@@ -7,6 +7,7 @@ import { registerAllHandlers } from './ipc'
 import { checkClaudeBinary } from './claude/client'
 import { buildFeedbackUrl } from './feedback'
 import { applyLoginPath } from './loginPath'
+import { sendToWindow } from './windowSend'
 
 const APP_NAME = 'Koto'
 const SAKURA_AI_URL = 'https://ai.sakura.ad.jp/'
@@ -42,6 +43,12 @@ function createWindow() {
 
   // 初回ペイント可能になってから表示する（空ウィンドウのちらつき防止・体感起動を速く）
   mainWindow.once('ready-to-show', () => { mainWindow?.show() })
+
+  // **閉じたら必ず null に戻す。** これを忘れると mainWindow に破棄済みの
+  // BrowserWindow が残り、`mainWindow?.webContents` の `?.` をすり抜けて
+  // 「Object has been destroyed」で main プロセスごと落ちる（2026-08-09 実機で発生）。
+  // macOS はウィンドウを閉じてもアプリが常駐するため、この状態が普通に起きる。
+  mainWindow.on('closed', () => { mainWindow = null })
 
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173')
@@ -106,7 +113,7 @@ function createWindow() {
     })
     if (response === 0) {
       // 保存してから終了：レンダラに全保存を依頼し、完了後に閉じる
-      mainWindow!.webContents.send('app:save-all')
+      sendToWindow(mainWindow, 'app:save-all')
     } else if (response === 1) {
       forceQuit = true
       mainWindow!.close()
@@ -228,7 +235,7 @@ function buildMenu() {
             {
               label: '認証情報（APIキー）…',
               accelerator: 'CmdOrCtrl+,',
-              click: () => mainWindow?.webContents.send('menu:open-credentials'),
+              click: () => sendToWindow(mainWindow, 'menu:open-credentials'),
             },
             { type: 'separator' },
             { role: 'hide', label: `${APP_NAME} を隠す` },
@@ -256,7 +263,7 @@ function buildMenu() {
       submenu: [
         // 「公開したもの一覧」: プロジェクトを開いていなくても見られるようメニューへ置く
         // （サービス側の障害時に「何を公開していたか」を確認する用途・2026-07-31 ユーザー要望）。
-        { label: '公開したもの一覧…', click: () => mainWindow?.webContents.send('menu:open-published') },
+        { label: '公開したもの一覧…', click: () => sendToWindow(mainWindow, 'menu:open-published') },
         { type: 'separator' },
         { role: 'reload', label: '再読み込み' },
         ...(isDev ? [{ role: 'toggleDevTools', label: '開発者ツール' } as MenuItemConstructorOptions] : []),

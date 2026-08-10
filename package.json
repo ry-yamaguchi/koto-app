@@ -1,6 +1,6 @@
 {
   "name": "koto",
-  "version": "0.2.103",
+  "version": "0.3.0",
   "description": "AIと対話してアプリを作り、公開できるmacOS向けIDE",
   "main": "dist/main/main.js",
   "license": "Apache-2.0",
@@ -17,14 +17,15 @@
     "build:main": "tsc -p tsconfig.main.json",
     "electron": "NODE_ENV=development electron .",
     "start": "npm run fetch:crane && npm run build:main && concurrently -n renderer,electron -c magenta,green \"npm run dev:renderer\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
-    "dist": "npm run fetch:crane && npm run gen:licenses && npm run build && electron-builder --mac",
+    "dist": "npm run check:build && npm run fetch:crane && npm run gen:licenses && npm run build && electron-builder --mac --config electron-builder.config.js",
     "smoke": "node scripts/smoke-test.mjs",
     "check:models": "node scripts/check-models.mjs",
     "check:links": "node scripts/check-links.mjs",
     "probe:models": "node scripts/probe-models.mjs",
     "release": "npm version patch --no-git-tag-version && npm run dist && npm run smoke",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:build": "node scripts/check-build-config.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",

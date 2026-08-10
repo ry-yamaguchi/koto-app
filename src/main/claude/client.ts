@@ -117,7 +117,21 @@ export function resolveClaudeBinary(): string | null {
   return null
 }
 
-/** 解決したバイナリを `--version` で起動して疎通確認する（10秒タイムアウト）。 */
+/**
+ * バイナリの起動を待つ上限（ミリ秒）。
+ *
+ * ── なぜ10秒では足りないのか（2026-08-09 署名の導入時に判明）─────────────
+ * アプリに署名を入れたところ、**初回だけ**このチェックが10秒を超えて失敗した
+ * （2回目以降は即座に成功）。macOS が新しく署名されたバイナリを初めて実行するとき、
+ * 署名と公証チケットの検証が入るためで、異常ではない。
+ *
+ * ただし利用者から見ると「インストール直後に Claude が使えないと言われる」ことになる。
+ * 実測で10秒超・2回目は1秒未満だったので、初回の検証を吸収できる幅を取る。
+ * ここを詰めても得るものは無い（失敗時に少し長く待つだけ）。
+ */
+const BINARY_CHECK_TIMEOUT_MS = 60_000
+
+/** 解決したバイナリを `--version` で起動して疎通確認する。 */
 export async function checkClaudeBinary(): Promise<{ ok: boolean; version?: string; path?: string; message?: string }> {
   const binPath = resolveClaudeBinary()
   if (!binPath) {
@@ -146,8 +160,13 @@ export async function checkClaudeBinary(): Promise<{ ok: boolean; version?: stri
     }
     timer = setTimeout(() => {
       try { child.kill('SIGKILL') } catch { /* 既に終了 */ }
-      finish({ ok: false, message: 'バイナリの起動がタイムアウトしました（10秒）' })
-    }, 10000)
+      finish({
+        ok: false,
+        message: `バイナリの起動がタイムアウトしました（${BINARY_CHECK_TIMEOUT_MS / 1000}秒）。`
+          + 'インストール直後は macOS の確認に時間がかかることがあります。'
+          + 'アプリを開き直してもう一度お試しください。',
+      })
+    }, BINARY_CHECK_TIMEOUT_MS)
     child.stdout?.on('data', d => { out += d })
     child.stderr?.on('data', d => { out += d })
     child.on('error', (e: any) => finish({ ok: false, message: e?.message ?? String(e) }))

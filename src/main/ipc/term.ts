@@ -4,6 +4,7 @@ import { ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as pty from 'node-pty'
 import type { IpcDeps } from './types'
+import { sendToWindow } from '../windowSend'
 
 export function registerTermHandlers(deps: IpcDeps) {
   // Terminal IPC
@@ -28,11 +29,12 @@ export function registerTermHandlers(deps: IpcDeps) {
     })
     terminals.set(id, term)
     term.onData(data => {
-      deps.getMainWindow()?.webContents.send(`term:data:${id}`, data)
+      // ウィンドウが閉じられた後もPTYは出力を続ける。破棄済みへ送ると main が落ちる（windowSend.ts）
+      sendToWindow(deps.getMainWindow(), `term:data:${id}`, data)
     })
     term.onExit(() => {
       terminals.delete(id)
-      deps.getMainWindow()?.webContents.send(`term:exit:${id}`)
+      sendToWindow(deps.getMainWindow(), `term:exit:${id}`)
     })
     return id
   })

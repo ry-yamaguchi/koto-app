@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Koto の署名（Developer ID）用エンタイトルメント。
+
+  公証（notarization）を通すには Hardened Runtime が必須で、そのままだと Electron が
+  動かなくなる。下の4つは「Electron を Hardened Runtime で動かすために必要な例外」である。
+  **必要な最小限にとどめること。** 増やすほど、この署名で許される動作が広がる。
+
+  - allow-jit / allow-unsigned-executable-memory
+      V8（JavaScript エンジン）は実行時に機械語を生成する。これが無いと起動しない。
+  - allow-dyld-environment-variables
+      Electron のヘルパープロセスが dyld の環境変数を使う。
+  - disable-library-validation
+      **Koto は第三者の実行ファイルを同梱している**ため必要:
+        Resources/bin/crane                        … コンテナイメージの組み立て（AppRun 公開）
+        @anthropic-ai/claude-agent-sdk-*/claude    … Claude モードの実体
+        node-pty の pty.node / spawn-helper        … ターミナル
+      これらは署名時に同じ Developer ID で署名し直されるが、動的読み込みの検証は
+      緩める必要がある。
+
+  ※ App Store 外の配布（Developer ID）なので App Sandbox は不要。
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
