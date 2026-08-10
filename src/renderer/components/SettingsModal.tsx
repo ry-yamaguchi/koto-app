@@ -9,6 +9,7 @@ import {
 import { useModels } from '../hooks/useModels'
 import { getAnthropicToken } from './CredentialsModal'
 import { SHOW_THINKING_KEY, isThinkingAlwaysOpen } from './ThinkingBlock'
+import { updateStatusText, shouldHighlight, type UpdateState } from '../../shared/updatePolicy'
 import {
   isClaudeModeEnabled, setClaudeMode, claudeMonthKey,
   getClaudeCostThisMonth, approxJpyFromUsd, getClaudeWarnUsd, setClaudeWarnUsd, isOverClaudeWarnThreshold,
@@ -43,6 +44,16 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
 
   // 所見6: 「チャットの頭脳」セクション用。Claudeキーの有無は StatusBar.tsx の claudeActive 判定パターンを
   // 踏襲し、getAnthropicToken() を 'sakura:credentials-changed' 購読で再判定する。
+  // アプリの更新。状態は main から流れてくる（購読は下の useEffect）。
+  const [update, setUpdate] = useState<UpdateState>({ kind: 'idle' })
+  const [applyError, setApplyError] = useState<string | null>(null)
+  const [appVersion, setAppVersion] = useState('')
+  useEffect(() => {
+    window.electronAPI.app.getVersion().then(setAppVersion).catch(() => { /* 版数が取れなくても支障はない */ })
+    window.electronAPI.update.state().then(setUpdate).catch(() => { /* 未対応版でも画面は動く */ })
+    return window.electronAPI.update.onState(s => { setUpdate(s); setApplyError(null) })
+  }, [])
+
   const [claudeKey, setClaudeKey] = useState<string | null>(null)
   const [claudeModeOn, setClaudeModeOn] = useState<boolean>(isClaudeModeEnabled())
   // AIの思考を常に開いたままにするか（ThinkingBlock が同じキーを読む）
@@ -239,6 +250,38 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
               </div>
             </div>
           )}
+
+          {/* アプリの更新（2026-08-10）。**勝手に再起動しない**のが設計の要。
+              見つけたら裏でダウンロードだけ済ませ、切り替えは次回起動時。
+              「いますぐ再起動」は利用者が押したときだけで、作業中なら断る（updatePolicy.ts）。 */}
+          <div className="bg-surface border border-line rounded-xl p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-semibold text-ink-secondary">アプリの更新</div>
+              <button
+                onClick={async () => { setUpdate(await window.electronAPI.update.check()) }}
+                disabled={update.kind === 'checking' || update.kind === 'downloading'}
+                className="text-[11px] border border-line rounded-md px-2 py-0.5 text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-50"
+              >更新を確認</button>
+            </div>
+            <p className={`text-xs leading-relaxed select-text ${shouldHighlight(update) ? 'text-sakura font-medium' : 'text-ink-secondary'}`}>
+              {updateStatusText(update) || `お使いの版: ${appVersion}`}
+            </p>
+            {shouldHighlight(update) && (
+              <div className="mt-2 space-y-1">
+                <button
+                  onClick={async () => {
+                    const r = await window.electronAPI.update.apply()
+                    if (!r.ok) setApplyError(r.message)
+                  }}
+                  className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                >いますぐ再起動して更新する</button>
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  押さなくても構いません。次に Koto を起動したときに自動で切り替わります。
+                </p>
+                {applyError && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {applyError}</p>}
+              </div>
+            )}
+          </div>
 
           {/* AIの思考表示（2026-08-03 ユーザー要望）。推論モデルは本文が出るまで沈黙するため、
               待っている間の進行が見えるようにする。既定は「生成中だけ開き、終わったら畳む」。 */}

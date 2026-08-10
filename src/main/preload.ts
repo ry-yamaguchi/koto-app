@@ -108,6 +108,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('menu:open-published', handler)
     },
   },
+  // 自動更新（update:*）。判定は main 側（shared/updatePolicy.ts）に集約してあり、
+  // renderer は状態を受け取って表示し、押されたら apply を呼ぶだけ。
+  update: {
+    state: () => ipcRenderer.invoke('update:state'),
+    check: () => ipcRenderer.invoke('update:check'),
+    apply: () => ipcRenderer.invoke('update:apply'),
+    /** 更新の進み具合を購読する（解除関数を返す）。 */
+    onState: (cb: (state: unknown) => void) => {
+      const handler = (_e: unknown, state: unknown) => cb(state)
+      ipcRenderer.on('update:state', handler)
+      return () => ipcRenderer.removeListener('update:state', handler)
+    },
+  },
   sakura: {
     models: (apiKey: string) => ipcRenderer.invoke('sakura:models', apiKey),
     chat: (args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; temperature?: number }) =>

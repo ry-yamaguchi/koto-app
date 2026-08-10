@@ -190,6 +190,17 @@ interface Window {
       /** 「表示 → 公開したもの一覧…」メニューの購読（解除関数を返す）。 */
       onOpenPublished(cb: () => void): () => void
     }
+    /** 自動更新。判定は main 側（shared/updatePolicy.ts）にあり、ここは表示と操作のみ。 */
+    update: {
+      /** いまの状態を取る（画面を開いた直後に一度）。 */
+      state(): Promise<import('../shared/updatePolicy').UpdateState>
+      /** 手動で確認する。 */
+      check(): Promise<import('../shared/updatePolicy').UpdateState>
+      /** いますぐ再起動して適用する。作業中なら断られ、理由が返る。 */
+      apply(): Promise<import('../shared/updatePolicy').ApplyDecision>
+      /** 状態の変化を購読する（解除関数を返す）。 */
+      onState(cb: (state: import('../shared/updatePolicy').UpdateState) => void): () => void
+    }
     sakura: {
       models(apiKey: string): Promise<string[]>
       chat(args: { apiKey: string; model: string; messages: { role: string; content: any }[]; maxTokens?: number; temperature?: number }): Promise<{ content: string; usage: { prompt_tokens?: number; completion_tokens?: number } | null }>

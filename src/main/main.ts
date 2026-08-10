@@ -8,6 +8,7 @@ import { checkClaudeBinary } from './claude/client'
 import { buildFeedbackUrl } from './feedback'
 import { applyLoginPath } from './loginPath'
 import { sendToWindow } from './windowSend'
+import { initUpdater } from './updater'
 
 const APP_NAME = 'Koto'
 const SAKURA_AI_URL = 'https://ai.sakura.ad.jp/'
@@ -132,6 +133,9 @@ registerAllHandlers({
     mainWindow?.close()
   },
   setBusy: (busy: boolean, label: string) => { isBusy = busy; busyLabel = label },
+  hasUnsavedChanges: () => hasUnsavedChanges,
+  isBusy: () => isBusy,
+  busyLabel: () => busyLabel,
 })
 
 // Content-Security-Policy（本番のみ。開発時はViteのHMRを壊さないため適用しない）
@@ -332,6 +336,11 @@ async function runClaudeBinarySmokeCheckIfRequested() {
 const pathFix = applyLoginPath()
 console.log(`[login-path] ${pathFix.ok ? 'ok' : 'skip'}${pathFix.message ? ` (${pathFix.message})` : ''} PATH=${process.env.PATH}`)
 
-app.whenReady().then(() => { applyCSP(); buildMenu(); setDockIcon(); createWindow(); runClaudeBinarySmokeCheckIfRequested() })
+app.whenReady().then(() => {
+  applyCSP(); buildMenu(); setDockIcon(); createWindow(); runClaudeBinarySmokeCheckIfRequested()
+  // 自動更新。既定は「ダウンロードだけして、次回起動時に適用」（勝手に再起動しない）。
+  // 配信元が未公開・オフラインでも、状態が error になるだけでアプリの動作には影響しない。
+  initUpdater({ getMainWindow: () => mainWindow, autoCheck: true })
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })

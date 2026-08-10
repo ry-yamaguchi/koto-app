@@ -19,6 +19,7 @@ import { registerBackupHandlers } from './backup'
 import { registerGithubHandlers } from './github'
 import { registerClaudeHandlers } from './claude'
 import { registerChatStoreHandlers } from './chatStore'
+import { registerUpdateHandlers } from './update'
 
 export type { IpcDeps } from './types'
 
@@ -41,4 +42,5 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerGithubHandlers(deps)
   registerClaudeHandlers(deps)
   registerChatStoreHandlers(deps)
+  registerUpdateHandlers(deps)
 }

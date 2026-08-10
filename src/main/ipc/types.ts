@@ -13,4 +13,14 @@ export interface IpcDeps {
   requestQuitAfterSave: () => void
   /** レンダラからの実行中通知（win:busy）を反映する。label は実行中の処理名（終了確認ダイアログに表示）。 */
   setBusy: (busy: boolean, label: string) => void
+
+  // ── 読み取り側（2026-08-10 自動更新のために追加）──────────────────────
+  // 「いま再起動して更新を適用してよいか」の判定に要る。書き込みだけ用意して
+  // 読み取りが無かったため、判定側から状態を見られなかった。
+  /** 未保存の変更があるか。 */
+  hasUnsavedChanges: () => boolean
+  /** 処理を実行中か（AI応答・公開処理・VPS操作・プロジェクト作成）。 */
+  isBusy: () => boolean
+  /** 実行中の処理名（利用者へ「〜が進行中です」と伝えるため）。 */
+  busyLabel: () => string
 }
