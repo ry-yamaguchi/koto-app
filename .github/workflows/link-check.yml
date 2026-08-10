@@ -1,0 +1,18 @@
+name: Link Check
+
+# 公開先UIに載せている公式サイトリンクのリンク切れを週次で検知する。
+# 外部サイト障害で通常のCI（ci.yml）を止めないよう、こちらは独立したワークフローにする。
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/check-links.mjs

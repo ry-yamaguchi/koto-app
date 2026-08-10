@@ -1,0 +1,214 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Koto design system
+  Palette:
+    pink #FF5577 · orange #F26B43 · amber #FBAE40 · cyan #00C8C8 · blue #7799DD
+    text #404044 / #7E7E86 · light gray #E8E8E8 · font 游ゴシック (Yu Gothic)
+*/
+
+/* ---- Dark theme (default · used by IDE mode) ---- */
+:root {
+  /* Surfaces — deep, cool near-black */
+  --bg-base: #0c0c11;
+  --bg-base-rgb: 12 12 17;
+  --bg-surface: #14141b;
+  --bg-surface-rgb: 20 20 27;
+  --bg-elevated: #1c1c26;
+  --bg-elevated-rgb: 28 28 38;
+  --bg-overlay: #242430;
+  --bg-overlay-rgb: 36 36 48;
+
+  /* Borders & lines */
+  --border: #2a2a37;
+  --border-rgb: 42 42 55;
+  --border-soft: #20202b;
+  --border-soft-rgb: 32 32 43;
+
+  /* Text */
+  --text-primary: #f2f2f7;
+  --text-primary-rgb: 242 242 247;
+  --text-secondary: #9a9aae;
+  --text-secondary-rgb: 154 154 174;
+  --text-muted: #5f5f72;
+  --text-muted-rgb: 95 95 114;
+
+  /* Sakura brand (coral-rose pink from the template) */
+  --sakura: #ff5577;
+  --sakura-rgb: 255 85 119;
+  --sakura-hover: #ff6e8a;
+  --sakura-hover-rgb: 255 110 138;
+  --sakura-soft: #ff8da3;
+  --sakura-soft-rgb: 255 141 163;
+  --sakura-glow: rgba(255, 85, 119, 0.35);
+
+  /* SAKURA secondary accents */
+  --green: #3ddc97;
+  --green-rgb: 61 220 151;
+  --blue: #7799dd;
+  --blue-rgb: 119 153 221;
+  --yellow: #fbae40;
+  --yellow-rgb: 251 174 64;
+  --orange: #f26b43;
+  --orange-rgb: 242 107 67;
+  --cyan: #00c8c8;
+  --cyan-rgb: 0 200 200;
+  --red: #ff5577;
+  --red-rgb: 255 85 119;
+}
+
+/*
+  ---- Light theme (used by Chat mode · faithful to the template) ----
+  各 --xxx-rgb は Tailwind の色不透明度修飾（例: bg-ink/80）用のRGB三つ組。
+  hex 版の --xxx はそのまま残す（inline style 等で var(--sakura) のように直接参照している箇所があるため）。
+  値は必ず同じ行の hex と同じ色を指すこと（ズレるとテーマ間で色が食い違う）。
+*/
+.theme-light {
+  --bg-base: #ffffff;
+  --bg-base-rgb: 255 255 255;
+  --bg-surface: #fff6f8;
+  --bg-surface-rgb: 255 246 248;
+  --bg-elevated: #ffffff;
+  --bg-elevated-rgb: 255 255 255;
+  --bg-overlay: #ffeef2;
+  --bg-overlay-rgb: 255 238 242;
+
+  --border: #e6d2d9;
+  --border-rgb: 230 210 217;
+  --border-soft: #efe0e5;
+  --border-soft-rgb: 239 224 229;
+
+  --text-primary: #33333a;
+  --text-primary-rgb: 51 51 58;
+  --text-secondary: #5f5f68;
+  --text-secondary-rgb: 95 95 104;
+  --text-muted: #86868f;
+  --text-muted-rgb: 134 134 143;
+
+  --sakura: #ff5577;
+  --sakura-rgb: 255 85 119;
+  --sakura-hover: #f23b60;
+  --sakura-hover-rgb: 242 59 96;
+  --sakura-soft: #ff8da3;
+  --sakura-soft-rgb: 255 141 163;
+  --sakura-glow: rgba(255, 85, 119, 0.25);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100vh;
+  width: 100vw;
+}
+
+body {
+  font-family: '游ゴシック', 'Yu Gothic', YuGothic, -apple-system, BlinkMacSystemFont,
+    'SF Pro Text', 'Hiragino Sans', system-ui, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
+}
+
+.monaco-editor,
+.monaco-editor .inputarea {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace !important;
+}
+
+/* Brand gradient helpers */
+.sakura-gradient {
+  background: linear-gradient(135deg, var(--sakura) 0%, var(--sakura-soft) 100%);
+}
+.sakura-gradient-text {
+  background: linear-gradient(135deg, var(--sakura) 0%, var(--sakura-soft) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.sakura-glow {
+  box-shadow: 0 0 0 1px var(--sakura), 0 4px 20px var(--sakura-glow);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #33333f;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #44444f; background-clip: padding-box; }
+
+/* ---- Resize handles (react-resizable-panels v4 <Separator>) ---- */
+.sep {
+  position: relative;
+  flex: 0 0 auto;
+  background: var(--border);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  z-index: 5;
+}
+.sep-v { width: 1px; cursor: col-resize; }
+.sep-h { height: 1px; cursor: row-resize; }
+
+/* Wider invisible hit area */
+.sep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.sep-v::after { left: -4px; right: -4px; }
+.sep-h::after { top: -4px; bottom: -4px; }
+
+.sep:hover,
+.sep[data-disabled="false"]:active {
+  background: var(--sakura);
+  box-shadow: 0 0 10px var(--sakura-glow);
+}
+
+/* Subtle fade-in for views */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.2s ease; }
+
+@keyframes bounce-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+/* ---- SAKURA geometric decoration (squares motif from the template) ---- */
+.geo-squares {
+  position: absolute;
+  pointer-events: none;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.geo-squares > i {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+/* Decorative bent-arrow / corner accent used on the template title slide */
+.geo-corner {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+/* secondary accent text helpers */
+.text-orange { color: var(--orange); }
+.text-amber  { color: var(--yellow); }
+.text-cyan   { color: var(--cyan); }
+.text-blue   { color: var(--blue); }

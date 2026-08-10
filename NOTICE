@@ -1,0 +1,54 @@
+Koto
+Copyright 2026 meryo
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+================================================================================
+提供主体について / About the provider
+================================================================================
+
+Koto は個人（meryo）が開発・提供する非公式ツールであり、さくらインターネット
+株式会社の製品ではありません。同社が提供・保証・推奨するものではありません。
+
+Koto is an unofficial tool developed and provided by an individual (meryo).
+It is NOT a product of SAKURA internet Inc., and is neither endorsed nor
+warranted by them.
+
+================================================================================
+接続先サービスについて / Third-party services
+================================================================================
+
+Koto は以下の外部サービスに接続する機能を持ちますが、これらのサービスは本
+ソフトウェアの作者が提供するものではありません。各サービスの利用には、それ
+ぞれの提供者が定める利用規約および料金が適用されます。利用者は自身のAPIキー
+／アカウントを登録して利用します（BYO: Bring Your Own key）。
+
+  - さくらのAI Engine, さくらのAppRun, さくらのレンタルサーバ,
+    さくらのクラウド (SAKURA internet Inc.)
+  - HANAMII
+  - Anthropic API / Claude (Anthropic PBC)
+  - Tavily Search API
+  - Brave Search API
+
+Koto connects to the third-party services listed above. Those services are not
+provided by the author of this software. Use of each service is governed by the
+terms and pricing of its respective provider. Users supply their own API keys.
+
+================================================================================
+商標について / Trademarks
+================================================================================
+
+「さくらインターネット」「さくらのAI Engine」「さくらのAppRun」「さくらの
+レンタルサーバ」「さくらのクラウド」は、さくらインターネット株式会社の商標
+または登録商標です。「Claude」「Anthropic」は Anthropic PBC の商標です。
+その他、本ソフトウェアに記載されている会社名・製品名・サービス名は、各社の
+商標または登録商標です。
+
+これらの名称は識別を目的として使用しているに過ぎず、各権利者による推奨・
+提携・出資その他の関係を示すものではありません。
+
+Product names, service names, and company names referenced in this software are
+trademarks or registered trademarks of their respective owners. They are used
+for identification purposes only and do not imply endorsement by, affiliation
+with, or sponsorship from their respective owners.

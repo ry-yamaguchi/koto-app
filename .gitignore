@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.local
+
+# macOS
+.DS_Store
+
+# デザイン参照用テンプレート（リポジトリ管理外）
+SAKURA_template_min.pptx
+release/
+build/bin/

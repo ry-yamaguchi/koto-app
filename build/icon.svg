@@ -1,0 +1,120 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Koto アプリアイコン: 満開の桜の天蓋から花びらが散る（儚さ）。2026-07-13 ユーザー参照画像を元にベクター再構成。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0%" stop-color="#ffd9e2"/>
+      <stop offset="52%" stop-color="#fcedf0"/>
+      <stop offset="100%" stop-color="#d7ebf7"/>
+    </linearGradient>
+    <clipPath id="sq"><rect x="96" y="96" width="832" height="832" rx="190"/></clipPath>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="42"/></filter>
+    <!-- 桜の花びら1枚（先端に切れ込み・基部が原点側）。細身にして5弁が潰れないように -->
+    <path id="ptl" d="M0,4 C-11,-4 -14,-24 -7,-36 L0,-29 L7,-36 C14,-24 11,-4 0,4 Z"/>
+    <!-- 5弁の桜（花弁を中心から少し離して独立させる） -->
+    <g id="flw">
+      <use href="#ptl" transform="translate(0,-8)"/>
+      <use href="#ptl" transform="rotate(72) translate(0,-8)"/>
+      <use href="#ptl" transform="rotate(144) translate(0,-8)"/>
+      <use href="#ptl" transform="rotate(216) translate(0,-8)"/>
+      <use href="#ptl" transform="rotate(288) translate(0,-8)"/>
+    </g>
+  </defs>
+
+  <rect x="96" y="96" width="832" height="832" rx="190" fill="url(#bg)"/>
+  <g clip-path="url(#sq)">
+    <!-- 奥の枝（シルエット・淡く） -->
+    <g stroke="#c98da0" fill="none" stroke-linecap="round" opacity="0.38">
+      <path d="M80,780 C 240,712 330,648 440,556" stroke-width="11"/>
+      <path d="M300,662 C 345,620 368,598 405,562" stroke-width="6"/>
+      <path d="M950,712 C 840,664 786,640 716,598" stroke-width="9"/>
+      <path d="M866,676 C 838,648 822,634 796,612" stroke-width="5"/>
+    </g>
+    <use href="#flw" transform="translate(300,655) scale(0.45)" fill="#e8a5b5" opacity="0.55"/>
+    <use href="#flw" transform="translate(402,565) scale(0.4) rotate(20)" fill="#e8a5b5" opacity="0.55"/>
+    <use href="#flw" transform="translate(228,700) scale(0.4) rotate(-15)" fill="#e8a5b5" opacity="0.5"/>
+    <use href="#flw" transform="translate(800,614) scale(0.4) rotate(10)" fill="#e8a5b5" opacity="0.5"/>
+
+    <!-- 中央の霞（柔らかい奥行き） -->
+    <ellipse cx="470" cy="520" rx="330" ry="150" fill="#ffffff" opacity="0.5" filter="url(#soft)"/>
+
+    <!-- 散る花びら -->
+    <g>
+      <use href="#ptl" transform="translate(600,560) scale(0.55) rotate(140)" fill="#f4a7b9"/>
+      <use href="#ptl" transform="translate(680,610) scale(0.5) rotate(80)" fill="#f9c8d3"/>
+      <use href="#ptl" transform="translate(560,640) scale(0.45) rotate(200)" fill="#ef8ba0"/>
+      <use href="#ptl" transform="translate(740,680) scale(0.5) rotate(110)" fill="#fbdde4"/>
+      <use href="#ptl" transform="translate(640,722) scale(0.55) rotate(60)" fill="#f4a7b9"/>
+      <use href="#ptl" transform="translate(700,782) scale(0.45) rotate(170)" fill="#f9c8d3"/>
+      <use href="#ptl" transform="translate(590,822) scale(0.5) rotate(30)" fill="#fbdde4"/>
+      <use href="#ptl" transform="translate(662,864) scale(0.4) rotate(220)" fill="#f4a7b9"/>
+      <use href="#ptl" transform="translate(430,600) scale(0.5) rotate(100)" fill="#f9c8d3"/>
+      <use href="#ptl" transform="translate(370,690) scale(0.45) rotate(150)" fill="#fbdde4"/>
+      <use href="#ptl" transform="translate(470,760) scale(0.5) rotate(70)" fill="#f4a7b9"/>
+      <use href="#ptl" transform="translate(402,842) scale(0.4) rotate(190)" fill="#f9c8d3"/>
+      <use href="#ptl" transform="translate(310,782) scale(0.4) rotate(40)" fill="#fbdde4"/>
+      <use href="#ptl" transform="translate(822,602) scale(0.45) rotate(60)" fill="#f9c8d3"/>
+      <use href="#ptl" transform="translate(852,722) scale(0.5) rotate(130)" fill="#fbdde4"/>
+      <use href="#ptl" transform="translate(802,832) scale(0.45) rotate(20)" fill="#f4a7b9"/>
+      <use href="#ptl" transform="translate(882,882) scale(0.4) rotate(160)" fill="#fbdde4"/>
+      <use href="#ptl" transform="translate(242,880) scale(0.45) rotate(90)" fill="#f9c8d3"/>
+      <use href="#ptl" transform="translate(182,652) scale(0.4) rotate(120)" fill="#fbdde4"/>
+    </g>
+
+    <!-- 天蓋の量感（花の奥のぼかしたピンクの塊） -->
+    <g filter="url(#soft)" opacity="0.55">
+      <ellipse cx="300" cy="200" rx="270" ry="155" fill="#f9bfcd"/>
+      <ellipse cx="700" cy="190" rx="290" ry="155" fill="#f7b3c4"/>
+      <ellipse cx="500" cy="330" rx="340" ry="145" fill="#fbd3dc"/>
+    </g>
+    <!-- 満開の天蓋（上部を密に覆う） -->
+    <g>
+      <use href="#flw" transform="translate(150,140) scale(1.3) rotate(10)" fill="#ef8ba0"/>
+      <use href="#flw" transform="translate(255,118) scale(1.1) rotate(-20)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(350,150) scale(1.4) rotate(35)" fill="#e26a84"/>
+      <use href="#flw" transform="translate(455,114) scale(1.0)" fill="#f9c8d3"/>
+      <use href="#flw" transform="translate(560,145) scale(1.3) rotate(-15)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(665,118) scale(1.1) rotate(25)" fill="#f4a7b9"/>
+      <use href="#flw" transform="translate(770,150) scale(1.35) rotate(5)" fill="#e8798f"/>
+      <use href="#flw" transform="translate(872,124) scale(1.0) rotate(-30)" fill="#f6e9d8"/>
+      <use href="#flw" transform="translate(120,236) scale(1.0) rotate(45)" fill="#f4a7b9"/>
+      <use href="#flw" transform="translate(215,226) scale(1.25) rotate(-10)" fill="#e26a84"/>
+      <use href="#flw" transform="translate(320,246) scale(1.05) rotate(15)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(420,226) scale(1.3) rotate(-25)" fill="#ef8ba0"/>
+      <use href="#flw" transform="translate(525,240) scale(1.0) rotate(40)" fill="#f6e9d8"/>
+      <use href="#flw" transform="translate(625,230) scale(1.25) rotate(-5)" fill="#f9c8d3"/>
+      <use href="#flw" transform="translate(730,246) scale(1.15) rotate(20)" fill="#e26a84"/>
+      <use href="#flw" transform="translate(840,230) scale(1.2) rotate(-40)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(926,256) scale(0.9) rotate(10)" fill="#f4a7b9"/>
+      <use href="#flw" transform="translate(160,330) scale(1.1) rotate(-15)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(265,346) scale(0.95) rotate(25)" fill="#f9c8d3"/>
+      <use href="#flw" transform="translate(370,330) scale(1.2) rotate(-35)" fill="#f4a7b9"/>
+      <use href="#flw" transform="translate(475,350) scale(0.9) rotate(10)" fill="#fbdde4"/>
+      <use href="#flw" transform="translate(585,336) scale(1.1) rotate(-20)" fill="#ef8ba0"/>
+      <use href="#flw" transform="translate(695,350) scale(0.95) rotate(30)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(800,336) scale(1.05) rotate(-10)" fill="#f9c8d3"/>
+      <use href="#flw" transform="translate(900,356) scale(0.85) rotate(15)" fill="#fbdde4"/>
+      <use href="#flw" transform="translate(210,430) scale(0.8) rotate(20)" fill="#fbdde4"/>
+      <use href="#flw" transform="translate(330,446) scale(0.75) rotate(-25)" fill="#f9c8d3"/>
+      <use href="#flw" transform="translate(455,436) scale(0.85) rotate(5)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(590,450) scale(0.7) rotate(-15)" fill="#fbdde4"/>
+      <use href="#flw" transform="translate(720,440) scale(0.8) rotate(30)" fill="#f9c8d3"/>
+      <use href="#flw" transform="translate(860,450) scale(0.7) rotate(-5)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(285,520) scale(0.6) rotate(15)" fill="#fbdde4"/>
+      <use href="#flw" transform="translate(520,532) scale(0.55) rotate(-20)" fill="#ffffff"/>
+      <use href="#flw" transform="translate(760,526) scale(0.6) rotate(25)" fill="#fbdde4"/>
+    </g>
+    <!-- 白系・淡色の花の中心（濃いピンクの芯） -->
+    <g fill="#d95c78">
+      <circle cx="255" cy="118" r="11"/>
+      <circle cx="560" cy="145" r="12"/>
+      <circle cx="320" cy="246" r="10"/>
+      <circle cx="840" cy="230" r="11"/>
+      <circle cx="160" cy="330" r="10"/>
+      <circle cx="525" cy="240" r="9"/>
+      <circle cx="872" cy="124" r="9"/>
+      <circle cx="455" cy="436" r="8"/>
+      <circle cx="695" cy="350" r="9"/>
+      <circle cx="455" cy="114" r="9"/>
+    </g>
+  </g>
+</svg>
