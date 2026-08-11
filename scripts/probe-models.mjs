@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
  * モデル能力プローブ: さくらのAI Engine の各チャットモデルを実測し、
- * Sakura IDE を最適設定にするための「能力一覧」を出力する。
+ * Koto を最適設定にするための「能力一覧」を出力する。
  *
  * 使い方（トークンは端末内のみ。チャットに貼らないこと）:
  *   SAKURA_API_KEY=<キー> node scripts/probe-models.mjs

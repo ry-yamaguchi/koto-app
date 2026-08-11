@@ -3,7 +3,7 @@
 // アプリ本体と同じ CHAT_CONTEXT（src/renderer/aiContext.ts）を実APIに送って応答を判定する。
 //
 // 使い方:
-//   cd ~/sakura-ide && node scripts/verify-chat-context.mjs
+//   node scripts/verify-chat-context.mjs
 //   （APIキーを聞かれたら貼り付けてEnter。環境変数 SAKURA_API_KEY でも可）
 
 import { createInterface } from 'node:readline/promises'

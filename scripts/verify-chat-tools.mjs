@@ -4,7 +4,7 @@
 // 各周回の content / tool_calls / reasoning の有無を表示する。
 //
 // 使い方:
-//   cd ~/sakura-ide && node scripts/verify-chat-tools.mjs
+//   node scripts/verify-chat-tools.mjs
 //   （APIキーを聞かれたら貼り付けてEnter。環境変数 SAKURA_API_KEY でも可）
 
 import { createInterface } from 'node:readline/promises'

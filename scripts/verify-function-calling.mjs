@@ -2,13 +2,13 @@
 // さくらのAI Engine が OpenAI互換の Function Calling (tools) に対応しているかの検証スクリプト。
 //
 // 使い方:
-//   cd ~/sakura-ide && node scripts/verify-function-calling.mjs
+//   node scripts/verify-function-calling.mjs
 //   （APIキーを聞かれたら貼り付けてEnter。環境変数 SAKURA_API_KEY でも可）
 //
 // 検証内容:
 //   1. tools を渡してモデルが tool_calls を返すか（基本のFunction Calling）
 //   2. tool結果を返して最終回答が得られるか（ループ1周）
-//   3. ストリーミングでも tool_calls が取れるか（Sakura IDEはストリーミング利用のため）
+//   3. ストリーミングでも tool_calls が取れるか（Koto はストリーミング利用のため）
 
 import { createInterface } from 'node:readline/promises'
 

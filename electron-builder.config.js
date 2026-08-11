@@ -67,6 +67,22 @@ if (env.KOTO_SIGN === '1' && !creds.keychain && !creds.apiKey) {
 // 黙って見つからなくなるのを避けるため。
 const { identity: _ignored, ...macBase } = base.mac
 
+// ── DMG の公証はここでは**やらない**（2026-08-11 の教訓）─────────────
+// electron-builder が公証に出すのは .app だけで、DMG は署名すらされない。
+// その対処は `scripts/dmg-notarize.mjs` にあるが、**afterAllArtifactBuild では
+// 動かせない**。順序がこうなっているため:
+//
+//   1. DMG ができる → electron-builder が**この時点の**ハッシュを計算
+//      （app-builder-lib/out/publish/updateInfoBuilder.js の hashFile）
+//   2. afterAllArtifactBuild が呼ばれる ← ここではまだ latest-mac.yml が無い
+//      （あるのは**前の版**の yml。触ると前の版を壊す）
+//   3. ビルド完了後に latest-mac.yml が書き出される
+//      （PublishManager.awaitTasks → writeUpdateInfoFiles）
+//
+// 署名すると DMG の中身が変わり 1 のハッシュが古くなるので、**3 の後**に
+// 署名・公証・staple と yml の訂正をまとめてやる必要がある。
+// そのため npm script の `dist` の最後に置いてある。
+
 module.exports = {
   ...base,
   mac: sign

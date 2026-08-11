@@ -4,7 +4,7 @@
 // 応答が content / reasoning / それ以外 のどこに出るかを表示する。
 //
 // 使い方:
-//   cd ~/sakura-ide && node scripts/verify-vision.mjs
+//   node scripts/verify-vision.mjs
 //   モデルを指定:  SAKURA_API_KEY=<キー> node scripts/verify-vision.mjs preview/Kimi-K2.6
 //   （引数を省略すると既定の一覧を検証する）
 
