@@ -194,7 +194,7 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
                     )
                   })}
                 </div>
-                <p className="text-[10px] text-ink-muted mt-1.5">上限はキーごとに「認証情報（⌘,）」で設定できます。</p>
+                <p className="text-[10px] text-ink-muted mt-1.5">上限はキーごとに「認証情報（⇧⌘,）」で設定できます。</p>
               </div>
             )}
 
@@ -397,7 +397,7 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
               />
             </div>
             <p className="mt-1 text-[11px] text-ink-muted">
-              キーごとに上限を設定していない場合に適用される既定値です（空欄で無制限）。キー個別の上限は「認証情報（⌘,）」で設定します。
+              キーごとに上限を設定していない場合に適用される既定値です（空欄で無制限）。キー個別の上限は「認証情報（⇧⌘,）」で設定します。
             </p>
           </div>
 

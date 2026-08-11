@@ -236,9 +236,17 @@ function buildMenu() {
           submenu: [
             { role: 'about', label: `${APP_NAME} について` },
             { type: 'separator' },
+            // macOS では ⌘, が設定の定位置。以前はここが「認証情報」だったが、
+            // 設定（⚙️）が画面の中にしか無く、メニューから探した利用者が辿り着けなかった
+            // （2026-08-11 Ryosuke 指摘）。⌘, は設定に譲り、認証情報はその下に置く。
+            {
+              label: '設定…',
+              accelerator: 'CmdOrCtrl+,',
+              click: () => sendToWindow(mainWindow, 'menu:open-settings'),
+            },
             {
               label: '認証情報（APIキー）…',
-              accelerator: 'CmdOrCtrl+,',
+              accelerator: 'CmdOrCtrl+Shift+,',
               click: () => sendToWindow(mainWindow, 'menu:open-credentials'),
             },
             { type: 'separator' },
@@ -296,7 +304,7 @@ function buildMenu() {
         { label: 'Chromium 等のライセンス（Electron同梱）', click: () => openChromiumLicense() },
         { type: 'separator' },
         { label: `${APP_NAME} について`, click: () => app.showAboutPanel() },
-        { label: `バージョン ${app.getVersion()}（正式版前）`, enabled: false },
+        { label: `バージョン ${app.getVersion()}（ベータ提供中）`, enabled: false },
         { type: 'separator' },
         // A-2: フィードバック導線。リポジトリは private だが友人は協力者として Issues を使える想定（roadmap.md A-2）。
         { label: 'フィードバックを送る…', click: () => shell.openExternal(buildFeedbackUrl(app.getVersion(), os.release(), process.arch)) },

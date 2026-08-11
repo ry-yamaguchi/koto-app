@@ -107,6 +107,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('menu:open-published', handler)
       return () => ipcRenderer.removeListener('menu:open-published', handler)
     },
+    // 「Koto → 設定…」（⌘,）。設定が画面の中にしか無かったのを、macOS の定位置からも開けるようにした。
+    onOpenSettings: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('menu:open-settings', handler)
+      return () => ipcRenderer.removeListener('menu:open-settings', handler)
+    },
   },
   // 自動更新（update:*）。判定は main 側（shared/updatePolicy.ts）に集約してあり、
   // renderer は状態を受け取って表示し、押されたら apply を呼ぶだけ。

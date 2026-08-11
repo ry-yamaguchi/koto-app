@@ -165,6 +165,12 @@ export default function App() {
   useEffect(() => {
     return window.electronAPI.app.onOpenPublished(() => setShowPublishedList(true))
   }, [])
+
+  // メニューバー「Koto → 設定…」（⌘,）から開く。
+  // 設定（⚙️）が画面の中にしか無く、メニューから探した利用者が辿り着けなかった（2026-08-11 Ryosuke 指摘）
+  useEffect(() => {
+    return window.electronAPI.app.onOpenSettings(() => setShowSettings(true))
+  }, [])
   const [sakuraApiKey, setSakuraApiKey] = useState('')
   const [version, setVersion] = useState('')
 

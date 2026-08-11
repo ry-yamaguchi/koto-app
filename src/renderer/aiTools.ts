@@ -442,7 +442,7 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'search_web') {
-    if (!ctx.search) return 'エラー: Web検索のAPIキーが未設定です（ユーザーに認証情報（⌘,）でのTavilyまたはBraveのキー登録を案内してください）'
+    if (!ctx.search) return 'エラー: Web検索のAPIキーが未設定です（ユーザーに認証情報（⇧⌘,）でのTavilyまたはBraveのキー登録を案内してください）'
     const query = String(args.query ?? '').trim()
     if (!query) return 'エラー: 検索クエリが空です'
     try {

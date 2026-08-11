@@ -557,7 +557,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           🔑 APIキーを登録する
         </button>
         <p className="text-[11px] text-ink-muted mt-1">
-          <a href="https://ai.sakura.ad.jp/" className="text-sakura-soft hover:underline">さくらのAI Engine</a> で取得 ・ ⌘, でも開けます
+          <a href="https://ai.sakura.ad.jp/" className="text-sakura-soft hover:underline">さくらのAI Engine</a> で取得 ・ ⇧⌘, でも開けます
         </p>
       </div>
     )

@@ -189,6 +189,8 @@ interface Window {
       onOpenCredentials(cb: () => void): () => void
       /** 「表示 → 公開したもの一覧…」メニューの購読（解除関数を返す）。 */
       onOpenPublished(cb: () => void): () => void
+      /** 「Koto → 設定…」（⌘,）メニューの購読（解除関数を返す）。 */
+      onOpenSettings(cb: () => void): () => void
     }
     /** 自動更新。判定は main 側（shared/updatePolicy.ts）にあり、ここは表示と操作のみ。 */
     update: {

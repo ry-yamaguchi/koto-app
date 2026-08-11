@@ -381,7 +381,7 @@ export function checkBeforeRequest(apiKey: string): { allowed: boolean; message?
       allowed: false,
       message:
         `このAPIキーの今月の利用額（推定 ¥${cost.toFixed(1)}）が上限 ¥${limit} に達しました。` +
-        `認証情報（⌘,）でこのキーの上限を変更するか、別のキーに切り替えてください。`,
+        `認証情報（⇧⌘,）でこのキーの上限を変更するか、別のキーに切り替えてください。`,
     }
   }
   return { allowed: true }

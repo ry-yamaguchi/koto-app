@@ -269,7 +269,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
             🔑 APIキーを登録する
           </button>
           <p className="text-xs text-ink-muted text-center mt-4">
-            <a href="https://ai.sakura.ad.jp/" className="text-sakura-soft hover:underline">さくらのAI Engine</a> でAPIキーを取得 ・ メニュー ⌘, でも開けます
+            <a href="https://ai.sakura.ad.jp/" className="text-sakura-soft hover:underline">さくらのAI Engine</a> でAPIキーを取得 ・ メニュー ⇧⌘, でも開けます
           </p>
         </div>
       </div>
