@@ -37,7 +37,18 @@ Koto は個人（meryo）が開発・提供する非公式ツールです（さ�
 
 以下は既知であり、報告いただかなくても把握しています（改善予定のものを含みます）。
 
-- **アプリは未署名です**（Apple Developer Program 未契約のため）。配布物の真正性は受け渡し経路に依存します。署名・公証は今後対応予定です。
+- **配布物には Apple の署名と公証（Notarization）が付いています**（v0.3.0 以降。Developer ID Application、Team ID `6L9VX84LZU`）。インストーラ（.dmg）にも v0.3.2 から付いています。次のコマンドで手元でも確認できます。
+
+  ```
+  spctl -a -t open --context context:primary-signature -v <ダウンロードした .dmg>
+  codesign -dv --verbose=2 /Applications/Koto.app
+  ```
+
+  **配布は [GitHub Releases](https://github.com/ry-yamaguchi/koto-app/releases) からのみ**です。他所で配られているものは信頼しないでください。
+- **アプリの更新は electron-updater を使い、上記 Releases の `latest-mac.yml` を HTTPS で読みます。** 更新の適用時には macOS が署名を検証するため、別の署名者が作ったものには入れ替わりません。
+- **既知の依存関係の脆弱性: js-yaml 4.3.0（[GHSA-5p4m-2wfm-xmqj](https://github.com/advisories/GHSA-5p4m-2wfm-xmqj) / CVE-2026-59870, high）。** 特定の YAML でCPUを浪費させられる問題です。同梱していますが、**現時点で修正版へ上げる手段がありません**（修正は js-yaml 5.x のみで、依存元の electron-updater 6.8.9（最新）が `^4.1.0` を要求しているため）。
+
+  Koto でこの js-yaml が読むのは**更新情報（`latest-mac.yml`）だけ**で、取得元は上記 Releases（HTTPS）です。悪用するには配信元そのものを乗っ取る必要があり、それができる攻撃者はアプリ本体を差し替えられるため、この脆弱性を使う意味がありません。影響もCPU浪費で、任意コード実行ではありません。**利用者のファイルやAPIキーを危険にさらす経路ではない**と判断し、依存の更新を待ちます（無理に semver メジャーを上書きすると、更新機能そのものを壊す危険のほうが大きいため）。
 - **APIキーは利用者のMac内にのみ保存されます。** OSのキーチェーンで暗号化（Electron の safeStorage）した上で保存し、キーが外部へ出るのは、各サービスのAPIを呼ぶ瞬間だけです。Koto に利用者のデータを集める中央サーバーは存在しません。
 - **AIが生成したコード・AIが実行したコマンドの結果について、開発者は責任を負えません。** 危険なコマンドの判定は入れていますが、完全ではありません。重要なデータのある環境では、バックアップの上でご利用ください。
 - 接続先サービス（さくらインターネット、Anthropic、GitHub、Vercel）側の脆弱性は、各社の窓口へご報告ください。Koto 側の使い方に問題がある場合はこちらへどうぞ。

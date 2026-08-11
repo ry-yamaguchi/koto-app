@@ -70,8 +70,8 @@
     },
     "files": [
       "dist/**",
-      "docs/**",
-      "!docs/**/*.md",
+      "docs/usage-guide.html",
+      "docs/third-party-licenses.html",
       "build/icon.png",
       "package.json",
       "LICENSE",
