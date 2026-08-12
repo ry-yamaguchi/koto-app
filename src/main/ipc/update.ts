@@ -7,6 +7,7 @@
 import { ipcMain } from 'electron'
 import type { IpcDeps } from './types'
 import { checkForUpdatesNow, currentUpdateState, quitAndInstallNow } from '../updater'
+import { revealUpdateLog } from '../updateLog'
 import { canApplyNow } from '../../shared/updatePolicy'
 
 export function registerUpdateHandlers(deps: IpcDeps) {
@@ -32,4 +33,11 @@ export function registerUpdateHandlers(deps: IpcDeps) {
     quitAndInstallNow()
     return { ok: true as const }
   })
+
+  /**
+   * 更新ログを Finder で表示する。
+   * **非エンジニアに「~/Library/Logs を開いて」は通じない**ので、押すだけで
+   * 場所が出るようにする。ここが「更新されない」を追える唯一の入口になる。
+   */
+  ipcMain.handle('update:openLog', async () => await revealUpdateLog())
 }

@@ -202,6 +202,8 @@ interface Window {
       apply(): Promise<import('../shared/updatePolicy').ApplyDecision>
       /** 状態の変化を購読する（解除関数を返す）。 */
       onState(cb: (state: import('../shared/updatePolicy').UpdateState) => void): () => void
+      /** 更新ログを Finder で表示する。 */
+      openLog(): Promise<{ ok: boolean; path: string; message?: string }>
     }
     sakura: {
       models(apiKey: string): Promise<string[]>

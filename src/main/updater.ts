@@ -15,6 +15,7 @@ import { app } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { sendToWindow } from './windowSend'
+import { updateLogger, logUpdaterStart } from './updateLog'
 import { shouldCheckOnStartup, type UpdateState } from '../shared/updatePolicy'
 
 /** renderer へ状態を流すチャンネル（preload / global.d.ts と対応）。 */
@@ -41,6 +42,11 @@ function setState(next: UpdateState) {
  */
 export function initUpdater(deps: { getMainWindow: () => BrowserWindow | null; autoCheck: boolean }) {
   getWindow = deps.getMainWindow
+
+  // **失敗の理由をファイルに残す。** これが無いと「更新されない」と言われても
+  // 追う手段が無い（2026-08-11 に実際にそうなった）。秘密は書く前に落としてある。
+  autoUpdater.logger = updateLogger
+  logUpdaterStart({ version: app.getVersion(), isPackaged: app.isPackaged, autoCheck: deps.autoCheck })
 
   // 見つけたら自動でダウンロードする。ただし**適用はしない**。
   // 利用者を待たせずに準備を終えておき、切り替えは次回起動時にする。

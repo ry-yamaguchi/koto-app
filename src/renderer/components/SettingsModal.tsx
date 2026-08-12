@@ -281,6 +281,16 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
                 {applyError && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {applyError}</p>}
               </div>
             )}
+            {/* 更新の記録（2026-08-11）。更新は失敗しても画面が静かなままなので、
+                「更新されない」と言われたときに原因を追える唯一の入口になる。
+                非エンジニアに「~/Library/Logs を開いて」は通じないため、押すだけで場所が出る。 */}
+            <button
+              onClick={async () => {
+                const r = await window.electronAPI.update.openLog()
+                if (!r.ok) setApplyError(r.message ?? '記録を開けませんでした。')
+              }}
+              className="mt-2 text-[11px] text-ink-muted hover:text-sakura underline underline-offset-2"
+            >更新の記録を表示…</button>
           </div>
 
           {/* AIの思考表示（2026-08-03 ユーザー要望）。推論モデルは本文が出るまで沈黙するため、

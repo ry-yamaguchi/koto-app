@@ -120,6 +120,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     state: () => ipcRenderer.invoke('update:state'),
     check: () => ipcRenderer.invoke('update:check'),
     apply: () => ipcRenderer.invoke('update:apply'),
+    /** 更新ログを Finder で表示する（「更新されない」を追える唯一の入口）。 */
+    openLog: () => ipcRenderer.invoke('update:openLog'),
     /** 更新の進み具合を購読する（解除関数を返す）。 */
     onState: (cb: (state: unknown) => void) => {
       const handler = (_e: unknown, state: unknown) => cb(state)
