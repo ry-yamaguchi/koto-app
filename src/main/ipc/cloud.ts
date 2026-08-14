@@ -4,9 +4,9 @@ import { ipcMain } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { randomBytes } from 'crypto'
-import { validateSpec, defaultSpec, type EnvSpec } from '../cloud/spec'
+import { validateSpec, defaultSpec, normalizeSpecName, type EnvSpec } from '../cloud/spec'
 import { computePlan, type Plan } from '../cloud/planner'
-import { emptyState, isExpired, registryDeletionTarget, registryLookupNames, resolvePushRegistry, stateAfterTeardown, withCreationMeta, type EnvState } from '../cloud/state'
+import { emptyState, isExpired, registryDeletionTarget, registryLookupNames, resolvePushRegistry, stateToSave, type EnvState } from '../cloud/state'
 import { loadCredentials } from '../cloud/auth'
 import {
   hasRegistryCredentials,
@@ -17,8 +17,10 @@ import {
 } from '../cloud/registry-auth'
 import { SakuraCloudClient, pickContainerRegistries, extractRegistryId, extractAppUrl, extractLatestBill, extractAccountId, apiErrorMessage } from '../cloud/client'
 import { applyPlan } from '../cloud/apply'
+import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapter'
 import { buildRef, dockerAvailable, buildImage, loginRegistry, pushImage } from '../cloud/docker'
 import { builderAvailable, buildAndPush } from '../cloud/imageBuild'
+import { detectRuntime, type RuntimeChoice } from '../../shared/runtimeDetect'
 import type { IpcDeps } from './types'
 
 // ── さくらのクラウド連携（段階1＝基盤）。cloud: 名前空間 ──
@@ -93,12 +95,39 @@ function resolveBuildContext(projectDir: string, context: string): string {
   return full
 }
 
+/**
+ * プロジェクトを見て、何で動かすかを決める（IO はここだけ。判断は shared）。
+ * package.json が壊れていても落ちない（読めなければ「無い」として扱う）。
+ */
+function detectRuntimeFor(contextAbs: string): RuntimeChoice {
+  let packageJson: unknown = null
+  try {
+    const p = path.join(contextAbs, 'package.json')
+    if (fs.existsSync(p)) packageJson = JSON.parse(fs.readFileSync(p, 'utf-8'))
+  } catch {
+    // 壊れた package.json は「無い」とはしない。**静的だと決めつけると
+    // ソースが丸見えになる**ので、直してもらうよう伝える
+    return { kind: 'unsupported', reason: 'package.json を読み取れませんでした。書式（JSON）が正しいか確認してください。' }
+  }
+  let fileNames: string[] = []
+  try {
+    fileNames = fs.readdirSync(contextAbs, { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name)
+  } catch { fileNames = [] }
+  return detectRuntime({ packageJson, fileNames })
+}
+
 /** plan に apprun-app の create または update が含まれるか。 */
 function planTouchesApp(plan: Plan): boolean {
   return plan.actions.some(
     a => a.kind === 'apprun-app' && (a.type === 'create' || a.type === 'update'),
   )
 }
+
+import { scanDataUsage, ensureDataLayer } from '../dataLayer'
+import { ObjectStorageClient } from '../cloud/objectStorage'
+import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
+import { looksLikeRegistryProblem } from '../../shared/registryTrouble'
+import { sharedBucketName, isValidBucketName, consentedBuckets, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, KOTO_ROOT, type BucketMode } from '../../shared/objectStorage'
 
 export function registerCloudHandlers(_deps: IpcDeps) {
   // 接続テスト＝APIキーの権限を 3 点で非破壊チェックする。
@@ -192,6 +221,12 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     try {
       const result = validateSpec(spec)
       if (!result.ok) return { ok: false, errors: result.errors }
+      // **保存場所の記録だけは、画面からの写しで上書きしない。**
+      // 画面は開いた時点の spec を丸ごと書き戻すので、開いたあとに用意した
+      // 保存場所が消える（2026-08-14 実機で発覚）。判断は shared に集約。
+      let disk: EnvSpec | null = null
+      try { disk = loadCloudSpec(projectDir) } catch { disk = null }
+      result.spec = keepStorageFromDisk(result.spec, disk)
       const file = cloudFilePath(projectDir, CLOUD_ENV_FILE)
       fs.mkdirSync(path.dirname(file), { recursive: true })
       fs.writeFileSync(file, JSON.stringify(result.spec, null, 2) + '\n', 'utf-8')
@@ -571,6 +606,27 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           } catch { /* 記録できなくても公開は続行（次回また採用を試みる） */ }
         }
 
+        // 1c. **記録があることと、実在することは別。**（2026-08-14 実機）
+        // コントロールパネルでレジストリを削除すると、Koto は手元の認証情報だけを見て
+        // 「レジストリ登録 ✓」と表示し、組み立ての最後で push に失敗する。
+        // 原因が画面に出ないうえ、回復のボタンも出ないので袋小路になる。
+        try {
+          const probe = new SakuraCloudClient({ credentials: creds, dryRun: false })
+          const listedNow = await probe.listContainerRegistries(spec.region)
+          if (listedNow.dryRun === false && listedNow.ok) {
+            const names = pickContainerRegistries(listedNow.data).map(r => r.subdomainLabel)
+            if (names.length > 0 && !names.includes(push.use)) {
+              return {
+                ok: false,
+                hint: 'reset-registry' as const,
+                message: `このプロジェクトが使うコンテナレジストリ『${push.use}』が見つかりません`
+                  + '（コントロールパネルで削除された可能性があります）。'
+                  + '下の「レジストリを設定し直す」を押してから、もう一度公開してください。',
+              }
+            }
+          }
+        } catch { /* 確認できなくても公開は試す（本当の失敗は下で拾う） */ }
+
         let contextAbs: string
         try {
           contextAbs = resolveBuildContext(projectDir, source.context)
@@ -635,21 +691,40 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           if (!builderAvailable()) {
             return { ok: false, message: '内蔵ビルダーが見つかりません（再インストールしてください）' }
           }
-          progress('📦 イメージを組み立てています…')
+          // **何で動かすかを決める。** 長らく static 決め打ちで、Node のアプリを
+          // 公開してもソースの一覧が出るだけだった（2026-08-14 実機で発覚）。
+          // 判断は shared/runtimeDetect.ts に集約（掟10）。
+          const choice = detectRuntimeFor(contextAbs)
+          if (choice.kind === 'unsupported') {
+            // **黙って static で公開しない。** 動かないうえにソースが丸見えになる
+            return { ok: false, message: choice.reason }
+          }
+          progress(choice.kind === 'node' ? `📦 イメージを組み立てています…（${choice.entry} で起動）` : '📦 イメージを組み立てています…')
           const built = await buildAndPush({
             contextAbs,
             ref,
             port: spec.service.port,
-            runtime: 'static',
+            runtime: choice.kind,
+            ...(choice.kind === 'node' ? { entry: choice.entry } : {}),
             registryAuth: { server, user: regCreds.user, password: regCreds.password },
           })
           // 所見12: 生ログ（stderr要約）の行き止まりを避け、主文は「原因の見当＋次の行動」に。
           // 生ログは detail へ（renderer 側が折りたたみ「詳細を見る」で表示）。
           if (!built.ok) {
+            const detail = [built.message, built.log].filter(Boolean).join('\n')
+            // **回復の導線を、この経路にも出す。**（2026-08-14）
+            // これまで印を付けていたのは Docker の経路だけで、既定の使い方をしている
+            // 人だけが「直し方の分からない失敗」に取り残されていた
+            const registryTrouble = looksLikeRegistryProblem(detail)
             return {
               ok: false,
-              message: 'アプリの組み立てに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
-              detail: [built.message, built.log].filter(Boolean).join('\n'),
+              ...(registryTrouble ? { hint: 'reset-registry' as const } : {}),
+              message: registryTrouble
+                ? 'イメージの置き場（コンテナレジストリ）へ反映できませんでした。'
+                  + '削除された、または接続情報が古い可能性があります。'
+                  + '下の「レジストリを設定し直す」を押してから、もう一度お試しください。'
+                : 'アプリの組み立てに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
+              detail,
             }
           }
           progress('📤 レジストリへ反映しました')
@@ -666,24 +741,48 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         plan = computePlan(resolvedSpec, state)
       }
 
+      // ── 保存場所（永続データ）──
+      // **同意済みのバケットがあるときだけ**用意する。無ければ何も渡さない
+      // （渡さなければ apply はバケットに触れない）。2026-08-14 まで、ここで
+      // 渡し忘れていたため、公開してもバケットが作られなかった。
+      let storage: StorageAdapter | undefined
+      if (consentedBuckets(resolvedSpec.persistence?.objectStorage).length > 0) {
+        try {
+          progress('💾 保存場所を確認しています…')
+          storage = await createStorageAdapter(creds)
+        } catch (e: any) {
+          // 保存場所を使うと決めたアプリなので、**黙って進めない**。
+          // ここで進めると、データの消えるアプリが公開される
+          return { ok: false, message: `保存場所に接続できませんでした: ${e?.message ?? e}` }
+        }
+      }
+
       // ── AppRun へ反映 ──
       progress('🚀 AppRun に反映しています…')
       const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
-      const result = await applyPlan({
-        plan,
-        spec: resolvedSpec,
-        state,
-        client,
-        confirmed: opts?.confirmed === true,
-        ...(registryAuth ? { registryAuth } : {}),
-      })
-
-      // 初回の構築なら作成メタ（createdAt/ttlHours）を付与する。
-      // ここは meta を差し替えず必ずマージする（withCreationMeta）。直前の ensureRegistry が
-      // 書いた meta.registryName を消すと、破棄でレジストリが消えず・公開のたびに増える。
-      if (result.ok) {
-        saveCloudState(projectDir, withCreationMeta(result.state, spec.guardrails.ttlHours, new Date()))
+      let result: Awaited<ReturnType<typeof applyPlan>>
+      try {
+        result = await applyPlan({
+          plan,
+          spec: resolvedSpec,
+          state,
+          client,
+          confirmed: opts?.confirmed === true,
+          ...(storage ? { storage } : {}),
+          ...(registryAuth ? { registryAuth } : {}),
+        })
+      } finally {
+        // 一時的に発行した鍵は必ず片づける（失敗しても公開の結果は変えない）
+        if (storage) await storage.dispose()
       }
+
+      // **失敗しても記録する。** 途中まで実行された分（作られたアプリ等）を捨てると、
+      // Koto から見つけられないまま課金が続く。何を残すかの判断は state.ts に集約
+      // （初回の構築なら作成メタを付ける。meta は差し替えず必ずマージする）。
+      saveCloudState(projectDir, stateToSave({
+        ok: result.ok, state: result.state, kind: 'apply',
+        ttlHours: spec.guardrails.ttlHours, now: new Date(),
+      }))
       progress(result.ok ? '✅ 完了' : '⚠️ 失敗しました')
       return {
         ok: result.ok,
@@ -763,8 +862,25 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         hasStatefulDelete: state.resources.some(r => r.stateful),
       }
 
+      // 保存場所は **state に載っているときだけ**触る（載っていない＝作っていない）。
+      // ここで渡し忘れると、バケットだけが残って課金が続く
+      let storage: StorageAdapter | undefined
+      if (state.resources.some(r => r.kind === 'bucket')) {
+        try {
+          storage = await createStorageAdapter(creds)
+        } catch (e: any) {
+          // **中身を確かめられないなら消さない。** 破棄そのものを中止する
+          return { ok: false, message: `保存場所に接続できないため、破棄を中止しました: ${e?.message ?? e}` }
+        }
+      }
+
       const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
-      const result = await applyPlan({ plan, spec, state, client, confirmed: opts?.confirmed === true })
+      let result: Awaited<ReturnType<typeof applyPlan>>
+      try {
+        result = await applyPlan({ plan, spec, state, client, confirmed: opts?.confirmed === true, ...(storage ? { storage } : {}) })
+      } finally {
+        if (storage) await storage.dispose()
+      }
 
       const extraExecuted: string[] = []
       if (result.ok) {
@@ -820,12 +936,25 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
         // 資源を空にした state を保存する。**レジストリを残したときは registryName を残す**
         // （消すと、残したレジストリを Koto が二度と見つけられず・消せなくなる）。
-        saveCloudState(projectDir, stateAfterTeardown(result.state, registryDeleted))
+        saveCloudState(projectDir, stateToSave({ ok: true, state: result.state, kind: 'teardown', registryDeleted }))
+      } else {
+        // **失敗しても記録する。** 2026-08-14、保存場所の削除が 403 で落ちたとき、
+        // 既に消えていたアプリが記録に残り続け、次の公開が 404 になった
+        saveCloudState(projectDir, stateToSave({ ok: false, state: result.state, kind: 'teardown' }))
       }
+      // **保存場所が残ったかどうかは、結果でしか分からない。**
+      // 3段構え（ほかのプロジェクトが使っている・利用者のファイルがある）で残ることがあり、
+      // 残ったなら月額も続く。env.json は破棄しても変わらないので判断材料にならない。
+      // apply はバケットを実際に消したときだけ state から取り除くので、そこを見る。
+      const keptBucketName = plan.actions.some(a => a.kind === 'bucket' && a.type === 'delete')
+        ? (result.state.resources.find(r => r.kind === 'bucket')?.id ?? null)
+        : null
+
       return {
         ok: result.ok,
         executed: [...result.executed, ...extraExecuted],
         skipped: result.skipped,
+        keptBucketName,
         // ステートフル（bucket）削除を含む場合は明示する。
         message:
           result.message ??
@@ -898,4 +1027,199 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       return { ok: false, message: e?.message ?? String(e) }
     }
   })
+  /**
+   * プロジェクトのデータの扱いを調べる（③公開で保存場所の要否を出すため）。
+   * 値は読まず、**どのファイルがどう扱っているか**だけを返す。
+   */
+  ipcMain.handle('storage:scan', (_e, projectDir: string) => {
+    try {
+      const scan = scanDataUsage(String(projectDir || ''))
+      return { ok: true, usesDataLayer: scan.usedBy.length > 0, usedBy: scan.usedBy, writesFiles: scan.writesFiles }
+    } catch (e: any) {
+      return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], message: e?.message ?? String(e) }
+    }
+  })
+
+  /** koto-data.js が要るなら置く（既にあれば触らない）。 */
+  ipcMain.handle('storage:ensureLayer', (_e, projectDir: string) => {
+    try { return { ok: true, placed: ensureDataLayer(String(projectDir || '')) } }
+    catch (e: any) { return { ok: false, placed: false, message: e?.message ?? String(e) } }
+  })
+
+  /**
+   * 保存場所の状況（設定画面用）。
+   *
+   * **費用の判断材料をまとめて返す。** サイトの利用が始まっているか（＝月額が
+   * 発生しているか）、保存場所がいくつあるか（**バケット単位で課金**）。
+   */
+  ipcMain.handle('storage:status', async () => {
+    const creds = loadCredentials()
+    if (!creds) return { ok: false, message: 'さくらのクラウドのAPIキーが未登録です', siteReady: false, buckets: [] }
+    try {
+      const client = new ObjectStorageClient({ credentials: creds, dryRun: false })
+      const site = await client.pickSite()
+      const siteReady = await client.isSiteReady(site.id)
+      // 利用開始前はバケットも無い。無駄に問い合わせない
+      const buckets = siteReady ? await client.listBuckets(site.id) : []
+      return {
+        ok: true,
+        siteId: site.id,
+        siteName: site.display_name,
+        s3Endpoint: site.s3_endpoint,
+        siteReady,
+        buckets,
+        suggested: sharedBucketName(creds.token),
+      }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e), siteReady: false, buckets: [] }
+    }
+  })
+
+  /**
+   * 保存場所を新しく作る（設定画面から）。
+   *
+   * ⚠️ **バケット単位で月額が発生する。** 呼び出し側で必ず費用を示し、
+   * 同意を得てから呼ぶこと（AppRun のレジストリ作成と同じ扱い）。
+   * サイトの利用開始も同様なので、ここでまとめて行う。
+   */
+  /**
+   * このプロジェクトの保存場所の設定を読む（③公開の案内が「用意済みか」を出すため）。
+   * env.json の persistence から、**同意済みのもの**だけを返す。
+   */
+  ipcMain.handle('storage:placement', (_e, projectDir: string) => {
+    try {
+      const spec = loadCloudSpec(String(projectDir || ''))
+      const b = spec ? consentedBuckets(spec.persistence?.objectStorage)[0] : undefined
+      if (!b) return { ok: true, placement: null }
+      return { ok: true, placement: { bucket: b.bucket, prefix: b.prefix ?? '', shared: b.shared !== false, consentedAt: b.consentedAt ?? '' } }
+    } catch (e: any) {
+      return { ok: false, placement: null, message: e?.message ?? String(e) }
+    }
+  })
+
+  /**
+   * 保存場所を用意する（③公開の案内から。**費用の同意を得てから呼ぶこと**）。
+   *
+   * ここで行うのは3つ。**どれも課金に直結する**ので、まとめて1回の同意で済ませる:
+   *   1. サイトの利用開始（`POST /account`）… まだなら
+   *   2. バケットの作成（**1つにつき月額**）… 既にあれば使い回す（409 は正常）
+   *   3. env.json への記録（`consentedAt` 付き）… これが無いと公開で用意されない
+   *
+   * `bucket` を指定すると、**既にある保存場所に相乗り**する（費用は増えない）。
+   * 指定が無ければ共有／専用の既定に従って名前を決める。
+   */
+  ipcMain.handle('storage:prepare', async (_e, projectDir: string, opts?: { mode?: BucketMode; bucket?: string }) => {
+    const creds = loadCredentials()
+    if (!creds) return { ok: false, message: 'さくらのクラウドのAPIキーが未登録です' }
+    const dir = String(projectDir || '')
+    if (!path.isAbsolute(dir)) return { ok: false, message: 'プロジェクトフォルダのパスが不正です' }
+
+    try {
+      // 1. 記録先の spec を用意する（まだ公開の設定が無ければ既定から作る）
+      let spec = loadCloudSpec(dir)
+      if (!spec) {
+        const hasDockerfile = fs.existsSync(path.join(dir, 'Dockerfile'))
+        spec = defaultSpec({ name: normalizeSpecName(path.basename(dir)), hasDockerfile })
+      }
+
+      // 2. 置き場所を決める。**プロジェクト名ではなく spec.name で分ける**
+      //    （フォルダ名を変えても、公開済みのデータの置き場所が変わらないように）
+      const mode: BucketMode = opts?.mode === 'dedicated' ? 'dedicated' : 'shared'
+      const chosen = String(opts?.bucket || '').trim()
+      if (chosen && !isValidBucketName(chosen)) {
+        return { ok: false, message: '保存場所の名前は、英字で始まる小文字の英数字とハイフン（3〜63文字）にしてください。' }
+      }
+      const placement = chosen
+        ? { bucket: chosen, prefix: prefixForProject(spec.name), shared: mode !== 'dedicated' }
+        : resolvePlacement({ projectName: spec.name, mode, sharedBucket: sharedBucketName(creds.token) })
+
+      // 3. **課金の前に、記録できることを確かめる。** 順番が逆だと「バケットは
+      //    作られた（＝課金された）のに env.json に書けなかった」が起こりうる。
+      //    バケット名の長さの上限が spec 側（40字）のほうが厳しく、専用モードで
+      //    プロジェクト名が長いと、ここで初めて弾かれる
+      spec.persistence = {
+        objectStorage: [{
+          bucket: placement.bucket,
+          prefix: placement.prefix,
+          shared: placement.shared,
+          consentedAt: new Date().toISOString(),
+        }],
+      }
+      const validated = validateSpec(spec)
+      if (!validated.ok) {
+        return { ok: false, message: `保存場所の設定を作れませんでした（費用は発生していません）: ${validated.errors.join(' / ')}` }
+      }
+
+      // 4. サイトの利用開始とバケットの作成。**ここが課金の始まり**
+      const client = new ObjectStorageClient({ credentials: creds, dryRun: false })
+      const site = await client.pickSite()
+      const started = !(await client.isSiteReady(site.id))
+      if (started) await client.startSite(site.id)
+      const created = await client.createBucket(site.id, placement.bucket)
+      // **作れたと決めつけない。** 作成APIは 409 を返すことがあり、それを
+      // 「もうある」と読んでいる。同じ名前を消した直後は名前が解放されておらず、
+      // 作られていないのに 409 になり得る（2026-08-14）
+      const names = (await client.listBuckets(site.id)).map(b => b.name)
+      if (!names.includes(placement.bucket)) {
+        return {
+          ok: false,
+          message: `保存場所『${placement.bucket}』を作成しましたが、一覧に現れません。`
+            + '同じ名前の保存場所を削除した直後は、名前が解放されるまで作り直せないことがあります。'
+            + 'しばらく待ってからお試しください。'
+            + `（作成の応答: HTTP ${created.status}${created.text ? ' ' + created.text : ''}）`,
+        }
+      }
+
+      // 5. env.json に記録する。**consentedAt がここで付く**（これが無いと
+      //    planner が要求せず、公開しても用意されない）
+      const file = cloudFilePath(dir, CLOUD_ENV_FILE)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify(validated.spec, null, 2) + '\n', 'utf-8')
+
+      // 6. データ層も置いておく（既にあれば触らない）。これが無いと、
+      //    AI に書き直してもらった import 先が存在しない
+      let placed = false
+      try { placed = ensureDataLayer(dir) } catch { /* 置けなくても保存場所の用意は成立する */ }
+
+      return {
+        ok: true,
+        placement: { bucket: placement.bucket, prefix: placement.prefix, shared: placement.shared },
+        siteName: site.display_name,
+        startedSite: started,
+        dataLayerPlaced: placed,
+        note: storageCostNote(mode, BUCKET_MONTHLY_YEN),
+      }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  ipcMain.handle('storage:createBucket', async (_e, name: string) => {
+    const creds = loadCredentials()
+    if (!creds) return { ok: false, message: 'さくらのクラウドのAPIキーが未登録です' }
+    const bucket = String(name || '').trim()
+    if (!isValidBucketName(bucket)) {
+      return { ok: false, message: '保存場所の名前は、英字で始まる小文字の英数字とハイフン（3〜63文字）にしてください。' }
+    }
+    try {
+      const client = new ObjectStorageClient({ credentials: creds, dryRun: false })
+      const site = await client.pickSite()
+      if (!(await client.isSiteReady(site.id))) await client.startSite(site.id)
+      const created = await client.createBucket(site.id, bucket)
+      // **作れたと決めつけない**（apply・prepare と同じ守り。2026-08-14）
+      const names = (await client.listBuckets(site.id)).map(b => b.name)
+      if (!names.includes(bucket)) {
+        return {
+          ok: false,
+          message: `保存場所『${bucket}』を作成しましたが、一覧に現れません。`
+            + 'その名前は使えないか、削除した直後で名前が解放されていない可能性があります。別の名前でお試しください。'
+            + `（作成の応答: HTTP ${created.status}${created.text ? ' ' + created.text : ''}）`,
+        }
+      }
+      return { ok: true, bucket }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
 }

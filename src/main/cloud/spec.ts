@@ -41,7 +41,28 @@ export type ServiceSpec = {
 }
 
 /** オブジェクトストレージのバケット定義（ステートフル資源）。 */
-export type BucketSpec = { bucket: string }
+/**
+ * 永続データの置き場所。
+ *
+ * `shared` が既定（true）。**課金がバケット単位**なので、既定では1つのバケットを
+ * 共有し `prefix` で分ける（src/shared/objectStorage.ts）。分離したい場合だけ
+ * `shared: false` にする（そのぶん月額が増える）。
+ */
+export type BucketSpec = {
+  bucket: string
+  /** 共有バケット内の置き場所（`projects/<名前>/`）。専用でも付ける。 */
+  prefix?: string
+  /** ほかのプロジェクトと共有するか。**既定 true。** */
+  shared?: boolean
+  /**
+   * 費用の同意を取った日時（ISO文字列）。
+   *
+   * **これが無いバケットは用意しない**（src/shared/objectStorage.ts の
+   * `consentedBuckets`）。バケットは1つにつき月額が発生するので、
+   * 「書いてあるから作る」ではなく「同意したから作る」にしてある。
+   */
+  consentedAt?: string
+}
 
 /** 永続化（ステートフル）リソースの定義。 */
 export type PersistenceSpec = { objectStorage: BucketSpec[] }
@@ -238,6 +259,17 @@ export function validateSpec(obj: unknown): ValidateResult {
       } else if (seen.has(b.bucket)) {
         errors.push(`persistence.objectStorage に重複したバケット名があります: ${b.bucket}`)
       } else {
+        // 任意フィールド。**型が違うものは通さない**（prefix が壊れると隣の
+        // プロジェクトのデータに届き、shared が壊れると破棄の判断が変わる）。
+        if (b.prefix !== undefined && (!isString(b.prefix) || !b.prefix.endsWith('/'))) {
+          errors.push(`persistence.objectStorage[${i}].prefix は「/」で終わる文字列である必要があります`)
+        }
+        if (b.shared !== undefined && typeof b.shared !== 'boolean') {
+          errors.push(`persistence.objectStorage[${i}].shared は true/false である必要があります`)
+        }
+        if (b.consentedAt !== undefined && !isString(b.consentedAt)) {
+          errors.push(`persistence.objectStorage[${i}].consentedAt は文字列である必要があります`)
+        }
         seen.add(b.bucket)
       }
     })
@@ -279,7 +311,7 @@ export type DefaultSpecInput = { name: string; hasDockerfile: boolean; port?: nu
 /**
  * defaultSpec — プロジェクト情報から既定の EnvSpec を生成する純関数（IO無し）。
  * Dockerfile があれば source=dockerfile、無ければ image の雛形（後で差し替え前提）にする。
- * 既定バケット名は `<name>-data`。secrets は空（ref のみを後から追加する設計）。
+ * 保存場所は既定では持たない（費用が発生するため。同意を得てから足す）。secrets は空（ref のみを後から追加する設計）。
  */
 /**
  * プロジェクト名を NAME_PATTERN に合う形へ正規化する（純関数）。
@@ -320,8 +352,11 @@ export function defaultSpec(input: DefaultSpecInput): EnvSpec {
       secrets: [],
       scale: { min: 0, max: 1 },
     },
+    // **既定では保存場所を要求しない。** バケットは1つにつき月額が発生するので、
+    // 「新しいプロジェクトを作ったら課金が始まる」ことがあってはならない。
+    // 永続データが要ると分かった時点（③公開の案内）で、費用に同意してから足す。
     persistence: {
-      objectStorage: [{ bucket: `${input.name}-data` }],
+      objectStorage: [],
     },
     // ttlHours=0 は「期限なし（継続運用）」。AppRun は通常の実行環境なので既定は期限なし。
     // 使い捨てにしたい場合のみ、公開パネルから期限を設定する。

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { runSecurityCheck, SecurityCheckResult } from '../securityCheck'
 import { getTargetProfile, isAutoPublishTarget } from '../targetProfiles'
+import StorageNotice from './StorageNotice'
 import { buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, detectInterruptedPublish, latestPublishedTarget, type PendingPublish } from '../publishStatus'
 import { clearPublishPending } from '../publishPending'
 import { rsyncExcludeArgs } from '../../shared/publishExclude'
@@ -251,6 +252,16 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 className="text-xs text-ink-secondary border border-line rounded-lg px-3 py-1.5 hover:border-sakura hover:text-ink"
               >確認しました（この通知を消す）</button>
             </div>
+          </div>
+        )}
+
+        {/* 公開先を選んだら「データの保存」について知らせる（2026-08-13）。
+            **公開先ごとに答えが変わる**ので、ここに置く。レンタルサーバならファイルが
+            残るので費用は要らない。コンテナ系では消えるので保存場所が要る。
+            sakura-vps は①接続のみで公開の実装が無いため対象外。 */}
+        {loaded && target && target !== 'sakura-vps' && (
+          <div className="mb-3">
+            <StorageNotice projectDir={projectDir} target={target as 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 'vercel'} onAskAi={onClose} />
           </div>
         )}
 

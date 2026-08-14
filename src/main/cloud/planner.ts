@@ -10,6 +10,7 @@
 //   「データは失われます」）が必ず明示確認を挟む。自動では実行されない。
 
 import type { EnvSpec } from './spec'
+import { consentedBuckets } from '../../shared/objectStorage'
 import type { EnvState, ResourceKind, ResourceRef } from './state'
 import { isStateful } from './state'
 
@@ -60,8 +61,9 @@ function desiredResources(spec: EnvSpec): DesiredResource[] {
   // AppRunアプリは常に1つ。
   out.push({ kind: 'apprun-app', name: spec.name, key: `apprun-app:${spec.name}` })
 
-  // 各バケット（ステートフル）。
-  for (const b of spec.persistence.objectStorage) {
+  // 各バケット（ステートフル）。**同意済みのものだけ**を要求する。
+  // 同意の無いものまで要求すると、公開しただけで月額が発生する（2026-08-14）。
+  for (const b of consentedBuckets(spec.persistence.objectStorage)) {
     out.push({ kind: 'bucket', name: b.bucket, key: `bucket:${b.bucket}` })
   }
 

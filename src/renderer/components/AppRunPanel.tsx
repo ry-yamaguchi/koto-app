@@ -6,7 +6,8 @@ import { isNameConflictError, isCreationLimitError, suggestAlternativeName } fro
 import { beginActivity } from '../activity'
 import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
-import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN } from '../../shared/cloudCost'
+import { teardownDataNote } from '../../shared/teardownSupport'
+import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN } from '../../shared/cloudCost'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
 // （小文字英数字とハイフン・先頭末尾は英数字・3〜40文字）と同じ制約をここでも複製する
@@ -120,7 +121,35 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
   const [busy, setBusy] = useState(false) // apply/teardown 実行中
   // 破棄時にコンテナレジストリも消すか。既定 true（残すと月額課金が続くため）。
   const [deleteRegistry, setDeleteRegistry] = useState(true)
+
+  /**
+   * このプロジェクトの保存場所（用意していなければ null）。
+   * **費用の表示と、破棄で何が消えるかがこれで変わる**（2026-08-14）。
+   */
+  const [placement, setPlacement] = useState<{ bucket: string; prefix: string; shared: boolean } | null>(null)
+  useEffect(() => {
+    let alive = true
+    const load = async () => {
+      try {
+        const r = await window.electronAPI.storage.placement(projectDir)
+        if (alive && r.ok) setPlacement(r.placement)
+      } catch { /* 読めなくても公開はできる */ }
+    }
+    void load()
+    // **この画面を開いたあとに用意されることがある**（同じ③公開の中の案内から）。
+    // 取り直さないと、費用の表示も破棄の案内も保存場所を知らないままになる（2026-08-14）
+    const onPrepared = () => { void load() }
+    window.addEventListener('sakura:storage-prepared', onPrepared)
+    return () => { alive = false; window.removeEventListener('sakura:storage-prepared', onPrepared) }
+  }, [projectDir])
   const [registryName, setRegistryName] = useState<string | null>(null)
+  /**
+   * レジストリを設定し直して整ったか（2026-08-14 Ryosuke 指摘）。
+   * **一度直したらボタンを消す。** 出したままだと「効いていないのでは」と何度も
+   * 押させることになり、押すたびに push 用パスワードを作り直す（毎回無駄な往復）。
+   * 探し直しに失敗すれば新しいレジストリが作られ、**月額220円が増える**恐れもある。
+   */
+  const [registryFixed, setRegistryFixed] = useState(false)
   // detail は失敗時の生ログ（stderr要約等・診断用）。OpResultView が折りたたみ「詳細を見る」で表示する（所見12）。
   // hint: main 側が「この失敗はレジストリを設定し直せば直る」と判断したときに付ける印。
   // これが付いたときだけ再設定のボタンを出す（常設しない・2026-08-09）。
@@ -330,11 +359,13 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
     try {
       const r = await window.electronAPI.cloud.ensureRegistry(projectDir)
       if (r.ok) {
+        setRegistryFixed(true)
         setRegNotice(`${r.created ? '作成しました' : '既存のレジストリを利用します'}: ${r.server}（認証情報に保存済み）`)
         window.dispatchEvent(new Event('sakura:credentials-changed')) // 認証情報側にも反映
         refreshRegistryName() // 記録が更新されたので、破棄画面と費用案内が出す名前も取り直す
         await refreshPrereqs()
       } else {
+        setRegistryFixed(false)
         setRegNotice(`自動作成に失敗しました: ${r.message ?? ''}`)
       }
     } catch (e: any) {
@@ -404,6 +435,10 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
 
   const doApply = async () => {
     setBusy(true)
+    // **新しい公開のたびに、回復ボタンの状態を戻す。** 前回整えた印を残したままだと、
+    // 今回また同じ失敗をしたときにボタンが出ず、直せなくなる（2026-08-14）
+    setRegistryFixed(false)
+    setRegNotice('')
     setProgress('🚀 公開を開始しています…')
     // 構築中の進捗メッセージを購読（最新行を表示）。完了/失敗後に解除する。
     const unsubscribe = window.electronAPI.cloud.onApplyProgress(msg => setProgress(msg))
@@ -453,7 +488,9 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
       const r = await window.electronAPI.cloud.teardown(projectDir, { confirmed: true, deleteRegistry: effectiveDeleteRegistry })
       // レジストリを残した場合は、破棄の結果画面でも「課金は続く」と念を押す
       // （「破棄した＝もう費用はかからない」と受け取られるのを防ぐ）。
-      const warn = remainingCostWarning({ deleteRegistry: effectiveDeleteRegistry, registryName })
+      // 保存場所は破棄しても残ることがある（3段構え）。**残ったなら課金も続く。**
+      // 残ったかどうかは結果でしか分からないので、main から受け取る（2026-08-14）
+      const warn = remainingCostWarning({ deleteRegistry: effectiveDeleteRegistry, registryName, keptBucketName: r.keptBucketName ?? null })
       setOpResult(warn ? { ...r, message: [r.message, warn].filter(Boolean).join('\n') } : r)
       // 破棄できたら公開記録も消す（残すと「公開したもの一覧」に存在しない公開が出続ける）
       if (r.ok) { try { await clearAppRunPublishRecord(projectDir) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ } }
@@ -571,6 +608,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         deleteRegistry={deleteRegistry}
         onChangeDeleteRegistry={setDeleteRegistry}
         onRename={doRenameConfirmed}
+        placement={placement}
       />
     )
   }
@@ -877,15 +915,28 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
             このプロジェクトのレジストリと push 用パスワードを整える。 */}
         {opResult && !opResult.ok && opResult.hint === 'reset-registry' && (
           <div className="rounded-xl border border-sakura/50 bg-surface p-3 space-y-1.5">
-            <button
-              onClick={autoCreateRegistry}
-              disabled={regCreating || !keyReady}
-              className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
-            >{regCreating ? '設定し直しています…' : '↻ レジストリを設定し直す'}</button>
-            <p className="text-[11px] text-ink-secondary leading-relaxed">
-              このプロジェクトのコンテナレジストリを探し直し、push 用のパスワードを作り直します。
-              見つからない場合は新しく作るため、月額{REGISTRY_MONTHLY_YEN}円（税込）がかかり始めます。
-            </p>
+            {/* **整ったらボタンは消す。** 出したままだと「効いていないのでは」と
+                何度も押させる（2026-08-14 Ryosuke 指摘）。次にやることだけを示す */}
+            {registryFixed ? (
+              <>
+                <p className="text-xs font-semibold text-ink">✅ レジストリが整いました</p>
+                <p className="text-[11px] text-ink-secondary leading-relaxed">
+                  上の「🚀 公開する（作成・更新）」をもう一度押してください。
+                </p>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={autoCreateRegistry}
+                  disabled={regCreating || !keyReady}
+                  className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
+                >{regCreating ? '設定し直しています…' : '↻ レジストリを設定し直す'}</button>
+                <p className="text-[11px] text-ink-secondary leading-relaxed">
+                  このプロジェクトのコンテナレジストリを探し直し、push 用のパスワードを作り直します。
+                  見つからない場合は新しく作るため、月額{REGISTRY_MONTHLY_YEN}円（税込）がかかり始めます。
+                </p>
+              </>
+            )}
             {regNotice && <p className="text-[11px] text-ink select-text break-words">{regNotice}</p>}
           </div>
         )}
@@ -912,7 +963,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
             （2026-08-06 ユーザー指摘: アプリを消してもレジストリが残ると月額課金が続く）。 */}
         {appUrl && (
           <p className="text-[11px] text-ink-secondary leading-relaxed bg-overlay rounded-lg px-3 py-2">
-            💰 {registryCostNotice(registryName)}
+            💰 {ongoingCostNotice({ registryName, bucket: placement ? { name: placement.bucket, shared: placement.shared } : null })}
           </p>
         )}
       </section>
@@ -1381,7 +1432,7 @@ function PrereqChecklist({
 // ── 破壊操作の確認ダイアログ（やめる／実行 の2ボタン） ──
 function ConfirmDialog({
   confirm, busy, onCancel, onApply, onTeardown, onRename,
-  registryName, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry,
+  registryName, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry, placement,
 }: {
   confirm: Exclude<Confirm, null>
   busy: boolean
@@ -1394,6 +1445,8 @@ function ConfirmDialog({
   /** レジストリも削除するか（既定 true＝月額課金を止める）。 */
   deleteRegistry: boolean
   onChangeDeleteRegistry: (v: boolean) => void
+  /** このプロジェクトの保存場所（用意していなければ null）。破棄で消えるものに関わる。 */
+  placement: { bucket: string; prefix: string; shared: boolean } | null
 }) {
   // 記録が無いレジストリは削除できない（registryDeletionTarget が「対象不明」を返す）。
   // チェックを出さないだけでなく、破棄の実行にも「削除しない」を渡す。そうしないと
@@ -1436,7 +1489,13 @@ function ConfirmDialog({
                 ))}
               </ul>
               {plan.hasStatefulDelete && (
-                <p className="text-xs text-brand-red font-semibold">バケット（データ）も削除されます。元に戻せません。</p>
+                // 「バケットも削除されます」と言い切っていたが、実際は中身を一覧してから
+                // 決める（ほかのプロジェクトや利用者のファイルがあれば残す）。**約束と
+                // 実装を合わせる**（2026-08-14・掟9）。
+                <p className="text-xs text-brand-red font-semibold leading-relaxed select-text">
+                  {teardownDataNote({ bucket: deletes.find(a => a.kind === 'bucket')?.name ?? '' })
+                    || 'データも削除されます。元に戻せません。'}
+                </p>
               )}
             </div>
           )}
@@ -1492,15 +1551,17 @@ function ConfirmDialog({
         <p className="text-sm font-semibold text-ink">⚠️ 環境を破棄します</p>
         <p className="text-sm text-ink-secondary leading-relaxed">
           このプロジェクトの さくらのAppRun 環境（作成済みリソース）をすべて削除します。
-          <span className="text-brand-red font-semibold">バケット（データ）も削除されます。</span>
           この操作は元に戻せません。
         </p>
         <ul className="text-xs text-ink-muted leading-relaxed list-disc pl-5">
-          {teardownTargets({ hasBucket: true, deleteRegistry: canDeleteRegistry && deleteRegistry, registryName }).map(t => <li key={t}>{t}</li>)}
+          {teardownTargets({ hasBucket: !!placement, deleteRegistry: canDeleteRegistry && deleteRegistry, registryName }).map(t => <li key={t}>{t}</li>)}
         </ul>
         {/* 公開URLはアプリIDから作られるため、破棄して公開し直すと別のURLになる。
             人に伝えたURLが届かなくなるので、消える物の一覧と同じ強さで伝える。
             URLそのものは長くて読み取れないため出さない（2026-08-09 Ryosuke の指定）。 */}
+        {placement && (
+          <p className="text-xs text-brand-red leading-relaxed select-text">💾 {teardownDataNote(placement)}</p>
+        )}
         <p className="text-xs text-brand-red leading-relaxed">🔗 {urlChangesOnTeardownNotice()}</p>
       </div>
 

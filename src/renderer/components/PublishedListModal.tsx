@@ -4,7 +4,7 @@ import { getWorkspaceDir } from '../workspace'
 import { formatPublishedAt } from '../publishStatus'
 import { clearPublishRecord } from '../publishRecord'
 import { buildPublishedIndex, groupPublishedByTarget, type PublishedEntry, type PublishedGroup } from '../publishedIndex'
-import { teardownSupport, manualTeardownGuide, teardownScopeNote } from '../../shared/teardownSupport'
+import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNote } from '../../shared/teardownSupport'
 import { registryDeleteHelp, registryDeleteLabel, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 
@@ -39,6 +39,22 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
   /** AppRun の破棄でコンテナレジストリも消すか（既定 true＝月額課金を止める側）。 */
   const [deleteRegistry, setDeleteRegistry] = useState(true)
+  /**
+   * 確認中の行の保存場所（あれば）。**データが消えることを言わずに押させない**ため、
+   * 確認画面を出すときに読む（2026-08-14）。
+   */
+  const [confirmPlacement, setConfirmPlacement] = useState<{ bucket: string; prefix: string; shared: boolean } | null>(null)
+
+  /** 破棄の確認を出す（保存場所も調べてから）。 */
+  const askConfirm = async (e: PublishedEntry) => {
+    setDeleteRegistry(true)
+    setConfirmPlacement(null)
+    setConfirm(e)
+    try {
+      const r = await window.electronAPI.storage.placement(e.dir)
+      if (r.ok) setConfirmPlacement(r.placement)
+    } catch { /* 読めなくても破棄はできる（消えるものが増えるわけではない） */ }
+  }
 
   const reload = useCallback(async (ws?: string) => {
     const dir = ws ?? workspace ?? await getWorkspaceDir()
@@ -71,7 +87,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
     const key = `${e.dir}-${e.target}`
     setConfirm(null); setBusyKey(key); setResult(null)
     try {
-      let r: { ok: boolean; message?: string }
+      let r: { ok: boolean; message?: string; keptBucketName?: string | null }
       if (e.target === 'sakura-apprun') {
         // AppRun はクラウドのAPIキーを main 側が持っているので projectDir だけで足りる。
         // 記録が無いレジストリは削除できないので「削除しない」を渡す（確認画面と同じ判断）。
@@ -79,7 +95,8 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
         r = await window.electronAPI.cloud.teardown(e.dir, { confirmed: true, deleteRegistry: effectiveDeleteRegistry })
         if (r.ok) {
           // レジストリを残したなら、結果でも「課金は続く」と念を押す（③公開の破棄と同じ扱い）。
-          const warn = remainingCostWarning({ deleteRegistry: effectiveDeleteRegistry, registryName: e.registryName })
+          // 保存場所は破棄しても残ることがある（3段構え）。残ったなら課金も続く
+          const warn = remainingCostWarning({ deleteRegistry: effectiveDeleteRegistry, registryName: e.registryName, keptBucketName: r.keptBucketName ?? null })
           if (warn) {
             try { await clearPublishRecord(e.dir, e.target) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ }
             setResult({ ok: true, text: `${e.projectName}（${e.label}）を破棄しました。\n${warn}` })
@@ -212,7 +229,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                           ボタンを並べない（判定は shared/teardownSupport.ts に一元化）。 */}
                       {teardownSupport(e.target) === 'supported' && (
                         <button
-                          onClick={() => { setDeleteRegistry(true); setConfirm(e) }}
+                          onClick={() => { void askConfirm(e) }}
                           disabled={busyKey !== null}
                           className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 disabled:opacity-40 whitespace-nowrap"
                           title="公開を止めて、作られたものを削除します"
@@ -239,6 +256,11 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 <b className="text-ink">{confirm.projectName}</b>（{confirm.label}）<br />
                 {teardownScopeNote(confirm.target)}この操作は元に戻せません。
               </p>
+              {confirmPlacement && (
+                <p className="text-xs text-brand-red leading-relaxed select-text">
+                  💾 {teardownDataNote(confirmPlacement)}
+                </p>
+              )}
               <p className="text-xs text-brand-red leading-relaxed">
                 🔗 {urlChangesOnTeardownNotice()}
               </p>

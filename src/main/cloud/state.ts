@@ -20,6 +20,14 @@ export type ResourceRef = {
   id: string
   stateful: boolean
   key: string
+  /**
+   * バケットのときの置き場所（`projects/<名前>/`）。
+   *
+   * **破棄のときに要る。** そのころには spec からこのプロジェクトの記述が
+   * 消えているため、spec からは引けない。ここに控えておかないと
+   * 「どこを消せばよいか」が分からなくなる。
+   */
+  prefix?: string
 }
 
 /**
@@ -31,6 +39,14 @@ export type ResourceRef = {
 export type EnvMeta = {
   createdAt?: string
   ttlHours?: number
+  /**
+   * 永続データの読み書きに使っている権限のID。
+   *
+   * **シークレットは控えない**（発行時にしか読めず、控える必要も無い）。
+   * 控えるのはIDだけで、次の公開で新しい鍵を発行したあと、**これを頼りに
+   * 古い鍵を無効にする**。控えないと古い鍵が使えるまま溜まり続ける。
+   */
+  storagePermissionId?: string
   /**
    * このプロジェクトが使っているコンテナレジストリ名（subdomainLabel）。
    *
@@ -208,4 +224,38 @@ export function isExpired(state: EnvState, now: Date): boolean {
   if (Number.isNaN(created)) return false
   const expiresAt = created + meta.ttlHours * 60 * 60 * 1000
   return now.getTime() > expiresAt
+}
+
+/**
+ * 実行のあとで**記録に残す state** を決める（純関数）。
+ *
+ * ── なぜ要るか（2026-08-14 実機で発覚）────────────────────────────────
+ * 保存場所の破棄が 403 で落ちたとき、**AppRunアプリは既に削除されていた**のに
+ * `if (result.ok)` の中でしか記録を保存していなかったため、state.json は
+ * 「アプリはまだある」と言い続けた。次に公開すると、消えたアプリへ再デプロイを
+ * 試みて **HTTP 404**。利用者は公開も破棄もできない袋小路に入った。
+ *
+ * **途中まで実行された分は、失敗しても必ず記録する。** applyPlan が返す state は
+ * 「実際に何が起きたか」であって「成功したか」ではない。捨ててよいものではない。
+ *
+ * 公開（apply）で同じことが起きると、もっと悪い。**作られたアプリが記録に残らず、
+ * Koto から見つけられないまま課金が続く。**
+ */
+export function stateToSave(opts: {
+  ok: boolean
+  state: EnvState
+  kind: 'apply' | 'teardown'
+  /** apply の初回構築で付ける期限（kind='apply' のときだけ使う）。 */
+  ttlHours?: number
+  now?: Date
+  /** teardown でレジストリを消せたか（kind='teardown' のときだけ使う）。 */
+  registryDeleted?: boolean
+}): EnvState {
+  // 失敗したときは、起きたことをそのまま残す。**成功時だけの仕上げは行わない**
+  // （作成メタを付けたり、レジストリの記録を落としたりしない）
+  if (!opts.ok) return opts.state
+  if (opts.kind === 'apply') {
+    return withCreationMeta(opts.state, opts.ttlHours ?? 0, opts.now ?? new Date())
+  }
+  return stateAfterTeardown(opts.state, opts.registryDeleted === true)
 }

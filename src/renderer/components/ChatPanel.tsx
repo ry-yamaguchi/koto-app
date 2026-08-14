@@ -401,6 +401,25 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     return () => window.removeEventListener('sakura:focus-chat', h)
   }, [])
 
+  // 画面のどこかから「AIに頼む」を押されたとき（例: ③公開の「データが消えてしまいます」）。
+  // **文面を入れてフォーカスするところまで**にし、送信は押さない。
+  // 何を頼むのかを読んでから送れるようにする（勝手に送るとAIが動き出して費用も発生する）。
+  useEffect(() => {
+    const h = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text
+      if (!text) return
+      setInput(text)
+      setTimeout(() => {
+        const ta = textareaRef.current
+        if (!ta) return
+        ta.focus()
+        ta.setSelectionRange(text.length, text.length)
+      }, 50)
+    }
+    window.addEventListener('sakura:ask-ai', h)
+    return () => window.removeEventListener('sakura:ask-ai', h)
+  }, [])
+
   // 公開先が変更された直後に自動診断した target（重複発火・多重送信の防止用）
   const lastCheckedTargetRef = useRef<string | null>(null)
 

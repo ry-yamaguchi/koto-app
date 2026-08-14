@@ -3,9 +3,21 @@ import { computePlan } from '../src/main/cloud/planner'
 import { emptyState, type EnvState, type ResourceRef } from '../src/main/cloud/state'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 
+/**
+ * defaultSpec() は 2026-08-14 から**保存場所を持たない**（バケットは1つにつき
+ * 月額が発生するため、同意 = `consentedAt` があるものだけを要求する）。
+ * バケットが要るテストは、ここで同意済みのものを明示的に足す。
+ */
+function withBucket(spec: EnvSpec): EnvSpec {
+  spec.persistence.objectStorage = [
+    { bucket: `${spec.name}-data`, prefix: `projects/${spec.name}/`, shared: true, consentedAt: '2026-08-14T00:00:00.000Z' },
+  ]
+  return spec
+}
+
 describe('computePlan', () => {
   it('emits create actions and is non-destructive when state is empty', () => {
-    const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: true })
+    const spec: EnvSpec = withBucket(defaultSpec({ name: 'myapp', hasDockerfile: true }))
     const state: EnvState = emptyState(spec.name, spec.backend)
 
     const plan = computePlan(spec, state)
@@ -20,7 +32,7 @@ describe('computePlan', () => {
   })
 
   it('is all noop/update (never destructive) when state matches spec exactly', () => {
-    const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: true })
+    const spec: EnvSpec = withBucket(defaultSpec({ name: 'myapp', hasDockerfile: true }))
     const resources: ResourceRef[] = [
       { kind: 'registry', id: 'reg-1', stateful: false, key: `registry:${spec.name}` },
       { kind: 'image', id: 'img-1', stateful: false, key: `image:${spec.name}` },
@@ -47,7 +59,7 @@ describe('computePlan', () => {
     // list to remove the bucket is not enough (bucket is stateful); instead we simulate a
     // leftover apprun-app under a *different* name than spec.name, which will never appear
     // in desiredResources() (that only ever adds a single apprun-app keyed by spec.name).
-    const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: true })
+    const spec: EnvSpec = withBucket(defaultSpec({ name: 'myapp', hasDockerfile: true }))
     const resources: ResourceRef[] = [
       { kind: 'registry', id: 'reg-1', stateful: false, key: `registry:${spec.name}` },
       { kind: 'image', id: 'img-1', stateful: false, key: `image:${spec.name}` },
@@ -96,5 +108,32 @@ describe('computePlan', () => {
     expect(bucketDelete?.stateful).toBe(true)
     expect(plan.hasStatefulDelete).toBe(true)
     expect(plan.hasDestructive).toBe(true)
+  })
+})
+
+// ── 費用の同意（2026-08-14）─────────────────────────────────────────
+// planner が「同意していないバケット」を要求すると、公開しただけで月額が発生する。
+// **ここが最後の砦**（apply は言われたものを作るだけ）。
+describe('computePlan と保存場所の同意', () => {
+  it('既定のプロジェクトは、保存場所を要求しない', () => {
+    const spec = defaultSpec({ name: 'myapp', hasDockerfile: true })
+    const plan = computePlan(spec, emptyState(spec.name, spec.backend))
+    expect(plan.actions.some(a => a.kind === 'bucket')).toBe(false)
+  })
+
+  it('consentedAt の無いバケットが env.json にあっても、作らない', () => {
+    const spec = defaultSpec({ name: 'myapp', hasDockerfile: true })
+    // v0.3.5 以前の env.json はこの形（同意を取っていない既定値）
+    spec.persistence.objectStorage = [{ bucket: 'myapp-data' }]
+    const plan = computePlan(spec, emptyState(spec.name, spec.backend))
+    expect(plan.actions.some(a => a.kind === 'bucket')).toBe(false)
+  })
+
+  it('同意済みのバケットは作る', () => {
+    const spec = withBucket(defaultSpec({ name: 'myapp', hasDockerfile: true }))
+    const plan = computePlan(spec, emptyState(spec.name, spec.backend))
+    const bucket = plan.actions.find(a => a.kind === 'bucket')
+    expect(bucket?.type).toBe('create')
+    expect(bucket?.name).toBe('myapp-data')
   })
 })

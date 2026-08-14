@@ -17,7 +17,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { validateRegistryServer, buildRef } from './docker'
-import { excludedDirNames, isSecretFile, NOISE_FILES } from '../../shared/publishExclude'
+import { excludedDirNames, excludedFileNames, isSecretFile } from '../../shared/publishExclude'
 
 // ── 出力上限・タイムアウト（crane の build/push は時間がかかり得る） ──
 const OUTPUT_MAX = 16000
@@ -25,7 +25,11 @@ const BUILD_TIMEOUT = 600000 // 10分
 const MAX_BUFFER = 16 * 1024 * 1024
 
 /** ステージングから除外するエントリ名（プロジェクト直下・全階層で除外）。 */
-const EXCLUDE_NAMES = new Set([...excludedDirNames(), ...NOISE_FILES])
+// **ファイル側の除外を取りこぼしていた。** NOISE_FILES だけを足していたため、
+// KOTO_INTERNAL_FILES（`.sakuraide.json`）がイメージへ焼き込まれ、静的配信では
+// ブラウザから読めていた（2026-08-14 実機で確認）。publishExclude.ts は
+// 「同じリストを手で並べ直さない」ために作ったのに、ここが手で並べ直していた。
+const EXCLUDE_NAMES = new Set([...excludedDirNames(), ...excludedFileNames()])
 
 /** 出力を上限で切り詰める。 */
 function clip(s: unknown): string {
@@ -62,14 +66,15 @@ export function builderAvailable(): boolean {
   }
 }
 
-/** 対応ランタイム種別（MVP は static のみ。将来 node 等を足せる形）。 */
-export type RuntimeId = 'static'
+/** 対応ランタイム種別。 */
+export type RuntimeId = 'static' | 'node'
 
 /** ランタイム定義（ベースイメージ・起動設定）。cmd は port を受けて引数配列を返す。 */
 type RuntimeDef = {
   base: string
   entrypoint: string
-  cmd: (port: number) => string[]
+  /** 起動引数。`entry` は node ランタイムで実行するファイル（static では使わない）。 */
+  cmd: (port: number, entry: string) => string[]
   workdir: string
 }
 
@@ -85,11 +90,43 @@ const RUNTIME: Record<RuntimeId, RuntimeDef> = {
     cmd: (port: number) => ['-m', 'http.server', String(port)],
     workdir: '/app',
   },
+  // Node で実行する（2026-08-14）。**依存パッケージの無いアプリまで**が対象。
+  // 何を起動するかは shared/runtimeDetect.ts が決め、ここは受け取って動かすだけ。
+  node: {
+    base: 'node:22-alpine',
+    entrypoint: 'node',
+    cmd: (_port: number, entry: string) => [entry],
+    workdir: '/app',
+  },
+}
+
+/**
+ * **読み取り（と、フォルダなら辿る）だけを足す。** 何も奪わない・書き込みは与えない。
+ *
+ * ── なぜ「0644 に揃える」ではないのか（2026-08-14 Ryosuke の点検）────────
+ * 最初は `chmod 0644` と書いたが、それは**実行ビットを落とす**（`0755` の
+ * スクリプトが `0644` になって動かなくなる）。しかも元が `0400`（読み取り専用）
+ * だったものに書き込みを与えてしまう。**必要のないものを奪い、必要のないものを
+ * 与えていた。** 要るのは「コンテナの中の誰かが読めること」だけなので、
+ * ビット単位で足すだけにする。
+ *
+ * これが効くのは**一時的なステージング（配る複製）のみ**で、利用者のファイルには
+ * 触れない。秘密のファイルはこの前段（EXCLUDE_NAMES・isSecretFile）で
+ * **そもそも複製されない**ので、ここで権限が緩むこともない。
+ */
+function addPermission(target: string, bits: number): void {
+  try {
+    const mode = fs.statSync(target).mode & 0o7777
+    if ((mode & bits) === bits) return // すでに足りている
+    fs.chmodSync(target, mode | bits)
+  } catch { /* 変えられなくても続行（元のまま入る） */ }
 }
 
 /** プロジェクト配下を再帰コピーする（EXCLUDE_NAMES を全階層で除外）。 */
 function copyTree(srcDir: string, destDir: string): void {
   fs.mkdirSync(destDir, { recursive: true })
+  // フォルダは「読み＋辿る」だけを足す（書き込みは与えない）
+  addPermission(destDir, 0o555)
   const entries = fs.readdirSync(srcDir, { withFileTypes: true })
   for (const e of entries) {
     // 秘密ファイル（.env など）をイメージへ焼き込まない。2026-08-09 の総点検まで
@@ -104,6 +141,12 @@ function copyTree(srcDir: string, destDir: string): void {
       continue
     } else if (e.isFile()) {
       fs.copyFileSync(src, dest)
+      // **コンテナの中で読めるようにする。**（2026-08-14 実機）
+      // copyFileSync は元の権限を引き継ぐ。手元で 0600 のファイルがあると、
+      // そのままイメージに入り、コンテナの Node が読めずに
+      // `EACCES: permission denied` で起動に失敗する。
+      // **原因は手元の権限なのに、症状は容器の中で出る**ので辿るのが難しい。
+      addPermission(dest, 0o444)
     }
   }
 }
@@ -174,6 +217,8 @@ export type BuildAndPushOptions = {
   port: number
   /** ランタイム種別（既定 static）。 */
   runtime?: RuntimeId
+  /** node ランタイムで起動するファイル（例 'server.js'）。 */
+  entry?: string
   /** レジストリ認証情報（server/user/password）。config.json に base64(user:password) を書く。 */
   registryAuth: { server: string; user: string; password: string }
   /**
@@ -199,6 +244,8 @@ export function buildCraneArgs(opts: {
   port: number
   ref: string
   outFile?: string
+  /** イメージに焼く環境変数（node アプリに待受ポートを伝えるため）。 */
+  env?: Record<string, string>
 }): string[] {
   const args = [
     'mutate',
@@ -209,6 +256,9 @@ export function buildCraneArgs(opts: {
     '--cmd', opts.cmd.join(','),
     '--exposed-ports', String(opts.port),
   ]
+  // **待受ポートを伝えないと繋がらない。** よくある `process.env.PORT || 3000` は
+  // 3000 で待ち、AppRun は 8080 へ繋ぎに行く（2026-08-14）
+  for (const [k, v] of Object.entries(opts.env ?? {})) args.push('--env', `${k}=${v}`)
   if (opts.outFile) {
     // ローカル出力（オフライン検証用）。push しない。
     args.push('-o', opts.outFile)
@@ -233,6 +283,11 @@ export async function buildAndPush(opts: BuildAndPushOptions): Promise<BuildAndP
   const runtime = RUNTIME[opts.runtime ?? 'static']
   if (!runtime) {
     return { ok: false, log: '', message: '未対応のランタイム種別です' }
+  }
+  // **起動するファイルが分からないまま node で組み立てない。**
+  // entrypoint だけのイメージができ、起動して即終了する（原因が分かりにくい）
+  if (opts.runtime === 'node' && !opts.entry) {
+    return { ok: false, log: '', message: '起動するファイルが決まっていません' }
   }
   if (!builderAvailable()) {
     return { ok: false, log: '', message: '内蔵ビルダー（crane）が見つかりません' }
@@ -289,9 +344,10 @@ export async function buildAndPush(opts: BuildAndPushOptions): Promise<BuildAndP
       layer,
       workdir: runtime.workdir,
       entrypoint: runtime.entrypoint,
-      cmd: runtime.cmd(opts.port),
+      cmd: runtime.cmd(opts.port, opts.entry ?? ''),
       port: opts.port,
       ref,
+      env: { PORT: String(opts.port) },
       ...(opts.outFile ? { outFile: opts.outFile } : {}),
     })
     const r = await runExecFile(cranePath(), args, {

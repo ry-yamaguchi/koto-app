@@ -50,3 +50,26 @@ export function teardownScopeNote(target: PublishTargetKind): string {
       return ''
   }
 }
+
+/**
+ * 破棄したときに、保存場所のデータがどうなるかを伝える文（確認画面用）。
+ *
+ * ── なぜ別の文が要るのか（2026-08-14）────────────────────────────────
+ * 破棄の確認画面は「アプリとレジストリを消します」としか言っていなかった。
+ * だが永続データを使うプロジェクトでは、**利用者が入れたデータも消える**。
+ * それを言わずに押させてはいけない。
+ *
+ * 実際に何が消えるかの判断は `src/shared/objectStorage.ts` の `teardownPlanFor`
+ * が中身を一覧してから決める（ほかのプロジェクトや、利用者が自分で置いた
+ * ファイルがあれば保存場所そのものは残す）。**ここはその約束を先に伝える**。
+ *
+ * 画面には素のテキストとして出るので、Markdown 記法は使わない（v0.2.98 の教訓）。
+ */
+export function teardownDataNote(placement: { bucket: string; prefix?: string; shared?: boolean } | null | undefined): string {
+  if (!placement || typeof placement.bucket !== 'string' || placement.bucket.length === 0) return ''
+  const head = `保存場所『${placement.bucket}』にある、このプロジェクトのデータも削除します。`
+  const keep = 'ほかのプロジェクトのデータや、あなたが自分で置いたファイルは残します。'
+  return placement.shared === false
+    ? `${head}${keep}残るものが無ければ、保存場所そのものも削除して月額を止めます。`
+    : `${head}${keep}この保存場所を使っているプロジェクトがほかに無ければ、保存場所そのものも削除して月額を止めます。`
+}

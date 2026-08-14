@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import StorageSettings from './StorageSettings'
 import SakuraLogo from './SakuraLogo'
 import {
   getSettings, setSettings, getUsage, getUsageByModel, resetThisMonth, budgetStatus, PRICING,
@@ -250,6 +251,8 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
               </div>
             </div>
           )}
+
+          <StorageSettings />
 
           {/* アプリの更新（2026-08-10）。**勝手に再起動しない**のが設計の要。
               見つけたら裏でダウンロードだけ済ませ、切り替えは次回起動時。

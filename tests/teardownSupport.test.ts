@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { teardownSupport, manualTeardownGuide, teardownScopeNote } from '../src/shared/teardownSupport'
+import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNote } from '../src/shared/teardownSupport'
 import type { PublishTargetKind } from '../src/renderer/publishStatus'
 
 // 2026-08-09 Ryosuke の指摘で、破棄の導線を「③公開」以外にも増やした
@@ -63,5 +63,39 @@ describe('公開先を足したときの取りこぼし防止', () => {
     for (const t of ALL) {
       if (teardownSupport(t) === 'manual') expect(manualTeardownGuide(t).length).toBeGreaterThan(0)
     }
+  })
+})
+
+// 2026-08-14。破棄の確認画面が「アプリとレジストリを消します」としか言っておらず、
+// **利用者が入れたデータが消えることを伝えていなかった**。
+describe('保存場所のデータについての案内', () => {
+  it('保存場所が無ければ、何も言わない', () => {
+    expect(teardownDataNote(null)).toBe('')
+    expect(teardownDataNote(undefined)).toBe('')
+    expect(teardownDataNote({ bucket: '' })).toBe('')
+  })
+
+  it('保存場所の名前を必ず出す（心当たりが無ければやめられるように）', () => {
+    expect(teardownDataNote({ bucket: 'koto-data-x', shared: true })).toContain('koto-data-x')
+  })
+
+  // ★ 実装（teardownPlanFor の3段構え）と約束を合わせる。「バケットも消えます」と
+  //    言い切ると嘘になる（ほかのプロジェクトや利用者のファイルがあれば残す）
+  it('ほかのプロジェクトや利用者のファイルは残す、と約束する', () => {
+    for (const shared of [true, false]) {
+      const note = teardownDataNote({ bucket: 'koto-data-x', prefix: 'projects/x/', shared })
+      expect(note).toContain('自分で置いたファイルは残します')
+      expect(note).not.toContain('すべて削除')
+    }
+  })
+
+  it('月額が止まる条件を添える（消し忘れを防ぐ）', () => {
+    expect(teardownDataNote({ bucket: 'b', shared: true })).toContain('月額')
+    expect(teardownDataNote({ bucket: 'b', shared: false })).toContain('月額')
+  })
+
+  it('画面には素のテキストで出るので、Markdown 記法を混ぜない', () => {
+    const note = teardownDataNote({ bucket: 'koto-data-x', shared: true })
+    expect(note).not.toMatch(/\*\*|`|^- /m)
   })
 })

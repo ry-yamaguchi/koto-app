@@ -192,6 +192,24 @@ interface Window {
       /** 「Koto → 設定…」（⌘,）メニューの購読（解除関数を返す）。 */
       onOpenSettings(cb: () => void): () => void
     }
+    /** 永続データ（保存場所）。値は読まず、扱いだけを調べる。 */
+    storage: {
+      scan(projectDir: string): Promise<{ ok: boolean; usesDataLayer: boolean; usedBy: string[]; writesFiles: string[]; message?: string }>
+      ensureLayer(projectDir: string): Promise<{ ok: boolean; placed: boolean; message?: string }>
+      status(): Promise<{ ok: boolean; siteId?: string; siteName?: string; s3Endpoint?: string; siteReady: boolean; buckets: { name: string }[]; suggested?: string; message?: string }>
+      createBucket(name: string): Promise<{ ok: boolean; bucket?: string; message?: string }>
+      placement(projectDir: string): Promise<{ ok: boolean; placement: { bucket: string; prefix: string; shared: boolean; consentedAt: string } | null; message?: string }>
+      /** **課金に直結する。** 呼ぶ前に金額を見せて同意を得ること。 */
+      prepare(projectDir: string, opts?: { mode?: 'shared' | 'dedicated'; bucket?: string }): Promise<{
+        ok: boolean
+        placement?: { bucket: string; prefix: string; shared: boolean }
+        siteName?: string
+        startedSite?: boolean
+        dataLayerPlaced?: boolean
+        note?: string
+        message?: string
+      }>
+    }
     /** 自動更新。判定は main 側（shared/updatePolicy.ts）にあり、ここは表示と操作のみ。 */
     update: {
       /** いまの状態を取る（画面を開いた直後に一度）。 */
@@ -236,7 +254,8 @@ interface Window {
       // detail は失敗時の生ログ（stderr要約等・診断用。renderer側で折りたたみ表示する・所見12）。
       apply(projectDir: string, opts?: { confirmed?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string }>
       /** deleteRegistry: false でコンテナレジストリを残す（月額課金は続く）。未指定は削除する。 */
-      teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string }>
+      /** `keptBucketName` は「破棄したのに残った保存場所」。残っていれば月額も続く。 */
+      teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; keptBucketName?: string | null; message?: string }>
       /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
       registryName(projectDir: string): Promise<{ ok: boolean; name: string | null }>
       checkExpiry(projectDir: string): Promise<{ ok: boolean; expired?: boolean; createdAt?: string | null; ttlHours?: number | null; message?: string }>

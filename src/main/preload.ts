@@ -114,6 +114,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('menu:open-settings', handler)
     },
   },
+  // 永続データ（storage:*）。値は読まず、扱いだけを調べる。
+  storage: {
+    /** プロジェクトのデータの扱いを調べる（③公開で保存場所の要否を出す）。 */
+    scan: (projectDir: string) => ipcRenderer.invoke('storage:scan', projectDir),
+    /** koto-data.js が要るなら置く（既にあれば触らない）。 */
+    ensureLayer: (projectDir: string) => ipcRenderer.invoke('storage:ensureLayer', projectDir),
+    /** 保存場所の状況（設定画面用）。費用の判断材料をまとめて返す。 */
+    status: () => ipcRenderer.invoke('storage:status'),
+    /** 保存場所を新しく作る。**呼ぶ前に費用の同意を得ること。** */
+    createBucket: (name: string) => ipcRenderer.invoke('storage:createBucket', name),
+    /** このプロジェクトの保存場所の設定（用意済みかどうか）。 */
+    placement: (projectDir: string) => ipcRenderer.invoke('storage:placement', projectDir),
+    /**
+     * 保存場所を用意する（サイトの利用開始＋バケット作成＋env.json へ記録）。
+     * **課金に直結するので、呼ぶ前に必ず金額を見せて同意を得ること。**
+     */
+    prepare: (projectDir: string, opts?: { mode?: 'shared' | 'dedicated'; bucket?: string }) =>
+      ipcRenderer.invoke('storage:prepare', projectDir, opts),
+  },
   // 自動更新（update:*）。判定は main 側（shared/updatePolicy.ts）に集約してあり、
   // renderer は状態を受け取って表示し、押されたら apply を呼ぶだけ。
   update: {

@@ -191,7 +191,7 @@ export type CreateAppBody = {
 }
 
 /** EnvSpec から components 配列を組み立てる（create/patch 共通）。 */
-function buildComponents(spec: EnvSpec, registryAuth?: RegistryAuth): CreateAppBody['components'] {
+function buildComponents(spec: EnvSpec, registryAuth?: RegistryAuth, runtimeEnv: Array<{ key: string; value: string }> = []): CreateAppBody['components'] {
   const image = spec.service.source.type === 'image' ? spec.service.source.ref : ''
   const container_registry: ContainerRegistry = registryAuth
     ? { image, server: registryAuth.server, username: registryAuth.username, password: registryAuth.password }
@@ -202,7 +202,7 @@ function buildComponents(spec: EnvSpec, registryAuth?: RegistryAuth): CreateAppB
       max_cpu: '1',
       max_memory: '1Gi',
       deploy_source: { container_registry },
-      env: spec.service.env.map(e => ({ key: e.name, value: e.value })),
+      env: [...spec.service.env.map(e => ({ key: e.name, value: e.value })), ...runtimeEnv],
       probe: { http_get: { path: '/', port: spec.service.port } },
     },
   ]
@@ -215,18 +215,21 @@ function buildComponents(spec: EnvSpec, registryAuth?: RegistryAuth): CreateAppB
  *   （dockerfile の場合は段階3でビルド/プッシュ後に image ソースへ差し替える前提のため、
  *    呼び出し側 main 側が ref を解決してから渡す。）
  * - env は spec.service.env（{name,value}）を API 形式の {key,value} に変換する。
- *   秘密（secrets）は ref のみで値を持たないためここには含めない（段階以降で解決）。
+ *   秘密（secrets）は ref のみで値を持たないため spec からは来ない。
+ *   **公開のたびに発行する秘密（オブジェクトストレージのシークレットキー等）は
+ *   `runtimeEnv` で受け取り、ここでデプロイ本文へ直接載せる。** env.json には
+ *   決して書かない（spec.ts が平文の秘密を禁じているのと同じ理由）。
  * - registryAuth が渡された場合は container_registry に server/username/password も載せる
  *   （AppRun がプライベートレジストリから pull できるようにする）。後方互換: 無ければ従来通り image のみ。
  */
-export function buildCreateBody(spec: EnvSpec, registryAuth?: RegistryAuth): CreateAppBody {
+export function buildCreateBody(spec: EnvSpec, registryAuth?: RegistryAuth, runtimeEnv: Array<{ key: string; value: string }> = []): CreateAppBody {
   return {
     name: spec.name,
     timeout_seconds: 60,
     port: spec.service.port,
     min_scale: spec.service.scale.min,
     max_scale: spec.service.scale.max,
-    components: buildComponents(spec, registryAuth),
+    components: buildComponents(spec, registryAuth, runtimeEnv),
   }
 }
 
@@ -241,8 +244,8 @@ export type PatchAppBody = {
  * components を差し替え、all_traffic_available:true で新バージョンへ全トラフィックを向ける。
  * URLは固定のまま新バージョンが作られる（作り直さない）。
  */
-export function buildPatchBody(spec: EnvSpec, registryAuth?: RegistryAuth): PatchAppBody {
-  return { components: buildComponents(spec, registryAuth), all_traffic_available: true }
+export function buildPatchBody(spec: EnvSpec, registryAuth?: RegistryAuth, runtimeEnv: Array<{ key: string; value: string }> = []): PatchAppBody {
+  return { components: buildComponents(spec, registryAuth, runtimeEnv), all_traffic_available: true }
 }
 
 /** さくらのクラウド/AppRun API クライアント。 */
