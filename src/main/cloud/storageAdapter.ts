@@ -31,6 +31,7 @@ export type StorageApiLike = {
   deleteBucket(bucket: string): Promise<void>
   issueKey(siteId: string, bucket: string, displayName: string): Promise<IssuedKey>
   deletePermission(siteId: string, permissionId: string): Promise<void>
+  listPermissions(siteId: string): Promise<{ id: string; displayName: string }[]>
 }
 
 /** 組み立てに要る S3 操作（同上）。 */
@@ -158,6 +159,8 @@ export function makeStorageAdapter(
     async issueKey(bucket, displayName) { return client.issueKey(site.id, bucket, displayName) },
 
     async deletePermission(permissionId) { await client.deletePermission(site.id, permissionId) },
+
+    async listPermissions() { return client.listPermissions(site.id) },
 
     siteInfo() { return { s3Endpoint: site.s3_endpoint, region: site.region } },
 

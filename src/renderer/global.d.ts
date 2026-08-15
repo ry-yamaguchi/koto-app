@@ -252,9 +252,25 @@ interface Window {
       plan(projectDir: string): Promise<{ ok: true; plan: CloudPlan } | { ok: false; errors: string[] }>
       // 段階2a: 構築/破棄の実行（破壊操作は confirmed:true が必須）。
       // detail は失敗時の生ログ（stderr要約等・診断用。renderer側で折りたたみ表示する・所見12）。
-      apply(projectDir: string, opts?: { confirmed?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string }>
+      /**
+       * `hint: 'app-unhealthy'` は「公開はできたが、アプリが起動しなかった」。
+       * そのとき `logUrl`（コンパネのログ）と `askAi`（相談の文面）が付く。
+       */
+      /** `pending: true` は「失敗ではなく、まだ確認できていない」（起動に時間がかかっている）。 */
+      apply(projectDir: string, opts?: { confirmed?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string }>
       /** deleteRegistry: false でコンテナレジストリを残す（月額課金は続く）。未指定は削除する。 */
       /** `keptBucketName` は「破棄したのに残った保存場所」。残っていれば月額も続く。 */
+      /**
+       * 公開する前の確認（改善案 1-2）。**何も作らず、何も変えない。**
+       * `canPublish` が false なら、押しても失敗すると分かっている。
+       */
+      preflight(projectDir: string): Promise<{
+        ok: boolean
+        canPublish: boolean
+        summary: string
+        checks: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' }[]
+        message?: string
+      }>
       teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; keptBucketName?: string | null; message?: string }>
       /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
       registryName(projectDir: string): Promise<{ ok: boolean; name: string | null }>
@@ -271,6 +287,20 @@ interface Window {
       ensureRegistry(projectDir: string): Promise<{ ok: boolean; server?: string; created?: boolean; message?: string }>
       // デプロイ済み AppRun アプリの公開URLを取得する（未デプロイ時は url:null）。
       appUrl(projectDir: string): Promise<{ ok: boolean; url?: string | null; message?: string }>
+      /**
+       * いまアプリが動いているかを、もう一度聞く（**何も作らず、何も変えない**）。
+       * `ok` は「聞けたか」、`healthy` は「動いているか」。
+       */
+      appHealth(projectDir: string): Promise<{
+        ok: boolean
+        healthy?: boolean
+        pending?: boolean
+        note?: string
+        detail?: string
+        logUrl?: string
+        askAi?: string
+        message?: string
+      }>
       // 限定公開（アクセス制限＝パケットフィルタ）。デプロイ済みアプリの許可IPを読み書きする。
       getAccessLimit(projectDir: string): Promise<{ ok: boolean; deployed?: boolean; isEnabled?: boolean; ips?: Array<{ ip: string; prefix: number }>; message?: string }>
       setAccessLimit(projectDir: string, payload: { isEnabled: boolean; ips: Array<{ ip: string; prefix: number }> }): Promise<{ ok: boolean; message?: string }>

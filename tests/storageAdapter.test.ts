@@ -34,6 +34,7 @@ function fakes() {
       return { accessKey: `AK${n}`, secretKey: `SK${n}`, permissionId: `perm-${n}` }
     },
     async deletePermission(_s, id) { calls.deletedPermissions.push(id); calls.order.push(`deletePermission:${id}`) },
+    async listPermissions() { return [] },
   }
   const s3: S3Like = {
     async putObject(_a, b, k) { calls.puts.push(`${b}/${k}`) },

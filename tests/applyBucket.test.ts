@@ -29,6 +29,7 @@ function fakeStorage(keys: string[], opts: { siteReady?: boolean } = {}) {
     async deleteBucket(b) { calls.deletedBuckets.push(b) },
     async issueKey() { calls.issued++; return { accessKey: 'AKIANEW', secretKey: 'SECRETNEW', permissionId: 'perm-new' } },
     async deletePermission(id) { calls.deletedPermissions.push(id) },
+    async listPermissions() { return [] },
     siteInfo() { return { s3Endpoint: 's3.isk01.sakurastorage.jp', region: 'jp-north-1' } },
   }
   return { client, calls }
@@ -187,12 +188,20 @@ describe('公開のたびに鍵を発行して渡す', () => {
   })
 
   // 先に消すと、デプロイに失敗したとき古い版も動かなくなる
-  it('古い鍵は、新しい公開が成功してから無効にする', async () => {
+  // ★ 2026-08-14 実機で作り直した約束。
+  // 以前は「デプロイのAPIが 200 を返したらその場で古い鍵を消す」だった。
+  // だが AppRun のデプロイは非同期で、新しいコンテナが立ち上がるまで
+  // **古いコンテナが動き続ける**。そこで鍵を消すと、いま動いているアプリが
+  // 403 で落ちる。新しい版の起動に失敗すれば、そのまま壊れ続けた。
+  // → **applyPlan は消さない。** 片づけは呼び出し側が「動いた」と確かめてから行う。
+  it('★ 公開しただけでは、古い鍵を消さない（切り替わるまで古い版が使っている）', async () => {
     const { client, calls } = fakeStorage([])
     const state: EnvState = { ...emptyState('myapp', 'sakura-apprun'), meta: { storagePermissionId: 'perm-old' } }
     const cloud: CloudClientLike = { ...noCloud, async createApp() { return { ok: true, dryRun: false } } }
-    await applyPlan({ plan: deployPlan(), spec: imageSpec(), state, client: cloud, storage: client, confirmed: true })
-    expect(calls.deletedPermissions).toEqual(['perm-old'])
+    const r = await applyPlan({ plan: deployPlan(), spec: imageSpec(), state, client: cloud, storage: client, confirmed: true })
+    expect(calls.deletedPermissions).toEqual([])
+    // 新しい鍵は記録する（片づけるときに「どれが現役か」が要る）
+    expect(r.state.meta?.storagePermissionId).toBe('perm-new')
   })
 
   it('公開に失敗したら、古い鍵は消さない', async () => {

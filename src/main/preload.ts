@@ -205,6 +205,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     loadEnv: (projectDir: string) => ipcRenderer.invoke('cloud:loadEnv', projectDir),
     saveEnv: (projectDir: string, spec: any) => ipcRenderer.invoke('cloud:saveEnv', projectDir, spec),
     scaffoldEnv: (projectDir: string, name: string) => ipcRenderer.invoke('cloud:scaffoldEnv', projectDir, name),
+    /** 公開する前に「本当に通るか」をまとめて確かめる。**何も作らず、何も変えない。** */
+    preflight: (projectDir: string) => ipcRenderer.invoke('cloud:preflight', projectDir),
     // 差分プラン算出（ドライラン・API呼び出し無し）
     plan: (projectDir: string) => ipcRenderer.invoke('cloud:plan', projectDir),
     // 段階2a: 構築/破棄の実行（破壊操作は confirmed:true の明示確認が必須）
@@ -221,6 +223,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ensureRegistry: (projectDir: string) => ipcRenderer.invoke('cloud:ensureRegistry', projectDir),
     // デプロイ済み AppRun アプリの公開URLを取得する。
     appUrl: (projectDir: string) => ipcRenderer.invoke('cloud:appUrl', projectDir),
+    appHealth: (projectDir: string) => ipcRenderer.invoke('cloud:appHealth', projectDir),
     // 限定公開（アクセス制限＝パケットフィルタ）。デプロイ済みアプリの許可IPを読み書きする。
     getAccessLimit: (projectDir: string) => ipcRenderer.invoke('cloud:getAccessLimit', projectDir),
     setAccessLimit: (projectDir: string, payload: { isEnabled: boolean; ips: Array<{ ip: string; prefix: number }> }) => ipcRenderer.invoke('cloud:setAccessLimit', projectDir, payload),

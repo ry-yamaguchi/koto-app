@@ -26,19 +26,26 @@ export default function TitleBar({
 }: Props) {
   return (
     <div
-      className="h-10 flex items-center px-4 bg-surface border-b border-line flex-none relative"
+      className="h-10 flex items-center px-4 bg-surface border-b border-line flex-none"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
-      {/* Brand */}
-      <div className="flex items-center gap-2 ml-16 select-none">
+      {/* ── 3つの区画（2026-08-14 Ryosuke 指摘）──────────────────────────
+          以前は真ん中の切替を `absolute left-1/2` で浮かせていた。
+          **浮いているものはレイアウトの流れに入らない**ので、右のボタン群は
+          その存在を知らず、ウィンドウを狭めると重なって「公開」が「開」になった。
+          左右を flex-1 で等分し、真ん中を挟む形にすると、狭いときは
+          **重なる代わりに位置がずれる**（読めなくなるより、ずれるほうがよい）。 */}
+
+      {/* Brand — 狭いときはここから削れる（版番号 → 名前の順） */}
+      <div className="flex-1 min-w-0 flex items-center gap-2 ml-16 select-none overflow-hidden">
         <SakuraLogo size={18} />
-        <span className="text-sm font-semibold text-ink tracking-tight">Koto</span>
-        {version && <span className="text-[10px] text-ink-muted">v{version}</span>}
+        <span className="text-sm font-semibold text-ink tracking-tight hidden sm:inline">Koto</span>
+        {version && <span className="text-[10px] text-ink-muted hidden md:inline">v{version}</span>}
       </div>
 
-      {/* Mode switcher — centered */}
+      {/* Mode switcher — 左右に挟まれて中央に来る（浮かせない） */}
       <div
-        className="absolute left-1/2 -translate-x-1/2 flex items-center bg-elevated rounded-xl p-1 gap-1 border border-line-soft"
+        className="flex-none flex items-center bg-elevated rounded-xl p-1 gap-1 border border-line-soft"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         <ModeButton active={mode === 'ide'} onClick={() => onSwitchMode('ide')} label="IDE">
@@ -53,9 +60,15 @@ export default function TitleBar({
         </ModeButton>
       </div>
 
-      {/* Right controls */}
+      {/* ── Right controls — **中身より小さくならない**（2026-08-14 実測）──────────
+          `min-w-0` を付けていたのが重なりの正体だった。flex の既定 `min-width:auto` は
+          「中身より小さくならない」という**守り**で、それを自分で外していた。
+          外すと箱は中身より小さくなり、はみ出した分が真ん中に重なる
+          （CDP実測: 幅880で72px、幅720で152px 重なっていた）。
+          守りを戻すと、**先に譲るのは左（アプリ名）**になる。名前は隠れても困らないが、
+          「公開」が隠れると操作できなくなる。 */}
       <div
-        className="ml-auto flex items-center gap-1.5"
+        className="flex-1 flex items-center justify-end gap-1.5"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         {mode === 'ide' && (
@@ -63,14 +76,14 @@ export default function TitleBar({
             <button
               onClick={onPublish}
               title="プロジェクトを公開（レンタルサーバ / AppRun / HANAMII）"
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity shadow-sm"
+              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity shadow-sm"
             >
               🚀 公開
             </button>
             <button
               onClick={onOpenGithubSave}
               title="GitHubに保存（バックアップ・共有）"
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
+              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
             >
               💾 保存
             </button>
@@ -79,7 +92,7 @@ export default function TitleBar({
             <button
               onClick={onOpenHistory}
               title="前の状態に戻す（作業の履歴から選んで、その時点の状態に戻せます）"
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
+              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
             >
               🕘 元に戻す
             </button>
@@ -159,7 +172,7 @@ function ToggleChip({ active, onClick, label, title }: {
     <button
       onClick={onClick}
       title={title}
-      className={`text-xs px-2.5 py-1 rounded-lg font-medium transition-colors ${
+      className={`flex-none whitespace-nowrap text-xs px-2.5 py-1 rounded-lg font-medium transition-colors ${
         active
           ? 'bg-overlay text-ink border border-line'
           : 'text-ink-muted hover:text-ink-secondary border border-transparent'

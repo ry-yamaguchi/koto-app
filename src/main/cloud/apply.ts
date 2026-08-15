@@ -15,6 +15,7 @@ import type { EnvState, ResourceRef } from './state'
 import type { Plan } from './planner'
 import { buildCreateBody, buildPatchBody, apiErrorMessage, type RegistryAuth } from './client'
 import { teardownPlanFor, keepMarkerKey, storageEnvVars, containsSecretEnv, consentedBuckets, STORAGE_ENV } from '../../shared/objectStorage'
+import { permissionNameFor } from '../../shared/storageKeys'
 
 /**
  * apply が必要とするクラウドクライアントの最小インターフェース。
@@ -57,6 +58,11 @@ export interface StorageClientLike {
   issueKey(bucket: string, displayName: string): Promise<{ accessKey: string; secretKey: string; permissionId: string }>
   /** 古い権限を片づける（キーも一緒に無効になる）。 */
   deletePermission(permissionId: string): Promise<void>
+  /**
+   * いまある権限の一覧。**片づける対象を選ぶため。**
+   * 判断は shared/storageKeys.ts に集約してあり、ここは一覧を渡すだけ。
+   */
+  listPermissions(): Promise<{ id: string; displayName: string }[]>
   /** S3 のエンドポイントとリージョン（アプリに渡す）。 */
   siteInfo(): { s3Endpoint: string; region: string }
 }
@@ -189,7 +195,8 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
   const ensureRuntimeEnv = async (): Promise<string | null> => {
     if (!storage || !storageBucket || newPermissionId) return null
     const site = storage.siteInfo()
-    const issued = await storage.issueKey(storageBucket.bucket, `koto-${spec.name}`)
+    // 名前は**片づけの目印**。手で組み立てると、ずれた瞬間に孤児になる（掟10）
+    const issued = await storage.issueKey(storageBucket.bucket, permissionNameFor(spec.name))
     newPermissionId = issued.permissionId
     const publicVars = storageEnvVars({
       bucket: storageBucket.bucket,
@@ -385,14 +392,12 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
   // 順序が大事。先に消すと、デプロイに失敗したとき古い版も動かなくなる。
   // ここで失敗しても公開そのものは成功しているので、止めずに知らせるだけにする。
   if (storage && newPermissionId) {
-    const previous = state.meta?.storagePermissionId
-    if (previous && previous !== newPermissionId) {
-      try {
-        await storage.deletePermission(previous)
-      } catch {
-        skipped.push('保存場所の古い鍵を無効にできませんでした（公開は成功しています）')
-      }
-    }
+    // **古い鍵はここで消さない。**（2026-08-14 実機で発覚）
+    // デプロイのAPIが 200 を返しても、新しいコンテナはまだ立ち上がっていない。
+    // その間**古いコンテナが動き続ける**ので、ここで古い鍵を消すと、
+    // いま動いているアプリが 403 で落ちる。新しい版の起動に失敗すれば
+    // そのまま壊れ続ける（実際そうなった）。
+    // **片づけは「動いた」と確かめてから**（呼び出し側が起動確認のあとに行う）。
     state.meta = { ...state.meta, storagePermissionId: newPermissionId }
   }
 

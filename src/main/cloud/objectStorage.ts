@@ -22,6 +22,7 @@
 import type { CloudCredentials } from './auth'
 import { sigv4Authorization, canonicalQuery, sha256hex, amzDateOf } from '../../shared/sigv4'
 import { parseListResponse } from '../../shared/objectStorage'
+import { parsePermissions } from '../../shared/storageKeys'
 
 /** オブジェクトストレージAPI のベースURL（ゾーンは固定。サイトはこの下で分岐）。 */
 export function objectStorageBase(zone = 'is1a'): string {
@@ -177,6 +178,19 @@ export class ObjectStorageClient {
       throw new Error('アクセスキーの応答に必要な値がありません。')
     }
     return { accessKey: String(d.id), secretKey: String(d.secret), permissionId }
+  }
+
+  /**
+   * 権限の一覧。**片づける対象を選ぶために要る。**
+   *
+   * 公開のたびに新しい鍵を発行するので、片づけないと溜まる。実機では5件たまり、
+   * **消えたバケット向けのもの**まで残っていた（2026-08-14）。
+   * 鍵が残るのは「消したはずの保存場所へ届く鍵が生き続ける」ということでもある。
+   */
+  async listPermissions(siteId: string): Promise<{ id: string; displayName: string }[]> {
+    const r = await this.api('GET', `${siteId}/v2/permissions`)
+    if (!r.ok) throw new Error(`鍵の一覧を取得できませんでした（HTTP ${r.status}）`)
+    return parsePermissions(r.data)
   }
 
   /** 権限ごと削除する（キーも一緒に無効になる）。 */

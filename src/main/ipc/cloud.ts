@@ -7,7 +7,7 @@ import { randomBytes } from 'crypto'
 import { validateSpec, defaultSpec, normalizeSpecName, type EnvSpec } from '../cloud/spec'
 import { computePlan, type Plan } from '../cloud/planner'
 import { emptyState, isExpired, registryDeletionTarget, registryLookupNames, resolvePushRegistry, stateToSave, type EnvState } from '../cloud/state'
-import { loadCredentials } from '../cloud/auth'
+import { loadCredentials, type CloudCredentials } from '../cloud/auth'
 import {
   hasRegistryCredentials,
   saveRegistryCredentials,
@@ -116,6 +116,106 @@ function detectRuntimeFor(contextAbs: string): RuntimeChoice {
   return detectRuntime({ packageJson, fileNames })
 }
 
+/**
+ * アプリが動き出すまで待つ（IO はここ。判断は shared/appHealth.ts）。
+ *
+ * さくらは公開の直後しばらく `Deploying` を返す。**待たずに聞くと、失敗も成功も
+ * 分からない。** かといって無限には待てないので、上限を決めて打ち切り、
+ * 打ち切ったことを利用者に伝える（黙って成功にしない）。
+ */
+async function waitForHealthy(
+  client: SakuraCloudClient,
+  appId: string,
+  progress: (m: string) => void,
+): Promise<AppHealth> {
+  const waits = [3000, 5000, 8000, 12000, 20000] // 合計48秒まで
+  let last = judgeAppHealth({ status: 'Unknown' })
+  for (let i = 0; i <= waits.length; i++) {
+    const res = await client.getAppStatus(appId)
+    if (res.dryRun === false && res.ok) {
+      const { status, message } = parseAppStatus(res.data)
+      last = judgeAppHealth({ status, message, timedOut: i === waits.length })
+      if (!last.pending) return last
+    } else if (res.dryRun === false && !res.ok) {
+      // 状態を取れないだけでアプリは動いているかもしれない。**失敗とは言い切らない**
+      return judgeAppHealth({ status: 'Unknown' })
+    }
+    if (i < waits.length) {
+      progress('🩺 まだ準備中です…')
+      await new Promise(r => setTimeout(r, waits[i]))
+    }
+  }
+  return last
+}
+
+/**
+ * このアプリのログが残るようにする（IO はここ。判断は shared/appLog.ts）。
+ *
+ * **ここで失敗しても公開は失敗にしない。** ログは「動かなかったときに助かるもの」
+ * であって、公開そのものの成否とは別。止めると、本題（アプリを公開する）が
+ * 巻き添えになる。
+ *
+ * 費用の発生する操作（ログ領域の作成）はここでは行わない。**同意が要る**ので、
+ * それは別の導線（設定または案内）に回し、ここは「既にあるなら繋ぐ」だけにする。
+ */
+async function ensureAppLogRouting(
+  creds: CloudCredentials,
+  appId: string,
+  progress: (m: string) => void,
+): Promise<void> {
+  const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+  const app = await client.getApp(appId)
+  if (app.dryRun !== false || !app.ok) return
+  const resourceId = String((app.data as any)?.resource_id ?? '')
+  if (!resourceId) return
+
+  const mon = new MonitoringClient({ credentials: creds, dryRun: false })
+  const [state, storages, routings] = await Promise.all([
+    mon.provisioningState(), mon.listStorages(), mon.listRoutings(),
+  ])
+  if (!state.ok || !storages.ok || !routings.ok) return
+
+  const action = decideLogAction({
+    storageReady: parseProvisioningState(state.data),
+    storageId: pickLogStorageId(storages.data),
+    alreadyRouted: hasAppLogRouting(routings.data, resourceId),
+  })
+  if (action.kind !== 'route') return // 'ask'（費用が要る）はここでは行わない
+
+  progress('📋 ログを残す設定をしています…')
+  await mon.createRouting({
+    resourceId,
+    publisherCode: APPRUN_LOG_PUBLISHER,
+    variant: APPRUN_LOG_VARIANT,
+    logStorageId: action.storageId,
+  })
+}
+
+/**
+ * このプロジェクトの古い鍵を片づける（IO はここ。判断は shared/storageKeys.ts）。
+ *
+ * **公開が終わっただけでは消さない。アプリが動いたと確かめてから。**
+ * 実機では、デプロイ直後に消したせいで、まだ動いていた古いコンテナが 403 で落ちた。
+ *
+ * 片づけないと鍵が溜まる。実機では5件たまり、**消えたバケット向けのもの**まで
+ * 残っていた。鍵が残るのは「消したはずの保存場所へ届く鍵が生き続ける」ことでもある。
+ */
+async function cleanUpOldKeys(
+  storage: StorageAdapter,
+  projectName: string,
+  keepId: string | null,
+  progress: (m: string) => void,
+): Promise<void> {
+  if (!keepId) return // 現役が分からないときは何もしない（いちばん危ない）
+  const all = await storage.listPermissions()
+  const targets = permissionsToCleanUp({ all, projectName, keepId })
+  if (targets.length === 0) return
+  progress('🧹 古い鍵を片づけています…')
+  for (const id of targets) {
+    try { await storage.deletePermission(id) } catch { /* 1つ失敗しても続ける */ }
+  }
+}
+
 /** plan に apprun-app の create または update が含まれるか。 */
 function planTouchesApp(plan: Plan): boolean {
   return plan.actions.some(
@@ -127,6 +227,11 @@ import { scanDataUsage, ensureDataLayer } from '../dataLayer'
 import { ObjectStorageClient } from '../cloud/objectStorage'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
 import { looksLikeRegistryProblem } from '../../shared/registryTrouble'
+import { parseAppStatus, judgeAppHealth, judgeRecheck, appLogUrl, askAiAboutFailure, type AppHealth } from '../../shared/appHealth'
+import { MonitoringClient } from '../cloud/monitoring'
+import { decideLogAction, parseProvisioningState, pickLogStorageId, hasAppLogRouting, APPRUN_LOG_PUBLISHER, APPRUN_LOG_VARIANT } from '../../shared/appLog'
+import { permissionsToCleanUp } from '../../shared/storageKeys'
+import { summarizePreflight, sortChecks, type PreflightCheck } from '../../shared/preflight'
 import { sharedBucketName, isValidBucketName, consentedBuckets, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, KOTO_ROOT, type BucketMode } from '../../shared/objectStorage'
 
 export function registerCloudHandlers(_deps: IpcDeps) {
@@ -449,6 +554,52 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         return { ok: false, message: '認証に失敗しました（クラウドのAPIキーを確認してください）' }
       }
       return { ok: false, message: r.dryRun === false ? `URLの取得に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  /**
+   * いま動いているかを、もう一度聞く（2026-08-14 Ryosuke 提案）。
+   *
+   * **何も作らず、何も変えない。** 状態を1回聞くだけ。
+   *
+   * 公開の直後に待つのは48秒までで、それを超えて起動したアプリは
+   * 「まだ準備中です」の警告が出たまま残っていた。消す手立てが
+   * 「もう一度公開する」しか無く、**確かめるためだけにイメージを
+   * 作り直させていた**（実機でサイトは開けていた）。
+   *
+   * `ok` は「聞けたか」、`healthy` は「動いているか」。混ぜない。
+   */
+  ipcMain.handle('cloud:appHealth', async (_, projectDir: string) => {
+    try {
+      const creds = loadCredentials()
+      if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+      const spec = loadCloudSpec(projectDir)
+      if (!spec) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const state = loadCloudState(projectDir, spec)
+      const app = state.resources.find(r => r.kind === 'apprun-app')
+      if (!app) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+      const res = await client.getAppStatus(app.id)
+      if (res.dryRun !== false || !res.ok) {
+        const status = res.dryRun === false ? res.status : 0
+        if (status === 401 || status === 403) {
+          return { ok: false, message: '認証に失敗しました（クラウドのAPIキーを確認してください）' }
+        }
+        return { ok: false, message: status ? `状態を確認できませんでした（HTTP ${status}）` : '予期しない応答' }
+      }
+      const { status, message } = parseAppStatus(res.data)
+      const health = judgeRecheck({ status, message })
+      return {
+        ok: true,
+        healthy: health.ok,
+        pending: health.pending,
+        note: health.note,
+        ...(health.detail ? { detail: health.detail } : {}),
+        logUrl: appLogUrl(app.id),
+        askAi: askAiAboutFailure({ note: health.note, ...(health.detail ? { detail: health.detail } : {}) }),
+      }
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
     }
@@ -783,12 +934,49 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         ok: result.ok, state: result.state, kind: 'apply',
         ttlHours: spec.guardrails.ttlHours, now: new Date(),
       }))
-      progress(result.ok ? '✅ 完了' : '⚠️ 失敗しました')
+      // ── 本当に動いているかを確かめる（2026-08-14）──────────────────────
+      // **デプロイのAPIが 200 を返したことは、アプリが動いた証拠にならない。**
+      // 実機で「✅ 完了しました」と出しながら、アプリは
+      // `Component is exited: ExitCode1` で起動に失敗していた。
+      // 利用者は公開URLを開いて初めて気づき、原因はコンパネのログにしか無い。
+      let health: AppHealth | undefined
+      let appId: string | undefined
+      if (result.ok) {
+        appId = result.state.resources.find(r => r.kind === 'apprun-app')?.id
+        if (appId) {
+          // ── ログを残せるようにする（2026-08-14 Ryosuke 提案）────────────
+          // AppRun のログは**既定では残らない**。動かなかったときに原因を
+          // 調べられるよう、公開のついでに繋いでおく。
+          // **費用が増えるのはログ領域を作るときだけ**なので、既にあるときは
+          // 黙って繋ぐ（意味の分からない同意を増やさない）。判断は shared に集約。
+          try { await ensureAppLogRouting(creds, appId, progress) } catch { /* ログが無くても公開は成立する */ }
+
+          progress('🩺 アプリが動いているか確かめています…')
+          health = await waitForHealthy(client, appId, progress)
+
+          // ── 古い鍵は「動いた」と確かめてから片づける（2026-08-14 実機）──────
+          // デプロイのAPIが 200 を返しても、新しいコンテナはまだ立ち上がっていない。
+          // その間に古い鍵を消すと、**いま動いているアプリが 403 で落ちる**。
+          // 起動に失敗したときは**消さない**（古い版が動き続けられるように）。
+          if (health.ok && storage) {
+            try { await cleanUpOldKeys(storage, resolvedSpec.name, result.state.meta?.storagePermissionId ?? null, progress) }
+            catch { /* 片づけの失敗で公開を失敗にしない */ }
+          }
+        }
+      }
+
+      const finallyOk = result.ok && (health ? health.ok : true)
+      progress(finallyOk ? '✅ 完了' : health?.pending ? '⏳ 起動を確認できていません' : '⚠️ 失敗しました')
       return {
-        ok: result.ok,
+        ok: finallyOk,
         executed: result.executed,
         skipped: result.skipped,
-        message: result.message,
+        message: health && !health.ok ? health.note : result.message,
+        ...(health?.detail ? { detail: health.detail } : {}),
+        // 起動に失敗したときだけ、ログの場所とAIへの相談を出せるようにする
+        ...(health && !health.ok && appId
+          ? { hint: 'app-unhealthy' as const, pending: health.pending, logUrl: appLogUrl(appId), askAi: askAiAboutFailure({ note: health.note, ...(health.detail ? { detail: health.detail } : {}) }) }
+          : {}),
       }
     } catch (e: any) {
       progress('⚠️ 失敗しました')
@@ -1082,6 +1270,111 @@ export function registerCloudHandlers(_deps: IpcDeps) {
    * 同意を得てから呼ぶこと（AppRun のレジストリ作成と同じ扱い）。
    * サイトの利用開始も同様なので、ここでまとめて行う。
    */
+  /**
+   * 公開する前に「本当に通るか」をまとめて確かめる（改善案 1-2）。
+   *
+   * ── なぜ要るか（2026-08-14 の実機検証）────────────────────────────
+   * この日、公開は10回以上失敗した。そのうち**4件は押す前に分かったはず**だった:
+   *   ・レジストリが消えているのに「登録済み ✓」と出ていた
+   *   ・保存場所が作られていないのに「ある」と誤読していた
+   *   ・公開名が、記録に無い孤児のアプリと衝突していた
+   *   ・Node で動かせない作り（依存ライブラリ）だった
+   * どれも「押す → 数分待つ → 分からないエラー」で返ってきた。
+   * **押す前に、まとめて確かめて、まとめて伝える。**
+   *
+   * ⚠️ **何も作らない・何も変えない。** 見るだけ。
+   */
+  ipcMain.handle('cloud:preflight', async (_e, projectDir: string) => {
+    const checks: PreflightCheck[] = []
+    const add = (id: string, label: string, status: PreflightCheck['status'], note: string, fix?: PreflightCheck['fix']) =>
+      checks.push({ id, label, status, note, ...(fix ? { fix } : {}) })
+
+    try {
+      const creds = loadCredentials()
+      if (!creds) {
+        add('key', 'APIキー', 'ng', 'さくらのクラウドのAPIキーが登録されていません。「① APIキー」から登録してください。')
+        return { ok: true, ...summarizePreflight(sortChecks(checks)) }
+      }
+      add('key', 'APIキー', 'ok', '登録されています。')
+
+      let spec: EnvSpec | null = null
+      try { spec = loadCloudSpec(projectDir) } catch (e: any) {
+        add('spec', '公開の設定', 'ng', `公開の設定（env.json）を読み取れません: ${e?.message ?? e}`)
+      }
+      if (!spec) {
+        if (checks.every(c => c.id !== 'spec')) {
+          add('spec', '公開の設定', 'ng', '公開の設定がまだありません。「② 公開の設定」で作成してください。')
+        }
+        return { ok: true, ...summarizePreflight(sortChecks(checks)) }
+      }
+      add('spec', '公開の設定', 'ok', `公開名『${spec.name}』で公開します。`)
+
+      // 起動できる作りか（判断は shared/runtimeDetect.ts）
+      if (spec.service.source.type !== 'image') {
+        let contextAbs = projectDir
+        try { contextAbs = resolveBuildContext(projectDir, spec.service.source.context) } catch { /* 既定のまま */ }
+        const choice = detectRuntimeFor(contextAbs)
+        // コードを直せば通るので、AIに相談できるようにする
+        if (choice.kind === 'unsupported') add('runtime', 'アプリの作り', 'ng', choice.reason, 'ask-ai')
+        else if (choice.kind === 'node') add('runtime', 'アプリの作り', 'ok', `Node で ${choice.entry} を起動します。`)
+        else add('runtime', 'アプリの作り', 'ok', 'ファイルをそのまま配信します（HTML など）。')
+      }
+
+      const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+      const state = loadCloudState(projectDir, spec)
+
+      // イメージの置き場が**実在するか**（手元の認証情報だけを信じない）
+      try {
+        const listed = await client.listContainerRegistries(spec.region)
+        if (listed.dryRun === false && listed.ok) {
+          const names = pickContainerRegistries(listed.data).map(r => r.subdomainLabel)
+          const recorded = state.meta?.registryName
+          if (!recorded) add('registry', 'イメージの置き場', 'ok', '公開のときに用意します。')
+          else if (names.includes(recorded)) add('registry', 'イメージの置き場', 'ok', `『${recorded}』が使えます。`)
+          // **直し方が分かっているなら、その場で押せるようにする**（2026-08-14 Ryosuke 指摘）
+          else add('registry', 'イメージの置き場', 'ng', `『${recorded}』が見つかりません（削除された可能性があります）。下のボタンで作り直せます。`, 'reset-registry')
+        } else {
+          add('registry', 'イメージの置き場', 'warn', '確認できませんでした（公開はできます）。')
+        }
+      } catch { add('registry', 'イメージの置き場', 'warn', '確認できませんでした（公開はできます）。') }
+
+      // 公開名が空いているか（**自分のアプリなら衝突ではない**）
+      try {
+        const apps = await client.listApps()
+        if (apps.dryRun === false && apps.ok) {
+          const rows: any[] = (apps.data as any)?.data ?? []
+          const mine = state.resources.find(r => r.kind === 'apprun-app')?.id
+          const hit = rows.find(a => String(a?.name ?? '') === spec.name)
+          if (!hit) add('name', '公開名', 'ok', `『${spec.name}』は使えます。`)
+          else if (mine && String(hit.id) === String(mine)) add('name', '公開名', 'ok', `『${spec.name}』は、このプロジェクトが公開済みのものです（更新になります）。`)
+          else add('name', '公開名', 'ng', `『${spec.name}』は、Koto の記録に無い別のアプリが使っています。公開名を変えるか、さくらのコントロールパネルでそのアプリを削除してください。`)
+        } else {
+          add('name', '公開名', 'warn', '確認できませんでした（公開はできます）。')
+        }
+      } catch { add('name', '公開名', 'warn', '確認できませんでした（公開はできます）。') }
+
+      // 保存場所が**実在するか**（409 を「ある」と読んだ失敗の再発防止）
+      const bucket = consentedBuckets(spec.persistence?.objectStorage)[0]
+      if (bucket) {
+        try {
+          const os = new ObjectStorageClient({ credentials: creds, dryRun: false })
+          const site = await os.pickSite()
+          if (!(await os.isSiteReady(site.id))) {
+            add('storage', 'データの保存場所', 'ng', '保存場所の利用がまだ始まっていません。「③公開」の案内から用意してください。')
+          } else {
+            const names = (await os.listBuckets(site.id)).map(b => b.name)
+            if (names.includes(bucket.bucket)) add('storage', 'データの保存場所', 'ok', `『${bucket.bucket}』が使えます。`)
+            else add('storage', 'データの保存場所', 'ng', `『${bucket.bucket}』が見つかりません。「③公開」の案内から選び直してください。`)
+          }
+        } catch { add('storage', 'データの保存場所', 'warn', '確認できませんでした（公開はできます）。') }
+      }
+
+      return { ok: true, ...summarizePreflight(sortChecks(checks)) }
+    } catch (e: any) {
+      return { ok: false, canPublish: true, summary: '確認できませんでした', checks, message: e?.message ?? String(e) }
+    }
+  })
+
   /**
    * このプロジェクトの保存場所の設定を読む（③公開の案内が「用意済みか」を出すため）。
    * env.json の persistence から、**同意済みのもの**だけを返す。

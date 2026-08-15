@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
+import { foldRecheck } from '../../shared/appHealth'
 import { clearPublishRecord } from '../publishRecord'
 import { isNameConflictError, isCreationLimitError, suggestAlternativeName } from '../nameConflict'
 import { beginActivity } from '../activity'
 import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import { teardownDataNote } from '../../shared/teardownSupport'
+import { askAiAboutCheck } from '../../shared/preflight'
 import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN } from '../../shared/cloudCost'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
@@ -150,10 +152,29 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
    * 探し直しに失敗すれば新しいレジストリが作られ、**月額220円が増える**恐れもある。
    */
   const [registryFixed, setRegistryFixed] = useState(false)
+  // 「↻ 更新」で見直した結果（2026-08-14 Ryosuke 提案）。null は「まだ押していない」。
+  const [recheckBusy, setRecheckBusy] = useState(false)
+  const [recheck, setRecheck] = useState<{ healthy: boolean; note: string; detail?: string } | null>(null)
+  /**
+   * 公開する前の確認（改善案 1-2・2026-08-14）。
+   * **押す前に、まとめて確かめて、まとめて伝える。** 実機の失敗10件のうち4件は
+   * 押す前に分かったはずのものだった（レジストリ消失・保存場所の不在・名前の衝突・
+   * 動かせない作り）。どれも「押す → 数分待つ → 分からないエラー」で返ってきた。
+   */
+  const [preflight, setPreflight] = useState<Awaited<ReturnType<Window['electronAPI']['cloud']['preflight']>> | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const runPreflight = async () => {
+    setChecking(true)
+    setPreflight(null)
+    try { setPreflight(await window.electronAPI.cloud.preflight(projectDir)) }
+    catch (e: any) { setPreflight({ ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: e?.message ?? String(e) }) }
+    finally { setChecking(false) }
+  }
   // detail は失敗時の生ログ（stderr要約等・診断用）。OpResultView が折りたたみ「詳細を見る」で表示する（所見12）。
   // hint: main 側が「この失敗はレジストリを設定し直せば直る」と判断したときに付ける印。
   // これが付いたときだけ再設定のボタンを出す（常設しない・2026-08-09）。
-  const [opResult, setOpResult] = useState<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string } | null>(null)
+  const [opResult, setOpResult] = useState<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string } | null>(null)
   // 構築中の進捗メッセージ（最新行）。apply 中だけ表示する。
   const [progress, setProgress] = useState<string | null>(null)
 
@@ -244,6 +265,41 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
     } catch { setAppUrl(null) }
     finally { setUrlLoading(false) }
   }, [projectDir])
+
+  /**
+   * 「↻ 更新」— いま動いているかを、もう一度聞くだけ（**何も作らず、何も変えない**）。
+   *
+   * 公開のあとに待つのは48秒まで。それを超えて起動したアプリは、警告が出たまま
+   * 残っていた。**実機ではサイトが開けているのに警告が消えず**、消す手立ては
+   * 「もう一度公開する」しか無かった（2026-08-14 Ryosuke 指摘）。
+   *
+   * 動いていたら公開URLも取り直す（起動前は URL が取れないことがある）。
+   */
+  const recheckHealth = useCallback(async () => {
+    setRecheckBusy(true)
+    try {
+      const r = await window.electronAPI.cloud.appHealth(projectDir)
+      if (!r.ok) {
+        setRecheck({ healthy: false, note: r.message ?? '状態を確認できませんでした' })
+        return
+      }
+      setRecheck({ healthy: !!r.healthy, note: r.note ?? '', ...(r.detail ? { detail: r.detail } : {}) })
+      if (r.healthy) {
+        // **矛盾する表示を残さない**（2026-08-14 Ryosuke 指摘）。「✅ 動いています」の上に
+        // 「⏳ 起動を確認できていません」が残っていた。動いていると分かった時点で、
+        // 公開は成功していたのだから、結果そのものを成功へ畳み込む（判断は shared）。
+        setOpResult(prev => foldRecheck(prev, { ok: true, pending: false, note: r.note ?? '' }))
+        void refreshUrl()
+      }
+    } catch (e: any) {
+      setRecheck({ healthy: false, note: e?.message ?? String(e) })
+    } finally {
+      setRecheckBusy(false)
+    }
+  }, [projectDir, refreshUrl])
+
+  // 新しい結果が出たら、前の見直しは捨てる（**古い「動いています」を残さない**）。
+  useEffect(() => { setRecheck(null) }, [opResult])
 
   // 公開済みか（state.json に apprun-app リソースがあるか）を読む。APIキー不要の軽量チェック。
   const refreshPublished = useCallback(async () => {
@@ -360,6 +416,8 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
       const r = await window.electronAPI.cloud.ensureRegistry(projectDir)
       if (r.ok) {
         setRegistryFixed(true)
+        // 確認の結果が古くなるので取り直す（直したのに ❌ のままにしない）
+        if (preflight) void runPreflight()
         setRegNotice(`${r.created ? '作成しました' : '既存のレジストリを利用します'}: ${r.server}（認証情報に保存済み）`)
         window.dispatchEvent(new Event('sakura:credentials-changed')) // 認証情報側にも反映
         refreshRegistryName() // 記録が更新されたので、破棄画面と費用案内が出す名前も取り直す
@@ -609,6 +667,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         onChangeDeleteRegistry={setDeleteRegistry}
         onRename={doRenameConfirmed}
         placement={placement}
+        progress={progress}
       />
     )
   }
@@ -798,16 +857,64 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold text-ink">③ 事前チェック</p>
-          <button
-            onClick={runPlan}
-            disabled={planning || !spec}
-            title={spec ? '' : '先に公開の設定を作成してください'}
-            className="flex-none bg-overlay text-ink border border-line rounded-md px-3 py-1 text-xs font-medium hover:border-sakura disabled:opacity-40"
-          >{planning ? '確認中…' : '何が作られるか確認'}</button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={runPreflight}
+              disabled={checking}
+              className="flex-none bg-sakura text-white rounded-md px-3 py-1 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
+            >{checking ? '確かめています…' : '公開できるか確かめる'}</button>
+            <button
+              onClick={runPlan}
+              disabled={planning || !spec}
+              title={spec ? '' : '先に公開の設定を作成してください'}
+              className="flex-none bg-overlay text-ink border border-line rounded-md px-3 py-1 text-xs font-medium hover:border-sakura disabled:opacity-40"
+            >{planning ? '確認中…' : '何が作られるか確認'}</button>
+          </div>
         </div>
         <p className="text-[11px] text-ink-muted leading-relaxed">
-          公開する前に、さくら側で何が作成・更新・削除されるかを確認できます（この操作では何も変更しません）。
+          公開する前に、さくら側の状態と、何が作成・更新・削除されるかを確認できます
+          （どちらも何も変更しません）。
         </p>
+
+        {/* 公開できるかの確認結果。**駄目なものには「どうすればよいか」まで書く** */}
+        {preflight && (
+          <div className={`rounded-lg border p-3 space-y-2 ${preflight.canPublish ? 'border-line' : 'border-brand-red/60'}`}>
+            <p className={`text-xs font-semibold ${preflight.canPublish ? 'text-ink' : 'text-brand-red'}`}>
+              {preflight.canPublish ? '✅' : '⚠️'} {preflight.summary}
+            </p>
+            <ul className="space-y-1">
+              {preflight.checks.map(c => (
+                <li key={c.id} className="text-[11px] leading-relaxed flex gap-2">
+                  <span className="flex-none">{c.status === 'ok' ? '✅' : c.status === 'warn' ? '⚠️' : '❌'}</span>
+                  <span className="text-ink-secondary select-text">
+                    <span className="text-ink font-medium">{c.label}</span>　{c.note}
+                    {/* **直し方が分かっているなら、その場で押せるようにする。**
+                        以前は回復のボタンを「公開の失敗」に紐づけていたため、確認で
+                        分かっていても一度公開を押させる形だった（2026-08-14 Ryosuke 指摘）。 */}
+                    {c.fix === 'reset-registry' && (
+                      <button
+                        onClick={autoCreateRegistry}
+                        disabled={regCreating || !keyReady}
+                        className="ml-2 align-middle bg-sakura text-white rounded px-2 py-0.5 text-[11px] font-semibold hover:opacity-90 disabled:opacity-40"
+                      >{regCreating ? '設定し直しています…' : '↻ 設定し直す'}</button>
+                    )}
+                    {c.fix === 'ask-ai' && (
+                      <button
+                        onClick={() => {
+                          window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text: askAiAboutCheck(c) } }))
+                        }}
+                        className="ml-2 align-middle bg-sakura text-white rounded px-2 py-0.5 text-[11px] font-semibold hover:opacity-90"
+                      >AIに相談する</button>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {preflight.message && (
+              <p className="text-[11px] text-brand-red leading-relaxed select-text">{preflight.message}</p>
+            )}
+          </div>
+        )}
         {planError && (
           <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed break-all">{planError}</p>
         )}
@@ -913,6 +1020,71 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         {/* 「困ったときだけ現れる」導線。push が401、または別プロジェクトのレジストリを
             指しているときに main が hint を付けてくる。押すと ensureRegistry をやり直し、
             このプロジェクトのレジストリと push 用パスワードを整える。 */}
+        {/* 公開はできたが、アプリが起動しなかったとき。**ログは Koto から取れない**
+            （AppRun の公式APIにログ取得が無く、コンパネのモニタリングスイート連携でのみ
+            見られる）ので、場所へ案内し、AIに相談できるようにする（2026-08-14） */}
+        {opResult && !opResult.ok && opResult.hint === 'app-unhealthy' && (
+          <div className={`rounded-xl border ${recheck?.healthy ? 'border-brand-green/70' : 'border-brand-yellow/70'} bg-surface p-3 space-y-2`}>
+            {/* ── 「↻ 更新」（2026-08-14 Ryosuke 提案）───────────────────────────
+                起動の確認は48秒で打ち切る。**それを超えて起動するアプリは珍しくない**。
+                実機では公開URLが開けているのにこの警告が消えず、消す手立ては
+                「もう一度公開する」だけだった。公開はイメージを作り直す重い操作なので、
+                **確かめたいだけの人に払わせる代償として大きすぎる**。
+                ここでは状態を聞き直すだけにする（何も作らず、何も変えない）。 */}
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-xs font-semibold text-ink">
+                {recheck?.healthy
+                  ? '✅ アプリが動いています'
+                  : opResult.pending ? 'アプリの起動をまだ確認できていません' : 'アプリが起動しませんでした'}
+              </p>
+              <button
+                onClick={recheckHealth}
+                disabled={recheckBusy}
+                title="いま動いているかを、もう一度確かめます（何も作りません・何も変えません）"
+                className="flex-none text-xs text-ink-muted hover:underline disabled:opacity-50"
+              >{recheckBusy ? '確かめています…' : '↻ 更新'}</button>
+            </div>
+            {recheck?.healthy ? (
+              <p className="text-[11px] text-ink-secondary leading-relaxed">
+                起動に時間がかかっていただけのようです。公開URLを開いて確かめてください。
+              </p>
+            ) : (
+              <>
+                <p className="text-[11px] text-ink-secondary leading-relaxed">
+                  {opResult.pending
+                    ? '公開そのものは終わっています。起動に時間がかかっているだけのこともあるので、少し待ってから「↻ 更新」を押してみてください。それでも変わらないときは、AIに相談してみてください。'
+                    : '公開そのものは終わっています。プログラムが起動の途中で止まっている可能性が高いので、まずはAIに相談してみてください。'}
+                </p>
+                {recheck && (
+                  <p className="text-[11px] text-ink select-text break-words">
+                    {recheck.note}{recheck.detail ? `（${recheck.detail}）` : ''}
+                  </p>
+                )}
+                <div className="flex gap-2 flex-wrap">
+                  {opResult.askAi && (
+                    <button
+                      onClick={() => {
+                        window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text: opResult.askAi } }))
+                      }}
+                      className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                    >AIに調べてもらう</button>
+                  )}
+                  {opResult.logUrl && (
+                    <a
+                      href={opResult.logUrl}
+                      className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura"
+                    >さくらのコントロールパネルでログを見る ↗</a>
+                  )}
+                </div>
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  チャットに文面が入ります。<span className="font-semibold">ログをコピーして貼り付けてから</span>送信すると、
+                  原因がはっきりします。くわしいログは Koto からは取得できないため、
+                  右のボタンからコントロールパネルでご確認ください。
+                </p>
+              </>
+            )}
+          </div>
+        )}
         {opResult && !opResult.ok && opResult.hint === 'reset-registry' && (
           <div className="rounded-xl border border-sakura/50 bg-surface p-3 space-y-1.5">
             {/* **整ったらボタンは消す。** 出したままだと「効いていないのでは」と
@@ -1281,12 +1453,16 @@ function PlanView({ plan }: { plan: CloudPlan }) {
 // ── apply / teardown の結果表示 ──
 // detail は失敗時の生ログ（stderr要約等・診断用・所見12）。文言に混ぜず <details>「詳細を見る」で折りたたむ。
 // demoted=true（名前衝突/作成上限の親切カードが主役のケース・所見17）ではブロックごと折りたたみに降格する。
-function OpResultView({ result, demoted = false }: { result: { ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string }; demoted?: boolean }) {
+function OpResultView({ result, demoted = false }: { result: { ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; pending?: boolean }; demoted?: boolean }) {
   const copyText = [result.message, result.detail].filter(Boolean).join('\n')
+  // **「失敗しました」と言い切らない場合がある**（2026-08-14 Ryosuke 指摘）。
+  // 公開そのものは終わっていて、アプリの起動確認が48秒に間に合わなかっただけのとき、
+  // 実機ではサイトが開けていた。それを赤い「失敗」と書くのは事実に反する。
+  const pending = !result.ok && !!result.pending
   const body = (
-    <div className={`rounded-xl border p-3 ${result.ok ? 'border-brand-green/60' : 'border-brand-red/60'} bg-overlay space-y-1.5`}>
-      <p className={`text-xs font-semibold ${result.ok ? 'text-brand-green' : 'text-brand-red'}`}>
-        {result.ok ? '✅ 完了しました' : '⚠️ 失敗しました'}
+    <div className={`rounded-xl border p-3 ${result.ok ? 'border-brand-green/60' : pending ? 'border-brand-yellow/60' : 'border-brand-red/60'} bg-overlay space-y-1.5`}>
+      <p className={`text-xs font-semibold ${result.ok ? 'text-brand-green' : pending ? 'text-brand-yellow' : 'text-brand-red'}`}>
+        {result.ok ? '✅ 完了しました' : pending ? '⏳ 起動を確認できていません' : '⚠️ 失敗しました'}
       </p>
       {result.message && (
         <div className="flex items-start gap-1.5">
@@ -1432,7 +1608,7 @@ function PrereqChecklist({
 // ── 破壊操作の確認ダイアログ（やめる／実行 の2ボタン） ──
 function ConfirmDialog({
   confirm, busy, onCancel, onApply, onTeardown, onRename,
-  registryName, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry, placement,
+  registryName, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry, placement, progress,
 }: {
   confirm: Exclude<Confirm, null>
   busy: boolean
@@ -1447,6 +1623,15 @@ function ConfirmDialog({
   onChangeDeleteRegistry: (v: boolean) => void
   /** このプロジェクトの保存場所（用意していなければ null）。破棄で消えるものに関わる。 */
   placement: { bucket: string; prefix: string; shared: boolean } | null
+  /**
+   * いま何をしているか（最新の1行）。
+   *
+   * **この確認ダイアログが出ている間は、後ろの画面が描かれない**（早期 return）。
+   * 進捗の表示は後ろの画面にあったので、**公開の数分間、利用者には「実行中…」しか
+   * 見えていなかった**（2026-08-14 Ryosuke の問いで発覚）。いちばん知りたい時間に
+   * 何も出ていないのは、待たせているだけで不安を増やす。
+   */
+  progress: string | null
 }) {
   // 記録が無いレジストリは削除できない（registryDeletionTarget が「対象不明」を返す）。
   // チェックを出さないだけでなく、破棄の実行にも「削除しない」を渡す。そうしないと
@@ -1500,6 +1685,14 @@ function ConfirmDialog({
             </div>
           )}
         </div>
+        {/* **いま何をしているかを、ここに出す。** この画面が出ている間は後ろが
+            描かれないので、進捗を後ろに置いていると誰にも見えない（2026-08-14） */}
+        {busy && progress && (
+          <div className="rounded-lg border border-line bg-overlay px-3 py-2 flex items-center gap-2">
+            <span className="inline-block w-3.5 h-3.5 border-2 border-sakura border-t-transparent rounded-full animate-spin flex-none" />
+            <span className="text-xs text-ink-secondary leading-relaxed break-all">{progress}</span>
+          </div>
+        )}
         <div className="flex justify-between items-center">
           <button
             onClick={onCancel}
