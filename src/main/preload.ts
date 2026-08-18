@@ -243,7 +243,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 方式B: トークンは中央ストア（認証情報）から renderer が読んで引数で渡す。
     testConnection: (token: string) => ipcRenderer.invoke('hanamii:testConnection', token),
     listWorkspaces: (token: string) => ipcRenderer.invoke('hanamii:listWorkspaces', token),
-    publish: (projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }) => ipcRenderer.invoke('hanamii:publish', projectDir, opts),
+    publish: (projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null }; withStorage?: boolean }) => ipcRenderer.invoke('hanamii:publish', projectDir, opts),
+    // 古い鍵の片づけ（**動いたと確かめてから呼ぶこと**）。ほかの公開先の鍵には触れない。
+    cleanUpKeys: (opts: { projectName: string; keepId: string }) => ipcRenderer.invoke('hanamii:cleanUpKeys', opts),
     status: (projectId: string, token: string) => ipcRenderer.invoke('hanamii:status', projectId, token),
     // A-5: env/ヘルスチェックの変更を再公開（ビルドし直し）なしで反映する高速経路。
     restart: (projectId: string, opts: { token: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }) =>
@@ -256,6 +258,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   vercel: {
     // 方式B: トークン/チームIDは中央ストア（認証情報）から renderer が読んで引数で渡す。main には保存しない。
     testConnection: (token: string, teamId?: string) => ipcRenderer.invoke('vercel:testConnection', token, teamId),
+    // 公開する前の確認（何も作らず、何も送らない）。
+    preflight: (projectDir: string) => ipcRenderer.invoke('vercel:preflight', projectDir),
     // アップロード→デプロイ作成→READYまでポーリングを一括で行い、完了後に結果を返す。
     publish: (projectDir: string, opts: { token: string; teamId?: string; name: string }) =>
       ipcRenderer.invoke('vercel:publish', projectDir, opts),

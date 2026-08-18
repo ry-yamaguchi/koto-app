@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { runSecurityCheck, SecurityCheckResult } from '../securityCheck'
 import { getTargetProfile, isAutoPublishTarget } from '../targetProfiles'
 import StorageNotice from './StorageNotice'
-import { buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, detectInterruptedPublish, latestPublishedTarget, type PendingPublish } from '../publishStatus'
+import { withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE, buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, detectInterruptedPublish, latestPublishedTarget, type PendingPublish } from '../publishStatus'
 import { clearPublishPending } from '../publishPending'
 import { rsyncExcludeArgs } from '../../shared/publishExclude'
 import AppRunPanel from './AppRunPanel'
@@ -367,7 +367,12 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             const showMismatch = !!cur && cur !== 'local' && !isAutoPublishTarget(cur)
             return (
           <div className="space-y-3">
-            <PublishStatusBox publish={meta.publish} latestChangeAt={latestChangeAt} apprunLegacy={apprunLegacy} />
+            <PublishStatusBox
+              publish={meta.publish}
+              latestChangeAt={latestChangeAt}
+              apprunLegacy={apprunLegacy}
+              onForget={async t => { await saveMeta({ publish: withoutPublishTarget(meta.publish, t) as Meta['publish'] }) }}
+            />
             {showMismatch ? (
               <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4">
                 <p className="text-sm text-ink leading-relaxed">
@@ -505,12 +510,25 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
 
 // 「📡 このプロジェクトの公開状況」ボックス。publish.targets（＋レガシー救済）に1件以上あるときだけ表示する
 // （呼び出し側で行が無ければ何も描画しない＝return null）。
-function PublishStatusBox({ publish, latestChangeAt, apprunLegacy }: { publish: Meta['publish']; latestChangeAt: string | null; apprunLegacy: { createdAt: string | null } | null }) {
+function PublishStatusBox({ publish, latestChangeAt, apprunLegacy, onForget }: {
+  publish: Meta['publish']
+  latestChangeAt: string | null
+  apprunLegacy: { createdAt: string | null } | null
+  onForget: (t: PublishTargetKind) => Promise<void>
+}) {
   const rows = buildPublishStatusRows(publish, { apprunLegacy })
+  // **一度では消さない**（記録とはいえ、消すと戻せない）
+  const [confirming, setConfirming] = useState<PublishTargetKind | null>(null)
   if (rows.length === 0) return null
   return (
     <div className="rounded-xl border border-line bg-surface p-4 space-y-2">
       <p className="text-sm font-semibold text-ink">📡 このプロジェクトの公開状況</p>
+      <p className="text-[11px] text-ink-muted leading-relaxed">
+        キーを失くしたり作り直したりして Koto から操作できなくなっても、
+        <span className="text-ink-secondary">管理画面</span>から辿れます。
+        <span className="text-ink-secondary">記録を片づける</span>のは、この一覧から消すだけです
+        （<b className="text-ink">公開したもの自体は消えません</b>。先に「破棄」してください）。
+      </p>
       <ul className="space-y-1.5">
         {rows.map(row => {
           const stale = !row.dateUnknown && isStale(row.publishedAt, latestChangeAt)
@@ -530,6 +548,36 @@ function PublishStatusBox({ publish, latestChangeAt, apprunLegacy }: { publish: 
               {stale && (
                 <span className="block text-brand-yellow">⚠️ その後に変更あり（公開内容が古い可能性）</span>
               )}
+              {/* ── 外に生きているものへ辿り着けるようにする（2026-08-15 Ryosuke 指摘）──
+                  キーを失くす／作り直す／別のマシンへ移ると、Koto からは操作できなくなる。
+                  そのとき「公開済み」とだけ出して行き先を示さないと、**放置され課金が続く**。 */}
+              <span className="block mt-0.5">
+                <a href={PUBLISH_TARGET_CONSOLE[row.target]} className="text-ink-muted hover:text-sakura hover:underline">
+                  管理画面を開く ↗
+                </a>
+                {canForgetRow(row) && (
+                  confirming === row.target ? (
+                    <>
+                      {'　'}
+                      <button
+                        onClick={async () => { await onForget(row.target); setConfirming(null) }}
+                        className="text-brand-red hover:underline font-semibold"
+                      >この一覧から消す（公開したものは残ります）</button>
+                      {'　'}
+                      <button onClick={() => setConfirming(null)} className="text-ink-muted hover:underline">やめる</button>
+                    </>
+                  ) : (
+                    <>
+                      {'　'}
+                      <button
+                        onClick={() => setConfirming(row.target)}
+                        title="記録だけを消します。公開したもの自体は消えません"
+                        className="text-ink-muted hover:text-brand-red hover:underline"
+                      >記録を片づける</button>
+                    </>
+                  )
+                )}
+              </span>
             </li>
           )
         })}

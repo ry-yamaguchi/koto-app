@@ -23,8 +23,13 @@ export type StoragePermission = {
 }
 
 /** このプロジェクトの鍵に付ける名前。**他のプロジェクトのものを消さないための目印。** */
-export function permissionNameFor(projectName: string): string {
-  return `koto-${projectName}`
+export type StorageTarget = 'apprun' | 'hanamii'
+
+export function permissionNameFor(projectName: string, target: StorageTarget = 'apprun'): string {
+  // **apprun の名前は変えない。** すでに発行済みの鍵は `koto-<名前>` で、
+  // 片づけは名前の一致だけを見ている。変えると**現役の鍵が孤児になる**
+  // （誰も片づけられないまま残り、次の鍵と二重に生き続ける）。
+  return target === 'apprun' ? `koto-${projectName}` : `koto-${projectName}-${target}`
 }
 
 /**
@@ -41,9 +46,19 @@ export function permissionsToCleanUp(opts: {
   all: readonly StoragePermission[]
   projectName: string
   keepId: string | null
+  /**
+   * どの公開先の鍵を片づけるか（既定は apprun）。
+   *
+   * **公開先をまたいで消さない**（2026-08-15）。同じプロジェクトを AppRun と
+   * HANAMII の両方へ公開すると、鍵は公開先ごとに1本ずつ要る。名前を分けずに
+   * 片づけると、**AppRun へ公開した瞬間に HANAMII の鍵が消え、動いている
+   * アプリが 403 で落ちる**。名前は完全一致で見ているので、
+   * `koto-<名前>` と `koto-<名前>-hanamii` は互いに触れない。
+   */
+  target?: StorageTarget
 }): string[] {
   if (!opts.keepId) return []
-  const mine = permissionNameFor(opts.projectName)
+  const mine = permissionNameFor(opts.projectName, opts.target ?? 'apprun')
   return (opts.all ?? [])
     .filter(p => p && p.displayName === mine && String(p.id) !== String(opts.keepId))
     .map(p => String(p.id))

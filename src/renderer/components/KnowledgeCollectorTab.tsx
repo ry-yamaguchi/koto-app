@@ -1,6 +1,8 @@
 import React, { useState } from 'react'
 import { getSearchConfig } from '../aiTools'
 import { buildWebPageMarkdown, sanitizeFilename, WEB_FETCH_MAX_CHARS } from '../ragContext'
+import { setBaseline } from '../knowledgeBaseline'
+import { fingerprint } from '../../shared/freshness'
 
 // 🌐 Webから資料を作る（ナレッジコレクター・R3）。
 // 検索 → 選択（チェックボックス） → 取得＋Markdown整形 → プレビュー → アップロード＋ローカル控え、の一直線フロー。
@@ -138,6 +140,8 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
           filename,
           tags: [...userTags, 'web'],
         })
+        // **取り込んだページの指紋を控える**（更新の有無は、これと比べて判定する）
+        if (r.ok && r.document?.id) setBaseline(r.document.id, fingerprint(page.content))
         if (!r.ok) {
           errors.push(`「${page.title}」: ${r.error ?? 'アップロードに失敗しました'}`)
           continue

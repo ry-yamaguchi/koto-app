@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
+  withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE,
   buildPublishStatusRows,
   isStale,
   formatPublishedAt,
   parseApprunLegacy,
   detectInterruptedPublish,
   latestPublishedTarget,
-  withoutPublishTarget,
 } from '../src/renderer/publishStatus'
 
 describe('buildPublishStatusRows', () => {
@@ -277,5 +279,74 @@ describe('withoutPublishTarget（破棄したら記録からも消す）', () =>
     const rows = buildPublishStatusRows(next, {})
     expect(rows.map(r => r.target)).not.toContain('sakura-apprun')
     expect(rows.map(r => r.target)).toContain('hanamii')
+  })
+})
+
+// ── 公開したものへ辿り着けなくならない（2026-08-15 Ryosuke の実例）──────────
+// Vercel のトークンを失くしたら、Koto は「公開済み」と表示するだけで、
+// **そこから先へ行く道が無かった**（破棄も、記録を消すこともできない）。
+// 課金される公開先で同じことが起きると、放置がそのままお金になる。
+describe('キーが無くても片づけられる', () => {
+  it('公開先ごとに管理画面のURLがある', () => {
+    for (const t of ['hanamii', 'vercel', 'sakura-apprun', 'sakura-rental'] as const) {
+      expect(PUBLISH_TARGET_CONSOLE[t]).toMatch(/^https:\/\//)
+    }
+  })
+
+  it('★ 記録を片づけると、その行だけが消える', () => {
+    const publish = {
+      targets: {
+        vercel: { publishedAt: '2026-07-21T08:52:42.843Z', url: 'https://koto-test.vercel.app' },
+        hanamii: { publishedAt: '2026-08-01T00:00:00.000Z', url: 'https://x.hanamii.app' },
+      },
+    }
+    const next = withoutPublishTarget(publish, 'vercel')
+    expect(next.targets?.vercel).toBeUndefined()
+    expect(next.targets?.hanamii).toBeDefined()   // **ほかの公開先には触れない**
+    expect(buildPublishStatusRows(next).map(r => r.target)).toEqual(['hanamii'])
+  })
+
+  it('★ 片づけた行が、レガシー救済で戻ってこない', () => {
+    // hanamii は projectId があるだけでも行が作られる。消し残すと
+    // 「片づけたのに一覧に居る」＝効いていないように見える
+    const publish = { targets: { hanamii: { publishedAt: '2026-08-01T00:00:00.000Z', url: null } }, hanamii: { projectId: 'p1' } }
+    const next = withoutPublishTarget(publish, 'hanamii')
+    expect(buildPublishStatusRows(next)).toEqual([])
+  })
+
+  it('★ レンタルサーバも、古い手がかりごと消える', () => {
+    const publish = { targets: { 'sakura-rental': { publishedAt: '2026-08-01T00:00:00.000Z', url: 'https://x.sakura.ne.jp' } }, lastPublishedAt: '2026-08-01T00:00:00.000Z', host: 'x.sakura.ne.jp' }
+    const next = withoutPublishTarget(publish, 'sakura-rental')
+    expect(buildPublishStatusRows(next)).toEqual([])
+  })
+
+  it('AppRun の日時不明の行は、ここでは片づけない（消しても消えないため）', () => {
+    expect(canForgetRow({ target: 'sakura-apprun', dateUnknown: true })).toBe(false)
+    expect(canForgetRow({ target: 'sakura-apprun', dateUnknown: false })).toBe(true)
+    expect(canForgetRow({ target: 'vercel', dateUnknown: true })).toBe(true)
+  })
+})
+
+// ── 破棄できないものを、記録だけ片づけられる（2026-08-15 Ryosuke 指摘）──────
+// 「公開したもの一覧」からも片づけたい。キーを失くした・向こうで消した等で
+// **破棄できない**ことがあり、そのとき記録だけが残って幽霊が並ぶ。
+describe('公開したもの一覧からも片づけられる', () => {
+  const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf-8')
+
+  it('一覧に「記録を片づける」がある', () => {
+    const src = read('src/renderer/components/PublishedListModal.tsx')
+    expect(src).toContain('記録を片づける')
+    expect(src).toContain('clearPublishRecord')
+  })
+
+  it('★ 実体は消えないと、押す前に伝える', () => {
+    const src = read('src/renderer/components/PublishedListModal.tsx')
+    expect(src).toContain('実体は残ります')
+  })
+
+  it('★ 判断は1つ（同じ処理を二度書かない）', () => {
+    // forgetPublishTarget を作ってしまい withoutPublishTarget と重複していた（2026-08-15 統合）
+    const src = read('src/renderer/publishStatus.ts')
+    expect(src).not.toContain('forgetPublishTarget')
   })
 })

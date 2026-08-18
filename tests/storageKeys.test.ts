@@ -104,3 +104,36 @@ describe('公開の経路が、正しい順序で片づけている', () => {
     expect(before).toContain('health.ok')
   })
 })
+
+// ── 公開先をまたいで鍵を消さない（2026-08-15）────────────────────────────
+// 同じプロジェクトを AppRun と HANAMII の両方へ公開すると、鍵は公開先ごとに要る。
+// 名前を分けずに片づけると、**AppRun へ公開した瞬間に HANAMII の鍵が消え、
+// 動いているアプリが 403 で落ちる**（昨日の「古い鍵を先に消した」と同じ形）。
+describe('公開先ごとに鍵を分ける', () => {
+  it('AppRun の名前は変えない（発行済みの鍵を孤児にしない）', () => {
+    expect(permissionNameFor('data-test')).toBe('koto-data-test')
+    expect(permissionNameFor('data-test', 'apprun')).toBe('koto-data-test')
+  })
+
+  it('HANAMII は別の名前になる', () => {
+    expect(permissionNameFor('data-test', 'hanamii')).toBe('koto-data-test-hanamii')
+  })
+
+  it('★ AppRun の片づけが HANAMII の鍵に触れない', () => {
+    const all = [
+      { id: '1', displayName: 'koto-data-test' },          // AppRun の古い鍵
+      { id: '2', displayName: 'koto-data-test' },          // AppRun の現役
+      { id: '3', displayName: 'koto-data-test-hanamii' },  // **HANAMII の現役**
+    ]
+    expect(permissionsToCleanUp({ all, projectName: 'data-test', keepId: '2' })).toEqual(['1'])
+  })
+
+  it('★ HANAMII の片づけが AppRun の鍵に触れない', () => {
+    const all = [
+      { id: '1', displayName: 'koto-data-test' },
+      { id: '3', displayName: 'koto-data-test-hanamii' },
+      { id: '4', displayName: 'koto-data-test-hanamii' },
+    ]
+    expect(permissionsToCleanUp({ all, projectName: 'data-test', keepId: '4', target: 'hanamii' })).toEqual(['3'])
+  })
+})

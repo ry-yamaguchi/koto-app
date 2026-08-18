@@ -12,6 +12,9 @@ import {
   sanitizeProjectName,
 } from '../vercel/client'
 import type { IpcDeps } from './types'
+import { scanDataUsage } from '../dataLayer'
+import { judgeVercelFit } from '../../shared/vercelFit'
+import { summarizePreflight, sortChecks } from '../../shared/preflight'
 
 // デプロイ状態のポーリング設定。数秒間隔でREADY/ERRORまで待つ（タイムアウトあり）。
 const POLL_INTERVAL_MS = 3000
@@ -27,6 +30,41 @@ export function registerVercelHandlers(_deps: IpcDeps) {
     const r = await new VercelClient({ token, teamId }).testConnection()
     if (!r.ok) return r
     return { ok: true, status: r.status, message: r.username ? `接続できました（${r.username}）` : '接続できました' }
+  })
+
+  /**
+   * 公開する前の確認（2026-08-15）。**何も作らず、何も送りません。**
+   *
+   * Vercel の画面には折りたたみの注意書きしか無く、押すと**デプロイは成功する**。
+   * だが常駐サーバは起動しないので、**ソースが丸見えのページ**が公開される。
+   * 「成功と表示されながら壊れている」を防ぐ（AppRun の cloud:preflight と同じ考え）。
+   */
+  ipcMain.handle('vercel:preflight', async (_, projectDir: string) => {
+    try {
+      if (!projectDir) return { ok: false, message: 'プロジェクトが選ばれていません' }
+      let packageJson: unknown = null
+      try {
+        const p = path.join(projectDir, 'package.json')
+        if (fs.existsSync(p)) packageJson = JSON.parse(fs.readFileSync(p, 'utf-8'))
+      } catch {
+        // 壊れた package.json は「無い」として扱う（静的として通る）。
+        // ここで止めるほどの根拠が無く、Vercel 側のビルドで分かる
+        packageJson = null
+      }
+      const scan = scanDataUsage(projectDir)
+      let hasFiles = false
+      try { hasFiles = collectDeployFiles(projectDir).length > 0 } catch { hasFiles = false }
+      const checks = sortChecks(judgeVercelFit({
+        packageJson,
+        listens: scan.listens,
+        usesData: scan.usedBy,
+        hasFiles,
+      }))
+      const result = summarizePreflight(checks)
+      return { ok: true, canPublish: result.canPublish, summary: result.summary, checks }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
   })
 
   ipcMain.handle('vercel:publish', async (event, projectDir: string, opts: { token: string; teamId?: string; name: string }) => {

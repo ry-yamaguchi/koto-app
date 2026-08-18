@@ -313,7 +313,12 @@ interface Window {
       testConnection(token: string): Promise<{ ok: boolean; status?: number; message?: string }>
       listWorkspaces(token: string): Promise<{ ok: boolean; workspaces?: Array<{ id: string; name: string; role: string }>; message?: string }>
       // detail は失敗時の生API応答（JSON短縮・診断用。renderer側で折りたたみ表示する・所見11）。
-      publish(projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }): Promise<{ ok: boolean; projectId?: string | null; deploymentId?: string | null; message?: string; detail?: string }>
+      publish(projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null }; withStorage?: boolean }): Promise<{ ok: boolean; projectId?: string | null; deploymentId?: string | null; storagePermissionId?: string; storageProjectName?: string; message?: string; detail?: string }>
+      /**
+       * この公開先の古い鍵を片づける（**動いたと確かめてから呼ぶこと**）。
+       * ほかの公開先（AppRun）の鍵には触れない。
+       */
+      cleanUpKeys(opts: { projectName: string; keepId: string }): Promise<{ ok: boolean; deleted?: number; message?: string }>
       status(projectId: string, token: string): Promise<{ ok: boolean; url?: string | null; readyState?: string | null; errorCode?: string | null; runtime?: { status: string | null; detail: string | null; syncedAt: string | null }; message?: string }>
       // A-5: env/ヘルスチェックの変更を再公開（ビルドし直し）なしで反映する高速経路（PATCH /env・PUT /health-check → POST /restart）。
       // detail は失敗時の生API応答（診断用）。noop=true は HANAMII 側で変更がなく再起動が不要だった場合。
@@ -326,6 +331,17 @@ interface Window {
     // Vercel（海外PaaS）連携。トークン/チームIDは中央ストア（認証情報）から renderer が渡す（方式B）。
     vercel: {
       testConnection(token: string, teamId?: string): Promise<{ ok: boolean; status?: number; message?: string }>
+      /**
+       * 公開する前の確認（**何も作らず、何も送らない**）。
+       * `canPublish` が false なら、公開しても壊れると分かっている。
+       */
+      preflight(projectDir: string): Promise<{
+        ok: boolean
+        canPublish?: boolean
+        summary?: string
+        checks?: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' }[]
+        message?: string
+      }>
       // ファイルアップロード→デプロイ作成→READYまでのポーリングを main 側で一括して行い、完了後に結果を返す
       // （MVP: 途中経過は返さない。detail は失敗時の生API応答＝JSON短縮・診断用）。
       publish(projectDir: string, opts: { token: string; teamId?: string; name: string }): Promise<{ ok: boolean; deploymentId?: string | null; url?: string | null; readyState?: string | null; message?: string; detail?: string }>

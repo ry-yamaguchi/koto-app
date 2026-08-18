@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import SakuraLogo from './SakuraLogo'
 import { getDefaultModel } from '../usage'
-import { parseRagSettings, mergeRagSettings, type RagSettings } from '../ragContext'
+import { parseRagSettings, mergeRagSettings, buildWebPageMarkdown, WEB_FETCH_MAX_CHARS, type RagSettings } from '../ragContext'
 import KnowledgeCollectorTab from './KnowledgeCollectorTab'
 import KnowledgePacksTab from './KnowledgePacksTab'
+import { judgeFreshness, parseSourceMeta, sourcesDueForCheck, fingerprint, judgeUpdate } from '../../shared/freshness'
+import { setBaseline, getBaseline, pruneBaselines } from '../knowledgeBaseline'
 
 // 「📚 資料」モーダル：さくらのAI Engine RAG API を使った資料（ドキュメント）管理（R1）
 // ＋ このプロジェクトのチャットで資料を使うかの設定（R2・セクション④）
@@ -51,6 +53,15 @@ function formatDate(s: string | null): string {
 
 type TabId = 'library' | 'collector' | 'packs'
 
+/** 前回いつ「元のページ」を見に行ったか（資料ID → ISO）。開くたびに全部叩かないため。 */
+const CHECKED_KEY = 'koto.knowledge.lastCheckedAt'
+function loadLastChecked(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(CHECKED_KEY) ?? '{}') } catch { return {} }
+}
+function saveLastChecked(v: Record<string, string>): void {
+  try { localStorage.setItem(CHECKED_KEY, JSON.stringify(v)) } catch { /* 使えなくても機能は成立する */ }
+}
+
 export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, projectDir }: Props) {
   const [tab, setTab] = useState<TabId>('library')
   const [documents, setDocuments] = useState<RagDocument[]>([])
@@ -58,6 +69,18 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
   const [listError, setListError] = useState('')
   const [ideOnly, setIdeOnly] = useState(true)
   const [expandedError, setExpandedError] = useState<string | null>(null)
+  // ── 鮮度（2026-08-15 Ryosuke 提案）────────────────────────────────
+  // 資料は**取り込んだ時点のコピー**。3か月前のページも今日のページも同じ顔では、
+  // AI は古い情報を「いまの情報」として読む。**いつのものかを必ず見せる。**
+  /** 資料ID → 元のページを見た結果。 */
+  const [sourceState, setSourceState] = useState<Record<string, 'same' | 'changed' | 'checking' | 'no-baseline' | 'no-url' | 'fetch-failed'>>({})
+  /** 出典URLが見つからなかったときの、実際の本文の先頭（**推測で直さないため**の材料）。 */
+  const [sourceHead, setSourceHead] = useState<Record<string, string>>({})
+  const [refreshingId, setRefreshingId] = useState<string | null>(null)
+  /** 次の一覧読み込みのあと、間隔を待たずに全部確かめるか（「更新を確認」ボタン用）。 */
+  const forceCheckRef = useRef(false)
+  /** 更新のあった資料（全体を更新の対象）。 */
+  const changedIds = Object.entries(sourceState).filter(([, v]) => v === 'changed').map(([k]) => k)
 
   // 追加
   const [uploading, setUploading] = useState(false)
@@ -206,6 +229,135 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
     setEditTags(doc.tags.join(', '))
   }
 
+  /**
+   * 元のページを見に行って、中身が変わっていないかを確かめる。
+   *
+   * **何も書き換えない。** 変わっていたら「取り直せます」と伝えるだけ。
+   * 出どころは資料の本文（`- 出典URL:`）から読む。**別の記録を持たない**
+   * （持つと、資料を消したときに残ってずれる。今日の「記録だけ残る」と同じ轍）。
+   */
+  const checkSource = useCallback(async (doc: RagDocument): Promise<void> => {
+    setSourceState(prev => ({ ...prev, [doc.id]: 'checking' }))
+    try {
+      // 出どころ（URL）は資料の本文から読む
+      const got = await window.electronAPI.rag.get(apiKey, doc.id)
+      const stored = got.ok ? (got.document?.content ?? null) : null
+      const meta = parseSourceMeta(stored)
+      if (!meta.url) {
+        setSourceHead(prev => ({ ...prev, [doc.id]: String(stored ?? '').replace(/\s+/g, ' ').slice(0, 80) }))
+        setSourceState(prev => ({ ...prev, [doc.id]: 'no-url' }))
+        return
+      }
+      const page = await window.electronAPI.web.fetchPage(meta.url, { maxChars: WEB_FETCH_MAX_CHARS })
+      // ── 比べるのは Koto が取ってきたページどうし（2026-08-18）──────────
+      // 保存された本文と比べていたが、**保存して読み戻すと形が変わる**ため
+      // 当てにならなかった（同じ資料が「最新です」にも「更新されています」にも
+      // なった）。取り込んだときの指紋と、いまの指紋を比べる。
+      const verdict = judgeUpdate({ baseline: getBaseline(doc.id), nowText: page.content })
+      if (verdict === 'no-baseline') {
+        // **昔に取り込んだ資料は控えが無い。** 「更新されています」と言うのは
+        // 根拠のない断定なので言わない。いまの内容を基準にして、次から分かるようにする
+        setBaseline(doc.id, fingerprint(page.content))
+      }
+      setSourceState(prev => ({ ...prev, [doc.id]: verdict }))
+    } catch {
+      // 取りに行けないだけで「変わった」とは言わない（相手が落ちている・認証が要る等）
+      setSourceState(prev => ({ ...prev, [doc.id]: 'fetch-failed' }))
+    } finally {
+      const next = { ...loadLastChecked(), [doc.id]: new Date().toISOString() }
+      saveLastChecked(next)
+    }
+  }, [apiKey])
+
+  /**
+   * 取り直す（元のページを取得し直して、資料を差し替える）。
+   *
+   * さくらの AI Engine は**本文の差し替えができない**（書けるのは name と tags のみ）ので、
+   * **新しいものを入れてから、古いものを消す**。逆にすると、失敗したときに
+   * 資料が消えたまま残る（2026-08-14「古い鍵を先に消してアプリを壊した」と同じ形）。
+   */
+  const refreshDoc = useCallback(async (doc: RagDocument): Promise<void> => {
+    setRefreshingId(doc.id)
+    try {
+      const got = await window.electronAPI.rag.get(apiKey, doc.id)
+      const meta = parseSourceMeta(got.ok ? (got.document?.content ?? null) : null)
+      if (!meta.url) { setListError('この資料には出典URLが記録されていないため、取り直せません。'); return }
+      const page = await window.electronAPI.web.fetchPage(meta.url, { maxChars: WEB_FETCH_MAX_CHARS })
+      const markdown = buildWebPageMarkdown(
+        { title: doc.name.replace(/\.md$/, ''), url: page.url || meta.url, content: page.content },
+        new Date(),
+      )
+      const up = await window.electronAPI.rag.upload(apiKey, {
+        content: markdown,
+        filename: doc.name.endsWith('.md') ? doc.name : `${doc.name}.md`,
+        tags: doc.tags,
+      })
+      if (!up.ok) { setListError(up.error ?? '取り直しに失敗しました'); return }
+      // **新しいものが入ってから、古いものを消す**
+      await window.electronAPI.rag.delete(apiKey, doc.id)
+      // **押した結果を見せる。** 取り直したのに何も変わらないと、効いたのか分からない
+      // （2026-08-15 Ryosuke 指摘）。新しい資料には「最新の内容です」を付ける
+      const newId = up.document?.id ?? null
+      // **取り込んだページそのものの指紋を控える。** これが次回の比較の基準になる
+      if (newId) setBaseline(newId, fingerprint(page.content))
+      setSourceState(prev => {
+        const n = { ...prev }
+        delete n[doc.id]
+        if (newId) n[newId] = 'same'
+        return n
+      })
+      if (newId) {
+        // 取り直した直後に、また確認しに行かないようにする
+        saveLastChecked({ ...loadLastChecked(), [newId]: new Date().toISOString() })
+      }
+      await load()
+    } catch (e: any) {
+      setListError(e?.message ?? String(e))
+    } finally {
+      setRefreshingId(null)
+    }
+  }, [apiKey, load])
+
+  /**
+   * 更新のあった資料を、まとめて最新にする（2026-08-18 Ryosuke 提案）。
+   *
+   * **1件ずつ順に**行う（まとめて投げると、どこで失敗したか分からなくなる）。
+   * 途中で失敗しても、そこまでに終わったものは有効なので続ける。
+   */
+  const refreshAll = useCallback(async () => {
+    const targets = documents.filter(d => sourceState[d.id] === 'changed')
+    for (const d of targets) {
+      await refreshDoc(d)
+    }
+  }, [documents, sourceState, refreshDoc])
+
+  // **押さなくても確かめる**（2026-08-15 Ryosuke 提案「起動時に日付などをみて更新ができるとよい」）。
+  // ただし**開くたびに全部は叩かない**（相手のサイトに負担をかける）。前回から時間が経った
+  // ものを数件だけ。取り直しは**必ず利用者が押してから**（勝手に差し替えない）。
+  useEffect(() => {
+    // 消えた資料の控えは捨てる（残すと際限なく溜まる）
+    if (documents.length > 0) pruneBaselines(documents.map(d => d.id))
+    const web = documents.filter(d => d.status === 'available' && d.tags.includes('web'))
+    if (web.length === 0) return
+    // 明示的に押されたときは、間隔を待たず**全部**確かめる（押したのに何も
+    // 起きないのはおかしい・2026-08-15 Ryosuke 指摘）
+    const forced = forceCheckRef.current
+    forceCheckRef.current = false
+    const due = forced
+      ? web
+      : sourcesDueForCheck({ docs: web, lastCheckedAt: loadLastChecked(), now: new Date() })
+    let cancelled = false
+    ;(async () => {
+      for (const d of due) {
+        if (cancelled) return
+        await checkSource(d)
+      }
+    })()
+    return () => { cancelled = true }
+    // documents が入れ替わったときだけ走らせる（checkSource は apiKey にのみ依存）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documents])
+
   const saveEdit = async () => {
     if (!editingId) return
     setSavingEdit(true)
@@ -312,11 +464,24 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
               <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-ink">① 登録済みの資料</h3>
-                  <button
-                    onClick={load}
-                    disabled={loading}
-                    className="flex-none text-xs text-ink-secondary border border-line rounded-md px-2 py-1 hover:border-sakura disabled:opacity-40"
-                  >↻ 再読み込み</button>
+                  {/* ── 全体と個別で役割を分ける（2026-08-18 Ryosuke 指摘）──────────
+                      同じ「更新を確認」が2箇所にあると、どちらが何をするのか分からない。
+                      **全体＝確認と一括更新／個別＝その資料の更新**にする。 */}
+                  {changedIds.length > 0 ? (
+                    <button
+                      onClick={refreshAll}
+                      disabled={loading || refreshingId !== null}
+                      title="更新のあった資料を、まとめて最新の内容にします"
+                      className="flex-none text-xs font-semibold text-white sakura-gradient rounded-md px-2.5 py-1 hover:opacity-90 disabled:opacity-40"
+                    >{refreshingId ? '更新しています…' : `⬆ 全体を更新（${changedIds.length}件）`}</button>
+                  ) : (
+                    <button
+                      onClick={() => { forceCheckRef.current = true; setSourceState({}); void load() }}
+                      disabled={loading || refreshingId !== null}
+                      title="Web から作った資料について、元のページが更新されていないかをまとめて確かめます"
+                      className="flex-none text-xs text-ink-secondary border border-line rounded-md px-2 py-1 hover:border-sakura disabled:opacity-40"
+                    >↻ 更新を確認</button>
+                  )}
                 </div>
                 <label className="flex items-center gap-2 text-xs text-ink-secondary cursor-pointer">
                   <input type="checkbox" checked={ideOnly} onChange={e => setIdeOnly(e.target.checked)} />
@@ -395,6 +560,44 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                               {expandedError === doc.id && doc.errorMessage && (
                                 <p className="text-[11px] text-ink bg-surface border border-line rounded-lg px-2 py-1.5 select-text break-all">{doc.errorMessage}</p>
                               )}
+                              {/* ── 鮮度（2026-08-15）────────────────────────────────
+                                  資料は**取り込んだ時点のコピー**。いつのものかを必ず見せる。
+                                  「元が変わったか」は取りに行かないと分からないので、
+                                  分かったときだけ言う（分からないものを分かったように見せない）。 */}
+                              {(() => {
+                                const fresh = judgeFreshness({ fetchedAt: doc.createdAt, now: new Date() })
+                                const st = sourceState[doc.id]
+                                const isWeb = doc.tags.includes('web')
+                                // **普段は静かに、気にすべきときだけ目立たせる。**
+                                // 何でも色を付けると、本当に見てほしいものが埋もれる
+                                const note =
+                                  st === 'checking' ? { text: '元のページを確認中…', warn: false }
+                                  : st === 'changed' ? { text: '🔄 元のページが更新されています', warn: true }
+                                  : st === 'same' ? { text: '✅ 元のページと同じ内容です（最新です）', warn: false }
+                                  : st === 'no-baseline' ? { text: '取り込んだときの内容が控えられていないため、更新の有無は分かりません（いまの内容を基準にしました）', warn: false }
+                                  : st === 'no-url' ? { text: `出典URLが記録されていないため、確認できません（本文の先頭: ${sourceHead[doc.id] ?? '—'}）`, warn: false }
+                                  : st === 'fetch-failed' ? { text: '元のページに届きませんでした', warn: false }
+                                  : null
+                                return (
+                                  <div className="flex items-baseline gap-2 flex-wrap text-[11px]">
+                                    <span className={fresh.level === 'stale' ? 'text-brand-yellow' : 'text-ink-muted'}>
+                                      {fresh.label}
+                                      {fresh.level === 'stale' && '（内容が古いかもしれません）'}
+                                    </span>
+                                    {note && (
+                                      <span className={note.warn ? 'text-brand-yellow font-medium' : 'text-ink-muted'}>{note.text}</span>
+                                    )}
+                                    {isWeb && st === 'changed' && (
+                                      <button
+                                        onClick={() => refreshDoc(doc)}
+                                        disabled={refreshingId !== null}
+                                        className="text-sakura font-medium hover:underline disabled:opacity-40"
+                                        title="元のページの最新の内容で、この資料を作り直します"
+                                      >{refreshingId === doc.id ? '更新しています…' : '更新'}</button>
+                                    )}
+                                  </div>
+                                )
+                              })()}
                               <div className="flex items-center gap-3 pt-0.5">
                                 <button onClick={() => startEdit(doc)} className="text-[11px] font-medium text-sakura hover:underline">名前を変更 / タグを編集</button>
                                 <button onClick={() => setPendingDelete(doc)} className="text-[11px] font-medium text-brand-red hover:underline">削除</button>

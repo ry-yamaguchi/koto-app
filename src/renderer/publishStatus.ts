@@ -15,6 +15,21 @@ export const PUBLISH_TARGET_LABEL: Record<PublishTargetKind, string> = {
   vercel: '▲ Vercel',
 }
 
+/**
+ * 公開先の管理画面（2026-08-15 Ryosuke 指摘）。
+ *
+ * **キーが無くても、外に生きているものへ辿り着けるようにする。** キーを失くす／
+ * 作り直す／別のマシンへ移ると、Koto からは操作できなくなる。そのとき
+ * 「公開済み」とだけ表示して行き先を示さないと、**放置され、課金が続く**。
+ * URL はコード内で既に使っているものを流用する（推測しない・掟1）。
+ */
+export const PUBLISH_TARGET_CONSOLE: Record<PublishTargetKind, string> = {
+  hanamii: 'https://hanamii.jp/',
+  'sakura-apprun': 'https://secure.sakura.ad.jp/cloud/apprun/',
+  'sakura-rental': 'https://secure.sakura.ad.jp/rs/cp/',
+  vercel: 'https://vercel.com/dashboard',
+}
+
 export interface PublishTargetRecord {
   publishedAt?: string | null
   url?: string | null
@@ -208,5 +223,29 @@ export function withoutPublishTarget(
   const base = publish ?? {}
   const targets = { ...(base.targets ?? {}) }
   delete targets[target]
-  return { ...base, targets }
+  const next: PublishMeta = { ...base, targets }
+  // ── 行を復活させる手がかりも一緒に消す（2026-08-15）──────────────────
+  // buildPublishStatusRows は、targets に無くても
+  //   ・hanamii.projectId があれば hanamii の行
+  //   ・lastPublishedAt + host があればレンタルサーバの行
+  // を**作り直す**（古いプロジェクトの救済）。消し残すと、片づけたのに一覧へ
+  // 戻ってきて「効いていない」ように見える。
+  // 破棄の導線（📡 公開したもの一覧）はここしか通らないので、ここで消す。
+  if (target === 'hanamii') next.hanamii = { ...(base.hanamii ?? {}), projectId: null }
+  if (target === 'sakura-rental') {
+    next.lastPublishedAt = undefined
+    next.host = undefined
+  }
+  return next
+}
+
+/**
+ * その行を「片づける」ことができるか（純関数）。
+ *
+ * AppRun の日時不明の行は `.sakura-cloud/state.json`（構築の記録）から作られており、
+ * **ここを消しても消えない**。あちらは「破棄」で扱うものなので、片づけの対象にしない
+ * （押しても何も起きないボタンを出さない）。
+ */
+export function canForgetRow(row: Pick<PublishStatusRow, 'target' | 'dateUnknown'>): boolean {
+  return !(row.target === 'sakura-apprun' && row.dateUnknown)
 }

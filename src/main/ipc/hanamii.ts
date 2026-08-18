@@ -6,6 +6,7 @@ import * as fs from 'fs'
 import { execFile } from 'child_process'
 import { HanamiiClient, extractProjectIds, extractProjectStatus, extractLogs, normalizeHealthCheck, hanamiiErrorMessage, type HanamiiEnv, type HanamiiHealthCheck, type HanamiiResult } from '../hanamii/client'
 import { detectEnvKeysInProject } from '../envDetect'
+import { issueStorageEnvFor, cleanUpOldKeysFor } from '../cloud/storageForTarget'
 import type { IpcDeps } from './types'
 import { zipExcludePatterns } from '../../shared/publishExclude'
 
@@ -104,7 +105,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     const workspaces = Array.isArray(raw) ? raw.map((w: any) => ({ id: String(w.id), name: String(w.name ?? w.id), role: String(w.role ?? '') })) : []
     return { ok: true, workspaces }
   })
-  ipcMain.handle('hanamii:publish', async (_, projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: HanamiiHealthCheck }) => {
+  ipcMain.handle('hanamii:publish', async (_, projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: HanamiiHealthCheck; withStorage?: boolean }) => {
     // 失敗時の生応答（JSON短縮・診断用）。message には連結せず detail フィールドで返し、renderer 側が
     // 折りたたみ（詳細を見る）で表示する（所見11: 生JSON連結の修正。生JSONは過去に原因究明で
     // 役立った実績があるため、捨てずに折りたたみとして残す）。
@@ -156,9 +157,31 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       }
       const checkId = result?.checkId ?? (chk.data as any)?.checkId
       if (!checkId) return { ok: false, message: '検証結果(checkId)を取得できませんでした。', detail: dbg(chk.data) }
-      const envs = Array.isArray(opts.envs)
+      let envs = Array.isArray(opts.envs)
         ? opts.envs.filter(e => e && typeof e.key === 'string' && e.key.trim()).map(e => ({ key: e.key.trim(), value: e.value ?? '', type: e.type ?? 'plain' as const }))
         : undefined
+      // ── データの保存を持っていく（2026-08-15）────────────────────────
+      // データはオブジェクトストレージにあり、**計算とは別の場所**にある。
+      // 鍵を発行して環境変数で渡せば、AppRun で作ったデータをそのまま読める。
+      // **シークレットはここ（main）で受け取り、そのまま HANAMII へ渡し切る。**
+      // renderer には渡さず、ディスクにも書かない（掟4）。
+      let storagePermissionId: string | null = null
+      let storageProjectName = ''
+      if (opts.withStorage) {
+        const st = await issueStorageEnvFor({ projectDir, target: 'hanamii' })
+        if (!st.ok) {
+          // 「保存場所が無い」だけなら黙って続ける（使っていないアプリもある）
+          if (st.reason === 'error') return { ok: false, message: st.message }
+        } else {
+          storagePermissionId = st.permissionId
+          storageProjectName = st.projectName
+          const storageEnvs = st.envs.map(e => ({ key: e.key, value: e.value, type: (e.secret ? 'secret' : 'plain') as 'plain' | 'secret' }))
+          // 利用者が同じ名前を手で入れていたら、**そちらを優先しない**
+          // （こちらは今この瞬間に発行した鍵で、手入力は古い可能性がある）
+          const names = new Set(storageEnvs.map(e => e.key))
+          envs = [...(envs ?? []).filter(e => !names.has(e.key)), ...storageEnvs]
+        }
+      }
       const healthCheck = opts.healthCheck ? normalizeHealthCheck(opts.healthCheck) : undefined
       let dep: HanamiiResult
       if (opts.projectId) {
@@ -185,7 +208,13 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       }
       if (!dep.ok) return { ok: false, message: `公開に失敗しました（HTTP ${dep.status}）${reason(dep.data)}`, detail: dbg(dep.data) }
       const ids = extractProjectIds(dep.data)
-      return { ok: true, projectId: opts.projectId ?? ids.projectId, deploymentId: ids.deploymentId }
+      return {
+        ok: true,
+        projectId: opts.projectId ?? ids.projectId,
+        deploymentId: ids.deploymentId,
+        // 片づけは**動いたと確かめてから**なので、ここではまだ消さない（下の hanamii:cleanUpKeys）
+        ...(storagePermissionId ? { storagePermissionId, storageProjectName } : {}),
+      }
     } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
   })
   ipcMain.handle('hanamii:status', async (_, projectId: string, token: string) => {
@@ -196,6 +225,25 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     const s = extractProjectStatus(r.data)
     return { ok: true, url: s.url, readyState: s.readyState, errorCode: s.errorCode, runtime: s.runtime }
   })
+  /**
+   * この公開先の古い鍵を片づける（2026-08-15）。
+   *
+   * **動いたと確かめてから呼ぶこと。** デプロイの応答が返っても新しいコンテナは
+   * まだ立ち上がっておらず、その間に古い鍵を消すと**動いているアプリが 403 で落ちる**
+   * （2026-08-14 に AppRun で実際に起きた）。
+   * ほかの公開先（AppRun）の鍵には触れない（名前で分けてある）。
+   */
+  ipcMain.handle('hanamii:cleanUpKeys', async (_, opts: { projectName: string; keepId: string }) => {
+    try {
+      if (!opts?.projectName || !opts?.keepId) return { ok: true, deleted: 0 }
+      const r = await cleanUpOldKeysFor({ projectName: opts.projectName, target: 'hanamii', keepId: opts.keepId })
+      return { ok: true, deleted: r.deleted }
+    } catch (e: any) {
+      // 片づけに失敗しても公開は成立している
+      return { ok: false, deleted: 0, message: e?.message ?? String(e) }
+    }
+  })
+
   ipcMain.handle('hanamii:logs', async (_, token: string, projectId: string, opts?: { limit?: number; since?: string }) => {
     if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
     if (!projectId) return { ok: false, message: 'プロジェクトIDがありません' }

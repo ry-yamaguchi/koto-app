@@ -15,6 +15,7 @@ import fs from 'fs'
 import path from 'path'
 import { app } from 'electron'
 import { usesDataLayer, writesFilesDirectly, DATA_LAYER_FILE } from '../shared/objectStorage'
+import { serverListens } from '../shared/vercelFit'
 
 /** 走査を打ち切る条件（envDetect.ts と同じ考え方）。 */
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'out', '.koto-data', '.sakuraide', '.sakuraide-backup', '.sakura-cloud', 'vendor', '__pycache__'])
@@ -37,12 +38,20 @@ export type DataLayerScan = {
   usedBy: string[]
   /** 自分でファイルに書き込んでいるファイル（相対パス）。**静かに壊れる形。** */
   writesFiles: string[]
+  /**
+   * 自分でポートを待ち受けているファイル（相対パス）。
+   *
+   * Vercel の確認で使う（2026-08-15）。**歩き回る処理を二つ持たない**ため、
+   * ここで一緒に集める（同じファイルを二度読まない）。
+   */
+  listens: string[]
 }
 
 /** プロジェクトを走査して、データの扱いを調べる。 */
 export function scanDataUsage(projectDir: string): DataLayerScan {
   const usedBy: string[] = []
   const writesFiles: string[] = []
+  const listens: string[] = []
   let scanned = 0
   const walk = (dir: string, depth: number): void => {
     if (depth > 8 || scanned >= MAX_FILES) return
@@ -66,10 +75,12 @@ export function scanDataUsage(projectDir: string): DataLayerScan {
       const rel = path.relative(projectDir, full)
       if (usesDataLayer(text)) usedBy.push(rel)
       else if (writesFilesDirectly(text)) writesFiles.push(rel)
+      // **これは別の観点**（データの扱いではなく起動の形）なので else にしない
+      if (serverListens(text)) listens.push(rel)
     }
   }
   walk(projectDir, 0)
-  return { usedBy, writesFiles }
+  return { usedBy, writesFiles, listens }
 }
 
 /**

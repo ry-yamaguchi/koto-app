@@ -2,6 +2,8 @@ import React, { useState } from 'react'
 import { RAG_PACKS, packTotalChars, formatApproxChars, packTags, estimatePackCostPerTurnYen, type RagPack } from '../ragPacks'
 import { buildWebPageMarkdown, sanitizeFilename, WEB_FETCH_MAX_CHARS, CHUNK_MAX_CHARS, RAG_TOP_K } from '../ragContext'
 import { getDefaultModel, modelLabel } from '../usage'
+import { setBaseline } from '../knowledgeBaseline'
+import { fingerprint } from '../../shared/freshness'
 
 // 📚 さくらの資料パック（roadmap.md N-2）。
 // さくら公式ドキュメントの既定URLセット（ragPacks.ts）を「取り込む」ボタン一つで📚資料に一括登録する。
@@ -74,6 +76,8 @@ export default function KnowledgePacksTab({ apiKey, onUploaded }: Props) {
           filename: `${sanitizeFilename(title)}.md`,
           tags: packTags(pack.id),
         })
+        // **取り込んだページの指紋を控える**（更新の有無は、これと比べて判定する）
+        if (r.ok && r.document?.id) setBaseline(r.document.id, fingerprint(fetched.content))
         if (!r.ok) throw new Error(r.error ?? 'アップロードに失敗しました')
         successCount += 1
         setPackState(pack.id, s => ({ ...s, results: s.results.map(res => res.url === page.url ? { ...res, status: 'ok' as const } : res) }))

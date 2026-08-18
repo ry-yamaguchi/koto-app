@@ -171,6 +171,31 @@ export default function HanamiiPanel({ projectDir, onOpenCredentials }: Props) {
     }
   }, [loadWorkspaces])
 
+  // ── データの保存を持っていく（2026-08-15）──────────────────────────
+  // データはオブジェクトストレージにあり、**計算とは別の場所**にある。
+  // 鍵を発行して環境変数で渡せば、AppRun で作ったデータをそのまま読める。
+  const [placement, setPlacement] = useState<{ bucket: string; prefix: string } | null>(null)
+  const [usesData, setUsesData] = useState(false)
+  const [withStorage, setWithStorage] = useState(true)
+  /** 片づけ待ちの鍵。**動いたと確かめてから**消す（先に消すと動いているアプリが落ちる）。 */
+  const [pendingKeyCleanup, setPendingKeyCleanup] = useState<{ projectName: string; keepId: string } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [pl, scan] = await Promise.all([
+          window.electronAPI.storage.placement(projectDir),
+          window.electronAPI.storage.scan(projectDir),
+        ])
+        if (cancelled) return
+        setPlacement(pl.ok && pl.placement ? { bucket: pl.placement.bucket, prefix: pl.placement.prefix } : null)
+        setUsesData(!!(scan as any)?.usedBy?.length)
+      } catch { /* 分からなければ出さない */ }
+    })()
+    return () => { cancelled = true }
+  }, [projectDir])
+
   const startPolling = useCallback((pid: string, tk: string) => {
     if (pollRef.current) window.clearInterval(pollRef.current)
     let ticks = 0
@@ -186,6 +211,14 @@ export default function HanamiiPanel({ projectDir, onOpenCredentials }: Props) {
             const m = await readMeta()
             const prevAt = m.publish?.targets?.hanamii?.publishedAt ?? new Date().toISOString()
             await saveHanamiiMeta({}, { publishedAt: prevAt, url: r.url })
+          }
+          // **動いたと確かめてから、古い鍵を片づける**（2026-08-14 の教訓）。
+          // 起動に失敗したときは残す（前の版が動き続けられるように）。
+          if (r.readyState === 'READY') {
+            setPendingKeyCleanup(prev => {
+              if (prev) void window.electronAPI.hanamii.cleanUpKeys(prev).catch(() => {})
+              return null
+            })
           }
         }
       }
@@ -267,9 +300,13 @@ export default function HanamiiPanel({ projectDir, onOpenCredentials }: Props) {
       // API呼び出しが成功/失敗いずれで終わっても finally で必ず消す。
       await markPublishPending(projectDir, 'hanamii')
       try {
-        const r = await window.electronAPI.hanamii.publish(projectDir, { token, workspaceId, projectId: projectId ?? undefined, name, envs: sendEnvs, healthCheck })
+        const r = await window.electronAPI.hanamii.publish(projectDir, { token, workspaceId, projectId: projectId ?? undefined, name, envs: sendEnvs, healthCheck, withStorage: withStorage && !!placement })
         setPublishing(false)
         if (!r.ok) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? ''); setStatus(null); return }
+        // 片づけは動作確認のあと（ここではまだ消さない）
+        if (r.storagePermissionId && r.storageProjectName) {
+          setPendingKeyCleanup({ projectName: r.storageProjectName, keepId: r.storagePermissionId })
+        }
         const pid = r.projectId ?? projectId
         if (pid) {
           setProjectId(pid)
@@ -538,6 +575,38 @@ export default function HanamiiPanel({ projectDir, onOpenCredentials }: Props) {
                 : '公開に失敗する場合、下に表示される代替名の提案からワンクリックで変更できます。'}
             </p>
           </div>
+          {/* ── データの保存を持っていく（2026-08-15）──────────────────────
+              データはオブジェクトストレージにあり、**計算とは別の場所**にある。
+              だから公開先を変えても、同じデータをそのまま読める。
+              **何が持っていかれるのかを見せる**（黙って鍵を配らない）。 */}
+          {placement && (
+            <div className="rounded-lg border border-line bg-overlay p-3 space-y-1.5">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={withStorage}
+                  onChange={e => setWithStorage(e.target.checked)}
+                  disabled={busy}
+                  className="mt-0.5 accent-sakura"
+                />
+                <span className="text-[11px] text-ink-secondary leading-relaxed">
+                  <span className="text-ink font-medium">💾 データの保存を持っていく</span>
+                  <br />
+                  保存場所 <span className="font-mono">{placement.bucket}</span>
+                  {placement.prefix && <span className="font-mono"> / {placement.prefix}</span>}
+                  {' '}を読み書きできるようにします（公開のたびに新しい鍵を発行します）。
+                  <b className="text-ink"> AppRun と同じデータ</b>を見るので、
+                  片方で消したものは、もう片方からも消えます。
+                </span>
+              </label>
+              {!usesData && (
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  ※ このアプリは、いまのところデータの保存（koto-data）を使っていないようです。
+                </p>
+              )}
+            </div>
+          )}
+
           <button
             onClick={() => publish()}
             disabled={busy || !workspaceId}

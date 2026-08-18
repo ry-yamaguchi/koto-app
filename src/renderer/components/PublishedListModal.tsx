@@ -56,6 +56,9 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
     } catch { /* 読めなくても破棄はできる（消えるものが増えるわけではない） */ }
   }
 
+  /** 記録だけを片づける確認中の行（**実体は消えない**ので、必ず1枚挟む）。 */
+  const [forgetting, setForgetting] = useState<string | null>(null)
+
   const reload = useCallback(async (ws?: string) => {
     const dir = ws ?? workspace ?? await getWorkspaceDir()
     const r = await window.electronAPI.fs.publishedRecords(dir)
@@ -234,6 +237,31 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                           className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 disabled:opacity-40 whitespace-nowrap"
                           title="公開を止めて、作られたものを削除します"
                         >{busyKey === `${e.dir}-${e.target}` ? '破棄中…' : '🗑 破棄'}</button>
+                      )}
+                      {/* ── 記録だけを片づける（2026-08-15 Ryosuke 指摘）──────────────
+                          キーを失くした・向こうで消した等で**破棄できない**ことがある。
+                          そのとき記録だけが残り続け、この一覧に幽霊が並ぶ。
+                          **実体は消えない**ので、押す前にそう伝える。 */}
+                      {forgetting === `${e.dir}-${e.target}` ? (
+                        <>
+                          <button
+                            onClick={async () => {
+                              try { await clearPublishRecord(e.dir, e.target) } finally { setForgetting(null); await reload() }
+                            }}
+                            className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 whitespace-nowrap"
+                            title="この一覧から消すだけです。公開したもの自体は消えません"
+                          >記録だけ消す（実体は残ります）</button>
+                          <button
+                            onClick={() => setForgetting(null)}
+                            className="text-[11px] text-ink-muted hover:text-ink whitespace-nowrap"
+                          >やめる</button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => setForgetting(`${e.dir}-${e.target}`)}
+                          className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura whitespace-nowrap"
+                          title="記録だけを消します。公開したもの自体は消えません（先に「破棄」してください）"
+                        >記録を片づける</button>
                       )}
                     </div>
                   </div>
