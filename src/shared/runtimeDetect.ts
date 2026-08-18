@@ -48,17 +48,11 @@ export function detectRuntime(opts: { packageJson: unknown | null; fileNames: re
   if (!pkg || typeof pkg !== 'object') return { kind: 'static' }
   const p = pkg as Record<string, unknown>
 
-  // **依存パッケージがあると動かせない。** node_modules を入れる手段がまだ無い
-  const deps = p.dependencies
-  const depNames = deps && typeof deps === 'object' ? Object.keys(deps as object) : []
-  if (depNames.length > 0) {
-    return {
-      kind: 'unsupported',
-      reason: `このアプリは外部のライブラリ（${depNames.slice(0, 3).join('、')}${depNames.length > 3 ? ' ほか' : ''}）を使っています。`
-        + 'いまの公開方法では、ライブラリを一緒に持っていけないため動きません。'
-        + 'ライブラリを使わない作りに直してもらうか、公開先を変えてください。',
-    }
-  }
+  // ── 依存ライブラリは持っていける（改善案 1-5・2026-08-18）──────────────
+  // 以前はここで断っていた（node_modules を入れる手段が無かった）。いまは
+  // **手元で用意して層に含める**（main/cloud/npmInstall.ts）。
+  // ただし**その場で機械語に翻訳される部品**は Linux で動かないので、
+  // 入れたあとに見つけて断る（判断は shared/deps.ts）。ここでは分からない。
 
   // 起動するファイルを決める: scripts.start → main → よくある名前
   const scripts = p.scripts && typeof p.scripts === 'object' ? (p.scripts as Record<string, unknown>) : {}

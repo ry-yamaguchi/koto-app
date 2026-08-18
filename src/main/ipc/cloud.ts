@@ -21,6 +21,7 @@ import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapt
 import { buildRef, dockerAvailable, buildImage, loginRegistry, pushImage } from '../cloud/docker'
 import { builderAvailable, buildAndPush } from '../cloud/imageBuild'
 import { detectRuntime, type RuntimeChoice } from '../../shared/runtimeDetect'
+import { planDependencies, installTimeNote } from '../../shared/deps'
 import type { IpcDeps } from './types'
 
 // ── さくらのクラウド連携（段階1＝基盤）。cloud: 名前空間 ──
@@ -114,6 +115,16 @@ function detectRuntimeFor(contextAbs: string): RuntimeChoice {
     fileNames = fs.readdirSync(contextAbs, { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name)
   } catch { fileNames = [] }
   return detectRuntime({ packageJson, fileNames })
+}
+
+/** プロジェクト直下の package.json を読む（無い・壊れていれば null）。 */
+function readProjectPackageJson(contextAbs: string): unknown {
+  try {
+    const p = path.join(contextAbs, 'package.json')
+    return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -858,6 +869,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
             runtime: choice.kind,
             ...(choice.kind === 'node' ? { entry: choice.entry } : {}),
             registryAuth: { server, user: regCreds.user, password: regCreds.password },
+            // ライブラリの用意は数分かかることがある。**黙って待たせない**
+            onProgress: progress,
           })
           // 所見12: 生ログ（stderr要約）の行き止まりを避け、主文は「原因の見当＋次の行動」に。
           // 生ログは detail へ（renderer 側が折りたたみ「詳細を見る」で表示）。
@@ -1316,7 +1329,16 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         const choice = detectRuntimeFor(contextAbs)
         // コードを直せば通るので、AIに相談できるようにする
         if (choice.kind === 'unsupported') add('runtime', 'アプリの作り', 'ng', choice.reason, 'ask-ai')
-        else if (choice.kind === 'node') add('runtime', 'アプリの作り', 'ok', `Node で ${choice.entry} を起動します。`)
+        else if (choice.kind === 'node') {
+          // 依存ライブラリがあると、公開のたびに手元で用意する（数分かかることがある）。
+          // **待たされる理由を先に伝える**（改善案 1-5・2026-08-18）
+          const deps = planDependencies(readProjectPackageJson(contextAbs))
+          add('runtime', 'アプリの作り', 'ok',
+            `Node で ${choice.entry} を起動します。`
+            + (deps.kind === 'install'
+              ? `ライブラリ ${deps.names.length}件（${deps.names.slice(0, 3).join('、')}${deps.names.length > 3 ? ' ほか' : ''}）も一緒に用意します。${installTimeNote(deps.names.length)}。`
+              : ''))
+        }
         else add('runtime', 'アプリの作り', 'ok', 'ファイルをそのまま配信します（HTML など）。')
       }
 

@@ -222,3 +222,29 @@ describe('latest-mac.yml の記録を実物に合わせる', () => {
     expect(() => updateDmgEntry(broken, { url: 'Koto-0.3.2-arm64.dmg', sha512: 'x', size: 2 })).toThrow(/sha512/)
   })
 })
+
+// ── 試作（-rc.N）を巻き込まない（2026-08-18 実機）────────────────────────
+// v0.3.34 の署名ビルドが、release/ に残っていた**未署名の rc** まで公証に出し、
+// `Invalid` で ❌ を出した。**成功しているのに失敗に見える**うえ、数分待たされる。
+// 版の付け方を -rc.N にしたことで新しく生まれた穴（2026-08-18 に運用を変えた）。
+describe('版の DMG を選ぶ — 試作を巻き込まない', () => {
+  const FILES = [
+    'Koto-0.3.34-arm64.dmg',
+    'Koto-0.3.34-rc.1-arm64.dmg',
+    'Koto-0.3.34-rc.2-arm64.dmg',
+    'Koto-0.3.33-arm64.dmg',
+    'Koto-0.3.34-arm64-mac.zip',
+  ]
+
+  it('★ 0.3.34 を選ぶと、0.3.34-rc.N は入らない', () => {
+    expect(dmgsForVersion(FILES, '0.3.34')).toEqual(['Koto-0.3.34-arm64.dmg'])
+  })
+
+  it('rc そのものをビルドしたときは、その rc だけを選ぶ', () => {
+    expect(dmgsForVersion(FILES, '0.3.34-rc.1')).toEqual(['Koto-0.3.34-rc.1-arm64.dmg'])
+  })
+
+  it('ほかの版は巻き込まない', () => {
+    expect(dmgsForVersion(FILES, '0.3.33')).toEqual(['Koto-0.3.33-arm64.dmg'])
+  })
+})

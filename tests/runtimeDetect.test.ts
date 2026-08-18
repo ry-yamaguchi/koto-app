@@ -8,7 +8,10 @@ import { detectRuntime } from '../src/shared/runtimeDetect'
 //
 // ここで守るのは2つ:
 //   ① Node のアプリを static と決めつけない（ソースが丸見えになる）
-//   ② 動かせないものを「動く」と言わない（依存パッケージはまだ運べない）
+//   ② 動かせないものを「動く」と言わない
+//
+// 2026-08-18: 依存パッケージは**運べるようになった**（改善案 1-5。手元で用意して
+// 層に含める）。持っていけない部品の判定は、入れたあとに行う（shared/deps.ts）。
 
 describe('起動方法の判断', () => {
   it('package.json が無ければ静的配信（これまでどおり）', () => {
@@ -44,16 +47,17 @@ describe('起動方法の判断', () => {
     expect(r).toEqual({ kind: 'node', entry: 'server.js' })
   })
 
-  // ★ 止めすぎも害（掟10）。ただし「動かないのに動くと言う」よりはよい
-  it('依存パッケージがあれば、動かせないと正直に伝える', () => {
+  // ── 契約が変わった（改善案 1-5・2026-08-18）────────────────────────
+  // 以前はここで「動かせない」と断っていた（node_modules を持っていく手段が
+  // 無かったため）。いまは**手元で用意して層に含める**ので、断らない。
+  // 持っていけない部品（macOS 用に翻訳されたもの）は、**入れてみないと
+  // 分からない**ので、ここではなく用意したあとに判定する。
+  it('★ 依存パッケージがあっても動かせる（内蔵ビルダーが用意する）', () => {
     const r = detectRuntime({
       packageJson: { dependencies: { express: '^4.0.0' }, scripts: { start: 'node server.js' } },
       fileNames: ['server.js'],
     })
-    expect(r.kind).toBe('unsupported')
-    if (r.kind !== 'unsupported') throw new Error('unreachable')
-    expect(r.reason).toContain('express')      // 何が原因かを名指しする
-    expect(r.reason).toContain('公開先を変えて') // 次の行動を示す
+    expect(r).toEqual({ kind: 'node', entry: 'server.js' })
   })
 
   it('開発用の依存（devDependencies）だけなら動かせる', () => {

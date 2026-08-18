@@ -293,10 +293,37 @@ export function requiresConfirmation(cmd: string): boolean {
   return isDangerousCommand(cmd) || isSensitiveCommand(cmd)
 }
 
+/**
+ * インストールするライブラリの名前をコマンドから読み取る（純関数）。
+ *
+ * ── なぜ要るか（2026-08-18 Ryosuke 指摘）────────────────────────────
+ * 「インターネットからプログラムを取得して実行します」とだけ出しても、
+ * **何が入るのかが分からない**。名前が分かるなら見せる。
+ * `npm install`（名前なし）は package.json を見ないと分からないので、
+ * その場合は呼び出し側が渡す。
+ */
+export function installTargetsFromCommand(cmd: string): string[] {
+  const t = String(cmd ?? '').trim()
+  const m = /^(?:npm|pnpm|yarn|bun)\s+(?:install|i|add)\s+(.+)$/i.exec(t)
+  if (!m) return []
+  return m[1]
+    .split(/\s+/)
+    .filter(a => a && !a.startsWith('-'))   // オプションは名前ではない
+    .slice(0, 20)
+}
+
 /** なぜ確認するのかを初心者向けに一言で説明する */
-export function confirmReason(cmd: string): string {
+export function confirmReason(cmd: string, opts?: { dependencies?: readonly string[] }): string {
   if (isDangerousCommand(cmd)) return 'この操作はファイルやシステムを壊す可能性があります。'
-  if (/\binstall\b|\badd\b|\bnpx\b|\bget\b|\brequire\b|\btap\b/i.test(cmd)) return 'インターネットからプログラムを取得して実行します。'
+  if (/\binstall\b|\badd\b|\bnpx\b|\bget\b|\brequire\b|\btap\b/i.test(cmd)) {
+    // **何が入るのかを見せる**（2026-08-18 Ryosuke 指摘）
+    const named = installTargetsFromCommand(cmd)
+    const names = named.length > 0 ? named : (opts?.dependencies ?? [])
+    const list = names.length > 0
+      ? `（${names.slice(0, 5).join('、')}${names.length > 5 ? ` ほか${names.length - 5}件` : ''}）`
+      : ''
+    return `インターネットからプログラム${list}を取得して実行します。`
+  }
   if (/\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd)) return '外部と通信します。'
   if (/-(c|e)\b|\bosascript\b|\beval\b|\bbase64\b/i.test(cmd)) return 'コードを直接実行します。'
   return 'システムやホームの設定を変更する可能性があります。'

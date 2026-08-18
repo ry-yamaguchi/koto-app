@@ -305,7 +305,16 @@ export function syncUpdateRecord(dmgPath) {
  */
 export function dmgsForVersion(fileNames, version) {
   const prefix = `Koto-${version}-`
-  return (fileNames || []).filter((n) => n.startsWith(prefix) && n.endsWith('.dmg')).sort()
+  return (fileNames || [])
+    .filter((n) => n.startsWith(prefix) && n.endsWith('.dmg'))
+    // ── 試作（-rc.N）を巻き込まない（2026-08-18 実機）────────────────────
+    // `Koto-0.3.34-` は **`Koto-0.3.34-rc.1-arm64.dmg` にも一致する**。
+    // そのため v0.3.34 の署名ビルドが、release/ に残っていた**未署名の rc**まで
+    // 公証に出し、`Invalid` で ❌ を出した（中の .app が署名されていないので当然）。
+    // 数分の待ち時間と、**成功しているのに失敗に見える表示**を生む。
+    // 版のうしろに来てよいのは**アーキテクチャ1語だけ**（`arm64.dmg` など）。
+    .filter((n) => !n.slice(prefix.length, -'.dmg'.length).includes('-'))
+    .sort()
 }
 
 /** ビルド成果物すべてに対して実行する。 */

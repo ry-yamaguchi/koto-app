@@ -264,7 +264,17 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         let cmd = ''
         try { cmd = JSON.parse(toolArgs || '{}').command ?? '' } catch { /* 不明でも確認は出す */ }
         if (getWriteMode() === 'confirm' || requiresConfirmation(cmd)) {
-          const reason = requiresConfirmation(cmd) ? `\n理由: ${confirmReason(cmd)}` : ''
+          // 名前の書かれていない `npm install` は、package.json を見ないと
+          // **何が入るのか分からない**（2026-08-18 Ryosuke 指摘）
+          let deps: string[] = []
+          try {
+            if (projectDir && /\b(install|i|add)\b/.test(cmd)) {
+              const raw = await window.electronAPI.fs.readFile(`${projectDir}/package.json`)
+              const d = JSON.parse(raw)?.dependencies
+              deps = d && typeof d === 'object' ? Object.keys(d) : []
+            }
+          } catch { /* 読めなければ名前なしで確認する */ }
+          const reason = requiresConfirmation(cmd) ? `\n理由: ${confirmReason(cmd, { dependencies: deps })}` : ''
           const approved = await new Promise<boolean>(resolve => setPendingApproval({ path: `コマンド実行: ${cmd || '(不明)'}${reason}`, resolve }))
           setPendingApproval(null)
           if (!approved) {

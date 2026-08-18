@@ -18,6 +18,8 @@ import * as os from 'os'
 import * as path from 'path'
 import { validateRegistryServer, buildRef } from './docker'
 import { excludedDirNames, excludedFileNames, isSecretFile } from '../../shared/publishExclude'
+import { planDependencies, nativeDepsMessage } from '../../shared/deps'
+import { installDependencies } from './npmInstall'
 
 // ── 出力上限・タイムアウト（crane の build/push は時間がかかり得る） ──
 const OUTPUT_MAX = 16000
@@ -176,7 +178,20 @@ function runExecFile(
  * 戻り値: layer tar の絶対パス（作業用 tmp ディレクトリ内）。
  * ※呼び出し側が後始末でその tmp ディレクトリを削除すること。
  */
-export async function stageAndTar(contextAbs: string): Promise<string> {
+/** ステージングした app/ の package.json を読む（無い・壊れていれば null）。 */
+function readPackageJson(appDir: string): unknown {
+  try {
+    const p = path.join(appDir, 'package.json')
+    return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : null
+  } catch {
+    return null
+  }
+}
+
+export async function stageAndTar(
+  contextAbs: string,
+  opts?: { onProgress?: (m: string) => void },
+): Promise<string> {
   if (typeof contextAbs !== 'string' || !path.isAbsolute(contextAbs)) {
     throw new Error('ビルドコンテキストは絶対パスである必要があります')
   }
@@ -196,6 +211,24 @@ export async function stageAndTar(contextAbs: string): Promise<string> {
   const layer = path.join(tmpDir, 'layer.tar')
 
   copyTree(contextAbs, appDir)
+
+  // ── 依存ライブラリを用意して、一緒に持っていく（改善案 1-5・2026-08-18）──
+  // コンテナの中で入れる場所が無い（Docker を使わないので）ため、**手元で入れて
+  // node_modules ごと層に含める**。持っていけない部品（macOS 用に翻訳されたもの）が
+  // あれば、**黙って持っていかずに断る**（公開できたのに起動しない、を防ぐ）。
+  const deps = planDependencies(readPackageJson(appDir))
+  if (deps.kind === 'install') {
+    const r = await installDependencies(appDir, opts?.onProgress)
+    if (!r.ok) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
+      throw new Error(r.message ?? 'ライブラリを用意できませんでした')
+    }
+    if (r.nativeFiles.length > 0) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
+      throw new Error(nativeDepsMessage(r.nativeFiles))
+    }
+    opts?.onProgress?.(`📚 ライブラリ ${deps.names.length}件を用意しました`)
+  }
 
   // tar -cf <layer> -C <stageDir> app  → 中身が app/... となる層 tar を作る。
   const r = await runExecFile('tar', ['-cf', layer, '-C', stageDir, 'app'])
@@ -221,6 +254,8 @@ export type BuildAndPushOptions = {
   entry?: string
   /** レジストリ認証情報（server/user/password）。config.json に base64(user:password) を書く。 */
   registryAuth: { server: string; user: string; password: string }
+  /** 進捗の通知（ライブラリの用意は時間がかかるので、黙って待たせない）。 */
+  onProgress?: (message: string) => void
   /**
    * テスト/オフライン用: 指定すると crane の push（-t）の代わりに `-o <outFile>` でローカル出力する。
    * 実レジストリへ push せずに引数組み立てと層構築を検証できる。
@@ -322,7 +357,7 @@ export async function buildAndPush(opts: BuildAndPushOptions): Promise<BuildAndP
   try {
     // 2. ファイル層（app/ 配下）を作る。
     try {
-      layer = await stageAndTar(opts.contextAbs)
+      layer = await stageAndTar(opts.contextAbs, { onProgress: opts.onProgress })
       layerTmpDir = path.dirname(layer)
     } catch (e: any) {
       return { ok: false, log: '', message: e?.message ?? String(e) }
