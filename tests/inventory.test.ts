@@ -16,21 +16,21 @@ const projects = [
     dir: '/w/data-test', name: 'data-test',
     apprunState: {
       resources: [
-        { kind: 'apprun-app', id: '573b9bf0-aaaa' },
-        { kind: 'bucket', id: 'koto-data2' },
+        { kind: 'apprun-app', id: 'app-1111-aaaa' },
+        { kind: 'bucket', id: 'koto-data-sample' },
       ],
-      meta: { registryName: 'data-test-65f6' },
+      meta: { registryName: 'sample-registry-65f6' },
     },
   },
-  { dir: '/w/express', name: 'express', apprunState: { resources: [{ kind: 'apprun-app', id: 'd64f78d6-bbbb' }], meta: { registryName: 'express' } } },
+  { dir: '/w/express', name: 'express', apprunState: { resources: [{ kind: 'apprun-app', id: 'app-2222-bbbb' }], meta: { registryName: 'express' } } },
 ]
 
 const actual = [
-  { kind: 'apprun-app' as const, id: '573b9bf0-aaaa', name: 'data-test' },
+  { kind: 'apprun-app' as const, id: 'app-1111-aaaa', name: 'data-test' },
   { kind: 'apprun-app' as const, id: 'zzzz-9999', name: 'old-experiment' },  // 記録に無い
-  { kind: 'registry' as const, id: 'data-test-65f6', name: 'data-test-65f6' },
+  { kind: 'registry' as const, id: 'sample-registry-65f6', name: 'sample-registry-65f6' },
   { kind: 'registry' as const, id: 'express', name: 'express' },
-  { kind: 'bucket' as const, id: 'koto-data2', name: 'koto-data2' },
+  { kind: 'bucket' as const, id: 'koto-data-sample', name: 'koto-data-sample' },
 ]
 
 describe('手元の記録を読む', () => {
@@ -38,7 +38,7 @@ describe('手元の記録を読む', () => {
     const r = parseLocalRecords(projects)
     expect(r[0]).toEqual({
       dir: '/w/data-test', projectName: 'data-test',
-      appIds: ['573b9bf0-aaaa'], bucketNames: ['koto-data2'], registryNames: ['data-test-65f6'],
+      appIds: ['app-1111-aaaa'], bucketNames: ['koto-data-sample'], registryNames: ['sample-registry-65f6'],
     })
   })
 
@@ -53,9 +53,9 @@ describe('さくら側の実物と突き合わせる', () => {
   const rows = buildInventory({ actual, records: parseLocalRecords(projects) })
 
   it('記録にあるものは、どのプロジェクトのものか分かる', () => {
-    expect(rows.find(r => r.id === '573b9bf0-aaaa')?.project).toBe('data-test')
-    expect(rows.find(r => r.id === 'data-test-65f6')?.project).toBe('data-test')
-    expect(rows.find(r => r.id === 'koto-data2')?.dir).toBe('/w/data-test')
+    expect(rows.find(r => r.id === 'app-1111-aaaa')?.project).toBe('data-test')
+    expect(rows.find(r => r.id === 'sample-registry-65f6')?.project).toBe('data-test')
+    expect(rows.find(r => r.id === 'koto-data-sample')?.dir).toBe('/w/data-test')
   })
 
   it('★ 心当たりの無いものも必ず出す（出さなければ放置される）', () => {
@@ -68,7 +68,7 @@ describe('さくら側の実物と突き合わせる', () => {
   it('★ 名前が似ているだけで引き取らない（利用者のものを乗っ取らない）', () => {
     const rows2 = buildInventory({
       actual: [{ kind: 'registry', id: 'data-test-old', name: 'data-test-old' }],
-      records: parseLocalRecords(projects),  // data-test-65f6 は記録にあるが、これは別物
+      records: parseLocalRecords(projects),  // sample-registry-65f6 は記録にあるが、これは別物
     })
     expect(rows2[0].project).toBeNull()
   })
