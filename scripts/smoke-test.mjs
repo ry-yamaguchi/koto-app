@@ -6,6 +6,8 @@
 //   メイン側 stdout だけ見ていると、レンダラのJS実行時エラー（真っ黒画面）を見逃すため。
 import { spawn, execSync } from 'child_process'
 import fs from 'fs'
+import os from 'os'
+import path from 'path'
 
 const APP = 'release/mac-arm64/Koto.app/Contents/MacOS/Koto'
 const LOG = '/tmp/sakura-smoke.log'
@@ -16,8 +18,20 @@ if (!fs.existsSync(APP)) {
   process.exit(1)
 }
 
+// ── **利用者の保存領域を使わない**（2026-08-19 の事故）────────────────────
+// このスモークテストは、起動して11秒後に SIGTERM と pkill で**強制終了**する。
+// ところが既定では利用者と同じ保存領域（~/Library/Application Support/Koto）を
+// 使うため、**書き込みの途中で殺すと localStorage（leveldb）が壊れる**。
+// 2026-08-19 09:00:50 にこのテストが走り、09:01:32 に leveldb が作り直され、
+// **中央ストアに入っていたAPIキーが全部消えた**（さくらのAI Engine・Claude・
+// GitHub・HANAMII）。ファイルで持っているもの（さくらのクラウド・レジストリ）
+// だけが残った。復元手段は無かった。
+//
+// 起動できるかを見るのが目的なので、**使い捨ての保存領域**で十分である。
+const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-smoke-profile-'))
+
 const out = fs.openSync(LOG, 'w')
-const child = spawn(APP, [], {
+const child = spawn(APP, [`--user-data-dir=${PROFILE}`], {
   stdio: ['ignore', out, out],
   detached: true,
   env: {
@@ -31,9 +45,10 @@ child.unref()
 console.log(`起動スモークテスト中…（${WAIT_MS / 1000}秒待機）`)
 await new Promise(r => setTimeout(r, WAIT_MS))
 
-// 起動したアプリと取りこぼしプロセスを終了
+// 起動したアプリと取りこぼしプロセスを終了。
+// **使い捨ての保存領域で起動したものだけ**を狙う（利用者が開いている Koto を巻き込まない）。
 try { process.kill(child.pid, 'SIGTERM') } catch { /* 既に終了 */ }
-try { execSync('pkill -f "release/mac-arm64.*MacOS/Koto"', { stdio: 'ignore' }) } catch { /* 無ければ無視 */ }
+try { execSync(`pkill -f "user-data-dir=${PROFILE}"`, { stdio: 'ignore' }) } catch { /* 無ければ無視 */ }
 
 const log = fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8') : ''
 
@@ -63,5 +78,7 @@ if (!lines.some(l => l.includes('[claude-binary-check] ok'))) {
   if (failLine) console.error('--- 該当ログ ---\n' + failLine)
   process.exit(1)
 }
+
+try { fs.rmSync(PROFILE, { recursive: true, force: true }) } catch { /* 消せなくても害は無い */ }
 
 console.log(`✅ スモークテスト成功（起動${WAIT_MS / 1000}秒・レンダラ/メインに致命的エラーなし・Claudeバイナリ実行OK）`)

@@ -224,6 +224,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // デプロイ済み AppRun アプリの公開URLを取得する。
     appUrl: (projectDir: string) => ipcRenderer.invoke('cloud:appUrl', projectDir),
     appHealth: (projectDir: string) => ipcRenderer.invoke('cloud:appHealth', projectDir),
+    // さくら側にあるものの棚卸し（**何も作らず、何も消さない**）。
+    inventory: (projects: unknown) => ipcRenderer.invoke('cloud:inventory', projects),
     // 限定公開（アクセス制限＝パケットフィルタ）。デプロイ済みアプリの許可IPを読み書きする。
     getAccessLimit: (projectDir: string) => ipcRenderer.invoke('cloud:getAccessLimit', projectDir),
     setAccessLimit: (projectDir: string, payload: { isEnabled: boolean; ips: Array<{ ip: string; prefix: number }> }) => ipcRenderer.invoke('cloud:setAccessLimit', projectDir, payload),

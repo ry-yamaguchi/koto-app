@@ -1,4 +1,6 @@
 import { app, BrowserWindow, dialog, shell, session, Menu } from 'electron'
+import { execFileSync } from 'child_process'
+import { findOtherKoto } from '../shared/singleInstance'
 import type { MenuItemConstructorOptions } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -344,11 +346,75 @@ async function runClaudeBinarySmokeCheckIfRequested() {
 const pathFix = applyLoginPath()
 console.log(`[login-path] ${pathFix.ok ? 'ok' : 'skip'}${pathFix.message ? ` (${pathFix.message})` : ''} PATH=${process.env.PATH}`)
 
+// ── 同じ保存領域で2つ動かさない（2026-08-19 の事故）──────────────────────
+// Koto の設定とAPIキー（中央ストア）は **localStorage（leveldb）** にある。
+// 同じ保存領域を2つのアプリが同時に開くと壊れうる。実際、2026-08-19 に
+// スモークテストが利用者と同じ領域でアプリを起動して**強制終了**し、
+// leveldb が作り直されて **APIキーが全部消えた**（復元手段は無かった）。
+//
+// **黙って前の窓を出さない。** 「別の版を試しているつもりで、古い版を見ている」
+// のは、この一週間ずっと直してきた「成功に見えて壊れている」と同じ形になる。
+// 後から起動したほうは、何が起きたかを伝えて終了する。
+/**
+ * 同じ保存領域を使う別の Koto が動いていないか、**こちらから見に行く**。
+ *
+ * `requestSingleInstanceLock` は互いに名乗り合う仕組みなので、**相手が古い版だと
+ * 効かない**（2026-08-19 実測: 守りの無い版が先に動いていると、こちらの鍵の要求は
+ * 通ってしまい二重起動になる。逆に古い版を後から起動すると、そちらが異常終了した）。
+ * 判断は shared/singleInstance.ts。**読めなければ通す**（追加の守りであって唯一の砦ではない）。
+ */
+function anotherKotoIsRunning(): boolean {
+  try {
+    const ps = execFileSync('/bin/ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8', timeout: 3000 })
+    const dir = app.getPath('userData')
+    const other = findOtherKoto({ psOutput: ps, myPid: process.pid, myUserDataDir: dir })
+    // **判断をログに残す。** 効いているかどうかを、あとから推測しないで済むように
+    // （[login-path] と同じ流儀。2026-08-19、効かない理由が分からず時間を溶かした）
+    console.log(`[single-instance] userData=${dir} other=${other ? other.pid : 'none'}`)
+    return other !== null
+  } catch (e: any) {
+    console.log(`[single-instance] 確認できませんでした: ${e?.message ?? e}`)
+    return false
+  }
+}
+
+function warnAlreadyRunningAndQuit(): void {
+  dialog.showMessageBoxSync({
+    type: 'warning',
+    title: 'Koto はすでに起動しています',
+    message: 'Koto はすでに起動しています。',
+    detail: '同じ設定を2つのアプリが同時に使うと、APIキーなどの保存が壊れることがあります。'
+      + '先に起動している Koto を終了してから、開き直してください。',
+    buttons: ['閉じる'],
+  })
+  app.quit()
+}
+
+const gotLock = app.requestSingleInstanceLock()
+console.log(`[single-instance] lock=${gotLock}`)
+if (!gotLock || anotherKotoIsRunning()) {
+  app.whenReady().then(warnAlreadyRunningAndQuit)
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
 app.whenReady().then(() => {
+  if (!app.hasSingleInstanceLock()) return  // 上で終了処理に入っている
   applyCSP(); buildMenu(); setDockIcon(); createWindow(); runClaudeBinarySmokeCheckIfRequested()
   // 自動更新。既定は「ダウンロードだけして、次回起動時に適用」（勝手に再起動しない）。
   // 配信元が未公開・オフラインでも、状態が error になるだけでアプリの動作には影響しない。
   initUpdater({ getMainWindow: () => mainWindow, autoCheck: true })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+// Dock やアイコンのクリックで飛ぶ。**準備前にも飛ぶ**ので、そのまま窓を作ると
+// `Cannot create BrowserWindow before app is ready` で落ちる（2026-08-19 実機）。
+// 二重起動で終了しようとしている側でも飛ぶため、鍵を持っていないときも作らない。
+app.on('activate', () => {
+  if (!app.isReady() || !app.hasSingleInstanceLock()) return
+  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+})

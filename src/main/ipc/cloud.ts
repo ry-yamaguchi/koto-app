@@ -21,6 +21,7 @@ import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapt
 import { buildRef, dockerAvailable, buildImage, loginRegistry, pushImage } from '../cloud/docker'
 import { builderAvailable, buildAndPush } from '../cloud/imageBuild'
 import { detectRuntime, type RuntimeChoice } from '../../shared/runtimeDetect'
+import { parseLocalRecords, buildInventory, sumMonthly, totalNotice, type ActualResource } from '../../shared/inventory'
 import { planDependencies, installTimeNote } from '../../shared/deps'
 import type { IpcDeps } from './types'
 
@@ -1253,6 +1254,68 @@ export function registerCloudHandlers(_deps: IpcDeps) {
    * **費用の判断材料をまとめて返す。** サイトの利用が始まっているか（＝月額が
    * 発生しているか）、保存場所がいくつあるか（**バケット単位で課金**）。
    */
+  /**
+   * さくら側にあるものを棚卸しする（改善案 1-3 / 1-4・2026-08-18）。
+   *
+   * **何も作らず、何も消しません。** 一覧を3種類引いて、手元の記録と突き合わせるだけ。
+   *
+   * 2026-08-14、Koto の記録に無いアプリとレジストリが残り、コントロールパネルで
+   * 消してもらった（非エンジニアにはできない作業）。**放置は毎月のお金になる。**
+   * 突き合わせの判断は shared/inventory.ts に集約（**名前が似ているだけで
+   * 引き取らない**——利用者が自分で作ったものを乗っ取らないため）。
+   */
+  ipcMain.handle('cloud:inventory', async (_e, projects: unknown) => {
+    const creds = loadCredentials()
+    if (!creds) return { ok: false, message: 'さくらのクラウドのAPIキーが未登録です', rows: [] }
+    const actual: ActualResource[] = []
+    const failed: string[] = []
+    const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+
+    // ① 公開したアプリ
+    try {
+      const r = await client.listApps()
+      if (r.dryRun === false && r.ok) {
+        for (const a of ((r.data as any)?.data ?? []) as any[]) {
+          const id = String(a?.id ?? '')
+          if (id) actual.push({ kind: 'apprun-app', id, name: String(a?.name ?? id) })
+        }
+      } else failed.push('公開したアプリ')
+    } catch { failed.push('公開したアプリ') }
+
+    // ② イメージの置き場（コンテナレジストリ）
+    try {
+      // レジストリは全ゾーン共通（グローバル資源）。既定のゾーンで引く
+      const r = await client.listContainerRegistries('is1a')
+      if (r.dryRun === false && r.ok) {
+        for (const g of pickContainerRegistries(r.data)) {
+          if (g.subdomainLabel) actual.push({ kind: 'registry', id: g.subdomainLabel, name: g.subdomainLabel })
+        }
+      } else failed.push('イメージの置き場')
+    } catch { failed.push('イメージの置き場') }
+
+    // ③ データの保存場所（バケット）。**利用開始前は問い合わせない**（無いので）
+    try {
+      const os = new ObjectStorageClient({ credentials: creds, dryRun: false })
+      const site = await os.pickSite()
+      if (await os.isSiteReady(site.id)) {
+        for (const b of await os.listBuckets(site.id)) {
+          if (b?.name) actual.push({ kind: 'bucket', id: b.name, name: b.name })
+        }
+      }
+    } catch { failed.push('データの保存場所') }
+
+    const records = parseLocalRecords(Array.isArray(projects) ? projects as any[] : [])
+    const rows = buildInventory({ actual, records })
+    return {
+      ok: true,
+      rows,
+      totalYen: sumMonthly(rows),
+      notice: totalNotice(rows),
+      // **引けなかったものは黙って0件にしない**（「何も無い」と誤解させる）
+      ...(failed.length > 0 ? { partial: failed } : {}),
+    }
+  })
+
   ipcMain.handle('storage:status', async () => {
     const creds = loadCredentials()
     if (!creds) return { ok: false, message: 'さくらのクラウドのAPIキーが未登録です', siteReady: false, buckets: [] }

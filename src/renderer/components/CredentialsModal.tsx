@@ -677,6 +677,8 @@ function GithubPatGuide() {
 
 export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props) {
   const [store, setStore] = useState<Store>(emptyStore())
+  /** 保存されているのに読み取れなかった（別の版のアプリで保存された等）。 */
+  const [unreadable, setUnreadable] = useState(false)
   const [saved, setSaved] = useState(false)
   const [searchPref, setSearchPref] = useState<SearchProvider>(getSearchPref())
   // 未保存の変更があるかどうか（所見5）。各入力の変更操作（addEntry/removeEntry/setLabel/setValue/setActive/
@@ -730,6 +732,12 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
         let parsed: any = null
         if (enc) {
           const json = await window.electronAPI.secure.decrypt(enc)
+          // ── 「読めなかった」を「無かった」と混ぜない（2026-08-19 実機）──────
+          // 復号できないのに「未登録」と見せると、利用者はそこへ入力し直し、
+          // **元の設定が上書きされて消える**。実際に起きうる形:
+          // 署名の違うビルド（署名版と手元の未署名ビルド）は**キーチェーンの鍵が別**で、
+          // 一方で保存したものはもう一方から読めない（実測: 同名の項目が2つできていた）。
+          if (json === null) setUnreadable(true)
           if (json) parsed = JSON.parse(json)
         }
         let s: Store
@@ -932,6 +940,19 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
                       <p className="text-[11px] text-brand-yellow mt-0.5">※ VPSでの公開機能は開発中です（現在は「🚀 公開」→さくらのVPSの「① 接続」のみ利用できます）</p>
                     )}
                   </div>
+          {/* ── 読めなかったことを、はっきり言う（2026-08-19 実機）──────────────
+              復号できないのに「未登録」と見せると、利用者はそこへ入力し直し、
+              **元の設定が上書きされて消える**。署名の違うビルド（署名版と手元の
+              未署名ビルド）はキーチェーンの鍵が別になるため、実際に起こる。 */}
+          {unreadable && (
+            <div className="rounded-xl border border-brand-red/60 bg-surface p-3 text-xs text-ink leading-relaxed select-text">
+              ⚠️ <b>保存されている設定を読み取れませんでした。</b>
+              このアプリとは<b>別の版（署名の異なるビルド）で保存された</b>可能性があります。
+              下の入力欄は「未登録」に見えていますが、<b className="text-brand-red">
+              このまま保存すると、元の設定は失われます</b>。
+              元の版のアプリで開くと読めることがあります。
+            </div>
+          )}
                   <button onClick={() => addEntry(def.id)} className="text-xs font-medium text-sakura hover:underline flex-none">＋ 追加</button>
                 </div>
 

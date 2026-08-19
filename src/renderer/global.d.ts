@@ -237,7 +237,8 @@ interface Window {
     secure: {
       available(): Promise<boolean>
       encrypt(plain: string): Promise<string | null>
-      decrypt(b64: string): Promise<string>
+      /** 復号できなかったときは **null**（未登録の '' と混ぜないこと）。 */
+      decrypt(b64: string): Promise<string | null>
     }
     cloud: {
       saveKey(token: string, secret: string): Promise<{ ok: boolean; message?: string }>
@@ -299,6 +300,27 @@ interface Window {
         detail?: string
         logUrl?: string
         askAi?: string
+        message?: string
+      }>
+      /**
+       * さくら側にあるものの棚卸し（**何も作らず、何も消さない**）。
+       * `project` が null の行は「このパソコンの Koto に心当たりがない」もの。
+       * `partial` は引けなかった種類（**黙って0件にしない**）。
+       */
+      inventory(projects: unknown): Promise<{
+        ok: boolean
+        rows?: Array<{
+          kind: 'apprun-app' | 'registry' | 'bucket'
+          id: string
+          name: string
+          project: string | null
+          dir: string | null
+          monthlyYen: number
+          note: string
+        }>
+        totalYen?: number
+        notice?: string
+        partial?: string[]
         message?: string
       }>
       // 限定公開（アクセス制限＝パケットフィルタ）。デプロイ済みアプリの許可IPを読み書きする。
