@@ -102,6 +102,35 @@ export function excludedDirNames(extra: readonly string[] = []): Set<string> {
   return new Set<string>([...HEAVY_DIRS, ...KOTO_INTERNAL_DIRS, ...extra])
 }
 
+/**
+ * ビルドのための設定ファイル。**そのまま配信される公開先には入れない。**
+ *
+ * ── なぜ（2026-08-20 実測）────────────────────────────────────────────
+ * 標準の公開は `python -m http.server` で `/app` を**まるごと配信**する。
+ * 公開中のサイトで実際に測ったところ、次がすべて **HTTP 200** で読めていた:
+ *   `/Dockerfile` `/nginx.conf` `/README.md` `/.dockerignore`
+ * このうち Dockerfile と nginx.conf は **AI がビルドのために書いたもの**で、
+ * サイトの一部ではない。配信する意味が無く、構成が読めるのも避けたい。
+ *
+ * ⚠️ **適用してよいのは「静的に配信される公開先」だけ**（AppRun標準 / Vercel / レンタルサーバ）。
+ *   ・Docker（エキスパート）経路の**ビルドコンテキストからは外さない**——そこでは入力そのもの。
+ *     その経路は `copyTree` を通らないので、ここを使う限り触れない。
+ *   ・**HANAMII は対象外**。zip からコンテナをビルドし、マニフェストの有無で挙動が変わる。
+ *     外して壊れないことを確かめられていないので、`zipExcludePatterns` には足していない。
+ *   ・**GitHub保存も対象外**。Dockerfile はリポジトリに入っているべきもの。
+ *
+ * `README.md` は外さない（**公開したい人がいる**ため。サイトの一部になりうる）。
+ */
+export const BUILD_CONFIG_FILES = ['Dockerfile', '.dockerignore', 'nginx.conf'] as const
+
+/**
+ * **そのまま配信される公開先**で除外するファイル名。
+ * 通常の除外に、上のビルド設定を足したもの。
+ */
+export function servedExcludedFileNames(extra: readonly string[] = []): Set<string> {
+  return new Set<string>([...excludedFileNames(extra), ...BUILD_CONFIG_FILES])
+}
+
 /** 除外すべきファイル名（Set で名前一致に使う）。 */
 export function excludedFileNames(extra: readonly string[] = []): Set<string> {
   return new Set<string>([...NOISE_FILES, ...KOTO_INTERNAL_FILES, ...extra])
@@ -137,7 +166,8 @@ const SECRET_GLOBS = [
 
 /** rsync の `--exclude='x'` を並べた文字列（先頭に空白1つ付く）。extra は呼び出し側固有の追加分。 */
 export function rsyncExcludeArgs(extra: readonly string[] = []): string {
-  const names = [...HEAVY_DIRS, ...KOTO_INTERNAL_DIRS, ...PUBLISH_ONLY_DIRS, ...KOTO_INTERNAL_FILES, ...NOISE_FILES, ...SECRET_GLOBS, ...extra]
+  // レンタルサーバは `~/www/` へそのまま置く＝**静的に配信される**ので、ビルド設定も外す。
+  const names = [...HEAVY_DIRS, ...KOTO_INTERNAL_DIRS, ...PUBLISH_ONLY_DIRS, ...KOTO_INTERNAL_FILES, ...NOISE_FILES, ...BUILD_CONFIG_FILES, ...SECRET_GLOBS, ...extra]
   return names.map(n => ` --exclude='${n}'`).join('')
 }
 

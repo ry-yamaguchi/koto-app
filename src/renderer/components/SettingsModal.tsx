@@ -168,7 +168,7 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
               </button>
             </div>
             {status.over && (
-              <p className="mt-2 text-[11px] text-white bg-brand-red/90 rounded-md px-2 py-1">⚠️ 上限に達しています</p>
+              <p className="mt-2 text-[11px] text-white bg-brand-red-fill rounded-md px-2 py-1">⚠️ 上限に達しています</p>
             )}
             {!status.over && status.warn && (
               <p className="mt-2 text-[11px] text-ink bg-brand-yellow/25 rounded-md px-2 py-1">上限の{Math.round(settings.warnRatio * 100)}%を超えました</p>

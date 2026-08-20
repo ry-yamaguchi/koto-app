@@ -427,7 +427,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 >やめる</button>
                 <button
                   onClick={() => runTeardown(confirm)}
-                  className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red hover:opacity-90"
+                  className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red-fill hover:opacity-90"
                 >🗑 理解した上で破棄する</button>
               </div>
             </div>

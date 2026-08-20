@@ -469,7 +469,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <p className="text-[11px] text-ink-muted leading-relaxed">
               💡 SSH接続が初めての場合は、コントロールパネルでSSH接続を有効にしておいてください。実行時にパスワードを聞かれたらターミナルに入力します。
             </p>
-            {error && <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2">{error}</p>}
+            {error && <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2">{error}</p>}
             <div className="flex justify-between items-center">
               <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
               <button onClick={publishRental} disabled={busy || !account || !host}

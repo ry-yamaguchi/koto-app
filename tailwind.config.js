@@ -26,6 +26,12 @@ module.exports = {
           soft: 'rgb(var(--sakura-soft-rgb) / <alpha-value>)',
         },
         brand: {
+          // 「文字用」と「塗り用」を分ける（2026-08-20）。
+          // 文字用（brand-red など）は地の上で読める明るさ、塗り用（brand-red-fill）は
+          // **上に載る白文字が読める**明るさ。1つの色で両方はまかなえない
+          // （ダークで bg-brand-red に白文字は 3.08:1 しか出ていなかった）。
+          'red-fill': 'rgb(var(--red-fill-rgb) / <alpha-value>)',
+          'yellow-fill': 'rgb(var(--yellow-fill-rgb) / <alpha-value>)',
           green: 'rgb(var(--green-rgb) / <alpha-value>)',
           blue: 'rgb(var(--blue-rgb) / <alpha-value>)',
           yellow: 'rgb(var(--yellow-rgb) / <alpha-value>)',

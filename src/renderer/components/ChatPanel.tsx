@@ -1021,7 +1021,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
             {isLoading ? (
               <button
                 onClick={() => { chat.abort(); greetAbortRef.current?.() }}
-                className="bg-elevated border border-brand-red text-brand-red rounded-lg px-3 py-1.5 text-sm font-semibold hover:bg-brand-red hover:text-white transition-colors"
+                className="bg-elevated border border-brand-red text-brand-red rounded-lg px-3 py-1.5 text-sm font-semibold hover:bg-brand-red-fill hover:text-white transition-colors"
                 title="応答を停止"
               >
                 ⏹ 停止

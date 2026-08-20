@@ -138,7 +138,7 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
             </div>
 
             {listError && (
-              <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed select-text">{listError}</p>
+              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{listError}</p>
             )}
 
             {loading && snapshots.length === 0 ? (

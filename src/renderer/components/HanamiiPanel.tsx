@@ -749,7 +749,7 @@ export default function HanamiiPanel({ projectDir, onOpenCredentials }: Props) {
               <div className="rounded-lg border border-brand-red/60 bg-overlay p-3 space-y-2">
                 <p className="text-xs text-brand-red font-semibold">この公開を破棄（削除）します。公開URLは無効になります。</p>
                 <div className="flex gap-2">
-                  <button onClick={teardown} className="bg-brand-red/90 text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90">破棄する</button>
+                  <button onClick={teardown} className="bg-brand-red-fill text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90">破棄する</button>
                   <button onClick={() => setConfirmDel(false)} className="bg-overlay text-ink border border-line rounded-lg px-3 py-1.5 text-xs">やめる</button>
                 </div>
               </div>

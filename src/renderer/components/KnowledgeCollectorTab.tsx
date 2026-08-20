@@ -214,7 +214,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
             </label>
 
             {searchError && (
-              <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed select-text">{searchError}</p>
+              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{searchError}</p>
             )}
 
             {results.length > 0 && (

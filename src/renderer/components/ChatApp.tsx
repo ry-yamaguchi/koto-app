@@ -179,14 +179,30 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   }, [])
 
   // 保存（デバウンス1.5秒。ストリーミング中は messages がトークン毎に変わるため）。
-  // 画像でサイズ超過等の失敗時は画像を落として再試行する（slim化は chatStorage.saveAppSessions 側）。
+  // 画像でサイズ超過等の失敗時は、**先に画像をファイルへ書き出してから**落とす。
+  // 落としたことは黙らず、会話に出す（2026-08-20。以前は console.warn だけで、
+  // 利用者は理由も分からないまま画像を失っていた）。
   // sessionsRef: 直近の sessions を常に保持（アンマウント時のフラッシュ用）。
   const sessionsRef = useRef<Session[]>(sessions)
   sessionsRef.current = sessions
+  // 保存は間引いて遅れて走るので、そのときの「いま開いている会話」を ref で持つ。
+  const activeIdRef = useRef<string>(activeId)
+  activeIdRef.current = activeId
+
+  /** 保存して、画像を落としていたらその事実を会話に出す（同じ知らせは重ねない）。 */
+  const droppedNotedRef = useRef(false)
+  const saveAndReport = useCallback(async (ws: string, list: Session[]) => {
+    const r = await saveAppSessions(ws, list)
+    if (!('droppedImages' in r) || droppedNotedRef.current) return
+    droppedNotedRef.current = true
+    setSessions(prev => prev.map(sess => sess.id === activeIdRef.current
+      ? { ...sess, messages: [...sess.messages, { role: 'assistant', content: r.note, toolNote: true } as ChatMessage] }
+      : sess))
+  }, [])
   useEffect(() => {
     if (!chatWorkspace) return
     const id = window.setTimeout(() => {
-      void saveAppSessions(chatWorkspace, sessionsRef.current)
+      void saveAndReport(chatWorkspace, sessionsRef.current)
     }, 1500)
     return () => window.clearTimeout(id)
   }, [sessions, chatWorkspace])
@@ -194,7 +210,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   // アンマウント時に保存待ちの内容を即座にフラッシュする
   useEffect(() => {
     return () => {
-      if (chatWorkspace) void saveAppSessions(chatWorkspace, sessionsRef.current)
+      if (chatWorkspace) void saveAndReport(chatWorkspace, sessionsRef.current)
     }
   }, [chatWorkspace])
   // B: セッション（会話）を切り替えたら割り振りをリセット
@@ -527,7 +543,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
               {isLoading ? (
                 <button
                   onClick={() => chat.abort()}
-                  className="flex-none w-8 h-8 bg-elevated border border-brand-red text-brand-red rounded-xl flex items-center justify-center hover:bg-brand-red hover:text-white transition-colors shadow-sm"
+                  className="flex-none w-8 h-8 bg-elevated border border-brand-red text-brand-red rounded-xl flex items-center justify-center hover:bg-brand-red-fill hover:text-white transition-colors shadow-sm"
                   title="応答を停止"
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">

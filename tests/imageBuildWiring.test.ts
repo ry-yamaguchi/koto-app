@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { excludedFileNames, excludedDirNames } from '../src/shared/publishExclude'
+import { excludedFileNames, excludedDirNames, servedExcludedFileNames, BUILD_CONFIG_FILES } from '../src/shared/publishExclude'
 
 // 2026-08-14 実機で発覚。公開したアプリのURLを開くと、`.sakuraide.json` が
 // ブラウザから読めていた（静的配信だったため一覧に出た）。
@@ -27,7 +27,22 @@ describe('公開イメージの除外リスト', () => {
     expect(line).toBeDefined()
     // 2026-08-19: 公開経路は publishExcludedDirNames（素材フォルダも外れる）を使う
     expect(line!).toContain('publishExcludedDirNames()')
-    expect(line!).toContain('excludedFileNames()')
+    // 2026-08-20: **配信されるもの**を集めるので、ビルド用の設定も外す版を使う。
+    // servedExcludedFileNames は excludedFileNames を丸ごと含む（下の検査で固定）。
+    expect(line!).toContain('servedExcludedFileNames()')
+  })
+
+  it('配信用の除外が、通常の除外を丸ごと含んでいる（部分的に使わない）', () => {
+    // 「一元化したモジュールがあっても、呼ぶ側が部分的に使えば穴は空く」（掟10）。
+    for (const f of excludedFileNames()) expect(servedExcludedFileNames().has(f)).toBe(true)
+  })
+
+  it('ビルド用の設定ファイルが、配信されるものから外れている', () => {
+    // 2026-08-20 実測: /Dockerfile /nginx.conf /.dockerignore が公開URLから読めていた。
+    for (const f of ['Dockerfile', 'nginx.conf', '.dockerignore']) {
+      expect(servedExcludedFileNames().has(f), `${f} が配信されてしまう`).toBe(true)
+      expect(BUILD_CONFIG_FILES as readonly string[]).toContain(f)
+    }
   })
 
   it('一元定義に、Koto の内部ファイルが入っている', () => {

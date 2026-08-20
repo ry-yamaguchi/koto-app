@@ -65,6 +65,9 @@ const THEMES = [
 /** 文字色として使う補助色（text-brand-* として実際に使われているもの）。 */
 const BRAND = ['green', 'blue', 'yellow', 'orange', 'cyan', 'red'] as const
 
+/** 塗りとして使う色（上に白文字が載る）。 */
+const FILLS = ['red-fill', 'yellow-fill'] as const
+
 /** その色が載る地色。 */
 const BACKGROUNDS = ['bg-base', 'bg-surface', 'bg-elevated', 'bg-overlay'] as const
 
@@ -83,10 +86,26 @@ describe.each(THEMES)('$name', ({ selector }) => {
     }
   })
 
-  it('本文の色が、どの地色の上でも読める', () => {
-    const fg = hexToRgb(varOf(src, 'text-primary')!)
+  it.each(['text-primary', 'text-secondary', 'text-muted'])('--%s が、どの地色の上でも読める', (name) => {
+    // --text-muted は 2026-08-20 まで、どのテーマでも 4.5:1 を切っていた
+    //（ダークの --bg-overlay 上で 2.46 / ライトで 3.22）。
+    // 📋 🗑 🔑 などの小さなボタンや補足が、ほとんど読めない状態だった。
+    const fg = hexToRgb(varOf(src, name)!)
     for (const bgName of BACKGROUNDS) {
-      expect(contrast(fg, hexToRgb(varOf(src, bgName)!))).toBeGreaterThanOrEqual(MIN)
+      const bg = varOf(src, bgName)!
+      const r = contrast(fg, hexToRgb(bg))
+      expect(r, `--${name} を --${bgName} の上に置くと ${r.toFixed(2)}:1`).toBeGreaterThanOrEqual(MIN)
+    }
+  })
+
+  it.each([...FILLS])('--%s は塗りとして使える（白文字が読め、地とも見分けられる）', (name) => {
+    // 「文字として読める色」と「白文字を載せられる色」は両立しない。
+    // 塗りに使う色は別に持つ（tailwind.config.js の brand.red-fill / brand.yellow-fill）。
+    const fg = hexToRgb(varOf(src, name)!)
+    expect(contrast(fg, [255, 255, 255]), `--${name} の上の白文字`).toBeGreaterThanOrEqual(MIN)
+    for (const bgName of BACKGROUNDS) {
+      // 塗りは「部品」なので、地との見分けは 3:1 を目安にする
+      expect(contrast(fg, hexToRgb(varOf(src, bgName)!)), `--${name} と --${bgName} の見分け`).toBeGreaterThanOrEqual(3)
     }
   })
 
@@ -98,18 +117,5 @@ describe.each(THEMES)('$name', ({ selector }) => {
       if (!hex || !hex.startsWith('#')) continue // hex を持たない組（--sakura-glow 等）は対象外
       expect(triple(varOf(src, `${n}-rgb`)!), `--${n} と --${n}-rgb がズレている`).toEqual(hexToRgb(hex))
     }
-  })
-})
-
-// ── 明るいテーマだけの約束 ────────────────────────────────────────────
-// 補助色は背景としても使われる（`bg-brand-red/90 text-white` など）。
-// ライトの色は「文字として読めるところまで暗くした」結果、白文字を載せても読める。
-// **ダークの色ではこれは成り立たない**（実測: 白文字 × --red で 3.08:1、--green で 1.77:1）。
-// これは今回の変更で生じたものではなく、以前からある別の課題なので、
-// ここでは**成り立っている側だけ**を固定する（成り立たないことを黙って通さないための記録も兼ねる）。
-describe('ライト（.theme-light）の補助色は、背景としても使える', () => {
-  const src = block('.theme-light {')
-  it.each([...BRAND])('--%s の上の白文字が読める', (name) => {
-    expect(contrast(hexToRgb(varOf(src, name)!), [255, 255, 255])).toBeGreaterThanOrEqual(MIN)
   })
 })

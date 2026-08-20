@@ -163,7 +163,7 @@ export default function KnowledgePacksTab({ apiKey, onUploaded }: Props) {
                 </p>
                 <div className="flex justify-between items-center">
                   <button onClick={() => cancelReplace(pack.id)} className="text-xs text-ink-secondary px-2 py-1 rounded-md hover:bg-overlay">やめる</button>
-                  <button onClick={() => confirmReplaceAndRun(pack)} className="text-xs font-semibold text-white bg-brand-red rounded-md px-3 py-1.5 hover:opacity-90">
+                  <button onClick={() => confirmReplaceAndRun(pack)} className="text-xs font-semibold text-white bg-brand-red-fill rounded-md px-3 py-1.5 hover:opacity-90">
                     削除して取り込む
                   </button>
                 </div>

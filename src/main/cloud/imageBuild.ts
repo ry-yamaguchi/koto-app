@@ -17,7 +17,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { validateRegistryServer, buildRef } from './docker'
-import { publishExcludedDirNames, excludedFileNames, isSecretFile } from '../../shared/publishExclude'
+import { publishExcludedDirNames, servedExcludedFileNames, isSecretFile } from '../../shared/publishExclude'
 import { planDependencies, nativeDepsMessage } from '../../shared/deps'
 import { MARKER_FILE, markerContent } from '../../shared/publishVerify'
 import { installDependencies } from './npmInstall'
@@ -32,7 +32,9 @@ const MAX_BUFFER = 16 * 1024 * 1024
 // KOTO_INTERNAL_FILES（`.sakuraide.json`）がイメージへ焼き込まれ、静的配信では
 // ブラウザから読めていた（2026-08-14 実機で確認）。publishExclude.ts は
 // 「同じリストを手で並べ直さない」ために作ったのに、ここが手で並べ直していた。
-const EXCLUDE_NAMES = new Set([...publishExcludedDirNames(), ...excludedFileNames()])
+// **配信されるものを集める**ので、ビルド用の設定ファイルも外す（servedExcludedFileNames）。
+// 2026-08-20 実測: /Dockerfile /nginx.conf /.dockerignore が公開URLから読めていた。
+const EXCLUDE_NAMES = new Set([...publishExcludedDirNames(), ...servedExcludedFileNames()])
 
 /** 出力を上限で切り詰める。 */
 function clip(s: unknown): string {

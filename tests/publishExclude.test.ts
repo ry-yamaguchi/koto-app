@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { publishExcludedDirNames, MATERIALS_DIR,
   KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES, SECRET_FILE_PATTERNS,
   excludedDirNames, excludedFileNames, isSecretFile, rsyncExcludeArgs, zipExcludePatterns,
-  isPublished } from '../src/shared/publishExclude'
+  isPublished, BUILD_CONFIG_FILES, servedExcludedFileNames } from '../src/shared/publishExclude'
 import { SKIP_DIRS, isEnvFileName } from '../src/main/github/enumerate'
 
 // 2026-08-05: レンタルサーバへの公開だけ Koto の内部フォルダの除外が抜けており、
@@ -220,5 +220,64 @@ describe('isPublished（一覧の見分け）', () => {
   it('呼び出し側固有の追加分も効く', () => {
     expect(isPublished('dist', true)).toBe(true)
     expect(isPublished('dist', true, ['dist'])).toBe(false)
+  })
+})
+
+// ── 配信されるものから、ビルド用の設定ファイルを外す（2026-08-20）─────────────
+// 公開中のサイトで実測したところ、次がすべて HTTP 200 で読めていた:
+//   /Dockerfile /nginx.conf /README.md /.dockerignore
+// 標準の公開は `python -m http.server` で /app をまるごと配信するため。
+// Dockerfile と nginx.conf は AI がビルドのために書いたもので、サイトの一部ではない。
+describe('servedExcludedFileNames（配信されるものの除外）', () => {
+  it('ビルド用の設定ファイルを外す', () => {
+    // **名前を書き下す。** BUILD_CONFIG_FILES を回すだけでは、中身が減っても気づけない
+    //（2026-08-20、ミューテーション試験で同語反復になっていたのを発見）。
+    for (const f of ['Dockerfile', 'nginx.conf', '.dockerignore']) {
+      expect(servedExcludedFileNames().has(f), `${f} が配信されてしまう`).toBe(true)
+    }
+  })
+
+  it('通常の除外も引き継ぐ（一元定義を丸ごと使う・掟10）', () => {
+    for (const f of excludedFileNames()) expect(servedExcludedFileNames().has(f)).toBe(true)
+  })
+
+  it('サイトの中身は外さない', () => {
+    for (const f of ['index.html', 'style.css', 'main.js', 'README.md']) {
+      expect(servedExcludedFileNames().has(f)).toBe(false)
+    }
+  })
+
+  it('README.md は外さない（公開したい人がいる）', () => {
+    expect(BUILD_CONFIG_FILES).not.toContain('README.md')
+  })
+
+  it('呼び出し側固有の追加分も効く', () => {
+    expect(servedExcludedFileNames(['secret.txt']).has('secret.txt')).toBe(true)
+  })
+})
+
+describe('ビルド設定を外してよい経路・いけない経路', () => {
+  it('レンタルサーバ（そのまま配信）では外す', () => {
+    const args = rsyncExcludeArgs()
+    for (const f of ['Dockerfile', 'nginx.conf', '.dockerignore']) {
+      expect(args, `${f} が置かれてしまう`).toContain(`--exclude='${f}'`)
+    }
+  })
+
+  it('HANAMII（zipからコンテナをビルド）では外さない', () => {
+    // zip から言語を判定してビルドするため、外して壊れないことを確かめられていない。
+    // 確かめるまでは触らない（掟1: 推測で実装しない）。
+    const pats = zipExcludePatterns()
+    for (const f of BUILD_CONFIG_FILES) expect(pats).not.toContain(f)
+  })
+
+  it('GitHub保存では外さない（Dockerfile はリポジトリに入っているべきもの）', () => {
+    for (const f of BUILD_CONFIG_FILES) expect(excludedFileNames().has(f)).toBe(false)
+  })
+
+  it('一覧の見分け（isPublished）はまだ変えない', () => {
+    // HANAMII では配信されうるので、「公開されない」と言い切れない。
+    // **「公開される」と多めに言うのは安全側**だが、逆は危ない（秘密を置かれてしまう）。
+    for (const f of BUILD_CONFIG_FILES) expect(isPublished(f, false)).toBe(true)
   })
 })

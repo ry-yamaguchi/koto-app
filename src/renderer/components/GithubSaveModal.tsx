@@ -226,7 +226,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
           )}
 
           {result && (
-            <p className={`text-xs rounded-lg px-3 py-2 leading-relaxed select-text break-all ${result.ok ? 'text-white bg-brand-green/90' : 'text-white bg-brand-red/90'}`}>
+            <p className={`text-xs rounded-lg px-3 py-2 leading-relaxed select-text break-all ${result.ok ? 'text-white bg-brand-green/90' : 'text-white bg-brand-red-fill'}`}>
               {result.ok ? '✅ ' : '❌ '}{result.text}
             </p>
           )}

@@ -4,6 +4,8 @@
 import type { ChatMessage } from './hooks/useAiChat'
 import { getWorkspaceDir } from './workspace'
 import { parseJsonArray, resolveChatSource } from './chatMigration'
+import { rescueTargets, withoutImages, droppedNote, stampOf } from '../shared/chatImages'
+import { MATERIALS_DIR } from '../shared/publishExclude'
 
 const LEGACY_PROJECT_PREFIX = 'sakura_chat:'
 const LEGACY_APP_KEY = 'sakura_sessions'
@@ -84,11 +86,24 @@ export async function loadAppSessions<T = any>(): Promise<{ workspaceDir: string
   return { workspaceDir, sessions: null }
 }
 
+/** 保存の結果。**画像を落としたときは、それを呼び出し側へ必ず返す**（画面で伝えるため）。 */
+export type SaveAppResult =
+  | { ok: true }
+  /** 保存はできたが、**画像を落とした**。note を画面に出すこと。 */
+  | { ok: true; droppedImages: number; note: string }
+  | { ok: false; message: string }
+
 /**
- * 単独チャット（ChatApp）のセッション一覧を保存する。画像でサイズ超過した場合は画像を落として再試行する
- * （旧 localStorage 実装の QuotaExceeded 対策と同じ考え方を踏襲）。失敗は握りつぶさず console.warn する。
+ * 単独チャット（ChatApp）のセッション一覧を保存する。
+ *
+ * ── 画像を落とすときの決まり（2026-08-20 実測で作り直した）────────────────
+ * 以前は、保存に失敗すると**全セッションの画像を黙って落として**保存し直し、
+ * console.warn を出すだけだった。「画像を使う」を押していない画像は**ここにしか無い**ので、
+ * 利用者は次に開いたとき、理由も分からないまま画像を失っていた。
+ *
+ * いまは **①先にファイルへ書き出して助ける ②落としたことを返して画面に出す** の順で行う。
  */
-export async function saveAppSessions(workspaceDir: string, sessions: any[]): Promise<void> {
+export async function saveAppSessions(workspaceDir: string, sessions: any[]): Promise<SaveAppResult> {
   const trySave = async (payload: any[]): Promise<{ ok: boolean; message?: string }> => {
     let json: string
     try {
@@ -110,12 +125,26 @@ export async function saveAppSessions(workspaceDir: string, sessions: any[]): Pr
   }))
 
   const first = await trySave(cleaned)
-  if (first.ok) return
+  if (first.ok) return { ok: true }
 
-  const slim = cleaned.map((s: any) => ({
-    ...s,
-    messages: Array.isArray(s.messages) ? s.messages.map((m: any) => (m.images ? { ...m, images: undefined } : m)) : s.messages,
-  }))
-  const second = await trySave(slim)
-  if (!second.ok) console.warn('[chatStorage] チャット履歴の保存に失敗しました:', second.message ?? first.message)
+  // ここから先は「画像を落とさないと保存できない」状態。**落とす前に助ける。**
+  const stamp = stampOf(new Date())
+  const targets = rescueTargets(cleaned, stamp)
+  let saved = 0
+  for (const t of targets) {
+    try {
+      // ワークスペース直下の「素材（公開しません）」へ書き出す（公開物には入らない場所）。
+      const r = await window.electronAPI.fs.importImageData(workspaceDir, t.name, t.url, 'material')
+      if (r?.ok) saved++
+    } catch { /* 1枚失敗しても続ける（助けられた分は助ける） */ }
+  }
+
+  const second = await trySave(withoutImages(cleaned))
+  if (!second.ok) {
+    const message = second.message ?? first.message ?? '保存に失敗しました'
+    console.warn('[chatStorage] チャット履歴の保存に失敗しました:', message)
+    return { ok: false, message }
+  }
+  if (targets.length === 0) return { ok: true }
+  return { ok: true, droppedImages: targets.length, note: droppedNote(saved, targets.length, MATERIALS_DIR) }
 }

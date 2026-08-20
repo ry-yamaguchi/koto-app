@@ -32,8 +32,10 @@
   --text-primary-rgb: 242 242 247;
   --text-secondary: #9a9aae;
   --text-secondary-rgb: 154 154 174;
-  --text-muted: #5f5f72;
-  --text-muted-rgb: 95 95 114;
+  /* 2026-08-20: どの地色の上でも 4.5:1 を切っていた（最悪は --bg-overlay の上で 2.46）。
+     📋 🗑 🔑 などの小さなボタンや補足がほとんど読めなかったため、明るさを上げた。 */
+  --text-muted: #8a8a9e;
+  --text-muted-rgb: 138 138 158;
 
   /* Sakura brand (coral-rose pink from the template) */
   --sakura: #ff5577;
@@ -57,6 +59,19 @@
   --cyan-rgb: 0 200 200;
   --red: #ff5577;
   --red-rgb: 255 85 119;
+
+  /*
+    ---- 塗り用の色（2026-08-20 追加）----
+    上の補助色は「暗い地の上で読める文字色」として選んである。
+    そのぶん明るく、**塗りに使って白文字を載せると読めない**
+    （実測: bg-brand-red に白文字で 3.08:1、bg-brand-yellow なら 1.9:1）。
+    1つの色で「文字として読める」と「白文字を載せられる」の両方はまかなえないので、
+    塗り用を別に持つ。白文字で 5.0:1、地色との差も 3:1 以上。
+  */
+  --red-fill: #dd0934;
+  --red-fill-rgb: 221 9 52;
+  --yellow-fill: #a06107;
+  --yellow-fill-rgb: 160 97 7;
 }
 
 /*
@@ -84,8 +99,9 @@
   --text-primary-rgb: 51 51 58;
   --text-secondary: #5f5f68;
   --text-secondary-rgb: 95 95 104;
-  --text-muted: #86868f;
-  --text-muted-rgb: 134 134 143;
+  /* 2026-08-20: ダークと同じ理由（最悪は --bg-overlay の上で 3.22）。 */
+  --text-muted: #6e6e77;
+  --text-muted-rgb: 110 110 119;
 
   --sakura: #ff5577;
   --sakura-rgb: 255 85 119;
@@ -118,6 +134,12 @@
   --cyan-rgb: 6 116 116;
   --red: #d10b33;
   --red-rgb: 209 11 51;
+
+  /* 塗り用（上記ダークと同じ考え方）。明るい地では文字用がすでに十分暗いので、同じ値でよい。 */
+  --red-fill: #d10b33;
+  --red-fill-rgb: 209 11 51;
+  --yellow-fill: #955b08;
+  --yellow-fill-rgb: 149 91 8;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

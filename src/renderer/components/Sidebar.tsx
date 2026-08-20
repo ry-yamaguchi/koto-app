@@ -762,7 +762,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
               <button
                 onClick={() => deleteProject(confirmProjDelete)}
                 disabled={deletingBusy}
-                className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red hover:opacity-90 transition-opacity disabled:opacity-40"
+                className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red-fill hover:opacity-90 transition-opacity disabled:opacity-40"
               >{deletingBusy ? '公開を破棄しています…' : '🗑 ゴミ箱に移動'}</button>
             </div>
           </div>

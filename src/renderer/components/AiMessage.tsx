@@ -89,7 +89,7 @@ function FileCard({ path, lang, code, onApply, applyHint }: {
           </button>
         )}
       </div>
-      {state === 'error' && <div className="px-3 py-1.5 text-[11px] text-white bg-brand-red/90">{err}</div>}
+      {state === 'error' && <div className="px-3 py-1.5 text-[11px] text-white bg-brand-red-fill">{err}</div>}
       {applyHint && (
         <div className="px-3 py-1.5 text-[11px] text-ink-muted border-t border-line-soft">💡 {applyHint}</div>
       )}

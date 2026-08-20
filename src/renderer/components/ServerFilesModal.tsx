@@ -252,7 +252,7 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
               >🔌 接続テスト</button>
             </div>
             {conn === 'ng' && connMsg && (
-              <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed">{connMsg}</p>
+              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">{connMsg}</p>
             )}
 
             {/* 操作結果メッセージ */}
@@ -280,7 +280,7 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
               {listing ? (
                 <p className="text-sm text-ink-secondary py-3">読み込み中…</p>
               ) : listError ? (
-                <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed">{listError}</p>
+                <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">{listError}</p>
               ) : entries.length === 0 ? (
                 <p className="text-sm text-ink-muted py-3">ファイルがありません。</p>
               ) : (

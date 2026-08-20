@@ -489,13 +489,13 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 </label>
 
                 {pollTimedOut && (
-                  <p className="text-[11px] text-white bg-brand-yellow/90 rounded-lg px-3 py-2 leading-relaxed">
+                  <p className="text-[11px] text-white bg-brand-yellow-fill rounded-lg px-3 py-2 leading-relaxed">
                     取り込みに時間がかかっています。あとで再読み込みしてください。
                   </p>
                 )}
 
                 {listError && (
-                  <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed select-text">{listError}</p>
+                  <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{listError}</p>
                 )}
 
                 {loading && documents.length === 0 ? (
@@ -645,7 +645,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                   </p>
                   <div className="flex justify-between items-center">
                     <button onClick={() => setPendingDelete(null)} disabled={deleting} className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40">やめる</button>
-                    <button onClick={doDelete} disabled={deleting} className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40">
+                    <button onClick={doDelete} disabled={deleting} className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40">
                       {deleting ? '削除中…' : '削除する'}
                     </button>
                   </div>
@@ -671,7 +671,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                   >{asking ? '考え中…' : '資料に質問してみる'}</button>
                 </div>
                 {askError && (
-                  <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed select-text">{askError}</p>
+                  <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{askError}</p>
                 )}
                 {answer && (
                   <div className="bg-elevated border border-line rounded-lg p-3 space-y-2">

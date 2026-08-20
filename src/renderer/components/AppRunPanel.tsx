@@ -788,7 +788,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
           <button
             onClick={() => { setOpResult(null); setConfirm({ kind: 'teardown' }) }}
             disabled={busy}
-            className="flex-none bg-brand-red text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
+            className="flex-none bg-brand-red-fill text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
           >🗑 破棄する</button>
         </div>
       )}
@@ -896,7 +896,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         )}
         {/* 認証情報未保存など、項目別に出せない全体エラーのみ表示。 */}
         {conn === 'ng' && connMsg && (
-          <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed">
+          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">
             {connMsg}
           </p>
         )}
@@ -919,7 +919,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
           // エラーがあっても「作成」導線は必ず残す（以前はエラー表示だけになり操作不能に見えた）
           <div className="space-y-2">
             {envError && (
-              <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed break-all select-text">{envError}</p>
+              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all select-text">{envError}</p>
             )}
             <p className="text-sm text-ink-secondary leading-relaxed">
               このプロジェクトにはまだ公開の設定がありません。ひな形（env.json）を自動で作成できます。
@@ -931,7 +931,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
             >{scaffolding ? '作成中…' : '☁ 公開の設定を作成'}</button>
           </div>
         ) : envError ? (
-          <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed break-all">{envError}</p>
+          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all">{envError}</p>
         ) : (
           <SpecSummary
             spec={spec}
@@ -1074,7 +1074,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
           </div>
         )}
         {planError && (
-          <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed break-all">{planError}</p>
+          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all">{planError}</p>
         )}
         {plan && <PlanView plan={plan} />}
       </section>
@@ -1613,7 +1613,7 @@ function PlanView({ plan }: { plan: CloudPlan }) {
   return (
     <div className="space-y-2">
       {plan.hasStatefulDelete && (
-        <p className="text-xs text-white bg-brand-red/90 rounded-lg px-3 py-2 leading-relaxed font-semibold">
+        <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed font-semibold">
           ⚠️ データが消える削除を含みます（バケットの削除）。
         </p>
       )}
@@ -1633,7 +1633,7 @@ function PlanView({ plan }: { plan: CloudPlan }) {
                     <span className="text-[10px] text-brand-blue border border-brand-blue/50 rounded px-1.5 py-0.5">データ保持</span>
                   )}
                   {destructive && a.stateful && (
-                    <span className="text-[10px] text-white bg-brand-red rounded px-1.5 py-0.5">データ削除</span>
+                    <span className="text-[10px] text-white bg-brand-red-fill rounded px-1.5 py-0.5">データ削除</span>
                   )}
                 </div>
                 <p className="text-[11px] text-ink-muted leading-relaxed mt-0.5 break-all">{a.description}</p>
@@ -1906,7 +1906,7 @@ function ConfirmDialog({
           <button
             onClick={onApply}
             disabled={busy}
-            className={`${destructive ? 'bg-brand-red' : 'sakura-gradient'} text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40`}
+            className={`${destructive ? 'bg-brand-red-fill' : 'sakura-gradient'} text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40`}
           >{busy ? '実行中…' : (destructive ? '理解した上で公開する' : '公開する')}</button>
         </div>
       </div>
@@ -1969,7 +1969,7 @@ function ConfirmDialog({
           <button
             onClick={onCleanupImages}
             disabled={busy}
-            className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+            className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
           >{busy ? '片づけています…' : '理解した上で消す'}</button>
         </div>
       </div>
@@ -2059,7 +2059,7 @@ function ConfirmDialog({
         <button
           onClick={onTeardown}
           disabled={busy}
-          className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+          className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
         >{busy ? '破棄中…' : '理解した上で破棄する'}</button>
       </div>
     </div>
