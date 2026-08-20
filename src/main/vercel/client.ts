@@ -30,9 +30,9 @@ export const VERCEL_USER_PATH = '/v2/user'
 // HANAMII の zipProjectToBuffer（src/main/ipc/hanamii.ts）の除外リストと揃える。
 // dist/build 等のビルド成果物は除外しない（Vercel が自身でビルドするため。
 // 静的サイトを事前ビルドしてコミットしている構成でも取りこぼさないようにする）。
-import { excludedDirNames, excludedFileNames, isSecretFile } from '../../shared/publishExclude'
+import { publishExcludedDirNames, excludedFileNames, isSecretFile } from '../../shared/publishExclude'
 
-const EXCLUDE_DIRS = excludedDirNames()
+const EXCLUDE_DIRS = publishExcludedDirNames()
 // .sakuraide.json は Koto 自身のメタ情報（公開設定等）で公開物ではないため、HANAMII と同様に除外する。
 const EXCLUDE_FILES = excludedFileNames()
 

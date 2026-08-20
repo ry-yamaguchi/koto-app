@@ -28,6 +28,30 @@ export const KOTO_INTERNAL_FILES = ['.sakuraide.json'] as const
 /** 公開に含める意味が無い重い／環境依存のフォルダ。 */
 export const HEAVY_DIRS = ['.git', 'node_modules'] as const
 
+/**
+ * 素材の置き場（2026-08-19 Ryosuke と決定）。
+ *
+ * 画像などを「アプリでは使わないが手元に置いておきたい」ときの場所。
+ * **公開先（Webに出る場所）へは出さない**が、**GitHub保存（バックアップ）には含める**
+ * ——Koto が作るリポジトリは private 固定なので、外へ出るわけではない。
+ * 含めないと「パソコンを替えたら素材が消える」ことになる。
+ *
+ * **名前で判定する。** だから名前自体が説明になっているものを選んだ
+ * （利用者が自分で作ったフォルダを勝手に除外しないため。今日の
+ * 「名前が似ているだけで引き取らない」と同じ考え）。
+ */
+export const MATERIALS_DIR = '素材（公開しません）'
+
+/**
+ * **公開先にだけ出さない**もの（バックアップには含める）。
+ *
+ * ここに足したものは `publishExcludedDirNames` / `rsyncExcludeArgs` /
+ * `zipExcludePatterns` の全部に効く。**公開経路が1つでも直接
+ * `excludedDirNames()` を使っていると漏れる**ので、テストで縛ってある
+ * （2026-08-05・08-09・08-14 と3回、同じ形で穴が空いた）。
+ */
+export const PUBLISH_ONLY_DIRS = [MATERIALS_DIR] as const
+
 /** OS が勝手に作る雑音ファイル。 */
 export const NOISE_FILES = ['.DS_Store'] as const
 
@@ -66,6 +90,14 @@ export function isSecretFile(name: string): boolean {
 }
 
 /** ディレクトリを歩くときに丸ごと飛ばす名前（Set で名前一致に使う）。 */
+/**
+ * **公開先へ出さないフォルダ名**（GitHub保存では使わない）。
+ * 公開の経路（レンタルサーバ・AppRun・HANAMII・Vercel）は必ずこちらを使う。
+ */
+export function publishExcludedDirNames(extra: readonly string[] = []): Set<string> {
+  return new Set<string>([...excludedDirNames(extra), ...PUBLISH_ONLY_DIRS])
+}
+
 export function excludedDirNames(extra: readonly string[] = []): Set<string> {
   return new Set<string>([...HEAVY_DIRS, ...KOTO_INTERNAL_DIRS, ...extra])
 }
@@ -90,7 +122,7 @@ const SECRET_GLOBS = [
 
 /** rsync の `--exclude='x'` を並べた文字列（先頭に空白1つ付く）。extra は呼び出し側固有の追加分。 */
 export function rsyncExcludeArgs(extra: readonly string[] = []): string {
-  const names = [...HEAVY_DIRS, ...KOTO_INTERNAL_DIRS, ...KOTO_INTERNAL_FILES, ...NOISE_FILES, ...SECRET_GLOBS, ...extra]
+  const names = [...HEAVY_DIRS, ...KOTO_INTERNAL_DIRS, ...PUBLISH_ONLY_DIRS, ...KOTO_INTERNAL_FILES, ...NOISE_FILES, ...SECRET_GLOBS, ...extra]
   return names.map(n => ` --exclude='${n}'`).join('')
 }
 
@@ -99,6 +131,7 @@ export function zipExcludePatterns(extra: readonly string[] = []): string[] {
   return [
     ...HEAVY_DIRS.map(d => `${d}/*`),
     ...KOTO_INTERNAL_DIRS.map(d => `${d}/*`),
+    ...PUBLISH_ONLY_DIRS.map(d => `${d}/*`),
     ...NOISE_FILES,
     ...KOTO_INTERNAL_FILES,
     // zip の -x はパスに対して照合するので、配下のどの階層でも効くよう */ を前置する

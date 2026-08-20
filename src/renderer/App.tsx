@@ -18,6 +18,7 @@ import KnowledgeModal from './components/KnowledgeModal'
 import HistoryModal from './components/HistoryModal'
 import GithubSaveModal from './components/GithubSaveModal'
 import PublishedListModal from './components/PublishedListModal'
+import { useFileDrag } from './hooks/useFileDrag'
 
 const EditorPanel = lazy(() => import('./components/EditorPanel'))
 
@@ -88,6 +89,10 @@ export default function App() {
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [showChat, setShowChat] = useState(true)
+  /** 画面全体にファイルを重ねているか（落とせることを見せる）。 */
+  const windowDrag = useFileDrag()
+  // いまファイル一覧の上に居るか（案内の文面を切り替えるだけ）
+  const [overTree, setOverTree] = useState(false)
   const [showTerminal, setShowTerminal] = useState(true)
   const [currentDir, setCurrentDir] = useState<string | null>(null)
   const [treeRefresh, setTreeRefresh] = useState(0)
@@ -154,6 +159,20 @@ export default function App() {
     setShowChat(true)
     // ChatPanel 側がこのイベントで入力欄にフォーカスする
     setTimeout(() => window.dispatchEvent(new Event('sakura:focus-chat')), 50)
+  }, [])
+
+  // ── 「AIに修正させる」を押したら、AIが働く様子が見える場所へ移す（2026-08-19）──
+  // 実機（Ryosuke）: 公開の画面を開いたまま裏でAIが動き、**何が起きているのか
+  // 分からなかった**。押した人の目的は「直してもらうこと」なので、
+  // 公開の画面を閉じてチャットを前に出す（送信は ChatPanel 側が行う）。
+  useEffect(() => {
+    const h = () => {
+      setShowPublish(false)
+      setShowChat(true)
+      setMode('ide') // チャットモードにはプロジェクトのファイルを直す道具が無い
+    }
+    window.addEventListener('sakura:fix-with-ai', h)
+    return () => window.removeEventListener('sakura:fix-with-ai', h)
   }, [])
 
   // メニューバー「認証情報（APIキー）…」から開く
@@ -562,8 +581,44 @@ export default function App() {
             id="sakura-ide-h"
             defaultLayout={loadLayout('sakura-ide-h')}
             onLayoutChanged={l => saveLayout('sakura-ide-h', l)}
-            className="h-full fade-in flex"
+            className="h-full fade-in flex relative"
+            /* ── どこに落としても受け取る（2026-08-19 Ryosuke 指摘）──────────────
+               これまで受け取れたのは「ファイル一覧」と「チャットの履歴」だけで、
+               **エディタの上に落としても無反応**だった。落とせる場所が見た目で
+               分からないので、画面全体で受ける。
+               ファイル一覧の上に落としたときは、そちらの動き（プロジェクトへ取り込む）
+               が優先される（Sidebar 側で止めている）。 */
+            /* 表示の出し入れは useFileDrag が持つ（2026-08-19 実機）。
+               ここで自前に持っていたときは、**窓の外へ出したときに消えず**、
+               受け入れたままの見た目で操作できなくなった。 */
+            onDragOver={e => {
+              // 落とす先で結果が変わるのは**ファイル一覧だけ**。どこに居るかを見て文面を変える
+              setOverTree(!!(e.target as HTMLElement | null)?.closest?.('[data-drop="tree"]'))
+              windowDrag.onDragOver(e)
+            }}
+            onDragLeave={windowDrag.onDragLeave}
+            onDrop={e => {
+              if (!e.dataTransfer.files?.length) return
+              e.preventDefault(); windowDrag.end()
+              // ChatPanel が受け取って添付にする（同じ道を2つ持たない）
+              window.dispatchEvent(new CustomEvent('sakura:attach-images', { detail: { files: e.dataTransfer.files } }))
+            }}
           >
+            {/* ── 案内はひとつだけ（2026-08-19 実機・Ryosuke 指摘）────────────────
+                以前は「ファイル一覧」と「チャット」だけが受け口で、その2か所を
+                桜色の枠で光らせていた。**いまは画面全体で受ける**ので、枠と
+                全体の案内が二重に出て「以前の名残」に見えていた。
+                出すのはこの1つにし、**ファイル一覧の上だけ文面を変える**
+                （そこだけ結果が違う＝プロジェクトへ取り込む）。 */}
+            {windowDrag.over && (
+              <div className="absolute inset-0 z-30 flex items-center justify-center bg-base/60 pointer-events-none">
+                <span className="text-sm font-semibold text-sakura bg-surface border border-sakura rounded-xl px-4 py-2">
+                  {overTree
+                    ? '📥 ここに落とすと、プロジェクトに取り込みます'
+                    : '🖼 ここに落とすと、AIに見せます（そのあと「📁 画像を使う」でプロジェクトにも入れられます）'}
+                </span>
+              </div>
+            )}
             {/* Sidebar */}
             <Panel id="sidebar" defaultSize="18%" minSize="12%" maxSize="32%">
               <div className="h-full bg-surface">

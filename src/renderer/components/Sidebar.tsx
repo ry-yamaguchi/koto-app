@@ -5,6 +5,7 @@ import { clearPublishRecord, readHanamiiProjectId, readPublishTargets } from '..
 import { teardownSupport, manualTeardownGuide } from '../../shared/teardownSupport'
 import { REGISTRY_MONTHLY_YEN } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
+import { useFileDrag } from '../hooks/useFileDrag'
 
 interface FileEntry {
   name: string
@@ -163,7 +164,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   const [workspaceProjects, setWorkspaceProjects] = useState<string[]>([])
   const [recents, setRecents] = useState<string[]>(loadRecents)
   const [dropHint, setDropHint] = useState<string | null>(null)
-  const [treeDragOver, setTreeDragOver] = useState(false)
+  const treeDrag = useFileDrag()
   const [nameDialog, setNameDialog] = useState<{ mode: 'new' | 'rename'; targetPath: string; initial: string } | null>(null)
   const [nameInput, setNameInput] = useState('')
   // プロジェクト削除の確認ダイアログ（削除対象のパス。null=非表示）
@@ -477,10 +478,15 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       )}
 
       <div
-        className={`flex-1 overflow-y-auto py-1.5${treeDragOver ? ' ring-2 ring-sakura ring-inset' : ''}`}
-        onDragOver={e => { e.preventDefault(); setTreeDragOver(true) }}
-        onDragLeave={() => setTreeDragOver(false)}
-        onDrop={e => { e.preventDefault(); setTreeDragOver(false); if (e.dataTransfer.files?.length) importDropped(e.dataTransfer.files) }}
+        data-drop="tree"
+        className={`flex-1 overflow-y-auto py-1.5${treeDrag.over ? ' ring-2 ring-sakura ring-inset' : ''}`}
+        // ここに落としたときは**プロジェクトに取り込む**。落とす処理だけはここで止める
+        //（画面全体の受け口＝AIに見せる、へ流さないため）。
+        // 重なっている合図は止めない: 全体の案内が「取り込みます」に変わるのを、
+        // 上（App）が知る必要がある（2026-08-19 実機で二重の枠を整理）
+        onDragOver={treeDrag.onDragOver}
+        onDragLeave={treeDrag.onDragLeave}
+        onDrop={e => { e.preventDefault(); e.stopPropagation(); treeDrag.end(); if (e.dataTransfer.files?.length) importDropped(e.dataTransfer.files) }}
       >
         {currentDir ? (
           <>

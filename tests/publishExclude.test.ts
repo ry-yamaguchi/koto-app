@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import {
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { publishExcludedDirNames, MATERIALS_DIR,
   KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES, SECRET_FILE_PATTERNS,
   excludedDirNames, excludedFileNames, isSecretFile, rsyncExcludeArgs, zipExcludePatterns,
 } from '../src/shared/publishExclude'
@@ -144,5 +146,40 @@ describe('秘密ファイルは、どの形式でも必ず除外される', () =
       expect(args).toContain(`--exclude='${g}'`)
       expect(pats).toContain(g)
     }
+  })
+})
+
+// ── 素材の置き場（2026-08-19 Ryosuke と決定）────────────────────────────
+// 画像などを「アプリでは使わないが手元に置いておきたい」ときの場所。
+// **公開先へは出さない／GitHub保存（バックアップ）には含める。**
+// Koto が作るリポジトリは private 固定なので、含めても外へは出ない。
+// 含めないと「パソコンを替えたら素材が消える」ことになる。
+describe('素材（公開しません）の扱い', () => {
+  it('名前自体が説明になっている（自分で作ったフォルダと衝突しないように）', () => {
+    expect(MATERIALS_DIR).toBe('素材（公開しません）')
+  })
+
+  it('★ 公開の全経路から外れる', () => {
+    // 名前の集合を使う経路（AppRun の内蔵ビルダー・Vercel）
+    expect(publishExcludedDirNames().has(MATERIALS_DIR)).toBe(true)
+    // rsync を使う経路（レンタルサーバ）
+    expect(rsyncExcludeArgs()).toContain(`--exclude='${MATERIALS_DIR}'`)
+    // zip を使う経路（HANAMII）
+    expect(zipExcludePatterns()).toContain(`${MATERIALS_DIR}/*`)
+  })
+
+  it('★ GitHub保存（バックアップ）には含める', () => {
+    // GitHub 経路は excludedDirNames を使う。ここに入っていたら素材が失われる
+    expect(excludedDirNames().has(MATERIALS_DIR)).toBe(false)
+  })
+
+  it('★ 公開経路が excludedDirNames を直接使っていないこと', () => {
+    // 直接使うと素材が公開物へ入る（2026-08-05/08-09/08-14 と3回開いた穴と同じ形）
+    const vercel = readFileSync(join(__dirname, '..', 'src/main/vercel/client.ts'), 'utf-8')
+    const image = readFileSync(join(__dirname, '..', 'src/main/cloud/imageBuild.ts'), 'utf-8')
+    expect(vercel).toContain('publishExcludedDirNames()')
+    expect(vercel).not.toMatch(/=\s*excludedDirNames\(\)/)
+    expect(image).toContain('publishExcludedDirNames()')
+    expect(image).not.toMatch(/\.\.\.excludedDirNames\(\)/)
   })
 })

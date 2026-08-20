@@ -7,6 +7,8 @@ import type { IpcDeps } from './types'
 
 // ── AI専用：プロジェクト内に閉じ込めたファイル読み書き（多層防御） ──
 // rel はプロジェクトルートからの相対パス。絶対パスや .. での脱出は拒否する。
+import { destinationDir, uniqueName, isImageFileName, type AssetPurpose } from '../../shared/assetImport'
+
 function confineToProject(projectDir: string, rel: string): string {
   if (path.isAbsolute(rel)) throw new Error('不正なパスです（絶対パスは指定できません）')
   const full = path.normalize(path.join(projectDir, rel))
@@ -106,19 +108,72 @@ export function registerFsHandlers(deps: IpcDeps) {
   })
 
   // Finderからのドラッグ＆ドロップ取り込み：外部ファイルをプロジェクトへコピーする
-  ipcMain.handle('fs:importFile', async (_, args: { src: string; projectDir: string }) => {
+  /**
+   * 手元のファイルをプロジェクトへ複製する。
+   *
+   * **入れ先の判断は shared/assetImport.ts に集約**（2026-08-19）。
+   * ここで独自に決めると、画面の説明と実際の場所がずれる。
+   *
+   * `purpose`:
+   *   'app'      … アプリで使う（`public/` があれば `public/images/`、無ければ `images/`）
+   *   'material' … 素材として置く（`素材（公開しません）/`。**公開先へは出ない**）
+   */
+  ipcMain.handle('fs:importFile', async (_, args: { src: string; projectDir: string; purpose?: AssetPurpose }) => {
+    const purpose: AssetPurpose = args.purpose === 'material' ? 'material' : 'app'
     const name = path.basename(args.src)
-    const isImage = /\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i.test(name)
-    // 画像は images/ へ、それ以外はルートへ
-    const destDir = isImage ? path.join(args.projectDir, 'images') : args.projectDir
+    let topLevel: string[] = []
+    try { topLevel = fs.readdirSync(args.projectDir) } catch { topLevel = [] }
+
+    // 画像でないものは、これまでどおりプロジェクト直下へ置く（素材は指定どおり）
+    const relDir = isImageFileName(name) || purpose === 'material'
+      ? destinationDir(purpose, topLevel)
+      : ''
+    const destDir = relDir ? confineToProject(args.projectDir, relDir) : args.projectDir
     fs.mkdirSync(destDir, { recursive: true })
-    // 同名ファイルがあれば name-2.ext のように自動リネーム
-    const ext = path.extname(name)
-    const stem = path.basename(name, ext)
-    let dest = path.join(destDir, name)
-    for (let i = 2; fs.existsSync(dest); i++) dest = path.join(destDir, `${stem}-${i}${ext}`)
+
+    let existing: string[] = []
+    try { existing = fs.readdirSync(destDir) } catch { existing = [] }
+    const dest = path.join(destDir, uniqueName(name, existing))
     fs.copyFileSync(args.src, dest)
-    return path.relative(args.projectDir, dest) // 例: images/photo.jpg
+    // **読み取りだけを足す**（2026-08-14 の EACCES と同じ轍を踏まない）。
+    // 手元が 0600 のままだと、公開したコンテナの中で読めない
+    try {
+      const mode = fs.statSync(dest).mode & 0o7777
+      fs.chmodSync(dest, mode | 0o444)
+    } catch { /* 権限を変えられなくても複製自体は成立している */ }
+    return path.relative(args.projectDir, dest) // 例: public/images/logo.png
+  })
+
+  /**
+   * チャットに添付した画像を、そのままプロジェクトへ入れる（2026-08-19）。
+   *
+   * 添付は**本文（data URL）として手元にある**ので、元ファイルの場所を追わなくてよい。
+   * 貼り付けた画像（元ファイルが無い）も同じ道で入れられる。
+   * 入れ先の判断は shared/assetImport.ts に集約。
+   */
+  ipcMain.handle('fs:importImageData', async (_, args: { projectDir: string; name: string; dataUrl: string; purpose?: AssetPurpose }) => {
+    try {
+      const m = /^data:([^;,]+);base64,(.+)$/s.exec(String(args.dataUrl ?? ''))
+      if (!m) return { ok: false, message: '画像の形式を読み取れませんでした' }
+      const purpose: AssetPurpose = args.purpose === 'material' ? 'material' : 'app'
+      let topLevel: string[] = []
+      try { topLevel = fs.readdirSync(args.projectDir) } catch { topLevel = [] }
+      const relDir = destinationDir(purpose, topLevel)
+      const destDir = confineToProject(args.projectDir, relDir)
+      fs.mkdirSync(destDir, { recursive: true })
+      let existing: string[] = []
+      try { existing = fs.readdirSync(destDir) } catch { existing = [] }
+      const dest = path.join(destDir, uniqueName(args.name, existing))
+      fs.writeFileSync(dest, Buffer.from(m[2], 'base64'))
+      // **読み取りだけを足す**（2026-08-14 の EACCES と同じ轍を踏まない）
+      try {
+        const mode = fs.statSync(dest).mode & 0o7777
+        fs.chmodSync(dest, mode | 0o444)
+      } catch { /* 権限を変えられなくても複製自体は成立している */ }
+      return { ok: true, rel: path.relative(args.projectDir, dest) }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
   })
 
   // ファイルをゴミ箱へ（完全削除はしない）

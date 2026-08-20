@@ -17,8 +17,9 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { validateRegistryServer, buildRef } from './docker'
-import { excludedDirNames, excludedFileNames, isSecretFile } from '../../shared/publishExclude'
+import { publishExcludedDirNames, excludedFileNames, isSecretFile } from '../../shared/publishExclude'
 import { planDependencies, nativeDepsMessage } from '../../shared/deps'
+import { MARKER_FILE, markerContent } from '../../shared/publishVerify'
 import { installDependencies } from './npmInstall'
 
 // ── 出力上限・タイムアウト（crane の build/push は時間がかかり得る） ──
@@ -31,7 +32,7 @@ const MAX_BUFFER = 16 * 1024 * 1024
 // KOTO_INTERNAL_FILES（`.sakuraide.json`）がイメージへ焼き込まれ、静的配信では
 // ブラウザから読めていた（2026-08-14 実機で確認）。publishExclude.ts は
 // 「同じリストを手で並べ直さない」ために作ったのに、ここが手で並べ直していた。
-const EXCLUDE_NAMES = new Set([...excludedDirNames(), ...excludedFileNames()])
+const EXCLUDE_NAMES = new Set([...publishExcludedDirNames(), ...excludedFileNames()])
 
 /** 出力を上限で切り詰める。 */
 function clip(s: unknown): string {
@@ -153,6 +154,26 @@ function copyTree(srcDir: string, destDir: string): void {
   }
 }
 
+/**
+ * crane に渡す一時 DOCKER_CONFIG ディレクトリを作る（絶対パスを返す）。
+ *
+ * **パスワードを argv に載せない**ための仕掛け。`ps` 等のプロセス一覧に出てしまうため、
+ * base64(user:password) を 0600 のファイルに書き、`DOCKER_CONFIG` 環境変数で渡す。
+ *
+ * **呼び出し側が必ず削除すること**（finally で `fs.rmSync(dir, { recursive: true, force: true })`）。
+ * 片づけ（imageCleanup.ts）も同じ仕掛けを使うので、ここ1箇所に置く（掟10）。
+ */
+export function makeDockerConfigDir(auth: { server: string; user: string; password: string }): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-dcfg-'))
+  const authB64 = Buffer.from(`${auth.user}:${auth.password}`, 'utf-8').toString('base64')
+  fs.writeFileSync(
+    path.join(dir, 'config.json'),
+    JSON.stringify({ auths: { [auth.server]: { auth: authB64 } } }),
+    { mode: 0o600 }
+  )
+  return dir
+}
+
 /** execFile を Promise でラップ（タイムアウト・出力上限つき）。 */
 function runExecFile(
   cmd: string,
@@ -190,7 +211,7 @@ function readPackageJson(appDir: string): unknown {
 
 export async function stageAndTar(
   contextAbs: string,
-  opts?: { onProgress?: (m: string) => void },
+  opts?: { onProgress?: (m: string) => void; buildTag?: string },
 ): Promise<string> {
   if (typeof contextAbs !== 'string' || !path.isAbsolute(contextAbs)) {
     throw new Error('ビルドコンテキストは絶対パスである必要があります')
@@ -211,6 +232,18 @@ export async function stageAndTar(
   const layer = path.join(tmpDir, 'layer.tar')
 
   copyTree(contextAbs, appDir)
+
+  // ── 版の目印を1つ混ぜる（2026-08-19 実機・Ryosuke 報告）──────────────────
+  // 公開が「✅ 完了」と出ても、**古い中身が配られ続けている**ことがあった。
+  // デプロイのAPIが 200 を返したことも、アプリが起動したことも、
+  // 「中身が新しい」証拠にはならない。**公開のあとにこの目印を読みに行く**。
+  if (opts?.buildTag) {
+    try {
+      const marker = path.join(appDir, MARKER_FILE)
+      fs.writeFileSync(marker, markerContent(opts.buildTag))
+      addPermission(marker, 0o444)
+    } catch { /* 目印を置けなくても公開そのものは成立する（確認ができないだけ） */ }
+  }
 
   // ── 依存ライブラリを用意して、一緒に持っていく（改善案 1-5・2026-08-18）──
   // コンテナの中で入れる場所が無い（Docker を使わないので）ため、**手元で入れて
@@ -238,6 +271,20 @@ export async function stageAndTar(
     throw new Error(`ファイル層の作成に失敗しました: ${summarizeStderr(r.stderr)}`)
   }
   return layer
+}
+
+/**
+ * イメージ参照からタグだけを取り出す（純関数）。
+ *
+ * `example.sakuracr.jp/app:v20260819-182300` → `v20260819-182300`
+ * ポート付きのサーバ（`host:5000/app:tag`）でも、**最後の `:` の後ろ**を見る。
+ * `/` を含む場合はタグではない（`host:5000/app` のような形）ので空にする。
+ */
+export function tagOfRef(ref: string): string {
+  const at = String(ref ?? '').lastIndexOf(':')
+  if (at < 0) return ''
+  const tail = ref.slice(at + 1)
+  return tail.includes('/') ? '' : tail
 }
 
 /** buildAndPush の入力。 */
@@ -357,7 +404,11 @@ export async function buildAndPush(opts: BuildAndPushOptions): Promise<BuildAndP
   try {
     // 2. ファイル層（app/ 配下）を作る。
     try {
-      layer = await stageAndTar(opts.contextAbs, { onProgress: opts.onProgress })
+      layer = await stageAndTar(opts.contextAbs, {
+        onProgress: opts.onProgress,
+        // 版の目印は ref のタグをそのまま使う（公開のあとに読みに行く）
+        buildTag: tagOfRef(opts.ref),
+      })
       layerTmpDir = path.dirname(layer)
     } catch (e: any) {
       return { ok: false, log: '', message: e?.message ?? String(e) }
@@ -365,13 +416,7 @@ export async function buildAndPush(opts: BuildAndPushOptions): Promise<BuildAndP
 
     // 3. 一時 DOCKER_CONFIG ディレクトリに config.json を書く（push 先の認証）。
     //    ベース（docker.io）は公開のため認証不要。-t 先（さくら）の auths のみ載せる。
-    cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-dcfg-'))
-    const authB64 = Buffer.from(
-      `${opts.registryAuth.user}:${opts.registryAuth.password}`,
-      'utf-8'
-    ).toString('base64')
-    const dockerConfig = { auths: { [opts.registryAuth.server]: { auth: authB64 } } }
-    fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify(dockerConfig), { mode: 0o600 })
+    cfgDir = makeDockerConfigDir(opts.registryAuth)
 
     // 4. crane 実行。
     const args = buildCraneArgs({

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { CHAT_TEXT_WRAP } from '../textWrap'
 
 // 推論モデル（Kimi K2.7 / gpt-oss 等）の「思考」を、生成中はライブで見せ、終わったら畳む折りたたみ表示。
 //
@@ -49,7 +50,7 @@ export default function ThinkingBlock({ text, live }: { text: string; live: bool
       {open && (
         <div
           ref={bodyRef}
-          className="px-2 pb-2 max-h-40 overflow-y-auto text-[11px] text-ink-secondary whitespace-pre-wrap leading-relaxed select-text"
+          className={`px-2 pb-2 max-h-40 overflow-y-auto text-[11px] text-ink-secondary leading-relaxed select-text ${CHAT_TEXT_WRAP}`}
         >{text}</div>
       )}
     </div>

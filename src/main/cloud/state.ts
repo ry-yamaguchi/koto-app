@@ -58,6 +58,16 @@ export type EnvMeta = {
    * レジストリ名はプロジェクトごとに state.json へ記録し、破棄はこれだけを見る。
    */
   registryName?: string
+  /**
+   * いま公開しているイメージのタグ（例 `v20260819-182300`）。
+   *
+   * ── なぜ控えるのか（2026-08-19）──────────────────────────────────────
+   * 公開のたびに新しいタグを打つようになったので、レジストリに古いタグが溜まる。
+   * 片づけるときに**いま動いているアプリが使っているタグを消してはいけない**が、
+   * それは spec からは分からない（spec の tag は `latest` のままで、実際に打った
+   * タグはその場で作る）。控えておかないと、**足元を外す**ことになる。
+   */
+  imageTag?: string
 }
 
 /**
@@ -241,6 +251,18 @@ export function isExpired(state: EnvState, now: Date): boolean {
  * 公開（apply）で同じことが起きると、もっと悪い。**作られたアプリが記録に残らず、
  * Koto から見つけられないまま課金が続く。**
  */
+/**
+ * 公開に使ったイメージのタグを記録する（**既存の meta は必ず残す**）。
+ *
+ * meta を丸ごと差し替えると registryName が消える（2026-08-09 に実害が出た形）ので、
+ * 追加は必ずここを通す。タグが空のときは何も変えない。
+ */
+export function withImageTag(state: EnvState, tag: string | null | undefined): EnvState {
+  const t = String(tag ?? '').trim()
+  if (!t) return state
+  return { ...state, meta: { ...state.meta, imageTag: t } }
+}
+
 export function stateToSave(opts: {
   ok: boolean
   state: EnvState
@@ -250,12 +272,19 @@ export function stateToSave(opts: {
   now?: Date
   /** teardown でレジストリを消せたか（kind='teardown' のときだけ使う）。 */
   registryDeleted?: boolean
+  /** 今回の公開に使ったイメージのタグ（kind='apply' のときだけ使う）。 */
+  imageTag?: string
 }): EnvState {
   // 失敗したときは、起きたことをそのまま残す。**成功時だけの仕上げは行わない**
   // （作成メタを付けたり、レジストリの記録を落としたりしない）
   if (!opts.ok) return opts.state
   if (opts.kind === 'apply') {
-    return withCreationMeta(opts.state, opts.ttlHours ?? 0, opts.now ?? new Date())
+    // **タグは毎回書き換える**（createdAt と違い「初回だけ」ではない。
+    // 記録が古いと、いま動いているタグを消してしまう）。
+    return withImageTag(
+      withCreationMeta(opts.state, opts.ttlHours ?? 0, opts.now ?? new Date()),
+      opts.imageTag
+    )
   }
   return stateAfterTeardown(opts.state, opts.registryDeleted === true)
 }

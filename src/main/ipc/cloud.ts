@@ -135,6 +135,44 @@ function readProjectPackageJson(contextAbs: string): unknown {
  * 分からない。** かといって無限には待てないので、上限を決めて打ち切り、
  * 打ち切ったことを利用者に伝える（黙って成功にしない）。
  */
+/**
+ * 公開した中身が**本当に新しくなったか**を確かめる（2026-08-19 実機・Ryosuke 報告）。
+ *
+ * デプロイのAPIが 200 を返しても、アプリが起動していても、**中身が新しい
+ * 証拠にはならない**。実際に「✅ 完了」と出しながら、画像を入れる前の
+ * 古いページが配られ続けていた。配る中身に混ぜた目印（.koto-build）を
+ * 公開先から読み、版が一致するまで待つ。
+ *
+ * 判断は shared/publishVerify に集約し、ここは読みに行くだけ。
+ */
+async function verifyPublished(
+  publicUrl: string,
+  tag: string,
+  progress: (m: string) => void,
+): Promise<VerifyOutcome> {
+  const url = markerUrl(publicUrl)
+  const delays = verifyDelaysMs()
+  let reached = false
+  for (let i = 0; i <= delays.length; i++) {
+    try {
+      // キャッシュに騙されないよう、毎回違う問い合わせにする
+      const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' as RequestCache })
+      if (res.ok) {
+        reached = true
+        if (matchesMarker(await res.text(), tag)) return 'ok'
+      } else if (res.status === 404) {
+        // 目印が無い＝古い版が配られている（目印は今回から入るため、初回は起こりうる）
+        reached = true
+      }
+    } catch { /* まだ立ち上がっていない・通信できない。次の待ちで再挑戦する */ }
+    if (i < delays.length) {
+      progress('🔎 公開先に新しい内容が出るのを待っています…')
+      await new Promise(r => setTimeout(r, delays[i]))
+    }
+  }
+  return reached ? 'stale' : 'unreachable'
+}
+
 async function waitForHealthy(
   client: SakuraCloudClient,
   appId: string,
@@ -244,7 +282,17 @@ import { MonitoringClient } from '../cloud/monitoring'
 import { decideLogAction, parseProvisioningState, pickLogStorageId, hasAppLogRouting, APPRUN_LOG_PUBLISHER, APPRUN_LOG_VARIANT } from '../../shared/appLog'
 import { permissionsToCleanUp } from '../../shared/storageKeys'
 import { summarizePreflight, sortChecks, type PreflightCheck } from '../../shared/preflight'
+import {
+  localRefs, checkRefs, backgroundImageIssues, sizedClassNames, sizedImageClassNames,
+  localLinks, hasViewportMeta, imgWithoutSizing, unusedImages, heavyImages, humanBytes,
+  siteIssueNote, siteCheckSummary, fixInstruction, type SiteIssue, type SiteIssueKind,
+} from '../../shared/siteCheck'
+import { publishExcludedDirNames } from '../../shared/publishExclude'
 import { sharedBucketName, isValidBucketName, consentedBuckets, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, KOTO_ROOT, type BucketMode } from '../../shared/objectStorage'
+import { tagForPublish } from '../../shared/publishTag'
+import { planTagCleanup, digestsToDelete, normalizeKeep, DEFAULT_KEEP } from '../../shared/imageRetention'
+import { listTags, resolveDigests, deleteDigests } from '../cloud/imageCleanup'
+import { markerUrl, matchesMarker, verifyDelaysMs, verifyMessage, canVerify, type VerifyOutcome } from '../../shared/publishVerify'
 
 export function registerCloudHandlers(_deps: IpcDeps) {
   // 接続テスト＝APIキーの権限を 3 点で非破壊チェックする。
@@ -725,6 +773,13 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       // 適用に使う spec（dockerfile の場合はビルド後に image ソースへ差し替える）。
       let resolvedSpec = spec
       let registryAuth: { server: string; username: string; password: string } | undefined
+      // 公開のあとに「中身が新しくなったか」を確かめるための控え（2026-08-19）
+      let publishedTag: string | null = null
+      // 片づけ（cloud:cleanupImages）と溜まり具合の通知に使う。
+      let publishedImage: string | null = null
+      let staleImages: { total: number; removable: number; keep: number } | undefined
+      let runtimeKind = 'static'
+      let verified: VerifyOutcome | undefined
 
       // ── image 以外のソース かつ プランがアプリの create/update を含むなら、
       //    同梱の crane で「公開ベース＋ファイル層＋起動設定」を組み立ててレジストリへ push する。
@@ -801,10 +856,19 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         }
 
         // 2. レジストリサーバ＋image＋tag から完全な参照を組み立てる（検証込み）。
+        //
+        // ── 公開のたびに違うタグを付ける（2026-08-19 実機・Ryosuke 報告）────────
+        // 「試すと画像が出るのに、公開すると出ない」。実測すると公開先には
+        // **画像を入れる前の古いページ**が出ていた（`images/` は 404）。
+        // 毎回 `…:latest` という**同じ名前**を渡していたため、中身が変わっても
+        // AppRun 側からは同じイメージに見えていた。名前を変えれば必ず取りに行く。
         const server = registryServer(regCreds.name)
+        const publishRefTag = tagForPublish(source.tag, new Date())
+        publishedTag = publishRefTag
+        publishedImage = source.image
         let ref: string
         try {
-          ref = buildRef(server, source.image, source.tag)
+          ref = buildRef(server, source.image, publishRefTag)
         } catch (e: any) {
           return { ok: false, message: e?.message ?? String(e) }
         }
@@ -858,6 +922,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           // 公開してもソースの一覧が出るだけだった（2026-08-14 実機で発覚）。
           // 判断は shared/runtimeDetect.ts に集約（掟10）。
           const choice = detectRuntimeFor(contextAbs)
+          runtimeKind = choice.kind
           if (choice.kind === 'unsupported') {
             // **黙って static で公開しない。** 動かないうえにソースが丸見えになる
             return { ok: false, message: choice.reason }
@@ -947,6 +1012,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       saveCloudState(projectDir, stateToSave({
         ok: result.ok, state: result.state, kind: 'apply',
         ttlHours: spec.guardrails.ttlHours, now: new Date(),
+        // **いま動いているタグを控える。** 片づけのときに、これを消さないため（2026-08-19）
+        ...(publishedTag ? { imageTag: publishedTag } : {}),
       }))
       // ── 本当に動いているかを確かめる（2026-08-14）──────────────────────
       // **デプロイのAPIが 200 を返したことは、アプリが動いた証拠にならない。**
@@ -976,15 +1043,61 @@ export function registerCloudHandlers(_deps: IpcDeps) {
             try { await cleanUpOldKeys(storage, resolvedSpec.name, result.state.meta?.storagePermissionId ?? null, progress) }
             catch { /* 片づけの失敗で公開を失敗にしない */ }
           }
+
+          // ── 中身が新しくなったかを確かめる（2026-08-19 実機・Ryosuke 報告）──
+          // 「試すと画像が出るのに公開すると出ない」。公開は成功と出ていたが、
+          // 配られていたのは**画像を入れる前の古いページ**だった。
+          // 起動を確認しただけでは、これは分からない。
+          if (health.ok && publishedTag) {
+            let publicUrl: string | null = null
+            try {
+              const info = await client.getApp(appId)
+              if (info.dryRun === false && info.ok) publicUrl = extractAppUrl(info.data)
+            } catch { /* URLが取れなければ確認しないだけ（公開は成立している） */ }
+            if (canVerify(runtimeKind, publicUrl)) {
+              verified = await verifyPublished(publicUrl as string, publishedTag, progress)
+            }
+          }
+
+          // ── 古いイメージがどれだけ溜まったかを数える（2026-08-19 Ryosuke 指摘）──
+          // 公開のたびに新しいタグを打つようになった副作用で、コンテナレジストリに
+          // タグが1公開につき1つ増える（1公開で増える容量は実測で数KB〜5.3MiB。
+          // 料金は月額220円に5GiB込み・超過1GiBごと22円）。
+          //
+          // **ここでは数えるだけで、消さない。** 消すのは利用者の資産を壊す操作なので、
+          // 確認ダイアログを経た cloud:cleanupImages でしか行わない（掟5）。
+          // 一覧が取れなくても公開は成立しているので、失敗は黙って見送る。
+          //
+          // **うまくいった公開のときだけ言う。** 失敗した公開の画面に「古いものが
+          // 溜まっています」を並べても、いま直したいことの邪魔になるだけ。
+          if (health.ok && publishedImage && registryAuth) {
+            try {
+              const listed = await listTags({
+                auth: { server: registryAuth.server, user: registryAuth.username, password: registryAuth.password },
+                image: publishedImage,
+              })
+              if (listed.ok) {
+                const p = planTagCleanup({ tags: listed.tags, keep: DEFAULT_KEEP, currentTag: publishedTag })
+                if (p.remove.length > 0) {
+                  staleImages = { total: listed.tags.length, removable: p.remove.length, keep: DEFAULT_KEEP }
+                }
+              }
+            } catch { /* 数えられなくても公開は成立している */ }
+          }
         }
       }
 
       const finallyOk = result.ok && (health ? health.ok : true)
       progress(finallyOk ? '✅ 完了' : health?.pending ? '⏳ 起動を確認できていません' : '⚠️ 失敗しました')
+      // 確認できたときだけ一言添える（確認できない公開もあるので、無言を失敗と混ぜない）
+      const verifyNote = verified ? verifyMessage(verified) : ''
       return {
         ok: finallyOk,
         executed: result.executed,
         skipped: result.skipped,
+        ...(verifyNote ? { verifyNote } : {}),
+        // 古いイメージが溜まっているときだけ載せる（画面が「片づける」を出す材料）
+        ...(staleImages ? { staleImages } : {}),
         message: health && !health.ok ? health.note : result.message,
         ...(health?.detail ? { detail: health.detail } : {}),
         // 起動に失敗したときだけ、ログの場所とAIへの相談を出せるようにする
@@ -994,6 +1107,197 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
     } catch (e: any) {
       progress('⚠️ 失敗しました')
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  // ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）────────────────────────
+  //
+  // 公開のたびに新しいタグを打つようにした（publishTag.ts）副作用で、コンテナレジストリに
+  // タグが溜まる。料金は月額220円に5GiB込み・超過1GiBごと22円なので、放っておくと
+  // **静かに増える課金**になる（1公開で増える容量の実測は shared/imageRetention.ts の冒頭）。
+  //
+  // **守り（掟5・掟10）:**
+  //   ・`confirmed` が true でなければ**一覧を返すだけで、何も消さない**。
+  //     画面はこれを確認ダイアログに出してから、もう一度 confirmed で呼ぶ。
+  //   ・何を消すかの判断は shared/imageRetention.ts（テスト付き）。ここは配線だけ。
+  //   ・**別のプロジェクトのレジストリを触らない。** 接続情報はアプリ共通に1つしか無く、
+  //     最後に公開したプロジェクトのもので上書きされる（2026-08-09 に、破棄で別プロジェクトの
+  //     レジストリを消す事故が実際に起きた）。公開と同じ resolvePushRegistry で突き合わせる。
+  /**
+   * 消すあいだだけ、レジストリの権限を上げる（2026-08-19 実機・Ryosuke 指摘）。
+   *
+   * ── なぜこの形か ──────────────────────────────────────────────────
+   * 実機で分かった: **`readwrite`（Push & Pull）では削除できない**。
+   * はじめは「失敗したら【権限を上げる】ボタンを出す」形にしたが、
+   *
+   *   「権限が不足していることを認識しておきながら、あえて失敗させてその後
+   *     ボタンを押させるのは不条理だ」（Ryosuke）
+   *
+   * そのとおりなので、**押した1回の中で**上げる→消す→**必ず戻す**。
+   * 上がったままにしないので、保存している接続情報でできることも普段は広がらない。
+   *
+   * ・パスワードは変えない（変えると、いま動いている公開の認証が切れる）
+   * ・戻せなかったときは**黙らない**（何が残っているかを伝える）
+   */
+  async function withDeletePermission<T>(
+    creds: ReturnType<typeof loadCredentials>,
+    opts: { region: string; registryLabel: string; username: string; password: string; progress: (m: string) => void },
+    run: () => Promise<T>,
+  ): Promise<{ raised: boolean; restored: boolean; message?: string; result?: T }> {
+    if (!creds) return { raised: false, restored: true, message: 'APIキーが未登録です' }
+    const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+    const listed = await client.listContainerRegistries(opts.region)
+    if (listed.dryRun !== false || !listed.ok) {
+      return { raised: false, restored: true, message: 'レジストリの一覧を取得できませんでした（APIキーの権限をご確認ください）' }
+    }
+    const found = pickContainerRegistries(listed.data).find(r => r.subdomainLabel === opts.registryLabel)
+    if (!found) return { raised: false, restored: true, message: `レジストリ『${opts.registryLabel}』が見つかりませんでした` }
+
+    const setPermission = async (permission: 'all' | 'readwrite') =>
+      client.updateRegistryUser(opts.region, found.id, { username: opts.username, password: opts.password, permission })
+
+    opts.progress('🔑 消すあいだだけ権限を上げています…')
+    const up = await setPermission('all')
+    if (up.dryRun === false && !up.ok) {
+      return {
+        raised: false, restored: true,
+        message: `削除のための権限に変更できませんでした（HTTP ${up.status}）${apiErrorMessage(up.data) ? ' — ' + apiErrorMessage(up.data) : ''}。`
+          + 'さくらのコントロールパネルで、このレジストリの利用者権限を「All」に変更してからお試しください。',
+      }
+    }
+    try {
+      const result = await run()
+      return { raised: true, restored: false, result } // 戻すのは下の finally 後に判定する
+    } finally {
+      // **必ず戻す。** 失敗しても戻す（上がったままにしない）
+      opts.progress('🔑 権限を元に戻しています…')
+      const down = await setPermission('readwrite')
+      if (down.dryRun === false && !down.ok) {
+        // 戻せなかったことは、あとで必ず伝える（下の呼び出し側で message に混ぜる）
+        restoreFailed = true
+      } else {
+        restoreFailed = false
+      }
+    }
+  }
+  /** 直前の withDeletePermission で権限を戻せたか（戻せなければ利用者に伝える）。 */
+  let restoreFailed = false
+
+  ipcMain.handle('cloud:cleanupImages', async (event, projectDir: string, opts?: { confirmed?: boolean; keep?: number }) => {
+    const progress = (msg: string) => {
+      try { event.sender.send('cloud:apply-progress', msg) } catch { /* ウィンドウ破棄時は無視 */ }
+    }
+    try {
+      const spec = loadCloudSpec(projectDir)
+      if (!spec) return { ok: false, message: 'env.json がありません（先に公開の設定を作ってください）' }
+      const source = spec.service.source
+      if (source.type !== 'dockerfile' || !source.image) {
+        return { ok: false, message: 'このプロジェクトは Koto がイメージを組み立てていないため、片づける対象がありません' }
+      }
+      const regCreds = loadRegistryCredentials()
+      if (!regCreds) {
+        return { ok: false, message: 'コンテナレジストリの認証情報が未登録です（「🛠 レジストリを自動作成」を押してください）' }
+      }
+      const state = loadCloudState(projectDir, spec)
+
+      // **どのレジストリを触るのかを、公開とまったく同じやり方で決める。**
+      const push = resolvePushRegistry(state.meta?.registryName, regCreds.name)
+      if ('error' in push) {
+        return {
+          ok: false,
+          hint: 'reset-registry' as const,
+          message: push.error === 'no-credentials'
+            ? 'コンテナレジストリの認証情報が未登録です'
+            : `このプロジェクトはコンテナレジストリ『${push.recorded}』を使う設定ですが、`
+              + `いまは別のレジストリ『${push.credential}』の接続情報が入っています。`
+              + `別のプロジェクトのイメージを消してしまうため、片づけは行いません。`
+              + `下の「レジストリを設定し直す」を押してから、もう一度お試しください。`,
+        }
+      }
+
+      const auth = { server: registryServer(push.use), user: regCreds.user, password: regCreds.password }
+      progress('🔎 レジストリのイメージを調べています…')
+      const listed = await listTags({ auth, image: source.image })
+      if (!listed.ok) {
+        // **生の応答を捨てない。**（原因に辿り着けなくなる。2026-08-14 の教訓）
+        return {
+          ok: false,
+          message: listed.permission
+            ? 'レジストリのイメージ一覧を見る権限がありませんでした。'
+              + 'さくらのコントロールパネルで、このレジストリの利用者権限を「All」に変更してください。'
+            : listed.message,
+          detail: listed.detail,
+        }
+      }
+
+      const imageName = source.image
+      const keep = normalizeKeep(opts?.keep ?? DEFAULT_KEEP) ?? DEFAULT_KEEP
+      const currentTag = state.meta?.imageTag ?? null
+      const plan = planTagCleanup({ tags: listed.tags, keep, currentTag })
+
+      // **消す前に、必ず一覧を見せる。** ここで止まるのが既定の道。
+      if (opts?.confirmed !== true) {
+        return { ok: true, dryRun: true, plan, currentTag, keep }
+      }
+      if (plan.remove.length === 0) {
+        return { ok: true, dryRun: false, plan, currentTag, keep, deleted: [], failed: [] }
+      }
+
+      // **同じ実体を指すタグを巻き添えにしない。** 中身が変わっていない公開は
+      // 別のタグでも同じ digest になる（2026-08-19 実測）。
+      progress('🔎 消してよいイメージか確かめています…')
+      const digestOf = await resolveDigests({
+        auth, image: source.image,
+        tags: [...plan.remove, ...plan.keep, ...plan.untouched],
+      })
+      const { digests, sharedWithKept } = digestsToDelete({ plan, digestOf })
+      if (digests.length === 0) {
+        return {
+          ok: true, dryRun: false, plan, currentTag, keep, deleted: [], failed: [], sharedWithKept,
+          message: '消してよいイメージはありませんでした（残すものと中身が同じでした）。',
+        }
+      }
+
+      // **消すあいだだけ権限を上げ、終わったら必ず戻す**（2026-08-19 Ryosuke 指摘）
+      const region = spec.region ?? 'is1a'
+      const guarded = await withDeletePermission(
+        loadCredentials(),
+        { region, registryLabel: push.use, username: regCreds.user, password: regCreds.password, progress },
+        // 閉じた関数の中では型の絞り込みが効かないので、名前を控えてから渡す
+        () => deleteDigests({ auth, image: imageName, digests, onProgress: progress }),
+      )
+      if (!guarded.raised || !guarded.result) {
+        return {
+          ok: false, dryRun: false, plan, currentTag, keep, sharedWithKept,
+          message: guarded.message ?? '削除のための権限を用意できませんでした。',
+        }
+      }
+      const r = guarded.result
+      progress(r.failed.length === 0 ? '✅ 片づけました' : '⚠️ 一部を片づけられませんでした')
+      return {
+        ok: r.failed.length === 0,
+        dryRun: false,
+        plan, currentTag, keep, sharedWithKept,
+        deleted: r.deleted,
+        failed: r.failed,
+        message: (r.failed.length === 0
+          ? `古いイメージを ${r.deleted.length} 件片づけました。`
+          : r.permission
+            ? 'イメージを削除する権限がありませんでした。'
+              + 'さくらのコントロールパネルで、このレジストリの利用者権限を「All」に変更してからお試しください。'
+            : r.unsupported
+              ? 'このレジストリは、Koto からのイメージ削除に対応していないようです。'
+                + 'さくらのコントロールパネルから削除してください。'
+              : '一部のイメージを片づけられませんでした。')
+          // **戻せなかったことは黙らない。**（上がったままだと、できることが広がったままになる）
+          + (restoreFailed
+            ? '\n⚠️ レジストリの権限を元（Push & Pull）に戻せませんでした。'
+              + 'さくらのコントロールパネルで戻してください。'
+            : ''),
+        ...(r.failed.length > 0 ? { detail: r.failed.map(f => `${f.digest}: ${f.detail}`).join('\n') } : {}),
+      }
+    } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
     }
   })
@@ -1360,6 +1664,75 @@ export function registerCloudHandlers(_deps: IpcDeps) {
    *
    * ⚠️ **何も作らない・何も変えない。** 見るだけ。
    */
+/**
+ * 作ったページの「押す前に分かる落とし穴」を探す（2026-08-19 実機・Ryosuke 報告）。
+ *
+ * 公開したページのヒーローが**タイル表示**になっていた。記録では、背景画像を
+ * 入れてから `background-size: cover` が足されるまで25分あり、その間は
+ * **試すでも公開でも本当にタイル表示**だった（AI の作りかけ）。
+ *
+ * 見た目の良し悪しは人が決めることだが、**決まった落とし穴**は押す前に拾える。
+ * 判断は shared/siteCheck に集約し、ここはファイルを読むだけ。
+ */
+function findSiteIssues(root: string): SiteIssue[] {
+  const skip = publishExcludedDirNames()
+  const files: string[] = []
+  const walk = (dir: string, base: string, depth: number) => {
+    if (depth > 6 || files.length > 2000) return // 大きなプロジェクトで止まらないための歯止め
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (skip.has(e.name) || e.name.startsWith('.')) continue
+      const rel = base ? `${base}/${e.name}` : e.name
+      if (e.isDirectory()) walk(path.join(dir, e.name), rel, depth + 1)
+      else if (e.isFile()) files.push(rel)
+    }
+  }
+  walk(root, '', 0)
+
+  const read = (rel: string) => { try { return fs.readFileSync(path.join(root, rel), 'utf-8') } catch { return '' } }
+  const pages = files.filter(f => /\.html$/i.test(f))
+  const styles = files.filter(f => /\.css$/i.test(f))
+  const allCss = styles.map(read).join('\n')
+  // 大きさの指定は**別のファイル（CSS）に書かれていることがある**ので、先に集める
+  const sizedBg = sizedClassNames(allCss)
+  const sizedImg = sizedImageClassNames(allCss)
+
+  const issues: SiteIssue[] = []
+  const referenced = new Set<string>()
+  const push = (kind: SiteIssueKind, file: string, detail: string) =>
+    issues.push({ kind, file, detail, note: siteIssueNote(kind, detail) })
+
+  for (const f of [...pages, ...styles]) {
+    const text = read(f)
+    const refs = localRefs(text)
+    for (const r of refs) referenced.add(r)
+    const { missing, miscased } = checkRefs(refs, files)
+    for (const m of missing) push('missing', f, m)
+    for (const m of miscased) { push('miscased', f, `${m.ref} → ${m.actual}`); referenced.add(m.actual) }
+    for (const b of backgroundImageIssues(text, sizedBg)) push('background', f, b)
+  }
+  for (const f of pages) {
+    const html = read(f)
+    const links = localLinks(html)
+    for (const l of checkRefs(links, files).missing) push('link', f, l)
+    if (!hasViewportMeta(html)) push('viewport', f, '')
+    for (const i of imgWithoutSizing(html, sizedImg)) push('imgSize', f, i)
+  }
+
+  // どこからも使われていない画像・大きすぎる画像（**AI では直せない**ので、伝えるだけ）
+  // 名前は行の頭に出るので、ここでは繰り返さない（2026-08-19）
+  for (const u of unusedImages(files, Array.from(referenced))) push('unused', u, '')
+  const sizes = files.map(f => {
+    try { return { path: f, bytes: fs.statSync(path.join(root, f)).size } } catch { return { path: f, bytes: 0 } }
+  })
+  // **使われている画像だけ**を見る（使っていないものはページを重くしないし、
+  // 片づけで消えるものに「対応してください」と言うのは筋が通らない・2026-08-19）
+  for (const h of heavyImages(sizes, Array.from(referenced))) push('heavy', h.path, humanBytes(h.bytes))
+
+  return issues
+}
+
   ipcMain.handle('cloud:preflight', async (_e, projectDir: string) => {
     const checks: PreflightCheck[] = []
     const add = (id: string, label: string, status: PreflightCheck['status'], note: string, fix?: PreflightCheck['fix']) =>
@@ -1384,6 +1757,29 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         return { ok: true, ...summarizePreflight(sortChecks(checks)) }
       }
       add('spec', '公開の設定', 'ok', `公開名『${spec.name}』で公開します。`)
+
+      // ── 見た目の落とし穴（2026-08-19 実機・Ryosuke 報告）────────────────
+      // 公開は止めない（`warn`）。**直すかどうかは人が決める**が、
+      // 「押してから気づく」よりは、押す前に見えていた方がよい。
+      try {
+        const issues = findSiteIssues(projectDir)
+        if (issues.length === 0) {
+          add('look', '見た目', 'ok', 'よくある落とし穴（背景画像・リンク切れ・スマホ対応・画像の大きさ）は見つかりませんでした。')
+        } else {
+          const lines = issues.slice(0, 6).map(i => `・${i.file}: ${i.note}`)
+          if (issues.length > 6) lines.push(`・ほか ${issues.length - 6} 件`)
+          // AI が直せるものが1つでもあれば「直させる」ボタンを出す
+          const instruction = fixInstruction(issues)
+          // AI では直せないが Koto なら消せるもの（押せるものが無いと行き止まりになる）
+          const unusedFiles = issues.filter(i => i.kind === 'unused').map(i => i.file)
+          checks.push({
+            id: 'look', label: '見た目', status: 'warn',
+            note: `${siteCheckSummary(issues)}\n${lines.join('\n')}`,
+            ...(instruction ? { fix: 'ai-fix' as const, fixPrompt: instruction } : {}),
+            ...(unusedFiles.length ? { unusedFiles } : {}),
+          })
+        }
+      } catch { /* 見つけられなくても公開は成立する（黙って通す） */ }
 
       // 起動できる作りか（判断は shared/runtimeDetect.ts）
       if (spec.service.source.type !== 'image') {

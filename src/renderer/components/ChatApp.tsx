@@ -12,6 +12,8 @@ import { loadAppSessions, saveAppSessions } from '../chatStorage'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
 import BrainToggle from './BrainToggle'
+import { useFileDrag } from '../hooks/useFileDrag'
+import { CHAT_TEXT_WRAP } from '../textWrap'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
 function GeoSquares({ className = '' }: { className?: string }) {
@@ -83,7 +85,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   const models = useModels(apiKey)
   const [input, setInput] = useState('')
   const [pendingImages, setPendingImages] = useState<string[]>([])
-  const [dragOver, setDragOver] = useState(false)
+  const drag = useFileDrag()
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -347,15 +349,15 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
 
         {/* Messages */}
         <div
-          className={`flex-1 overflow-y-auto relative ${dragOver ? 'ring-2 ring-sakura ring-inset' : ''}`}
-          onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
+          className={`flex-1 overflow-y-auto relative ${drag.over ? 'ring-2 ring-sakura ring-inset' : ''}`}
+          onDragOver={drag.onDragOver}
+          onDragLeave={drag.onDragLeave}
           onDrop={e => {
-            e.preventDefault(); setDragOver(false)
+            e.preventDefault(); drag.end()
             if (e.dataTransfer.files?.length) addImages(e.dataTransfer.files)
           }}
         >
-          {dragOver && (
+          {drag.over && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-base/70 pointer-events-none">
               <span className="text-base font-semibold text-sakura">🖼 画像をドロップしてAIに渡す</span>
             </div>
@@ -411,7 +413,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                       {msg.role === 'assistant' && msg.thinking && (
                         <ThinkingBlock text={msg.thinking} live={isLoading && i === activeSession.messages.length - 1} />
                       )}
-                      {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={onApplyFile} applyHint="保存後の編集・実行・公開は、画面上部の切替で IDE モードに移って行えます" /> : (msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>)}
+                      {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={onApplyFile} applyHint="保存後の編集・実行・公開は、画面上部の切替で IDE モードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
                       {/* #31: Claudeが使えないときの「さくらのAI Engineに切り替えて続ける」提案ボタン。 */}
                       {msg.offerAiEngineFallback && (
                         <button
@@ -504,7 +506,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                   const files = Array.from(e.clipboardData.files)
                   if (files.length) { e.preventDefault(); addImages(files) }
                 }}
-                placeholder="Koto AIにメッセージを送る... (⌘+Enter で送信。画像は貼付け/ドロップ/📎で添付)"
+                placeholder="Koto AIにメッセージを送る…"
                 rows={1}
                 className="flex-1 bg-transparent text-sm text-ink placeholder-ink-muted outline-none resize-none leading-relaxed"
                 style={{ minHeight: '24px', maxHeight: '200px' }}

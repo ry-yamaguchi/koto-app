@@ -32,3 +32,36 @@ export function looksLikeRegistryProblem(log: string): boolean {
   if (t.length === 0) return false
   return MARKERS.some(re => re.test(t))
 }
+
+/**
+ * 「権限が足りない」応答か（2026-08-19）。
+ *
+ * ── なぜ分けて見るのか ────────────────────────────────────────────────
+ * さくらの公式マニュアルは、レジストリの利用者権限をこう定めている:
+ *   All        … 新規追加・変更・**削除**・取得・イメージ一覧・イメージ詳細・タグ一覧の取得
+ *   Push & Pull… 変更・取得
+ *   Pullのみ   … 取得のみ
+ *   https://manual.sakura.ad.jp/cloud/appliance/container-registry/index.html
+ * Koto が自動作成する push 用ユーザーは **`readwrite`（Push & Pull）** なので、
+ * 古いイメージの片づけは**権限不足で断られる可能性が高い**。
+ * そのときに「よく分からない失敗」で終わらせず、直し方（コントロールパネルで
+ * 権限を All にする）を出せるよう、ほかの失敗と区別する。
+ */
+export function looksLikePermissionProblem(log: string): boolean {
+  const t = String(log ?? '').toLowerCase()
+  if (t.length === 0) return false
+  return /\b401\b|\b403\b|unauthorized|denied|forbidden|insufficient[_ ]scope/.test(t)
+}
+
+/**
+ * 「この操作に対応していない」応答か（2026-08-19）。
+ *
+ * レジストリによっては、イメージの削除そのものを受け付けない設定がある
+ * （Docker のレジストリは削除を無効にできる）。権限の問題と取り違えると、
+ * 直しようのない案内（権限を上げてください）を出し続けることになる。
+ */
+export function looksLikeUnsupported(log: string): boolean {
+  const t = String(log ?? '').toLowerCase()
+  if (t.length === 0) return false
+  return /\b405\b|unsupported|not implemented|method not allowed/.test(t)
+}

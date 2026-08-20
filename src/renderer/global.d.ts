@@ -126,7 +126,17 @@ interface Window {
       exists(path: string): Promise<boolean>
       readFileBase64(path: string): Promise<string>
       pathForFile(file: File): string
-      importFile(src: string, projectDir: string): Promise<string>
+      /**
+       * チャットに添付した画像（data URL）を、そのままプロジェクトへ入れる。
+       * 元ファイルの場所を追わないので、**貼り付けた画像**でも入れられる。
+       */
+      importImageData(projectDir: string, name: string, dataUrl: string, purpose?: 'app' | 'material'): Promise<{ ok: boolean; rel?: string; message?: string }>
+      /**
+       * 手元のファイルをプロジェクトへ複製し、**プロジェクトからの相対パス**を返す。
+       * `purpose` 未指定は 'app'（アプリで使う。公開されます）。
+       * 'material' は「素材（公開しません）」へ入れる。
+       */
+      importFile(src: string, projectDir: string, purpose?: 'app' | 'material'): Promise<string>
       trash(p: string): Promise<void>
       rename(oldPath: string, newName: string): Promise<string>
       watchDir(dir: string, cb: () => void): () => void
@@ -258,7 +268,8 @@ interface Window {
        * そのとき `logUrl`（コンパネのログ）と `askAi`（相談の文面）が付く。
        */
       /** `pending: true` は「失敗ではなく、まだ確認できていない」（起動に時間がかかっている）。 */
-      apply(projectDir: string, opts?: { confirmed?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string }>
+      /** `verifyNote`: 公開先の中身が本当に新しくなったかの確認結果（確認できたときだけ入る）。 */
+      apply(projectDir: string, opts?: { confirmed?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string; verifyNote?: string; staleImages?: { total: number; removable: number; keep: number } }>
       /** deleteRegistry: false でコンテナレジストリを残す（月額課金は続く）。未指定は削除する。 */
       /** `keptBucketName` は「破棄したのに残った保存場所」。残っていれば月額も続く。 */
       /**
@@ -269,7 +280,8 @@ interface Window {
         ok: boolean
         canPublish: boolean
         summary: string
-        checks: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' }[]
+        /** `fix: 'ai-fix'` のときは `fixPrompt` を AI に送って直させる（押したら直しにいく）。 */
+        checks: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' | 'ai-fix'; fixPrompt?: string; unusedFiles?: string[] }[]
         message?: string
       }>
       teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; keptBucketName?: string | null; message?: string }>
@@ -282,6 +294,23 @@ interface Window {
       checkPrereqs(projectDir: string): Promise<{ sourceType: 'dockerfile' | 'image' | null; builderMode: 'builtin' | 'docker'; builder?: boolean; docker?: boolean; dockerfile?: boolean; registry: boolean; message?: string }>
       // 環境スペックのビルド方式を切り替える（標準=builtin / エキスパート=docker）。
       setBuilderMode(projectDir: string, mode: 'builtin' | 'docker'): Promise<{ ok: boolean; message?: string }>
+      /**
+       * 古いイメージの片づけ。**confirmed を付けなければ何も消さず、計画だけ返す**
+       * （画面はそれを確認ダイアログに出してから、confirmed で呼び直す）。
+       */
+      cleanupImages(projectDir: string, opts?: { confirmed?: boolean; keep?: number }): Promise<{
+        ok: boolean
+        dryRun?: boolean
+        plan?: { remove: string[]; keep: string[]; untouched: string[] }
+        currentTag?: string | null
+        keep?: number
+        deleted?: string[]
+        failed?: Array<{ digest: string; message: string; detail: string }>
+        sharedWithKept?: string[]
+        message?: string
+        detail?: string
+        hint?: string
+      }>
       // 直近に確定した請求額（コスト実額・円）と対象月(asOf, 例 "2026年5月")を取得する。
       cost(): Promise<{ ok: boolean; amountYen?: number; asOf?: string; message?: string }>
       // コンテナレジストリを自動作成（無ければ作成・あれば再利用）し push 用認証を保存する。
@@ -361,7 +390,7 @@ interface Window {
         ok: boolean
         canPublish?: boolean
         summary?: string
-        checks?: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' }[]
+        checks?: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' | 'ai-fix'; fixPrompt?: string; unusedFiles?: string[] }[]
         message?: string
       }>
       // ファイルアップロード→デプロイ作成→READYまでのポーリングを main 側で一括して行い、完了後に結果を返す

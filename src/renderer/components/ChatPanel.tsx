@@ -4,6 +4,7 @@ import SakuraLogo from './SakuraLogo'
 import AiMessage from './AiMessage'
 import ThinkingBlock from './ThinkingBlock'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
+import { shouldTryImagesDirectly } from '../visionSupport'
 import { useModels } from '../hooks/useModels'
 import { useClaudeModels } from '../hooks/useClaudeModels'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
@@ -19,6 +20,9 @@ import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeModel, claudeModelShortLabel, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
 import { loadProjectChat, saveProjectChat } from '../chatStorage'
 import { takeNewProjectRequest } from '../newProjectRequest'
+import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, mediaTypeOf, type AssetPurpose } from '../../shared/assetImport'
+import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
+import { CHAT_TEXT_WRAP } from '../textWrap'
 
 type Message = ChatMessage
 
@@ -64,8 +68,21 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   const [projectCtx, setProjectCtx] = useState<{ dir: string; ctx: string } | null>(null)
   // 📚 資料設定（.sakuraide.json の rag キー）。プロジェクト切替や KnowledgeModal での保存後に読み直す。
   const [ragSettings, setRagSettings] = useState<RagSettings | null>(null)
-  const [pendingImages, setPendingImages] = useState<string[]>([])
-  const [dragOver, setDragOver] = useState(false)
+  /**
+   * 添付中の画像。**名前も持つ**（プロジェクトへ入れるときのファイル名に使う。
+   * 貼り付けた画像には元の名前が無いので、その場で付ける・2026-08-19）。
+   */
+  const [pendingImages, setPendingImages] = useState<Array<{ url: string; name: string }>>([])
+  const [assetChoice, setAssetChoice] = useState<AssetPurpose | null>(null)
+  /**
+   * もうプロジェクトへ入れた画像（2026-08-19 実機・Ryosuke 指摘）。
+   *
+   * 入れたあとも会話の中の画像にボタンが残っていた。押すと**同じ画像がもう1枚**
+   * 増える（`uniqueName` が `-2` を付ける）。入れ終わったものからは導線を消す。
+   */
+  const [savedImages, setSavedImages] = useState<Set<string>>(new Set())
+  // 添付が無くなったら印も外す（次に付けた画像に、前の印が残らないように）
+  useEffect(() => { if (pendingImages.length === 0) setAssetChoice(null) }, [pendingImages.length])
   const [writeMode, setWriteMode] = useState<WriteMode>(getWriteMode())
   // 「毎回確認」モードで保存待ちのファイル。resolve(true)=許可 / resolve(false)=拒否
   const [pendingApproval, setPendingApproval] = useState<{ path: string; resolve: (ok: boolean) => void } | null>(null)
@@ -133,6 +150,39 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   const sentNewProjectDirRef = useRef<string | null>(null) // 同一dirでの二重送信防止
 
   // 画像を取り込む（縮小してdata URL化し、添付候補に追加）
+  /**
+   * 添付した画像をプロジェクトへ入れる（2026-08-19）。
+   *
+   * 入れたら**チャット欄に文面を入れる**（送信はしない）。入れただけでは
+   * AI は知らないので、知らせるところまでが「入れる」である。
+   */
+  /**
+   * 画像をプロジェクトへ入れる。**画面には何も出さない**（入れた場所を返すだけ）。
+   *
+   * 入れたことをどう伝えるかは呼ぶ側が決める:
+   *   ・添付から入れたとき … 送信のときにAIへ添える（画面には出さない）
+   *   ・送信済みから入れたとき … 会話に一言だけ残す
+   */
+  const putIntoProject = useCallback(async (images: Array<{ url: string; name: string }>, purpose: AssetPurpose) => {
+    const done: string[] = []
+    const failed: string[] = []
+    const saved: string[] = [] // 入れられた画像そのもの（導線を消すため）
+    if (!projectDir) return { done, failed }
+    for (const img of images) {
+      try {
+        const r = await window.electronAPI.fs.importImageData(projectDir, img.name, img.url, purpose)
+        if (r.ok && r.rel) { done.push(r.rel); saved.push(img.url) }
+        else failed.push(r.message ?? '原因不明')
+      } catch (e: any) {
+        failed.push(e?.message ?? String(e))
+      }
+    }
+    // ファイル一覧に反映させる（入れたのに見えないと、入ったか分からない）
+    if (done.length) onExternalFilesChanged?.(done)
+    if (saved.length) setSavedImages(prev => new Set([...prev, ...saved]))
+    return { done, failed }
+  }, [projectDir, onExternalFilesChanged])
+
   const addImages = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files)
     // 所見19: 画像以外のファイルが混じっていたら、黙って捨てずに toolNote バブルで案内する
@@ -146,9 +196,21 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     }
     for (const f of list) {
       const url = await fileToDataUrl(f)
-      if (url) setPendingImages(prev => [...prev, url])
+      if (url) setPendingImages(prev => [...prev, { url, name: f.name || defaultImageName(f.type) }])
     }
   }, [])
+
+  // 画面のどこに落とされても、ここで受け取って添付にする（2026-08-19）。
+  // **受け口を2つ持たない**ため、実際の取り込みは addImages に一本化する。
+  useEffect(() => {
+    const onAttach = (e: Event) => {
+      const files = (e as CustomEvent).detail?.files as FileList | undefined
+      if (files?.length) void addImages(files)
+    }
+    window.addEventListener('sakura:attach-images', onAttach)
+    return () => window.removeEventListener('sakura:attach-images', onAttach)
+  }, [addImages])
+
 
   // projectCtx は state（再描画・greet発火用）と ref（送信時の即時参照用）の両方で持つ。
   // setState は非同期のため、「文脈を読み直した直後に send する」流れ（公開先切替の自動診断）では
@@ -292,6 +354,38 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // 表示上のローディングは、あいさつ生成中と送信中の両方を含める
   const isLoading = chat.isLoading || greetLoading
 
+  /**
+   * 送信済みの画像から入れて、**そのまま続きをやらせる**。
+   *
+   * ── 押したら終わりにする（2026-08-19 実機・Ryosuke 指摘）────────────────
+   * 「手順の説明が長く、結局自分で何か入力しないと動かないのは面倒」
+   * 押した人がやりたいことは、**さっき頼んだこと**である。保存できたら
+   * こちらから続きを送る（利用者は何も打たない）。
+   *
+   * ── 知らせ方を2つに分ける（同日・別の報告）────────────────────────────
+   * 会話に出す一言は `toolNote`（表示専用）で、**AIには送られない**決まり
+   * （結果の伴わない実況でモデルが混乱するため）。AI へは送信に添えて渡す。
+   */
+  const importFromMessage = useCallback(async (image: { url: string; name: string }) => {
+    const purpose: AssetPurpose = 'app'
+    const { done, failed } = await putIntoProject([image], purpose)
+    const shown = [
+      ...done.map(rel => assetSavedNote(rel, purpose)),
+      ...(failed.length ? [`⚠️ 画像を入れられませんでした: ${failed[0]}`] : []),
+    ]
+    if (!shown.length) return
+    setMessages(prev => [...prev, { role: 'assistant', content: shown.join('\n'), toolNote: true }])
+    if (!done.length) return
+    const forAi = done.map(rel => tellAiAboutAsset(rel, purpose)).join('\n')
+    // 応答中に割り込まない（そのときは次の発言で伝わるよう履歴に残すだけ）
+    if (chat.isLoading) {
+      setMessages(prev => [...prev, { role: 'user', content: forAi, hidden: true }])
+      return
+    }
+    void chat.send('画像を使えるようにしました。さきほどの依頼を続けてください。', [], forAi)
+  }, [putIntoProject, setMessages, chat])
+
+
   // プロジェクトごとに会話を読み込む（remount/再起動でも継続）。
   // 保存先は `<project>/.sakuraide/chat.json`（旧 localStorage 形式が残っていれば読み込み時に移行する）。
   // loadedChatDirRef: 現在 messages に反映済みのプロジェクト（読み込み完了前の誤保存を防ぐガード）。
@@ -430,6 +524,21 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     return () => window.removeEventListener('sakura:ask-ai', h)
   }, [])
 
+  // ── 「AIに修正させる」（2026-08-19 Ryosuke 指定）────────────────────────
+  // 公開前チェックの「見た目」に出るボタン。**相談ではなく、直しにいく。**
+  // 上の `ask-ai`（文を入れるだけ）と違い、そのまま送る。押した人の意図が
+  // 「直して」なので、もう一度送信を押させない。何を頼んだかは吹き出しに残る。
+  useEffect(() => {
+    const h = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text
+      if (!text) return
+      if (chat.isLoading) { setInput(text); return } // 応答中は割り込まず、入力欄に置く
+      void chat.send(text, [])
+    }
+    window.addEventListener('sakura:fix-with-ai', h)
+    return () => window.removeEventListener('sakura:fix-with-ai', h)
+  }, [chat])
+
   // 公開先が変更された直後に自動診断した target（重複発火・多重送信の防止用）
   const lastCheckedTargetRef = useRef<string | null>(null)
 
@@ -555,19 +664,57 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     }
   }
 
-  const send = useCallback(() => {
+  /**
+   * 送信。**印が付いていれば、ここで画像をプロジェクトへ入れる**（2026-08-19）。
+   *
+   * 入れたことは AI にだけ添える（画面には出さない）。以前は入力欄に説明文を
+   * 差し込んでいたが、利用者が打った文と混ざって読みにくかった。
+   */
+  const send = useCallback(async () => {
     const text = input
-    const images = pendingImages
+    const attached = pendingImages
+    const images = attached.map(p => p.url)
     if ((!text.trim() && images.length === 0) || isLoading) return
+    const choice = assetChoice
     setInput('')
     setPendingImages([])
-    void chat.send(text, images)
-  }, [input, pendingImages, isLoading, chat])
+    setAssetChoice(null)
+
+    let forAi = ''
+    if (choice && projectDir && attached.length) {
+      const { done, failed } = await putIntoProject(attached, choice)
+      forAi = done.map(rel => tellAiAboutAsset(rel, choice)).join('\n')
+      // このターンは forAi で届く。**次のターン以降も覚えておく**ため履歴にも残す
+      // （画面には出さない。getHistory は hidden を AI へ送る・toolNote は送らない）
+      if (forAi) setMessages(prev => [...prev, { role: 'user', content: forAi, hidden: true }])
+      // 入れられなかったときだけ画面に出す（黙って落とさない）
+      if (failed.length) {
+        setMessages(prev => [...prev, {
+          role: 'assistant', toolNote: true,
+          content: `⚠️ ${failed.length}枚をプロジェクトに入れられませんでした: ${failed[0]}`,
+        }])
+      }
+    }
+    // ── 保存していない画像の案内は、Koto が出す（2026-08-19 実機・Ryosuke 指摘）──
+    // AI に案内させると、**古い会話を真似て長い手順**を書いた。文面は毎回同じで
+    // よいので Koto が出す。AI には「保存のしかたを説明するな」とだけ伝える。
+    const needHint = !choice && projectDir && attached.length > 0
+    if (needHint) {
+      forAi = [forAi, '（Koto より）この画像はまだプロジェクトに保存されていません。'
+        + '保存のしかた・ボタン名・手順は説明しないでください（Koto が画面で案内します）。'
+        + '保存が要る作業は行わず、「この画像を使うには保存が必要です」と1文だけ伝えてください。'].filter(Boolean).join('\n')
+    }
+    const turn = chat.send(text, images, forAi || undefined)
+    // 案内は**AIの返事のあと**に置く（先に出すと、返事に埋もれて読まれない）
+    if (needHint) void turn.then(() => setMessages(prev => [...prev, {
+      role: 'assistant', toolNote: true, content: useImageHint(attached.length),
+    }]))
+  }, [input, pendingImages, isLoading, chat, assetChoice, projectDir, putIntoProject, setMessages])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      send()
+      void send()
     }
   }
 
@@ -656,19 +803,17 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
 
       {/* Messages */}
       <div
-        className={`flex-1 overflow-y-auto p-3 space-y-3 relative ${dragOver ? 'ring-2 ring-sakura ring-inset' : ''}`}
-        onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
+        className="flex-1 overflow-y-auto p-3 space-y-3 relative"
+        // ── 二重に受け取らない（2026-08-19 実機）──────────────────────────
+        // 画面全体でも受けるようにしたため、ここで止めないと**同じ画像が2枚**添付される
+        // （ここで addImages → 画面全体の受け口へ伝わって、もう一度 addImages）。
+        // **止めるのは落としたときだけ。** 重なっている合図は上へ流す
+        //（結果は同じ「AIに見せる」なので、案内は画面全体のものひとつでよい）。
         onDrop={e => {
-          e.preventDefault(); setDragOver(false)
+          e.preventDefault(); e.stopPropagation()
           if (e.dataTransfer.files?.length) addImages(e.dataTransfer.files)
         }}
       >
-        {dragOver && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-base/70 pointer-events-none">
-            <span className="text-sm font-semibold text-sakura">🖼 画像をドロップしてAIに渡す</span>
-          </div>
-        )}
         {messages.filter(m => !m.hidden).length === 0 && !isLoading && (
           <div className="text-center text-ink-muted text-xs py-6">
             <div className="flex justify-center mb-2"><SakuraLogo size={32} /></div>
@@ -689,9 +834,23 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               <MessageCopyButton text={msg.content} side={msg.role === 'user' ? 'left' : 'right'} />
               {msg.images && msg.images.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mb-1.5">
-                  {msg.images.map((src, k) => (
-                    <img key={k} src={src} alt="" className="max-h-32 rounded-lg border border-white/30 object-cover" />
-                  ))}
+                  {/* ── 送信したあとも入れられる（2026-08-19 実機）────────────────
+                      送信すると添付欄は空になるので、ここが唯一の拠り所になる。
+                      こちらは押した時点で入れる（送信を待つ理由が無いため）。 */}
+                  {msg.images.map((src, k) => {
+                    const name = defaultImageName(mediaTypeOf(src))
+                    return (
+                    <React.Fragment key={k}>
+                      <span className="inline-flex flex-col items-stretch">
+                        <img src={src} alt="" className="max-h-32 rounded-lg border border-white/30 object-cover" />
+                        {/* 入れ終わった画像には出さない（押すと同じ画像がもう1枚増える） */}
+                        {projectDir && !savedImages.has(src) && (
+                          <AssetUseButton onClick={() => void importFromMessage({ url: src, name })} />
+                        )}
+                      </span>
+                    </React.Fragment>
+                    )
+                  })}
                 </div>
               )}
               {/* 推論モデルの思考（表示専用）。生成中はライブ表示、終わったら自動で畳む。
@@ -702,7 +861,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               {msg.role === 'assistant' ? (
                 <AiMessage content={msg.content} onApplyFile={onApplyFile} />
               ) : (
-                msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>
+                msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>
               )}
               {/* #31: Claudeが使えないときの「さくらのAI Engineに切り替えて続ける」提案ボタン。 */}
               {msg.offerAiEngineFallback && (
@@ -767,9 +926,13 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           {/* 添付画像のプレビュー */}
           {pendingImages.length > 0 && (
             <div className="flex flex-wrap gap-2 px-1">
-              {pendingImages.map((src, i) => (
+              {/* ── プロジェクトに入れる（2026-08-19 Ryosuke 提案）────────────────
+                  これまで画像は**AIに見せるだけ**で、プロジェクトには残らなかった。
+                  アプリの部品として使いたいことがある。**毎回選ばせない**ため、
+                  押した人にだけ「どちらに入れるか」を聞く。 */}
+              {pendingImages.map((img, i) => (
                 <div key={i} className="relative">
-                  <img src={src} alt="" className="h-16 w-16 object-cover rounded-lg border border-line" />
+                  <img src={img.url} alt="" className="h-16 w-16 object-cover rounded-lg border border-line" />
                   <button
                     onClick={() => setPendingImages(prev => prev.filter((_, k) => k !== i))}
                     className="absolute -top-1.5 -right-1.5 bg-base border border-line text-ink-muted hover:text-sakura rounded-full w-5 h-5 flex items-center justify-center text-[11px]"
@@ -779,9 +942,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               ))}
               {/* Claudeが実際にこのターンの画像を直接処理する場合（プロジェクトを開いていてClaude頭脳が有効）は、
                   AI Engineの視覚モデルへの委譲は発生しないため、この案内は出さない（C2d）。 */}
-              {!(claudeActive && projectDir) && !isVisionModel(model) && (
+              {/* ── 実際の動きを書く（2026-08-19 Ryosuke 指摘）──────────────────
+                  IDEモードは**二段構え**（視覚モデルが画像を読み取り、続きは
+                  いまのモデルが行う。ツールを使えるようにするため）。
+                  「画像対応モデルで処理します」だと、モデルが丸ごと入れ替わるように
+                  読める。**実装と文面がずれていた。** */}
+              {!(claudeActive && projectDir) && !shouldTryImagesDirectly(model) && (
                 <span className="self-center text-[11px] text-ink-muted">
-                  送信時に画像対応モデル（{modelLabel(getDefaultVisionModel())}）で処理します
+                  「{modelLabel(model)}」は画像を扱えないため、送信すると
+                  「{modelLabel(getDefaultVisionModel())}」が読み取り、
+                  続きは「{modelLabel(model)}」が行います
                 </span>
               )}
             </div>
@@ -796,10 +966,17 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               const files = Array.from(e.clipboardData.files)
               if (files.length) { e.preventDefault(); addImages(files) }
             }}
-            placeholder="メッセージを入力... (⌘+Enter で送信。画像は貼付け/ドロップ/📎で添付)"
+            // ── 注意書きを入れない（2026-08-19 Ryosuke 指摘）────────────────
+            //「メッセージを入力と、欄の左下のクリップマークだけで良い」
+            // 使い方は 📎 のツールチップと、落としたときの案内で伝わる。
+            // 入力欄は**打つ場所**であって、説明の置き場ではない。
+            placeholder="メッセージを入力…"
             rows={3}
             className="flex-1 bg-transparent px-1 py-0.5 text-sm text-ink placeholder-ink-muted outline-none resize-none"
           />
+          {/* ── 押す場所は「送信」のとなり（2026-08-19 Ryosuke 指摘）──────────────
+              サムネイルの上に置いていたが、**画像の上にボタンがあるのは分かりにくい**。
+              添付したときだけ、📎 と 送信 の間に出す。選ぶ画面はそのすぐ上に開く。 */}
           <div className="flex items-center justify-between">
             <input
               ref={fileInputRef}
@@ -814,6 +991,15 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               className="text-ink-muted hover:text-sakura text-base px-1.5 py-1 rounded-md hover:bg-overlay transition-colors"
               title="画像を添付"
             >📎</button>
+            {projectDir && pendingImages.length > 0 && (
+              <AssetUseCheckbox
+                checked={assetChoice === 'app'}
+                count={pendingImages.length}
+                // 入れるのは【送信】のとき（ここでは印を付けるだけ）
+                onChange={next => setAssetChoice(next ? 'app' : null)}
+              />
+            )}
+            <div className="flex-1" />
             {isLoading ? (
               <button
                 onClick={() => { chat.abort(); greetAbortRef.current?.() }}
@@ -824,7 +1010,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               </button>
             ) : (
               <button
-                onClick={send}
+                onClick={() => void send()}
+                title="送信（⌘+Enter）"
                 disabled={!input.trim() && pendingImages.length === 0}
                 className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity"
               >

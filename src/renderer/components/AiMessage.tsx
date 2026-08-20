@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { CHAT_TEXT_WRAP } from '../textWrap'
 
 type Part =
   | { type: 'text'; text: string }
@@ -111,7 +112,7 @@ export default function AiMessage({ content, onApplyFile, applyHint }: {
   return (
     <div className="text-sm leading-relaxed">
       {parts.map((p, i) => {
-        if (p.type === 'text') return <p key={i} className="whitespace-pre-wrap">{p.text}</p>
+        if (p.type === 'text') return <p key={i} className={CHAT_TEXT_WRAP}>{p.text}</p>
         if (p.type === 'file') return <FileCard key={i} path={p.path} lang={p.lang} code={p.code} onApply={onApplyFile} applyHint={applyHint} />
         return <InlineCode key={i} lang={p.lang} code={p.code} />
       })}

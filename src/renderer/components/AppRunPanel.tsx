@@ -9,7 +9,8 @@ import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
-import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN } from '../../shared/cloudCost'
+import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
+import { retentionNotice } from '../../shared/imageRetention'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
 // （小文字英数字とハイフン・先頭末尾は英数字・3〜40文字）と同じ制約をここでも複製する
@@ -64,6 +65,9 @@ type Confirm =
   // （変更すると次回公開時に新しいアプリとして作成され公開URLが変わるため）。
   // retryPublish: true のときは保存後に公開処理（事前チェック→確認→適用）を続けて呼ぶ（衝突時の再公開ボタン用）。
   | { kind: 'renameSpec'; name: string; retryPublish: boolean }
+  // 古いイメージの片づけ（2026-08-19）。**消す前に必ず一覧を見せる**ため、
+  // main から返ってきた計画をそのまま持たせる。
+  | { kind: 'cleanupImages'; plan: { remove: string[]; keep: string[]; untouched: string[] }; keep: number; currentTag: string | null }
   | null
 
 // 統一公開記録（publish.targets）を .sakuraide.json にマージ書き込みする（既存キーは残す）。
@@ -164,6 +168,42 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
   const [preflight, setPreflight] = useState<Awaited<ReturnType<Window['electronAPI']['cloud']['preflight']>> | null>(null)
   const [checking, setChecking] = useState(false)
 
+  /**
+   * どこからも使われていない画像を片づける（2026-08-19 Ryosuke 指示）。
+   *
+   * AI には削除の道具が無いので、**Koto が自分でやる**。押せるものが無いと
+   * 「6件あります」と言われたまま行き止まりになる。
+   *
+   * **完全削除はしない**（ゴミ箱へ移す）。取り違えても Finder から戻せる。
+   */
+  const [trashing, setTrashing] = useState(false)
+  // 片づけた結果（黙って消すと「なぜ消えたのか」が分からない・2026-08-19 実機）
+  const [trashNote, setTrashNote] = useState<string | null>(null)
+  const cleanUnusedImages = async (files: string[]) => {
+    const head = files.slice(0, 8).map(f => `・${f}`).join('\n')
+    const more = files.length > 8 ? `\n・ほか ${files.length - 8} 件` : ''
+    if (!window.confirm(
+      `どこからも使われていない画像 ${files.length} 件をゴミ箱へ移します。\n\n${head}${more}\n\n`
+      + '完全には消えません（Finder のゴミ箱から戻せます）。よろしいですか？'
+    )) return
+    setTrashing(true)
+    const failed: string[] = []
+    try {
+      for (const rel of files) {
+        try { await window.electronAPI.fs.trash(`${projectDir}/${rel}`) } catch { failed.push(rel) }
+      }
+    } finally {
+      setTrashing(false)
+    }
+    if (failed.length) window.alert(`${failed.length} 件はゴミ箱へ移せませんでした:\n${failed.slice(0, 5).join('\n')}`)
+    // **何をしたかを残す。** 黙って消すと、指摘が減った理由が分からない
+    const moved = files.length - failed.length
+    setTrashNote(moved > 0
+      ? `🗑 ${moved}件をゴミ箱へ移しました（Finder のゴミ箱から戻せます）。指摘もそのぶん減ります。`
+      : '⚠️ ゴミ箱へ移せませんでした。')
+    await runPreflight() // 片づけた結果をその場で見せる
+  }
+
   const runPreflight = async () => {
     setChecking(true)
     setPreflight(null)
@@ -174,7 +214,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
   // detail は失敗時の生ログ（stderr要約等・診断用）。OpResultView が折りたたみ「詳細を見る」で表示する（所見12）。
   // hint: main 側が「この失敗はレジストリを設定し直せば直る」と判断したときに付ける印。
   // これが付いたときだけ再設定のボタンを出す（常設しない・2026-08-09）。
-  const [opResult, setOpResult] = useState<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string } | null>(null)
+  const [opResult, setOpResult] = useState<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string; verifyNote?: string; staleImages?: { total: number; removable: number; keep: number } } | null>(null)
   // 構築中の進捗メッセージ（最新行）。apply 中だけ表示する。
   const [progress, setProgress] = useState<string | null>(null)
 
@@ -564,6 +604,50 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
     } finally { setBusy(false) }
   }
 
+  // ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）─────────────────────────
+  // 公開のたびに新しいタグを打つので、レジストリに古いイメージが溜まる
+  // （月額220円に5GiB込み・超過1GiBごと22円。放っておくと静かに増える）。
+  //
+  // **1回目の呼び出しでは何も消さない。** 消える一覧を受け取って確認ダイアログに出し、
+  // 了解を得てから2回目（confirmed）で消す（掟5）。
+  const [cleaning, setCleaning] = useState(false)
+  const askCleanupImages = async () => {
+    setCleaning(true)
+    setOpResult(null)
+    try {
+      const r = await window.electronAPI.cloud.cleanupImages(projectDir)
+      if (!r.ok || !r.plan) {
+        setOpResult({ ok: false, message: r.message ?? '古いイメージを調べられませんでした', ...(r.detail ? { detail: r.detail } : {}), ...(r.hint ? { hint: r.hint } : {}) })
+        return
+      }
+      if (r.plan.remove.length === 0) {
+        setOpResult({ ok: true, message: '片づける古いイメージはありませんでした。' })
+        return
+      }
+      setConfirm({ kind: 'cleanupImages', plan: r.plan, keep: r.keep ?? 5, currentTag: r.currentTag ?? null })
+    } catch (e: any) {
+      setOpResult({ ok: false, message: e?.message ?? String(e) })
+    } finally { setCleaning(false) }
+  }
+
+  const doCleanupImages = async () => {
+    if (confirm?.kind !== 'cleanupImages') return
+    const keep = confirm.keep
+    setBusy(true)
+    try {
+      const r = await window.electronAPI.cloud.cleanupImages(projectDir, { confirmed: true, keep })
+      setOpResult({
+        ok: r.ok,
+        message: r.message ?? (r.ok ? '片づけました。' : '片づけられませんでした。'),
+        ...(r.detail ? { detail: r.detail } : {}),
+      })
+      setConfirm(null)
+    } catch (e: any) {
+      setOpResult({ ok: false, message: e?.message ?? String(e) })
+      setConfirm(null)
+    } finally { setBusy(false) }
+  }
+
   // 公開名（spec.name）を保存する。retryPublish=true のときは保存後に公開処理を続けて呼ぶ
   // （衝突時のワンクリック再公開ボタン用）。useCallback にしない理由: doApply/doTeardown/scaffold と同じく
   // useEffect の依存配列からは参照されないため（JSXのイベントハンドラからのみ呼ばれる）。
@@ -666,6 +750,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         deleteRegistry={deleteRegistry}
         onChangeDeleteRegistry={setDeleteRegistry}
         onRename={doRenameConfirmed}
+        onCleanupImages={doCleanupImages}
         placement={placement}
         progress={progress}
       />
@@ -883,11 +968,27 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
               {preflight.canPublish ? '✅' : '⚠️'} {preflight.summary}
             </p>
             <ul className="space-y-1">
-              {preflight.checks.map(c => (
-                <li key={c.id} className="text-[11px] leading-relaxed flex gap-2">
+              {preflight.checks.map(c => {
+                // ── 1件ずつ改行して読ませる（2026-08-19 Ryosuke 指摘）──────────────
+                // 「修正提案であることが分かりにくい。一つの問題毎に改行を」。
+                // 見出し（1行目）＋ぶら下がりの箇条書き、に分ける。
+                const [head, ...details] = String(c.note ?? '').split('\n')
+                return (
+                <li key={c.id} className="text-xs leading-relaxed flex gap-2">
                   <span className="flex-none">{c.status === 'ok' ? '✅' : c.status === 'warn' ? '⚠️' : '❌'}</span>
-                  <span className="text-ink-secondary select-text">
-                    <span className="text-ink font-medium">{c.label}</span>　{c.note}
+                  <span className="text-ink-secondary select-text min-w-0 flex-1">
+                    {/* 区切りは**余白で作る**（2026-08-19 実機）。行末に全角空白を置くと
+                        JSX がその行の空白ごと落とし、「見た目見た目に問題があります」と
+                        続けて出てしまう（同じ言葉が2回出ているように見えた）。 */}
+                    <span className="text-ink font-medium mr-1.5">{c.label}</span>
+                    <span className={c.status === 'warn' ? 'text-ink font-semibold' : undefined}>{head}</span>
+                    {details.length > 0 && (
+                      <span className="mt-1 block space-y-1 pl-1">
+                        {details.map((d, i) => (
+                          <span key={i} className="block text-[11px] leading-relaxed text-ink-secondary break-words [overflow-wrap:anywhere]">{d}</span>
+                        ))}
+                      </span>
+                    )}
                     {/* **直し方が分かっているなら、その場で押せるようにする。**
                         以前は回復のボタンを「公開の失敗」に紐づけていたため、確認で
                         分かっていても一度公開を押させる形だった（2026-08-14 Ryosuke 指摘）。 */}
@@ -906,10 +1007,42 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
                         className="ml-2 align-middle bg-sakura text-white rounded px-2 py-0.5 text-[11px] font-semibold hover:opacity-90"
                       >AIに相談する</button>
                     )}
+                    {/* ── 押したら直しにいく（2026-08-19 Ryosuke 指定）──────────────
+                        「AIに修正させるボタンを作って、押すと修正指示までできるように」。
+                        相談（入力欄に文を入れるだけ）と違い、そのまま送る。 */}
+                    {/* ボタンは**行の途中に埋めない**（長い一覧の末尾だと見つからない） */}
+                    {c.fix === 'ai-fix' && c.fixPrompt && (
+                      <span className="mt-2 block">
+                        <button
+                          onClick={() => {
+                            window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: c.fixPrompt } }))
+                          }}
+                          className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                        >🛠 AIに修正させる</button>
+                        <span className="ml-2 text-[11px] text-ink-muted">押すとチャットに移り、AIが直します</span>
+                      </span>
+                    )}
+                    {/* ── AI では直せないものは Koto が片づける（2026-08-19 Ryosuke 指示）──
+                        押せるものが何も無いと「6件あります」で行き止まりになる。
+                        **完全削除はしない**（ゴミ箱へ移す＝戻せる）。 */}
+                    {!!c.unusedFiles?.length && (
+                      <span className="mt-2 block">
+                        <button
+                          onClick={() => void cleanUnusedImages(c.unusedFiles!)}
+                          disabled={trashing}
+                          className="bg-elevated border border-line text-ink rounded-lg px-3 py-1.5 text-xs font-semibold hover:border-sakura disabled:opacity-40"
+                        >{trashing ? '片づけています…' : `🗑 使っていない画像をゴミ箱へ（${c.unusedFiles!.length}件）`}</button>
+                        <span className="ml-2 text-[11px] text-ink-muted">完全には消えません（ゴミ箱から戻せます）</span>
+                      </span>
+                    )}
                   </span>
                 </li>
-              ))}
+                )
+              })}
             </ul>
+            {trashNote && (
+              <p className="text-[11px] text-ink leading-relaxed select-text">{trashNote}</p>
+            )}
             {preflight.message && (
               <p className="text-[11px] text-brand-red leading-relaxed select-text">{preflight.message}</p>
             )}
@@ -973,6 +1106,19 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         <p className="text-[11px] text-ink-muted leading-relaxed">
           「公開する」は事前チェックを表示して確認してから実行します。「破棄する」はデータ（バケット）も含めて削除する場合があります。
         </p>
+        {/* ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）──────────────────
+            公開のたびに新しいタグを打つので、レジストリに過去のイメージが残る。
+            **常に出しておく。** 公開直後の結果カードからしか辿れないと、
+            「溜まっているか確かめたい」ときに行き場が無い（回復の導線は全経路に出す）。
+            押しても消えない（消える一覧が出るだけ）ので、ここに置いてよい。 */}
+        {registryName && (
+          <button
+            onClick={askCleanupImages}
+            disabled={cleaning || busy || !keyReady}
+            title="レジストリに残っている過去のイメージを調べます（押しただけでは何も消えません）"
+            className="text-[11px] text-ink-muted hover:text-sakura hover:underline disabled:opacity-40"
+          >{cleaning ? '調べています…' : '🧹 古いイメージを片づける…'}</button>
+        )}
         {needsPrereqs && !prereqsOk && (
           <p className="text-[11px] text-brand-yellow leading-relaxed">
             ⚠️ {prereqReason}。公開にはコンテナレジストリの認証情報が必要です。
@@ -1023,6 +1169,29 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         {/* 公開はできたが、アプリが起動しなかったとき。**ログは Koto から取れない**
             （AppRun の公式APIにログ取得が無く、コンパネのモニタリングスイート連携でのみ
             見られる）ので、場所へ案内し、AIに相談できるようにする（2026-08-14） */}
+        {/* ── 古いイメージが溜まっている（2026-08-19）────────────────────────
+            公開のたびに新しいタグを打つので、レジストリに過去のイメージが残る。
+            **勝手に消さない。** 溜まっていると分かったときだけ、片づける手段を出す。
+            料金は月額220円に5GiB込み・超過1GiBごと22円なので、慌てる必要はない。 */}
+        {opResult?.staleImages && opResult.staleImages.removable > 0 && (
+          <div className="rounded-xl border border-line bg-surface p-3 space-y-1.5">
+            <p className="text-xs font-semibold text-ink">🧹 古いイメージが残っています</p>
+            <p className="text-[11px] text-ink-secondary leading-relaxed">
+              {retentionNotice({ removable: opResult.staleImages.removable, keep: opResult.staleImages.keep })}
+              コンテナレジストリは月額{REGISTRY_MONTHLY_YEN}円（税込）に{REGISTRY_INCLUDED_STORAGE_GIB}GiB分が含まれ、
+              超えると1GiBごとに{REGISTRY_EXTRA_GIB_YEN}円（税込）が加算されます。すぐに困る量ではありません。
+            </p>
+            <button
+              onClick={askCleanupImages}
+              disabled={cleaning || busy}
+              className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
+            >{cleaning ? '調べています…' : '🧹 古いイメージを片づける'}</button>
+            <p className="text-[11px] text-ink-muted leading-relaxed">
+              押すと、消えるものの一覧が出ます。そこで確かめてから実行できます。
+              いま公開しているものと、直近{opResult.staleImages.keep}件は残ります。
+            </p>
+          </div>
+        )}
         {opResult && !opResult.ok && opResult.hint === 'app-unhealthy' && (
           <div className={`rounded-xl border ${recheck?.healthy ? 'border-brand-green/70' : 'border-brand-yellow/70'} bg-surface p-3 space-y-2`}>
             {/* ── 「↻ 更新」（2026-08-14 Ryosuke 提案）───────────────────────────
@@ -1453,7 +1622,7 @@ function PlanView({ plan }: { plan: CloudPlan }) {
 // ── apply / teardown の結果表示 ──
 // detail は失敗時の生ログ（stderr要約等・診断用・所見12）。文言に混ぜず <details>「詳細を見る」で折りたたむ。
 // demoted=true（名前衝突/作成上限の親切カードが主役のケース・所見17）ではブロックごと折りたたみに降格する。
-function OpResultView({ result, demoted = false }: { result: { ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; pending?: boolean }; demoted?: boolean }) {
+function OpResultView({ result, demoted = false }: { result: { ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; pending?: boolean; verifyNote?: string }; demoted?: boolean }) {
   const copyText = [result.message, result.detail].filter(Boolean).join('\n')
   // **「失敗しました」と言い切らない場合がある**（2026-08-14 Ryosuke 指摘）。
   // 公開そのものは終わっていて、アプリの起動確認が48秒に間に合わなかっただけのとき、
@@ -1464,6 +1633,12 @@ function OpResultView({ result, demoted = false }: { result: { ok: boolean; exec
       <p className={`text-xs font-semibold ${result.ok ? 'text-brand-green' : pending ? 'text-brand-yellow' : 'text-brand-red'}`}>
         {result.ok ? '✅ 完了しました' : pending ? '⏳ 起動を確認できていません' : '⚠️ 失敗しました'}
       </p>
+      {/* ── 中身が新しくなったかの確認（2026-08-19 Ryosuke 提案）──────────────
+          「✅ 完了しました」だけでは、**古い中身が配られていても分からない**。
+          実際にそうなっていた（公開は成功・配信は画像を入れる前の版）。 */}
+      {result.verifyNote && (
+        <p className="text-xs leading-relaxed select-text whitespace-pre-wrap text-ink-secondary">{result.verifyNote}</p>
+      )}
       {result.message && (
         <div className="flex items-start gap-1.5">
           <p className="text-xs text-ink-secondary leading-relaxed break-all flex-1 select-text whitespace-pre-wrap">{result.message}</p>
@@ -1607,7 +1782,7 @@ function PrereqChecklist({
 
 // ── 破壊操作の確認ダイアログ（やめる／実行 の2ボタン） ──
 function ConfirmDialog({
-  confirm, busy, onCancel, onApply, onTeardown, onRename,
+  confirm, busy, onCancel, onApply, onTeardown, onRename, onCleanupImages,
   registryName, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry, placement, progress,
 }: {
   confirm: Exclude<Confirm, null>
@@ -1616,6 +1791,8 @@ function ConfirmDialog({
   onApply: () => void
   onTeardown: () => void
   onRename: () => void
+  /** 古いイメージの片づけを実行する（一覧を見せたあとの2回目の呼び出し）。 */
+  onCleanupImages: () => void
   /** 破棄画面に出すコンテナレジストリ名（未取得なら null）。 */
   registryName: string | null
   /** レジストリも削除するか（既定 true＝月額課金を止める）。 */
@@ -1704,6 +1881,64 @@ function ConfirmDialog({
             disabled={busy}
             className={`${destructive ? 'bg-brand-red' : 'sakura-gradient'} text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40`}
           >{busy ? '実行中…' : (destructive ? '理解した上で公開する' : '公開する')}</button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── 古いイメージの片づけ（2026-08-19）──────────────────────────────────
+  // **消えるものを、そのまま並べて見せる。** 件数だけでは何が消えるか分からない。
+  // 残るもの（いま公開しているタグ・直近N件・利用者が付けた名前）も一緒に出す。
+  if (confirm.kind === 'cleanupImages') {
+    const { plan, keep, currentTag } = confirm
+    return (
+      <div className="space-y-3">
+        <div className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-2">
+          <p className="text-sm font-semibold text-ink">⚠️ 古いイメージを {plan.remove.length} 件消します</p>
+          <p className="text-sm text-ink-secondary leading-relaxed">
+            コンテナレジストリに残っている、過去の公開のイメージを消します。元に戻せません。
+
+            いま公開しているアプリには影響しません。
+          </p>
+          <div className="rounded-lg border border-brand-red/50 bg-overlay p-2 space-y-1">
+            <p className="text-xs font-semibold text-brand-red">消えるもの：</p>
+            <ul className="text-xs text-ink list-disc pl-4 space-y-0.5 max-h-48 overflow-y-auto">
+              {plan.remove.map(t => <li key={t} className="font-mono break-all select-text">{t}</li>)}
+            </ul>
+          </div>
+          <div className="rounded-lg border border-line bg-overlay p-2 space-y-1">
+            <p className="text-xs font-semibold text-ink">残るもの：</p>
+            <ul className="text-xs text-ink-secondary list-disc pl-4 space-y-0.5 max-h-40 overflow-y-auto">
+              {currentTag && (
+                <li className="font-mono break-all select-text">{currentTag}（いま公開しているもの）</li>
+              )}
+              {plan.keep.map(t => <li key={t} className="font-mono break-all select-text">{t}</li>)}
+              {plan.untouched.filter(t => t !== currentTag).map(t => (
+                <li key={t} className="font-mono break-all select-text">{t}（あなたが付けた名前）</li>
+              ))}
+            </ul>
+            <p className="text-[11px] text-ink-muted leading-relaxed">
+              直近{keep}件は、公開したものを前の版に戻したいときのために残します。
+            </p>
+          </div>
+        </div>
+        {busy && progress && (
+          <div className="rounded-lg border border-line bg-overlay px-3 py-2 flex items-center gap-2">
+            <span className="inline-block w-3.5 h-3.5 border-2 border-sakura border-t-transparent rounded-full animate-spin flex-none" />
+            <span className="text-xs text-ink-secondary leading-relaxed break-all">{progress}</span>
+          </div>
+        )}
+        <div className="flex justify-between items-center">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
+          >やめる</button>
+          <button
+            onClick={onCleanupImages}
+            disabled={busy}
+            className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+          >{busy ? '片づけています…' : '理解した上で消す'}</button>
         </div>
       </div>
     )

@@ -14,7 +14,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readFileBase64: (path: string) => ipcRenderer.invoke('fs:readFileBase64', path),
     // Finder からドロップされた File の絶対パスを得る（Electronの公式API）
     pathForFile: (file: File) => webUtils.getPathForFile(file),
-    importFile: (src: string, projectDir: string) => ipcRenderer.invoke('fs:importFile', { src, projectDir }),
+    /** チャットに添付した画像（data URL）を、そのままプロジェクトへ入れる。 */
+    importImageData: (projectDir: string, name: string, dataUrl: string, purpose?: 'app' | 'material') =>
+      ipcRenderer.invoke('fs:importImageData', { projectDir, name, dataUrl, purpose }),
+    /** 手元のファイルをプロジェクトへ複製する。purpose 未指定は 'app'（アプリで使う）。 */
+    importFile: (src: string, projectDir: string, purpose?: 'app' | 'material') => ipcRenderer.invoke('fs:importFile', { src, projectDir, purpose }),
     trash: (p: string) => ipcRenderer.invoke('fs:trash', p),
     rename: (oldPath: string, newName: string) => ipcRenderer.invoke('fs:rename', oldPath, newName),
     // フォルダ監視。変更があるたび cb を呼ぶ。戻り値で監視解除。
@@ -234,6 +238,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setBuilderMode: (projectDir: string, mode: 'builtin' | 'docker') => ipcRenderer.invoke('cloud:setBuilderMode', projectDir, mode),
     // 当月の利用額（コスト実額）を取得する。
     cost: () => ipcRenderer.invoke('cloud:cost'),
+    // 古いイメージの片づけ。**confirmed を付けない呼び出しは「一覧を見るだけ」**で、何も消さない。
+    cleanupImages: (projectDir: string, opts?: { confirmed?: boolean; keep?: number }) =>
+      ipcRenderer.invoke('cloud:cleanupImages', projectDir, opts),
     // 段階3b: 構築（apply）の進捗メッセージ購読。戻り値の関数を呼ぶと購読解除。
     onApplyProgress: (cb: (msg: string) => void) => {
       const handler = (_: Electron.IpcRendererEvent, msg: string) => cb(msg)

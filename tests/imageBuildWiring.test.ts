@@ -25,7 +25,8 @@ describe('公開イメージの除外リスト', () => {
   it('フォルダとファイルの両方を、一元定義から取っている', () => {
     const line = source.split('\n').find(l => l.includes('const EXCLUDE_NAMES'))
     expect(line).toBeDefined()
-    expect(line!).toContain('excludedDirNames()')
+    // 2026-08-19: 公開経路は publishExcludedDirNames（素材フォルダも外れる）を使う
+    expect(line!).toContain('publishExcludedDirNames()')
     expect(line!).toContain('excludedFileNames()')
   })
 
