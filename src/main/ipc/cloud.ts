@@ -1142,7 +1142,12 @@ export function registerCloudHandlers(_deps: IpcDeps) {
    */
   async function withDeletePermission<T>(
     creds: ReturnType<typeof loadCredentials>,
-    opts: { region: string; registryLabel: string; username: string; password: string; progress: (m: string) => void },
+    opts: {
+      region: string; registryLabel: string; username: string; password: string
+      progress: (m: string) => void
+      /** 「上げたまま」の印を付け外しする（強制終了に備える）。 */
+      markElevated: (on: boolean) => void
+    },
     run: () => Promise<T>,
   ): Promise<{ raised: boolean; restored: boolean; message?: string; result?: T }> {
     if (!creds) return { raised: false, restored: true, message: 'APIキーが未登録です' }
@@ -1157,32 +1162,38 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     const setPermission = async (permission: 'all' | 'readwrite') =>
       client.updateRegistryUser(opts.region, found.id, { username: opts.username, password: opts.password, permission })
 
-    opts.progress('🔑 消すあいだだけ権限を上げています…')
+    // 権限の上げ下げは内部の都合。**普段それを伝えていないので、ここでも言わない**
+    // （2026-08-19/20 Ryosuke 指摘）。戻せなかったときだけ伝える。
+    opts.progress('🗑 古いイメージを消す準備をしています…')
+    // **上げる前に印を残す**（2026-08-20 点検）。ここでアプリが強制終了すると
+    // 権限が上がったまま残るので、次に片づけを始めるときに戻せるようにする。
+    opts.markElevated(true)
     const up = await setPermission('all')
     if (up.dryRun === false && !up.ok) {
+      opts.markElevated(false)
       return {
         raised: false, restored: true,
         message: `削除のための権限に変更できませんでした（HTTP ${up.status}）${apiErrorMessage(up.data) ? ' — ' + apiErrorMessage(up.data) : ''}。`
           + 'さくらのコントロールパネルで、このレジストリの利用者権限を「All」に変更してからお試しください。',
       }
     }
+    // **戻せたかは、この呼び出しの中だけで持つ。**
+    // 以前は外側の変数に書いていたが、複数の片づけが重なると混ざるうえ、
+    // 早く返る道（権限を上げられなかった場合）では前回の値が残ってしまう。
+    let restored = true
+    // try の中で必ず代入され、例外はそのまま外へ投げる（finally で戻したうえで）
+    let result!: T
     try {
-      const result = await run()
-      return { raised: true, restored: false, result } // 戻すのは下の finally 後に判定する
+      result = await run()
     } finally {
       // **必ず戻す。** 失敗しても戻す（上がったままにしない）
-      opts.progress('🔑 権限を元に戻しています…')
+      opts.progress('🗑 片づけを終えています…')
       const down = await setPermission('readwrite')
-      if (down.dryRun === false && !down.ok) {
-        // 戻せなかったことは、あとで必ず伝える（下の呼び出し側で message に混ぜる）
-        restoreFailed = true
-      } else {
-        restoreFailed = false
-      }
+      restored = !(down.dryRun === false && !down.ok)
+      if (restored) opts.markElevated(false) // 戻せたときだけ印を消す
     }
+    return { raised: true, restored, result }
   }
-  /** 直前の withDeletePermission で権限を戻せたか（戻せなければ利用者に伝える）。 */
-  let restoreFailed = false
 
   ipcMain.handle('cloud:cleanupImages', async (event, projectDir: string, opts?: { confirmed?: boolean; keep?: number }) => {
     const progress = (msg: string) => {
@@ -1217,6 +1228,34 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
 
       const auth = { server: registryServer(push.use), user: regCreds.user, password: regCreds.password }
+
+      // ── 前回の途中終了で上がったままなら、まず戻す（2026-08-20 点検）──────
+      // 片づけの途中でアプリが強制終了すると、権限が `all` のまま残りうる。
+      // 印が付いていたら、何をするより先に戻す（べき等なので二重に戻しても害はない）。
+      if (state.meta?.registryElevatedAt) {
+        try {
+          const creds0 = loadCredentials()
+          if (creds0) {
+            const c0 = new SakuraCloudClient({ credentials: creds0, dryRun: false })
+            const l0 = await c0.listContainerRegistries(spec.region ?? 'is1a')
+            const f0 = l0.dryRun === false && l0.ok
+              ? pickContainerRegistries(l0.data).find(r => r.subdomainLabel === push.use)
+              : undefined
+            if (f0) {
+              const back = await c0.updateRegistryUser(spec.region ?? 'is1a', f0.id, {
+                username: regCreds.user, password: regCreds.password, permission: 'readwrite',
+              })
+              if (!(back.dryRun === false && !back.ok)) {
+                const st = loadCloudState(projectDir, spec)
+                const meta = { ...st.meta }
+                delete meta.registryElevatedAt
+                saveCloudState(projectDir, { ...st, meta })
+              }
+            }
+          }
+        } catch { /* 戻せなくても片づけは続けられる（このあと上げ直す） */ }
+      }
+
       progress('🔎 レジストリのイメージを調べています…')
       const listed = await listTags({ auth, image: source.image })
       if (!listed.ok) {
@@ -1261,9 +1300,18 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
       // **消すあいだだけ権限を上げ、終わったら必ず戻す**（2026-08-19 Ryosuke 指摘）
       const region = spec.region ?? 'is1a'
+      const markElevated = (on: boolean) => {
+        try {
+          const st = loadCloudState(projectDir, spec)
+          const meta = { ...st.meta }
+          if (on) meta.registryElevatedAt = new Date().toISOString()
+          else delete meta.registryElevatedAt
+          saveCloudState(projectDir, { ...st, meta })
+        } catch { /* 印を残せなくても片づけ自体は続ける */ }
+      }
       const guarded = await withDeletePermission(
         loadCredentials(),
-        { region, registryLabel: push.use, username: regCreds.user, password: regCreds.password, progress },
+        { region, registryLabel: push.use, username: regCreds.user, password: regCreds.password, progress, markElevated },
         // 閉じた関数の中では型の絞り込みが効かないので、名前を控えてから渡す
         () => deleteDigests({ auth, image: imageName, digests, onProgress: progress }),
       )
@@ -1291,7 +1339,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
                 + 'さくらのコントロールパネルから削除してください。'
               : '一部のイメージを片づけられませんでした。')
           // **戻せなかったことは黙らない。**（上がったままだと、できることが広がったままになる）
-          + (restoreFailed
+          + (!guarded.restored
             ? '\n⚠️ レジストリの権限を元（Push & Pull）に戻せませんでした。'
               + 'さくらのコントロールパネルで戻してください。'
             : ''),

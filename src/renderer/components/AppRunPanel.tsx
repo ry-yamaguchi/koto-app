@@ -10,7 +10,7 @@ import CopyButton from './CopyButton'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
-import { retentionNotice } from '../../shared/imageRetention'
+import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
 // （小文字英数字とハイフン・先頭末尾は英数字・3〜40文字）と同じ制約をここでも複製する
@@ -521,8 +521,15 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
       const r = await window.electronAPI.cloud.plan(projectDir)
       if (r.ok) {
         setPlan(r.plan)
-        // noop だけ（変更なし）なら確認ダイアログを出さず即適用してよいが、明示確認を優先する。
-        setConfirm({ kind: 'apply', plan: r.plan })
+        // ── 確認は「増える・消える」ときだけ（2026-08-20 Ryosuke 指摘）──────────
+        // 更新だけの公開（作るものも消えるものも無い）は、**押した時点で意図が
+        // はっきりしている**。毎回もう一度押させるのは冗長。
+        // 確認を出すのは、**新しく作る（＝費用が発生しうる）**か
+        // **消える（＝取り返しがつかない）**ときに限る。
+        const needsConfirm = r.plan.hasDestructive
+          || r.plan.actions.some(a => a.type === 'create' || a.type === 'delete')
+        if (needsConfirm) setConfirm({ kind: 'apply', plan: r.plan })
+        else await doApply()
       } else {
         setPlanError(r.errors.join(' / '))
       }
@@ -967,6 +974,23 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
             <p className={`text-xs font-semibold ${preflight.canPublish ? 'text-ink' : 'text-brand-red'}`}>
               {preflight.canPublish ? '✅' : '⚠️'} {preflight.summary}
             </p>
+            {/* ── 全部 ✅ なら畳む（2026-08-20 Ryosuke 指摘）────────────────────
+                問題が無くても7行読ませていた。**気になる点だけを見せ**、
+                確認できたものは1行にまとめる（見たい人は開ける）。 */}
+            {preflight.checks.length > 0 && preflight.checks.every(c => c.status === 'ok') ? (
+              <details className="text-xs">
+                <summary className="cursor-pointer select-none text-ink-secondary hover:text-ink">
+                  ✅ {preflight.checks.length}項目すべて確認しました（内訳を見る）
+                </summary>
+                <ul className="mt-1 space-y-0.5 pl-1">
+                  {preflight.checks.map(c => (
+                    <li key={c.id} className="text-[11px] text-ink-secondary leading-relaxed">
+                      ✅ <span className="text-ink font-medium">{c.label}</span> {c.note}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : (
             <ul className="space-y-1">
               {preflight.checks.map(c => {
                 // ── 1件ずつ改行して読ませる（2026-08-19 Ryosuke 指摘）──────────────
@@ -1040,6 +1064,7 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
                 )
               })}
             </ul>
+            )}
             {trashNote && (
               <p className="text-[11px] text-ink leading-relaxed select-text">{trashNote}</p>
             )}
@@ -1173,13 +1198,15 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
             公開のたびに新しいタグを打つので、レジストリに過去のイメージが残る。
             **勝手に消さない。** 溜まっていると分かったときだけ、片づける手段を出す。
             料金は月額220円に5GiB込み・超過1GiBごと22円なので、慌てる必要はない。 */}
-        {opResult?.staleImages && opResult.staleImages.removable > 0 && (
+        {/* ── 毎回言わない（2026-08-20 Ryosuke 指示）────────────────────────
+            以前は1件でも出していた。**すぐに困らないと自分で書いているもの**を
+            公開のたびに見せるのは雑音。10件たまってから伝える。
+            料金の内訳は、実際に片づけるときの画面（確認ダイアログ）で見せる。 */}
+        {opResult?.staleImages && shouldNoticeStale(opResult.staleImages.removable) && (
           <div className="rounded-xl border border-line bg-surface p-3 space-y-1.5">
             <p className="text-xs font-semibold text-ink">🧹 古いイメージが残っています</p>
             <p className="text-[11px] text-ink-secondary leading-relaxed">
               {retentionNotice({ removable: opResult.staleImages.removable, keep: opResult.staleImages.keep })}
-              コンテナレジストリは月額{REGISTRY_MONTHLY_YEN}円（税込）に{REGISTRY_INCLUDED_STORAGE_GIB}GiB分が含まれ、
-              超えると1GiBごとに{REGISTRY_EXTRA_GIB_YEN}円（税込）が加算されます。すぐに困る量ではありません。
             </p>
             <button
               onClick={askCleanupImages}
@@ -1897,6 +1924,11 @@ function ConfirmDialog({
           <p className="text-sm font-semibold text-ink">⚠️ 古いイメージを {plan.remove.length} 件消します</p>
           <p className="text-sm text-ink-secondary leading-relaxed">
             コンテナレジストリに残っている、過去の公開のイメージを消します。元に戻せません。
+            {/* 料金の内訳は**実際に片づけるこの場面**で見せる（公開のたびに言わない・2026-08-20） */}
+            <span className="block mt-1 text-[11px] text-ink-muted leading-relaxed">
+              コンテナレジストリは月額{REGISTRY_MONTHLY_YEN}円（税込）に{REGISTRY_INCLUDED_STORAGE_GIB}GiB分が含まれ、
+              超えると1GiBごとに{REGISTRY_EXTRA_GIB_YEN}円（税込）が加算されます。
+            </span>
 
             いま公開しているアプリには影響しません。
           </p>

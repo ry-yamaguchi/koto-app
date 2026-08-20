@@ -32,8 +32,16 @@ describe('消すあいだだけ権限を上げる', () => {
   })
 
   it('★★ 戻せなかったら黙らない', () => {
-    expect(block).toContain('restoreFailed = true')
     expect(cloud).toContain('権限を元（Push & Pull）に戻せませんでした')
+    expect(cloud).toContain('!guarded.restored')
+  })
+
+  // 2026-08-20 の点検で見つけた欠陥: 「戻せたか」を外側の変数で持っていた。
+  // 片づけが重なると混ざるうえ、早く返る道では前回の値が残る。
+  it('★★ 「戻せたか」は呼び出しごとに持つ（共有しない）', () => {
+    expect(cloud).not.toContain('let restoreFailed')
+    expect(block).toContain('let restored = true')
+    expect(block).toContain('return { raised: true, restored, result }')
   })
 
   it('★★ パスワードは変えない（動いている公開の認証を切らない）', () => {

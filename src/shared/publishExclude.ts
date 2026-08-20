@@ -108,6 +108,21 @@ export function excludedFileNames(extra: readonly string[] = []): Set<string> {
 }
 
 /**
+ * その名前のものが **公開物に入るか**。
+ *
+ * ── なぜ一元定義に置くか（2026-08-20 Ryosuke 要望）──────────────────────
+ * ファイル一覧を「公開されるもの／公開されないもの」に分けて見せるための判定。
+ * **画面の表示と、実際に公開されるものが食い違ってはいけない。**
+ * だから4経路（AppRun / Vercel / HANAMII / レンタルサーバ）が使っているのと
+ * まったく同じ定義から導く。**画面側で名前を並べ直さないこと**
+ * （手で組み直して穴が空いた事故が過去に3回ある。CLAUDE.md 掟10）。
+ */
+export function isPublished(name: string, isDir: boolean, extra: readonly string[] = []): boolean {
+  if (isDir) return !publishExcludedDirNames(extra).has(name)
+  return !excludedFileNames(extra).has(name) && !isSecretFile(name)
+}
+
+/**
  * 秘密ファイルを rsync / zip の「名前パターン」で表したもの。
  * どちらもワイルドカードは `*` なので、SECRET_FILE_PATTERNS と同じ範囲を
  * この2つの形式で書き下す（正規表現をそのまま渡せないため）。

@@ -8,6 +8,7 @@ import type { IpcDeps } from './types'
 // ── AI専用：プロジェクト内に閉じ込めたファイル読み書き（多層防御） ──
 // rel はプロジェクトルートからの相対パス。絶対パスや .. での脱出は拒否する。
 import { destinationDir, uniqueName, isImageFileName, type AssetPurpose } from '../../shared/assetImport'
+import { canTrash } from '../../shared/trashGuard'
 
 function confineToProject(projectDir: string, rel: string): string {
   if (path.isAbsolute(rel)) throw new Error('不正なパスです（絶対パスは指定できません）')
@@ -177,7 +178,14 @@ export function registerFsHandlers(deps: IpcDeps) {
   })
 
   // ファイルをゴミ箱へ（完全削除はしない）
-  ipcMain.handle('fs:trash', async (_, p: string) => shell.trashItem(p))
+  // ── ゴミ箱は「ホームの深さ2以上」だけ（2026-08-20 セキュリティ点検）──────
+  // どんな絶対パスでも送れる作りだった。到達する道はいま無いが、1枚目の守りに
+  // 頼り切らない。判断は shared/trashGuard.ts（テスト付き）。
+  ipcMain.handle('fs:trash', async (_, p: string) => {
+    const check = canTrash(app.getPath('home'), path.resolve(String(p ?? '')), path.sep)
+    if (!check.ok) throw new Error(check.reason)
+    return shell.trashItem(path.resolve(String(p)))
+  })
   // リネーム（同フォルダ内での名前変更のみ）
   ipcMain.handle('fs:rename', async (_, oldPath: string, newName: string) => {
     if (!newName || newName.includes('/') || newName.includes('..')) throw new Error('不正なファイル名です')

@@ -98,7 +98,9 @@ export async function runSecurityCheck(projectDir: string, apiKey: string): Prom
         { role: 'system', content: 'あなたはWebセキュリティのレビュアーです。日本語のみで、指定された出力形式に厳密に従ってください。' },
         { role: 'user', content: userPrompt },
       ],
-      maxTokens: 800,
+      // 800 では推論型モデル（gpt-oss / Kimi 等）が考えるだけで使い切り、
+      // 判定を書き始める前に打ち切られる（2026-08-20 実機で、まとめ側で同じことが起きた）。
+      maxTokens: 2048,
       temperature: 0.2,
     })
     const report = (res.content ?? '').trim()

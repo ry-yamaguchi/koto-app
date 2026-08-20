@@ -146,8 +146,22 @@ export function digestsToDelete(opts: {
  * 溜まり具合を伝える文（画面にそのまま出る。**Markdown 記法は使わない** — 掟5・cloudCost.ts と同じ）。
  * 消す前・消した後のどちらでも使えるよう、件数だけを述べる。
  */
+/**
+ * 片づけの案内を出す目安（2026-08-20 Ryosuke 指示）。
+ *
+ * **公開のたびに言わない。** 以前は1件でも出していたが、自分で
+ * 「すぐに困る量ではありません」と書いているものを毎回見せるのは、ただの雑音。
+ * 5GiB に届くのは約970回の公開なので、10件たまってから伝えれば十分間に合う。
+ */
+export const NOTICE_THRESHOLD = 10
+
+/** 片づけの案内を出すか（純関数）。 */
+export function shouldNoticeStale(removable: number): boolean {
+  return removable >= NOTICE_THRESHOLD
+}
+
 export function retentionNotice(opts: { removable: number; keep: number }): string {
-  if (opts.removable <= 0) return ''
+  if (!shouldNoticeStale(opts.removable)) return ''
   return `過去の公開でできたイメージが ${opts.removable} 件たまっています`
     + `（直近 ${opts.keep} 件を残して片づけられます）。`
 }

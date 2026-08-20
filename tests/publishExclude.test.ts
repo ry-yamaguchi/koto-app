@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { publishExcludedDirNames, MATERIALS_DIR,
   KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES, SECRET_FILE_PATTERNS,
   excludedDirNames, excludedFileNames, isSecretFile, rsyncExcludeArgs, zipExcludePatterns,
-} from '../src/shared/publishExclude'
+  isPublished } from '../src/shared/publishExclude'
 import { SKIP_DIRS, isEnvFileName } from '../src/main/github/enumerate'
 
 // 2026-08-05: レンタルサーバへの公開だけ Koto の内部フォルダの除外が抜けており、
@@ -181,5 +181,44 @@ describe('素材（公開しません）の扱い', () => {
     expect(vercel).not.toMatch(/=\s*excludedDirNames\(\)/)
     expect(image).toContain('publishExcludedDirNames()')
     expect(image).not.toMatch(/\.\.\.excludedDirNames\(\)/)
+  })
+})
+
+// ── 画面の「公開されるもの／されないもの」の判定（2026-08-20）─────────────────
+// ファイル一覧の見分け（Sidebar）はこの関数だけを使う。**画面側で名前を並べ直さない。**
+// 手で組み直して穴が空いた事故が過去に3回あるため（掟10）。
+describe('isPublished（一覧の見分け）', () => {
+  it('アプリのファイルは公開される', () => {
+    for (const n of ['index.html', 'style.css', 'script.js', 'README.md', 'Dockerfile', 'nginx.conf']) {
+      expect(isPublished(n, false)).toBe(true)
+    }
+    expect(isPublished('images', true)).toBe(true)
+  })
+
+  it('素材（公開しません）は公開されない', () => {
+    expect(isPublished(MATERIALS_DIR, true)).toBe(false)
+  })
+
+  it('Koto の内部フォルダ・重いフォルダは公開されない', () => {
+    for (const d of [...KOTO_INTERNAL_DIRS, '.git', 'node_modules']) {
+      expect(isPublished(d, true)).toBe(false)
+    }
+  })
+
+  it('秘密ファイル・雑音ファイル・内部ファイルは公開されない', () => {
+    for (const f of ['.env', '.env.local', 'id_rsa', 'server.pem', '.netrc', '.DS_Store', ...KOTO_INTERNAL_FILES]) {
+      expect(isPublished(f, false)).toBe(false)
+    }
+  })
+
+  it('判定が、実際に公開経路が使っている定義と一致する', () => {
+    // ここがずれると「画面では公開されないのに、実際は公開される」が起きる。
+    for (const name of publishExcludedDirNames()) expect(isPublished(name, true)).toBe(false)
+    for (const name of excludedFileNames()) expect(isPublished(name, false)).toBe(false)
+  })
+
+  it('呼び出し側固有の追加分も効く', () => {
+    expect(isPublished('dist', true)).toBe(true)
+    expect(isPublished('dist', true, ['dist'])).toBe(false)
   })
 })

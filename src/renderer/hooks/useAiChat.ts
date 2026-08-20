@@ -9,7 +9,7 @@ import { shouldTryImagesDirectly, recordVisionSupport, isImageUnsupportedError }
 import { extractUrls, fetchPagesBlock, autoSearchBlock, wantsWebSearch } from '../webContext'
 import { toolsFor, isToolUnsupportedError, executeTool, toolStatusLabel, getSearchConfig, formatChatError, formatClaudeError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning, claimsFileChange, unexecutedChangeWarning, WRITING_TOOLS, isToolArgsComplete } from '../aiTools'
 import { shouldSendTools, isKnownToolCapable, recordToolSupport } from '../toolSupport'
-import { limitHistory } from '../historyLimit'
+import { planSend, planCompact, planManualCompact, compactPrompt, acceptSummary, compactSource, type CompactMark, type CompactPlan } from '../historyCompact'
 import { searchStatusContext } from '../aiContext'
 import { getAnthropicToken } from '../components/CredentialsModal'
 import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode } from '../claudeMode'
@@ -38,6 +38,11 @@ export type ChatMessage = {
    *  **AIへは送り返さない**（費用が増え、モデルも混乱する）。**履歴ファイルにも保存しない**
    *  （本文の何倍にもなり chat.json が膨らむため。chatStorage.ts の保存時に落とす）。 */
   thinking?: string
+  /** 🗂 これまでのやり取りのまとめ（content がまとめ本文）。
+   *  会話が長くなったとき、古いぶんを**捨てずに**1件へ畳んだもの。
+   *  画面には「🗂 ここまでの内容をまとめました」とだけ出し、本文は折りたたむ（CompactNote.tsx）。
+   *  AIへは、この1件だけを履歴の先頭に置いて送る（historyCompact.ts）。 */
+  summary?: CompactMark
 }
 
 export type UseAiChatArgs = {
@@ -60,7 +65,7 @@ export type UseAiChatArgs = {
   buildExecuteOpts: () => Record<string, unknown>
   /** ツール実行前の承認フック。undefined なら常に許可（ChatApp）。ChatPanel は write_file/run_command の確認UIをここに実装。戻り値: 許可なら null、拒否なら tool 結果として返す文字列 */
   approveToolCall?: (name: string, args: string) => Promise<string | null>
-  /** APIへ送る過去履歴を返す（toolNote 除外や limitHistory 適用「前」の生配列。hook 内で filter+limitHistory する） */
+  /** APIへ送る過去履歴を返す（**加工前の生配列**。表示専用の除外・まとめの適用は hook 内の planSend が行う） */
   getHistory: () => ChatMessage[]
   /** 画面のメッセージ列を関数型更新する（ChatApp はアクティブセッション内、ChatPanel はフラット配列に適用） */
   updateShown: (updater: (prev: ChatMessage[]) => ChatMessage[]) => void
@@ -131,6 +136,97 @@ export function useAiChat(args: UseAiChatArgs) {
     return next
   }), [updateShown])
   const removeLast = useCallback(() => updateShown(prev => prev.slice(0, -1)), [updateShown])
+
+  /** まとめ作りの結果。手動で押したときは**理由も見せる**ので、失敗を文言で返す。 */
+  type CompactOutcome = { msg: ChatMessage } | { error: string }
+
+  /**
+   * 決めた範囲を1件の「まとめ」に畳む（**元の会話は消さない**）。
+   *
+   * ── なぜ（2026-08-20 Ryosuke 指摘）────────────────────────────────
+   * これまでは直近ぶんだけを送り、それより前は黙って捨てていた。
+   * 長い相談ほど「さっき決めたこと」を忘れ、利用者からは物覚えを失ったように見える。
+   *
+   * ・**まとめは「いま選んでいるモデル」で作る**（利用者の知らない経路・料金を使わない）。
+   * ・**黙ってやらない。** 会話に「🗂 ここまでの内容をまとめました」を残す。
+   * ・**失敗しても送信は止めない。** まとめが無いだけで、従来どおり動く。
+   */
+  const runCompact = useCallback(async (history: ChatMessage[], plan: CompactPlan): Promise<CompactOutcome> => {
+    if (!apiKey || !model) return { error: 'さくらのAI Engine のキーが登録されていないため、まとめを作れません。' }
+    // 予算の上限に達しているときは作らない（まとめのために上限を超えない）。
+    if (!checkBeforeRequest(apiKey).allowed) {
+      return { error: '今月のさくらのAI Engine の利用額が上限に達しているため、まとめを作れません（上限は ⚙️ 設定で変えられます）。' }
+    }
+    // 材料には**書き込み・実行の実況も混ぜる**（どのファイルを変えたかは本文に残らない）。
+    const { system, user } = compactPrompt(plan.base, compactSource(history, plan.from, plan.to))
+    setStatusNote('🗂 これまでの内容をまとめています…')
+    try {
+      const res = await window.electronAPI.sakura.chat({
+        apiKey,
+        model,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        // 推論型モデルは考えるだけで上限に達し、本文にたどり着けないことがある
+        // （2026-08-20 実機: 2048 では思考の途中で打ち切られていた）。余裕を持たせる。
+        maxTokens: 4096,
+      })
+      recordUsage(
+        apiKey,
+        model,
+        res.usage?.prompt_tokens ?? estimateTokens(system + user),
+        res.usage?.completion_tokens ?? estimateTokens(res.content ?? ''),
+      )
+      const text = acceptSummary(res.content ?? '')
+      if (!text) return { error: `「${modelLabel(model)}」から空の返事が返ってきました。別のモデルでお試しください。` }
+      return { msg: { role: 'assistant', content: text, summary: { upTo: plan.to, mark: plan.mark } } }
+    } catch (e: any) {
+      return { error: formatChatError(e?.message ?? String(e)) }
+    } finally {
+      setStatusNote('')
+    }
+  }, [apiKey, model])
+
+  /** 送るものが予算を超えていたら、送信の前に自動で畳む。**自動の失敗は黙る**（利用者は
+   *  そもそも「まとめが要る状態」を知らないため）。ただし**実際に送れなくなったときは1度だけ伝える**。 */
+  const compactWarnedRef = useRef(false)
+  const compactIfNeeded = useCallback(async (history: ChatMessage[]): Promise<ChatMessage | null> => {
+    const plan = planCompact(history)
+    if (!plan) return null
+    const r = await runCompact(history, plan)
+    if ('msg' in r) return r.msg
+    // ここへ来た時点で、送る量は予算を超えている＝**古いやり取りの一部が送れていない**。
+    // 黙って忘れられるより、やり直せる手があることを1度だけ伝える。
+    if (!compactWarnedRef.current) {
+      compactWarnedRef.current = true
+      appendBubble({
+        role: 'assistant', toolNote: true,
+        content: `⚠️ ${r.error}
+そのため、古いやり取りの一部はAIへ送れていません。上の【🗂 まとめる】でやり直せます。`,
+      })
+    }
+    return null
+  }, [runCompact, appendBubble])
+
+  /**
+   * 🗂 手動で「ここまでをまとめる」（2026-08-20 Ryosuke 要望）。
+   *
+   * 自動は本文95件（約47往復）を超えないと働かないので、**ほとんどの人は一度も見ない**。
+   * 区切りたいときに自分で押せるようにする。直近3往復はそのまま残す。
+   * **押した人には失敗も伝える**（自動と違い、待っている人がいるため）。
+   */
+  const compactNow = useCallback(async () => {
+    if (isLoading) return
+    const history = getHistory()
+    const plan = planManualCompact(history)
+    if (!plan) return
+    setIsLoading(true)
+    try {
+      const r = await runCompact(history, plan)
+      if ('msg' in r) appendBubble(r.msg)
+      else appendBubble({ role: 'assistant', toolNote: true, content: `⚠️ ${r.error}` })
+    } finally {
+      setIsLoading(false)
+    }
+  }, [isLoading, getHistory, runCompact, appendBubble])
 
   // Claude頭脳モード（C2a/C2b/C2d）: Agent SDK 経路での1ターン送信。SDK のストリームイベント
   // （session/text/tool/result/error/openPreview）をチャットの吹き出しへ反映する。
@@ -353,8 +449,20 @@ export function useAiChat(args: UseAiChatArgs) {
       onUserMessage?.(text, isFirst)
       setIsLoading(true)
 
+      // 会話が長くなっていたら、ここで古いぶんをまとめる（送信に使う履歴もこれに差し替える）。
+      // 先にユーザーの吹き出しを出してから行うので、待っている間も「送れている」ことが分かる。
+      let history = historyBefore
+      const summaryMsg = await compactIfNeeded(historyBefore)
+      if (summaryMsg) {
+        appendBubble({ role: 'assistant', content: summaryMsg.content, summary: summaryMsg.summary })
+        history = [...historyBefore, summaryMsg]
+      }
+
       const systemPrompt = buildSystemPrompt()
-      const inputText = systemPrompt + historyBefore.map(m => m.content).join('\n') + text + assetBlock
+      // 費用の見積りは「実際に送るもの」で行う（まとめたのに元の全文で数えると合わない）。
+      // 送る履歴は1度だけ組み立てて使い回す（下のエージェントループでも同じものを使う）。
+      const pastMessages = planSend(history)
+      const inputText = systemPrompt + pastMessages.map(m => m.content).join('\n') + text + assetBlock
 
       try {
         const search = await getSearchConfig() // Web検索設定（未設定なら検索ツールは出さない）
@@ -516,8 +624,9 @@ export function useAiChat(args: UseAiChatArgs) {
         // エージェントループ：ツール呼び出しがあれば実行して結果を返し、続きを生成
         let apiMessages: ApiMsg[] = [
           { role: 'system', content: systemPrompt + searchStatusContext(!!search) },
-          // 過去ターンは直近分のみテキストで送る（画像の再送はせず、履歴も制限してコストを抑える）
-          ...limitHistory(historyBefore.filter(m => !m.toolNote)),
+          // 過去ターンはテキストのみで送る（画像は再送しない）。長くなった会話は、
+          // 古いぶんが「まとめ」に畳まれた形で先頭に入る（historyCompact.ts）。
+          ...pastMessages,
           { role: 'user', content: userContent },
         ]
 
@@ -741,6 +850,7 @@ export function useAiChat(args: UseAiChatArgs) {
     isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage, errorPrefix,
     routedModel, appendBubble, replaceLast, removeLast, buildRagBlock, sendViaClaude,
+    compactIfNeeded,
   ])
 
   // #31: 「さくらのAI Engine に切り替えて続ける」提案ボタンのハンドラ。頭脳をさくらのAI Engineへ
@@ -751,5 +861,5 @@ export function useAiChat(args: UseAiChatArgs) {
     void send(text, images)
   }, [send])
 
-  return { isLoading, statusNote, stalled, elapsedSec, routedModel, setRoutedModel, send, abort, switchToAiEngineAndResend }
+  return { isLoading, statusNote, stalled, elapsedSec, routedModel, setRoutedModel, send, abort, switchToAiEngineAndResend, compactNow }
 }

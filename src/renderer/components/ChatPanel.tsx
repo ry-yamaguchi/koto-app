@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect, useCallback } from 'react'
 import type { OpenFile } from '../App'
 import SakuraLogo from './SakuraLogo'
 import AiMessage from './AiMessage'
+import CompactNote from './CompactNote'
+import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
 import { shouldTryImagesDirectly } from '../visionSupport'
@@ -767,10 +769,24 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               ? 'AIのファイル保存：おまかせ（自動保存）。クリックで「毎回確認」に切替'
               : 'AIのファイル保存：毎回確認（保存前に許可を求める）。クリックで「おまかせ」に切替'}
           >{writeMode === 'auto' ? '🪄 おまかせ' : '✋ 毎回確認'}</button>
+          {/* 🗂 手動で区切る（2026-08-20 Ryosuke 要望）。自動は約47往復を超えないと働かないので、
+              ほとんどの人は一度も見ない。押しても意味が無いうちは出さない（掟5）。
+              Claude頭脳モードでは Koto から履歴を送らないので、まとめても使い道が無い＝出さない。 */}
+          {!claudeActive && canCompactNow(messages) && (
+            <button
+              onClick={() => void chat.compactNow()}
+              disabled={isLoading}
+              className="text-[11px] text-ink-secondary hover:text-ink border border-line rounded-md px-1.5 py-0.5 whitespace-nowrap disabled:opacity-50"
+              title="これまでのやり取りをひとつにまとめて、AIに渡す量を減らします（直近3往復はそのまま残ります。会話は消えません）"
+            >🗂 まとめる</button>
+          )}
           <button
             onClick={() => {
+              // 🗂 まとめは「AIの発言」ではないので、そう見えないように書き出す。
               const text = messages.filter(m => !m.hidden)
-                .map(m => `${m.role === 'user' ? '🧑 あなた' : 'AI'}:\n${m.content}`).join('\n\n')
+                .map(m => m.summary
+                  ? `${COMPACT_NOTE}\n${m.content}`
+                  : `${m.role === 'user' ? '🧑 あなた' : 'AI'}:\n${m.content}`).join('\n\n')
               navigator.clipboard.writeText(text)
             }}
             className="text-xs text-ink-muted hover:text-ink"
@@ -822,6 +838,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           </div>
         )}
         {messages.filter(m => !m.hidden).map((msg, i) => {
+          // 🗂 会話のまとめ。吹き出しではなく、区切りとして中央に出す（本文は折りたたみ）。
+          if (msg.summary) return <CompactNote key={i} text={msg.content} projectDir={projectDir} />
           // 応答待ち/思考中の空のアシスタント吹き出しは描画しない（「…」インジケータで代替し、空箱が出ないようにする）。
           if (msg.role === 'assistant' && !msg.content.trim() && !msg.images?.length) return null
           return (

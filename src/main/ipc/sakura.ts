@@ -4,6 +4,7 @@ import { ipcMain } from 'electron'
 import OpenAI from 'openai'
 import type { IpcDeps } from './types'
 import { newStreamState, applyChunk, finishedToolCalls } from '../../shared/streamDelta'
+import { pickContent } from '../../shared/chatContent'
 
 const SAKURA_BASE_URL = 'https://api.ai.sakura.ad.jp/v1'
 // C3: delegate_implementation（claude/tools.ts）からも同じクライアント生成を再利用する。
@@ -90,7 +91,8 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
         if (safe == null) throw err
         res = await mk(safe) // モデルのコンテキスト上限に合わせて縮めて再試行
       }
-      return { content: res.choices?.[0]?.message?.content ?? '', usage: res.usage ?? null }
+      // 推論型モデルは本文が空で、答えが reasoning 側に入ることがある（shared/chatContent.ts）。
+      return { content: pickContent(res.choices?.[0]?.message), usage: res.usage ?? null }
     }
   )
 

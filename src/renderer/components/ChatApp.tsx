@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import SakuraLogo from './SakuraLogo'
 import AiMessage from './AiMessage'
+import CompactNote from './CompactNote'
+import { canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
 import { MODELS, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
 import { useModels } from '../hooks/useModels'
@@ -344,6 +346,15 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
             />
             {/* 頭脳の切替（2026-07-29 ユーザー要望）。右下の BrainToggle と同じもの・同じ書き込み口。 */}
             <BrainToggle apiKey={apiKey} compact />
+            {/* 🗂 手動で区切る（2026-08-20 Ryosuke 要望）。押しても意味が無いうちは出さない（掟5）。 */}
+            {canCompactNow(activeSession?.messages ?? []) && (
+              <button
+                onClick={() => void chat.compactNow()}
+                disabled={isLoading}
+                className="text-[12px] text-ink-secondary hover:text-ink border border-line rounded-lg px-2 py-1.5 whitespace-nowrap disabled:opacity-50"
+                title="これまでのやり取りをひとつにまとめて、AIに渡す量を減らします（直近3往復はそのまま残ります。会話は消えません）"
+              >🗂 まとめる</button>
+            )}
           </div>
         </div>
 
@@ -388,6 +399,8 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
           ) : (
             <div className="max-w-3xl mx-auto py-6 px-4 space-y-6">
               {activeSession.messages.map((msg, i) => {
+                // 🗂 会話のまとめ。吹き出しではなく、区切りとして中央に出す（本文は折りたたみ）。
+                if (msg.summary) return <CompactNote key={i} text={msg.content} />
                 // 応答待ち/思考中の空のアシスタント吹き出しは描画しない（「…」インジケータで代替し、空箱が出ないようにする）。
                 if (msg.role === 'assistant' && !msg.content.trim() && !msg.images?.length) return null
                 return (

@@ -1,6 +1,6 @@
 // claudeMode.ts — Claude頭脳モード（C2a）の renderer 側の小さな純粋ヘルパー群。
 // useAiChat.ts から呼ばれる（掟7: チャット変更は useAiChat.ts のみを修正するが、
-// historyLimit.ts / aiTools.ts と同様に独立した純粋ロジックは別モジュールへ切り出す）。
+// historyCompact.ts / aiTools.ts と同様に独立した純粋ロジックは別モジュールへ切り出す）。
 
 /** モードのオン/オフ（既定=オン）。'off' が明示されているときだけ Claude 経路を使わない。 */
 export const CLAUDE_MODE_KEY = 'sakura_claude_mode'
