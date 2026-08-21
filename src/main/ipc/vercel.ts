@@ -15,6 +15,7 @@ import type { IpcDeps } from './types'
 import { scanDataUsage } from '../dataLayer'
 import { judgeVercelFit } from '../../shared/vercelFit'
 import { summarizePreflight, sortChecks } from '../../shared/preflight'
+import { resolvePublishRoot } from '../publishRootFs'
 
 // デプロイ状態のポーリング設定。数秒間隔でREADY/ERRORまで待つ（タイムアウトあり）。
 const POLL_INTERVAL_MS = 3000
@@ -51,9 +52,9 @@ export function registerVercelHandlers(_deps: IpcDeps) {
         // ここで止めるほどの根拠が無く、Vercel 側のビルドで分かる
         packageJson = null
       }
-      const scan = scanDataUsage(projectDir)
+      const scan = scanDataUsage(resolvePublishRoot(projectDir))
       let hasFiles = false
-      try { hasFiles = collectDeployFiles(projectDir).length > 0 } catch { hasFiles = false }
+      try { hasFiles = collectDeployFiles(resolvePublishRoot(projectDir)).length > 0 } catch { hasFiles = false }
       const checks = sortChecks(judgeVercelFit({
         packageJson,
         listens: scan.listens,
@@ -84,7 +85,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       const name = sanitizeProjectName(opts.name || path.basename(projectDir))
 
       progress('ファイルを収集しています…')
-      const files = collectDeployFiles(projectDir)
+      const files = collectDeployFiles(resolvePublishRoot(projectDir))
       if (files.length === 0) {
         return { ok: false, message: 'アップロードできるファイルが見つかりません（プロジェクトが空の可能性があります）。' }
       }

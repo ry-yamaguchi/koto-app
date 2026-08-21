@@ -3,6 +3,8 @@ import type { OpenFile } from '../App'
 import SakuraLogo from './SakuraLogo'
 import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
+import MigrateNotice from './MigrateNotice'
+import type { MigratePlan } from '../../shared/migratePlan'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
@@ -25,6 +27,7 @@ import { takeNewProjectRequest } from '../newProjectRequest'
 import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, mediaTypeOf, type AssetPurpose } from '../../shared/assetImport'
 import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
 import { CHAT_TEXT_WRAP } from '../textWrap'
+import { resolvePublishRoot } from '../publishRootRenderer'
 
 type Message = ChatMessage
 
@@ -53,12 +56,14 @@ interface Props {
   /** Claudeモードの書き込み後、該当タブをディスクから読み直す（App.tsx の applyRestoreResult 相当。
    *  stale tab のオートセーブ上書きによるデータ喪失防止・2026-07-11） */
   onExternalFilesChanged?: (relPaths: string[]) => void
+  /** フォルダの整理でファイルの場所が変わったとき。**開いているタブは古い場所を指すので閉じる。** */
+  onProjectFilesMoved?: () => void
   activeFile: OpenFile | null
   projectDir?: string | null
 }
 
 
-export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile, onExternalFilesChanged, activeFile, projectDir }: Props) {
+export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile, onExternalFilesChanged, onProjectFilesMoved, activeFile, projectDir }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   // あいさつ（greet）専用のローディング／中断。送信パイプラインの状態は useAiChat が持つ。
@@ -93,6 +98,44 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // C2c: チャットの頭脳が Claude か（StatusBar.tsx と同じ判定方式）。Claudeのときは
   // ModelSelect の選択肢を AI Engine のモデル一覧から Claudeモデル一覧（ライブ取得。useClaudeModels）へ切り替える。
   const [claudeActive, setClaudeActive] = useState(false)
+
+  // ── AI が読み書きする基準（2026-08-20）───────────────────────────────
+  // `public/` がある＝そこが作業の場。無ければプロジェクト直下（移行前）。
+  // `resolveInProject` は `..` と絶対パスを拒むので、基準をここにすると
+  // **AI は書き込みで外へ出られない**（間違えにくい、ではなく構造上できない）。
+  // 🗂 プロジェクトの形を新しくする案内（2026-08-20）。**拒否はできないが、黙ってもやらない。**
+  const [migratePlan, setMigratePlan] = useState<MigratePlan | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setMigratePlan(null)
+    if (!projectDir) return
+    void window.electronAPI.fs.migrateCheck(projectDir)
+      .then(r => { if (!cancelled && r.needed) setMigratePlan(r.plan) })
+      .catch(() => { /* 調べられなければ案内を出さない（邪魔をしない） */ })
+    return () => { cancelled = true }
+  }, [projectDir])
+
+  const runMigrate = useCallback(async () => {
+    const snapshotId = new Date().toISOString().replace(/[:.]/g, '-')
+    const r = await window.electronAPI.fs.migrate(projectDir!, snapshotId)
+    if (r.ok) {
+      // 根が変わったので取り直す（AI・ターミナル・公開の起点が一斉に切り替わる）
+      const next = await resolvePublishRoot(projectDir!)
+      setAiRoot(next || projectDir!)
+      // **開いているタブは古い場所を指したままになる。** そのまま保存すると、
+      // 移したはずのファイルが元の場所に復活する（2026-07-11 の stale tab 事故と同じ形）。
+      onProjectFilesMoved?.()
+    }
+    return r
+  }, [projectDir])
+
+  const [aiRoot, setAiRoot] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    if (!projectDir) { setAiRoot(null); return }
+    void resolvePublishRoot(projectDir).then(r => { if (!cancelled) setAiRoot(r || projectDir) })
+    return () => { cancelled = true }
+  }, [projectDir])
   const [claudeKey, setClaudeKey] = useState('')
   useEffect(() => {
     let alive = true
@@ -172,7 +215,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     if (!projectDir) return { done, failed }
     for (const img of images) {
       try {
-        const r = await window.electronAPI.fs.importImageData(projectDir, img.name, img.url, purpose)
+        // 'app'（アプリで使う）は公開されるので根の中へ。'material'（素材）は
+        // 公開されない置き場なので、これまでどおりプロジェクト直下へ入れる。
+        const dest = purpose === 'material' ? projectDir : (aiRoot ?? projectDir)
+        const r = await window.electronAPI.fs.importImageData(dest, img.name, img.url, purpose)
         if (r.ok && r.rel) { done.push(r.rel); saved.push(img.url) }
         else failed.push(r.message ?? '原因不明')
       } catch (e: any) {
@@ -292,7 +338,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     toolsProjectDir: projectDir ?? null,
     onExternalFilesChanged,
     buildExecuteOpts: () => ({
-      projectDir,
+      // AI のファイル操作・コマンド・プレビューは、すべてこの根を基準にする。
+      projectDir: aiRoot ?? projectDir,
       applyFile: onApplyFile,
       // 📚 資料検索ツール（search_docs）の実体。rag:query を呼び、出典付きブロックに整形して返す。
       ragSearch: ragEnabled ? async (query: string) => {
@@ -939,6 +986,15 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       </div>
 
       {/* Input */}
+      {/* 🗂 フォルダの整理（2026-08-20）。**会話の中に置かない。**
+          最初は会話のいちばん上に出していたが、やり取りが多いプロジェクトでは
+          スクロールの外に行き、実機で「実装されていないように見える」状態になった。
+          常に見える場所（入力欄の直上）へ置く。 */}
+      {migratePlan && (
+        <div className="border-t border-line px-3 pt-3 flex-none">
+          <MigrateNotice plan={migratePlan} onRun={runMigrate} />
+        </div>
+      )}
       <div className="border-t border-line p-3 flex-none">
         <div className="flex flex-col gap-2 bg-elevated rounded-xl border border-line focus-within:border-sakura transition-colors p-2">
           {/* 添付画像のプレビュー */}

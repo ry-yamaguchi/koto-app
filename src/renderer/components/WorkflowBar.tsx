@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { TARGET_PROFILES, getTargetProfile, isAvailableTarget, TargetId } from '../targetProfiles'
+import { resolvePublishRoot } from '../publishRootRenderer'
 
 export interface ProjectMeta {
   name?: string
@@ -17,6 +18,8 @@ export interface ProjectMeta {
 
 interface Props {
   projectDir: string
+  /** プロジェクトの形が変わった合図（移行など）。上がったら根を取り直す。 */
+  refreshKey?: number
   meta: ProjectMeta | null
   onFocusChat: () => void        // focus the AI chat input
   onRunCmd: (cmd: string) => void // run a shell command in the IDE's terminal panel
@@ -38,7 +41,7 @@ function formatPublishedAt(iso?: string): string | null {
   return `${m}/${day} ${hh}:${mm} 公開`
 }
 
-export default function WorkflowBar({ projectDir, meta, onFocusChat, onRunCmd, onStopCmd, onOpenPublish, onChangeTarget, onOpenServer }: Props) {
+export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusChat, onRunCmd, onStopCmd, onOpenPublish, onChangeTarget, onOpenServer }: Props) {
   // 公開先変更のドロップダウン開閉
   const [showTargetMenu, setShowTargetMenu] = useState(false)
   // ② 試す の検出中フラグ（ボタン無効化に使用）
@@ -90,6 +93,16 @@ export default function WorkflowBar({ projectDir, meta, onFocusChat, onRunCmd, o
   // プロジェクトが切り替わったらサーバー実行中フラグをリセット
   useEffect(() => { setServerRunning(false) }, [projectDir])
 
+  // 「② 試す」で動かすのは**実際に公開されるもの**（`public/`。無ければ直下）。
+  // ここがずれると「試すと動くのに、公開すると別の中身」になる（2026-08-20）。
+  const [root, setRoot] = useState<string>(projectDir)
+  useEffect(() => {
+    let cancelled = false
+    if (!projectDir) { setRoot(''); return }
+    void resolvePublishRoot(projectDir).then(r => { if (!cancelled) setRoot(r || projectDir) })
+    return () => { cancelled = true }
+  }, [projectDir, refreshKey])
+
   // アンマウント時にタイマーを掃除
   useEffect(() => {
     return () => {
@@ -126,7 +139,7 @@ export default function WorkflowBar({ projectDir, meta, onFocusChat, onRunCmd, o
     setMissingRuntime(null)
     try {
       const api = window.electronAPI
-      const join = (p: string) => `${projectDir}/${p}`
+      const join = (p: string) => `${root}/${p}`
 
       // 1. index.html → ブラウザで開く
       if (await api.fs.exists(join('index.html'))) {
@@ -140,31 +153,31 @@ export default function WorkflowBar({ projectDir, meta, onFocusChat, onRunCmd, o
       }
       // 3. public/index.php → PHP ビルトインサーバ (public 配下)
       if (await api.fs.exists(join('public/index.php'))) {
-        await ensureRuntimeThenRun('php', `cd "${projectDir}" && php -S localhost:8000 -t public`, 'http://localhost:8000')
+        await ensureRuntimeThenRun('php', `cd "${root}" && php -S localhost:8000 -t public`, 'http://localhost:8000')
         return
       }
       // 4. index.php → PHP ビルトインサーバ (ルート)
       if (await api.fs.exists(join('index.php'))) {
-        await ensureRuntimeThenRun('php', `cd "${projectDir}" && php -S localhost:8000`, 'http://localhost:8000')
+        await ensureRuntimeThenRun('php', `cd "${root}" && php -S localhost:8000`, 'http://localhost:8000')
         return
       }
       // 5. server.js → node 実行
       if (await api.fs.exists(join('server.js'))) {
-        await ensureRuntimeThenRun('node', `cd "${projectDir}" && node server.js`, 'http://localhost:8080')
+        await ensureRuntimeThenRun('node', `cd "${root}" && node server.js`, 'http://localhost:8080')
         return
       }
       // 6. main.py / app.py → python3 実行（ポートは様々なのでブラウザは自動で開かない）
       if (await api.fs.exists(join('main.py'))) {
-        await ensureRuntimeThenRun('python3', `cd "${projectDir}" && python3 main.py`)
+        await ensureRuntimeThenRun('python3', `cd "${root}" && python3 main.py`)
         return
       }
       if (await api.fs.exists(join('app.py'))) {
-        await ensureRuntimeThenRun('python3', `cd "${projectDir}" && python3 app.py`)
+        await ensureRuntimeThenRun('python3', `cd "${root}" && python3 app.py`)
         return
       }
       // 7. package.json → npm start
       if (await api.fs.exists(join('package.json'))) {
-        await ensureRuntimeThenRun('node', `cd "${projectDir}" && npm start`)
+        await ensureRuntimeThenRun('node', `cd "${root}" && npm start`)
         return
       }
       // 8. 何も該当しない → インラインヒントを表示

@@ -49,7 +49,10 @@ type SdkModule = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'tool' | 
 
 export type IdeToolsParams = {
   /** プロジェクトルート（絶対パス）。search_docs のタグフィルタ（.sakuraide.json）の読み出しに使う。 */
+  /** 🕘 履歴の退避先・`.sakuraide.json` の場所（プロジェクトの絶対パス）。 */
   projectDir: string
+  /** 書き込みと読み取りの基準（`public/`。無ければ projectDir と同じ）。 */
+  writeRoot: string
   /** さくらのAI Engine のAPIキー（方式B: renderer が使う瞬間に読んで渡す。null なら資料検索/委譲は案内文言を返す）。 */
   aiEngineKey: string | null
   /** open_preview の副作用（renderer への通知）。相対パスを受け取る。 */
@@ -116,7 +119,7 @@ function readDelegateContextFile(projectDir: string, rel: string): DelegateConte
  * 実際のツール名は `mcp__ide__<tool名>` に修飾される（toolText.ts の IDE_MCP_TOOL_NAMES 参照）。
  */
 export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): McpSdkServerConfigWithInstance {
-  const { projectDir, aiEngineKey, onOpenPreview, snapshotId, snapshotLabel, onDelegated, onFileWritten } = params
+  const { projectDir, writeRoot, aiEngineKey, onOpenPreview, snapshotId, snapshotLabel, onDelegated, onFileWritten } = params
 
   const fetchUrlTool = sdk.tool(
     'fetch_url',
@@ -183,7 +186,7 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
       try {
         const contextFiles: DelegateContextFile[] = []
         for (const rel of (files ?? []).slice(0, 10)) {
-          const f = readDelegateContextFile(projectDir, rel)
+          const f = readDelegateContextFile(writeRoot, rel)
           if (f) contextFiles.push(f)
         }
         const { system, user } = buildDelegatePrompt(String(task ?? ''), contextFiles)
@@ -224,18 +227,21 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
 
         const written: { path: string; bytes: number }[] = []
         for (const f of parsed.files) {
+          // 退避の道は**プロジェクト直下からの相対**にする（🕘 はそこを見る）。
+          // 書き込み先は作業フォルダ基準なので、two つを取り違えないこと。
+          const relForBackup = path.relative(projectDir, path.join(writeRoot, f.path))
           try {
-            snapshotBeforeWrite(projectDir, snapshotId, f.path, f.content, snapshotLabel)
+            snapshotBeforeWrite(projectDir, snapshotId, relForBackup, f.content, snapshotLabel)
           } catch {
             // スナップショット失敗で委譲自体は止めない（P2-⑧履歴の欠落よりファイル反映を優先。agent.ts の
             // makePreToolUseHook と同じ方針）
           }
-          const full = path.join(projectDir, f.path)
+          const full = path.join(writeRoot, f.path)
           fs.mkdirSync(path.dirname(full), { recursive: true })
           fs.writeFileSync(full, f.content, 'utf8')
           written.push({ path: f.path, bytes: Buffer.byteLength(f.content, 'utf8') })
           // エディタの開きタブへ反映を通知（stale tab のオートセーブ上書き防止）
-          try { onFileWritten(f.path) } catch { /* 通知失敗で委譲は止めない */ }
+          try { onFileWritten(relForBackup) } catch { /* 通知失敗で委譲は止めない */ }
         }
 
         const promptTokens = res.usage?.prompt_tokens ?? 0

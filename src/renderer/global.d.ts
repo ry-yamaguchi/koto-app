@@ -160,6 +160,18 @@ interface Window {
         projects: { dir: string; name: string; publish: unknown; apprunState: unknown }[]
         message?: string
       }>
+      /**
+       * `public/` の形へ移す必要があるか調べる（**何も変えない**）。
+       * `plan.move` が移すもの、`plan.keep` が直下に残すもの。
+       */
+      migrateCheck(projectDir: string): Promise<{ needed: boolean; plan: { move: string[]; keep: string[] } }>
+      /**
+       * 実際に移す。**途中で失敗したら移した分を元へ戻す**（`restored` で分かる）。
+       * `snapshotOk` は 🕘 履歴に「移す直前」を残せたか。
+       */
+      migrate(projectDir: string, snapshotId: string): Promise<{
+        ok: boolean; moved: string[]; restored: boolean; snapshotOk?: boolean; message?: string
+      }>
       createProject(
         parentDir: string,
         name: string,

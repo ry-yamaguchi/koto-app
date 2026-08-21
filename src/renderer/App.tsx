@@ -19,6 +19,7 @@ import HistoryModal from './components/HistoryModal'
 import GithubSaveModal from './components/GithubSaveModal'
 import PublishedListModal from './components/PublishedListModal'
 import { useFileDrag } from './hooks/useFileDrag'
+import { resolvePublishRoot } from './publishRootRenderer'
 
 const EditorPanel = lazy(() => import('./components/EditorPanel'))
 
@@ -95,7 +96,17 @@ export default function App() {
   const [overTree, setOverTree] = useState(false)
   const [showTerminal, setShowTerminal] = useState(true)
   const [currentDir, setCurrentDir] = useState<string | null>(null)
+  // プロジェクトの形が変わった合図（ファイル一覧の更新と、各画面の「根」の取り直しに使う）。
   const [treeRefresh, setTreeRefresh] = useState(0)
+  // ターミナルを開く場所も`public/` に揃える（2026-08-20）。
+  // ここがずれると、アプリ型で `npm install` が別の場所に入ってしまう。
+  const [termDir, setTermDir] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    if (!currentDir) { setTermDir(null); return }
+    void resolvePublishRoot(currentDir).then(r => { if (!cancelled) setTermDir(r || currentDir) })
+    return () => { cancelled = true }
+  }, [currentDir, treeRefresh])
   const [showNewProject, setShowNewProject] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showCredentials, setShowCredentials] = useState(false)
@@ -560,6 +571,7 @@ export default function App() {
       {mode === 'ide' && currentDir && (
         <WorkflowBar
           projectDir={currentDir}
+          refreshKey={treeRefresh}
           meta={projectMeta}
           onFocusChat={focusChat}
           onRunCmd={runInTerminal}
@@ -662,7 +674,7 @@ export default function App() {
                   <>
                     <Separator className="sep sep-h" />
                     <Panel id="terminal" defaultSize="28%" minSize="8%" maxSize="70%">
-                      <TerminalPanel theme={theme} cwd={currentDir} exec={termExec} />
+                      <TerminalPanel theme={theme} cwd={termDir ?? currentDir} exec={termExec} />
                     </Panel>
                   </>
                 )}
@@ -675,7 +687,19 @@ export default function App() {
                 <Separator className="sep sep-v" />
                 <Panel id="chat" defaultSize="24%" minSize="16%" maxSize="45%">
                   <div className="h-full bg-surface">
-                    <ChatPanel apiKey={sakuraApiKey} onSetApiKey={setApiKey} activeFile={activeFileObj} projectDir={currentDir} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} onExternalFilesChanged={rels => { void applyRestoreResult(rels, []) }} />
+                    <ChatPanel apiKey={sakuraApiKey} onSetApiKey={setApiKey} activeFile={activeFileObj} projectDir={currentDir} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} onExternalFilesChanged={rels => { void applyRestoreResult(rels, []) }}
+                      onProjectFilesMoved={() => {
+                        // フォルダの整理でファイルが動いた。開いているタブは古い場所を
+                        // 指したままなので、**保存で元の場所に復活させないよう全部閉じる**
+                        // （2026-07-11 の stale tab 事故と同じ形を避ける）。
+                        setOpenFiles([])
+                        setActiveFile(null)
+                        // **プロジェクトの形が変わった。** ファイル一覧だけでなく、
+                        // 各画面が持っている「根」も取り直させる（treeRefresh を合図に使う）。
+                        // これを忘れると、移行後も古い場所を見たままになる
+                        //（2026-08-20 実機: 「② 試す」が実行方法を見つけられなくなった）。
+                        setTreeRefresh(n => n + 1)
+                      }} />
                   </div>
                 </Panel>
               </>

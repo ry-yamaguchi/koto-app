@@ -20,11 +20,13 @@ import { registerGithubHandlers } from './github'
 import { registerClaudeHandlers } from './claude'
 import { registerChatStoreHandlers } from './chatStore'
 import { registerUpdateHandlers } from './update'
+import { registerMigrateHandlers } from './migrate'
 
 export type { IpcDeps } from './types'
 
 export function registerAllHandlers(deps: IpcDeps) {
   registerWindowHandlers(deps)
+  registerMigrateHandlers()
   registerShellHandlers(deps)
   registerWebHandlers(deps)
   registerRemoteHandlers(deps)

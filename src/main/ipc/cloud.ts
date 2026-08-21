@@ -293,6 +293,7 @@ import { tagForPublish } from '../../shared/publishTag'
 import { planTagCleanup, digestsToDelete, normalizeKeep, DEFAULT_KEEP } from '../../shared/imageRetention'
 import { listTags, resolveDigests, deleteDigests } from '../cloud/imageCleanup'
 import { markerUrl, matchesMarker, verifyDelaysMs, verifyMessage, canVerify, type VerifyOutcome } from '../../shared/publishVerify'
+import { resolvePublishRoot } from '../publishRootFs'
 
 export function registerCloudHandlers(_deps: IpcDeps) {
   // 接続テスト＝APIキーの権限を 3 点で非破壊チェックする。
@@ -847,7 +848,9 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
         let contextAbs: string
         try {
-          contextAbs = resolveBuildContext(projectDir, source.context)
+          // 公開の起点は`public/`（無ければプロジェクト直下）。
+          // env.json の context は、その根からの相対として解決する。
+          contextAbs = resolveBuildContext(resolvePublishRoot(projectDir), source.context)
         } catch (e: any) {
           return { ok: false, message: e?.message ?? String(e) }
         }
@@ -1375,7 +1378,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (builderMode === 'docker') {
         // エキスパート: Docker 導入 ＋ Dockerfile ＋ レジストリ認証。
         let dockerfile = false
-        try { dockerfile = fs.existsSync(path.join(resolveBuildContext(projectDir, source.context), 'Dockerfile')) } catch { dockerfile = false }
+        try { dockerfile = fs.existsSync(path.join(resolveBuildContext(resolvePublishRoot(projectDir), source.context), 'Dockerfile')) } catch { dockerfile = false }
         return { sourceType: 'dockerfile' as const, builderMode, docker: await dockerAvailable(), dockerfile, registry }
       }
       // 標準: 内蔵ビルダー（同梱 crane・常時可）＋ レジストリ認証。Docker/Dockerfile 不要。
@@ -1587,7 +1590,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
    */
   ipcMain.handle('storage:scan', (_e, projectDir: string) => {
     try {
-      const scan = scanDataUsage(String(projectDir || ''))
+      // データの使い方も koto-data の置き場も、アプリ本体（＝公開される側）を見る。
+      const scan = scanDataUsage(resolvePublishRoot(String(projectDir || '')))
       return { ok: true, usesDataLayer: scan.usedBy.length > 0, usedBy: scan.usedBy, writesFiles: scan.writesFiles }
     } catch (e: any) {
       return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], message: e?.message ?? String(e) }
@@ -1596,7 +1600,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
   /** koto-data.js が要るなら置く（既にあれば触らない）。 */
   ipcMain.handle('storage:ensureLayer', (_e, projectDir: string) => {
-    try { return { ok: true, placed: ensureDataLayer(String(projectDir || '')) } }
+    try { return { ok: true, placed: ensureDataLayer(resolvePublishRoot(String(projectDir || ''))) } }
     catch (e: any) { return { ok: false, placed: false, message: e?.message ?? String(e) } }
   })
 
@@ -1810,7 +1814,10 @@ function findSiteIssues(root: string): SiteIssue[] {
       // 公開は止めない（`warn`）。**直すかどうかは人が決める**が、
       // 「押してから気づく」よりは、押す前に見えていた方がよい。
       try {
-        const issues = findSiteIssues(projectDir)
+        // 見るのは**実際に公開されるもの**（`public/`。無ければ直下）。
+        // ここがずれると、`main.js` が同じフォルダにあるのに「見つかりません」と出る
+        //（2026-08-20 実機で発生。相対パスの解決の基準がずれていた）。
+        const issues = findSiteIssues(resolvePublishRoot(projectDir))
         if (issues.length === 0) {
           add('look', '見た目', 'ok', 'よくある落とし穴（背景画像・リンク切れ・スマホ対応・画像の大きさ）は見つかりませんでした。')
         } else {
@@ -1831,8 +1838,10 @@ function findSiteIssues(root: string): SiteIssue[] {
 
       // 起動できる作りか（判断は shared/runtimeDetect.ts）
       if (spec.service.source.type !== 'image') {
-        let contextAbs = projectDir
-        try { contextAbs = resolveBuildContext(projectDir, spec.service.source.context) } catch { /* 既定のまま */ }
+        // 公開前チェックも、実際に公開するのと同じ根を見る（ここがずれると
+        // 「チェックは通ったのに公開すると別の中身」になる）。
+        let contextAbs = resolvePublishRoot(projectDir)
+        try { contextAbs = resolveBuildContext(resolvePublishRoot(projectDir), spec.service.source.context) } catch { /* 既定のまま */ }
         const choice = detectRuntimeFor(contextAbs)
         // コードを直せば通るので、AIに相談できるようにする
         if (choice.kind === 'unsupported') add('runtime', 'アプリの作り', 'ng', choice.reason, 'ask-ai')
@@ -2001,7 +2010,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       // 6. データ層も置いておく（既にあれば触らない）。これが無いと、
       //    AI に書き直してもらった import 先が存在しない
       let placed = false
-      try { placed = ensureDataLayer(dir) } catch { /* 置けなくても保存場所の用意は成立する */ }
+      try { placed = ensureDataLayer(resolvePublishRoot(dir)) } catch { /* 置けなくても保存場所の用意は成立する */ }
 
       return {
         ok: true,

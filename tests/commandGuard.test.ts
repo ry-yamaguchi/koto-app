@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isDangerousCommand } from '../src/shared/commandGuard'
+import { isDangerousCommand , leavesWorkingDir} from '../src/shared/commandGuard'
 
 // AIが実行しようとするコマンドの最後の砦（commandGuard.ts 冒頭のコメント参照）。
 // ここを通ってしまったコマンドは、🪄おまかせ運転中なら確認なしで実行される。
@@ -110,5 +110,38 @@ describe('入力の端', () => {
     expect(isDangerousCommand('cat README.md')).toBe(false)
     expect(isDangerousCommand('npm run add-user')).toBe(false)   // su
     expect(isDangerousCommand('node build.js')).toBe(false)
+  })
+})
+
+// ── 作業フォルダの外へ出るコマンド（2026-08-20）──────────────────────
+// **止めない。一度だけ目に入るようにする**（おまかせモードでも確認が出る）。
+// 確実に塞ぐ方法は無く（シェル1行から書き込み先は読めない）、
+// 塞ぎ込むとアプリ型で `npm install` が使えなくなる。誤検出しても確認が1回出るだけ。
+describe('leavesWorkingDir（外へ出ようとしているか）', () => {
+  it('親をたどる移動は拾う', () => {
+    for (const c of ['cd ..', 'cd ../other', 'cd .. && ls', 'cp a.txt ../b.txt', 'mv x ../y']) {
+      expect(leavesWorkingDir(c), c).toBe(true)
+    }
+  })
+
+  it('絶対パスやホームへの移動も拾う', () => {
+    expect(leavesWorkingDir('cd /tmp')).toBe(true)
+    expect(leavesWorkingDir('cd ~/Desktop')).toBe(true)
+  })
+
+  it('普段の作業は止めない（止めすぎない）', () => {
+    for (const c of ['npm install', 'node server.js', 'ls -la', 'cd images', 'cd ./images', 'python3 -m http.server']) {
+      expect(leavesWorkingDir(c), c).toBe(false)
+    }
+  })
+
+  it('似ているだけの語は拾わない', () => {
+    expect(leavesWorkingDir('cd ...weird')).toBe(false)
+    expect(leavesWorkingDir('echo "a..b"')).toBe(false)
+  })
+
+  it('空でも壊れない', () => {
+    expect(leavesWorkingDir('')).toBe(false)
+    expect(leavesWorkingDir(undefined as any)).toBe(false)
   })
 })

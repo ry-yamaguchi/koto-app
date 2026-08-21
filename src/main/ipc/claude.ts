@@ -5,6 +5,7 @@ import { ipcMain } from 'electron'
 import { testAnthropicKey, checkClaudeBinary, listAnthropicModels } from '../claude/client'
 import { startClaudeChat, type ClaudeChatHandle } from '../claude/agent'
 import type { IpcDeps } from './types'
+import { resolvePublishRoot } from '../publishRootFs'
 
 // 同時実行は1セッションのみ（C2の設計どおり）。新しい claude:chatStart が来たら、
 // 進行中のセッションがあれば中断してから開始する。
@@ -39,6 +40,9 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
       activeChat?.abort()
       const handle = startClaudeChat({
         projectDir,
+        // Claude の作業フォルダは`public/`（無ければプロジェクト直下）。
+        // 退避先（projectDir）とは別物。取り違えると 🕘 履歴が公開フォルダの中に入る。
+        writeRoot: resolvePublishRoot(projectDir),
         apiKey,
         aiEngineKey: aiEngineKey ?? null,
         prompt,

@@ -9,6 +9,7 @@ import AppRunPanel from './AppRunPanel'
 import HanamiiPanel from './HanamiiPanel'
 import VercelPanel from './VercelPanel'
 import VpsPanel from './VpsPanel'
+import { resolvePublishRoot } from '../publishRootRenderer'
 
 // 公開先ごとの表示名（中断検知バナー用。TARGET_LABELS と同じ内容だが publishStatus.ts 側に
 // 定義があるためここでは PublishTargetKind → 表示名の最小限のみを持つ）。
@@ -193,7 +194,9 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
       const hasPublic = await window.electronAPI.fs.exists(`${projectDir}/public`)
       const hasApp = await window.electronAPI.fs.exists(`${projectDir}/app`)
       const dest = `${account}@${host}`
-      let cmd = `cd "${projectDir}"`
+      // 公開の起点は`public/`（無ければプロジェクト直下＝移行前）。
+      const root = await resolvePublishRoot(projectDir)
+      let cmd = `cd "${root}"`
       if (hasPublic) {
         cmd += ` && rsync -avz --exclude='.DS_Store' public/ "${dest}:/home/${account}/www/"`
         if (hasApp) cmd += ` && rsync -avz --exclude='config.sample.php' --exclude='.DS_Store' app/ "${dest}:/home/${account}/app/"`

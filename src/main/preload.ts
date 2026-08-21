@@ -55,6 +55,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       files: { path: string; content: string }[],
       allowExisting = false
     ) => ipcRenderer.invoke('project:create', parentDir, name, files, allowExisting),
+    /** `public/` の形へ移す必要があるか調べる（何も変えない）。 */
+    migrateCheck: (projectDir: string) => ipcRenderer.invoke('project:migrateCheck', projectDir),
+    /** 実際に移す。失敗したら移した分を元へ戻す。 */
+    migrate: (projectDir: string, snapshotId: string) => ipcRenderer.invoke('project:migrate', projectDir, snapshotId),
   },
   term: {
     create: (cwd?: string) => ipcRenderer.invoke('term:create', cwd),

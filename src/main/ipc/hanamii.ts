@@ -8,7 +8,8 @@ import { HanamiiClient, extractProjectIds, extractProjectStatus, extractLogs, no
 import { detectEnvKeysInProject } from '../envDetect'
 import { issueStorageEnvFor, cleanUpOldKeysFor } from '../cloud/storageForTarget'
 import type { IpcDeps } from './types'
-import { zipExcludePatterns } from '../../shared/publishExclude'
+import { zipExcludePatterns, BUILD_CONFIG_FILES } from '../../shared/publishExclude'
+import { resolvePublishRoot } from '../publishRootFs'
 
 // ── HANAMII（国産PaaS）連携 ──────────────────────────────────────────
 // HANAMII は言語マニフェスト(package.json 等)が無いと「対応言語を検出できない」と拒否する。
@@ -61,10 +62,27 @@ CMD ["node", ".hanamii-static.js"]
 
 // プロジェクトをZIP化する（macOS 同梱の zip を使用。node_modules 等は除外）。
 // extraFiles があればアーカイブ直下へ追加同梱する（静的サイト用の最小サーバ等）。
-function zipProjectToBuffer(projectDir: string, extraFiles?: { name: string; content: string }[]): Promise<Buffer> {
+//
+// ── dropBuildConfig（2026-08-20）────────────────────────────────────────
+// **Koto が Dockerfile を同梱するとき（静的サイト）だけ**、プロジェクト側の
+// ビルド設定（Dockerfile / nginx.conf / .dockerignore）を外す。理由は2つ:
+//   ・同じ `Dockerfile` が2つ入り、**どちらが使われるか決まらない**。
+//     HANAMII は**待受ポートを Dockerfile の EXPOSE から判定する**ので（2026-07-03 実測）、
+//     AI が AppRun 向けに書いた Dockerfile が拾われると公開が失敗しうる。
+//   ・同梱する最小サーバは**カレントの中身をそのまま配る**ので、
+//     Dockerfile や nginx.conf が公開URLから読めてしまう。
+//
+// **マニフェストがある場合（Nodeアプリ等）は外さない。** そのときは Koto は
+// Dockerfile を同梱せず、HANAMII がプロジェクトのものを使う可能性がある。
+// 外して壊れないことを確かめられていないので触らない（掟1）。
+function zipProjectToBuffer(
+  projectDir: string,
+  extraFiles?: { name: string; content: string }[],
+  dropBuildConfig = false,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const tmp = path.join(app.getPath('temp'), `hanamii-${Date.now()}.zip`)
-    const args = ['-r', '-q', '-X', tmp, '.', '-x', ...zipExcludePatterns()]
+    const args = ['-r', '-q', '-X', tmp, '.', '-x', ...zipExcludePatterns(dropBuildConfig ? [...BUILD_CONFIG_FILES] : [])]
     execFile('zip', args, { cwd: projectDir, timeout: 60000, maxBuffer: 8 * 1024 * 1024 }, (err) => {
       if (err) { try { fs.rmSync(tmp) } catch {}; reject(new Error(`ZIP化に失敗しました（zip コマンドが必要です）: ${err.message}`)); return }
       if (!extraFiles?.length) {
@@ -122,10 +140,14 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       if (!opts?.workspaceId) return { ok: false, message: 'ワークスペースが選択されていません' }
       const client = new HanamiiClient({ token })
       // 静的サイト(マニフェスト無し + index.html)は HANAMII が言語を検出できず拒否するため、最小の静的サーバを同梱する。
-      const hasManifest = ['package.json', 'requirements.txt', 'pyproject.toml', 'composer.json'].some(f => fs.existsSync(path.join(projectDir, f)))
-      const hasIndex = fs.existsSync(path.join(projectDir, 'index.html'))
+      // 送るのは`public/` の中身（無ければプロジェクト直下＝移行前）。
+      // HANAMII は **ZIPのルート直下**の言語マニフェストを見るので、根がずれると公開が拒否される。
+      const root = resolvePublishRoot(projectDir)
+      const hasManifest = ['package.json', 'requirements.txt', 'pyproject.toml', 'composer.json'].some(f => fs.existsSync(path.join(root, f)))
+      const hasIndex = fs.existsSync(path.join(root, 'index.html'))
       const extra = (!hasManifest && hasIndex) ? staticServerFiles(opts.name || 'app') : undefined
-      const zip = await zipProjectToBuffer(projectDir, extra)
+      // extra が付く＝Koto が Dockerfile を同梱する＝プロジェクト側のものは外す（上記）。
+      const zip = await zipProjectToBuffer(root, extra, !!extra)
       if (!zip.length) return { ok: false, message: 'ZIPが空です（公開できるファイルが見つかりません）' }
       // マニフェストも index.html も無い＝HANAMIIが公開形態を判定できない。分かりやすく案内する。
       if (!hasManifest && !hasIndex) {
@@ -294,7 +316,8 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
   ipcMain.handle('hanamii:detectEnvKeys', async (_, projectDir: string) => {
     try {
       if (!projectDir) return { ok: false, keys: [] as string[] }
-      return { ok: true, keys: detectEnvKeysInProject(projectDir) }
+      // 送るのは`public/` の中身なので、キーもそこから探す。
+      return { ok: true, keys: detectEnvKeysInProject(resolvePublishRoot(projectDir)) }
     } catch (e: any) { return { ok: false, keys: [] as string[], message: e?.message ?? String(e) } }
   })
 }

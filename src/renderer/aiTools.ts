@@ -4,7 +4,8 @@
 // ※相互参照: Claude頭脳モード（C2b）の src/main/claude/tools.ts が fetch_url / search_docs / open_preview の
 //   説明文言と結果整形（toolText.ts）を踏襲している。これらの文言・挙動を変更したら main 側も追随させること。
 
-import { isDangerousCommand } from '../shared/commandGuard'
+import { isDangerousCommand, leavesWorkingDir } from '../shared/commandGuard'
+import { PUBLISH_DIR_LABEL } from '../shared/publishRoot'
 import { applyEdit } from './editFile'
 import { isProtectedWritePath, protectedWriteMessage } from '../shared/protectedPaths'
 export { isDangerousCommand }
@@ -290,7 +291,8 @@ export function isSensitiveCommand(cmd: string): boolean {
 
 /** run_command 実行前にユーザー確認が必要か（破壊的 or 上記カテゴリ） */
 export function requiresConfirmation(cmd: string): boolean {
-  return isDangerousCommand(cmd) || isSensitiveCommand(cmd)
+  // 作業フォルダの外へ出るコマンドも一度は目に入れる（止めはしない・2026-08-20）。
+  return isDangerousCommand(cmd) || isSensitiveCommand(cmd) || leavesWorkingDir(cmd)
 }
 
 /**
@@ -325,6 +327,8 @@ export function confirmReason(cmd: string, opts?: { dependencies?: readonly stri
     return `インターネットからプログラム${list}を取得して実行します。`
   }
   if (/\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd)) return '外部と通信します。'
+  // 止めはしないが、一度は目に入れる（2026-08-20）。
+  if (leavesWorkingDir(cmd)) return `作業フォルダ（${PUBLISH_DIR_LABEL}）の外を操作しようとしています。`
   if (/-(c|e)\b|\bosascript\b|\beval\b|\bbase64\b/i.test(cmd)) return 'コードを直接実行します。'
   return 'システムやホームの設定を変更する可能性があります。'
 }

@@ -4,6 +4,7 @@
 
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel } from './usage'
 import { isSecretFile } from '../shared/publishExclude'
+import { resolvePublishRoot } from './publishRootRenderer'
 
 export interface SecurityCheckResult {
   verdict: 'ok' | 'warn' | 'skip' // 問題なし / 要確認 / チェック未実施
@@ -54,6 +55,9 @@ export function judgeVerdict(report: string): 'ok' | 'warn' {
 }
 
 export async function runSecurityCheck(projectDir: string, apiKey: string): Promise<SecurityCheckResult> {
+  // 見るのは**実際に公開されるもの**（`public/`。無ければプロジェクト直下）。
+  // ここがずれると「チェックは通ったのに、公開すると別の中身」になる。
+  projectDir = (await resolvePublishRoot(projectDir)) || projectDir
   if (!apiKey) return { verdict: 'skip', report: 'APIキーが未設定のため、セキュリティチェックを省略しました。' }
   const budget = checkBeforeRequest(apiKey)
   if (!budget.allowed) return { verdict: 'skip', report: 'AI利用上限に達しているため、セキュリティチェックを省略しました。' }

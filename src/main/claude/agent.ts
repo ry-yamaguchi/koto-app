@@ -48,8 +48,21 @@ const BUILTIN_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'] as 
 const ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([...BUILTIN_TOOL_NAMES, ...IDE_MCP_TOOL_NAMES])
 
 export type StartClaudeChatParams = {
-  /** SDK の cwd。プロジェクトルート（絶対パス）。 */
+  /**
+   * **🕘 履歴の退避先**（プロジェクトの絶対パス）。
+   *
+   * ⚠️ **作業フォルダ（cwd）とは別物**（2026-08-20 で分けた）。
+   * 退避は `<projectDir>/.sakuraide-backup` へ行う。ここを作業フォルダにすると
+   * **履歴が`public/` の中に入ってしまう**（公開物からは除外されるが、
+   * 置き場所として誤り。IDE の 🕘 もプロジェクト直下を見る）。
+   */
   projectDir: string
+  /**
+   * **Claude の作業フォルダ（cwd）と、書き込みを許す範囲**（絶対パス）。
+   * `public/`があればその中、無ければプロジェクト直下（＝移行前）。
+   * さくらのAI Engine 経路の基準（ChatPanel の aiRoot）と揃えること。
+   */
+  writeRoot: string
   /** Anthropic APIキー（方式B・呼び出しの子プロセスenvにのみ注入。保存しない）。 */
   apiKey: string
   /** さくらのAI Engine のAPIキー（方式B・search_docs ツール用。未登録なら null。保存しない）。 */
@@ -206,7 +219,7 @@ async function* singleUserMessage(text: string, images: string[]): AsyncGenerato
  * onEvent へ流す。呼び出しはすぐに ClaudeChatHandle を返す（ストリームは非同期に進む）。
  */
 export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle {
-  const { projectDir, apiKey, aiEngineKey, prompt, images, snapshotId, resumeSessionId, model, onEvent, onOpenPreview, onDelegated, onFileWritten } = params
+  const { projectDir, writeRoot, apiKey, aiEngineKey, prompt, images, snapshotId, resumeSessionId, model, onEvent, onOpenPreview, onDelegated, onFileWritten } = params
   const abortController = new AbortController()
   // 🕘 履歴の見出し（このターンのユーザーの指示文。長さの整形は ipc/backup.ts 側で行う）。
   // 「どの指示でこうなったか」が一覧に出ることで「3つ前の状態に戻す」を選べるようにする（2026-08-05）。
@@ -219,7 +232,7 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
     images.length > 0 ? singleUserMessage(prompt, images) : prompt
 
   const options: Options = {
-    cwd: projectDir,
+    cwd: writeRoot,
     // C2c: renderer で選択されたモデル（claudeMode.ts CLAUDE_MODELS）。未指定時は既定定数。
     model: model || CLAUDE_DEFAULT_MODEL,
     resume: resumeSessionId ?? undefined,
@@ -233,7 +246,8 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
     allowedTools: [...BUILTIN_TOOL_NAMES, ...IDE_MCP_TOOL_NAMES],
     settingSources: [], // ユーザーの ~/.claude 設定・project/local settings を読ませない
     permissionMode: 'acceptEdits',
-    canUseTool: makeCanUseTool(projectDir),
+    // 書き込みを許すのは作業フォルダの中だけ（退避先の projectDir ではない）。
+    canUseTool: makeCanUseTool(writeRoot),
     hooks: {
       PreToolUse: [{ matcher: 'Edit|Write', hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)] }],
       // 実行成功後にエディタへ反映を通知（stale tab のオートセーブ上書きによるデータ喪失防止）
@@ -258,7 +272,7 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
     // インプロセスMCPサーバとして注入する。createSdkMcpServer / tool も ESM 専用 SDK の関数のため、
     // 動的 import 済みモジュールを渡す。
     options.mcpServers = {
-      [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, { projectDir, aiEngineKey, onOpenPreview, snapshotId, snapshotLabel, onDelegated, onFileWritten }),
+      [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, onOpenPreview, snapshotId, snapshotLabel, onDelegated, onFileWritten }),
     }
 
     // query() を1回実行してストリームを onEvent へ流す。emittedAny=このストリームで何かイベントを

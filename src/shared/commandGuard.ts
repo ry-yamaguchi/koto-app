@@ -65,3 +65,29 @@ export function isDangerousCommand(cmd: string): boolean {
   const s = String(cmd ?? '')
   return DANGEROUS_PATTERNS.some(re => re.test(s))
 }
+
+/**
+ * **作業フォルダの外へ出ようとしているか**（`cd ..` など）。
+ *
+ * ── なぜ「拒否」ではなく「確認」なのか（2026-08-20 Ryosuke と合意）──────
+ * AI の書き込みツールは作業フォルダの外へ出られない（`resolveInProject` が `..` を拒む）。
+ * だが `run_command` はシェルなので `cd ..` で外に出られる。**確実に塞ぐ方法は無い**——
+ * シェル1行から書き込み先を読むのは現実的に不可能（`>` `tee` `cp` `mv` `sed -i`・
+ * 変数展開・パイプ）。中途半端な判定は**「止めすぎ」と「取りこぼし」を同時に招く**（掟10）。
+ * さらにアプリ型では `npm install` を作業フォルダの中で動かす必要があり、
+ * 塞ぎ込むとアプリが作れなくなる。
+ *
+ * そこで**止めない。一度だけ目に入るようにする**（おまかせモードでも確認が出る）。
+ * 誤検出しても「確認が1回出るだけ」なので、止めすぎにはならない。
+ */
+export function leavesWorkingDir(cmd: string): boolean {
+  const c = String(cmd ?? '')
+  if (!c) return false
+  // `cd ..` / `cd ../x` / `cd /abs`（`cd ...foo` のような別語は拾わない）
+  if (/\bcd\s+\.\.(?=$|[/\s;&|])/.test(c)) return true
+  if (/\bcd\s+\//.test(c)) return true
+  if (/\bcd\s+~/.test(c)) return true
+  // 引数として親をたどる道を渡している（`cp x ../y` など）
+  if (/(^|[\s=])\.\.\//.test(c)) return true
+  return false
+}
