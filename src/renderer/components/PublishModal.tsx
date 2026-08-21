@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { runSecurityCheck, SecurityCheckResult } from '../securityCheck'
 import { getTargetProfile, isAutoPublishTarget } from '../targetProfiles'
 import StorageNotice from './StorageNotice'
 import { withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE, buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, detectInterruptedPublish, latestPublishedTarget, type PendingPublish } from '../publishStatus'
 import { clearPublishPending } from '../publishPending'
 import { rsyncExcludeArgs } from '../../shared/publishExclude'
+import SecurityCheckSection from './SecurityCheckSection'
 import AppRunPanel from './AppRunPanel'
 import HanamiiPanel from './HanamiiPanel'
 import VercelPanel from './VercelPanel'
@@ -85,33 +85,14 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   const [copied, setCopied] = useState(false)
   const [running, setRunning] = useState(false)
   const [busy, setBusy] = useState(false)
-  // 公開前セキュリティチェック
-  const [checking, setChecking] = useState(false)
-  const [check, setCheck] = useState<SecurityCheckResult | null>(null)
-  const [pendingCmd, setPendingCmd] = useState<string | null>(null) // 「要確認」時にユーザー判断待ちの公開コマンド
   // 公開状況一覧（③公開 冒頭の「このプロジェクトの公開状況」ボックス用）。プロジェクトの最終変更時刻は1回だけ取得する。
   const [latestChangeAt, setLatestChangeAt] = useState<string | null>(null)
   const [apprunLegacy, setApprunLegacy] = useState<{ createdAt: string | null } | null>(null)
 
-  // 公開の実行：先にセキュリティチェックを行い、「要確認」ならユーザーの判断を待つ
+  // 公開の実行。🛡 簡易セキュリティチェックは**自動では走らせない**
+  // （2026-08-21 Ryosuke 指定: 毎回は不要。確認したい時に各公開先の 🛡 節から手動で実行する）
   const startPublish = async (cmd: string) => {
-    setChecking(true)
-    setCheck(null)
-    const result = await runSecurityCheck(projectDir, apiKey)
-    setChecking(false)
-    setCheck(result)
-    if (result.verdict === 'warn') {
-      setPendingCmd(cmd) // 指摘を見せて判断を仰ぐ
-      return
-    }
-    onRun(cmd) // 問題なし／チェック省略 → そのまま公開
-    setRunning(true)
-  }
-
-  const proceedAnyway = () => {
-    if (!pendingCmd) return
-    onRun(pendingCmd)
-    setPendingCmd(null)
+    onRun(cmd)
     setRunning(true)
   }
 
@@ -289,50 +270,9 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               <button onClick={() => setMissingTool(null)} className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90">戻る</button>
             </div>
           </div>
-        ) : checking ? (
-          // ── 公開前セキュリティチェック中 ──
-          <div className="rounded-xl border border-line bg-surface p-5 flex items-center gap-3">
-            <span className="w-4 h-4 rounded-full border-2 border-sakura border-t-transparent animate-spin flex-none" />
-            <div>
-              <p className="text-sm text-ink font-semibold">🛡 公開前のセキュリティチェックを実行中…（AIがコードを確認しています。30秒ほどかかります）</p>
-              <p className="text-xs text-ink-muted mt-0.5">秘密情報の直書き・XSS・公開NGファイル等をAIが確認しています（数十秒）</p>
-            </div>
-          </div>
-        ) : pendingCmd && check ? (
-          // ── チェックで「要確認」→ ユーザーの判断を仰ぐ ──
-          <div className="space-y-3">
-            <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4">
-              <p className="text-sm font-semibold text-ink mb-2">🛡 セキュリティチェック: ⚠️ 要確認</p>
-              <pre className="text-xs text-ink-secondary whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">{check.report}</pre>
-            </div>
-            <p className="text-xs text-ink-muted leading-relaxed">
-              修正してから公開する場合は「やめる」を選び、AIチャットに指摘内容を貼り付けて修正を依頼してください。
-            </p>
-            <div className="flex justify-between items-center">
-              <button
-                onClick={() => { setPendingCmd(null); setCheck(null) }}
-                className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura"
-              >やめる（修正してから公開）</button>
-              <button
-                onClick={proceedAnyway}
-                className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90"
-              >理解した上で公開する</button>
-            </div>
-          </div>
         ) : running ? (
           // ── 実行中／完了案内 ──
           <div className="space-y-3">
-            {check && (
-              <div className={`rounded-xl border p-3 ${check.verdict === 'ok' ? 'border-brand-green/60' : 'border-line'} bg-surface`}>
-                <p className="text-xs font-semibold text-ink">
-                  {check.verdict === 'ok' ? '🛡 セキュリティチェック: ✅ 問題なし' : '🛡 セキュリティチェック: ⏭ 省略'}
-                </p>
-                <details className="mt-1">
-                  <summary className="text-[11px] text-ink-muted cursor-pointer hover:text-ink-secondary">詳細を見る</summary>
-                  <pre className="text-[11px] text-ink-secondary whitespace-pre-wrap leading-relaxed mt-1">{check.report}</pre>
-                </details>
-              </div>
-            )}
             <div className="rounded-xl border border-line bg-surface p-4">
               <p className="text-sm text-ink font-semibold mb-1">⏳ 公開はターミナルで進行します</p>
               <p className="text-xs text-ink-secondary">
@@ -472,6 +412,8 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <p className="text-[11px] text-ink-muted leading-relaxed">
               💡 SSH接続が初めての場合は、コントロールパネルでSSH接続を有効にしておいてください。実行時にパスワードを聞かれたらターミナルに入力します。
             </p>
+            {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
+            <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
             {error && <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2">{error}</p>}
             <div className="flex justify-between items-center">
               <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
@@ -485,13 +427,13 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
           // ── HANAMII（自己完結フロー） ──
           <div className="space-y-3">
             <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
-            <HanamiiPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+            <HanamiiPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
           </div>
         ) : target === 'vercel' ? (
           // ── Vercel（自己完結フロー） ──
           <div className="space-y-3">
             <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
-            <VercelPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+            <VercelPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
           </div>
         ) : target === 'sakura-vps' ? (
           // ── さくらのVPS（V1a・①接続のみ。自己完結フロー） ──
@@ -503,7 +445,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
           // ── さくらのAppRun（自己完結フロー） ──
           <div className="space-y-3">
             <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
-            <AppRunPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+            <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
           </div>
         )}
       </div>

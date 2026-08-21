@@ -29,8 +29,15 @@ describe('HANAMII へ送る ZIP', () => {
 
   it('Koto が Dockerfile を同梱するときだけ、プロジェクト側のビルド設定を外す', () => {
     // extra があるとき＝静的サイト＝Koto が Dockerfile を入れるとき。
-    expect(source).toContain('zipProjectToBuffer(projectDir, extra, !!extra)')
+    expect(source).toContain('zipProjectToBuffer(root, extra, !!extra)')
     expect(source).toContain('dropBuildConfig ? [...BUILD_CONFIG_FILES] : []')
+  })
+
+  it('送るのは public/ の中身（ZIPのルート直下に言語マニフェストが来る）', () => {
+    // HANAMII は ZIP のルート直下の package.json 等で言語を判定する。
+    // 根がずれると公開を拒否される（2026-07-03 実測）。
+    expect(source).toContain('const root = resolvePublishRoot(projectDir)')
+    expect(source).toContain("fs.existsSync(path.join(root, 'index.html'))")
   })
 
   it('Koto が同梱する Dockerfile には EXPOSE が付いている', () => {

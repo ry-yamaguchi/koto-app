@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import SecurityCheckSection from './SecurityCheckSection'
 import { getVercelToken, getVercelTokenById, getVercelTeamId, getVercelTeamIdById, listVercelTokenEntries } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
 import { beginActivity } from '../activity'
@@ -26,10 +27,12 @@ function safeName(s: string): string {
 
 interface Props {
   projectDir: string
+  /** さくらのAI Engine のAPIキー（🛡 セキュリティチェックに使用）。 */
+  apiKey: string
   onOpenCredentials: () => void
 }
 
-export default function VercelPanel({ projectDir, onOpenCredentials }: Props) {
+export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: Props) {
   const projName = projectDir.split('/').pop() ?? 'app'
   const metaPath = `${projectDir}/.sakuraide.json`
 
@@ -239,6 +242,9 @@ export default function VercelPanel({ projectDir, onOpenCredentials }: Props) {
 
       {/* 🔰 初めて公開する方へ */}
       {token && <VercelFirstTimeGuide />}
+
+      {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
 
       {/* ② 公開 */}
         {/* 公開できるかの確認。**駄目なものには「どうすればよいか」まで書く**

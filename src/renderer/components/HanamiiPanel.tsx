@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import SecurityCheckSection from './SecurityCheckSection'
 import { getHanamiiToken, getHanamiiTokenById, listHanamiiTokenEntries } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
 import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
@@ -72,6 +73,8 @@ export function formatSyncedAt(syncedAt: string | null | undefined, now: Date = 
 
 interface Props {
   projectDir: string
+  /** さくらのAI Engine のAPIキー（🛡 セキュリティチェックに使用）。 */
+  apiKey: string
   onOpenCredentials: () => void
 }
 
@@ -80,7 +83,7 @@ function safeName(s: string): string {
   return s.replace(/[^A-Za-z0-9-]/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'app'
 }
 
-export default function HanamiiPanel({ projectDir, onOpenCredentials }: Props) {
+export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: Props) {
   const projName = projectDir.split('/').pop() ?? 'app'
   const metaPath = `${projectDir}/.sakuraide.json`
   const guessSecret = (k: string) => /KEY|SECRET|TOKEN|PASS|PWD|CREDENTIAL|PRIVATE|APIKEY/i.test(k)
@@ -555,6 +558,9 @@ export default function HanamiiPanel({ projectDir, onOpenCredentials }: Props) {
           )}
         </section>
       )}
+
+      {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
 
       {/* ③ 公開 */}
       {token && (

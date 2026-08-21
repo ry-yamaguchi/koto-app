@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { pickCheckTargets, judgeVerdict } from '../src/renderer/securityCheck'
+import * as fs from 'fs'
+import * as path from 'path'
+import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, checkRecordKey, formatCheckRecord } from '../src/renderer/securityCheck'
 
 // 2026-08-09 の総点検で見つかった2件の回帰テスト。
 // 公開前セキュリティチェックは「守り」のコードなのに、テストが1件も無かった（掟10）。
@@ -33,16 +35,27 @@ describe('チェックにかけるファイルの選び方', () => {
   })
 
   it('普通のコード・設定ファイルは中身を見る', () => {
-    const { targets } = pickCheckTargets(['index.html', 'style.css', 'script.js', 'Dockerfile', '.htaccess', 'config.yaml'])
+    const { targets } = pickCheckTargets(['index.html', 'style.css', 'script.js', '.htaccess', 'config.yaml'])
     expect(targets).toContain('index.html')
-    expect(targets).toContain('Dockerfile')
     expect(targets).toContain('.htaccess')
     expect(targets).toContain('config.yaml')
   })
 
-  it('対象は8件までに絞る（送りすぎない）', () => {
+  // ── Koto が管理するビルド設定は検査しない（2026-08-21 rc.2 実機・Ryosuke 指摘）──
+  // AI が「COPY . で Dockerfile 等が公開される」と指摘したが、それは Koto 自身の
+  // 責任範囲で、そのまま配信される公開先には入れない（v0.3.38 で 404 を実測済み）。
+  // 利用者には直せない・Koto の設計と矛盾する助言になるため、対象から外す。
+  it('Koto が管理するビルド設定（Dockerfile / nginx.conf / .dockerignore）は対象外', () => {
+    const { targets, secretFiles } = pickCheckTargets(['index.html', 'Dockerfile', 'nginx.conf', '.dockerignore'])
+    expect(targets).toEqual(['index.html'])
+    expect(secretFiles).toEqual([])
+  })
+
+  // 2026-08-21 Ryosuke 指摘: 8件で切ると、**9件目以降は何度押しても見られない**。
+  // 量の調整は「分けて複数回」で行い、対象からは落とさない。
+  it('件数では落とさない（20個あれば20個とも対象にする）', () => {
     const many = Array.from({ length: 20 }, (_, i) => `page${i}.html`)
-    expect(pickCheckTargets(many).targets).toHaveLength(8)
+    expect(pickCheckTargets(many).targets).toHaveLength(20)
   })
 
   it('画像やフォントは対象外', () => {
@@ -76,5 +89,466 @@ describe('AIの回答から判定を決める', () => {
 
   it('2行目以降に問題なしと書かれていても、1行目で判断する', () => {
     expect(judgeVerdict('判定: 要確認\nstyle.css: 問題なし')).toBe('warn')
+  })
+})
+
+// ── サイトとアプリで観点を変える（2026-08-21 Ryosuke 提案）────────────────
+// 静的サイトの危険は「露出」、アプリの危険は「入力の悪用」。的外れな指摘は
+// 利用者を混乱させるので、アプリ専用の観点をサイトに混ぜないことも固定する。
+describe('検査の観点は種別で変わる', () => {
+  it('共通: 秘密の直書き・混入・XSS はどちらの種別でも見る', () => {
+    for (const mode of ['static', 'node'] as const) {
+      const all = checkpointsFor(mode).join('\n')
+      expect(all).toContain('秘密情報の直書き')
+      expect(all).toContain('個人情報の混入')
+      expect(all).toContain('XSS')
+    }
+  })
+
+  it('サイト: 送信先・読み込み元を見る。アプリ専用の観点は混ぜない', () => {
+    const all = checkpointsFor('static').join('\n')
+    expect(all).toContain('フォームの送信先')
+    expect(all).not.toContain('命令の混入')
+    expect(all).not.toContain('認証')
+    expect(all).not.toContain('スタックトレース')
+  })
+
+  it('アプリ: 入力の悪用・認証の無い操作・エラーの漏れを見る', () => {
+    const all = checkpointsFor('node').join('\n')
+    expect(all).toContain('命令の混入')
+    expect(all).toContain('パス遡り')
+    expect(all).toContain('認証')
+    expect(all).toContain('スタックトレース')
+  })
+})
+
+describe('AIへの依頼文', () => {
+  it('アプリなら、サーバーで実行されると明言し、入口ファイル名を伝える', () => {
+    const p = buildCheckPrompt({ mode: 'node', entry: 'server.js', secretFiles: [], parts: ['--- server.js ---\nconst http = ...'] })
+    expect(p).toContain('サーバーで実行される')
+    expect(p).toContain('入口は server.js')
+    expect(p).toContain('命令の混入')
+  })
+
+  it('サイトなら、そのまま配信されると明言し、アプリ専用の観点は入れない', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
+    expect(p).toContain('そのまま配信される')
+    expect(p).not.toContain('命令の混入')
+  })
+
+  it('秘密ファイルは名前だけを伝える行に載る', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: ['.env'], parts: [] })
+    expect(p).toContain('公開NGの可能性が高い: .env')
+  })
+
+  it('出力形式（判定の1行目）を必ず要求する', () => {
+    const p = buildCheckPrompt({ mode: 'node', entry: 'a.js', secretFiles: [], parts: [] })
+    expect(p).toContain('「判定: 問題なし」または「判定: 要確認」')
+  })
+})
+
+describe('アプリの入口ファイルの扱い', () => {
+  it('入口は必ず先頭で検査する（サーバーコードこそ本丸）', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `page${i}.html`)
+    const { targets } = pickCheckTargets([...many, 'server.js'], 'server.js')
+    expect(targets[0]).toBe('server.js')
+    expect(targets).toHaveLength(21)
+  })
+
+  it('入口の指定があっても、実在しなければ足さない', () => {
+    const { targets } = pickCheckTargets(['index.html'], 'server.js')
+    expect(targets).toEqual(['index.html'])
+  })
+
+  it('入口の指定が無ければ従来どおり', () => {
+    expect(pickCheckTargets(['index.html']).targets).toEqual(['index.html'])
+  })
+})
+
+// ── 配線（ソースを読んで固定）──────────────────────────────────────────
+// electron に依存するファイルは import できないため、ソースを読んで確かめる
+// （publishRootWiring.test.ts と同じ流儀）。当て先は呼び出しの形ごと一意に指す（掟10）。
+describe('セキュリティチェックの配線', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  it('🛡 節（SecurityCheckSection）は共通実装 runSecurityCheck を呼び、修正は fix-with-ai へ送る', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+    expect(s).toContain('await runSecurityCheck(projectDir, apiKey, setProgress)')
+    expect(s).toContain("new CustomEvent('sakura:fix-with-ai'")
+    // 依頼文は「実際に修正しろ」と明言する（rc.1 は指示が弱く、AIが翻訳・再レビューだけで終わった）
+    expect(s).toContain('実際に修正して解消してください')
+    // 実体を持たない（独自のプロンプトや判定を書かない）
+    expect(s).not.toContain('sakura.chat')
+  })
+
+  it('公開フローの4経路すべてに 🛡 節が居る（AppRun・Vercel・HANAMII・レンタル）', () => {
+    for (const f of ['AppRunPanel.tsx', 'VercelPanel.tsx', 'HanamiiPanel.tsx', 'PublishModal.tsx']) {
+      expect(read(`src/renderer/components/${f}`)).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />')
+    }
+  })
+
+  it('公開時に自動では走らせない（2026-08-21 Ryosuke 指定。入口は手動の 🛡 節だけ）', () => {
+    expect(read('src/renderer/components/PublishModal.tsx')).not.toContain('runSecurityCheck(')
+  })
+
+  it('🛡 節は「簡易」を名乗り、自動実行をうたわない', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+    expect(s).toContain('簡易セキュリティチェック')
+    expect(s).toContain('最終的にはご自身で確認してください')
+    expect(s).not.toContain('自動で走ります')
+  })
+
+  // 2026-08-21 Ryosuke 指摘: 免責が結果の中にしか無く、**押す前には見えなかった**。
+  // 「結果が出る前から読める」ことまで固定する（文字列の存在だけでは足りない）。
+  it('免責は、結果を待たずに読める位置にある（説明文の側）', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+    const disclaimer = s.indexOf('最終的にはご自身で確認してください')
+    const resultBlock = s.indexOf('{result && (')
+    expect(disclaimer).toBeGreaterThan(-1)
+    expect(resultBlock).toBeGreaterThan(-1)
+    expect(disclaimer).toBeLessThan(resultBlock)
+  })
+
+  it('ビルド設定の除外は一元定義（BUILD_CONFIG_FILES）を呼び出しの形ごと使う', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    // 名簿の丸ごと利用を、式の形ごと一意に指す（手書きの配列に替わったら落ちる）
+    expect(s).toContain('(BUILD_CONFIG_FILES as readonly string[]).includes(base)')
+  })
+
+  it('PublishModal は各パネルへAPIキーを渡している', () => {
+    const s = read('src/renderer/components/PublishModal.tsx')
+    for (const name of ['AppRunPanel', 'VercelPanel', 'HanamiiPanel']) {
+      expect(s).toContain(`<${name} projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />`)
+    }
+  })
+
+  it('推論対策: 上限4096・目印方式・実況が実装に居る', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain('maxTokens: 4096')
+    expect(s).toContain('extractCheckReport(raw)')
+    // 実測で1分を超えることがある。短く言い切らない（2026-08-21 rc.3 実機）
+    expect(s).toContain('少々時間がかかります')
+    expect(s).not.toContain('30秒ほどかかります')
+    // 生の応答をそのまま判定・表示に回さない（rc.1 の再発防止）
+    expect(s).not.toContain('judgeVerdict(raw)')
+  })
+
+  it('全ファイル・全文を分けて確認し、結果をまとめている', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain('pieces.push(...splitIntoPieces(f, await window.electronAPI.fs.readFile(')
+    expect(s).toContain('const { batches, skipped } = packBatches(pieces)')
+    expect(s).toContain('mergeCheckResults(results, {')
+  })
+
+  // 2026-08-21 Ryosuke 指定: 利用量の歯止めは全体予算のブロックに一本化する。
+  // この機能だけが回ごとに独自の判断を持つと、止まる条件が場所ごとに変わる。
+  it('利用量の歯止めは全体予算のブロックだけ（開始時の1回。回ごとに独自判断しない）', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s.match(/checkBeforeRequest\(/g) ?? []).toHaveLength(1)
+    expect(s).toContain('const budget = checkBeforeRequest(apiKey)')
+  })
+
+  it('種別の見分けは runtimeDetect に一元化（独自に package.json を解釈しない）', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain('detectRuntime({ packageJson, fileNames: files.filter(f => !f.includes(')
+    expect(s).not.toContain('scripts.start') // 入口の推定ロジックを複製しない
+  })
+})
+
+// ── AIの生の応答から報告を取り出す（目印方式・2026-08-21 rc.1 実機の再発防止）──
+// 推論型モデルが maxTokens を考えるだけで使い切ると、本文の代わりに**英語の思考**が
+// 届く（IPC 側の pickContent が空本文を推論で代替するため）。🗂 まとめと同じく、
+// 目印「判定:」の最後の出現以降だけを受理し、思考を利用者に見せない。
+describe('AIの生の応答から報告を取り出す（目印方式）', () => {
+  it('英語の思考の後ろに報告があれば、最後の「判定:」以降だけを受理する', () => {
+    const raw = 'We need act as web security reviewer. Then decide 判定: ok or not. Let me write.\n判定: 要確認\n- index.html: APIキーが直書きされています'
+    expect(extractCheckReport(raw)).toBe('判定: 要確認\n- index.html: APIキーが直書きされています')
+  })
+
+  it('思考だけで切れた応答（rc.1 実機で起きた形）は不採用にする', () => {
+    expect(extractCheckReport('We need act as web security reviewer. Must output Japanese only, strict format. Need analyze provided files...')).toBeNull()
+  })
+
+  it('全角コロン（判定：）でも受理する', () => {
+    expect(extractCheckReport('前置きの文章\n判定： 問題なし\n確認した観点: 秘密情報・XSS')).toBe('判定： 問題なし\n確認した観点: 秘密情報・XSS')
+  })
+
+  it('報告だけの応答は、そのまま全体を受理する', () => {
+    expect(extractCheckReport('判定: 問題なし\n確認した観点: 秘密情報の直書き、XSS')).toBe('判定: 問題なし\n確認した観点: 秘密情報の直書き、XSS')
+  })
+})
+
+// ── 報告の「後ろ側」も切る（2026-08-21 rc.3 実機・Ryosuke 報告）────────────
+// 報告を書き終えたあとに思考へ戻る応答があり、利用者向けの文の末尾に
+// `Wait, the bullet format for no issues?…` がぶら下がっていた。
+describe('報告のあとに続く思考を切る', () => {
+  it('報告の末尾にぶら下がった英語の思考を落とす（実機で出た形）', () => {
+    const raw = [
+      '判定: 問題なし',
+      '- 全ファイル: APIキーの直書きは確認されませんでした。',
+      '',
+      'Wait, the bullet format for no issues? The instruction says "問題なしの場合',
+    ].join('\n')
+    expect(extractCheckReport(raw)).toBe('判定: 問題なし\n- 全ファイル: APIキーの直書きは確認されませんでした。')
+  })
+
+  it('「ファイル名: …」で始まる行は、箇条書きでなくても報告として残す', () => {
+    const raw = '判定: 要確認\nindex.html: APIキーが直書きされています\nscript.js: 入力をそのまま出力しています'
+    expect(extractCheckReport(raw)).toBe(raw)
+  })
+
+  it('番号付き・記号付きの箇条書きも残す', () => {
+    const raw = '判定: 要確認\n1. index.html: 危険\n・script.js: 危険\n* style.css: 危険'
+    expect(extractCheckReport(raw)).toBe(raw)
+  })
+
+  it('前後どちらにも思考がある応答から、報告だけを取り出す', () => {
+    const raw = 'We need to review. 判定: is decided later.\n判定: 要確認\n- app.js: 入力をそのまま実行しています\n\nWe should double check the format here.'
+    expect(extractCheckReport(raw)).toBe('判定: 要確認\n- app.js: 入力をそのまま実行しています')
+  })
+})
+
+describe('AIへの依頼文（指摘の絞り込み・切り詰めの申し送り）', () => {
+  it('問題の無い確認結果や、体裁の助言を指摘欄に書かせない', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
+    expect(p).toContain('問題がある項目だけ')
+    expect(p).toContain('セキュリティに関係しない指摘')
+    expect(p).toContain('報告以外の文章（思考の経過・英語のメモ）は書かない')
+  })
+
+  it('分けて渡すときは「途中で切れている」と書かないよう伝える', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], split: true })
+    expect(p).toContain('「途中で切れている」「全文を確認せよ」とは書かないでください')
+    expect(p).toContain('ほかの部分は別の回に確認します')
+  })
+
+  it('分けていないときは、その申し送りを入れない（余計な前提を渡さない）', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
+    expect(p).not.toContain('複数回に分けて')
+  })
+})
+
+// ── 全ファイル・全文を分けて確認する（2026-08-21 rc.5 の設計見直し）─────────
+// 以前は「先頭8ファイル・各6000文字」で、9個目以降と6000文字超の部分は
+// **何度押しても一度も見られなかった**（landingTEST の menu.html は
+// 9,309文字のうち 3,309文字＝36% が対象外だった）。
+describe('長いファイルを分ける', () => {
+  it('上限以下なら分けない', () => {
+    const pieces = splitIntoPieces('a.html', 'x'.repeat(100), 6000)
+    expect(pieces).toHaveLength(1)
+    expect(pieces[0]).toMatchObject({ file: 'a.html', part: 1, total: 1 })
+  })
+
+  it('分けても中身は1文字も落とさない（つなぐと元に戻る）', () => {
+    const content = Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n')
+    const pieces = splitIntoPieces('big.css', content, 1000)
+    expect(pieces.length).toBeGreaterThan(1)
+    expect(pieces.map(p => p.text).join('')).toBe(content)
+  })
+
+  it('できるだけ行の切れ目で分ける（行の途中で切らない）', () => {
+    const content = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n')
+    for (const p of splitIntoPieces('a.js', content, 200).slice(0, -1)) {
+      expect(p.text.endsWith('\n')).toBe(true)
+    }
+  })
+
+  it('改行の無い長い1行でも、必ず上限内に収める（無限に膨らませない）', () => {
+    for (const p of splitIntoPieces('min.js', 'x'.repeat(5000), 1000)) {
+      expect(p.text.length).toBeLessThanOrEqual(1000)
+    }
+  })
+
+  it('分かれたファイルの見出しには何分割目かを書く', () => {
+    const pieces = splitIntoPieces('menu.html', 'x'.repeat(2500), 1000)
+    expect(pieceHeader(pieces[0])).toBe('--- menu.html（1/3）---')
+    expect(pieceHeader(splitIntoPieces('a.html', 'x', 1000)[0])).toBe('--- a.html ---')
+  })
+})
+
+describe('1回ぶんずつの束に詰める', () => {
+  const piece = (file: string, len: number): ReturnType<typeof splitIntoPieces>[number] =>
+    ({ file, part: 1, total: 1, text: 'x'.repeat(len) })
+
+  it('上限を超えないように束を分ける', () => {
+    const { batches } = packBatches([piece('a', 900), piece('b', 900), piece('c', 900)], 2000, 6)
+    expect(batches).toHaveLength(2)
+    expect(batches[0].map(p => p.file)).toEqual(['a', 'b'])
+    expect(batches[1].map(p => p.file)).toEqual(['c'])
+  })
+
+  it('1つで上限を超えるかたまりも捨てない（単独の束にする）', () => {
+    const { batches, skipped } = packBatches([piece('huge', 5000)], 2000, 6)
+    expect(batches).toHaveLength(1)
+    expect(skipped).toEqual([])
+  })
+
+  it('回数の上限を超えたぶんは「確認していない」と明示する（黙って落とさない）', () => {
+    const { batches, skipped } = packBatches([piece('a', 900), piece('b', 900), piece('c', 900)], 1000, 2)
+    expect(batches).toHaveLength(2)
+    expect(skipped).toEqual(['c'])
+  })
+
+  it('一部でも確認できたファイルは「確認していない」に入れない', () => {
+    const pieces = [
+      { file: 'big.html', part: 1, total: 2, text: 'x'.repeat(900) },
+      { file: 'big.html', part: 2, total: 2, text: 'x'.repeat(900) },
+    ]
+    const { skipped } = packBatches(pieces, 1000, 1)
+    expect(skipped).toEqual([])
+  })
+})
+
+describe('複数回の結果をまとめる', () => {
+  const info = { files: 9, batches: 2, skipped: [] as string[] }
+
+  it('1回でも「要確認」なら全体で「要確認」（安全側に倒す）', () => {
+    const m = mergeCheckResults([
+      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題ありませんでした' },
+      { verdict: 'warn', report: '判定: 要確認\n- b.js: APIキーが直書きされています' },
+    ], info)
+    expect(m.verdict).toBe('warn')
+    // 「要確認」の中に「問題ありませんでした」を混ぜない
+    expect(m.report).toContain('- b.js: APIキーが直書きされています')
+    expect(m.report).not.toContain('問題ありませんでした')
+  })
+
+  // ⚠️ 順番を変えても倒れること。**「最後の回で決める」実装でも通る**テストしか
+  // 書いておらず、ミューテーション試験で素通りした（2026-08-21・掟10 と同じ形）。
+  it('「要確認」が最初の回でも、全体で「要確認」になる', () => {
+    const m = mergeCheckResults([
+      { verdict: 'warn', report: '判定: 要確認\n- b.js: APIキーが直書きされています' },
+      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題ありませんでした' },
+    ], info)
+    expect(m.verdict).toBe('warn')
+    expect(m.report).toContain('- b.js: APIキーが直書きされています')
+  })
+
+  it('「要確認」が真ん中の回でも、全体で「要確認」になる', () => {
+    const m = mergeCheckResults([
+      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題ありませんでした' },
+      { verdict: 'warn', report: '判定: 要確認\n- b.js: 危険' },
+      { verdict: 'ok', report: '判定: 問題なし\n- c.css: 問題ありませんでした' },
+    ], info)
+    expect(m.verdict).toBe('warn')
+  })
+
+  it('1回でも実施できていれば、失敗した回に引きずられない（skip は判定を左右しない）', () => {
+    const m = mergeCheckResults([
+      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題なし' },
+      { verdict: 'skip', report: 'チェックに失敗しました（timeout）。' },
+    ], info)
+    expect(m.verdict).toBe('ok')
+  })
+
+  it('全部問題なしなら、確認した件数と回数を添えて「問題なし」', () => {
+    const m = mergeCheckResults([
+      { verdict: 'ok', report: '判定: 問題なし\n- 全ファイル: 秘密情報はありません' },
+      { verdict: 'ok', report: '判定: 問題なし\n- 全ファイル: 秘密情報はありません' },
+    ], info)
+    expect(m.verdict).toBe('ok')
+    expect(m.report).toContain('（9個のファイルを2回に分けて確認しました）')
+    // 同じ指摘は1度だけ
+    expect(m.report.match(/秘密情報はありません/g)).toHaveLength(1)
+  })
+
+  it('確認できなかったファイルは、結果の中で名指しで伝える', () => {
+    const m = mergeCheckResults(
+      [{ verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題なし' }],
+      { files: 30, batches: 6, skipped: ['x.html', 'y.js'] },
+    )
+    expect(m.report).toContain('※ 量が多いため、次のファイルは確認していません: x.html, y.js')
+  })
+
+  it('全部が実施できなかったときは skip のまま（問題なしと言わない）', () => {
+    const m = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（timeout）。' }], info)
+    expect(m.verdict).toBe('skip')
+    expect(m.report).toContain('チェックに失敗しました')
+  })
+
+  it('1回だけのときは「回に分けて」と言わない', () => {
+    const m = mergeCheckResults(
+      [{ verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題なし' }],
+      { files: 3, batches: 1, skipped: [] },
+    )
+    expect(m.report).toContain('（3個のファイルを確認しました）')
+    expect(m.report).not.toContain('回に分けて')
+  })
+})
+
+// ── AI の利用量を使う場面の一覧（2026-08-21 Ryosuke 提案）────────────────
+// 「AIリソースを何に使うのか」を利用者が見られるようにした。実装（AI を呼ぶ
+// 経路）と文書がずれると、いちばん困る種類の嘘になるので、対応を固定する。
+describe('AIの利用量を使う場面の一覧', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  it('使い方ガイドに一覧があり、AI を呼ぶ6つの場面が載っている', () => {
+    const g = read('docs/usage-guide.html')
+    expect(g).toContain('AIの利用量を使うところ')
+    for (const scene of ['AIチャット（① 作る）', '画像を読む', '最初のあいさつ', '🗂 まとめ', '🛡 簡易セキュリティチェック', '公開先を変えたときの確認']) {
+      expect(g).toContain(scene)
+    }
+  })
+
+  it('一覧は「上限に達すると全部止まる」ことと、Claude は別勘定であることを書いている', () => {
+    const g = read('docs/usage-guide.html')
+    expect(g).toContain('上限に達すると、上のすべての場面で AI の呼び出しを止めます')
+    expect(g).toContain('Anthropic 側の利用料')
+  })
+
+  it('AI を呼ぶ実装は、一覧に挙げた3ファイルの中だけにある', () => {
+    // 増えたらここが落ちる → 一覧の更新を促す（掟9: 文書と実物を一致させる）
+    const callers = ['src/renderer/hooks/useAiChat.ts', 'src/renderer/components/ChatPanel.tsx', 'src/renderer/securityCheck.ts']
+    for (const f of callers) expect(read(f)).toMatch(/sakura\.chat(Stream)?\(/)
+  })
+})
+
+// ── 前回の確認（2026-08-21 Ryosuke 提案）──────────────────────────────
+// 公開の画面を閉じると結果が消え、**最後にいつ確認したのか分からなくなる**。
+// 最新1件だけを残す。古い日付が残っていること自体が判断の材料になる。
+describe('前回の確認の記録', () => {
+  it('置き場所はプロジェクトごとに分かれる', () => {
+    expect(checkRecordKey('/a/proj1')).not.toBe(checkRecordKey('/a/proj2'))
+    expect(checkRecordKey('/a/proj1')).toContain('/a/proj1')
+  })
+
+  it('問題なしは日時つきで表示する', () => {
+    const at = new Date(2026, 7, 21, 20, 5).toISOString()
+    expect(formatCheckRecord({ at, verdict: 'ok' })).toBe('前回の確認: 8/21 20:05 ✅ 問題なし')
+  })
+
+  it('要確認は「修正の提案あり」と分かるように表示する', () => {
+    const at = new Date(2026, 7, 21, 9, 30).toISOString()
+    expect(formatCheckRecord({ at, verdict: 'warn' })).toBe('前回の確認: 8/21 09:30 ⚠️ 要確認（修正の提案あり）')
+  })
+
+  it('記録が無い・壊れているときは何も出さない（嘘の日付を出さない）', () => {
+    expect(formatCheckRecord(null)).toBeNull()
+    expect(formatCheckRecord(undefined)).toBeNull()
+    expect(formatCheckRecord({ at: 'こわれた', verdict: 'ok' })).toBeNull()
+    expect(formatCheckRecord({ at: new Date().toISOString(), verdict: 'skip' as any })).toBeNull()
+  })
+})
+
+describe('前回の確認の配線', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  it('実施できたときだけ記録する（省略・失敗は「確認した」ではない）', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+    expect(s).toContain("if (r.verdict === 'ok' || r.verdict === 'warn') {")
+    expect(s).toContain('window.localStorage.setItem(checkRecordKey(projectDir), JSON.stringify(rec))')
+  })
+
+  it('置き場所は共通の関数から取る（画面側で文字列を組み立てない）', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+    expect(s).toContain('window.localStorage.getItem(checkRecordKey(projectDir))')
+    expect(s).not.toContain('koto_seccheck') // 直書きが復活したら落ちる
+  })
+
+  it('プロジェクトを切り替えたら読み直す（前のプロジェクトの記録を見せない）', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+    const effect = s.slice(s.indexOf('useEffect(() => {'), s.indexOf('}, [projectDir])'))
+    expect(effect).toContain('setResult(null)')
+    expect(effect).toContain('checkRecordKey(projectDir)')
   })
 })

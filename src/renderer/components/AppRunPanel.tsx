@@ -7,6 +7,7 @@ import { isNameConflictError, isCreationLimitError, suggestAlternativeName } fro
 import { beginActivity } from '../activity'
 import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
+import SecurityCheckSection from './SecurityCheckSection'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
@@ -33,6 +34,8 @@ function normalizeApprunName(raw: string): string {
 
 interface Props {
   projectDir: string
+  /** さくらのAI Engine のAPIキー（🛡 セキュリティチェックに使用）。 */
+  apiKey: string
   onOpenCredentials: () => void
 }
 
@@ -96,7 +99,7 @@ async function saveAppRunPublishRecord(projectDir: string, rec: { publishedAt: s
 // ③公開の各パネル・📡 公開したもの一覧・プロジェクト削除の3系統に増えたため。
 const clearAppRunPublishRecord = (projectDir: string) => clearPublishRecord(projectDir, 'sakura-apprun')
 
-export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
+export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: Props) {
   const projName = projectDir.split('/').pop() ?? 'app'
 
   // ── APIキー状態（入力は「認証情報」モーダルに一本化。ここは状態表示と選択のみ） ──
@@ -1078,6 +1081,9 @@ export default function AppRunPanel({ projectDir, onOpenCredentials }: Props) {
         )}
         {plan && <PlanView plan={plan} />}
       </section>
+
+      {/* ③′ セキュリティチェック（事前チェックの次・2026-08-21 Ryosuke 指定） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
 
       {/* ④ 公開・破棄（apply / teardown） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
