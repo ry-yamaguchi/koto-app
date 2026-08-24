@@ -59,9 +59,24 @@ const CONSUMERS: { name: string; file: string; must: string; mustNot: string; vi
     // ここが projectDir に戻ると、AI が作ったものが公開されなくなる。
     name: 'AIのファイル操作（executeTool へ渡す基準）',
     file: 'src/renderer/components/ChatPanel.tsx',
-    must: 'projectDir: aiRoot ?? projectDir',
-    mustNot: '      projectDir,\n      applyFile: onApplyFile,',
+    must: 'writeRoot: currentAiRoot,',
+    // ⚠️ 2026-08-24 の実害。`projectDir` 1つで「読み書きの根」と「退避の根」を
+    // 兼ねていたため、退避が public/.sakuraide-backup へ行き、🕘 履歴に出なかった
+    // （＝「元に戻す」が効かない）。この形へ戻さない。
+    // ⚠️ 2026-08-24 の実害①。`projectDir` 1つで「読み書きの根」と「退避の根」を
+    // 兼ねていたため、退避が public/.sakuraide-backup へ行き、🕘 履歴に出なかった。
+    // ⚠️ 実害②。根は非同期に解決されるので、`aiRoot ?? projectDir` だと
+    // **切り替えた直後は前のプロジェクトの根を指す**。どちらの形へも戻さない。
+    mustNot: 'aiRoot ?? projectDir',
   },
+  {
+    // 退避（🕘 履歴）の根は**プロジェクト直下**。読み書きの根と兼ねてはいけない。
+    name: '🕘 履歴の退避の根（読み書きの根と分ける）',
+    file: 'src/renderer/components/ChatPanel.tsx',
+    must: 'projectRoot: projectDir,',
+    mustNot: 'projectRoot: aiRoot',
+  },
+
   {
     name: 'ターミナルの作業フォルダ',
     file: 'src/renderer/App.tsx',
@@ -100,7 +115,8 @@ const CONSUMERS: { name: string; file: string; must: string; mustNot: string; vi
   {
     name: '画像を使う（アプリで使う画像の入り先）',
     file: 'src/renderer/components/ChatPanel.tsx',
-    must: "purpose === 'material' ? projectDir : (aiRoot ?? projectDir)",
+    // 根が追いついていなければ直下へ（**前のプロジェクトの根を絶対に使わない**）
+    must: "purpose === 'material' || !(aiRoot && aiRoot.dir === projectDir)",
     mustNot: 'importImageData(projectDir,',
   },
   {
@@ -296,5 +312,89 @@ describe('プロジェクトを走査するものは、すべて根から', () =
     ['公開前セキュリティチェック', 'src/renderer/securityCheck.ts', 'await resolvePublishRoot(projectDir)'],
   ])('%s', (_name, file, must) => {
     expect(read(file)).toContain(must)
+  })
+})
+
+// ── 🕘 履歴の退避（2026-08-24 の実害）──────────────────────────────────
+// `projectDir` 1つで「AI が読み書きする根」と「退避の根」を兼ねていたため、
+// 退避が `<project>/public/.sakuraide-backup` へ行き、履歴の一覧
+// （`<project>/.sakuraide-backup` を見る）に**一切出なかった**。
+// つまり **AI が書き換えても「元に戻す」が効かない**状態だった。
+describe('🕘 履歴の退避の根', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  // ⚠️ 退避の口は**2つある**（write_file と edit_file）。`toContain` だけだと
+  // **片方だけ古い形に戻しても素通りする**（掟10 の戒め）。数で固定する。
+  it('退避はプロジェクト直下へ置き、根のずれを足し戻す（両方の口で）', () => {
+    const s = read('src/renderer/aiTools.ts')
+    const count = (needle: string) => s.split(needle).length - 1
+    // 退避の口の数（増減したらこのテストを見直す＝気づける）
+    expect(count('backup.snapshotBeforeWrite(')).toBe(2)
+    // 根は writeRoot ではなく projectRoot（省略時だけ writeRoot に落ちる）
+    expect(count('const root = ctx.projectRoot ?? ctx.writeRoot')).toBe(2)
+    // パスはプロジェクト直下からの相対に直す（public/ を足し戻す）
+    expect(count('backupRelPath(root, ctx.writeRoot, rel)')).toBe(2)
+    // 直す前の形（読み書きの根へそのまま退避）へ戻さない
+    expect(s).not.toContain('snapshotBeforeWrite(ctx.writeRoot,')
+  })
+
+  it('読み書きの根と退避の根は、別の名前で持つ（兼ねない）', () => {
+    const s = read('src/renderer/aiTools.ts')
+    // 1つの名前に2つの意味を持たせない（これが実害の原因だった）
+    expect(s).not.toContain('ctx.projectDir')
+    expect(s).toContain('writeRoot?: string | null')
+    expect(s).toContain('projectRoot?: string | null')
+  })
+
+  // 公開しないプロジェクト（ローカルのみ）に public/ を作らせない。
+  it('移行の判定は、プロジェクトの公開先を見る', () => {
+    const s = read('src/main/ipc/migrate.ts')
+    const count = (needle: string) => s.split(needle).length - 1
+    // 調べるときと実際に移すときの**両方**で見る（片方だけだと素通りする）
+    expect(count('needsMigration(entries, readTarget(projectDir))')).toBe(2)
+    expect(s).not.toContain('needsMigration(entries)')
+    // 判定そのものは純関数に置く（IPC 側で公開先を並べ直さない）
+    expect(read('src/shared/migratePlan.ts')).toContain("target === 'local' || target === 'other'")
+  })
+
+  // ⚠️ 2026-08-24 の実害②。根の解決は非同期なので、プロジェクトを切り替えた直後は
+  // **前のプロジェクトの根が残る**。新規作成では、まさにその瞬間に AI への依頼が飛び、
+  // 実機で **AI が前のプロジェクトのファイルを `rm -rf` しようとした**（承認前で止まった）。
+  it('AI の作業フォルダは、どのプロジェクトのものかを対で持つ', () => {
+    const s = read('src/renderer/components/ChatPanel.tsx')
+    expect(s).toContain('useState<{ dir: string; root: string } | null>(null)')
+    // 切り替えたら、まず捨てる（前の根を引きずらない）
+    expect(s).toContain('setAiRoot(null) // **前のプロジェクトの根を引きずらない**')
+    // 追いついていなければプロジェクト直下を使う
+    expect(s).toContain('const currentAiRoot = aiRoot && aiRoot.dir === projectDir ? aiRoot.root : projectDir')
+    // 直す前の形（どのプロジェクトのものか分からない根）へ戻さない
+    expect(s).not.toContain('aiRoot ?? projectDir')
+  })
+
+  // ⚠️ 2026-08-24 の点検。作業中にプロジェクトを切り替えると、書き込み先も実行先も
+  // 切り替え先へ移り、**A の作業が B に付いてくる**。送信した時点で固定する。
+  it('ターンの行き先は、送信した瞬間に固定する', () => {
+    const s = read('src/renderer/hooks/useAiChat.ts')
+    const count = (needle: string) => s.split(needle).length - 1
+    expect(s).toContain('const turnOpts = buildExecuteOpts()')
+    // 道具を呼ぶたびに読み直さない（**これが「作業が付いてくる」の原因だった**）
+    expect(s).not.toContain('{ ...buildExecuteOpts(), search, snapshotId, snapshotLabel }')
+    expect(count('{ ...turnOpts, search, snapshotId, snapshotLabel }')).toBe(1)
+    // 確認も、縛った行き先の話として出す
+    expect(s).toContain('approveToolCall(toolName, toolArgs, turnOpts')
+  })
+
+  it('確認の中身は、縛った行き先で組む（画面の切り替えに引きずられない）', () => {
+    const s = read('src/renderer/components/ChatPanel.tsx')
+    expect(s).toContain('const scopeDir = scope?.projectDir ?? projectDir')
+    expect(s).toContain('const scopeRoot = scope?.writeRoot ?? currentAiRoot')
+    expect(s).toContain('commandScopeNote(scopeDir, scopeRoot)')
+    // package.json を読む先も縛った側
+    expect(s).toContain('fs.readFile(`${scopeDir}/package.json`)')
+  })
+
+  it('Claude 経路は先に分けてあり、その形を崩さない', () => {
+    const s = read('src/main/claude/agent.ts')
+    expect(s).toContain('hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)]')
   })
 })

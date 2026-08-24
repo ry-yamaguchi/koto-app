@@ -64,6 +64,29 @@ interface CloudEnvSpec {
   auth?: { keyId?: string; keyLabel?: string }
 }
 type CloudResourceKind = 'registry' | 'image' | 'apprun-app' | 'bucket'
+
+/** 引き取りの候補（shared/publishImport.ts の ImportCandidate と同じ形）。 */
+type ImportCandidate = {
+  target: 'vercel' | 'sakura-apprun'
+  id: string
+  name: string
+  url: string | null
+  at: string | null
+  note: string
+  blocked?: string
+}
+/** 引き取れる AppRun の公開設定（shared/publishImport.ts の AppRunSettings と同じ形）。 */
+type AppRunImportSettings = {
+  port: number | null
+  minScale: number | null
+  maxScale: number | null
+  maxCpu: string | null
+  maxMemory: string | null
+  timeoutSeconds: number | null
+  env: { key: string; value: string }[]
+  probePath: string | null
+  secretKeys: string[]
+}
 interface CloudPlanAction {
   type: 'create' | 'update' | 'delete' | 'noop'
   kind: CloudResourceKind
@@ -392,8 +415,32 @@ interface Window {
       logs(token: string, projectId: string, opts?: { limit?: number; since?: string }): Promise<{ ok: boolean; logs?: Array<{ timestamp: string; message: string }>; message?: string }>
     }
     // Vercel（海外PaaS）連携。トークン/チームIDは中央ストア（認証情報）から renderer が渡す（方式B）。
+    /** 公開済みのものを引き取る（dev-plan ④）。読み取りと、選んだあとの取り込みだけ。 */
+    import: {
+      /** 引き取りの候補を一覧する。 */
+      list(args: { target: 'vercel' | 'sakura-apprun'; token?: string; teamId?: string }): Promise<
+        { ok: true; candidates: ImportCandidate[] } | { ok: false; message: string }>
+      /** 取り込む前に、何が起きるかを調べる（Git 由来ならここで断る）。 */
+      inspect(args: { target: 'vercel' | 'sakura-apprun'; id: string; token?: string; teamId?: string }): Promise<
+        | { ok: true; fileCount?: number; stripped?: string | null; files?: string[]; image?: string; settings?: AppRunImportSettings; secretKeys?: string[] }
+        | { ok: false; gitBacked?: boolean; message: string }>
+      /** 取り込む（ここで初めてディスクへ書く）。 */
+      run(args: { target: 'vercel' | 'sakura-apprun'; id: string; destDir: string; token?: string; teamId?: string }): Promise<
+        | {
+            ok: true; fileCount: number; failed?: string[]; stripped?: string | null; settings?: AppRunImportSettings
+            /** 取り込んだ直後の「戻れる起点」（🕘 履歴）。作れなかったときは null。 */
+            historySnapshotId?: string | null
+            /** 起点を作らなかった・作れなかった理由（**黙って省かない**）。 */
+            historyNote?: string | null
+          }
+        | { ok: false; message: string }>
+      /** 取り込みの実況。戻り値を呼ぶと購読を解除する。 */
+      onProgress(cb: (message: string) => void): () => void
+    }
+
     vercel: {
-      testConnection(token: string, teamId?: string): Promise<{ ok: boolean; status?: number; message?: string }>
+      /** 疎通テスト。`warn: true` は「トークンは有効だが、公開する範囲が見えていない」。 */
+      testConnection(token: string, teamId?: string): Promise<{ ok: boolean; warn?: boolean; status?: number; message?: string }>
       /**
        * 公開する前の確認（**何も作らず、何も送らない**）。
        * `canPublish` が false なら、公開しても壊れると分かっている。

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planMigrate, alreadyMigrated, needsMigration, migrateNotice, migrateDone, migrateFailed } from '../src/shared/migratePlan'
+import { planMigrate, alreadyMigrated, needsMigration, migrateNotice, migrateDone, migrateFailed , skipMigrationForTarget } from '../src/shared/migratePlan'
 import { PUBLISH_DIR, placeInProject, topSegment } from '../src/shared/publishRoot'
 import { isPublished, MATERIALS_DIR } from '../src/shared/publishExclude'
 
@@ -116,5 +116,38 @@ describe('新規作成と移行が同じ判断を使う', () => {
 
   it('先頭の ./ は落とす', () => {
     expect(placeInProject('./index.html', true)).toBe(`${PUBLISH_DIR}/index.html`)
+  })
+})
+
+// ── 公開しないプロジェクトには案内しない（2026-08-24 Ryosuke 指摘）─────────
+// `public/` は「サーバーへ置かれるもの」の場所。ローカルで動かすだけのもの
+// （ゲーム・手元の道具）には置く先が無い。実機では Unreal Engine のゲームで
+// `Source/` や `.uproject` まで移そうとしていた。**害のほうが大きい。**
+describe('公開しないプロジェクトでは移行を案内しない', () => {
+  const entries = [{ name: 'Source', isDir: true }, { name: 'game.uproject', isDir: false }]
+
+  it('ローカルのみ・公開しないなら案内しない', () => {
+    expect(skipMigrationForTarget('local')).toBe(true)
+    expect(skipMigrationForTarget('other')).toBe(true)
+    expect(needsMigration(entries, 'local')).toBe(false)
+    expect(needsMigration(entries, 'other')).toBe(false)
+  })
+
+  it('公開先が決まっていれば、これまでどおり案内する', () => {
+    for (const t of ['vercel', 'sakura-apprun', 'sakura-rental', 'hanamii']) {
+      expect(skipMigrationForTarget(t)).toBe(false)
+      expect(needsMigration(entries, t)).toBe(true)
+    }
+  })
+
+  // メタが読めない（既存フォルダを開いた等）ときに黙って案内をやめない
+  it('公開先が分からないときは、これまでどおり案内する', () => {
+    expect(needsMigration(entries, null)).toBe(true)
+    expect(needsMigration(entries, undefined)).toBe(true)
+    expect(needsMigration(entries)).toBe(true)
+  })
+
+  it('すでに public があれば、公開先によらず案内しない', () => {
+    expect(needsMigration([...entries, { name: 'public', isDir: true }], 'vercel')).toBe(false)
   })
 })

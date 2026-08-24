@@ -779,6 +779,7 @@ export default function App() {
         <NewProjectModal
           apiKey={sakuraApiKey}
           onClose={() => setShowNewProject(false)}
+          onOpenCredentials={() => { setShowNewProject(false); setShowCredentials(true) }}
           onCreated={(root, openRelPath) => {
             setShowNewProject(false)
             setMode('ide')

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isDangerousCommand , leavesWorkingDir} from '../src/shared/commandGuard'
+import { isDangerousCommand , leavesWorkingDir, commandScopeNote } from '../src/shared/commandGuard'
 
 // AIが実行しようとするコマンドの最後の砦（commandGuard.ts 冒頭のコメント参照）。
 // ここを通ってしまったコマンドは、🪄おまかせ運転中なら確認なしで実行される。
@@ -143,5 +143,37 @@ describe('leavesWorkingDir（外へ出ようとしているか）', () => {
   it('空でも壊れない', () => {
     expect(leavesWorkingDir('')).toBe(false)
     expect(leavesWorkingDir(undefined as any)).toBe(false)
+  })
+})
+
+// ── いつもと違う場所での実行を知らせる（2026-08-24 の実害）─────────────────
+// 新規プロジェクトを開いた直後、AI の作業フォルダが前のプロジェクトのままになり、
+// もっともらしい理由つきの `rm -rf` を承認して**別プロジェクトの 19 件が消えた**。
+describe('いつもと違う場所での実行', () => {
+  it('プロジェクトの中なら、何も言わない（確認の文を長くしない）', () => {
+    expect(commandScopeNote('/w/myapp', '/w/myapp')).toBe('')
+    expect(commandScopeNote('/w/myapp', '/w/myapp/public')).toBe('')
+    expect(commandScopeNote('/w/myapp', '/w/myapp/public/sub')).toBe('')
+  })
+
+  // ⚠️ パスを読み比べさせない（Ryosuke 指摘）。**見分けのつく名前**だけを出す。
+  it('外なら「通常と異なる場所」と言い、両方の名前を出す', () => {
+    const n = commandScopeNote('/w/UnrealEngineTest', '/w/landingtest-2/public')
+    expect(n).toContain('通常と異なる場所で実行しようとしています')
+    expect(n).toContain('「UnrealEngineTest」')
+    expect(n).toContain('「landingtest-2」')
+    expect(n).toContain('心当たりがなければ拒否してください')
+    // フルパスは出さない（読み比べは人にとって難しい仕事）
+    expect(n).not.toContain('/w/')
+  })
+
+  it('似た名前のフォルダに引っかからない（区切りまで見る）', () => {
+    expect(commandScopeNote('/w/app', '/w/application')).toContain('通常と異なる場所')
+  })
+
+  it('どちらかが分からなければ、余計なことを言わない', () => {
+    expect(commandScopeNote('', '/w/x')).toBe('')
+    expect(commandScopeNote('/w/x', '')).toBe('')
+    expect(commandScopeNote(null, undefined)).toBe('')
   })
 })

@@ -104,3 +104,31 @@ export function placeInProject(relPath: string, isPublishedTop: boolean): string
   if (!clean) return ''
   return shouldMove(topSegment(clean), isPublishedTop) ? `${PUBLISH_DIR}/${clean}` : clean
 }
+
+/**
+ * 🕘 履歴に記録するときの相対パス（純関数）。
+ *
+ * ── なぜ要るか（2026-08-24 の実害）────────────────────────────────────
+ * AI が読み書きする根（`writeRoot`＝ふつうは `public/`）と、
+ * 退避を置く根（`projectRoot`＝プロジェクト直下）は**別物**である。
+ * これを1つの `projectDir` で兼ねていたため、さくらのAI Engine 経路では
+ * 退避が `<project>/public/.sakuraide-backup` へ行き、
+ * 🕘 履歴の一覧（`<project>/.sakuraide-backup` を見る）に**一切出なかった**。
+ * つまり **AI がファイルを書き換えても「元に戻す」が効かない**状態だった。
+ *
+ * 退避のマニフェストは**プロジェクト直下からの相対**で持つ約束なので、
+ * 書き込み側の相対パスに、根のずれ（`public/`）を足し戻す。
+ *
+ * @param projectRoot プロジェクト直下（退避の根）
+ * @param writeRoot   AI が読み書きする根（`projectRoot` と同じこともある）
+ * @param rel         `writeRoot` からの相対パス
+ */
+export function backupRelPath(projectRoot: string, writeRoot: string, rel: string, sep = '/'): string {
+  const p = String(projectRoot ?? '').replace(/[/\\]+$/, '')
+  const w = String(writeRoot ?? '').replace(/[/\\]+$/, '')
+  if (!p || !w || p === w) return rel
+  // writeRoot が projectRoot の中に無い（想定外）ときは、足し戻さない（勝手に外を指さない）
+  if (!w.startsWith(p + sep)) return rel
+  const sub = w.slice(p.length + 1)
+  return sub ? `${sub}${sep}${rel}` : rel
+}

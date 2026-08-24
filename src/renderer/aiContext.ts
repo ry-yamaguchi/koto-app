@@ -6,6 +6,7 @@
 import { getTargetProfile, profileToContext } from './targetProfiles'
 import { MATERIALS_DIR } from '../shared/publishExclude'
 import { PUBLISH_DIR } from '../shared/publishRoot'
+import { importedContext } from './importProject'
 
 // 共通：アプリの説明
 const APP_INTRO =
@@ -166,7 +167,11 @@ const TARGET_LABEL: Record<string, string> = {
   'sakura-cloud': 'さくらのクラウド',
 }
 
-interface ProjectMeta { name?: string; description?: string; kind?: string; siteType?: string; base?: string; target?: string }
+interface ProjectMeta {
+  name?: string; description?: string; kind?: string; siteType?: string; base?: string; target?: string
+  /** インポートしたものなら、どこから・いつ取り込んだか（importProject.ts が書く）。 */
+  importedFrom?: unknown
+}
 
 const SITE_TYPE_LABEL: Record<string, string> = {
   lp: 'LP（1ページ）',
@@ -192,6 +197,7 @@ export async function buildProjectContext(dir: string | null | undefined): Promi
 
   // 公開先プロファイル（その環境でうまくいく構成の知識）を注入する
   const profileBlock = '\n' + profileToContext(getTargetProfile(meta.target)) + '\n'
+  const importedFromBlock = importedContext(meta.importedFrom)
 
   return (
     '# 現在のプロジェクト\n' +
@@ -202,6 +208,9 @@ export async function buildProjectContext(dir: string | null | undefined): Promi
     (meta.description ? `概要: ${meta.description}\n` : '') +
     (meta.target ? `公開先: ${TARGET_LABEL[meta.target] ?? meta.target}\n` : '') +
     profileBlock +
+    // インポートしたものは**扱いが違う**（利用者の資産・組み立て後・秘密が無い・次の公開が上書き）。
+    // 何も言わないと、AI はふつうに新規作成したプロジェクトとして扱う（2026-08-24 Ryosuke 指摘）。
+    (importedFromBlock ? importedFromBlock + '\n\n' : '') +
     `ルートパス: ${dir}\n` +
     'ファイル構成:\n' +
     fileList +

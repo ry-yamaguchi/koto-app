@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import CopyButton from './CopyButton'
 import SakuraLogo from './SakuraLogo'
 import { getKeyLimit, setKeyLimit, getSettings } from '../usage'
 
@@ -52,7 +53,7 @@ const SERVICES: ServiceDef[] = [
     id: 'vercel', title: 'Vercel（海外PaaS）', hint: '③公開→Vercel で使うトークン。https://vercel.com/account/tokens で発行します。',
     active: true,
     fields: [
-      { key: 'apiKey', label: 'トークン', secret: true, placeholder: 'vercel_…' },
+      { key: 'apiKey', label: 'トークン', secret: true, placeholder: '発行したトークンを貼り付け' },
       { key: 'teamId', label: 'チームID（個人アカウントなら空欄）', placeholder: '例: team_xxxxxxxx' },
     ],
   },
@@ -596,16 +597,19 @@ function VpsKeyStatus({ hasKey, onClear }: { hasKey: boolean; onClear: () => voi
   )
 }
 
-// Vercel トークンの接続テスト（GET /v2/user で有効性を確認・読み取りのみ）。teamId は任意。
+// Vercel トークンの接続テスト（読み取りのみ）。teamId は任意。
+// **2段階**で見る: ①トークンが有効か（/v2/user）②公開する範囲が見えているか（デプロイ一覧）。
+// ②が通らないときは緑の ✅ にしない（2026-08-22 Ryosuke 指摘。範囲の無いトークンでも
+// ①は 200 を返すため、「接続OK」と出したのに公開で落ちる形になっていた）。
 function VercelTestButton({ token, teamId }: { token: string; teamId: string }) {
-  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
+  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'warn' | 'ng'>('idle')
   const [detail, setDetail] = useState('')
   const test = async () => {
     if (!token.trim()) { setState('ng'); setDetail('トークンが空です'); return }
     setState('testing')
     try {
       const r = await window.electronAPI.vercel.testConnection(token.trim(), teamId.trim() || undefined)
-      if (r.ok) { setState('ok'); setDetail(r.message ?? '') }
+      if (r.ok) { setState(r.warn ? 'warn' : 'ok'); setDetail(r.message ?? '') }
       else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
     } catch (e: any) {
       setState('ng'); setDetail(e?.message ?? String(e))
@@ -618,6 +622,7 @@ function VercelTestButton({ token, teamId }: { token: string; teamId: string }) 
         {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
       </button>
       {state === 'ok' && <span className="text-[11px] text-brand-green">✅ {detail || '接続OK'}</span>}
+      {state === 'warn' && <span className="text-[11px] text-brand-yellow whitespace-pre-wrap select-text">⚠️ {detail}</span>}
       {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ {detail}</span>}
     </div>
   )
@@ -686,7 +691,9 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   // dirty にはならない。
   const [dirty, setDirty] = useState(false)
   // コンテナレジストリ認証の登録状況（③公開→AppRun が自動作成。ここでは表示のみ）
-  const [regInfo, setRegInfo] = useState<{ name: string; user: string } | null>(null)
+  const [regInfo, setRegInfo] = useState<{ name: string; user: string; password: string } | null>(null)
+  // パスワードを表示中か（既定は伏せる。ほかのキーと同じ 👁 の作法）
+  const [showRegPw, setShowRegPw] = useState(false)
 
   const changeSearchPref = (p: SearchProvider) => {
     setSearchPref(p)
@@ -696,7 +703,8 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   // バックエンドからレジストリ認証の登録状況を読み直す
   const refreshRegInfo = async () => {
     const k = await window.electronAPI.registry.loadKey()
-    setRegInfo(k && k.name ? { name: k.name, user: k.user } : null)
+    setRegInfo(k && k.name ? { name: k.name, user: k.user, password: k.password ?? '' } : null)
+    setShowRegPw(false) // 読み直したら伏せ直す
   }
 
   // 初回読み込み＋認証情報変更イベントで登録状況を更新
@@ -1038,11 +1046,25 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
                     <span className="text-ink-muted flex-none w-16">ユーザー</span>
                     <span className="text-ink font-mono break-all">{regInfo.user}</span>
                   </div>
+                  {/* ── パスワードは見えるようにする（2026-08-22 Ryosuke 指摘）──────
+                      ここだけ 👁 が無く、**利用者が自分の持ち物を取り出せなかった**。
+                      ほかのキーは利用者が発行して手元に控えがあるが、**この値は Koto が
+                      自動生成したもので Koto の中にしか存在しない**。見えないままだと、
+                      docker で自分のイメージを取ることも、Koto を離れることもできない。 */}
                   <div className="flex items-center gap-2">
                     <span className="text-ink-muted flex-none w-16">パスワード</span>
-                    <span className="text-ink font-mono">••••••••</span>
-                    <span className="text-[10px] text-ink-muted">（実値は表示しない）</span>
+                    <span className="text-ink font-mono break-all flex-1 select-text">{showRegPw ? regInfo.password : '••••••••'}</span>
+                    <button
+                      onClick={() => setShowRegPw(v => !v)}
+                      className="flex-none text-[11px] text-ink-muted hover:text-ink"
+                      title={showRegPw ? '隠す' : '表示'}
+                    >{showRegPw ? '🙈 隠す' : '👁 表示'}</button>
+                    <CopyButton text={regInfo.password} title="パスワードをコピー" />
                   </div>
+                  <p className="text-[10px] text-ink-muted leading-relaxed">
+                    この値は Koto が作って保存したもので、<b>ほかのどこにも控えがありません</b>。
+                    ご自身で <code>docker login {regInfo.name}.sakuracr.jp</code> するときにも使えます。
+                  </p>
                 </div>
               </div>
             ) : (

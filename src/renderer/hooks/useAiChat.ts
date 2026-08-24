@@ -64,7 +64,14 @@ export type UseAiChatArgs = {
   /** executeTool に渡す追加オプションを作る（search は hook が持つので除く）: ChatApp=()=>({}) / ChatPanel=()=>({ projectDir, applyFile: onApplyFile }) */
   buildExecuteOpts: () => Record<string, unknown>
   /** ツール実行前の承認フック。undefined なら常に許可（ChatApp）。ChatPanel は write_file/run_command の確認UIをここに実装。戻り値: 許可なら null、拒否なら tool 結果として返す文字列 */
-  approveToolCall?: (name: string, args: string) => Promise<string | null>
+  /**
+   * 実行の許可を取る。`scope` は**このターンが縛られている行き先**（送信時に固定したもの）。
+   * 画面が別のプロジェクトへ切り替わっていても、**確認は始めたプロジェクトの話**として出す。
+   */
+  approveToolCall?: (
+    name: string, args: string,
+    scope?: { projectDir?: string | null; writeRoot?: string | null },
+  ) => Promise<string | null>
   /** APIへ送る過去履歴を返す（**加工前の生配列**。表示専用の除外・まとめの適用は hook 内の planSend が行う） */
   getHistory: () => ChatMessage[]
   /** 画面のメッセージ列を関数型更新する（ChatApp はアクティブセッション内、ChatPanel はフラット配列に適用） */
@@ -353,6 +360,19 @@ export function useAiChat(args: UseAiChatArgs) {
       // 履歴（🕘）の見出し。「どの指示でこうなったか」が分かると「3つ前の状態に戻す」を選べる
       // （利用者からの要望・2026-08-05）。Claude経路の見出しは main 側が prompt から作る。
       const snapshotLabel = rawText.trim() || (hasImages ? '画像についての依頼' : '')
+      /**
+       * このターンが**どのプロジェクトのものか**を、送信した瞬間に固定する。
+       *
+       * ── なぜ要るか（2026-08-24 の実害と点検・Ryosuke 指摘）─────────────
+       * これまでは道具を呼ぶ**たびに** `buildExecuteOpts()` を読み直していた。
+       * Koto は同時に1つしか動かないが、**同じ画面のまま projectDir が差し替わる**ので、
+       * 作業中にプロジェクトを切り替えると、**書き込み先も実行先も切り替え先へ移る**。
+       * つまり **A の作業が B に付いてくる**。
+       *
+       * 送信した時点の行き先で最後まで通す。利用者が切り替えても、
+       * **始めたプロジェクトの中で終わる**。並列に走らせる形（第2段階）の土台でもある。
+       */
+      const turnOpts = buildExecuteOpts()
       // 画面には出さず、AI にだけ添える一言（Koto が画像をどこへ入れたか等）
       const assetBlock = aiOnlyNote ? `\n\n${aiOnlyNote}` : ''
 
@@ -824,13 +844,13 @@ export function useAiChat(args: UseAiChatArgs) {
             // 実行前の承認フック（ChatPanel の write_file/run_command 確認UIなど）。
             // 文字列が返ったら実行せず、その文字列をツール結果としてAIへ返す。
             if (approveToolCall) {
-              const denial = await approveToolCall(toolName, toolArgs)
+              const denial = await approveToolCall(toolName, toolArgs, turnOpts as { projectDir?: string | null; writeRoot?: string | null })
               if (denial !== null) {
                 apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: denial })
                 continue
               }
             }
-            const result = await executeTool(toolName, toolArgs, { ...buildExecuteOpts(), search, snapshotId, snapshotLabel })
+            const result = await executeTool(toolName, toolArgs, { ...turnOpts, search, snapshotId, snapshotLabel })
             if ((WRITING_TOOLS as readonly string[]).includes(toolName)) wroteFiles = true
             apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: result })
           }

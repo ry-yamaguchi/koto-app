@@ -147,6 +147,61 @@ export function snapshotBeforeChange(
   return snapshotEntry(projectDir, snapshotId, rel, null, label)
 }
 
+/**
+ * いま在るファイルの内容を、そのまま1つの「時点」として残す（**戻れる起点**）。
+ *
+ * ── なぜ要るか（2026-08-24・④ 公開されているもののインポート）────────────
+ * インポートした直後のプロジェクトには履歴が1つも無い。そのまま AI に触らせると、
+ * **公開されていた姿へ戻す手立てが無いまま**作業が始まる。取り込んだ直後に
+ * 「その時点」を作り、何をどう壊しても戻れるようにしてから触らせる。
+ *
+ * 既存の snapshotBeforeWrite は使えない。あれは「これから書き換える1件の旧内容」を
+ * 退避する形で、まだ無いファイルは `create` として記録される。インポート直後の
+ * ファイルをそれで記録すると、**その時点へ戻したときに全部消える**（逆になる）。
+ * ここは復元前の現状退避と同じ `pre-restore` 扱い（＝戻すと書き戻る）で記録する。
+ *
+ * copyFileSync で写すので、**画像などのバイナリも壊れない**。
+ * 呼び出し側は件数の上限を自分で判断すること（ここでは黙って打ち切らない）。
+ */
+export function snapshotCurrentFiles(
+  projectDir: string, rels: readonly string[], label?: string
+): { ok: boolean; snapshotId?: string; count: number; message?: string } {
+  try {
+    const kept: string[] = []
+    const dirs = new Set<string>()
+    // スナップショットIDは写し始める前に決める（途中で日付が変わっても1つの時点にまとまる）。
+    const id = nextFreeSnapshotId(
+      new Date().toISOString(),
+      i => fs.existsSync(path.join(backupRoot(projectDir), i))
+    )
+    const dir = snapshotDir(projectDir, id)
+    for (const rel of rels) {
+      if (rel === MANIFEST_FILENAME) continue // マニフェストと衝突する名前は残せない
+      const full = confineToProject(projectDir, rel) // プロジェクトの外は触らせない
+      // フォルダが紛れても写そうとしない（1件で起点づくり全体を落とさない）
+      let stat: fs.Stats
+      try { stat = fs.statSync(full) } catch { continue }
+      if (!stat.isFile()) continue
+      const dest = path.join(dir, rel)
+      const parent = path.dirname(dest)
+      if (!dirs.has(parent)) { fs.mkdirSync(parent, { recursive: true }); dirs.add(parent) }
+      fs.copyFileSync(full, dest)
+      kept.push(rel)
+    }
+    if (!kept.length) {
+      try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* 作っていなければ何もしない */ }
+      return { ok: true, count: 0 }
+    }
+    const existsMap: Record<string, boolean> = {}
+    for (const k of kept) existsMap[k] = true
+    writeManifest(dir, buildPreRestoreManifest(kept, existsMap, snapshotIdToIso(id) ?? new Date().toISOString(), label))
+    rotate(projectDir)
+    return { ok: true, snapshotId: id, count: kept.length }
+  } catch (e: any) {
+    return { ok: false, count: 0, message: e?.message ?? String(e) }
+  }
+}
+
 /** 「🕘 履歴」一覧（新しい順）。restoreCount / deleteCount は「その時点に戻すと何ファイルが変わるか」。 */
 export function listSnapshotSummaries(projectDir: string): { ok: boolean; snapshots: SnapshotSummary[]; message?: string } {
   try {

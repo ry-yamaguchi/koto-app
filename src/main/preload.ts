@@ -268,6 +268,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     logs: (token: string, projectId: string, opts?: { limit?: number; since?: string }) =>
       ipcRenderer.invoke('hanamii:logs', token, projectId, opts),
   },
+  // 公開済みのものを引き取る（dev-plan ④）。**読み取りと、選んだあとの取り込みだけ。**
+  import: {
+    list: (args: { target: 'vercel' | 'sakura-apprun'; token?: string; teamId?: string }) =>
+      ipcRenderer.invoke('import:list', args),
+    inspect: (args: { target: 'vercel' | 'sakura-apprun'; id: string; token?: string; teamId?: string }) =>
+      ipcRenderer.invoke('import:inspect', args),
+    run: (args: { target: 'vercel' | 'sakura-apprun'; id: string; destDir: string; token?: string; teamId?: string }) =>
+      ipcRenderer.invoke('import:run', args),
+    /** 取り込みの進み具合（画面に実況を出す）。戻り値は購読解除。 */
+    onProgress: (cb: (message: string) => void) => {
+      const h = (_: unknown, p: { message: string }) => cb(p?.message ?? '')
+      ipcRenderer.on('import:progress', h)
+      return () => ipcRenderer.removeListener('import:progress', h)
+    },
+  },
+
   vercel: {
     // 方式B: トークン/チームIDは中央ストア（認証情報）から renderer が読んで引数で渡す。main には保存しない。
     testConnection: (token: string, teamId?: string) => ipcRenderer.invoke('vercel:testConnection', token, teamId),

@@ -24,6 +24,19 @@ function readEntries(projectDir: string): Entry[] {
   }
 }
 
+/**
+ * プロジェクトの公開先（`.sakuraide.json` の `target`）。読めなければ null。
+ * **公開しないものに `public/` を作らせない**ために要る（migratePlan の skipMigrationForTarget）。
+ */
+function readTarget(projectDir: string): string | null {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(projectDir, '.sakuraide.json'), 'utf-8'))
+    return typeof m?.target === 'string' ? m.target : null
+  } catch {
+    return null // メタが無い（既存フォルダを開いた等）＝ 従来どおり案内する
+  }
+}
+
 export function registerMigrateHandlers(): void {
   /** 移行が要るか調べ、計画を返す（**何も変えない**）。 */
   ipcMain.handle('project:migrateCheck', (_, projectDir: string) => {
@@ -31,7 +44,7 @@ export function registerMigrateHandlers(): void {
       return { needed: false, plan: { move: [], keep: [] } as MigratePlan }
     }
     const entries = readEntries(projectDir)
-    if (!needsMigration(entries)) return { needed: false, plan: { move: [], keep: [] } as MigratePlan }
+    if (!needsMigration(entries, readTarget(projectDir))) return { needed: false, plan: { move: [], keep: [] } as MigratePlan }
     return { needed: true, plan: planMigrate(entries, isPublished) }
   })
 
@@ -44,7 +57,7 @@ export function registerMigrateHandlers(): void {
       return { ok: false, moved: [], restored: true, message: 'プロジェクトフォルダのパスが不正です' }
     }
     const entries = readEntries(projectDir)
-    if (!needsMigration(entries)) return { ok: true, moved: [], restored: true }
+    if (!needsMigration(entries, readTarget(projectDir))) return { ok: true, moved: [], restored: true }
     const plan = planMigrate(entries, isPublished)
     const dest = path.join(projectDir, PUBLISH_DIR)
 

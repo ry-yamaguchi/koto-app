@@ -25,6 +25,23 @@ export function vercelDeploymentPath(id: string): string {
   return `/v13/deployments/${encodeURIComponent(id)}`
 }
 export const VERCEL_USER_PATH = '/v2/user'
+// 疎通テストで「公開する範囲が見えているか」を確かめるために読む（読み取りのみ）。
+// **プロジェクト一覧を使う**（2026-08-22）。Vercel のトークンには3つの範囲があり、
+//   Full Account … 個人＋所属する全チーム
+//   Team         … 1つのチーム
+//   Project      … 1つのプロジェクト
+// で、**Project 範囲のトークンは「ユーザー階層・チーム階層の資源」を拒否する**
+// （公式明記）。つまり `/v2/user` や `/v6/deployments` では**正しいトークンでも 403** になる。
+// 公式が scoped token の例として挙げているのがこの `/v9/projects`。
+export const VERCEL_PROJECTS_PATH = '/v9/projects'
+// ── 引き取り（dev-plan ④）で読む経路。すべて**読み取りのみ**。実測 2026-08-23。
+export const VERCEL_DEPLOYMENTS_PATH_V6 = '/v6/deployments'
+export function vercelDeploymentFilesPath(id: string): string {
+  return `/v6/deployments/${encodeURIComponent(id)}/files`
+}
+export function vercelDeploymentFilePath(id: string, fileId: string): string {
+  return `/v8/deployments/${encodeURIComponent(id)}/files/${encodeURIComponent(fileId)}`
+}
 
 // ── ファイル収集の除外ルール ─────────────────────────────────────
 // HANAMII の zipProjectToBuffer（src/main/ipc/hanamii.ts）の除外リストと揃える。
@@ -240,16 +257,80 @@ export class VercelClient {
     return this.send('GET', VERCEL_API_BASE + vercelDeploymentPath(id) + this.teamQuery(), { timeoutMs: 20000 })
   }
 
-  /** 疎通テスト（GET /v2/user）。200ならトークン有効。 */
-  async testConnection(): Promise<{ ok: boolean; status?: number; message?: string; username?: string }> {
+  // ── 引き取り（dev-plan ④）─────────────────────────────────────────────
+  // 「公開済みのものから中身を取り戻す」ための読み取り。**何も作らない・何も消さない。**
+
+  /** デプロイの一覧（引き取りの候補）。 */
+  async listDeployments(limit = 50): Promise<VercelResult> {
+    return this.send('GET', VERCEL_API_BASE + VERCEL_DEPLOYMENTS_PATH_V6 + `?limit=${limit}` + this.teamQuery('&'), { timeoutMs: 20000 })
+  }
+
+  /**
+   * デプロイの詳細。**Git 由来かどうかを見るために `withGitRepoInfo=true` を付ける**
+   * （付けないと `gitSource` が返らない）。
+   */
+  async getDeploymentDetail(id: string): Promise<VercelResult> {
+    return this.send('GET', VERCEL_API_BASE + vercelDeploymentPath(id) + '?withGitRepoInfo=true' + this.teamQuery('&'), { timeoutMs: 20000 })
+  }
+
+  /** デプロイのファイルツリー。Git 由来のデプロイでは 404 になりうる。 */
+  async getDeploymentFiles(id: string): Promise<VercelResult> {
+    return this.send('GET', VERCEL_API_BASE + vercelDeploymentFilesPath(id) + this.teamQuery(), { timeoutMs: 20000 })
+  }
+
+  /**
+   * ファイル1つの中身。実測では `{ data: <base64> }` が返る。
+   * **base64 のまま返す**（画像もあるので、文字列に変換しない）。
+   */
+  async getDeploymentFile(id: string, fileId: string): Promise<VercelResult> {
+    return this.send('GET', VERCEL_API_BASE + vercelDeploymentFilePath(id, fileId) + this.teamQuery(), { timeoutMs: 60000 })
+  }
+
+  /**
+   * 疎通テスト。
+   *
+   * ── なぜ2段階なのか（2026-08-22 Ryosuke 指摘）─────────────────────────
+   * 以前は `GET /v2/user` が 200 なら「接続OK」としていた。だがこれは
+   * **トークンが有効であること**しか確かめていない。Vercel のトークンには
+   * 範囲（スコープ）があり、**公開したい先が見えていないトークンでも
+   * /v2/user は 200 を返す**。結果、「接続OK」と出したのに公開で落ちる。
+   * そこで、**公開する範囲（個人／チーム）のデプロイ一覧が読めるか**まで見る。
+   *
+   * それでも**書き込みができる保証にはならない**（読めても作れないことはある）。
+   * 確かめずに「公開できます」とは言わない——呼び出し側の文言もそう書くこと。
+   */
+  async testConnection(): Promise<{
+    ok: boolean; status?: number; message?: string; username?: string
+    /** 見えているプロジェクトの数（範囲の広さの目安）。 */
+    projects?: number
+    /** チームIDを付けると拒否されるが、外すと通る＝**範囲つきトークン**。 */
+    dropTeamId?: boolean
+  }> {
     try {
-      const r = await this.send('GET', VERCEL_API_BASE + VERCEL_USER_PATH + this.teamQuery(), { timeoutMs: 15000 })
-      if (r.ok) {
-        const u = (r.data as any)?.user
-        const username = typeof u?.username === 'string' ? u.username : (typeof u?.email === 'string' ? u.email : undefined)
-        return { ok: true, status: r.status, username }
+      // ① まず「公開先が見えるか」を見る。**ここが本題**（トークンが有効かだけでは足りない）
+      let r = await this.send('GET', VERCEL_API_BASE + VERCEL_PROJECTS_PATH + '?limit=1' + this.teamQuery('&'), { timeoutMs: 15000 })
+      let dropTeamId = false
+
+      // 範囲つきトークンは teamId を要らない（公式: 「Team・Project 範囲のトークンは
+      // teamId を必要としない」）。付けたまま拒否されたなら、外して確かめる。
+      if (!r.ok && this.teamId) {
+        const retry = await this.send('GET', VERCEL_API_BASE + VERCEL_PROJECTS_PATH + '?limit=1', { timeoutMs: 15000 })
+        if (retry.ok) { r = retry; dropTeamId = true }
       }
-      return { ok: false, status: r.status, message: vercelErrorMessage(r.data, r.status) }
+      if (!r.ok) return { ok: false, status: r.status, message: vercelErrorMessage(r.data, r.status) }
+
+      const projects = Array.isArray((r.data as any)?.projects) ? (r.data as any).projects.length : undefined
+
+      // ② 誰として見えているかは**分かれば添える**程度に留める。
+      // Project 範囲のトークンはユーザー階層を拒否するので、**失敗しても異常ではない**。
+      let username: string | undefined
+      try {
+        const who = await this.send('GET', VERCEL_API_BASE + VERCEL_USER_PATH, { timeoutMs: 10000 })
+        const u = (who.data as any)?.user
+        if (who.ok) username = typeof u?.username === 'string' ? u.username : (typeof u?.email === 'string' ? u.email : undefined)
+      } catch { /* 取れなくてよい */ }
+
+      return { ok: true, status: r.status, username, projects, dropTeamId }
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
     }

@@ -5,7 +5,7 @@
 //   説明文言と結果整形（toolText.ts）を踏襲している。これらの文言・挙動を変更したら main 側も追随させること。
 
 import { isDangerousCommand, leavesWorkingDir } from '../shared/commandGuard'
-import { PUBLISH_DIR_LABEL } from '../shared/publishRoot'
+import { PUBLISH_DIR_LABEL, backupRelPath } from '../shared/publishRoot'
 import { applyEdit } from './editFile'
 import { isProtectedWritePath, protectedWriteMessage } from '../shared/protectedPaths'
 export { isDangerousCommand }
@@ -505,7 +505,18 @@ export function stripToolMarkup(text: string): string {
 }
 
 export interface ToolContext {
-  projectDir?: string | null
+  /**
+   * AI が読み書きする根（ふつうは `<project>/public`）。
+   *
+   * ⚠️ **退避（🕘 履歴）の根とは別物。** 1つの `projectDir` で兼ねていたため、
+   * 退避が `public/.sakuraide-backup` へ行き、履歴の一覧に一切出なかった
+   * （＝「元に戻す」が効かない）。2026-08-24 に実害を確認して分けた。
+   * `main/claude/agent.ts` は同じ問題を先に解いており（projectDir と writeRoot）、
+   * こちらもその形へ揃える。
+   */
+  writeRoot?: string | null
+  /** プロジェクト直下（**退避と記録の根**）。省略時は `writeRoot` を使う。 */
+  projectRoot?: string | null
   search?: SearchConfig | null
   // ファイル保存の実処理（保存＋エディタ・ツリーへの反映）。App.tsx の applyAiFile を渡す
   applyFile?: (relPath: string, content: string) => Promise<void>
@@ -551,9 +562,9 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'list_files') {
-    if (!ctx.projectDir) return 'エラー: プロジェクトが開かれていません'
+    if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     try {
-      const files = await window.electronAPI.fs.projectFiles(ctx.projectDir)
+      const files = await window.electronAPI.fs.projectFiles(ctx.writeRoot)
       return files.length ? `プロジェクトのファイル一覧:\n${files.map(f => `- ${f}`).join('\n')}` : '（ファイルがありません）'
     } catch (e: any) {
       return `エラー: 一覧を取得できませんでした（${e?.message ?? e}）`
@@ -561,12 +572,12 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'read_file') {
-    if (!ctx.projectDir) return 'エラー: プロジェクトが開かれていません'
+    if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     const rel = String(args.path ?? '')
-    const full = resolveInProject(ctx.projectDir, rel)
+    const full = resolveInProject(ctx.writeRoot, rel)
     if (!full) return `エラー: 不正なパスです（${rel}）。プロジェクトルートからの相対パスを指定してください`
     try {
-      const content = await window.electronAPI.fs.readFileInProject(ctx.projectDir, rel)
+      const content = await window.electronAPI.fs.readFileInProject(ctx.writeRoot, rel)
       const truncated = content.length > READ_MAX_CHARS
       return (
         `ファイル: ${rel}\n\n${content.slice(0, READ_MAX_CHARS)}` +
@@ -578,10 +589,10 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'write_file') {
-    if (!ctx.projectDir) return 'エラー: プロジェクトが開かれていません'
+    if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     const rel = String(args.path ?? '')
     const content = String(args.content ?? '')
-    const resolved = resolveForWrite(ctx.projectDir, rel)
+    const resolved = resolveForWrite(ctx.writeRoot, rel)
     if ('error' in resolved) return resolved.error
     try {
       // 上書き前の自動バックアップ（AIターン単位のスナップショット。「🕘 履歴」から1クリックで戻せる）
@@ -589,13 +600,15 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
       try {
         // snapshotId は useAiChat が send 1回ごとに採番。万一無ければこの呼び出し単体で採番する
         const snapshotId = ctx.snapshotId ?? new Date().toISOString().replace(/[:.]/g, '-')
-        const r = await window.electronAPI.backup.snapshotBeforeWrite(ctx.projectDir, snapshotId, rel, content, ctx.snapshotLabel)
+        const root = ctx.projectRoot ?? ctx.writeRoot
+        const r = await window.electronAPI.backup.snapshotBeforeWrite(
+          root, snapshotId, backupRelPath(root, ctx.writeRoot, rel), content, ctx.snapshotLabel)
         backedUp = r.ok && r.backedUp
       } catch { /* バックアップ失敗は保存を妨げない */ }
       if (ctx.applyFile) {
         await ctx.applyFile(rel, content) // 保存＋エディタ・ツリー反映
       } else {
-        await window.electronAPI.fs.writeFileInProject(ctx.projectDir, rel, content)
+        await window.electronAPI.fs.writeFileInProject(ctx.writeRoot, rel, content)
       }
       return `保存しました: ${rel}（${content.length}文字）` +
         (backedUp ? `（旧内容は自動バックアップ済み。ユーザーに「元に戻して」と言われたら、画面上部の「🕘 元に戻す」から、その時点の状態にまるごと戻せることを案内してください）` : '')
@@ -605,17 +618,17 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'edit_file') {
-    if (!ctx.projectDir) return 'エラー: プロジェクトが開かれていません'
+    if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     const rel = String(args.path ?? '')
     const oldString = String(args.old_string ?? '')
     const newString = String(args.new_string ?? '')
     const replaceAll = args.replace_all === true
-    const resolved = resolveForWrite(ctx.projectDir, rel)
+    const resolved = resolveForWrite(ctx.writeRoot, rel)
     if ('error' in resolved) return resolved.error
 
     let content: string
     try {
-      content = await window.electronAPI.fs.readFileInProject(ctx.projectDir, rel)
+      content = await window.electronAPI.fs.readFileInProject(ctx.writeRoot, rel)
     } catch (e: any) {
       return `エラー: ファイルを読めませんでした（${e?.message ?? e}）。先に read_file で現在の内容を確認するか、新規作成なら write_file を使ってください`
     }
@@ -639,13 +652,15 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
       let backedUp = false
       try {
         const snapshotId = ctx.snapshotId ?? new Date().toISOString().replace(/[:.]/g, '-')
-        const r = await window.electronAPI.backup.snapshotBeforeWrite(ctx.projectDir, snapshotId, rel, result.next, ctx.snapshotLabel)
+        const root = ctx.projectRoot ?? ctx.writeRoot
+        const r = await window.electronAPI.backup.snapshotBeforeWrite(
+          root, snapshotId, backupRelPath(root, ctx.writeRoot, rel), result.next, ctx.snapshotLabel)
         backedUp = r.ok && r.backedUp
       } catch { /* バックアップ失敗は保存を妨げない */ }
       if (ctx.applyFile) {
         await ctx.applyFile(rel, result.next) // 保存＋エディタ・ツリー反映
       } else {
-        await window.electronAPI.fs.writeFileInProject(ctx.projectDir, rel, result.next)
+        await window.electronAPI.fs.writeFileInProject(ctx.writeRoot, rel, result.next)
       }
       return `編集しました: ${rel}（${result.count}箇所を置換）` +
         (backedUp ? `（旧内容は自動バックアップ済み。ユーザーに「元に戻して」と言われたら、画面上部の「🕘 元に戻す」から、その時点の状態にまるごと戻せることを案内してください）` : '')
@@ -655,11 +670,11 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'run_command') {
-    if (!ctx.projectDir) return 'エラー: プロジェクトが開かれていません'
+    if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     const command = String(args.command ?? '').trim()
     if (!command) return 'エラー: コマンドが空です'
     try {
-      const r = await window.electronAPI.proc.run(ctx.projectDir, command)
+      const r = await window.electronAPI.proc.run(ctx.writeRoot, command)
       return (
         `$ ${command}\n終了コード: ${r.code}${r.timedOut ? '（60秒でタイムアウト。常駐プロセスはこのツールでは起動できません）' : ''}\n` +
         (r.stdout ? `--- stdout ---\n${r.stdout}\n` : '') +
@@ -684,12 +699,12 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'search_in_files') {
-    if (!ctx.projectDir) return 'エラー: プロジェクトが開かれていません'
+    if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     const query = String(args.query ?? '').trim()
     if (!query) return 'エラー: 検索クエリが空です'
     const pathPattern = args.path_pattern ? String(args.path_pattern) : undefined
     try {
-      const r = await window.electronAPI.fs.searchInProject(ctx.projectDir, query, pathPattern)
+      const r = await window.electronAPI.fs.searchInProject(ctx.writeRoot, query, pathPattern)
       if (!r.ok) return `エラー: 検索できませんでした（${r.message ?? ''}）`
       if (!r.matches.length) return `「${query}」は見つかりませんでした。別の語で試すか、list_files で構成を確認してください`
       const lines = r.matches.map(m => `${m.path}:${m.line}: ${m.text}`).join('\n')
@@ -704,9 +719,9 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
   }
 
   if (name === 'open_preview') {
-    if (!ctx.projectDir) return 'エラー: プロジェクトが開かれていません'
+    if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     const rel = String(args.path ?? 'index.html')
-    const full = resolveInProject(ctx.projectDir, rel)
+    const full = resolveInProject(ctx.writeRoot, rel)
     if (!full) return `エラー: 不正なパスです（${rel}）`
     if (!(await window.electronAPI.fs.exists(full))) return `エラー: ファイルがありません（${rel}）`
     try {

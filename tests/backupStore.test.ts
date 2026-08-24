@@ -4,6 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import {
   snapshotBeforeWrite, snapshotBeforeChange, listSnapshotSummaries, restoreToSnapshot,
+  snapshotCurrentFiles,
 } from '../src/main/backup/store'
 import { BACKUP_DIRNAME } from '../src/main/backup/plan'
 
@@ -235,5 +236,81 @@ describe('古い形式との共存', () => {
     const s = listSnapshotSummaries(dir).snapshots
     expect(s).toHaveLength(1)
     expect(s[0].label).toBeUndefined()
+  })
+})
+
+// ── 引き取った直後の「戻れる起点」（④ 第3段階・2026-08-24）────────────────
+// 公開されているものを引き取った直後は履歴が1つも無い。そのまま AI に触らせると、
+// **公開されていた姿へ戻す手立てが無いまま**作業が始まる。
+describe('いま在るものを、そのまま「戻れる起点」にする', () => {
+  it('起点へ戻すと、引き取った直後の中身が書き戻る', () => {
+    write('public/index.html', '公開されていた中身')
+    write('public/images/hero.txt', '画像のかわり')
+    const origin = snapshotCurrentFiles(dir, ['public/index.html', 'public/images/hero.txt'], '公開されていたものを引き取った時点')
+    expect(origin.ok).toBe(true)
+    expect(origin.count).toBe(2)
+    expect(origin.snapshotId).toBeTruthy()
+
+    // このあと AI が壊す
+    aiTurn(idAt(30), 'デザインを変えて', { 'public/index.html': 'AIが書き換えた' })
+    expect(read('public/index.html')).toBe('AIが書き換えた')
+
+    const r = restoreToSnapshot(dir, origin.snapshotId!)
+    expect(r.ok).toBe(true)
+    expect(read('public/index.html')).toBe('公開されていた中身')
+    expect(read('public/images/hero.txt')).toBe('画像のかわり')
+  })
+
+  it('起点へ戻しても、引き取ったファイルは消えない（create として記録しない）', () => {
+    write('public/index.html', '公開されていた中身')
+    const origin = snapshotCurrentFiles(dir, ['public/index.html'], '引き取った時点')
+    restoreToSnapshot(dir, origin.snapshotId!)
+    expect(exists('public/index.html')).toBe(true)
+  })
+
+  it('起点は履歴の一覧に見出しつきで出る', () => {
+    write('public/index.html', 'x')
+    snapshotCurrentFiles(dir, ['public/index.html'], '公開されていたものを引き取った時点')
+    const list = listSnapshotSummaries(dir)
+    expect(list.ok).toBe(true)
+    expect(list.snapshots[0].label).toBe('公開されていたものを引き取った時点')
+    expect(list.snapshots[0].fileCount).toBe(1)
+  })
+
+  it('バイナリを壊さない（読み書きではなく写しで残す）', () => {
+    const bytes = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x01])
+    fs.mkdirSync(path.join(dir, 'public'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'public/logo.png'), bytes)
+    const origin = snapshotCurrentFiles(dir, ['public/logo.png'], '引き取った時点')
+    fs.writeFileSync(path.join(dir, 'public/logo.png'), Buffer.from([0x11]))
+    restoreToSnapshot(dir, origin.snapshotId!)
+    expect(fs.readFileSync(path.join(dir, 'public/logo.png')).equals(bytes)).toBe(true)
+  })
+
+  it('プロジェクトの外は残さない（脱出を許さない）', () => {
+    write('public/index.html', 'x')
+    const r = snapshotCurrentFiles(dir, ['../外のファイル.txt'], '引き取った時点')
+    expect(r.ok).toBe(false)
+    expect(r.count).toBe(0)
+  })
+
+  // イメージの tar にはフォルダの項目も並ぶ。1件でも写そうとすると例外になり、
+  // **起点づくりが丸ごと失敗する**（戻れないまま作業が始まる）。
+  it('フォルダが紛れても、ファイルの分はちゃんと残る', () => {
+    write('public/index.html', '中身')
+    const r = snapshotCurrentFiles(dir, ['public', 'public/index.html'], '引き取った時点')
+    expect(r.ok).toBe(true)
+    expect(r.count).toBe(1)
+    write('public/index.html', '壊した')
+    restoreToSnapshot(dir, r.snapshotId!)
+    expect(read('public/index.html')).toBe('中身')
+  })
+
+  it('残すものが1つも無ければ、空の履歴を作らない', () => {
+    const r = snapshotCurrentFiles(dir, ['public/ない.html'], '引き取った時点')
+    expect(r.ok).toBe(true)
+    expect(r.count).toBe(0)
+    expect(r.snapshotId).toBeUndefined()
+    expect(listSnapshotSummaries(dir).snapshots).toEqual([])
   })
 })

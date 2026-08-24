@@ -48,8 +48,28 @@ export function alreadyMigrated(entries: readonly Entry[]): boolean {
   return (entries ?? []).some(e => e?.name === PUBLISH_DIR && e.isDir)
 }
 
-/** 移す必要があるか。**移すものが1つも無いなら、案内も出さない**（空のフォルダだけ作らない）。 */
-export function needsMigration(entries: readonly Entry[]): boolean {
+/**
+ * 公開しないプロジェクトか（純関数）。
+ *
+ * ── なぜ要るか（2026-08-24 の実機・Ryosuke 指摘）──────────────────────
+ * `public/` は「**サーバーへ置かれるもの**」を入れる場所である。
+ * ローカルで動かすだけのもの（ゲーム・手元の道具）には、置く先が無い。
+ * それなのに案内を出していたので、Unreal Engine のゲームで
+ * `Source/` や `.uproject` まで `public/` へ移そうとしていた。**害のほうが大きい。**
+ *
+ * 公開先が決まっていない（`local`）・公開しない（`other`）ものでは、案内を出さない。
+ * あとで公開先を選べば、そのとき案内が出る（機会は失われない）。
+ */
+export function skipMigrationForTarget(target: string | null | undefined): boolean {
+  return target === 'local' || target === 'other'
+}
+
+/**
+ * 移す必要があるか。**移すものが1つも無いなら、案内も出さない**（空のフォルダだけ作らない）。
+ * `target` を渡すと、公開しないプロジェクトでは案内しない（`skipMigrationForTarget`）。
+ */
+export function needsMigration(entries: readonly Entry[], target?: string | null): boolean {
+  if (skipMigrationForTarget(target)) return false
   if (alreadyMigrated(entries)) return false
   return (entries ?? []).length > 0
 }

@@ -10,6 +10,7 @@ import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeMode, setClaudeModel } from '../claudeMode'
 import { defaultCreationBrain, pickSavedModel, type CreationBrain } from '../newProjectAgent'
 import { buildNewProjectRequest, stashNewProjectRequest, SITE_TYPES } from '../newProjectRequest'
+import ImportFromPublishedPanel from './ImportFromPublishedPanel'
 
 const WORKSPACE_KEY = 'sakura_workspace'
 const WORKSPACE_DIRNAME = 'SAKURAIDE'
@@ -26,6 +27,8 @@ interface Props {
   apiKey: string
   onClose: () => void
   onCreated: (rootDir: string, openRelPath?: string) => void
+  /** 認証情報の画面を開く（インポートでトークンが無いときの行き先）。 */
+  onOpenCredentials?: () => void
 }
 
 interface GenFile { path: string; content: string }
@@ -578,7 +581,14 @@ footer { text-align: center; padding: 24px; color: #999; border-top: 1px solid #
 // モーダル側はプロジェクト作成後にその依頼文をチャットへ渡すだけになり、AI応答の解析（旧 extractJson/toFiles）も
 // 不要になった。
 
-export default function NewProjectModal({ apiKey, onClose, onCreated }: Props) {
+export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCredentials }: Props) {
+  // ── 作り方（2026-08-24・dev-plan ④ 第3段階）──────────────────────────
+  // 「公開先からインポート」は**ここに置く**。公開の画面に置くと、
+  // 空のプロジェクトを作ってから探すことになり、機能があること自体に
+  // 気づけない（Ryosuke 指摘）。
+  const [mode, setMode] = useState<'create' | 'import'>('create')
+  /** インポートの進行中（閉じさせない）。 */
+  const [importBusy, setImportBusy] = useState(false)
   const [parentDir, setParentDir] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [kind, setKind] = useState<KindId>('site')
@@ -825,7 +835,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated }: Props) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={busy ? undefined : onClose}
+      onClick={busy || importBusy ? undefined : onClose}
     >
       <div
         className="w-[480px] max-h-[90vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
@@ -837,10 +847,12 @@ export default function NewProjectModal({ apiKey, onClose, onCreated }: Props) {
           <div>
             <h2 className="text-lg font-bold text-ink">新規プロジェクト</h2>
             <p className="text-xs text-ink-secondary">
-              {apiKey || claudeKey ? '作成後、チャットでAIが初期ファイルを作ります' : 'フォルダと雛形を作成します'}
+              {mode === 'import'
+                ? '公開されているものをインポートし、編集できるようにします'
+                : apiKey || claudeKey ? '作成後、チャットでAIが初期ファイルを作ります' : 'フォルダと雛形を作成します'}
             </p>
           </div>
-          {!busy && (
+          {!busy && !importBusy && (
             <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
           )}
         </div>
@@ -866,6 +878,40 @@ export default function NewProjectModal({ apiKey, onClose, onCreated }: Props) {
             </div>
             <p className="mt-1 text-[11px] text-ink-muted">プロジェクトはこのフォルダの配下に作成されます</p>
           </div>
+
+          {/* 作り方（新しく作る／すでに公開しているものから作る）。
+              入口をここに置く理由は上の mode の宣言のコメント参照。 */}
+          {!busy && !importBusy && (
+            <div className="grid grid-cols-2 gap-1.5">
+              {([
+                { id: 'create' as const, label: '新しく作る', hint: 'ゼロから始めます' },
+                { id: 'import' as const, label: '公開先からインポート', hint: '公開されているものを取り込みます' },
+              ]).map(m => (
+                <button
+                  key={m.id}
+                  onClick={() => setMode(m.id)}
+                  className={`px-3 py-2 rounded-xl border text-left transition-colors ${
+                    mode === m.id ? 'border-sakura bg-surface' : 'border-line bg-surface hover:border-sakura/60'
+                  }`}
+                >
+                  <div className="text-sm font-semibold text-ink">{m.label}</div>
+                  <div className="text-[11px] text-ink-muted">{m.hint}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {mode === 'import' && (
+            <ImportFromPublishedPanel
+              parentDir={parentDir}
+              onBack={() => setMode('create')}
+              onCreated={root => onCreated(root)}
+              onOpenCredentials={() => { onOpenCredentials?.() }}
+              onBusyChange={setImportBusy}
+            />
+          )}
+
+          {mode === 'create' && (<>
 
           {/* Name */}
           <div>
@@ -1191,6 +1237,8 @@ export default function NewProjectModal({ apiKey, onClose, onCreated }: Props) {
               {busy ? '処理中...' : (apiKey || claudeKey) ? '✨ AIで作成' : 'フォルダを作成'}
             </button>
           </div>
+
+          </>)}
         </div>
       </div>
     </div>

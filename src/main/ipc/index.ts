@@ -12,6 +12,7 @@ import { registerCloudKeysHandlers } from './cloudKeys'
 import { registerCloudHandlers } from './cloud'
 import { registerHanamiiHandlers } from './hanamii'
 import { registerVercelHandlers } from './vercel'
+import { registerPublishImportHandlers } from './publishImport'
 import { registerVpsHandlers } from './vps'
 import { registerRagHandlers } from './rag'
 import { registerTermHandlers } from './term'
@@ -37,6 +38,7 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerCloudHandlers(deps)
   registerHanamiiHandlers(deps)
   registerVercelHandlers(deps)
+  registerPublishImportHandlers(deps)
   registerVpsHandlers(deps)
   registerRagHandlers(deps)
   registerTermHandlers(deps)

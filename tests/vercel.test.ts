@@ -233,3 +233,61 @@ describe('sanitizeProjectName', () => {
     expect(sanitizeProjectName('日本語フォルダ')).toBe('app')
   })
 })
+
+// ── 資格情報まわりの配線（2026-08-22 Ryosuke 指摘）──────────────────────
+// ① 接続テストが甘かった: `GET /v2/user` が 200 なら「接続OK」としていたが、
+//    これは**トークンが有効**なことしか見ていない。範囲（スコープ）の外を
+//    公開しようとすると落ちるのに、緑の ✅ が出ていた。
+// ② トークンの先頭の形（`vercel_…`）を決めつけて案内していた。Vercel 側の
+//    都合で変わりうるので、決めつけを画面に書かない。
+// ③ レジストリのパスワードだけ利用者にも見えなかった。**Koto が自動生成した
+//    値で、Koto の中にしか無い**のに取り出せなかった。
+describe('資格情報まわりの配線', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  // 2026-08-22 実測＋公式明記: **Project 範囲のトークンはユーザー階層・チーム階層を拒否する**。
+  // つまり `/v2/user` を関門にすると、正しいトークンでも 403 で弾いてしまう。
+  it('接続テストの関門はプロジェクト一覧（ユーザー階層に依存しない）', () => {
+    const s = read('src/main/vercel/client.ts')
+    expect(s).toContain("VERCEL_API_BASE + VERCEL_PROJECTS_PATH + '?limit=1' + this.teamQuery('&')")
+    // ユーザー情報の取得は「取れたら添える」だけ。失敗しても異常にしない
+    expect(s).toContain('/* 取れなくてよい */')
+    expect(s).not.toContain('const r = await this.send(\'GET\', VERCEL_API_BASE + VERCEL_USER_PATH')
+  })
+
+  it('範囲つきトークンに teamId が付いていたら、外すよう伝える', () => {
+    const s = read('src/main/vercel/client.ts')
+    // teamId を外して再試行し、通ったら印を返す。
+    // **条件ごと固定する**（中の行だけ見ると、条件を false にされても素通りする。
+    //  2026-08-22 のミューテーション試験で実際に素通りした・掟10）
+    expect(s).toContain('if (!r.ok && this.teamId) {')
+    expect(s).toContain("const retry = await this.send('GET', VERCEL_API_BASE + VERCEL_PROJECTS_PATH + '?limit=1', { timeoutMs: 15000 })")
+    expect(s).toContain('if (retry.ok) { r = retry; dropTeamId = true }')
+    const ipc = read('src/main/ipc/vercel.ts')
+    expect(ipc).toContain('if (r.dropTeamId)')
+    expect(ipc).toContain('warn: true')
+    const ui = read('src/renderer/components/CredentialsModal.tsx')
+    expect(ui).toContain("setState(r.warn ? 'warn' : 'ok')")
+    expect(ui).toContain("{state === 'warn' &&")
+  })
+
+  it('接続テストは読み取りだけで、何も作らない', () => {
+    const s = read('src/main/vercel/client.ts')
+    const fn = s.slice(s.indexOf('async testConnection('), s.indexOf('async testConnection(') + 2000)
+    expect(fn).not.toContain("'POST'")
+    expect(fn).not.toContain("'DELETE'")
+  })
+
+  it('トークンの先頭の形を決めつけて案内しない', () => {
+    const ui = read('src/renderer/components/CredentialsModal.tsx')
+    expect(ui).not.toContain("placeholder: 'vercel_…'")
+  })
+
+  it('レジストリのパスワードは、表示とコピーができる（Koto の中にしか無い値なので）', () => {
+    const ui = read('src/renderer/components/CredentialsModal.tsx')
+    expect(ui).toContain('showRegPw ? regInfo.password : ')
+    expect(ui).toContain('<CopyButton text={regInfo.password}')
+    // 「実値は表示しない」の一点張りに戻ったら落とす
+    expect(ui).not.toContain('（実値は表示しない）')
+  })
+})

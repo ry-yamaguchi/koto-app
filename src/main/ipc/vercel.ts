@@ -30,7 +30,20 @@ export function registerVercelHandlers(_deps: IpcDeps) {
     if (!token) return { ok: false, message: 'Vercel のトークンが未登録です' }
     const r = await new VercelClient({ token, teamId }).testConnection()
     if (!r.ok) return r
-    return { ok: true, status: r.status, message: r.username ? `接続できました（${r.username}）` : '接続できました' }
+    const who = r.username ? `（${r.username}）` : ''
+    // **「接続できた」＝「公開できる」ではない**（2026-08-22 Ryosuke 指摘）。
+    // 確かめたのは「公開先が見えること」までなので、そこまでの言い方に留める。
+    if (r.dropTeamId) {
+      // 範囲つき（Team / Project）のトークンは teamId を要らない。付いていると拒否される
+      return {
+        ok: true, warn: true, status: r.status,
+        message: `接続できました${who}。ただし**チームIDは空欄にしてください**——このトークンは範囲が決まっており、チームIDを付けると拒否されます。`,
+      }
+    }
+    const scope = typeof r.projects === 'number'
+      ? (r.projects === 0 ? '（見えるプロジェクトはまだありません）' : `（プロジェクトが見えています）`)
+      : ''
+    return { ok: true, status: r.status, message: `接続できました${who}${scope}` }
   })
 
   /**

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PUBLISH_DIR, publishRoot, publishRootRel, isMigrated, shouldMove } from '../src/shared/publishRoot'
+import { PUBLISH_DIR, publishRoot, publishRootRel, isMigrated, shouldMove , backupRelPath } from '../src/shared/publishRoot'
 import { isPublished, MATERIALS_DIR, KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES } from '../src/shared/publishExclude'
 
 // 公開の根を1箇所に集める（2026-08-20）。
@@ -67,5 +67,33 @@ describe('shouldMove（移行で移すもの）', () => {
     // shouldMove は isPublished の結果をそのまま使う。ここで独自の名簿を持たない。
     expect(shouldMove('なにか.html', false)).toBe(false)
     expect(shouldMove('なにか.html', true)).toBe(true)
+  })
+})
+
+// ── 🕘 履歴の退避パス（2026-08-24 の実害）──────────────────────────────
+// AI が読み書きする根（public/）と、退避を置く根（プロジェクト直下）は別物。
+// 兼ねていたため、退避が public/.sakuraide-backup へ行き、履歴に出なかった。
+describe('退避のパスは、プロジェクト直下からの相対にする', () => {
+  it('public/ の中で書いたものは、public/ を足し戻す', () => {
+    expect(backupRelPath('/p/app', '/p/app/public', 'index.html')).toBe('public/index.html')
+    expect(backupRelPath('/p/app', '/p/app/public', 'img/a.png')).toBe('public/img/a.png')
+  })
+
+  it('根が同じ（移行前のプロジェクト）なら、そのまま', () => {
+    expect(backupRelPath('/p/app', '/p/app', 'index.html')).toBe('index.html')
+  })
+
+  it('末尾の区切りがあっても同じに扱う', () => {
+    expect(backupRelPath('/p/app/', '/p/app/public/', 'index.html')).toBe('public/index.html')
+  })
+
+  // **勝手にプロジェクトの外を指さない。** 想定外の組み合わせでは足し戻さない。
+  it('書き込みの根がプロジェクトの外なら、足し戻さない', () => {
+    expect(backupRelPath('/p/app', '/other/place', 'index.html')).toBe('index.html')
+    expect(backupRelPath('/p/app', '/p/application', 'index.html')).toBe('index.html')
+  })
+
+  it('空でも落ちない', () => {
+    expect(backupRelPath('', '', 'a.html')).toBe('a.html')
   })
 })

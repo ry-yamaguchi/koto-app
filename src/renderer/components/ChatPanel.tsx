@@ -5,6 +5,7 @@ import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
 import MigrateNotice from './MigrateNotice'
 import type { MigratePlan } from '../../shared/migratePlan'
+import { commandScopeNote } from '../../shared/commandGuard'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
@@ -121,7 +122,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     if (r.ok) {
       // 根が変わったので取り直す（AI・ターミナル・公開の起点が一斉に切り替わる）
       const next = await resolvePublishRoot(projectDir!)
-      setAiRoot(next || projectDir!)
+      setAiRoot({ dir: projectDir!, root: next || projectDir! })
       // **開いているタブは古い場所を指したままになる。** そのまま保存すると、
       // 移したはずのファイルが元の場所に復活する（2026-07-11 の stale tab 事故と同じ形）。
       onProjectFilesMoved?.()
@@ -129,13 +130,31 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     return r
   }, [projectDir])
 
-  const [aiRoot, setAiRoot] = useState<string | null>(null)
+  /**
+   * AI の作業フォルダ（`public/`。無ければプロジェクト直下）。
+   *
+   * ── ⚠️ どのプロジェクトのものかを必ず持つ（2026-08-24 の実害）───────────
+   * 以前は根だけを持っていた。解決はディスクを見る**非同期**なので、
+   * プロジェクトを切り替えた直後は**前のプロジェクトの根が残る**。
+   * 新規作成では、まさにその瞬間に AI への依頼が飛ぶ。実機では
+   * **新規の Unreal ゲームで、AI が前のプロジェクト（landingtest）の
+   * ファイル一覧を見て `rm -rf` しようとした**（承認前で止まった）。
+   *
+   * 文脈（`projectCtx`）は前から `{ dir, ctx }` の対で持ち、
+   * `dir !== projectDir` なら使わない作法だった。**根も同じ作法に揃える。**
+   */
+  const [aiRoot, setAiRoot] = useState<{ dir: string; root: string } | null>(null)
   useEffect(() => {
     let cancelled = false
-    if (!projectDir) { setAiRoot(null); return }
-    void resolvePublishRoot(projectDir).then(r => { if (!cancelled) setAiRoot(r || projectDir) })
+    setAiRoot(null) // **前のプロジェクトの根を引きずらない**
+    if (!projectDir) return
+    void resolvePublishRoot(projectDir).then(r => {
+      if (!cancelled) setAiRoot({ dir: projectDir, root: r || projectDir })
+    })
     return () => { cancelled = true }
   }, [projectDir])
+  /** いま開いているプロジェクトの根（追いついていなければプロジェクト直下）。 */
+  const currentAiRoot = aiRoot && aiRoot.dir === projectDir ? aiRoot.root : projectDir
   const [claudeKey, setClaudeKey] = useState('')
   useEffect(() => {
     let alive = true
@@ -217,7 +236,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       try {
         // 'app'（アプリで使う）は公開されるので根の中へ。'material'（素材）は
         // 公開されない置き場なので、これまでどおりプロジェクト直下へ入れる。
-        const dest = purpose === 'material' ? projectDir : (aiRoot ?? projectDir)
+        // ここは projectDir が確定している文脈。**根が追いついていなければ直下**
+        // （前のプロジェクトの根を絶対に使わない）。
+        const dest = purpose === 'material' || !(aiRoot && aiRoot.dir === projectDir)
+          ? projectDir : aiRoot.root
         const r = await window.electronAPI.fs.importImageData(dest, img.name, img.url, purpose)
         if (r.ok && r.rel) { done.push(r.rel); saved.push(img.url) }
         else failed.push(r.message ?? '原因不明')
@@ -339,7 +361,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     onExternalFilesChanged,
     buildExecuteOpts: () => ({
       // AI のファイル操作・コマンド・プレビューは、すべてこの根を基準にする。
-      projectDir: aiRoot ?? projectDir,
+      writeRoot: currentAiRoot,
+      // ⚠️ **退避（🕘 履歴）の根は別。** ここを writeRoot と兼ねていたため、
+      // 退避が `public/.sakuraide-backup` へ行き、履歴の一覧に一切出なかった
+      // （＝「元に戻す」が効かない）。2026-08-24 に実害を確認して分けた。
+      projectRoot: projectDir,
       applyFile: onApplyFile,
       // 📚 資料検索ツール（search_docs）の実体。rag:query を呼び、出典付きブロックに整形して返す。
       ragSearch: ragEnabled ? async (query: string) => {
@@ -354,7 +380,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     }),
     // 📚 資料の自動注入（IDE主導）。無効時は未指定にし、useAiChat の従来動作（注入なし）を維持する。
     buildRagBlock: ragEnabled ? (text: string) => autoRagBlock(text, apiKey, ragSettings) : undefined,
-    approveToolCall: async (toolName, toolArgs) => {
+    approveToolCall: async (toolName, toolArgs, scope) => {
+      // **確認は「このターンが縛られている行き先」の話として出す**（2026-08-24）。
+      // 画面が別のプロジェクトへ切り替わっていても、聞いている中身は変わらない。
+      const scopeDir = scope?.projectDir ?? projectDir
+      const scopeRoot = scope?.writeRoot ?? currentAiRoot
       // 「毎回確認」モードでは、ファイル保存（全文上書き／部分編集）の前にユーザーの許可を取る
       // （localStorageから都度読む＝会話の途中でモードを切り替えても即反映）。
       // edit_file も write_file と同じくファイルを書き換える破壊的操作のため、同じ扱いにする。
@@ -379,14 +409,17 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           // **何が入るのか分からない**（2026-08-18 Ryosuke 指摘）
           let deps: string[] = []
           try {
-            if (projectDir && /\b(install|i|add)\b/.test(cmd)) {
-              const raw = await window.electronAPI.fs.readFile(`${projectDir}/package.json`)
+            if (scopeDir && /\b(install|i|add)\b/.test(cmd)) {
+              const raw = await window.electronAPI.fs.readFile(`${scopeDir}/package.json`)
               const d = JSON.parse(raw)?.dependencies
               deps = d && typeof d === 'object' ? Object.keys(d) : []
             }
           } catch { /* 読めなければ名前なしで確認する */ }
           const reason = requiresConfirmation(cmd) ? `\n理由: ${confirmReason(cmd, { dependencies: deps })}` : ''
-          const approved = await new Promise<boolean>(resolve => setPendingApproval({ path: `コマンド実行: ${cmd || '(不明)'}${reason}`, resolve }))
+          // **いつもと違う場所なら、そのことだけを名前で伝える**（2026-08-24 の実害）。
+          // パスを読み比べさせない——利用者に難しい判断を押しつけることになる。
+          const scopeNote = commandScopeNote(scopeDir, scopeRoot)
+          const approved = await new Promise<boolean>(resolve => setPendingApproval({ path: `コマンド実行: ${cmd || '(不明)'}${scopeNote}${reason}`, resolve }))
           setPendingApproval(null)
           if (!approved) {
             return `ユーザーがコマンド「${cmd}」の実行を許可しませんでした。実行せずに、どう進めるべきかユーザーに確認してください。`

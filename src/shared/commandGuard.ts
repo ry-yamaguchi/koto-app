@@ -19,6 +19,8 @@
 // 「通すべきコマンド」と対にして必ず検証すること。
 
 /** 常に拒否・確認すべき危険なコマンドのパターン。意図が分かるよう分類して並べる。 */
+import { PUBLISH_DIR } from './publishRoot'
+
 const DANGEROUS_PATTERNS: RegExp[] = [
   // ── 削除・破壊 ──
   /\brm\b/i,                                   // rm / rm -rf
@@ -90,4 +92,42 @@ export function leavesWorkingDir(cmd: string): boolean {
   // 引数として親をたどる道を渡している（`cp x ../y` など）
   if (/(^|[\s=])\.\.\//.test(c)) return true
   return false
+}
+
+/**
+ * 「いつもと違う場所で実行しようとしている」ときだけ知らせる（純関数）。
+ *
+ * ── なぜ要るか（2026-08-24 の実害）────────────────────────────────────
+ * 新規プロジェクトを開いた直後、AI の作業フォルダが**前のプロジェクトのまま**になり、
+ * AI が前のプロジェクトのファイル一覧を見て `rm -rf` を出した。利用者は
+ * 「既存ファイルが混在している」という**もっともらしい理由**を読んで承認し、
+ * **別のプロジェクトのファイルが 19 件消えた**（幸い 🕘 の起点から戻せた）。
+ *
+ * ── パスは出さない（2026-08-24 Ryosuke 指摘）──────────────────────────
+ * 最初はフルパスを出す案にしたが、**利用者に難しい判断を押しつける**ことになる。
+ * 長いパスを1文字ずつ読み比べて「これは違う」と気づける人はいない。
+ * **「いつもと違う」という事実**と、**見分けのつく名前**だけを伝える。
+ *
+ * いつもどおり（プロジェクトの中）なら**何も言わない**。確認の文が長くなるほど
+ * 読まれなくなり、本当に危ないときの一行が埋もれる。
+ *
+ * @param projectDir いま開いているプロジェクト（絶対パス）
+ * @param execRoot   実際に実行される場所（絶対パス）
+ */
+export function commandScopeNote(projectDir: string | null | undefined, execRoot: string | null | undefined, sep = '/'): string {
+  const p = String(projectDir ?? '').replace(/[/\\]+$/, '')
+  const e = String(execRoot ?? '').replace(/[/\\]+$/, '')
+  if (!e || !p) return ''
+  if (e === p || e.startsWith(p + sep)) return '' // いつもどおり＝何も言わない
+  // **利用者が見分けるのはプロジェクト名。** 実行先は `<project>/public` のことが多く、
+  // そのまま末尾を取ると「public」になって、どこの話か分からない。
+  const name = (abs: string) => {
+    const parts = abs.split(/[/\\]/).filter(Boolean)
+    const last = parts[parts.length - 1]
+    if (last === PUBLISH_DIR && parts.length > 1) return parts[parts.length - 2]
+    return last ?? abs
+  }
+  return `\n⚠️ 通常と異なる場所で実行しようとしています。`
+    + `いま開いているのは「${name(p)}」ですが、「${name(e)}」の中で実行されます。`
+    + `心当たりがなければ拒否してください。`
 }
