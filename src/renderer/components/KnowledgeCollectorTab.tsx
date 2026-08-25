@@ -3,6 +3,7 @@ import { getSearchConfig } from '../aiTools'
 import { buildWebPageMarkdown, sanitizeFilename, WEB_FETCH_MAX_CHARS } from '../ragContext'
 import { setBaseline } from '../knowledgeBaseline'
 import { fingerprint } from '../../shared/freshness'
+import { isSubmitEnter } from '../keyInput'
 
 // 🌐 Webから資料を作る（ナレッジコレクター・R3）。
 // 検索 → 選択（チェックボックス） → 取得＋Markdown整形 → プレビュー → アップロード＋ローカル控え、の一直線フロー。
@@ -198,7 +199,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
               <input
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && !searching) doSearch() }}
+                onKeyDown={e => { if (isSubmitEnter(e) && !searching) doSearch() }}
                 placeholder="例: AppRun デプロイ 環境変数"
                 className="flex-1 bg-elevated border border-line rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-muted outline-none focus:border-sakura"
               />

@@ -7,6 +7,7 @@ import { REGISTRY_MONTHLY_YEN } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { isPublished } from '../../shared/publishExclude'
+import { isSubmitEnter } from '../keyInput'
 
 interface FileEntry {
   name: string
@@ -786,7 +787,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
               value={nameInput}
               onChange={e => setNameInput(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter') { e.preventDefault(); submitNameDialog() }
+                if (isSubmitEnter(e)) { e.preventDefault(); submitNameDialog() }
                 else if (e.key === 'Escape') { e.preventDefault(); setNameDialog(null) }
               }}
               className="w-full px-2.5 py-1.5 rounded-md bg-surface border border-line text-[13px] text-ink focus:outline-none focus:border-sakura"

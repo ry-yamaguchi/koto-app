@@ -129,3 +129,24 @@ export function sanitizeFilename(title: string): string {
     .trim()
   return cleaned || 'web-page'
 }
+
+/**
+ * 資料の設定（`.sakuraide.json` の `rag`）を書き戻す。
+ *
+ * ── なぜここに置くのか（2026-08-25 Ryosuke と設計）──────────────────────
+ * この設定は**プロジェクトごと**なのに、編集できるのは
+ * **アプリ全体の資料を管理するダイアログの中**だけだった。しかも
+ * **使っているかどうかが、使う場所（チャット）に一度も出ていなかった**。
+ * チャットからも切り替えられるようにするので、**書き込み口を1つに集める**（掟10）。
+ *
+ * 既存のキーを壊さないマージ書き込み。書いたら `sakura-meta-changed` を投げて、
+ * 開いている画面（チャットの表示・資料の画面）に知らせる。
+ */
+export async function saveRagSettings(projectDir: string, next: RagSettings): Promise<void> {
+  if (!projectDir) return
+  const metaPath = `${projectDir}/.sakuraide.json`
+  let meta: any = {}
+  try { meta = JSON.parse(await window.electronAPI.fs.readFile(metaPath)) } catch { /* メタ無し→新規 */ }
+  await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(mergeRagSettings(meta, next), null, 2))
+  window.dispatchEvent(new Event('sakura-meta-changed'))
+}

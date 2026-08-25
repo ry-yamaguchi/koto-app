@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import CopyButton from './CopyButton'
 import SakuraLogo from './SakuraLogo'
 import { getKeyLimit, setKeyLimit, getSettings } from '../usage'
+import { isSubmitEnter } from '../keyInput'
 
 interface Props {
   apiKey: string                       // さくらのAI Engine の現在キー（チャットで使用）
@@ -461,7 +462,7 @@ function LimitControl({ value, onChange }: { value: string; onChange: (v: string
               // 入力中は自由に（全角・カンマ等も可）。フォーカスを外す/Enterで半角数字へ正規化
               onChange={e => onChange('a:' + e.target.value)}
               onBlur={() => onChange('a:' + toHankakuDigits(amount))}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              onKeyDown={e => { if (isSubmitEnter(e)) (e.target as HTMLInputElement).blur() }}
               inputMode="numeric"
               placeholder="1000"
               className="w-24 bg-surface border border-line rounded-lg px-2 py-2 text-sm text-ink outline-none focus:border-sakura"

@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import SakuraLogo from './SakuraLogo'
 import { getDefaultModel } from '../usage'
-import { parseRagSettings, mergeRagSettings, buildWebPageMarkdown, WEB_FETCH_MAX_CHARS, type RagSettings } from '../ragContext'
+import { buildWebPageMarkdown, WEB_FETCH_MAX_CHARS } from '../ragContext'
 import KnowledgeCollectorTab from './KnowledgeCollectorTab'
 import KnowledgePacksTab from './KnowledgePacksTab'
 import { judgeFreshness, parseSourceMeta, sourcesDueForCheck, fingerprint, judgeUpdate } from '../../shared/freshness'
 import { setBaseline, getBaseline, pruneBaselines } from '../knowledgeBaseline'
+import { isSubmitEnter } from '../keyInput'
 
 // 「📚 資料」モーダル：さくらのAI Engine RAG API を使った資料（ドキュメント）管理（R1）
 // ＋ このプロジェクトのチャットで資料を使うかの設定（R2・セクション④）
@@ -100,54 +101,21 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
   // 試し質問
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
-  const [answer, setAnswer] = useState<{ text: string; sources: string[] } | null>(null)
+  /**
+   * 検索の結果。**回答だけでなく、どの資料のどこが当たったかまで持つ**
+   * （2026-08-25 Ryosuke と設計）。応答は前からこれを返していたのに、
+   * **画面が資料名しか使わずに捨てていた**。
+   */
+  const [answer, setAnswer] = useState<{
+    text: string
+    hits: { name: string; where: string; excerpt: string }[]
+  } | null>(null)
   const [askError, setAskError] = useState('')
 
   // ポーリング管理（モーダルを閉じたら必ず停止）
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollDeadline = useRef<number | null>(null)
   const [pollTimedOut, setPollTimedOut] = useState(false)
-
-  // ④ このプロジェクトで使う（.sakuraide.json の rag キー）
-  const [ragEnabled, setRagEnabled] = useState(false)
-  const [ragTagsInput, setRagTagsInput] = useState('')
-  const [ragSaving, setRagSaving] = useState(false)
-  const metaPath = projectDir ? `${projectDir}/.sakuraide.json` : ''
-
-  // projectDir が変わるたびに現在の設定を読み直す（HanamiiPanel の readMeta と同じパターン）
-  useEffect(() => {
-    if (!projectDir) { setRagEnabled(false); setRagTagsInput(''); return }
-    let cancelled = false
-    ;(async () => {
-      try {
-        const raw = await window.electronAPI.fs.readFile(metaPath)
-        const settings = parseRagSettings(JSON.parse(raw))
-        if (cancelled) return
-        setRagEnabled(settings?.enabled ?? false)
-        setRagTagsInput((settings?.tags ?? []).join(', '))
-      } catch {
-        if (!cancelled) { setRagEnabled(false); setRagTagsInput('') }
-      }
-    })()
-    return () => { cancelled = true }
-  }, [projectDir, metaPath])
-
-  // 変更を .sakuraide.json へ即保存する（既存キーを壊さないマージ書き込み）
-  const saveRagSettings = useCallback(async (next: RagSettings) => {
-    if (!projectDir) return
-    setRagSaving(true)
-    try {
-      let meta: any = {}
-      try { meta = JSON.parse(await window.electronAPI.fs.readFile(metaPath)) } catch { /* メタ無し→新規 */ }
-      const merged = mergeRagSettings(meta, next)
-      await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(merged, null, 2))
-      window.dispatchEvent(new Event('sakura-meta-changed'))
-    } finally {
-      setRagSaving(false)
-    }
-  }, [projectDir, metaPath])
-
-  const ragTags = () => ragTagsInput.split(',').map(t => t.trim()).filter(Boolean)
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null }
@@ -397,8 +365,13 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
     })
     setAsking(false)
     if (r.ok) {
-      const sources = Array.from(new Set((r.sources ?? []).map(s => s.document?.name).filter((x): x is string => !!x)))
-      setAnswer({ text: r.answer ?? '', sources })
+      // **捨てずに全部使う**: 資料名・何番目の区切りか・当たった本文。
+      const hits = (r.sources ?? []).map(h => ({
+        name: h.document?.name ?? '（名前のない資料）',
+        where: typeof h.chunkIndex === 'number' ? `${h.chunkIndex + 1} 番目の区切り` : '',
+        excerpt: (h.content ?? '').trim().slice(0, 300),
+      }))
+      setAnswer({ text: r.answer ?? '', hits })
     } else {
       setAskError(r.error ?? '質問に失敗しました。')
     }
@@ -460,10 +433,35 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
             />
           ) : (
             <>
-              {/* ① 一覧 */}
+              {/* ① 追加。**初めて開くと一覧は空**なので、追加を先に置く（2026-08-25 Ryosuke と設計）。 */}
+              <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
+                <h3 className="text-sm font-semibold text-ink">① 資料を追加</h3>
+                <div>
+                  <label className="text-[11px] font-medium text-ink-secondary">タグ（任意・カンマ区切り）</label>
+                  <input
+                    value={uploadTagsInput}
+                    onChange={e => setUploadTagsInput(e.target.value)}
+                    placeholder="例: 仕様書, 契約"
+                    className="mt-1 w-full bg-surface border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                  />
+                </div>
+                <button
+                  onClick={pickAndUpload}
+                  disabled={uploading}
+                  className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+                >{uploading ? 'アップロード中…' : 'ファイルを追加'}</button>
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  対応形式: txt / pdf / html / docx / xlsx / md。アップロードした資料は<b className="text-ink-secondary">さくらのクラウド（AI Engine）に保存</b>されます。
+                </p>
+                {uploadNotice && (
+                  <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all">{uploadNotice}</p>
+                )}
+              </div>
+
+              {/* ② 一覧 */}
               <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-ink">① 登録済みの資料</h3>
+                  <h3 className="text-sm font-semibold text-ink">② 登録済みの資料</h3>
                   {/* ── 全体と個別で役割を分ける（2026-08-18 Ryosuke 指摘）──────────
                       同じ「更新を確認」が2箇所にあると、どちらが何をするのか分からない。
                       **全体＝確認と一括更新／個別＝その資料の更新**にする。 */}
@@ -611,31 +609,6 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 )}
               </div>
 
-              {/* ② 追加 */}
-              <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-                <h3 className="text-sm font-semibold text-ink">② 資料を追加</h3>
-                <div>
-                  <label className="text-[11px] font-medium text-ink-secondary">タグ（任意・カンマ区切り）</label>
-                  <input
-                    value={uploadTagsInput}
-                    onChange={e => setUploadTagsInput(e.target.value)}
-                    placeholder="例: 仕様書, 契約"
-                    className="mt-1 w-full bg-surface border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura"
-                  />
-                </div>
-                <button
-                  onClick={pickAndUpload}
-                  disabled={uploading}
-                  className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-                >{uploading ? 'アップロード中…' : 'ファイルを追加'}</button>
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  対応形式: txt / pdf / html / docx / xlsx / md。アップロードした資料は<b className="text-ink-secondary">さくらのクラウド（AI Engine）に保存</b>されます。
-                </p>
-                {uploadNotice && (
-                  <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all">{uploadNotice}</p>
-                )}
-              </div>
-
               {/* ③ 削除確認 */}
               {pendingDelete && (
                 <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-3">
@@ -652,15 +625,27 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 </div>
               )}
 
-              {/* ④ 試し質問 */}
+              {/* 「このプロジェクトで使う」の行き先（2026-08-25 Ryosuke と設計）。
+                  **機能が消えたと思わせない。** 設定はプロジェクトごとなので、
+                  使う場所（チャット）で切り替える形にした。 */}
+              {projectDir && (
+                <p className="text-[11px] text-ink-muted leading-relaxed px-1">
+                  このプロジェクトのチャットで資料を使うかどうかは、<b className="text-ink-secondary">チャット上部の「📚」</b>で切り替えられます。
+                </p>
+              )}
+
+              {/* ③ 検索。**目的は「登録した資料がちゃんと引けるか」の確認**（2026-08-25 Ryosuke と設計）。
+                  回答だけでなく、**どの資料のどこが当たったか**まで見せる。
+                  応答（rag.chat）は前から出典・区切り番号・当たった本文を返しており、
+                  **画面が資料名しか使わずに捨てていた**。追加の呼び出しは要らない。 */}
               <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-                <h3 className="text-sm font-semibold text-ink">③ 資料に質問してみる</h3>
+                <h3 className="text-sm font-semibold text-ink">③ 資料を検索</h3>
                 <div className="flex items-center gap-2">
                   <input
                     value={question}
                     onChange={e => setQuestion(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !asking) ask() }}
-                    placeholder={availableCount === 0 ? '利用可能な資料がありません' : '例: この資料の要点は？'}
+                    onKeyDown={e => { if (isSubmitEnter(e) && !asking) ask() }}
+                    placeholder={availableCount === 0 ? '利用可能な資料がありません' : '例: 料金について'}
                     disabled={availableCount === 0}
                     className="flex-1 bg-elevated border border-line rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-muted outline-none focus:border-sakura disabled:opacity-40"
                   />
@@ -668,53 +653,38 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                     onClick={ask}
                     disabled={availableCount === 0 || asking || !question.trim()}
                     className="flex-none sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-                  >{asking ? '考え中…' : '資料に質問してみる'}</button>
+                  >{asking ? '検索中…' : '検索'}</button>
                 </div>
                 {askError && (
                   <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{askError}</p>
                 )}
                 {answer && (
-                  <div className="bg-elevated border border-line rounded-lg p-3 space-y-2">
-                    <p className="text-sm text-ink whitespace-pre-wrap select-text">{answer.text}</p>
-                    {answer.sources.length > 0 && (
-                      <p className="text-[11px] text-ink-muted">出典: {answer.sources.join('、')}</p>
+                  <div className="bg-elevated border border-line rounded-lg p-3 space-y-3">
+                    {answer.text && (
+                      <p className="text-sm text-ink whitespace-pre-wrap select-text">{answer.text}</p>
+                    )}
+                    {answer.hits.length > 0 ? (
+                      <div className="space-y-2">
+                        <p className="text-[11px] font-semibold text-ink-secondary">見つかったところ</p>
+                        {answer.hits.map((h, i) => (
+                          <div key={i} className="border-l-2 border-line pl-2.5 space-y-1">
+                            <p className="text-[11px] text-ink-secondary">
+                              📄 {h.name}{h.where ? ` ・ ${h.where}` : ''}
+                            </p>
+                            <p className="text-[11px] text-ink-muted whitespace-pre-wrap select-text leading-relaxed">{h.excerpt}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      // **見つからなかったことを、はっきり言う**（回答だけ出すと効いたように見える）
+                      <p className="text-[11px] text-ink-muted">
+                        当てはまる資料は見つかりませんでした。言葉を変えて試すか、資料が登録されているか確かめてください。
+                      </p>
                     )}
                   </div>
                 )}
               </div>
 
-              {/* ④ このプロジェクトで使う */}
-              {projectDir && (
-                <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-                  <h3 className="text-sm font-semibold text-ink">④ このプロジェクトで使う</h3>
-                  <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={ragEnabled}
-                      onChange={e => {
-                        const next = e.target.checked
-                        setRagEnabled(next)
-                        saveRagSettings({ enabled: next, tags: ragTags() })
-                      }}
-                    />
-                    このプロジェクトのチャットで資料を使う
-                  </label>
-                  <div>
-                    <label className="text-[11px] font-medium text-ink-secondary">絞り込みタグ（任意・カンマ区切り）</label>
-                    <input
-                      value={ragTagsInput}
-                      onChange={e => setRagTagsInput(e.target.value)}
-                      onBlur={() => saveRagSettings({ enabled: ragEnabled, tags: ragTags() })}
-                      placeholder="例: 仕様書"
-                      disabled={!ragEnabled}
-                      className="mt-1 w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura disabled:opacity-40"
-                    />
-                  </div>
-                  <p className="text-[11px] text-ink-muted leading-relaxed">
-                    タグを複数指定すると、すべてのタグを持つ資料だけが対象になります。{ragSaving ? '（保存中…）' : ''}
-                  </p>
-                </div>
-              )}
             </>
           )}
 

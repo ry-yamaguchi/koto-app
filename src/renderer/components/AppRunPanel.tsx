@@ -12,6 +12,7 @@ import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
 import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
+import { isSubmitEnter } from '../keyInput'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
 // （小文字英数字とハイフン・先頭末尾は英数字・3〜40文字）と同じ制約をここでも複製する
@@ -1399,7 +1400,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
                   value={ipInput}
                   onChange={e => setIpInput(e.target.value)}
                   onKeyDown={e => {
-                    if (e.key === 'Enter') {
+                    if (isSubmitEnter(e)) {
                       const parsed = parseIpInput(ipInput)
                       if (!parsed) { setLimitMsg('IPアドレスの形式が正しくありません（例: 203.0.113.5 または 203.0.113.0/24）'); return }
                       setLimitIps(prev => [...prev, parsed]); setIpInput(''); setLimitMsg('')
@@ -1544,7 +1545,7 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onRename, renaming, pu
                 onChange={e => setNameInput(e.target.value)}
                 onBlur={commitName}
                 onKeyDown={e => {
-                  if (e.key === 'Enter') commitName()
+                  if (isSubmitEnter(e)) commitName()
                   if (e.key === 'Escape') { nameCommittedRef.current = true; setNameInput(spec.name); setEditingName(false) } // キャンセル後のネイティブblurで誤確定しないようガード
                 }}
                 disabled={renaming}

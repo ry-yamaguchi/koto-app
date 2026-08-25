@@ -6,6 +6,7 @@ import CompactNote from './CompactNote'
 import MigrateNotice from './MigrateNotice'
 import type { MigratePlan } from '../../shared/migratePlan'
 import { commandScopeNote } from '../../shared/commandGuard'
+import { saveRagSettings } from '../ragContext'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
@@ -340,6 +341,33 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
 
   // 📚 資料をこのプロジェクトのチャットで使うか（設定が有効 かつ APIキーあり）
   const ragEnabled = !!ragSettings?.enabled && !!apiKey
+  const [ragBusy, setRagBusy] = useState(false)
+  /**
+   * 📚 の切替。**資料が1件も無いときは、切り替えずに知らせる**
+   * （押しても何も起きないボタンにしない・2026-08-09 の戒め）。
+   */
+  const toggleRag = useCallback(async () => {
+    if (!projectDir || ragBusy) return
+    const next = !ragSettings?.enabled
+    setRagBusy(true)
+    try {
+      if (next && apiKey) {
+        const r = await window.electronAPI.rag.list(apiKey, { pageSize: 1 })
+        if (r.ok && (r.documents?.length ?? 0) === 0) {
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: 'まだ資料が登録されていません。画面右上の 📚 から資料を登録すると、'
+              + 'このプロジェクトのチャットで使えるようになります。',
+          }])
+          return
+        }
+      }
+      await saveRagSettings(projectDir, { enabled: next, tags: ragSettings?.tags ?? [] })
+      await reloadRagSettings(projectDir)
+    } finally {
+      setRagBusy(false)
+    }
+  }, [projectDir, ragBusy, ragSettings, apiKey, reloadRagSettings])
 
   // 送信パイプライン（予算・切替・検索・ツールループ・自己修復・モデル割り振り）は共通フックへ集約。
   // 表示はフラットな messages 配列へ反映する。
@@ -842,13 +870,6 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           <BrainToggle apiKey={apiKey} compact />
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={toggleWriteMode}
-            className="text-[11px] text-ink-muted hover:text-ink border border-line rounded-md px-1.5 py-0.5 whitespace-nowrap"
-            title={writeMode === 'auto'
-              ? 'AIのファイル保存：おまかせ（自動保存）。クリックで「毎回確認」に切替'
-              : 'AIのファイル保存：毎回確認（保存前に許可を求める）。クリックで「おまかせ」に切替'}
-          >{writeMode === 'auto' ? '🪄 おまかせ' : '✋ 毎回確認'}</button>
           {/* 🗂 手動で区切る（2026-08-20 Ryosuke 要望）。自動は約47往復を超えないと働かないので、
               ほとんどの人は一度も見ない。押しても意味が無いうちは出さない（掟5）。
               Claude頭脳モードでは Koto から履歴を送らないので、まとめても使い道が無い＝出さない。 */}
@@ -888,14 +909,6 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         </div>
       </div>
 
-      {/* Context pill */}
-      {activeFile && (
-        <div className="px-3 py-1.5 border-b border-line flex-none">
-          <span className="text-xs bg-elevated border border-line text-sakura-soft px-2 py-0.5 rounded-full">
-            📄 {activeFile.name}
-          </span>
-        </div>
-      )}
 
       {/* Messages */}
       <div
@@ -1028,7 +1041,39 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           <MigrateNotice plan={migratePlan} onRun={runMigrate} />
         </div>
       )}
-      <div className="border-t border-line p-3 flex-none">
+      {/* ── 送るときの扱い（2026-08-25 Ryosuke 提案）────────────────────────
+          最初はヘッダーに並べたが、**横に長くなりすぎて窓を狭めると隠れた**。
+          この2つは「誰が答えるか」（モデル・頭脳）ではなく
+          **「送るとどう扱われるか」**なので、**送る場所の隣**に置く。
+          🗂 フォルダの整理を入力欄の直上へ移したときと同じ理由——
+          **常に見える場所に置く**（会話が流れても隠れない）。 */}
+      <div className="border-t border-line px-3 pt-2 flex-none flex items-center gap-2 flex-wrap">
+        <button
+          onClick={toggleWriteMode}
+          className="text-[11px] text-ink-muted hover:text-ink border border-line rounded-md px-1.5 py-0.5 whitespace-nowrap"
+          title={writeMode === 'auto'
+            ? 'AIのファイル保存：おまかせ（自動保存）。クリックで「毎回確認」に切替'
+            : 'AIのファイル保存：毎回確認（保存前に許可を求める）。クリックで「おまかせ」に切替'}
+        >{writeMode === 'auto' ? '🪄 おまかせ' : '✋ 毎回確認'}</button>
+        {/* 📚 資料を使うか（2026-08-25 Ryosuke と設計）。
+            **設定はプロジェクトごとなのに、使う場所に一度も出ていなかった。**
+            資料の画面（アプリ全体の管理）から、ここへ移した。
+            **資料が0件でも出す**——「これはなんだろう？」と触って気づく道を残す
+            （Ryosuke 判断）。ただし押しても何も起きないボタンにはしない。 */}
+        {projectDir && (
+          <button
+            onClick={toggleRag}
+            disabled={ragBusy}
+            className={`text-[11px] border rounded-md px-1.5 py-0.5 whitespace-nowrap disabled:opacity-50 ${
+              ragEnabled ? 'text-ink border-sakura' : 'text-ink-muted hover:text-ink border-line'
+            }`}
+            title={ragEnabled
+              ? '📚 資料：このプロジェクトのチャットで資料を使っています。クリックで使わないに切替'
+              : '📚 資料：このプロジェクトのチャットで資料を使いません。クリックで使うに切替'}
+          >{ragEnabled ? '📚 資料を使う' : '📚 資料を使わない'}</button>
+        )}
+      </div>
+      <div className="px-3 pt-2 pb-3 flex-none">
         <div className="flex flex-col gap-2 bg-elevated rounded-xl border border-line focus-within:border-sakura transition-colors p-2">
           {/* 添付画像のプレビュー */}
           {pendingImages.length > 0 && (
