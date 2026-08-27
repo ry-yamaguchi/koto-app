@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   kindFromImport, buildImportedMeta, importPlanNotes, importDoneNotes, importConsoleLink,
-  importedContext, noCandidatesHint,
+  importedContext, noCandidatesHint, emphasize,
 } from '../src/renderer/importProject'
 import { REGISTRY_MONTHLY_YEN } from '../src/shared/cloudCost'
 
@@ -82,27 +82,49 @@ describe('インポートの記録（.sakuraide.json）', () => {
     expect(meta.importedFrom.intent).toBe('undecided')
   })
 
-  // ── AppRun は続けて面倒みられない ────────────────────────────────
-  // どのアプリかは .sakura-cloud/state.json で決まり、インポートではそれを作れない。
-  // ここで公開の記録だけ書くと「📡 公開したもの」に**押しても何も起きない破棄ボタン**が並ぶ。
-  it('AppRun は公開の記録を書かない（押しても効かない破棄ボタンを作らない）', () => {
-    const meta: any = buildImportedMeta({
-      ...base,
-      source: {
-        target: 'sakura-apprun', id: 'app-1', name: 'landingtest',
-        url: 'https://x.apprun.sakura.ne.jp', publishedAt: '2026-08-21T14:19:47.000Z',
-        stripped: 'usr/share/nginx/html', fileCount: 6,
-        settings: {
-          port: 8080, minScale: 0, maxScale: 1, maxCpu: '1', maxMemory: '1Gi',
-          timeoutSeconds: 60, env: [{ key: 'NODE_ENV', value: 'production' }],
-          probePath: '/', secretKeys: ['DB_PASSWORD'],
-        },
+  // ── AppRun は「引き継げたか」で分かれる（第4段階・2026-08-25）───────────
+  // どのアプリかは .sakura-cloud/state.json で決まる。引き継げていないのに公開の記録を
+  // 書くと「📡 公開したもの」に**押しても何も起きない破棄ボタン**が並ぶ。
+  const apprunMeta = (over: Record<string, unknown> = {}): any => buildImportedMeta({
+    ...base,
+    source: {
+      target: 'sakura-apprun', id: 'app-1', name: 'landingtest',
+      url: 'https://x.apprun.sakura.ne.jp', publishedAt: '2026-08-21T14:19:47.000Z',
+      stripped: 'usr/share/nginx/html', fileCount: 6,
+      settings: {
+        componentName: 'main',
+        port: 8080, minScale: 0, maxScale: 1, maxCpu: '1', maxMemory: '1Gi',
+        timeoutSeconds: 60, env: [{ key: 'NODE_ENV', value: 'production' }],
+        probePath: '/', secretKeys: ['DB_PASSWORD'],
       },
-    })
+      ...over,
+    },
+  })
+
+  it('引き継いでいない AppRun は公開の記録を書かない（押しても効かない破棄ボタンを作らない）', () => {
+    const meta = apprunMeta()
     expect(meta.publish).toBeUndefined()
     // 設定は控える（次の公開で入れ直せるように）
     expect(meta.importedFrom.settings.port).toBe(8080)
     expect(meta.importedFrom.settings.secretKeys).toEqual(['DB_PASSWORD'])
+  })
+
+  it('引き継げた AppRun は公開の記録を書く（破棄も更新も本物に効く）', () => {
+    const meta = apprunMeta({ intent: 'update', adopted: true })
+    expect(meta.publish.targets['sakura-apprun']).toEqual({
+      publishedAt: '2026-08-21T14:19:47.000Z',
+      url: 'https://x.apprun.sakura.ne.jp',
+    })
+    // AI の文脈が読む（引き継ぎずみだと分かる印）
+    expect(meta.importedFrom.adopted).toBe(true)
+  })
+
+  // ⚠️ **選んだこと（intent）と、できたこと（adopted）は違う。**
+  it('「更新していく」を選んでも、引き継げていなければ記録は書かない', () => {
+    const meta = apprunMeta({ intent: 'update' })
+    expect(meta.publish).toBeUndefined()
+    expect(meta.importedFrom.intent).toBe('update')
+    expect(meta.importedFrom.adopted).toBeUndefined()
   })
 })
 
@@ -175,19 +197,89 @@ describe('インポートする前に見せる「このあと起きること」'
   // 利用者は「自分のサイトを更新している」と受け取る。それでよい。
   // **言わなければならないのは、アドレスが変わることと費用が増えること。**
   it('AppRun: 手を入れて公開していけると言う（できない話にしない）', () => {
-    const notes = importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの' })
+    const notes = importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'fork' })
     expect(notes.some(n => n.includes('手を入れて公開していけます'))).toBe(true)
     expect(notes.some(n => n.includes('できません'))).toBe(false)
   })
 
-  it('AppRun: アドレスが変わることと、月220円増えることを言う', () => {
-    const notes = importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの' })
+  it('AppRun: 別物として公開するなら、アドレスが変わることと月220円増えることを言う', () => {
+    const notes = importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'fork' })
     expect(notes.some(n => n.includes('アドレス（URL）が変わります'))).toBe(true)
     // 費用の数字は一元定義から取る（掟10）。ここに直書きしない
     expect(notes.some(n => n.includes(`月額${REGISTRY_MONTHLY_YEN}円`))).toBe(true)
     expect(notes.some(n => n.includes('コントロールパネル'))).toBe(true)
-    // Vercel の文言と混ぜない
-    expect(notes.some(n => n.includes('置き換わります'))).toBe(false)
+  })
+
+  // ⚠️ 決めつけて書くと、**選ばれなかったほうの結末**を読ませることになる。
+  it('AppRun: 目的を選ぶまでは、公開したときの話をしない', () => {
+    const notes = importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの' })
+    // 取り出しの事実は出す
+    expect(notes.some(n => n.includes('組み立てる前のファイルは戻りません'))).toBe(true)
+    // 結末は出さない（どちらの結末も）
+    expect(notes.some(n => n.includes('アドレス（URL）が変わります'))).toBe(false)
+    expect(notes.some(n => n.includes('アドレス（URL）は変わりません'))).toBe(false)
+    expect(notes.some(n => n.includes(`月額${REGISTRY_MONTHLY_YEN}円`))).toBe(false)
+  })
+
+  // ── 引き継ぎ（dev-plan ④ 第4段階・2026-08-25）──────────────────────────
+  // 引き継ぐと URL も月額も変わらない代わりに、**間違えたときに壊れるのは本物**になる。
+  const ADOPT = {
+    canAdopt: true, blocker: null, specName: 'landingtest', appName: 'landingtest',
+    reusesRegistry: true, warnings: ['⚠️ 秘密の値…', '引き継ぐと、Koto の「破棄」は…'],
+  }
+
+  it('AppRun: 引き継ぐなら、URL が変わらないことと月額が増えないことを言う', () => {
+    const notes = importPlanNotes({
+      target: 'sakura-apprun', publishDirLabel: '公開されるもの',
+      intent: 'update', publishName: 'landingtest', adopt: ADOPT,
+    })
+    // ⚠️ 「アプリが置き換わります」とは言わない（作り直されるように読める・2026-08-25）。
+    // 入れ替わるのは**中身**。公開の確認画面の「再デプロイ（最新の内容を反映）」と揃える。
+    expect(notes.some(n => n.includes('landingtest') && n.includes('このプロジェクトの内容で更新されます'))).toBe(true)
+    expect(notes.some(n => n.includes('アプリ「landingtest」が置き換わります'))).toBe(false)
+    expect(notes.some(n => n.includes('アドレス（URL）は変わりません'))).toBe(true)
+    expect(notes.some(n => n.includes('月額は増えません'))).toBe(true)
+    // 引き継ぐのに「アドレスが変わります」を言わない（逆のことを両方言わない）
+    expect(notes.some(n => n.includes('アドレス（URL）が変わります'))).toBe(false)
+    // 伝えることは、必ず全部出す（間引かない）
+    for (const w of ADOPT.warnings) expect(notes).toContain(w)
+  })
+
+  it('AppRun: 引き継いでもレジストリが増えるときは、月220円を言う', () => {
+    const notes = importPlanNotes({
+      target: 'sakura-apprun', publishDirLabel: '公開されるもの',
+      intent: 'update', adopt: { ...ADOPT, reusesRegistry: false },
+    })
+    expect(notes.some(n => n.includes(`月額${REGISTRY_MONTHLY_YEN}円`))).toBe(true)
+    expect(notes.some(n => n.includes('月額は増えません'))).toBe(false)
+    // URL は引き継ぎなので変わらない（お金の話と混ぜない）
+    expect(notes.some(n => n.includes('アドレス（URL）は変わりません'))).toBe(true)
+  })
+
+  // ⚠️ **選んでも引き継げないことがある。黙って別物にしない。**
+  it('AppRun: 引き継げないときは理由を出し、別物になる結末を出す', () => {
+    const notes = importPlanNotes({
+      target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'update',
+      adopt: { ...ADOPT, canAdopt: false, blocker: 'ポートが読み取れませんでした。' },
+    })
+    expect(notes.some(n => n.includes('ポートが読み取れませんでした'))).toBe(true)
+    expect(notes.some(n => n.includes('アドレス（URL）が変わります'))).toBe(true)
+    expect(notes.some(n => n.includes('アドレス（URL）は変わりません'))).toBe(false)
+  })
+
+  it('AppRun: さくら側の名前と Koto の公開名が違うなら、そう言う', () => {
+    const notes = importPlanNotes({
+      target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'update',
+      adopt: { ...ADOPT, specName: 'my-shop', appName: 'My_Shop' },
+    })
+    expect(notes.some(n => n.includes('my-shop') && n.includes('My_Shop'))).toBe(true)
+  })
+
+  it('AppRun: 引き継ぐなら、設定を引き継ぐことを言う', () => {
+    const notes = importPlanNotes({
+      target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'update', adopt: ADOPT,
+    })
+    expect(notes.some(n => n.includes('健康診断の場所') && n.includes('そのまま引き継ぎます'))).toBe(true)
   })
 
   it('どちらでも「公開先には何も作らず、何も消さない」を言う', () => {
@@ -363,8 +455,100 @@ describe('インポートしたことを AI に伝える', () => {
     expect(c).not.toContain('手元に値がありません')
   })
 
+  // ── 引き継ぎずみ（第4段階・2026-08-25）─────────────────────────────
+  // URL もお金も変わらない代わりに、**間違えたときに壊れるのは本物**になる。
+  it('AppRun: 引き継いだなら、公開が本番の差し替えであることを伝える', () => {
+    const c = importedContext({ ...apprun, intent: 'update', adopted: true })
+    expect(c).toContain('引き継いでいます')
+    // 「アプリ自体が置き換わる」とは言わない（作り直されるように読める・2026-08-25）
+    expect(c).toContain('そのアプリが、このプロジェクトの内容で更新されます')
+    expect(c).not.toContain('そのアプリ自体が置き換わります')
+    expect(c).toContain('公開のアドレスは変わりません')
+    expect(c).toContain('公開＝本番の差し替え')
+    expect(c).toContain('「破棄」は**本物のアプリを消します**')
+    // 引き継いだのに「アドレスが変わります」を言わない（逆のことを両方言わない）
+    expect(c).not.toContain('公開のアドレス（URL）が変わります')
+    expect(c).not.toContain('が上乗せ')
+  })
+
+  // 引き継げていなければ、これまでどおり URL とお金の話をする。
+  it('AppRun: 引き継いでいなければ、URL とお金の話をする', () => {
+    const c = importedContext({ ...apprun, intent: 'update' })
+    expect(c).toContain('公開のアドレス（URL）が変わります')
+    expect(c).toContain('が上乗せ')
+    expect(c).not.toContain('引き継いでいます')
+  })
+
   it('🕘 戻せることを伝える（思い切った提案をしてよいと分かるように）', () => {
     expect(importedContext(vercel)).toContain('元へ戻せます')
+  })
+})
+
+// ── 画面に出すときの強調（2026-08-25 実機スクショで判明）───────────────────
+// `**` がそのまま画面に出ていた（0.3.41〜）。消すだけだと、いちばん読ませたい一行
+// （「アドレス（URL）は変わりません」）が平坦になるので、**太字にする**。
+describe('文言の強調', () => {
+  it('`**…**` を太字の区間として切り出す', () => {
+    expect(emphasize('公開すると**置き換わります**。')).toEqual([
+      { text: '公開すると', bold: false },
+      { text: '置き換わります', bold: true },
+      { text: '。', bold: false },
+    ])
+  })
+
+  it('1行に2つ以上あっても切り出せる', () => {
+    const spans = emphasize('**置き換わります**。**URL は変わりません。**')
+    expect(spans.filter(s => s.bold).map(s => s.text)).toEqual(['置き換わります', 'URL は変わりません。'])
+  })
+
+  it('強調が無ければ、そのまま1つ', () => {
+    expect(emphasize('ふつうの文です。')).toEqual([{ text: 'ふつうの文です。', bold: false }])
+  })
+
+  // 書き間違いで、文の後ろが丸ごと太字になるのを防ぐ
+  it('閉じていない `**` は強調にしない', () => {
+    expect(emphasize('あああ**いいい')).toEqual([
+      { text: 'あああ', bold: false },
+      { text: 'いいい', bold: false },
+    ])
+  })
+
+  it('こわれた値でも落ちない', () => {
+    expect(emphasize('')).toEqual([])
+    expect(emphasize(undefined as any)).toEqual([])
+  })
+
+  // ⚠️ **どの文言にも `**` が残って見えてはいけない。**
+  it('実際の文言を通すと、`**` が1つも残らない', () => {
+    const notes = [
+      ...importPlanNotes({
+        target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'update', publishName: 'landingtest',
+        adopt: { canAdopt: true, blocker: null, specName: 'landingtest', appName: 'landingtest', reusesRegistry: true, warnings: ['⚠️ 秘密の値**は**戻りません'] },
+      }),
+      ...importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'fork' }),
+      ...importPlanNotes({ target: 'vercel', publishDirLabel: '公開されるもの', intent: 'update', publishName: 'x' }),
+      ...importDoneNotes({ fileCount: 3, adopted: true }),
+    ]
+    expect(notes.length).toBeGreaterThan(8)
+    for (const n of notes) {
+      for (const sp of emphasize(n)) expect(sp.text, n).not.toContain('**')
+    }
+  })
+})
+
+// ── 画面の配線（掟10）──────────────────────────────────────────────────
+describe('強調の配線', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  it('文言は素のまま流し込まず、必ず強調を通す', () => {
+    const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
+    // 直す前の形（素の文字列をそのまま `<p>` へ）が残っていないこと
+    expect(s).not.toContain('<p key={i} className="text-ink-secondary">・{n}</p>')
+    expect(s).toContain('.map((n, i) => <Note key={i}>{n}</Note>)')
+    expect(s).toContain('emphasize(children)')
+    // Git 由来の案内も、消すのではなく太字にする
+    expect(s).not.toContain("gitNote.replace(/\\*\\*/g, '')")
+    expect(s).toContain('emphasize(gitNote)')
   })
 })
 
@@ -442,21 +626,37 @@ describe('インポートの画面の配線', () => {
   })
 
   // 間違いの重さが左右で違うので、既定値を置かず選ばせる（2026-08-24 Ryosuke 指摘）。
-  it('目的は Vercel のときだけ聞き、選ぶまで押させない', () => {
+  // 第4段階（2026-08-25）で AppRun も聞くようになった。**引き継ぐと破棄が本物に効く**ので、
+  // 「中を見たいだけ」の人に既定で背負わせない。
+  it('目的は両方の公開先で聞き、選ぶまで押させない', () => {
     const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
     // 既定値を置かない（fork のつもりが update になると、生きている公開が消える）
     expect(s).toContain('useState<ImportIntent | null>(null)')
-    expect(s).toContain("disabled={!name.trim() || !nameOk || !parentDir || (target === 'vercel' && !intent)}")
-    // AppRun は同じアプリを更新できないので、選ばせても効かない
-    expect(s).toContain("{target === 'vercel' && (")
+    expect(s).toContain('disabled={!name.trim() || !nameOk || !parentDir || !intent}')
+    // 公開先で出し分ける古い形に戻していないこと
+    expect(s).not.toContain("{target === 'vercel' && (")
     // 選び直したときに前の選択を引きずらない
     expect(s).toContain('setIntent(null) // 前に選んだものを引きずらない')
   })
 
-  it('選んだ目的は、記録にも「このあと起きること」にも渡す', () => {
+  it('選んだ目的は、記録にも「このあと起きること」にも main にも渡す', () => {
     const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
-    expect(s).toContain('          intent,\n        },')      // buildImportedMeta の source
+    expect(s).toContain('          intent,\n')               // buildImportedMeta の source
     expect(s).toContain('              intent,\n              projectName: name.trim(),') // importPlanNotes
+    // 引き継ぎは main が行う（`.sakura-cloud/` を書くのは main）
+    expect(s).toContain('...(intent ? { intent } : {}),')
+  })
+
+  // ⚠️ **選んだこと（intent）と、できたこと（adopted）は違う。**
+  // 引き継げていないのに公開の記録を書くと、押しても何も起きない破棄ボタンが並ぶ。
+  it('公開の記録は「引き継げたか」で決める（選んだかではない）', () => {
+    const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
+    expect(s).toContain('adopted: r.adopted === true,')
+    // 「このあと起きること」には、main が出した見立てを渡す
+    expect(s).toContain('adopt: insp?.adopt ?? null,')
+    // 完了画面にも結果を出す（引き継げなかったことを黙らない）
+    expect(s).toContain('adopted: result.adopted,')
+    expect(s).toContain('adoptNote: result.adoptNote,')
   })
 
   // 黙って1つのキーで探さない（2026-08-24 Ryosuke 指摘）。

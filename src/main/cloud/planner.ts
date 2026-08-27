@@ -90,10 +90,21 @@ function apprunNeedsUpdate(_spec: EnvSpec, _existing: ResourceRef): boolean {
   return true
 }
 
-function createDescription(kind: ResourceKind, name: string): string {
+function createDescription(kind: ResourceKind, name: string, recordedRegistry?: string | null): string {
   switch (kind) {
     case 'registry':
-      return `コンテナレジストリ『${name}』を作成`
+      // ⚠️ **「作成」と書いてはいけない**（2026-08-25 Ryosuke 実機指摘）。
+      //
+      // ここは公開の計画の見出しだが、**計画は置き場を作らない**
+      // （`applyPlan` は registry/image を読み飛ばし、実際の用意は
+      //  `cloud:ensureRegistry` が行う）。しかも ensureRegistry は
+      // **同じ名前のものがあれば、そのまま使う**（パスワードだけ付け替える）。
+      //
+      // インポートの引き継ぎでは、その直前に「**月額は増えません**」と言い切っている。
+      // そこで「作成」と出ると、**220円増えるように読める**。
+      return recordedRegistry
+        ? `コンテナレジストリ『${recordedRegistry}』を使用（新しくは作りません）`
+        : `コンテナレジストリ『${name}』を用意（同じ名前のものがあれば、そのまま使います）`
     case 'image':
       return `コンテナイメージ『${name}』をビルド・登録`
     case 'apprun-app':
@@ -170,7 +181,8 @@ export function computePlan(spec: EnvSpec, state: EnvState): Plan {
         name: d.name,
         stateful,
         destructive: false,
-        description: createDescription(d.kind, d.name),
+        // 置き場は**記録があればそれを使う**ので、名前も「作る／使う」も記録から決める。
+        description: createDescription(d.kind, d.name, d.kind === 'registry' ? state.meta?.registryName ?? null : null),
       })
       continue
     }

@@ -7,7 +7,7 @@
 //
 // electron / DOM に依存しないこと（tests/importProject.test.ts の対象）。
 
-import type { AppRunSettings } from '../shared/publishImport'
+import type { AdoptionPreview, AppRunSettings } from '../shared/publishImport'
 import { PUBLISH_TARGET_CONSOLE, PUBLISH_TARGET_LABEL, type PublishTargetKind } from './publishStatus'
 import { REGISTRY_MONTHLY_YEN } from '../shared/cloudCost'
 
@@ -36,7 +36,7 @@ export type ImportIntent =
 
 /** 選択肢の見出しと説明（画面と AI への説明で同じものを使う）。 */
 export const IMPORT_INTENTS: { id: ImportIntent; label: string; hint: string }[] = [
-  { id: 'update', label: 'いまの公開を更新していく', hint: '引っ越し・引き継ぎ。公開すると、いまのページが置き換わります' },
+  { id: 'update', label: 'いまの公開を更新していく', hint: '引っ越し・引き継ぎ。公開すると、いま公開されているものが置き換わります' },
   { id: 'fork', label: '別物として公開する', hint: '元はそのまま。作り替え・複製に使います' },
   { id: 'undecided', label: 'まだ決めていない', hint: '中身を見てから、公開のときに決めます' },
 ]
@@ -56,17 +56,16 @@ export type ImportedSource = {
   fileCount: number
   /** AppRun のときだけ。取り戻せた公開設定。 */
   settings?: AppRunSettings | null
-  /**
-   * このあと何をしたいか（**いまは Vercel のときだけ聞く**）。
-   *
-   * ⚠️ AppRun で聞かないのは「Koto が AppRun を更新できないから」ではない。
-   * Koto は既存アプリを PATCH で再デプロイでき、**公開URLも維持される**
-   * （`planner.ts` の `apprunNeedsUpdate`）。更新できないのは
-   * **インポートしたアプリだけ**で、`.sakura-cloud/state.json` にアプリIDが
-   * 無いため（`apply.ts` の update は `findRef` で id を引く）。
-   * インポート時にそれを書けば引き継げる——dev-plan ④ の第4段階。
-   */
+  /** このあと何をしたいか（**両方の公開先で聞く**）。 */
   intent?: ImportIntent | null
+  /**
+   * AppRun を**引き継げたか**（dev-plan ④ 第4段階）。
+   *
+   * `intent === 'update'` でも、引き継ぎに失敗することはある
+   * （ポートが読めない・設定を書けない）。**選んだこと**と**できたこと**は違うので、
+   * 記録も公開の記録も**できたほうだけ**を見る。
+   */
+  adopted?: boolean
 }
 
 /**
@@ -89,10 +88,11 @@ export function kindFromImport(target: ImportTarget, stripped: string | null | u
  *
  * - Vercel … 公開先は `publish.vercel.name` で決まる。これを書いておけば、
  *   次の公開は**同じプロジェクトを更新**する。記録を書いてよい。
- * - AppRun … どのアプリかは `.sakura-cloud/state.json`（Koto が作る内部の控え）で
- *   決まる。インポートではそれを作れないので、**次の公開は別の新しいアプリになる**。
- *   ここで公開の記録だけ書くと、「📡 公開したもの」に**押しても何も起きない
- *   破棄ボタン**が並ぶ（2026-08-09 に一元化したときの戒めと同じ形）。書かない。
+ * - AppRun … どのアプリかは `.sakura-cloud/state.json`（Koto が作る内部の控え）で決まる。
+ *   **引き継げた（`adopted`）ときだけ**それが手元にあるので、記録を書いてよい。
+ *   引き継いでいないのに書くと、「📡 公開したもの」に**押しても何も起きない
+ *   破棄ボタン**が並ぶ（2026-08-09 に一元化したときの戒めと同じ形）。
+ *   ⚠️ **選んだこと（`intent`）ではなく、できたこと（`adopted`）で決める。**
  *
  * どちらの場合も `importedFrom` には**インポートした事実をそのまま**残す。
  *
@@ -128,6 +128,7 @@ export function buildImportedMeta(opts: {
       fileCount: source.fileCount,
       stripped: source.stripped ?? null,
       ...(source.intent ? { intent: source.intent } : {}),
+      ...(source.adopted ? { adopted: true } : {}),
       ...(source.settings ? { settings: source.settings } : {}),
     },
   }
@@ -140,6 +141,11 @@ export function buildImportedMeta(opts: {
     // **元を絶対に上書きしない。** 公開名は新しいプロジェクト名にしておく。
     // まだ公開していないので、公開の記録（targets）は書かない。
     meta.publish = { vercel: { name: projectName } }
+  } else if (source.target === 'sakura-apprun' && source.adopted) {
+    // 引き継げた＝このプロジェクトから更新も破棄もできる。**実際に公開されている**ので書く。
+    meta.publish = {
+      targets: { 'sakura-apprun': { publishedAt: source.publishedAt, url: source.url } },
+    }
   }
   return meta
 }
@@ -151,7 +157,8 @@ export function buildImportedMeta(opts: {
  * 8/21 の🛡と同じ理屈で、**押したあとにしか出ない断り書きは無いのと同じ**。
  * とくに AppRun の「秘密は取り戻せない」は、知らずに公開すると**動かないものが出る**。
  *
- * 画面には素のテキストで出す（Markdown 記法は使わない・v0.2.98 の教訓）。
+ * 文中の `**…**` は**強調したいところ**。画面は `emphasize()` を通して太字で出す。
+ * （素の文字列のまま出すと `**` がそのまま見える。0.3.41 から出ていた・2026-08-25 実機）
  */
 export function importPlanNotes(opts: {
   target: ImportTarget
@@ -162,10 +169,12 @@ export function importPlanNotes(opts: {
   secretKeys?: string[]
   /** 公開先での名前（Vercel のプロジェクト名）。**どこが置き換わるかを名指しする**ために要る。 */
   publishName?: string | null
-  /** このあと何をしたいか（Vercel のみ）。まだ選んでいなければ未指定。 */
+  /** このあと何をしたいか。まだ選んでいなければ未指定。 */
   intent?: ImportIntent | null
   /** これから作るプロジェクト名（`fork` のときの公開先になる）。 */
   projectName?: string | null
+  /** 引き継ぎの見立て（AppRun のみ・`import:inspect` が返す）。 */
+  adopt?: AdoptionPreview | null
 }): string[] {
   const notes: string[] = []
   if (opts.target === 'vercel') {
@@ -203,15 +212,49 @@ export function importPlanNotes(opts: {
     if (keys.length) {
       notes.push(`⚠️ 秘密の値（${keys.length}件: ${keys.join(', ')}）は取り戻せません。公開する前に入れ直してください。`)
     }
-    // ⚠️ **利用者に関係があるのは URL とお金**（2026-08-24 Ryosuke 指摘）。
-    // 「別の新しいアプリとして作られます」はシステム側の言い分で、
-    // 利用者は「自分のサイトを更新している」と受け取る。それでよい。
-    // 言わなければならないのは、**アドレスが変わること**と**費用が増えること**。
-    notes.push('インポートしたあとも、手を入れて公開していけます。ただし公開すると'
-      + '**アドレス（URL）が変わります**。いま公開されているアドレスは、古い内容のまま残ります。')
-    notes.push(`いまのアプリも残るので、月額${REGISTRY_MONTHLY_YEN}円（税込）が上乗せされます`
-      + '（イメージの置き場が1つ増えるため）。要らなくなったら、'
-      + 'さくらのクラウドのコントロールパネルで古いほうを消してください。')
+
+    // ── ここから先は、選んだ目的で変わる（**選ぶまでは何も言わない**）──────
+    // 決めつけて書くと、選ばれなかったほうの結末を読ませることになる。
+    const adopt = opts.adopt ?? null
+    if (opts.intent === 'update' && adopt?.blocker) {
+      // **選んでも引き継げないことがある。黙って別物にしない。**
+      notes.push(`⚠️ ${adopt.blocker}`)
+    }
+    const adopting = opts.intent === 'update' && !adopt?.blocker
+    if (adopting) {
+      // ── 引き継ぐ（dev-plan ④ 第4段階）────────────────────────────────
+      // **いま動いているアプリそのもの**を、このプロジェクトから更新できるようにする。
+      notes.push('公開されていたときの設定（ポート・環境変数・入れ物の大きさ・健康診断の場所）を'
+        + '**そのまま引き継ぎます**。')
+      // ⚠️ 「アプリが**置き換わります**」とは書かない（2026-08-25 Ryosuke 実機指摘）。
+      // アプリそのものが作り直されるように読める。入れ替わるのは**中身**で、
+      // 公開の確認画面の「再デプロイ（最新の内容を反映）」とも言葉が合わない。
+      notes.push(opts.publishName
+        ? `Koto から公開すると、いま動いているアプリ「${opts.publishName}」が、`
+          + '**このプロジェクトの内容で更新されます**。**公開のアドレス（URL）は変わりません。**'
+        : 'Koto から公開すると、いま動いているアプリが**このプロジェクトの内容で更新されます**。'
+          + '**公開のアドレス（URL）は変わりません。**')
+      notes.push(adopt?.reusesRegistry === false
+        ? `イメージの置き場が1つ増えるため、月額${REGISTRY_MONTHLY_YEN}円（税込）が上乗せされます。`
+        : '**月額は増えません**（いまのイメージの置き場を、そのまま使います）。')
+      if (adopt && adopt.specName !== adopt.appName) {
+        notes.push(`Koto の中での公開名は「${adopt.specName}」になります`
+          + `（さくら側のアプリ名「${adopt.appName}」は変わりません）。`)
+      }
+      for (const w of adopt?.warnings ?? []) notes.push(w)
+    } else if (opts.intent) {
+      // `fork` / `undecided`、および「引き継ぎたかったが引き継げなかった」とき。
+      //
+      // ⚠️ **利用者に関係があるのは URL とお金**（2026-08-24 Ryosuke 指摘）。
+      // 「別の新しいアプリとして作られます」はシステム側の言い分で、
+      // 利用者は「自分のサイトを更新している」と受け取る。それでよい。
+      // 言わなければならないのは、**アドレスが変わること**と**費用が増えること**。
+      notes.push('インポートしたあとも、手を入れて公開していけます。ただし公開すると'
+        + '**アドレス（URL）が変わります**。いま公開されているアドレスは、古い内容のまま残ります。')
+      notes.push(`いまのアプリも残るので、月額${REGISTRY_MONTHLY_YEN}円（税込）が上乗せされます`
+        + '（イメージの置き場が1つ増えるため）。要らなくなったら、'
+        + 'さくらのクラウドのコントロールパネルで古いほうを消してください。')
+    }
   }
   notes.push('公開先には何も作らず、何も消しません（読み取るだけです）。')
   return notes
@@ -223,12 +266,23 @@ export function importDoneNotes(opts: {
   failed?: string[]
   historySnapshotId?: string | null
   historyNote?: string | null
+  /** AppRun を引き継げたか（dev-plan ④ 第4段階）。 */
+  adopted?: boolean
+  /** 引き継げなかった理由（**黙って省かない**）。 */
+  adoptNote?: string | null
 }): string[] {
   const notes: string[] = [`${opts.fileCount} 個のファイルをインポートしました。`]
   const failed = opts.failed ?? []
   if (failed.length) {
     notes.push(`取り出せなかったファイルが ${failed.length} 件あります: ${failed.slice(0, 5).join(', ')}`
       + (failed.length > 5 ? ' ほか' : ''))
+  }
+  // **「引き継ぐ」を選んだのに引き継げていない**ことを、黙って通さない。
+  if (opts.adopted) {
+    notes.push('このアプリを引き継ぎました。ここから公開すると、いま動いているアプリが'
+      + '更新されます（公開のアドレスは変わりません）。')
+  } else if (opts.adoptNote) {
+    notes.push(opts.adoptNote)
   }
   if (opts.historySnapshotId) {
     notes.push('🕘 履歴に「公開されていたものをインポートした時点」を作りました。何をしても、ここへ戻せます。')
@@ -320,18 +374,28 @@ export function importedContext(importedFrom: unknown): string {
       envKeys.length ? `環境変数 ${envKeys.join(', ')}（値はここには載せていません）` : '',
     ].filter(Boolean)
     if (spec.length) lines.push(`- 公開されていたときの設定: ${spec.join(' / ')}`)
-    // ⚠️ **「できません」と言わない**（2026-08-24 Ryosuke 指摘）。
-    // 手を入れて公開すること自体はできる。利用者はそれを「更新している」と受け取ってよい。
-    // 内部で別のアプリになるのはシステム側の言い分で、利用者には関係がない。
-    // **関係があるのは URL とお金の2つだけ**なので、それを伝える。
-    lines.push('- このまま手を入れて公開していけます。ただし公開の前に、**必ず次の2つを伝えてください**。')
-    lines.push('  ① **公開のアドレス（URL）が変わります。**'
-      + 'いま公開されているアドレスは、古い内容のまま生き続けます。'
-      + 'そのアドレスを誰かに伝えているなら、新しいものを伝え直す必要があります。')
-    lines.push(`  ② **月額${REGISTRY_MONTHLY_YEN}円（税込）が上乗せ**されます。`
-      + 'イメージの置き場（コンテナレジストリ）がもう1つ増えるためです。'
-      + '古いほうが要らなくなったら、さくらのクラウドのコントロールパネルで消してください'
-      + '（Koto からは消せません）。');
+    if (f.adopted) {
+      // ── 引き継ぎずみ（dev-plan ④ 第4段階）────────────────────────────
+      // **URL もお金も変わらない代わりに、間違えたときに壊れるのは本物になる。**
+      lines.push('- このプロジェクトは、いま動いているアプリを**引き継いでいます**。'
+        + 'ここから公開すると、**そのアプリが、このプロジェクトの内容で更新されます**（公開のアドレスは変わりません）。')
+      lines.push('- つまり、**公開＝本番の差し替え**です。'
+        + '公開を勧めるときは「いま公開中のものが、この内容に置き換わります」と必ず添えてください。')
+      lines.push('- 「破棄」は**本物のアプリを消します**。頼まれていないのに勧めないでください。')
+    } else {
+      // ⚠️ **「できません」と言わない**（2026-08-24 Ryosuke 指摘）。
+      // 手を入れて公開すること自体はできる。利用者はそれを「更新している」と受け取ってよい。
+      // 内部で別のアプリになるのはシステム側の言い分で、利用者には関係がない。
+      // **関係があるのは URL とお金の2つだけ**なので、それを伝える。
+      lines.push('- このまま手を入れて公開していけます。ただし公開の前に、**必ず次の2つを伝えてください**。')
+      lines.push('  ① **公開のアドレス（URL）が変わります。**'
+        + 'いま公開されているアドレスは、古い内容のまま生き続けます。'
+        + 'そのアドレスを誰かに伝えているなら、新しいものを伝え直す必要があります。')
+      lines.push(`  ② **月額${REGISTRY_MONTHLY_YEN}円（税込）が上乗せ**されます。`
+        + 'イメージの置き場（コンテナレジストリ）がもう1つ増えるためです。'
+        + '古いほうが要らなくなったら、さくらのクラウドのコントロールパネルで消してください'
+        + '（Koto からは消せません）。')
+    }
   } else if (intent === 'update') {
     lines.push(`- ここから公開すると、Vercel のプロジェクト「${f.name ?? ''}」が**置き換わります**。`
       + '公開を勧めるときは、そのことを必ず添えてください。')
@@ -369,4 +433,32 @@ export function noCandidatesHint(target: ImportTarget, keyCount: number): string
   return head + (target === 'vercel'
     ? 'そのトークンから見える範囲に、公開したものがありません（範囲を絞ったトークンでは見えないことがあります）。'
     : 'このアカウントに AppRun のアプリがありません。')
+}
+
+
+// ── 画面に出すときの強調 ──────────────────────────────────────────────
+//
+// ⚠️ **`**` がそのまま画面に出ていた**（0.3.41〜。2026-08-25 の実機スクショで判明）。
+// ここの文言は素のテキストとして `<p>` に流し込まれるので、Markdown は解釈されない。
+//
+// 消してしまうのがいちばん簡単だが、それだと**いちばん読ませたい一行**
+// （「公開のアドレス（URL）は変わりません」「月額は増えません」）が平坦になる。
+// **強調は強調として出す。**
+
+/** 文字列を、太字にするところとしないところへ分ける（純関数）。 */
+export type TextSpan = { text: string; bold: boolean }
+
+/**
+ * `**…**` を太字の区間として切り出す（純関数）。
+ *
+ * 閉じていない `**` は**強調にしない**（書き間違いで、文の後ろ全部が太字になるのを防ぐ）。
+ */
+export function emphasize(text: string): TextSpan[] {
+  const parts = String(text ?? '').split('**')
+  // 区切りが偶数個＝閉じている。奇数個＝最後が閉じていないので、その手前までを強調とみなす。
+  const closed = parts.length % 2 === 1
+  const lastBoldIndex = closed ? parts.length - 1 : parts.length - 2
+  return parts
+    .map((t, i) => ({ text: t, bold: i % 2 === 1 && i <= lastBoldIndex }))
+    .filter(sp => sp.text !== '')
 }

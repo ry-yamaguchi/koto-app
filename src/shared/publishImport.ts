@@ -22,6 +22,81 @@ export type ImportCandidate = {
   note: string
   /** **引き取れないもの**は理由を入れる（一覧には出すが、選ばせない）。 */
   blocked?: string
+  /**
+   * **このパソコンの Koto が、既にこれを公開している**ときのプロジェクト名。
+   *
+   * ── なぜ出すのか（2026-08-25 Ryosuke 指摘）──────────────────────────────
+   * 「同じものを2つ持つ理由が無い」。それでも取り込めてしまうのは、
+   * **手元に既にあることに気づけない**からで、気づけば起きない。
+   * **止めはしない**（人には人の事情がある）。**気づかせる。**
+   */
+  managedBy?: { projectName: string; dir: string }
+}
+
+// ── 手元で既に管理しているもの ────────────────────────────────────────
+
+/** ワークスペースの1プロジェクト分（キーもネットワークも使わずに読める範囲）。 */
+export type LocalProject = {
+  dir: string
+  name: string
+  /** `.sakuraide.json` の `publish`。 */
+  publish?: unknown
+  /** `.sakura-cloud/state.json`。 */
+  apprunState?: unknown
+}
+
+/** 手元のプロジェクトが押さえている公開先（純関数）。 */
+export type ManagedTargets = {
+  /** AppRun のアプリID → プロジェクト。 */
+  apprunAppIds: Record<string, { projectName: string; dir: string }>
+  /** Vercel のプロジェクト名 → プロジェクト。 */
+  vercelNames: Record<string, { projectName: string; dir: string }>
+}
+
+/**
+ * 手元のプロジェクトから「もう管理している公開先」を集める（純関数）。
+ *
+ * **AppRun は state.json のアプリID**（名前ではない。名前は変えられるが ID は変わらない）。
+ * **Vercel は `publish.vercel.name`**（公開先がこの名前で決まるため）。
+ */
+export function collectManagedTargets(projects: readonly LocalProject[]): ManagedTargets {
+  const out: ManagedTargets = { apprunAppIds: {}, vercelNames: {} }
+  for (const p of projects ?? []) {
+    if (!p || typeof p.dir !== 'string' || !p.dir) continue
+    const who = { projectName: p.name || p.dir.split('/').pop() || p.dir, dir: p.dir }
+    const resources = (p.apprunState as { resources?: unknown } | null | undefined)?.resources
+    if (Array.isArray(resources)) {
+      for (const r of resources) {
+        if (r && (r as any).kind === 'apprun-app' && typeof (r as any).id === 'string' && (r as any).id) {
+          out.apprunAppIds[(r as any).id] = who
+        }
+      }
+    }
+    const vname = (p.publish as { vercel?: { name?: unknown } } | null | undefined)?.vercel?.name
+    if (typeof vname === 'string' && vname) out.vercelNames[vname] = who
+  }
+  return out
+}
+
+/**
+ * 候補に「もう手元にある」印をつける（純関数）。**並びも件数も変えない。**
+ *
+ * 選ばせないのではなく、選ぶ前に見えるようにするだけ（`blocked` にはしない）。
+ */
+export function markManagedCandidates(
+  candidates: readonly ImportCandidate[], managed: ManagedTargets,
+): ImportCandidate[] {
+  return (candidates ?? []).map(c => {
+    const who = c.target === 'sakura-apprun'
+      ? managed?.apprunAppIds?.[c.id]
+      : managed?.vercelNames?.[c.name]
+    return who ? { ...c, managedBy: who } : c
+  })
+}
+
+/** 「もう手元にある」ときの一言（純関数）。 */
+export function managedNote(projectName: string): string {
+  return `このパソコンの「${projectName}」が公開しているものです。`
 }
 
 // ── Vercel ────────────────────────────────────────────────────────────
@@ -162,6 +237,37 @@ export type AppRunSettings = {
   probePath: string | null
   /** 秘密は**返ってこない**（実測: 空配列）。入れ直しが要る鍵の名前だけ拾う。 */
   secretKeys: string[]
+  /**
+   * 中の入れ物（component）の名前。Koto が作るものは `main` だが、
+   * **よそで作られたアプリは違う名前**でありうる。
+   *
+   * ── なぜ拾うのか（2026-08-25・第4段階の設計中に判明）────────────────────
+   * 引き継いだあとの公開は PATCH で `components` を**丸ごと差し替える**。
+   * 名前まで差し替えると、動いているアプリの入れ物が別物に置き換わる。
+   * **元のまま送り返せるように控える。**
+   */
+  componentName: string | null
+}
+
+/**
+ * 引き継ぎ（dev-plan ④ 第4段階）の見立て。**押す前に見せるためのもの。**
+ *
+ * 組み立てるのは main の `cloud/adopt.ts`（spec と state を知っている側）。
+ * 型だけここに置いて、画面（`renderer/importProject.ts`）と**同じ形**を共有する。
+ */
+export type AdoptionPreview = {
+  /** 引き継げるか。 */
+  canAdopt: boolean
+  /** 引き継げない理由（`canAdopt` が false のときだけ）。 */
+  blocker: string | null
+  /** Koto の中での公開名（正規化ずみ）。 */
+  specName: string
+  /** さくら側のアプリ名。`specName` と違うことがある（大文字・記号を含む名前）。 */
+  appName: string
+  /** 次の公開で、いまのレジストリをそのまま使うか（＝月額が増えないか）。 */
+  reusesRegistry: boolean
+  /** 引き継ぐ前に伝えること。 */
+  warnings: string[]
 }
 
 /** アプリの詳細から、戻せる公開設定を取り出す（純関数）。 */
@@ -175,6 +281,7 @@ export function appRunSettings(detail: unknown): AppRunSettings {
     ? c.secret.filter((s: any) => typeof s?.key === 'string').map((s: any) => s.key)
     : []
   return {
+    componentName: typeof c?.name === 'string' && c.name ? c.name : null,
     port: typeof d?.port === 'number' ? d.port : null,
     minScale: typeof d?.min_scale === 'number' ? d.min_scale : null,
     maxScale: typeof d?.max_scale === 'number' ? d.max_scale : null,

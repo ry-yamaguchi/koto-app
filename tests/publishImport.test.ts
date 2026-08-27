@@ -6,6 +6,7 @@ import {
   appRunImageRef, appRunSettings, appRunCandidates, pickImageContentRoot,
   importedFilePath, importFolderName, importedRelPathsFromTar,
   historyOriginSkipReason, HISTORY_ORIGIN_MAX_FILES,
+  collectManagedTargets, markManagedCandidates, managedNote, type ImportCandidate,
 } from '../src/shared/publishImport'
 
 // ④ 公開済みのものを引き取る（2026-08-22 Ryosuke 提案）。
@@ -347,5 +348,101 @@ describe('インポートの配線', () => {
     expect(s).toContain("vercelDeploymentPath(id) + '?withGitRepoInfo=true'")
     expect(s).toContain('async getDeploymentFiles(')
     expect(s).toContain('async getDeploymentFile(')
+  })
+})
+
+// ── もう手元にあるものに印をつける（2026-08-25 Ryosuke 指摘）────────────────
+// 「同じものを2つ持つ理由は無い」。それでも作ってしまうのは**気づけない**からで、
+// 気づけば起きない。**止めはしない。気づかせる。**
+describe('この Koto が既に公開しているもの', () => {
+  const PROJECTS = [
+    {
+      dir: '/ws/landingTEST', name: 'landingTEST',
+      publish: { targets: { 'sakura-apprun': {} } },
+      apprunState: { resources: [{ kind: 'apprun-app', id: 'app-1234', stateful: false, key: 'apprun-app:landingtest' }] },
+    },
+    { dir: '/ws/myshop', name: 'myshop', publish: { vercel: { name: 'my-shop' } }, apprunState: null },
+    { dir: '/ws/empty', name: 'empty', publish: null, apprunState: null },
+  ]
+
+  it('AppRun は state.json のアプリIDで見分ける（名前ではない）', () => {
+    const m = collectManagedTargets(PROJECTS)
+    expect(m.apprunAppIds['app-1234']).toEqual({ projectName: 'landingTEST', dir: '/ws/landingTEST' })
+  })
+
+  it('Vercel は公開名で見分ける（そこで公開先が決まるため）', () => {
+    const m = collectManagedTargets(PROJECTS)
+    expect(m.vercelNames['my-shop']).toEqual({ projectName: 'myshop', dir: '/ws/myshop' })
+  })
+
+  it('壊れた・空のプロジェクトがあっても落ちない', () => {
+    const m = collectManagedTargets([
+      null as any, { dir: '', name: '' }, { dir: '/ws/a', name: 'a', apprunState: { resources: 'こわれた' } },
+      { dir: '/ws/b', name: 'b', publish: { vercel: { name: 123 } } },
+    ])
+    expect(m.apprunAppIds).toEqual({})
+    expect(m.vercelNames).toEqual({})
+  })
+
+  const CANDS: ImportCandidate[] = [
+    { target: 'sakura-apprun', id: 'app-1234', name: 'landingtest', url: null, at: null, note: '' },
+    { target: 'sakura-apprun', id: 'app-9999', name: 'other', url: null, at: null, note: '' },
+    { target: 'vercel', id: 'dpl_1', name: 'my-shop', url: null, at: null, note: '' },
+    { target: 'vercel', id: 'dpl_2', name: 'unknown', url: null, at: null, note: '' },
+  ]
+
+  it('当てはまるものにだけ印がつく', () => {
+    const marked = markManagedCandidates(CANDS, collectManagedTargets(PROJECTS))
+    expect(marked[0].managedBy?.projectName).toBe('landingTEST')
+    expect(marked[1].managedBy).toBeUndefined()
+    expect(marked[2].managedBy?.projectName).toBe('myshop')
+    expect(marked[3].managedBy).toBeUndefined()
+  })
+
+  // **選ばせないのではない。** 件数も並びも変えず、blocked にもしない。
+  it('印をつけるだけで、選べなくはしない', () => {
+    const marked = markManagedCandidates(CANDS, collectManagedTargets(PROJECTS))
+    expect(marked.length).toBe(CANDS.length)
+    expect(marked.map(c => c.id)).toEqual(CANDS.map(c => c.id))
+    expect(marked.every(c => !c.blocked)).toBe(true)
+  })
+
+  it('手元に何も無ければ、何も変えない', () => {
+    const marked = markManagedCandidates(CANDS, collectManagedTargets([]))
+    expect(marked.every(c => !c.managedBy)).toBe(true)
+  })
+
+  it('一言は、どのプロジェクトかを名指しする', () => {
+    expect(managedNote('landingTEST')).toContain('landingTEST')
+    expect(managedNote('landingTEST')).toContain('このパソコン')
+  })
+})
+
+// ── 配線（画面は import できないのでソースを読んで固定。掟10）──────────────
+describe('印の配線', () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  it('一覧を取ったら、必ず手元と突き合わせる', () => {
+    const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
+    expect(s).toContain('setCandidates(markManagedCandidates(r.candidates, await localTargets()))')
+    // 突き合わせずにそのまま入れていた古い形が残っていないこと
+    expect(s).not.toContain('setCandidates(r.candidates)')
+  })
+
+  it('突き合わせはキーもネットワークも使わない（手元のフォルダを見るだけ）', () => {
+    const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
+    expect(s).toContain('window.electronAPI.fs.publishedRecords(parentDir)')
+  })
+
+  it('一覧の行と、押す前の確認の両方に出す', () => {
+    const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
+    expect(s).toContain('managedNote(c.managedBy.projectName)')      // 一覧の行
+    expect(s).toContain('managedNote(selected.managedBy.projectName)') // 確認
+  })
+
+  // 気づかせるだけでは行き止まり。**そちらを開ける道**を添える。
+  it('そのプロジェクトを開ける', () => {
+    const s = read('src/renderer/components/ImportFromPublishedPanel.tsx')
+    expect(s).toContain('onCreated(selected.managedBy.dir)')
   })
 })

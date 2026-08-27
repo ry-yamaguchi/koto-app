@@ -10,7 +10,7 @@ import CopyButton from './CopyButton'
 import SecurityCheckSection from './SecurityCheckSection'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
-import { teardownTargets, registryDeleteLabel, registryDeleteHelp, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
+import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryDeleteDefault, adoptedRegistryNote, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
 import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
 import { isSubmitEnter } from '../keyInput'
 
@@ -153,6 +153,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     return () => { alive = false; window.removeEventListener('sakura:storage-prepared', onPrepared) }
   }, [projectDir])
   const [registryName, setRegistryName] = useState<string | null>(null)
+  /** その置き場を Koto が作ったのではない（引き継ぎで借りている）か。既定オフの判断に使う。 */
+  const [registryAdopted, setRegistryAdopted] = useState(false)
   /**
    * レジストリを設定し直して整ったか（2026-08-14 Ryosuke 指摘）。
    * **一度直したらボタンを消す。** 出したままだと「効いていないのでは」と何度も
@@ -449,8 +451,14 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
   // 破棄した直後には必ず取り直す（古い名前のまま出すと、消す対象を誤解させる）。
   const refreshRegistryName = () => {
     window.electronAPI.cloud.registryName(projectDir)
-      .then(r => setRegistryName(r?.name ?? null))
-      .catch(() => setRegistryName(null))
+      .then(r => {
+        setRegistryName(r?.name ?? null)
+        const adopted = r?.adopted === true
+        setRegistryAdopted(adopted)
+        // **借り物なら、最初から外しておく**（判断は shared/cloudCost.ts に一元化）。
+        setDeleteRegistry(registryDeleteDefault({ registryName: r?.name ?? null, adopted }))
+      })
+      .catch(() => { setRegistryName(null); setRegistryAdopted(false) })
   }
 
   // ── レジストリを自動作成（クラウドAPI）。push 用認証も保存される ──
@@ -758,6 +766,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         onApply={doApply}
         onTeardown={doTeardown}
         registryName={registryName}
+        registryAdopted={registryAdopted}
         deleteRegistry={deleteRegistry}
         onChangeDeleteRegistry={setDeleteRegistry}
         onRename={doRenameConfirmed}
@@ -1817,7 +1826,7 @@ function PrereqChecklist({
 // ── 破壊操作の確認ダイアログ（やめる／実行 の2ボタン） ──
 function ConfirmDialog({
   confirm, busy, onCancel, onApply, onTeardown, onRename, onCleanupImages,
-  registryName, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry, placement, progress,
+  registryName, registryAdopted, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry, placement, progress,
 }: {
   confirm: Exclude<Confirm, null>
   busy: boolean
@@ -1829,7 +1838,9 @@ function ConfirmDialog({
   onCleanupImages: () => void
   /** 破棄画面に出すコンテナレジストリ名（未取得なら null）。 */
   registryName: string | null
-  /** レジストリも削除するか（既定 true＝月額課金を止める）。 */
+  /** その置き場が借り物か（引き継ぎで、もとからあったものを使っている）。 */
+  registryAdopted: boolean
+  /** レジストリも削除するか（Koto が作ったものなら既定 true＝月額課金を止める）。 */
   deleteRegistry: boolean
   onChangeDeleteRegistry: (v: boolean) => void
   /** このプロジェクトの保存場所（用意していなければ null）。破棄で消えるものに関わる。 */
@@ -2049,6 +2060,11 @@ function ConfirmDialog({
               />
               <span className="text-sm text-ink font-medium">{registryDeleteLabel(registryName)}</span>
             </label>
+            {/* 借り物のときは、既定を外した理由をその場で言う（黙って外すと、
+                「なぜ課金が止まらないのか」が分からなくなる・2026-08-25） */}
+            {registryAdopted && (
+              <p className="text-xs text-brand-red leading-relaxed pl-6 select-text">⚠️ {adoptedRegistryNote(registryName)}</p>
+            )}
             <p className={`text-xs leading-relaxed pl-6 ${deleteRegistry ? 'text-ink-secondary' : 'text-brand-red'}`}>
               {registryDeleteHelp(deleteRegistry)}
             </p>

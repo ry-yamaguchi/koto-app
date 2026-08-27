@@ -49,12 +49,22 @@ export interface PublishedEntry {
    * ③公開の破棄画面と同じ情報を出す。記録が無ければ null（＝Koto からは削除できない）。
    */
   registryName: string | null
+  /**
+   * その置き場を **Koto が作ったのではない**（引き継ぎで、もとからあったものを
+   * 借りている）か。破棄の「置き場も削除する」の既定がこれで変わる（2026-08-25）。
+   */
+  registryAdopted: boolean
 }
 
 /** .sakura-cloud/state.json から、このプロジェクトのレジストリ名を取り出す（形が違えば null）。 */
 function parseRegistryName(apprunState: unknown): string | null {
   const n = (apprunState as { meta?: { registryName?: unknown } } | null | undefined)?.meta?.registryName
   return typeof n === 'string' && n ? n : null
+}
+
+/** 借り物の置き場か（印が無ければ「Koto が作ったもの」＝これまでどおり）。 */
+function parseRegistryAdopted(apprunState: unknown): boolean {
+  return (apprunState as { meta?: { registryAdopted?: unknown } } | null | undefined)?.meta?.registryAdopted === true
 }
 
 /** publish メタから HANAMII のプロジェクトIDを取り出す（形が違えば null）。 */
@@ -77,6 +87,7 @@ export function buildPublishedIndex(projects: PublishedProjectInput[]): Publishe
     })
     const hanamiiProjectId = parseHanamiiProjectId(p.publish)
     const registryName = parseRegistryName(p.apprunState)
+    const registryAdopted = parseRegistryAdopted(p.apprunState)
     for (const r of rows) {
       entries.push({
         dir: p.dir,
@@ -88,6 +99,7 @@ export function buildPublishedIndex(projects: PublishedProjectInput[]): Publishe
         dateUnknown: r.dateUnknown,
         hanamiiProjectId: r.target === 'hanamii' ? hanamiiProjectId : null,
         registryName: r.target === 'sakura-apprun' ? registryName : null,
+        registryAdopted: r.target === 'sakura-apprun' && registryAdopted,
       })
     }
   }

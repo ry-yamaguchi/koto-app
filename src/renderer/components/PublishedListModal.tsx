@@ -7,7 +7,7 @@ import { listCloudKeys, getActiveCloudKeyId } from './CredentialsModal'
 import { clearPublishRecord } from '../publishRecord'
 import { buildPublishedIndex, groupPublishedByTarget, type PublishedEntry, type PublishedGroup } from '../publishedIndex'
 import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNote } from '../../shared/teardownSupport'
-import { registryDeleteHelp, registryDeleteLabel, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice } from '../../shared/cloudCost'
+import { registryDeleteHelp, registryDeleteLabel, registryDeleteDefault, adoptedRegistryNote, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 
 // 「📡 公開したもの一覧」モーダル（表示メニューから開く・2026-07-31 ユーザー要望）。
@@ -49,7 +49,8 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
 
   /** 破棄の確認を出す（保存場所も調べてから）。 */
   const askConfirm = async (e: PublishedEntry) => {
-    setDeleteRegistry(true)
+    // **借り物の置き場は、最初から外しておく**（判断は shared/cloudCost.ts に一元化）。
+    setDeleteRegistry(registryDeleteDefault({ registryName: e.registryName, adopted: e.registryAdopted }))
     setConfirmPlacement(null)
     setConfirm(e)
     try {
@@ -411,6 +412,10 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                       />
                       <span className="text-xs text-ink font-medium">{registryDeleteLabel(confirm.registryName)}</span>
                     </label>
+                    {/* 借り物のときは、既定を外した理由をその場で言う（③公開の破棄画面と同じ） */}
+                    {confirm.registryAdopted && (
+                      <p className="text-[11px] text-brand-red leading-relaxed pl-5 select-text">⚠️ {adoptedRegistryNote(confirm.registryName)}</p>
+                    )}
                     <p className={`text-[11px] leading-relaxed pl-5 ${deleteRegistry ? 'text-ink-secondary' : 'text-brand-red'}`}>
                       {registryDeleteHelp(deleteRegistry)}
                     </p>

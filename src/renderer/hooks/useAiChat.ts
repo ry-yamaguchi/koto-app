@@ -15,6 +15,7 @@ import { getAnthropicToken } from '../components/CredentialsModal'
 import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode } from '../claudeMode'
 import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
+import { stamp } from '../../shared/chatTime'
 
 /** まったく同じツール呼び出し（名前＋引数）がこの回数だけ連続したら暴走とみなして中断する。
  *  周回数の上限（maxRounds）を 5→25 に引き上げた代わりの歯止め（2026-07-23）。
@@ -43,6 +44,8 @@ export type ChatMessage = {
    *  画面には「🗂 ここまでの内容をまとめました」とだけ出し、本文は折りたたむ（CompactNote.tsx）。
    *  AIへは、この1件だけを履歴の先頭に置いて送る（historyCompact.ts）。 */
   summary?: CompactMark
+  /** そのやり取りがあった時刻（ISO 8601）。**古い会話には無い**（あとから付けない）。 */
+  at?: string
 }
 
 export type UseAiChatArgs = {
@@ -136,10 +139,10 @@ export function useAiChat(args: UseAiChatArgs) {
   const abort = useCallback(() => { abortRef.current?.() }, [])
 
   // 末尾の吹き出し操作ヘルパー（関数型更新で表示先に依存しない）
-  const appendBubble = useCallback((msg: ChatMessage) => updateShown(prev => [...prev, msg]), [updateShown])
+  const appendBubble = useCallback((msg: ChatMessage) => updateShown(prev => [...prev, stamp(msg)]), [updateShown])
   const replaceLast = useCallback((msg: ChatMessage) => updateShown(prev => {
     const next = [...prev]
-    next[next.length - 1] = msg
+    next[next.length - 1] = stamp(msg)
     return next
   }), [updateShown])
   const removeLast = useCallback(() => updateShown(prev => prev.slice(0, -1)), [updateShown])
@@ -442,7 +445,8 @@ export function useAiChat(args: UseAiChatArgs) {
       const budget = checkBeforeRequest(apiKey)
       if (!budget.allowed) {
         const userMsg: ChatMessage = { role: 'user', content: rawText.trim() }
-        updateShown(prev => [...prev, userMsg, { role: 'assistant', content: `🛑 ${budget.message}` }])
+        const budgetMsg: ChatMessage = { role: 'assistant', content: `🛑 ${budget.message}` }
+        updateShown(prev => [...prev, stamp(userMsg), stamp(budgetMsg)])
         return
       }
 

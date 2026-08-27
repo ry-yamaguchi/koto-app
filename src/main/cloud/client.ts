@@ -190,6 +190,16 @@ export type CreateAppBody = {
   }>
 }
 
+/**
+ * Koto が新しく作るときの既定値。**spec に書いていなければこれになる。**
+ *
+ * ⚠️ 再デプロイ（PATCH）は `components` を丸ごと差し替えるので、
+ * ここは「作るときの初期値」であると同時に「**書いていない項目が
+ * 上書きされる値**」でもある。引き継いだアプリで既定に戻ると壊れるため、
+ * インポートの引き継ぎは spec 側へ実物の値を書き写す（cloud/adopt.ts）。
+ */
+export const COMPONENT_DEFAULTS = { name: 'main', maxCpu: '1', maxMemory: '1Gi', probePath: '/' } as const
+
 /** EnvSpec から components 配列を組み立てる（create/patch 共通）。 */
 function buildComponents(spec: EnvSpec, registryAuth?: RegistryAuth, runtimeEnv: Array<{ key: string; value: string }> = []): CreateAppBody['components'] {
   const image = spec.service.source.type === 'image' ? spec.service.source.ref : ''
@@ -198,12 +208,12 @@ function buildComponents(spec: EnvSpec, registryAuth?: RegistryAuth, runtimeEnv:
     : { image }
   return [
     {
-      name: 'main',
-      max_cpu: '1',
-      max_memory: '1Gi',
+      name: spec.service.componentName || COMPONENT_DEFAULTS.name,
+      max_cpu: spec.service.cpu || COMPONENT_DEFAULTS.maxCpu,
+      max_memory: spec.service.memory || COMPONENT_DEFAULTS.maxMemory,
       deploy_source: { container_registry },
       env: [...spec.service.env.map(e => ({ key: e.name, value: e.value })), ...runtimeEnv],
-      probe: { http_get: { path: '/', port: spec.service.port } },
+      probe: { http_get: { path: spec.service.probePath || COMPONENT_DEFAULTS.probePath, port: spec.service.port } },
     },
   ]
 }

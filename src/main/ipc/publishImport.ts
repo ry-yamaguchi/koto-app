@@ -27,8 +27,53 @@ import {
 } from '../../shared/publishImport'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { snapshotCurrentFiles } from '../backup/store'
+import { adoptedFiles, adoptionPreview } from '../cloud/adopt'
 
 const run = promisify(execFile)
+
+/** 引き継ぎで書く設定の置き場所（cloud.ts と同じ場所・同じ名前）。 */
+const CLOUD_DIR = '.sakura-cloud'
+
+/**
+ * インポート先の中に閉じ込めてパスを作る（プロジェクトの外へは書かない）。
+ * `src/main/ipc/cloud.ts` の `cloudFilePath` と同じ守り方。
+ */
+function cloudFileIn(destDir: string, file: string): string {
+  const base = path.normalize(path.join(destDir, CLOUD_DIR))
+  const full = path.normalize(path.join(base, file))
+  if (full !== base && !full.startsWith(base + path.sep)) {
+    throw new Error('不正なパスです（プロジェクトの外は操作できません）')
+  }
+  return full
+}
+
+/**
+ * **引き継ぐ**——いま公開されているアプリを、このプロジェクトから更新できるようにする
+ * （dev-plan ④ 第4段階）。書くのは `.sakura-cloud/` の2つだけ。
+ *
+ * ⚠️ **さくら側には何も送らない。** ここで書くのは手元の控えで、
+ * 実際に切り替わるのは**次に公開したとき**。
+ *
+ * 引き継げなくてもインポート自体は成功している。**止めずに、理由を伝える。**
+ */
+function adoptAppRunApp(
+  destDir: string, appName: string, appId: string,
+  settings: ReturnType<typeof appRunSettings>, imageServer: string | null,
+): { adopted: boolean; adoptNote: string | null } {
+  // 中身の判断（何を書き写すか・検証）は cloud/adopt.ts。ここは**書くだけ**。
+  const built = adoptedFiles({ appName, appId, settings, imageServer })
+  if (!built.ok) return { adopted: false, adoptNote: built.reason }
+  try {
+    for (const f of built.files) {
+      const full = cloudFileIn(destDir, f.rel)
+      fs.mkdirSync(path.dirname(full), { recursive: true })
+      fs.writeFileSync(full, f.content, 'utf-8')
+    }
+    return { adopted: true, adoptNote: null }
+  } catch (e: any) {
+    return { adopted: false, adoptNote: `引き継ぎの設定を書けませんでした（${e?.message ?? String(e)}）。` }
+  }
+}
 
 /** 進み具合をレンダラへ流す（取り込みは数十秒かかることがある）。 */
 function notify(event: Electron.IpcMainInvokeEvent, message: string): void {
@@ -102,12 +147,17 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       const ref = appRunImageRef(d.data)
       if (!ref) return { ok: false, message: 'このアプリのイメージが分かりませんでした（コンテナレジストリ以外で作られた可能性があります）。' }
       const settings = appRunSettings(d.data)
+      const appName = typeof (d.data as any)?.name === 'string' && (d.data as any).name
+        ? String((d.data as any).name)
+        : args.id
       return {
         ok: true,
         image: ref.image,
         settings,
         // **秘密は返ってこない**（実測）。入れ直しが要ることを画面で伝えるための印
         secretKeys: settings.secretKeys,
+        // 引き継ぎの見立て（**押す前に**、URL と月額がどうなるかを言うため）。
+        adopt: adoptionPreview({ appName, settings, imageServer: ref.server }),
       }
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
@@ -122,6 +172,14 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
     destDir: string
     token?: string
     teamId?: string
+    /**
+     * このあと何をしたいか。**`'update'` のときだけ引き継ぐ**（dev-plan ④ 第4段階）。
+     *
+     * 引き継ぐと `.sakura-cloud/state.json` にアプリIDが入り、次の公開が
+     * **いま動いているアプリそのもの**を書き換えるようになる（破棄も本物に効く）。
+     * 中を見たいだけの人が持つには重すぎるので、**選んだときだけ**書く。
+     */
+    intent?: 'update' | 'fork' | 'undecided'
   }) => {
     try {
       if (fs.existsSync(args.destDir) && fs.readdirSync(args.destDir).length > 0) {
@@ -198,7 +256,20 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       const rels = importedRelPathsFromTar(names, root, PUBLISH_DIR)
       notify(e, '🕘 いつでも戻れるように、いまの状態を控えています…')
       const origin = makeHistoryOrigin(args.destDir, rels)
-      return { ok: true, fileCount: rels.length, stripped: root, settings: appRunSettings(d.data), ...origin }
+
+      // ── 引き継ぐ（選んだときだけ）────────────────────────────────────
+      const settings = appRunSettings(d.data)
+      let adopt: { adopted: boolean; adoptNote: string | null } = { adopted: false, adoptNote: null }
+      if (args.intent === 'update') {
+        notify(e, 'このアプリを、ここから更新できるようにしています…')
+        // 名前は**実物から**取る（画面のフォルダ名ではない）。state のキーと
+        // env.json の name は同じ正規化を通すこと（adopt.ts）。
+        const appName = typeof (d.data as any)?.name === 'string' && (d.data as any).name
+          ? String((d.data as any).name)
+          : args.id
+        adopt = adoptAppRunApp(args.destDir, appName, args.id, settings, ref.server)
+      }
+      return { ok: true, fileCount: rels.length, stripped: root, settings, ...origin, ...adopt }
     } catch (e2: any) {
       return { ok: false, message: e2?.message ?? String(e2) }
     }

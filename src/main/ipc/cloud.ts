@@ -6,7 +6,7 @@ import * as fs from 'fs'
 import { randomBytes } from 'crypto'
 import { validateSpec, defaultSpec, normalizeSpecName, type EnvSpec } from '../cloud/spec'
 import { computePlan, type Plan } from '../cloud/planner'
-import { emptyState, isExpired, registryDeletionTarget, registryLookupNames, resolvePushRegistry, stateToSave, type EnvState } from '../cloud/state'
+import { emptyState, isExpired, registryDeletionTarget, registryLookupNames, registrySubdomainLabel, resolvePushRegistry, stateToSave, type EnvState } from '../cloud/state'
 import { loadCredentials, type CloudCredentials } from '../cloud/auth'
 import {
   hasRegistryCredentials,
@@ -442,9 +442,9 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       } catch { /* env 無し/不正は既定で続行 */ }
 
       // サブドメインラベル: 英小数字とハイフンのみ、先頭英数字、3〜32文字程度に整形。
-      let label = baseName.toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 28)
-      if (label.length < 3) label = ('ide' + label).slice(0, 28)
-      if (!/^[a-z0-9]/.test(label)) label = 'a' + label
+      // **作り方は cloud/state.ts に1つだけ置く**（インポートの引き継ぎが
+      // 「いまのレジストリをそのまま使えるか」を、同じ名前で判断するため・掟10）。
+      let label = registrySubdomainLabel(baseName)
       // 衝突回避用に短い乱英数を付与（同名レジストリがあれば再利用するので必須ではないが安全側）。
 
       const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
@@ -527,7 +527,11 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         const spec = loadCloudSpec(projectDir)
         if (spec) {
           const st = loadCloudState(projectDir, spec)
-          saveCloudState(projectDir, { ...st, meta: { ...st.meta, registryName: label } })
+          // **新しく作ったなら、借り物の印は落とす**（2026-08-25）。
+          // 引き継ぎで付けた印を残したままにすると、Koto が作った置き場なのに
+          // 破棄のチェックが既定オフになり、月220円が止まらない。
+          const meta = { ...st.meta, registryName: label, ...(created ? { registryAdopted: false } : {}) }
+          saveCloudState(projectDir, { ...st, meta })
         }
       } catch { /* 記録できなくても公開は続行（破棄時に「対象不明」として安全側に倒れる） */ }
 
@@ -1533,7 +1537,10 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (typeof projectDir !== 'string' || !projectDir) return { ok: true, name: null }
       const spec = loadCloudSpec(projectDir)
       if (!spec) return { ok: true, name: null }
-      return { ok: true, name: loadCloudState(projectDir, spec).meta?.registryName ?? null }
+      const meta = loadCloudState(projectDir, spec).meta
+      // 借り物か（引き継ぎで、もとからあった置き場を使っているか）も返す。
+      // 破棄のチェックの既定がこれで変わる（2026-08-25）。
+      return { ok: true, name: meta?.registryName ?? null, adopted: meta?.registryAdopted === true }
     } catch {
       return { ok: true, name: null }
     }

@@ -74,9 +74,24 @@ type ImportCandidate = {
   at: string | null
   note: string
   blocked?: string
+  /** **このパソコンの Koto が既に公開している**ときのプロジェクト（画面側でつける印）。 */
+  managedBy?: { projectName: string; dir: string }
 }
 /** 引き取れる AppRun の公開設定（shared/publishImport.ts の AppRunSettings と同じ形）。 */
+/** 引き継ぎ（dev-plan ④ 第4段階）の見立て。main の cloud/adopt.ts が組む。 */
+type AppRunAdoptionPreview = {
+  canAdopt: boolean
+  blocker: string | null
+  /** Koto の中での公開名。さくら側のアプリ名と違うことがある。 */
+  specName: string
+  appName: string
+  /** 次の公開で、いまのレジストリをそのまま使うか（＝月額が増えないか）。 */
+  reusesRegistry: boolean
+  warnings: string[]
+}
 type AppRunImportSettings = {
+  /** 中の入れ物（component）の名前。再デプロイで**元のまま送り返す**ために要る。 */
+  componentName: string | null
   port: number | null
   minScale: number | null
   maxScale: number | null
@@ -321,7 +336,11 @@ interface Window {
       }>
       teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; keptBucketName?: string | null; message?: string }>
       /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
-      registryName(projectDir: string): Promise<{ ok: boolean; name: string | null }>
+      registryName(projectDir: string): Promise<{
+        ok: boolean; name: string | null
+        /** その置き場を Koto が作ったのではない（引き継ぎで借りている）か。 */
+        adopted?: boolean
+      }>
       checkExpiry(projectDir: string): Promise<{ ok: boolean; expired?: boolean; createdAt?: string | null; ttlHours?: number | null; message?: string }>
       // 公開済みか（state.json に apprun-app リソースがあるか）の軽量チェック。APIキー不要。
       isPublished(projectDir: string): Promise<{ ok: boolean; published?: boolean; message?: string }>
@@ -422,16 +441,30 @@ interface Window {
         { ok: true; candidates: ImportCandidate[] } | { ok: false; message: string }>
       /** 取り込む前に、何が起きるかを調べる（Git 由来ならここで断る）。 */
       inspect(args: { target: 'vercel' | 'sakura-apprun'; id: string; token?: string; teamId?: string }): Promise<
-        | { ok: true; fileCount?: number; stripped?: string | null; files?: string[]; image?: string; settings?: AppRunImportSettings; secretKeys?: string[] }
+        | {
+            ok: true; fileCount?: number; stripped?: string | null; files?: string[]; image?: string
+            settings?: AppRunImportSettings; secretKeys?: string[]
+            /** 引き継ぎの見立て（AppRun のみ）。**押す前に**URLと月額がどうなるかを言うため。 */
+            adopt?: AppRunAdoptionPreview
+          }
         | { ok: false; gitBacked?: boolean; message: string }>
       /** 取り込む（ここで初めてディスクへ書く）。 */
-      run(args: { target: 'vercel' | 'sakura-apprun'; id: string; destDir: string; token?: string; teamId?: string }): Promise<
+      run(args: {
+        target: 'vercel' | 'sakura-apprun'; id: string; destDir: string
+        token?: string; teamId?: string
+        /** `'update'` のときだけ AppRun のアプリを引き継ぐ（`.sakura-cloud/` を書く）。 */
+        intent?: 'update' | 'fork' | 'undecided'
+      }): Promise<
         | {
             ok: true; fileCount: number; failed?: string[]; stripped?: string | null; settings?: AppRunImportSettings
             /** 取り込んだ直後の「戻れる起点」（🕘 履歴）。作れなかったときは null。 */
             historySnapshotId?: string | null
             /** 起点を作らなかった・作れなかった理由（**黙って省かない**）。 */
             historyNote?: string | null
+            /** AppRun を引き継げたか（次の公開が、いま動いているアプリを更新する）。 */
+            adopted?: boolean
+            /** 引き継げなかった理由（**黙って省かない**）。 */
+            adoptNote?: string | null
           }
         | { ok: false; message: string }>
       /** 取り込みの実況。戻り値を呼ぶと購読を解除する。 */

@@ -3,7 +3,7 @@ import SakuraLogo from './SakuraLogo'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
 import { clearPublishRecord, readHanamiiProjectId, readPublishTargets } from '../publishRecord'
 import { teardownSupport, manualTeardownGuide } from '../../shared/teardownSupport'
-import { REGISTRY_MONTHLY_YEN } from '../../shared/cloudCost'
+import { REGISTRY_MONTHLY_YEN, registryDeleteDefault, projectDeleteRegistryNote } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { isPublished } from '../../shared/publishExclude'
@@ -223,6 +223,17 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   const [teardownOnDelete, setTeardownOnDelete] = useState(true)
   /** 破棄の実行中（ボタンを止めて二重実行を防ぐ）。 */
   const [deletingBusy, setDeletingBusy] = useState(false)
+  /**
+   * このプロジェクトのイメージの置き場（名前と、それが**借り物**か）。
+   *
+   * ── なぜ要るか（2026-08-25 Ryosuke の問いで見つけた）─────────────────────
+   * ここは**破棄の3つめの導線**で、`deleteRegistry: true` の決め打ちだった。
+   * Koto が作った置き場ならそれで正しい（残すと月220円が続く）。だが**引き継ぎで
+   * 借りている置き場**まで消してしまい、しかもこのダイアログには置き場の話が
+   * 一言も無いので、**断る手段が無い**。中に他のアプリのイメージが入っていれば、
+   * それらも一緒に消える。
+   */
+  const [pendingRegistry, setPendingRegistry] = useState<{ registryName: string | null; adopted: boolean }>({ registryName: null, adopted: false })
 
   // 開いたプロジェクトを「最近」に記録
   useEffect(() => {
@@ -343,7 +354,12 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     if (!confirmProjDelete) { setPendingPublish([]); return }
     let cancelled = false
     setTeardownOnDelete(true) // 開くたびに既定（破棄する）へ戻す
+    setPendingRegistry({ registryName: null, adopted: false }) // 前のプロジェクトのものを引きずらない
     readPublishTargets(confirmProjDelete).then(ts => { if (!cancelled) setPendingPublish(ts) })
+    // 置き場のことは**消す前に見せる**（このダイアログには今まで一言も出ていなかった）
+    window.electronAPI.cloud.registryName(confirmProjDelete)
+      .then(r => { if (!cancelled) setPendingRegistry({ registryName: r?.name ?? null, adopted: r?.adopted === true }) })
+      .catch(() => { /* 読めなくても削除はできる（消えるものが増えるわけではない） */ })
     return () => { cancelled = true }
   }, [confirmProjDelete])
 
@@ -358,9 +374,19 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       try {
         let r: { ok: boolean; message?: string }
         if (t === 'sakura-apprun') {
-          // レジストリも消す。残すと月220円が続くうえ、フォルダを消すと記録も消えて
-          // Koto からは二度と消せなくなる。
-          r = await window.electronAPI.cloud.teardown(dir, { confirmed: true, deleteRegistry: true })
+          // ── 置き場を消すかどうか（2026-08-25 に決め打ちをやめた）─────────────
+          // **Koto が作った置き場は消す。** 残すと月220円が続くうえ、フォルダを消すと
+          // 記録も消えて Koto からは二度と消せなくなる。
+          //
+          // **借りている置き場は消さない。** 引き継ぎでは利用者がもとから持っていた
+          // ものを使っており、中に他のアプリのイメージが入っていることがある。
+          // ここにはチェックボックスが無い＝**断る手段が無い**ので、消さない側に倒す
+          // （残ることと課金が続くことは、確認ダイアログに書いてある）。
+          // 判断は shared/cloudCost.ts に一元化（③公開・📡一覧と同じもの・掟10）。
+          r = await window.electronAPI.cloud.teardown(dir, {
+            confirmed: true,
+            deleteRegistry: registryDeleteDefault(pendingRegistry),
+          })
         } else {
           const id = await readHanamiiProjectId(dir)
           if (!id) { failed.push(`${PUBLISH_TARGET_LABEL[t]}: プロジェクトIDの記録がありません`); continue }
@@ -746,6 +772,12 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                           : '公開はそのまま残ります。フォルダを消すと「どこに何を公開したか」の記録も消えるため、'
                             + `あとから Koto では破棄できなくなります（AppRun はコンテナレジストリの月額${REGISTRY_MONTHLY_YEN}円が続きます）。`}
                       </p>
+                      {/* 置き場をどうするかは**ここでは選ばせない**（一気に進む操作なので、
+                          選択肢を増やすより安全側に倒す）。選ばせない代わりに、
+                          残すときは必ずそう書く（2026-08-25 Ryosuke の問いで見つけた）。 */}
+                      {teardownOnDelete && projectDeleteRegistryNote(pendingRegistry) && (
+                        <p className="pl-5 text-brand-red select-text">⚠️ {projectDeleteRegistryNote(pendingRegistry)}</p>
+                      )}
                     </>
                   )}
                 </div>

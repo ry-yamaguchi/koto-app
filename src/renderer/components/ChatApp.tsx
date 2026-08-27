@@ -16,6 +16,7 @@ import { isClaudeModeEnabled, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsabl
 import BrainToggle from './BrainToggle'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { CHAT_TEXT_WRAP } from '../textWrap'
+import { timelineMarks, bubbleTime } from '../../shared/chatTime'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
 function GeoSquares({ className = '' }: { className?: string }) {
@@ -414,55 +415,83 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
             </div>
           ) : (
             <div className="max-w-3xl mx-auto py-6 px-4 space-y-6">
-              {activeSession.messages.map((msg, i) => {
-                // 🗂 会話のまとめ。吹き出しではなく、区切りとして中央に出す（本文は折りたたみ）。
-                if (msg.summary) return <CompactNote key={i} text={msg.content} />
-                // 応答待ち/思考中の空のアシスタント吹き出しは描画しない（「…」インジケータで代替し、空箱が出ないようにする）。
-                if (msg.role === 'assistant' && !msg.content.trim() && !msg.images?.length) return null
-                return (
-                <div key={i} className={`group flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                  {msg.role === 'user' ? (
-                    <div className="flex-none w-8 h-8 rounded-xl bg-elevated border border-line flex items-center justify-center text-sm">👤</div>
-                  ) : <SakuraAvatar />}
-                  <div className={`flex-1 max-w-[85%] ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
-                    <div className={`relative inline-block px-4 py-3 rounded-2xl text-sm select-text text-left ${
-                      msg.role === 'user'
-                        ? 'sakura-gradient text-white rounded-tr-md'
-                        : 'bg-surface border border-line text-ink rounded-tl-md'
-                    }`}>
-                      <MessageCopyButton text={msg.content} side={msg.role === 'user' ? 'left' : 'right'} />
-                      {msg.images && msg.images.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 mb-1.5 justify-end">
-                          {msg.images.map((src, k) => (
-                            <img key={k} src={src} alt="" className="max-h-40 rounded-lg border border-white/30 object-cover" />
-                          ))}
-                        </div>
-                      )}
-                      {/* 推論モデルの思考（表示専用・ChatPanel と同じ扱い） */}
-                      {msg.role === 'assistant' && msg.thinking && (
-                        <ThinkingBlock text={msg.thinking} live={isLoading && i === activeSession.messages.length - 1} />
-                      )}
-                      {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={onApplyFile} applyHint="保存後の編集・実行・公開は、画面上部の切替で IDE モードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
-                      {/* #31: Claudeが使えないときの「さくらのAI Engineに切り替えて続ける」提案ボタン。 */}
-                      {msg.offerAiEngineFallback && (
-                        <button
-                          onClick={() => chat.switchToAiEngineAndResend(msg.offerAiEngineFallback!.text, msg.offerAiEngineFallback!.images ?? [])}
-                          className="mt-2 sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
-                        >さくらのAI Engine に切り替えて続ける</button>
-                      )}
-                      {/* ツール実行の回数上限で区切ったときの「続ける」ボタン（従来は「続けて」と手入力が必要だった）。 */}
-                      {msg.offerContinue && (
-                        <button
-                          onClick={() => chat.send('続けて', [])}
-                          disabled={chat.isLoading}
-                          className="mt-2 sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-                        >▶ 続ける</button>
-                      )}
+              {(() => {
+                const shown = activeSession.messages
+                // 会話がいつのものか分かるように、日付が変わったところ／記録が無い古い会話の先頭に区切りを出す（利用者要望）。
+                const marks = timelineMarks(shown, new Date())
+                return shown.map((msg, i) => {
+                  const mark = marks[i]
+                  const line = (text: string, key: string) => (
+                    <div className="flex items-center gap-2 py-1" aria-hidden key={key}>
+                      <div className="flex-1 h-px bg-line" />
+                      <span className="text-[11px] text-ink-muted">{text}</span>
+                      <div className="flex-1 h-px bg-line" />
                     </div>
-                  </div>
-                </div>
-                )
-              })}
+                  )
+                  // 境目では**2本**出す。1本にまとめて日付を潰すと、記録がある最初の会話が
+                  // 「いつのものか分からない」ままになる（2026-08-26 画面で気づいた）。
+                  const separator = mark.kind === 'none' ? null : mark.kind === 'unknown'
+                    ? <React.Fragment key={`mark-${i}`}>{line('日時の記録がありません', `u-${i}`)}{line(mark.label, `d-${i}`)}</React.Fragment>
+                    : line(mark.label, `mark-${i}`)
+                  // 🗂 会話のまとめ。吹き出しではなく、区切りとして中央に出す（本文は折りたたみ）。
+                  if (msg.summary) return <React.Fragment key={i}>{separator}<CompactNote text={msg.content} /></React.Fragment>
+                  // 応答待ち/思考中の空のアシスタント吹き出しは描画しない（「…」インジケータで代替し、空箱が出ないようにする）。
+                  if (msg.role === 'assistant' && !msg.content.trim() && !msg.images?.length) return <React.Fragment key={i}>{separator}</React.Fragment>
+                  return (
+                    <React.Fragment key={i}>
+                      {separator}
+                      <div className={`group flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                        {msg.role === 'user' ? (
+                          <div className="flex-none w-8 h-8 rounded-xl bg-elevated border border-line flex items-center justify-center text-sm">👤</div>
+                        ) : <SakuraAvatar />}
+                        <div className={`flex-1 max-w-[85%] ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
+                          <div className={`relative inline-block px-4 py-3 rounded-2xl text-sm select-text text-left ${
+                            msg.role === 'user'
+                              ? 'sakura-gradient text-white rounded-tr-md'
+                              : 'bg-surface border border-line text-ink rounded-tl-md'
+                          }`}>
+                            <MessageCopyButton text={msg.content} side={msg.role === 'user' ? 'left' : 'right'} />
+                            {msg.images && msg.images.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mb-1.5 justify-end">
+                                {msg.images.map((src, k) => (
+                                  <img key={k} src={src} alt="" className="max-h-40 rounded-lg border border-white/30 object-cover" />
+                                ))}
+                              </div>
+                            )}
+                            {/* 推論モデルの思考（表示専用・ChatPanel と同じ扱い） */}
+                            {msg.role === 'assistant' && msg.thinking && (
+                              <ThinkingBlock text={msg.thinking} live={isLoading && i === activeSession.messages.length - 1} />
+                            )}
+                            {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={onApplyFile} applyHint="保存後の編集・実行・公開は、画面上部の切替で IDE モードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
+                            {/* #31: Claudeが使えないときの「さくらのAI Engineに切り替えて続ける」提案ボタン。 */}
+                            {msg.offerAiEngineFallback && (
+                              <button
+                                onClick={() => chat.switchToAiEngineAndResend(msg.offerAiEngineFallback!.text, msg.offerAiEngineFallback!.images ?? [])}
+                                className="mt-2 sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                              >さくらのAI Engine に切り替えて続ける</button>
+                            )}
+                            {/* ツール実行の回数上限で区切ったときの「続ける」ボタン（従来は「続けて」と手入力が必要だった）。 */}
+                            {msg.offerContinue && (
+                              <button
+                                onClick={() => chat.send('続けて', [])}
+                                disabled={chat.isLoading}
+                                className="mt-2 sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+                              >▶ 続ける</button>
+                            )}
+                          </div>
+                          {/* 触れたら吹き出しの下に時刻。OS のツールチップ（title）は
+                              出るまでに間があり、少し動かすと消えるのでやめた（2026-08-26 実機）。 */}
+                          {bubbleTime(msg.at) && (
+                            <div className="mt-0.5 px-1 text-[11px] text-ink-muted opacity-0 group-hover:opacity-100 transition-opacity">
+                              {bubbleTime(msg.at)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </React.Fragment>
+                  )
+                })
+              })()}
               {isLoading && (
                 <div className="flex gap-3">
                   <SakuraAvatar />

@@ -137,3 +137,46 @@ describe('computePlan と保存場所の同意', () => {
     expect(bucket?.name).toBe('myapp-data')
   })
 })
+
+// ── 置き場の見出し（2026-08-25 Ryosuke 実機指摘）──────────────────────────
+// 計画に「コンテナレジストリ『x』を**作成**」と出ていたが、**計画は置き場を作らない**
+// （applyPlan は読み飛ばし、用意は cloud:ensureRegistry が行う。しかも同じ名前のものが
+// あれば、そのまま使う）。引き継ぎでは直前に「月額は増えません」と言い切っているので、
+// ここで「作成」と出ると **220円増えるように読める**。
+describe('コンテナレジストリの見出し', () => {
+  const planFor = (state: EnvState) =>
+    computePlan(defaultSpec({ name: 'landingtest', hasDockerfile: true }), state)
+      .actions.find(a => a.kind === 'registry')
+
+  it('記録があるときは「使用（新しくは作りません）」', () => {
+    const a = planFor({
+      name: 'landingtest', backend: 'apprun', resources: [],
+      meta: { registryName: 'landingtest', registryAdopted: true },
+    })
+    expect(a?.description).toBe('コンテナレジストリ『landingtest』を使用（新しくは作りません）')
+    expect(a?.description).not.toContain('作成')
+  })
+
+  // 記録した名前が公開名と違っていても、**使うのは記録したほう**。
+  it('記録の名前が公開名と違っても、記録したほうを出す', () => {
+    const a = planFor({
+      name: 'landingtest', backend: 'apprun', resources: [],
+      meta: { registryName: 'acme-reg', registryAdopted: true },
+    })
+    expect(a?.description).toContain('acme-reg')
+    expect(a?.description).not.toContain('『landingtest』')
+  })
+
+  // 記録が無いときも「作成」と言い切らない（同じ名前のものがあれば再利用される）。
+  it('記録が無いときは「用意（あればそのまま使う）」', () => {
+    const a = planFor(emptyState('landingtest', 'apprun'))
+    expect(a?.description).toBe('コンテナレジストリ『landingtest』を用意（同じ名前のものがあれば、そのまま使います）')
+  })
+
+  // 置き場だけの話。ほかの見出しは変えていない。
+  it('アプリやバケットの見出しは、これまでどおり', () => {
+    const acts = computePlan(defaultSpec({ name: 'landingtest', hasDockerfile: true }), emptyState('landingtest', 'apprun')).actions
+    expect(acts.find(a => a.kind === 'apprun-app')?.description).toBe('AppRunアプリ『landingtest』を作成')
+    expect(acts.find(a => a.kind === 'image')?.description).toBe('コンテナイメージ『landingtest』をビルド・登録')
+  })
+})

@@ -122,6 +122,51 @@ export function registryDeleteHelp(deleteIt: boolean): string {
 }
 
 /**
+ * 「置き場も削除する」の**最初の状態**を決める（純関数）。
+ *
+ * ── なぜ借り物だけ外すのか（2026-08-25・AppRun の引き継ぎ）──────────────────
+ * 既定はオン。残すと月220円が止まらないからで、**Koto が作った置き場ならそれで正しい**
+ * （そのプロジェクト専用なので、消して困る人がいない）。
+ *
+ * だが引き継ぎでは、**利用者が前から持っていた置き場**をそのまま使う。そこに
+ * 別のアプリのイメージが入っていることがあり（コントロールパネルで作った人は
+ * 1つにまとめがち）、消すと**それらのアプリが動かなくなる**。
+ * 消したい人は自分で入れられるので、**借り物のときだけ外しておく。**
+ */
+export function registryDeleteDefault(opts: { registryName: string | null; adopted: boolean }): boolean {
+  if (!opts.registryName) return false
+  return !opts.adopted
+}
+
+/**
+ * プロジェクトごと削除するときに、イメージの置き場がどうなるかの断り（純関数）。
+ *
+ * ── なぜ要るか（2026-08-25 Ryosuke の問いで見つけた）─────────────────────
+ * プロジェクト削除は**破棄の3つめの導線**で、置き場を消すかどうかの選択肢が無い。
+ * 選ばせないなら、**何が起きるかは必ず書く**。書かないと、
+ * 「消えると思っていなかったものが消える」「止まると思っていた課金が続く」の
+ * どちらかが黙って起きる。
+ *
+ * 消さないときだけ文を返す（消すときは「公開も一緒に破棄する」の説明で足りる）。
+ */
+export function projectDeleteRegistryNote(opts: { registryName: string | null; adopted: boolean }): string | null {
+  if (!opts.registryName) return null
+  if (!opts.adopted) return null
+  return `イメージの置き場『${opts.registryName}』は残します`
+    + '（Koto が作ったものではなく、ほかのアプリのイメージも入っている可能性があるためです）。'
+    + `月額${REGISTRY_MONTHLY_YEN}円（税込）は続きます。要らなければ、`
+    + 'さくらのクラウドのコントロールパネルで削除してください。'
+}
+
+/** 借り物の置き場であることの断り（既定を外した理由を、その場で言う）。 */
+export function adoptedRegistryNote(registryName: string | null): string {
+  return `この置き場${registryName ? `『${registryName}』` : ''}は Koto が作ったものではありません`
+    + '（引き継いだときに、もとからあったものをそのまま使っています）。'
+    + 'ほかのアプリのイメージも入っている場合、消すとそれらが動かなくなります。'
+    + `消してよいと分かっているときだけ、チェックを入れてください（月額${REGISTRY_MONTHLY_YEN}円・税込が止まります）。`
+}
+
+/**
  * どのレジストリを使っているかの記録が無いときに、破棄の確認画面へ出す注意。
  *
  * 記録が無いと registryDeletionTarget が「対象不明」を返すので、**チェックを入れても

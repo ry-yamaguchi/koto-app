@@ -59,6 +59,21 @@ export type EnvMeta = {
    */
   registryName?: string
   /**
+   * `registryName` の置き場を、**Koto が作ったのではない**（もとからあったものを
+   * 借りている）ことの印。
+   *
+   * ── なぜ要るか（2026-08-25・AppRun の引き継ぎ）──────────────────────────
+   * 引き継ぎでは、**利用者が前から持っていた置き場**をそのまま使う。それが
+   * 「月額は増えません」と言える理由でもある。ところが破棄の「置き場も削除する」は
+   * **既定でオン**（残すと月220円が止まらないため・2026-08-06）なので、そのままだと
+   * **利用者が自分で作った置き場を、うっかり消せてしまう**。中に他のアプリの
+   * イメージが入っていれば、それらも消える。
+   *
+   * **無い＝Koto が作ったもの**として扱う（今までのプロジェクトの動きを変えない）。
+   * 新しく作ったときは `false` を書き、印を古いまま残さない。
+   */
+  registryAdopted?: boolean
+  /**
    * いま公開しているイメージのタグ（例 `v20260819-182300`）。
    *
    * ── なぜ控えるのか（2026-08-19）──────────────────────────────────────
@@ -75,6 +90,22 @@ export type EnvMeta = {
    * 上がったまま残る**ので、印を残しておき、次に片づけを始めるときに戻す。
    */
   registryElevatedAt?: string
+}
+
+/**
+ * 公開名から、コンテナレジストリの名前（subdomainLabel）を作る（純関数）。
+ *
+ * ── なぜ切り出したか（2026-08-25・AppRun の引き継ぎ）────────────────────
+ * 引き継ぎでは「**次の公開で、いまのレジストリをそのまま使えるのか**」を
+ * 押す前に言う必要がある（使えれば月額は増えず、使えなければ1つ増えて月220円）。
+ * それを判断するには、`cloud:ensureRegistry` が実際に探しにいく名前と
+ * **同じ名前**を作らなければならない。ここに1つだけ置いて、両方から呼ぶ（掟10）。
+ */
+export function registrySubdomainLabel(baseName: string): string {
+  let label = (baseName ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 28)
+  if (label.length < 3) label = ('ide' + label).slice(0, 28)
+  if (!/^[a-z0-9]/.test(label)) label = 'a' + label
+  return label
 }
 
 /**
@@ -197,7 +228,11 @@ export function stateAfterTeardown(state: EnvState, registryDeleted: boolean): E
     name: state.name,
     backend: state.backend,
     resources: state.resources,
-    ...(keep ? { meta: { registryName: name as string } } : {}),
+    // 名前を残すなら、**それが借り物かどうかの印も一緒に残す**。片方だけ残すと、
+    // 次の破棄で「Koto が作ったもの」に見えてチェックが既定オンに戻る（2026-08-25）。
+    ...(keep
+      ? { meta: { registryName: name as string, ...(state.meta?.registryAdopted ? { registryAdopted: true } : {}) } }
+      : {}),
   }
 }
 

@@ -274,8 +274,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('import:list', args),
     inspect: (args: { target: 'vercel' | 'sakura-apprun'; id: string; token?: string; teamId?: string }) =>
       ipcRenderer.invoke('import:inspect', args),
-    run: (args: { target: 'vercel' | 'sakura-apprun'; id: string; destDir: string; token?: string; teamId?: string }) =>
-      ipcRenderer.invoke('import:run', args),
+    // intent は AppRun の「引き継ぎ」に使う（'update' のときだけ .sakura-cloud/ を書く）。
+    run: (args: {
+      target: 'vercel' | 'sakura-apprun'; id: string; destDir: string
+      token?: string; teamId?: string; intent?: 'update' | 'fork' | 'undecided'
+    }) => ipcRenderer.invoke('import:run', args),
     /** 取り込みの進み具合（画面に実況を出す）。戻り値は購読解除。 */
     onProgress: (cb: (message: string) => void) => {
       const h = (_: unknown, p: { message: string }) => cb(p?.message ?? '')

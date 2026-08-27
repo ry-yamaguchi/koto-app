@@ -12,10 +12,12 @@ import {
   listVercelTokenEntries, getVercelTokenById, getVercelTeamIdById,
   listCloudKeys, getActiveCloudKeyId,
 } from './CredentialsModal'
-import { importFolderName } from '../../shared/publishImport'
+import {
+  importFolderName, collectManagedTargets, markManagedCandidates, managedNote,
+} from '../../shared/publishImport'
 import {
   buildImportedMeta, importPlanNotes, importDoneNotes, importConsoleLink, noCandidatesHint,
-  IMPORT_INTENTS, type ImportTarget, type ImportIntent,
+  emphasize, IMPORT_INTENTS, type ImportTarget, type ImportIntent,
 } from '../importProject'
 import { beginActivity } from '../activity'
 
@@ -45,6 +47,22 @@ const TARGETS: { id: ImportTarget; label: string; hint: string }[] = [
   { id: 'sakura-apprun', label: '📦 さくらのAppRun', hint: '公開中のイメージから中身をインポートします' },
 ]
 
+/**
+ * 文言の1行。`**…**` は太字で出す（`emphasize`）。
+ *
+ * ⚠️ 素の文字列のまま出すと `**` がそのまま見える（0.3.41〜・2026-08-25 実機で判明）。
+ * 消すだけだと、いちばん読ませたい一行が平坦になるので**太字にする**。
+ */
+function Note({ children }: { children: string }) {
+  return (
+    <p className="text-ink-secondary">
+      ・{emphasize(children).map((sp, i) => (
+        sp.bold ? <b key={i} className="text-ink font-semibold">{sp.text}</b> : <span key={i}>{sp.text}</span>
+      ))}
+    </p>
+  )
+}
+
 function formatAt(at: string | null): string {
   if (!at) return ''
   const d = new Date(at)
@@ -65,10 +83,13 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
   const [gitNote, setGitNote] = useState('')
   const [progress, setProgress] = useState('')
   /**
-   * このあと何をしたいか（**Vercel のときだけ聞く**）。
+   * このあと何をしたいか（**両方の公開先で聞く**）。
    *
    * **既定値を置かない。** `fork` のつもりで `update` になると生きている公開が消えるが、
    * 逆はプロジェクトが1つ余分にできるだけ。間違いの重さが左右で違うので、選ばせる。
+   *
+   * AppRun では、`update` を選んだときだけ**引き継ぐ**（`.sakura-cloud/` を書く）。
+   * 引き継ぐと破棄が本物のアプリに効くようになるので、**中を見たいだけの人には重い**。
    */
   const [intent, setIntent] = useState<ImportIntent | null>(null)
   /**
@@ -107,6 +128,20 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
     return candidate
   }, [parentDir])
 
+  /**
+   * ワークスペースを見て、**もう手元で管理している公開先**を集める。
+   * 失敗しても一覧は出す（印が付かないだけで、インポート自体はできる）。
+   */
+  const localTargets = useCallback(async () => {
+    try {
+      if (!parentDir) return { apprunAppIds: {}, vercelNames: {} }
+      const r = await window.electronAPI.fs.publishedRecords(parentDir)
+      return collectManagedTargets(r.ok ? r.projects : [])
+    } catch {
+      return { apprunAppIds: {}, vercelNames: {} }
+    }
+  }, [parentDir])
+
   // ── ① 公開先を選ぶ → 一覧 ──────────────────────────────────────────
   /** 選んだキーで探し直す。Vercel はトークンを引数で渡す（方式B・副作用なし）。 */
   const fetchList = useCallback(async (t: ImportTarget, id: string, list: { id: string; label: string }[]) => {
@@ -123,7 +158,10 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       }
       const r = await window.electronAPI.import.list({ target: t, ...creds.current })
       if (!r.ok) { setError(r.message); return }
-      setCandidates(r.candidates)
+      // **もう手元にあるものには印をつける**（2026-08-25 Ryosuke 指摘）。
+      // 同じものを2つ持つ理由は無いが、気づけないと作ってしまう。
+      // 手元のフォルダを見るだけなので、キーもネットワークも要らない。
+      setCandidates(markManagedCandidates(r.candidates, await localTargets()))
       // **「見つかりません」の本当の意味が「そのキーからは見えません」であることは多い。**
       if (!r.candidates.length) setError(noCandidatesHint(t, list.length))
     } catch (e: any) {
@@ -201,7 +239,11 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
     const endActivity = beginActivity('公開しているもののインポート')
     const off = window.electronAPI.import.onProgress(m => setProgress(m))
     try {
-      const r = await window.electronAPI.import.run({ target, id: selected.id, destDir: dest, ...creds.current })
+      const r = await window.electronAPI.import.run({
+        target, id: selected.id, destDir: dest, ...creds.current,
+        // AppRun の引き継ぎは main 側で行う（`.sakura-cloud/` を書くのは main）。
+        ...(intent ? { intent } : {}),
+      })
       if (!r.ok) { setError(r.message); setStep('confirm'); return }
 
       // インポートした事実を記録する（何を・どこから・いつ）。公開の記録を書くかは
@@ -220,6 +262,8 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
           fileCount: r.fileCount,
           settings: r.settings ?? insp?.settings ?? null,
           intent,
+          // **選んだこと（intent）ではなく、できたこと（adopted）で記録を決める。**
+          adopted: r.adopted === true,
         },
       })
       await window.electronAPI.fs.createProject(parentDir, n, [
@@ -338,6 +382,10 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
                     {[formatAt(c.at), c.note].filter(Boolean).join(' / ')}
                   </div>
                   {c.blocked && <div className="text-[11px] text-brand-red mt-0.5">{c.blocked}</div>}
+                  {/* もう手元にある（2026-08-25）。**止めはしない。気づかせる。** */}
+                  {c.managedBy && (
+                    <div className="text-[11px] text-brand-yellow mt-0.5">⚠️ {managedNote(c.managedBy.projectName)}</div>
+                  )}
                 </button>
               ))}
             </div>
@@ -346,7 +394,9 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
           {/* Git 由来: 断るが、どこから取ればよいかを必ず添える */}
           {gitNote && (
             <div className="text-xs bg-surface border border-brand-yellow/60 rounded-lg px-3 py-2.5 text-ink leading-relaxed">
-              {gitNote.replace(/\*\*/g, '')}
+              {emphasize(gitNote).map((sp, i) => (
+                sp.bold ? <b key={i} className="font-semibold">{sp.text}</b> : <span key={i}>{sp.text}</span>
+              ))}
             </div>
           )}
         </>
@@ -378,33 +428,51 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
             )}
           </div>
 
-          {/* このあと何をしたいか（**いまは Vercel のときだけ**）。
-              AppRun で聞かないのは、インポートしたアプリの ID を
-              `.sakura-cloud/state.json` に書いていないから（Koto 自体は AppRun を
-              更新できる）。書けば引き継げる——dev-plan ④ の第4段階。 */}
-          {target === 'vercel' && (
-            <div>
-              <label className="text-xs font-semibold text-ink-secondary">このあと、どうしますか？</label>
-              <div className="mt-1.5 space-y-1.5">
-                {IMPORT_INTENTS.map(o => (
-                  <button
-                    key={o.id}
-                    onClick={() => setIntent(o.id)}
-                    disabled={step === 'running'}
-                    className={`w-full text-left px-3 py-2 rounded-xl border transition-colors disabled:opacity-50 ${
-                      intent === o.id ? 'border-sakura bg-surface' : 'border-line bg-surface hover:border-sakura/60'
-                    }`}
-                  >
-                    <div className="text-sm font-semibold text-ink">{o.label}</div>
-                    <div className="text-[11px] text-ink-muted">{o.hint}</div>
-                  </button>
-                ))}
-              </div>
-              {!intent && (
-                <p className="mt-1 text-[11px] text-ink-muted">選ぶと、このあと何が起きるかが下に出ます。</p>
-              )}
+          {/* もう手元にあるものを選んだとき。**同じものを2つ持つ理由は無い**ので、
+              そのプロジェクトを開ける道をここに出す（一覧の行はボタンなので、
+              入れ子のボタンを避けてこちらに置いた）。 */}
+          {selected.managedBy && (
+            <div className="text-xs bg-surface border border-brand-yellow/60 rounded-lg px-3 py-2.5 leading-relaxed space-y-1.5">
+              <p className="text-ink">⚠️ {managedNote(selected.managedBy.projectName)}</p>
+              <p className="text-ink-secondary">
+                取り込むと、同じものを指すプロジェクトが2つになります。編集を続けたいだけなら、
+                そちらを開いてください。
+              </p>
+              <button
+                onClick={() => selected.managedBy && onCreated(selected.managedBy.dir)}
+                disabled={step === 'running'}
+                className="text-[11px] text-sakura hover:underline disabled:opacity-50"
+              >
+                「{selected.managedBy.projectName}」を開く →
+              </button>
             </div>
           )}
+
+          {/* このあと何をしたいか（**両方の公開先で聞く**）。
+              AppRun では `update` を選んだときだけ引き継ぎ、
+              `.sakura-cloud/state.json` にアプリIDを書く（dev-plan ④ 第4段階）。
+              引き継ぐと破棄が本物のアプリに効くので、**選んだときだけ**にする。 */}
+          <div>
+            <label className="text-xs font-semibold text-ink-secondary">このあと、どうしますか？</label>
+            <div className="mt-1.5 space-y-1.5">
+              {IMPORT_INTENTS.map(o => (
+                <button
+                  key={o.id}
+                  onClick={() => setIntent(o.id)}
+                  disabled={step === 'running'}
+                  className={`w-full text-left px-3 py-2 rounded-xl border transition-colors disabled:opacity-50 ${
+                    intent === o.id ? 'border-sakura bg-surface' : 'border-line bg-surface hover:border-sakura/60'
+                  }`}
+                >
+                  <div className="text-sm font-semibold text-ink">{o.label}</div>
+                  <div className="text-[11px] text-ink-muted">{o.hint}</div>
+                </button>
+              ))}
+            </div>
+            {!intent && (
+              <p className="mt-1 text-[11px] text-ink-muted">選ぶと、このあと何が起きるかが下に出ます。</p>
+            )}
+          </div>
 
           <div className="text-xs bg-surface border border-line rounded-lg px-3 py-2.5 space-y-1.5 leading-relaxed">
             <div className="font-semibold text-ink">このあと起きること</div>
@@ -419,9 +487,8 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
               publishName: selected.name,
               intent,
               projectName: name.trim(),
-            }).map((n, i) => (
-              <p key={i} className="text-ink-secondary">・{n}</p>
-            ))}
+              adopt: insp?.adopt ?? null,
+            }).map((n, i) => <Note key={i}>{n}</Note>)}
           </div>
 
           {step === 'running' ? (
@@ -439,8 +506,8 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
               </button>
               <button
                 onClick={runImport}
-                disabled={!name.trim() || !nameOk || !parentDir || (target === 'vercel' && !intent)}
-                title={target === 'vercel' && !intent ? '「このあと、どうしますか？」を選んでください' : undefined}
+                disabled={!name.trim() || !nameOk || !parentDir || !intent}
+                title={!intent ? '「このあと、どうしますか？」を選んでください' : undefined}
                 className="flex-1 py-2.5 rounded-xl text-sm font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity disabled:opacity-50"
               >
                 インポート
@@ -460,9 +527,9 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
               failed: result.failed,
               historySnapshotId: result.historySnapshotId,
               historyNote: result.historyNote,
-            }).map((n, i) => (
-              <p key={i} className="text-ink-secondary">・{n}</p>
-            ))}
+              adopted: result.adopted,
+              adoptNote: result.adoptNote,
+            }).map((n, i) => <Note key={i}>{n}</Note>)}
             <p className="text-ink-muted">
               元の公開は{importConsoleLink(target).label}（{importConsoleLink(target).url}）で確認できます。
             </p>

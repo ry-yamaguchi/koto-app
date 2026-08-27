@@ -31,13 +31,36 @@ export type SecretRef = { name: string; ref: string }
 /** スケール設定（AppRun の最小/最大インスタンス数）。 */
 export type ScaleSpec = { min: number; max: number }
 
-/** サービス（AppRunアプリ）の定義。 */
+/**
+ * サービス（AppRunアプリ）の定義。
+ *
+ * ── 下の4つが任意なのはなぜか（2026-08-25・引き継ぎの設計中に判明）──────────
+ * これらは**よそで作られたアプリを引き継ぐとき**に要る。再デプロイ（PATCH）は
+ * `components` を**丸ごと差し替える**ので、書いていない項目は Koto の既定値で
+ * 上書きされる。引き継いだアプリで既定値に戻ると、**動いているアプリが壊れる**:
+ *
+ * | 項目 | 書かないと | 起きること |
+ * |---|---|---|
+ * | `componentName` | `main` になる | 入れ物が別名に置き換わる |
+ * | `cpu` / `memory` | `1` / `1Gi` になる | 2Gi で動いていたものが半分になる |
+ * | `probePath` | `/` になる | `/` が無いアプリは**健康診断に落ちて公開が失敗する** |
+ *
+ * **無ければ従来どおりの既定値**なので、Koto が作ったプロジェクトの動きは変わらない。
+ */
 export type ServiceSpec = {
   source: ServiceSource
   port: number
   env: EnvVar[]
   secrets: SecretRef[]
   scale: ScaleSpec
+  /** 入れ物の名前（任意。既定 `main`）。 */
+  componentName?: string
+  /** 割り当てる CPU（任意。既定 `1`）。さくらが受け取る文字列をそのまま持つ。 */
+  cpu?: string
+  /** 割り当てるメモリ（任意。既定 `1Gi`）。 */
+  memory?: string
+  /** 健康診断で叩く場所（任意。既定 `/`）。 */
+  probePath?: string
 }
 
 /** オブジェクトストレージのバケット定義（ステートフル資源）。 */
@@ -99,6 +122,12 @@ export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/
 
 /** イメージタグの制約: 英数字・ドット・アンダースコア・ハイフンのみ、1〜128文字。 */
 export const TAG_PATTERN = /^[A-Za-z0-9._-]{1,128}$/
+
+/** 入れ物（component）の名前の制約: 英数字・ドット・アンダースコア・ハイフンのみ、1〜64文字。 */
+export const COMPONENT_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
+
+/** CPU・メモリの表記の制約: 英数字とドットのみ、1〜16文字（`0.2` `512Mi` `1Gi` など）。 */
+export const SIZE_PATTERN = /^[A-Za-z0-9.]{1,16}$/
 
 /** validateSpec の戻り値。成功なら ok:true と正規化済みの spec、失敗なら ok:false と errors。 */
 export type ValidateResult =
@@ -239,6 +268,30 @@ export function validateSpec(obj: unknown): ValidateResult {
       }
       if (isInt(scale.min) && isInt(scale.max) && scale.min > scale.max) {
         errors.push('service.scale.min は service.scale.max 以下である必要があります')
+      }
+    }
+
+    // 引き継ぎ用の任意項目。**無いのは正常**（Koto が作ったものには無い）。
+    // 書いてあるときだけ形を見る。**中身の一覧は決めつけない**——さくらが返した
+    // 文字列をそのまま送り返すのが目的で、こちらが値を発明する場面が無いため。
+    if (service.componentName !== undefined) {
+      if (!isString(service.componentName) || !COMPONENT_NAME_PATTERN.test(service.componentName)) {
+        errors.push('service.componentName は英数字・ドット・アンダースコア・ハイフンのみ・1〜64文字にしてください')
+      }
+    }
+    if (service.cpu !== undefined) {
+      if (!isString(service.cpu) || !SIZE_PATTERN.test(service.cpu)) {
+        errors.push('service.cpu は英数字・ドットのみ・1〜16文字にしてください')
+      }
+    }
+    if (service.memory !== undefined) {
+      if (!isString(service.memory) || !SIZE_PATTERN.test(service.memory)) {
+        errors.push('service.memory は英数字・ドットのみ・1〜16文字にしてください')
+      }
+    }
+    if (service.probePath !== undefined) {
+      if (!isString(service.probePath) || !service.probePath.startsWith('/')) {
+        errors.push('service.probePath は「/」で始まる文字列である必要があります')
       }
     }
   }
