@@ -26,7 +26,7 @@
 // （ipc/cloud.ts の ensureRegistry）。
 //
 //   ✅ **一覧（crane ls）は readwrite のままで通る**
-//      2026-08-19、landingtest.sakuracr.jp に対して実機で確認した
+//      2026-08-19、sample-app.sakuracr.jp に対して実機で確認した
 //      （タグ v20260819-183758 / -184422 / -184601 と latest が返った）。
 //   ❓ **削除が readwrite で通るかは未確認。** マニュアルの区分どおりなら断られる。
 //      消す対象が無かったため、実機で試せていない（docs/dev-plan.md の調査ステップ）。

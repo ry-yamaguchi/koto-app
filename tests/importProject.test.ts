@@ -182,10 +182,10 @@ describe('インポートする前に見せる「このあと起きること」'
   it('AppRun: 秘密は取り戻せないことを、鍵の名前つきで言う', () => {
     const notes = importPlanNotes({
       target: 'sakura-apprun', publishDirLabel: '公開されるもの',
-      image: 'landingtest.sakuracr.jp/landingtest:v1', secretKeys: ['DB_PASSWORD', 'API_KEY'],
+      image: 'sample-app.sakuracr.jp/sample-app:v1', secretKeys: ['DB_PASSWORD', 'API_KEY'],
     })
     expect(notes.some(n => n.includes('秘密の値') && n.includes('DB_PASSWORD') && n.includes('入れ直して'))).toBe(true)
-    expect(notes.some(n => n.includes('landingtest.sakuracr.jp/landingtest:v1'))).toBe(true)
+    expect(notes.some(n => n.includes('sample-app.sakuracr.jp/sample-app:v1'))).toBe(true)
   })
 
   it('AppRun: 秘密が無ければ、入れ直しの話はしない', () => {

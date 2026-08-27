@@ -19,7 +19,7 @@ import { appRunSettings, type AppRunSettings } from '../src/shared/publishImport
 /** 実測（2026-08-22）の形に寄せた、公開中アプリの詳細。 */
 const DETAIL = {
   id: 'app-1234',
-  name: 'landingtest',
+  name: 'sample-app',
   port: 3000,
   min_scale: 1,
   max_scale: 4,
@@ -28,7 +28,7 @@ const DETAIL = {
     name: 'web',
     max_cpu: '0.2',
     max_memory: '2Gi',
-    deploy_source: { container_registry: { image: 'landingtest.sakuracr.jp/landingtest:v20260821-231947', server: 'landingtest.sakuracr.jp' } },
+    deploy_source: { container_registry: { image: 'sample-app.sakuracr.jp/sample-app:v20260821-231947', server: 'sample-app.sakuracr.jp' } },
     env: [{ key: 'NODE_ENV', value: 'production' }, { key: 'GREETING', value: 'hello' }],
     secret: [{ key: 'DB_PASS' }],
     probe: { http_get: { path: '/healthz', port: 3000 } },
@@ -91,7 +91,7 @@ describe('引き継ぐ前に伝えること', () => {
 })
 
 describe('引き継ぎで書く env.json', () => {
-  const spec = adoptedSpec({ appName: 'landingtest', appId: 'app-1234', settings: S() })
+  const spec = adoptedSpec({ appName: 'sample-app', appId: 'app-1234', settings: S() })
 
   it('公開の設定として通る形になっている', () => {
     const v = validateSpec(spec)
@@ -133,24 +133,24 @@ describe('引き継ぎで書く env.json', () => {
   })
 
   it('規模が読めないときだけ既定に倒す', () => {
-    const s2 = adoptedSpec({ appName: 'landingtest', appId: 'x', settings: S({ minScale: null, maxScale: null }) })
+    const s2 = adoptedSpec({ appName: 'sample-app', appId: 'x', settings: S({ minScale: null, maxScale: null }) })
     expect(s2.service.scale).toEqual({ min: 0, max: 1 })
     expect(validateSpec(s2).ok).toBe(true)
   })
 
   it('min が max を超える壊れた値でも、検証を通る形にする', () => {
-    const s2 = adoptedSpec({ appName: 'landingtest', appId: 'x', settings: S({ minScale: 5, maxScale: 2 }) })
+    const s2 = adoptedSpec({ appName: 'sample-app', appId: 'x', settings: S({ minScale: 5, maxScale: 2 }) })
     expect(validateSpec(s2).ok).toBe(true)
   })
 })
 
 describe('引き継ぎで書く state.json', () => {
-  const base = { appName: 'landingtest', appId: 'app-1234', settings: S() }
-  const state = adoptedState({ ...base, imageServer: 'landingtest.sakuracr.jp' })
+  const base = { appName: 'sample-app', appId: 'app-1234', settings: S() }
+  const state = adoptedState({ ...base, imageServer: 'sample-app.sakuracr.jp' })
 
   it('アプリIDを記録する（これが無いと再デプロイできない）', () => {
     expect(state.resources).toEqual([
-      { kind: 'apprun-app', id: 'app-1234', stateful: false, key: 'apprun-app:landingtest' },
+      { kind: 'apprun-app', id: 'app-1234', stateful: false, key: 'apprun-app:sample-app' },
     ])
   })
 
@@ -158,7 +158,7 @@ describe('引き継ぎで書く state.json', () => {
   // 用意した**別プロジェクト**のもの——を使い、関係のない置き場へイメージが入る。
   // もとの置き場は誰にも使われないまま月220円がかかり続ける（2026-08-25）。
   it('いま使っている置き場の名前を記録する', () => {
-    expect(state.meta?.registryName).toBe('landingtest')
+    expect(state.meta?.registryName).toBe('sample-app')
   })
 
   // ⚠️ 印が無いと、破棄の「置き場も削除する」が既定オンのままになり、
@@ -179,12 +179,12 @@ describe('引き継ぎで書く state.json', () => {
 describe('破棄で「置き場も削除する」の最初の状態', () => {
   // Koto が作った置き場は、そのプロジェクト専用。残すと月220円が止まらないので既定オン。
   it('Koto が作ったものなら、これまでどおりオン', () => {
-    expect(registryDeleteDefault({ registryName: 'landingtest', adopted: false })).toBe(true)
+    expect(registryDeleteDefault({ registryName: 'sample-app', adopted: false })).toBe(true)
   })
 
   // 借り物には、他のアプリのイメージも入っていることがある。
   it('借り物ならオフにしておく', () => {
-    expect(registryDeleteDefault({ registryName: 'landingtest', adopted: true })).toBe(false)
+    expect(registryDeleteDefault({ registryName: 'sample-app', adopted: true })).toBe(false)
   })
 
   it('記録が無ければ、そもそも消せない', () => {
@@ -192,8 +192,8 @@ describe('破棄で「置き場も削除する」の最初の状態', () => {
   })
 
   it('黙って外さず、理由をその場で言う', () => {
-    const note = adoptedRegistryNote('landingtest')
-    expect(note).toContain('landingtest')
+    const note = adoptedRegistryNote('sample-app')
+    expect(note).toContain('sample-app')
     expect(note).toContain('Koto が作ったものではありません')
     expect(note).toContain('ほかのアプリのイメージ')
     expect(note).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
@@ -202,15 +202,15 @@ describe('破棄で「置き場も削除する」の最初の状態', () => {
   // ⚠️ 名前だけ残して印を落とすと、次の破棄で「Koto が作ったもの」に見えて既定オンに戻る。
   it('破棄でレジストリを残したときは、名前と一緒に印も残す', () => {
     const kept = stateAfterTeardown(
-      { name: 'x', backend: 'apprun', resources: [], meta: { registryName: 'landingtest', registryAdopted: true } },
+      { name: 'x', backend: 'apprun', resources: [], meta: { registryName: 'sample-app', registryAdopted: true } },
       false,
     )
-    expect(kept.meta).toEqual({ registryName: 'landingtest', registryAdopted: true })
+    expect(kept.meta).toEqual({ registryName: 'sample-app', registryAdopted: true })
   })
 
   it('レジストリを消したときは、名前も印も残さない', () => {
     const gone = stateAfterTeardown(
-      { name: 'x', backend: 'apprun', resources: [], meta: { registryName: 'landingtest', registryAdopted: true } },
+      { name: 'x', backend: 'apprun', resources: [], meta: { registryName: 'sample-app', registryAdopted: true } },
       true,
     )
     expect(gone.meta).toBeUndefined()
@@ -270,8 +270,8 @@ describe('破棄で「置き場も削除する」の最初の状態', () => {
 
 describe('プロジェクトごと削除するときの断り', () => {
   it('借り物なら、残すことと課金が続くことを言う', () => {
-    const note = projectDeleteRegistryNote({ registryName: 'landingtest', adopted: true })
-    expect(note).toContain('landingtest')
+    const note = projectDeleteRegistryNote({ registryName: 'sample-app', adopted: true })
+    expect(note).toContain('sample-app')
     expect(note).toContain('残します')
     expect(note).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
     // 行き止まりにしない（消したい人の行き先を書く）
@@ -280,7 +280,7 @@ describe('プロジェクトごと削除するときの断り', () => {
 
   // Koto が作った置き場は今までどおり消す。消えるものの話は「公開も一緒に破棄する」で足りる。
   it('Koto が作ったものなら、何も言わない（消すので）', () => {
-    expect(projectDeleteRegistryNote({ registryName: 'landingtest', adopted: false })).toBeNull()
+    expect(projectDeleteRegistryNote({ registryName: 'sample-app', adopted: false })).toBeNull()
   })
 
   it('記録が無ければ、何も言わない（そもそも消せない）', () => {
@@ -291,7 +291,7 @@ describe('プロジェクトごと削除するときの断り', () => {
 // ── ここが本体。**env.json と state.json のキーが噛み合って初めて引き継げる。** ──
 describe('引き継いだあと、公開が「更新」になる', () => {
   it('計画が update になり、作成にならない', () => {
-    const input = { appName: 'landingtest', appId: 'app-1234', settings: S() }
+    const input = { appName: 'sample-app', appId: 'app-1234', settings: S() }
     const plan = computePlan(adoptedSpec(input), adoptedState(input))
     const app = plan.actions.filter(a => a.kind === 'apprun-app')
     expect(app.map(a => a.type)).toEqual(['update'])
@@ -308,14 +308,14 @@ describe('引き継いだあと、公開が「更新」になる', () => {
   })
 
   it('引き継いでいなければ、作成になる（第4段階の前の姿）', () => {
-    const spec = adoptedSpec({ appName: 'landingtest', appId: 'app-1234', settings: S() })
+    const spec = adoptedSpec({ appName: 'sample-app', appId: 'app-1234', settings: S() })
     const plan = computePlan(spec, { name: spec.name, backend: 'apprun', resources: [] })
     expect(plan.actions.filter(a => a.kind === 'apprun-app').map(a => a.type)).toEqual(['create'])
   })
 })
 
 describe('再デプロイの中身（PATCH は components を丸ごと差し替える）', () => {
-  const spec = adoptedSpec({ appName: 'landingtest', appId: 'app-1234', settings: S() })
+  const spec = adoptedSpec({ appName: 'sample-app', appId: 'app-1234', settings: S() })
 
   it('引き継いだ設定が、そのまま送り返される', () => {
     const c = buildPatchBody(spec).components[0]
@@ -343,8 +343,8 @@ describe('引き継いでも月額が増えないか', () => {
   // `registryLookupNames` は**記録した名前を先に試す**ので、名前を控えられたなら
   // いまの置き場がそのまま見つかる（＝新しく作らない＝増えない）。
   it('置き場の名前を読み取れたら、増えない', () => {
-    const r = adoptionRegistryReuse({ appName: 'landingtest', imageServer: 'landingtest.sakuracr.jp' })
-    expect(r).toEqual({ reuses: true, wanted: 'landingtest', current: 'landingtest' })
+    const r = adoptionRegistryReuse({ appName: 'sample-app', imageServer: 'sample-app.sakuracr.jp' })
+    expect(r).toEqual({ reuses: true, wanted: 'sample-app', current: 'sample-app' })
   })
 
   // 公開名と置き場の名前が違っていても、**記録するので見つかる**。
@@ -359,7 +359,7 @@ describe('引き継いでも月額が増えないか', () => {
   })
 
   it('イメージ参照そのものからでもレジストリ名を取り出せる', () => {
-    expect(registryLabelFromServer('landingtest.sakuracr.jp/landingtest:v1')).toBe('landingtest')
+    expect(registryLabelFromServer('sample-app.sakuracr.jp/sample-app:v1')).toBe('sample-app')
     expect(registryLabelFromServer('')).toBeNull()
   })
 
@@ -373,7 +373,7 @@ describe('引き継いでも月額が増えないか', () => {
     expect(registryLabelFromServer('my-registry.sakuracr.jp.evil.example/app')).toBeNull()
     expect(registryLabelFromServer('.sakuracr.jp')).toBeNull()
     // 大文字で来ても拾う
-    expect(registryLabelFromServer('LandingTest.sakuracr.jp')).toBe('landingtest')
+    expect(registryLabelFromServer('Sample-App.sakuracr.jp')).toBe('sample-app')
   })
 
   // ⚠️ 読み取れなかったときの当て先は、**ensureRegistry が実際に探す名前と同じ**でなければ
@@ -390,17 +390,17 @@ describe('引き継いでも月額が増えないか', () => {
 
 describe('押す前に見せる見立て', () => {
   it('引き継げるとき', () => {
-    const p = adoptionPreview({ appName: 'landingtest', settings: S(), imageServer: 'landingtest.sakuracr.jp' })
+    const p = adoptionPreview({ appName: 'sample-app', settings: S(), imageServer: 'sample-app.sakuracr.jp' })
     expect(p.canAdopt).toBe(true)
     expect(p.blocker).toBeNull()
     expect(p.reusesRegistry).toBe(true)
-    expect(p.specName).toBe('landingtest')
-    expect(p.appName).toBe('landingtest')
+    expect(p.specName).toBe('sample-app')
+    expect(p.appName).toBe('sample-app')
     expect(p.warnings.length).toBeGreaterThan(0)
   })
 
   it('引き継げないとき', () => {
-    const p = adoptionPreview({ appName: 'landingtest', settings: S({ port: null }), imageServer: 'x' })
+    const p = adoptionPreview({ appName: 'sample-app', settings: S({ port: null }), imageServer: 'x' })
     expect(p.canAdopt).toBe(false)
     expect(p.blocker).toContain('ポート')
   })
@@ -414,7 +414,7 @@ describe('押す前に見せる見立て', () => {
 
 // ── 実際にディスクへ書かれる中身（**書く側からは切り離してある**）──────────
 describe('引き継ぎで書くファイル', () => {
-  const input = { appName: 'landingtest', appId: 'app-1234', settings: S() }
+  const input = { appName: 'sample-app', appId: 'app-1234', settings: S() }
 
   it('.sakura-cloud の2つを、そのまま置ける中身で返す', () => {
     const r = adoptedFiles(input)
@@ -423,7 +423,7 @@ describe('引き継ぎで書くファイル', () => {
     expect(r.files.map(f => f.rel)).toEqual(['env.json', 'state.json'])
     const env = JSON.parse(r.files[0].content)
     const state = JSON.parse(r.files[1].content)
-    expect(env.name).toBe('landingtest')
+    expect(env.name).toBe('sample-app')
     expect(env.service.port).toBe(3000)
     expect(state.resources[0].id).toBe('app-1234')
     // どちらも改行で終わる（他の設定ファイルと同じ流儀）

@@ -44,7 +44,7 @@ describe('破棄で削除するレジストリの決め方', () => {
 // ── 公開の push 先（2026-08-09、実機検証の手順4c で発覚）───────────────────
 // v0.2.95 が直したのは「破棄」側だけで、「公開」側は接続情報（アプリ共通に1つだけ・
 // 最後に「↻ ユーザー再設定」を押したプロジェクトのもの）をそのまま push 先にしていた。
-// 実機では yamada のイメージが newproject-2-1b9c.sakuracr.jp/yamada:latest として
+// 実機では yamada のイメージが sample-2-1b9c.sakuracr.jp/yamada:latest として
 // B のレジストリに入った。この状態で B を破棄すると A が動かなくなる。
 describe('公開の push 先を決める', () => {
   it('記録と接続情報が一致すれば、そのまま使う', () => {
@@ -53,8 +53,8 @@ describe('公開の push 先を決める', () => {
 
   // 実害の再現。ここが通ると別プロジェクトのレジストリへ push される
   it('食い違ったら公開させない（別プロジェクトのレジストリへ入れない）', () => {
-    expect(resolvePushRegistry('yamada-2fdb', 'newproject-2-1b9c'))
-      .toEqual({ error: 'mismatch', recorded: 'yamada-2fdb', credential: 'newproject-2-1b9c' })
+    expect(resolvePushRegistry('yamada-2fdb', 'sample-2-1b9c'))
+      .toEqual({ error: 'mismatch', recorded: 'yamada-2fdb', credential: 'sample-2-1b9c' })
   })
 
   // 記録が無いのは v0.2.99 以前に失われた環境。ここで止めると「↻ ユーザー再設定」を
@@ -74,7 +74,7 @@ describe('公開の push 先を決める', () => {
   it('採用したあとは、同じ組み合わせで食い違い判定に切り替わる', () => {
     const first = resolvePushRegistry(null, 'yamada-2fdb')
     expect(first).toEqual({ use: 'yamada-2fdb', adopt: true })
-    expect(resolvePushRegistry('yamada-2fdb', 'newproject-2-1b9c')).toHaveProperty('error', 'mismatch')
+    expect(resolvePushRegistry('yamada-2fdb', 'sample-2-1b9c')).toHaveProperty('error', 'mismatch')
   })
 })
 

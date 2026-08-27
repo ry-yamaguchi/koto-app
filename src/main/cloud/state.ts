@@ -175,7 +175,7 @@ export function withCreationMeta(state: EnvState, ttlHours: number, now: Date): 
  * 最後に「↻ ユーザー再設定」を押したプロジェクトのもので上書きされる。
  * 公開処理はそれをそのまま使っていたため、**別のプロジェクトのレジストリへ
  * イメージを push していた**（例: yamada のイメージが
- * newproject-2-1b9c.sakuracr.jp/yamada:latest として B のレジストリに入った）。
+ * sample-2-1b9c.sakuracr.jp/yamada:latest として B のレジストリに入った）。
  * その状態で B を破棄してレジストリを消すと、**A が参照するイメージが消えて A が動かなくなる**。
  * プロジェクトを2つ行き来していれば、誤操作なしで起きる。
  *

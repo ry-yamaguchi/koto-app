@@ -12,7 +12,7 @@
 /** レジストリが原因らしいログの印。押し付けがましくならないよう、確度の高いものだけ。 */
 const MARKERS: readonly RegExp[] = [
   // さくらのレジストリが消えているときの、いちばんはっきりした印（2026-08-14 実機ログ）:
-  //   GET https://auth.sakuracr.jp/token/?...&service=data-test-cd35.sakuracr.jp:
+  //   GET https://auth.sakuracr.jp/token/?...&service=sample-data-cd35.sakuracr.jp:
   //   unexpected status code 404 Not Found: {"error": "unknown service"}
   /unknown service/i,
   /401|403/,

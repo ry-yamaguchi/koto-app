@@ -40,7 +40,7 @@ export type AdoptInput = {
   /** 実物から読んだ公開設定。 */
   settings: AppRunSettings
   /**
-   * いま使っているイメージの置き場（`landingtest.sakuracr.jp` の形）。
+   * いま使っているイメージの置き場（`sample-app.sakuracr.jp` の形）。
    *
    * **これを記録するのが引き継ぎの半分。** 書いておかないと、次の公開は
    * 「アプリ全体に1つだけある接続情報」——**最後にレジストリを用意した別プロジェクトのもの**

@@ -107,9 +107,9 @@ describe('Git 由来かどうか', () => {
 
 describe('Vercel の候補一覧', () => {
   const deployments = [
-    { uid: 'dpl_new', name: 'landingtest', projectId: 'prj_1', url: 'a-new.vercel.app', created: 200, state: 'READY', inspectorUrl: 'https://vercel.com/rryosuke/landingtest/new' },
-    { uid: 'dpl_old', name: 'landingtest', projectId: 'prj_1', url: 'a-old.vercel.app', created: 100, state: 'READY', inspectorUrl: 'https://vercel.com/rryosuke/landingtest/old' },
-    { uid: 'dpl_other', name: 'blog', projectId: 'prj_2', url: 'b.vercel.app', created: 150, state: 'READY', inspectorUrl: 'https://vercel.com/rryosuke/blog/x' },
+    { uid: 'dpl_new', name: 'landingtest', projectId: 'prj_1', url: 'a-new.vercel.app', created: 200, state: 'READY', inspectorUrl: 'https://vercel.com/acme/landingtest/new' },
+    { uid: 'dpl_old', name: 'landingtest', projectId: 'prj_1', url: 'a-old.vercel.app', created: 100, state: 'READY', inspectorUrl: 'https://vercel.com/acme/landingtest/old' },
+    { uid: 'dpl_other', name: 'blog', projectId: 'prj_2', url: 'b.vercel.app', created: 150, state: 'READY', inspectorUrl: 'https://vercel.com/acme/blog/x' },
   ]
 
   it('同じプロジェクトは最新の1件だけにする（古い版を並べない）', () => {
@@ -120,7 +120,7 @@ describe('Vercel の候補一覧', () => {
   })
 
   it('どこのものかを添える（個人の一覧にチームのものが出るため）', () => {
-    expect(vercelCandidates(deployments)[0].note).toContain('rryosuke')
+    expect(vercelCandidates(deployments)[0].note).toContain('acme')
   })
 
   it('公開が完了していないものは選ばせない', () => {
@@ -135,24 +135,24 @@ describe('Vercel の候補一覧', () => {
 
 // ── AppRun（2026-08-22 実測の応答）──────────────────────────────────────
 const appDetail = {
-  id: '10c655bd', name: 'landingtest', timeout_seconds: 60, port: 8080,
+  id: 'app-0001', name: 'landingtest', timeout_seconds: 60, port: 8080,
   min_scale: 0, max_scale: 1,
   components: [{
     name: 'main', max_cpu: '1', max_memory: '1Gi',
-    deploy_source: { container_registry: { image: 'landingtest.sakuracr.jp/landingtest:v20260821-231947', server: 'landingtest.sakuracr.jp', username: 'sakuraide' } },
+    deploy_source: { container_registry: { image: 'sample-app.sakuracr.jp/sample-app:v20260821-231947', server: 'sample-app.sakuracr.jp', username: 'sakuraide' } },
     env: [{ key: 'NODE_ENV', value: 'production' }],
     secret: [],
     probe: { http_get: { port: 8080, path: '/' } },
   }],
-  status: 'Healthy', public_url: 'https://app-10c655bd.ingress.apprun.sakura.ne.jp',
+  status: 'Healthy', public_url: 'https://app-0001.ingress.apprun.sakura.ne.jp',
   created_at: '2026-08-19T08:50:17+09:00',
 }
 
 describe('AppRun のアプリ詳細から取り出す', () => {
   it('イメージの参照（タグまで）を取れる', () => {
     expect(appRunImageRef(appDetail)).toEqual({
-      image: 'landingtest.sakuracr.jp/landingtest:v20260821-231947',
-      server: 'landingtest.sakuracr.jp',
+      image: 'sample-app.sakuracr.jp/sample-app:v20260821-231947',
+      server: 'sample-app.sakuracr.jp',
       username: 'sakuraide',
     })
   })

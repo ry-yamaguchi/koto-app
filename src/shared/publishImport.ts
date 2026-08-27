@@ -212,7 +212,7 @@ export function vercelCandidates(deployments: readonly any[]): ImportCandidate[]
 /**
  * アプリの詳細から、取り出すイメージの参照を得る（純関数）。
  * 実測（2026-08-22）で `components[0].deploy_source.container_registry.image` に
- * `landingtest.sakuracr.jp/landingtest:v20260821-231947` の形で入っていた。
+ * `sample-app.sakuracr.jp/sample-app:v20260821-231947` の形で入っていた。
  */
 export function appRunImageRef(detail: unknown): { image: string; server: string; username: string } | null {
   const c = (detail as any)?.components
