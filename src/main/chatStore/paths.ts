@@ -7,6 +7,11 @@
 // `.sakuraide/` はバックアップ・公開物・GitHub保存から除外する
 // （envDetect.ts / github/enumerate.ts / ipc/fs.ts の SKIP_DIRS、cloud/imageBuild.ts の EXCLUDE_NAMES、
 //   ipc/hanamii.ts の zip 除外に `.sakuraide-backup` と並べて追加してある）。
+//
+// IDEのプロジェクト別チャット（chat.json）は中身の形式が2種類ある（読み書きは chatStore/log.ts）:
+//   - v1: 配列まるごとの JSON（先頭の非空白文字が '['）
+//   - v2: 1行1レコードの JSONL（追記式。1.5秒ごとの自動保存で配列を丸ごと書き直さないようにした）
+// このファイル名・場所自体は v1/v2 どちらでも変わらない。単独チャット（chat-app.json）は今回の対象外で v1 のまま。
 import * as path from 'path'
 
 /** root 配下に閉じ込めたパスを組み立てる（ipc/backup.ts の confineToProject と同等の防御）。 */
