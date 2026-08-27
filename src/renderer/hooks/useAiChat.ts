@@ -15,7 +15,7 @@ import { getAnthropicToken } from '../components/CredentialsModal'
 import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode } from '../claudeMode'
 import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
-import { stamp } from '../../shared/chatTime'
+import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
 
 /** まったく同じツール呼び出し（名前＋引数）がこの回数だけ連続したら暴走とみなして中断する。
  *  周回数の上限（maxRounds）を 5→25 に引き上げた代わりの歯止め（2026-07-23）。
@@ -138,14 +138,24 @@ export function useAiChat(args: UseAiChatArgs) {
 
   const abort = useCallback(() => { abortRef.current?.() }, [])
 
-  // 末尾の吹き出し操作ヘルパー（関数型更新で表示先に依存しない）
-  const appendBubble = useCallback((msg: ChatMessage) => updateShown(prev => [...prev, stamp(msg)]), [updateShown])
-  const replaceLast = useCallback((msg: ChatMessage) => updateShown(prev => {
-    const next = [...prev]
-    next[next.length - 1] = stamp(msg)
-    return next
-  }), [updateShown])
-  const removeLast = useCallback(() => updateShown(prev => prev.slice(0, -1)), [updateShown])
+  // 画面に出す「出来事」はすべてここを通す。B'-3 でここが「main へ送る」に変わる。
+  const emit = useCallback((ev: ChatEvent<ChatMessage>) => {
+    switch (ev.kind) {
+      case 'append':
+      case 'replaceLast':
+      case 'removeLast':
+        updateShown(prev => applyToMessages(prev, ev))
+        break
+      case 'loading': setIsLoading(ev.value); break
+      case 'status': setStatusNote(ev.value); break
+      case 'routed': setRoutedModel(ev.value); break
+    }
+  }, [updateShown])
+
+  // 末尾の吹き出し操作ヘルパー（emit を呼ぶだけの薄い包み。呼び出し側は書き換えない）
+  const appendBubble = useCallback((msg: ChatMessage) => emit({ kind: 'append', msg }), [emit])
+  const replaceLast = useCallback((msg: ChatMessage) => emit({ kind: 'replaceLast', msg }), [emit])
+  const removeLast = useCallback(() => emit({ kind: 'removeLast' }), [emit])
 
   /** まとめ作りの結果。手動で押したときは**理由も見せる**ので、失敗を文言で返す。 */
   type CompactOutcome = { msg: ChatMessage } | { error: string }
@@ -169,7 +179,7 @@ export function useAiChat(args: UseAiChatArgs) {
     }
     // 材料には**書き込み・実行の実況も混ぜる**（どのファイルを変えたかは本文に残らない）。
     const { system, user } = compactPrompt(plan.base, compactSource(history, plan.from, plan.to))
-    setStatusNote('🗂 これまでの内容をまとめています…')
+    emit({ kind: 'status', value: '🗂 これまでの内容をまとめています…' })
     try {
       const res = await window.electronAPI.sakura.chat({
         apiKey,
@@ -191,9 +201,9 @@ export function useAiChat(args: UseAiChatArgs) {
     } catch (e: any) {
       return { error: formatChatError(e?.message ?? String(e)) }
     } finally {
-      setStatusNote('')
+      emit({ kind: 'status', value: '' })
     }
-  }, [apiKey, model])
+  }, [apiKey, model, emit])
 
   /** 送るものが予算を超えていたら、送信の前に自動で畳む。**自動の失敗は黙る**（利用者は
    *  そもそも「まとめが要る状態」を知らないため）。ただし**実際に送れなくなったときは1度だけ伝える**。 */
@@ -228,15 +238,15 @@ export function useAiChat(args: UseAiChatArgs) {
     const history = getHistory()
     const plan = planManualCompact(history)
     if (!plan) return
-    setIsLoading(true)
+    emit({ kind: 'loading', value: true })
     try {
       const r = await runCompact(history, plan)
       if ('msg' in r) appendBubble(r.msg)
       else appendBubble({ role: 'assistant', toolNote: true, content: `⚠️ ${r.error}` })
     } finally {
-      setIsLoading(false)
+      emit({ kind: 'loading', value: false })
     }
-  }, [isLoading, getHistory, runCompact, appendBubble])
+  }, [isLoading, getHistory, runCompact, appendBubble, emit])
 
   // Claude頭脳モード（C2a/C2b/C2d）: Agent SDK 経路での1ターン送信。SDK のストリームイベント
   // （session/text/tool/result/error/openPreview）をチャットの吹き出しへ反映する。
@@ -244,7 +254,7 @@ export function useAiChat(args: UseAiChatArgs) {
   // images は C2d: このターンでユーザーが添付した画像（data URL配列・空配列可）。main側 agent.ts が
   // 1枚以上ならストリーミング入力モードへ切り替え、Claude自身に直接読ませる（2段階visionを経由しない）。
   const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null) => {
-    setIsLoading(true)
+    emit({ kind: 'loading', value: true })
     let assistantOpen = false
     let textAcc = ''
     // C2c: このターンで使うClaudeモデル（設定で選択済みのもの）。chatStart に渡し、
@@ -340,10 +350,10 @@ export function useAiChat(args: UseAiChatArgs) {
       })
     } finally {
       abortRef.current = null
-      setIsLoading(false)
-      setStatusNote('')
+      emit({ kind: 'loading', value: false })
+      emit({ kind: 'status', value: '' })
     }
-  }, [appendBubble, replaceLast, errorPrefix, buildExecuteOpts, apiKey, onExternalFilesChanged])
+  }, [appendBubble, replaceLast, errorPrefix, buildExecuteOpts, apiKey, onExternalFilesChanged, emit])
 
   /**
    * @param aiOnlyNote 画面には出さず、AI にだけ添える一言（2026-08-19）。
@@ -446,7 +456,8 @@ export function useAiChat(args: UseAiChatArgs) {
       if (!budget.allowed) {
         const userMsg: ChatMessage = { role: 'user', content: rawText.trim() }
         const budgetMsg: ChatMessage = { role: 'assistant', content: `🛑 ${budget.message}` }
-        updateShown(prev => [...prev, stamp(userMsg), stamp(budgetMsg)])
+        emit({ kind: 'append', msg: userMsg })
+        emit({ kind: 'append', msg: budgetMsg })
         return
       }
 
@@ -471,7 +482,7 @@ export function useAiChat(args: UseAiChatArgs) {
       const userMsg: ChatMessage = { role: 'user', content: text, images: hasImages ? images : undefined }
       appendBubble(userMsg)
       onUserMessage?.(text, isFirst)
-      setIsLoading(true)
+      emit({ kind: 'loading', value: true })
 
       // 会話が長くなっていたら、ここで古いぶんをまとめる（送信に使う履歴もこれに差し替える）。
       // 先にユーザーの吹き出しを出してから行うので、待っている間も「送れている」ことが分かる。
@@ -494,13 +505,13 @@ export function useAiChat(args: UseAiChatArgs) {
         const pagesBlock = await fetchPagesBlock(extractUrls(text))
         // 実際にIDEが検索するときだけ「🔍 Web検索中…」を出す（autoSearchBlock の起動条件と一致させる）
         const willSearch = !!search && extractUrls(text).length === 0 && wantsWebSearch(text)
-        if (willSearch) setStatusNote('🔍 Web検索中…')
+        if (willSearch) emit({ kind: 'status', value: '🔍 Web検索中…' })
         const searchBlock = await autoSearchBlock(text, search)
-        setStatusNote('')
+        emit({ kind: 'status', value: '' })
         // 📚 資料の自動注入（設定されていれば）。searchBlock と同じ「取得中はstatusNoteを出す」パターン。
-        if (buildRagBlock) setStatusNote('📚 資料を確認しています…')
+        if (buildRagBlock) emit({ kind: 'status', value: '📚 資料を確認しています…' })
         const ragBlock = buildRagBlock ? await buildRagBlock(text) : ''
-        setStatusNote('')
+        emit({ kind: 'status', value: '' })
 
         // 現在ターンの content（画像があればOpenAI互換のマルチモーダル配列）
         const apiText = text + assetBlock + pagesBlock + searchBlock + ragBlock
@@ -522,7 +533,7 @@ export function useAiChat(args: UseAiChatArgs) {
          */
         const readImagesAsText = async (): Promise<string | null> => {
           const visionModel = getDefaultVisionModel()
-          setStatusNote('🖼 画像を読み取っています…')
+          emit({ kind: 'status', value: '🖼 画像を読み取っています…' })
           const visionMessages: ApiMsg[] = [
             { role: 'system', content: 'あなたは画像読み取り係です。添付画像の内容を客観的に詳しく説明してください（画面の構成要素、表示されている文言やエラーメッセージ、状態、気になる点）。修正案や次の行動の提案は書かないでください。' },
             {
@@ -540,7 +551,7 @@ export function useAiChat(args: UseAiChatArgs) {
             (abortFn) => { abortRef.current = abortFn },
             () => { lastActivityRef.current = Date.now() },
           )
-          setStatusNote('')
+          emit({ kind: 'status', value: '' })
           recordUsage(apiKey, visionModel, u?.prompt_tokens ?? estimateTokens(text), u?.completion_tokens ?? estimateTokens(acc))
           if (aborted || !acc.trim()) return null
           return acc
@@ -551,7 +562,7 @@ export function useAiChat(args: UseAiChatArgs) {
           // その説明文を本来のモデル（ツール使用可）へのプレーンテキストとして渡す。
           const visionModel = getDefaultVisionModel()
           appendBubble({ role: 'assistant', content: `🖼 画像を「${modelLabel(visionModel)}」で読み取り、「${modelLabel(useModel)}」で実行します。`, toolNote: true })
-          setStatusNote('🖼 画像を読み取っています…')
+          emit({ kind: 'status', value: '🖼 画像を読み取っています…' })
           const visionMessages: ApiMsg[] = [
             { role: 'system', content: 'あなたは画像読み取り係です。添付画像の内容を客観的に詳しく説明してください（画面の構成要素、表示されている文言やエラーメッセージ、状態、気になる点）。修正案や次の行動の提案は書かないでください。' },
             {
@@ -571,7 +582,7 @@ export function useAiChat(args: UseAiChatArgs) {
             // 停滞判定のリセットだけ行う（推論モデルが読み取り役のときに「止まった」と誤表示しないため）。
             () => { lastActivityRef.current = Date.now() },
           )
-          setStatusNote('')
+          emit({ kind: 'status', value: '' })
           recordUsage(
             apiKey,
             visionModel,
@@ -712,9 +723,9 @@ export function useAiChat(args: UseAiChatArgs) {
           if (shouldSendTools(useModel) && r.toolFailed && !retriedNoTools) {
             retriedNoTools = true
             removeLast()
-            setStatusNote('応答をやり直しています…')
+            emit({ kind: 'status', value: '応答をやり直しています…' })
             r = await streamOnce(apiMessages, /* noTools */ true)
-            setStatusNote('')
+            emit({ kind: 'status', value: '' })
             if (r.aborted) break
           }
           if (r.hadToolMarkup) sawToolMarkup = true
@@ -758,7 +769,7 @@ export function useAiChat(args: UseAiChatArgs) {
             if (capable !== useModel) {
               routed = true
               useModel = capable
-              setRoutedModel(capable) // B: この会話では以降もこのモデルで実行（再試行を省く）
+              emit({ kind: 'routed', value: capable }) // B: この会話では以降もこのモデルで実行（再試行を省く）
               removeLast() // 試行の吹き出しを除去
               // 切替を明示（表示のみ・APIへは送らない）
               appendBubble({ role: 'assistant', content: `🔀 この作業にはツールが必要なため、「${modelLabel(capable)}」に切り替えて実行します。`, toolNote: true })
@@ -864,8 +875,8 @@ export function useAiChat(args: UseAiChatArgs) {
         appendBubble({ role: 'assistant', content: errorPrefix + formatChatError(err?.message ?? String(err)) })
       } finally {
         abortRef.current = null
-        setIsLoading(false)
-        setStatusNote('')
+        emit({ kind: 'loading', value: false })
+        emit({ kind: 'status', value: '' })
       }
     } finally {
       endActivity()
@@ -874,7 +885,7 @@ export function useAiChat(args: UseAiChatArgs) {
     isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage, errorPrefix,
     routedModel, appendBubble, replaceLast, removeLast, buildRagBlock, sendViaClaude,
-    compactIfNeeded,
+    compactIfNeeded, emit,
   ])
 
   // #31: 「さくらのAI Engine に切り替えて続ける」提案ボタンのハンドラ。頭脳をさくらのAI Engineへ

@@ -225,19 +225,27 @@ describe('配線: 画面・保存経路がそれぞれ正しい判定を通し�
     expect(s).toContain('bubbleTime(')
   })
 
-  it('appendBubble が stamp( を通っている', () => {
+  // ⚠️ B'-2（2026-08-27）で stamp( の呼び出しは src/shared/chatEvents.ts の applyToMessages に
+  // 一元化された（useAiChat.ts は emit( を通すだけになった）。以下の3件は、その2段（emit → 一元化された
+  // stamp）が実際につながっていることを固定する（詳しい振る舞いの一致は tests/chatEvents.test.ts）。
+  it('appendBubble が emit( を通っている（stamp は chatEvents.ts の applyToMessages に一元化された）', () => {
     const s = read('src/renderer/hooks/useAiChat.ts')
-    expect(s).toContain('updateShown(prev => [...prev, stamp(msg)])')
+    expect(s).toContain("const appendBubble = useCallback((msg: ChatMessage) => emit({ kind: 'append', msg }), [emit])")
+    const events = read('src/shared/chatEvents.ts')
+    expect(events).toContain('return [...prev, stamp(ev.msg, now)]')
   })
 
-  it('replaceLast が stamp( を通っている', () => {
+  it('replaceLast が emit( を通っている（stamp は chatEvents.ts の applyToMessages に一元化された）', () => {
     const s = read('src/renderer/hooks/useAiChat.ts')
-    expect(s).toContain('next[next.length - 1] = stamp(msg)')
+    expect(s).toContain("const replaceLast = useCallback((msg: ChatMessage) => emit({ kind: 'replaceLast', msg }), [emit])")
+    const events = read('src/shared/chatEvents.ts')
+    expect(events).toContain('next[next.length - 1] = stamp(ev.msg, now)')
   })
 
-  it('利用上限で区切るときのユーザー吹き出し・案内の2件とも stamp( を通っている', () => {
+  it('利用上限で区切るときのユーザー吹き出し・案内の2件とも emit( の append を通っている', () => {
     const s = read('src/renderer/hooks/useAiChat.ts')
-    expect(s).toContain('updateShown(prev => [...prev, stamp(userMsg), stamp(budgetMsg)])')
+    expect(s).toContain("emit({ kind: 'append', msg: userMsg })")
+    expect(s).toContain("emit({ kind: 'append', msg: budgetMsg })")
   })
 
   it('chatStorage.ts に stamp( が入っていない（古い会話に時刻を付けない）', () => {
