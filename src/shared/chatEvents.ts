@@ -94,3 +94,38 @@ export function applyEvents<M extends { at?: string }>(
 ): ChatView<M> {
   return evs.reduce((v, ev) => applyEvent(v, ev, now), view)
 }
+
+// ── B-1a: 画面の更新を「main のストアからの押し出し」1本にする ─────────────────────
+//
+// main（convStore.ts）が会話を1件当てるたびに、画面（ChatPanel.tsx）へ
+// { projectDir, op, length }（当てた op と、当てた直後の件数）を通知する。画面はそれを
+// 「いま見ているプロジェクトの分だけ」写し（React state）に当てる。この判定を純粋関数に
+// 切り出すのは、useAiChat.ts と同じ理由（B'-2）: 「画面がどう変わるか」を決めるコードを
+// テストで固定できるようにするため。
+
+/** convStore.ts の Op と同じ形（会話への書き換え1件）。shared からは main/renderer どちらの
+ *  型も import しないため、ここで同じ形を定義する（main/renderer 側の Op はこれと構造的に同じ）。 */
+export type ViewSyncOp<M> = ChatEvent<M> | { kind: 'replaceAll'; messages: M[] }
+
+/**
+ * main のストアが1件当てた通知（op と、当てた直後の件数）を、画面の写しにそのまま
+ * 当ててよいか、ストアから読み直すべきかを決める。
+ *
+ * 画面の写しがストアと同期していれば、op を当てた結果の件数は storeLength に一致するはず
+ * （append なら写し+1、replaceLast なら写しのまま、removeLast なら写し-1）。一致しない＝
+ * どこかで取りこぼした（切替直後の読み込みと押し出しのすれ違い等）＝ストアから読み直して
+ * 自己修復する。replaceAll は丸ごと来るので写しの状態に依らず常に当てられる。
+ */
+export function viewSyncDecision<M>(
+  op: ViewSyncOp<M>, viewLength: number, storeLength: number,
+): 'apply' | 'reload' {
+  switch (op.kind) {
+    case 'append': return viewLength === storeLength - 1 ? 'apply' : 'reload'
+    case 'replaceLast': return viewLength === storeLength ? 'apply' : 'reload'
+    case 'removeLast': return viewLength === storeLength + 1 ? 'apply' : 'reload'
+    case 'replaceAll': return 'apply'
+    // loading/status/routed はここへは来ない想定（convStore の Op に含まれない書き換え）。
+    // 網羅のためだけに残す＝length に関係しないので当てて問題ない。
+    default: return 'apply'
+  }
+}

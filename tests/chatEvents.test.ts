@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { applyToMessages, applyEvent, applyEvents, emptyView, type ChatEvent, type ChatView } from '../src/shared/chatEvents'
+import { applyToMessages, applyEvent, applyEvents, emptyView, viewSyncDecision, type ChatEvent, type ChatView, type ViewSyncOp } from '../src/shared/chatEvents'
 import { stamp } from '../src/shared/chatTime'
 
 // B'-2: 画面への指示を「出来事（ChatEvent）」に変える。
@@ -210,6 +210,48 @@ describe('いまの3つのヘルパーとの一致（空・1件・3件）', () =
   })
 })
 
+// ── viewSyncDecision（B-1a）─────────────────────────────────────────
+// main（convStore.ts）が1件当てるたびに届く通知（op と、当てた直後の length）を、
+// 画面の写しにそのまま当ててよいか（'apply'）、ストアから読み直すべきか（'reload'）を決める。
+describe('viewSyncDecision', () => {
+  it('append: viewLength === storeLength - 1 なら apply', () => {
+    const op: ViewSyncOp<Msg> = { kind: 'append', msg: { id: 1 } }
+    expect(viewSyncDecision(op, 2, 3)).toBe('apply') // 写し2件→ストア3件（+1）＝一致
+  })
+  it('append: 一致しなければ reload', () => {
+    const op: ViewSyncOp<Msg> = { kind: 'append', msg: { id: 1 } }
+    expect(viewSyncDecision(op, 2, 4)).toBe('reload') // 何かを取りこぼしている
+    expect(viewSyncDecision(op, 3, 3)).toBe('reload')
+  })
+
+  it('replaceLast: viewLength === storeLength なら apply', () => {
+    const op: ViewSyncOp<Msg> = { kind: 'replaceLast', msg: { id: 1 } }
+    expect(viewSyncDecision(op, 3, 3)).toBe('apply')
+  })
+  it('replaceLast: 一致しなければ reload', () => {
+    const op: ViewSyncOp<Msg> = { kind: 'replaceLast', msg: { id: 1 } }
+    expect(viewSyncDecision(op, 2, 3)).toBe('reload')
+    expect(viewSyncDecision(op, 4, 3)).toBe('reload')
+  })
+
+  it('removeLast: viewLength === storeLength + 1 なら apply', () => {
+    const op: ViewSyncOp<Msg> = { kind: 'removeLast' }
+    expect(viewSyncDecision(op, 3, 2)).toBe('apply')
+  })
+  it('removeLast: 一致しなければ reload', () => {
+    const op: ViewSyncOp<Msg> = { kind: 'removeLast' }
+    expect(viewSyncDecision(op, 2, 2)).toBe('reload')
+    expect(viewSyncDecision(op, 4, 2)).toBe('reload')
+  })
+
+  it('replaceAll: 常に apply（写しの状態に依らない）', () => {
+    const op: ViewSyncOp<Msg> = { kind: 'replaceAll', messages: [{ id: 1 }] }
+    expect(viewSyncDecision(op, 0, 0)).toBe('apply')
+    expect(viewSyncDecision(op, 99, 1)).toBe('apply')
+    expect(viewSyncDecision(op, 0, 99)).toBe('apply')
+  })
+})
+
 // ── 配線（useAiChat.ts が emit だけを通ること。掟10）───────────────────
 //
 // ⚠️ コメントを外してから判定する（adoptAppRun.test.ts / syncPublic.test.ts の前例と同じ流儀。
@@ -251,11 +293,17 @@ describe('useAiChat.ts の配線（emit / viewOnlyEmit だけが画面に触る�
   })
 })
 
-// ── 11. B'-3c: emit と viewOnlyEmit の使い分け（二重書き防止）─────────────────
+// ── 11. B'-3c/B-1a: emit と viewOnlyEmit の使い分け（二重書き・誤配防止）─────────────
 // renderer 発の message系の出来事（emit）は onMessageEvent（main へ ops 送信）を通す一方、
 // main が既にストアへ当てているAI Engineのターンの出来事（chatTurn.start の onEvent）は
 // viewOnlyEmit（画面へ映すだけ）を通す。ここが emit に戻ると、main が既に保存した書き換えを
 // renderer がもう一度 ops として main へ送り返し、二重書きになる。
+//
+// B-1a: toolsProjectDir があるとき（ChatPanel）の message系は、main が convStore.ts へ
+// 当てた結果を chat:applied が押し出す1本の経路に揃えたので、viewOnlyEmit はここでは
+// 何もしない（画面へ当ててしまうと、projectDir を確かめない旧経路が復活し、ターン中の
+// プロジェクト切替で誤配する）。toolsProjectDir が無いとき（ChatApp・convStore の対象外）は
+// chat:applied が届かないため、今までどおりここが唯一の反映経路として当て続ける。
 describe("useAiChat.ts の配線（chatTurn.start の onEvent は viewOnlyEmit を通り、emit と分かれている）", () => {
   const src = readCode('src/renderer/hooks/useAiChat.ts')
 
@@ -275,5 +323,16 @@ describe("useAiChat.ts の配線（chatTurn.start の onEvent は viewOnlyEmit �
     const after = src.slice(at, at + 1200)
     expect(after).toContain('onEvent: (ev) => viewOnlyEmit(ev as any)')
     expect(after).not.toContain('onEvent: (ev) => emit(ev as any)')
+  })
+
+  it('B-1a: viewOnlyEmit の message系は toolsProjectDir が無いときだけ当てる（無条件に当てる形へ戻さない）', () => {
+    const start = src.indexOf('const viewOnlyEmit = useCallback(')
+    expect(start).toBeGreaterThan(-1)
+    const m = /\n {2}\}, \[[^\]]*\]\)/.exec(src.slice(start))
+    expect(m).not.toBeNull()
+    const block = src.slice(start, start + m!.index + m![0].length)
+    expect(block).toContain('if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))')
+    // 直す前の形（条件無しで当てる）が残っていない
+    expect(block).not.toContain('        updateShown(prev => applyToMessages(prev, ev))\n        break')
   })
 })

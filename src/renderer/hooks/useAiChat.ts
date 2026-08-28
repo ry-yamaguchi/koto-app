@@ -156,7 +156,7 @@ export function useAiChat(args: UseAiChatArgs) {
 
   const abort = useCallback(() => { abortRef.current?.() }, [])
 
-  // ── emit と viewOnlyEmit の2本立て（B'-3c）───────────────────────────
+  // ── emit と viewOnlyEmit の2本立て（B'-3c・B-1a で viewOnlyEmit の中身を見直した）───────
   //
   // なぜ2つあるか: 「画面がどう変わるか」（shared/chatEvents.ts）は1本のままだが、
   // 「出来事の**書き主**（persistence の主体）が誰か」が出来事の出どころによって違う。
@@ -165,14 +165,21 @@ export function useAiChat(args: UseAiChatArgs) {
   //     message系の出来事は、**renderer が書き主**。まだどこにも保存されていないので、
   //     画面反映と同時に main（convStore.ts）へ ops として送らないと消えてしまう。
   //     → emit を使う（onMessageEvent があればそれを呼ぶ＝ChatPanel は client.apply に繋ぎ、
-  //       画面反映＋ops送信の両方を行う。無ければ従来どおり updateShown 直行＝ChatApp）。
+  //       main へ ops を送るだけ。画面反映は chat:applied 側で行う。無ければ従来どおり
+  //       updateShown 直行＝ChatApp）。
   //
   //   - AI Engine のターン（main の turnRunner.ts で走っている）の message系の出来事は、
-  //     **main が既にストアへ直接当てている**（buildMainPorts.emit）。この出来事が
-  //     renderer 側の chatTurn.start の onEvent として戻ってきたとき、ここでまた
-  //     onMessageEvent（→ ops 送信）を通すと、同じ書き換えを**二重に**保存してしまう。
-  //     → viewOnlyEmit を使う（B'-2 の形＝updateShown 直行＋scalar setter。ops は送らない。
-  //       「画面へ映すだけ」で、書き込みは main が既に済ませている）。
+  //     **toolsProjectDir があるとき**（ChatPanel）は main が既にストアへ直接当てている
+  //     （buildMainPorts.emit）。この出来事が renderer 側の chatTurn.start の onEvent として
+  //     戻ってきたときにここでも当ててしまうと、「main のストアの押し出し」（chat:applied）と
+  //     二重になり、しかも「見ているものが何か」を確かめずに当てるため、ターン中に
+  //     プロジェクトを切り替えると誤配される（B-1a が直した不具合そのもの）。
+  //     → viewOnlyEmit を使い、toolsProjectDir があるときは message系を捨てる（画面反映は
+  //       chat:applied 一本に任せる）。
+  //     **toolsProjectDir が無いとき**（ChatApp・単独チャット・convStore の対象外）は、
+  //     main は convStore に一切書かない（turnRunner.ts の payload.spec.toolsProjectDir
+  //     ガード）ため chat:applied も届かない。ChatApp にとってはここが唯一の反映経路なので、
+  //     今までどおり updateShown 直行のまま変えない（ChatApp は今回のB-1aで触らない対象）。
   //
   // どちらも「画面がどう変わるか」自体は applyToMessages（同じ純粋関数）に委ねる。
   const emit = useCallback((ev: ChatEvent<ChatMessage>) => {
@@ -195,13 +202,16 @@ export function useAiChat(args: UseAiChatArgs) {
       case 'append':
       case 'replaceLast':
       case 'removeLast':
-        updateShown(prev => applyToMessages(prev, ev))
+        // toolsProjectDir があるとき（ChatPanel）は convStore.ts への書き込み＋chat:applied の
+        // 押し出しに一本化したので、ここでは何もしない。無いとき（ChatApp）だけ、唯一の
+        // 反映経路として今までどおり当てる（上のコメント参照）。
+        if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))
         break
       case 'loading': setIsLoading(ev.value); break
       case 'status': setStatusNote(ev.value); break
       case 'routed': setRoutedModel(ev.value); break
     }
-  }, [updateShown])
+  }, [toolsProjectDir, updateShown])
 
   // 末尾の吹き出し操作ヘルパー（emit を呼ぶだけの薄い包み。呼び出し側は書き換えない）
   const appendBubble = useCallback((msg: ChatMessage) => emit({ kind: 'append', msg }), [emit])

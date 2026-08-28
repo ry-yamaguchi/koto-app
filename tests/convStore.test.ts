@@ -6,7 +6,8 @@ import * as os from 'os'
 import * as path from 'path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  loadConversation, applyConversationOps, flushConversations, resetConversations, type Op,
+  loadConversation, applyConversationOps, flushConversations, resetConversations,
+  setApplyListener, type Op,
 } from '../src/main/chat/convStore'
 import { projectChatPath } from '../src/main/chatStore/paths'
 import { loadProjectChatFile, saveProjectChatFile, resetChatLogCache } from '../src/main/chatStore/file'
@@ -29,6 +30,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   resetConversations()
+  setApplyListener(null) // モジュール内のリスナーもテスト間で残り続けるため外す（B-1a）
   for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true })
 })
 
@@ -110,6 +112,47 @@ describe('convStore: applyConversationOps は applyToMessages と同じ結果に
     const replacement = [{ role: 'assistant', content: 'x' }] // at 無し
     applyConversationOps(dir, [{ kind: 'replaceAll', messages: replacement }])
     expect(loadConversation(dir)).toEqual(replacement) // stamp されていない（at が付かない）
+  })
+})
+
+describe('convStore: setApplyListener（B-1a・画面への押し出し口）', () => {
+  it('1. op ごとに（projectDir, op, 当てた直後の length）で呼ばれる。まとめて1回ではない', () => {
+    const dir = mkProjectDir()
+    const calls: Array<{ projectDir: string; op: Op; length: number }> = []
+    setApplyListener((projectDir, op, length) => calls.push({ projectDir, op, length }))
+
+    // replaceLast の連打（ストリーミングの差分を模す）を含む3件をまとめて渡す
+    applyConversationOps(dir, [
+      { kind: 'append', msg: { role: 'assistant', content: '' } },
+      { kind: 'replaceLast', msg: { role: 'assistant', content: 'a' } },
+      { kind: 'replaceLast', msg: { role: 'assistant', content: 'ab' } },
+    ])
+
+    expect(calls).toHaveLength(3) // 1回にまとめられていない
+    expect(calls.map(c => c.projectDir)).toEqual([dir, dir, dir])
+    expect(calls.map(c => c.length)).toEqual([1, 1, 1]) // append で1件→以降 replaceLast なので長さは1のまま
+    expect(calls[0].op).toEqual({ kind: 'append', msg: { role: 'assistant', content: '', at: expect.any(String) } })
+    expect(calls[2].op).toMatchObject({ kind: 'replaceLast', msg: { content: 'ab' } })
+  })
+
+  it('通知される op の msg には、実際に保存された値（stamp 済みの at）が入っている（二重stamp防止）', () => {
+    const dir = mkProjectDir()
+    let seenAt: string | undefined
+    setApplyListener((_dir, op) => { if (op.kind === 'append') seenAt = op.msg.at })
+
+    applyConversationOps(dir, [{ kind: 'append', msg: { role: 'user', content: 'hi' } }])
+
+    expect(seenAt).toBeDefined()
+    expect(loadConversation(dir)![0].at).toBe(seenAt) // 保存された at と通知された at が完全一致
+  })
+
+  it('setApplyListener(null) で外せる（以後は呼ばれない）', () => {
+    const dir = mkProjectDir()
+    let called = 0
+    setApplyListener(() => { called++ })
+    setApplyListener(null)
+    applyConversationOps(dir, [{ kind: 'append', msg: { role: 'user', content: 'a' } }])
+    expect(called).toBe(0)
   })
 })
 
@@ -243,7 +286,9 @@ describe('10. ChatPanel: 旧 chatStorage の読み書きがもう無い・デバ
   it('新しい chatConvClient.ts（loadConversationView / makeConvClient）を使っている', () => {
     expect(src).toContain("from '../chatConvClient'")
     expect(src).toContain('loadConversationView(projectDir)')
-    expect(src).toContain('makeConvClient(projectDir, applyOpLocally)')
+    // B-1a: makeConvClient はもう画面へのローカル反映を受け取らない（applyOpLocally を渡さない）
+    expect(src).toContain('makeConvClient(projectDir)')
+    expect(src).not.toContain('makeConvClient(projectDir, applyOpLocally)')
   })
 
   it('1.5秒デバウンス保存・アンマウント時フラッシュの effect が無い（window.setTimeout / messagesRef が出てこない）', () => {
@@ -267,14 +312,11 @@ describe('12. chatConvClient: 送信が直列化されていること（Promise�
     })
     ;(globalThis as any).window = { electronAPI: { chat: { ops: opsMock } } }
 
-    const applied: any[] = []
-    const client = makeConvClient('/tmp/koto-proj', op => applied.push(op))
+    // B-1a: makeConvClient はもう画面へのローカル反映を持たない（引数は projectDir だけ）
+    const client = makeConvClient('/tmp/koto-proj')
 
     client.apply({ kind: 'append', msg: { role: 'user', content: 'first' } } as any)
     client.apply({ kind: 'append', msg: { role: 'user', content: 'second' } } as any)
-
-    // 画面反映（applyLocal）は直列化しない＝即時に両方とも反映される
-    expect(applied).toHaveLength(2)
 
     // マイクロタスクを十分に流しても、1件目の invoke が解決するまで2件目は呼ばれない
     await new Promise(r => setImmediate(r))
@@ -287,4 +329,13 @@ describe('12. chatConvClient: 送信が直列化されていること（Promise�
     expect(calls).toEqual(['call:first', 'call:second']) // 到着順が送った順と一致する
   })
 
+  it('apply(op) は ops 送信だけで、画面への反映は一切行わない（B-1a）', async () => {
+    const opsMock = vi.fn(() => Promise.resolve({ ok: true }))
+    ;(globalThis as any).window = { electronAPI: { chat: { ops: opsMock } } }
+    // makeConvClient の第2引数（applyLocal）はもう受け取れない・呼ばれない
+    const client = makeConvClient('/tmp/koto-proj')
+    client.apply({ kind: 'append', msg: { role: 'user', content: 'x' } } as any)
+    await client.idle() // chain は Promise チェーンなので、送信は次のマイクロタスクまで待つ
+    expect(opsMock).toHaveBeenCalledWith('/tmp/koto-proj', [{ kind: 'append', msg: { role: 'user', content: 'x' } }])
+  })
 })

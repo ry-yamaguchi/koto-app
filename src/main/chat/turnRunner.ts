@@ -71,6 +71,15 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     // （ウィンドウが閉じていても・出来事を取りこぼしても、会話は必ず保存される）。
     // toolsProjectDir が無いとき（単独チャット・今回対象外）はストアに触らない。
     // loading/status/routed はストアに関係しないので、これまでどおり send のみ。
+    //
+    // ── B-1a（2026-08-28）: 画面反映は chat:applied へ一本化・ここでの2重送信はそのまま残す ──
+    // applyConversationOps がここで当たると、convStore.ts の通知口（setApplyListener）経由で
+    // chat:applied が自動的に画面へ飛ぶ。toolsProjectDir があるとき（ChatPanel）は、下の
+    // wc.send（chatTurn:event）で運ばれる message系の ev は renderer 側でもう使われない
+    // （useAiChat.ts の viewOnlyEmit は toolsProjectDir がある間 message系を捨てる）。
+    // それでも send 自体はここでは変えない（toolsProjectDir が無いとき＝単独チャット ChatApp は
+    // convStore に一切触れない＝chat:applied も届かないため、この send が唯一の反映経路のまま。
+    // scalar/activity も引き続きこの経路が必要。仕様外の削減をしない）。
     emit: (ev) => {
       if ((ev.kind === 'append' || ev.kind === 'replaceLast' || ev.kind === 'removeLast') && payload.spec.toolsProjectDir) {
         applyConversationOps(payload.spec.toolsProjectDir, [ev])

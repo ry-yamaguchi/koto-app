@@ -26,8 +26,14 @@ export function registerBackupHandlers(_deps: IpcDeps) {
   //
   // 0.3.50・roadmap「次の改善2件」その2: 復元が成功したら、会話にもその事実を1件残す
   // （Ryosuke 指摘: 会話には「保存しました」が残ったまま実物は戻る＝AIの頭とディスクがずれる）。
-  // 会話の持ち主は main（convStore.ts・B'-3c）なので、ここで直接 append し、画面へも知らせる。
-  ipcMain.handle('backup:restore', (event, projectDir: string, snapshotId: string) => {
+  // 会話の持ち主は main（convStore.ts・B'-3c）なので、ここで直接 append する。
+  //
+  // ── B-1a（2026-08-28）: 画面への手動 send（chat:appended）を廃止 ──────────────────
+  // 以前はここで event.sender.send('chat:appended', ...) して開いている画面へも直接知らせていたが、
+  // applyConversationOps が当てた瞬間に convStore.ts の通知口（setApplyListener）経由で
+  // chat:applied が自動的に飛ぶようになった（ipc/chatStore.ts が配線）。手動の二重送信をやめ、
+  // 会話への書き換えはすべて applyConversationOps を通す1本の経路に揃える。
+  ipcMain.handle('backup:restore', (_event, projectDir: string, snapshotId: string) => {
     // 対象スナップショットの label は復元の**前**に取っておく（restoreToSnapshot は最後に
     // rotate() を呼ぶため、直後に対象自身が古い順で片付けられて読めなくなることがある）。
     const label = listSnapshotSummaries(projectDir).snapshots.find(s => s.id === snapshotId)?.label ?? null
@@ -38,8 +44,7 @@ export function registerBackupHandlers(_deps: IpcDeps) {
       // 含むのでここを通せる。restoreNoteMessage 自体の返り値の型は仕様書どおり変えていない）。
       const note: TurnMessage = restoreNoteMessage({ label, restored: result.restored?.length ?? 0, deleted: result.deleted?.length ?? 0 })
       const msg = stamp(note)
-      applyConversationOps(projectDir, [{ kind: 'append', msg }]) // convStore へ＝保存される
-      event.sender.send('chat:appended', { projectDir, msg }) // 開いている画面へも知らせる
+      applyConversationOps(projectDir, [{ kind: 'append', msg }]) // convStore へ＝保存され、chat:applied で画面へも届く
     }
     return result
   })

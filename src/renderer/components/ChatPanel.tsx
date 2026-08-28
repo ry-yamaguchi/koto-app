@@ -25,7 +25,7 @@ import BrainToggle from './BrainToggle'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeModel, claudeModelShortLabel, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
 import { loadConversationView, makeConvClient, type Op } from '../chatConvClient'
-import { applyToMessages } from '../../shared/chatEvents'
+import { applyToMessages, viewSyncDecision } from '../../shared/chatEvents'
 import { takeNewProjectRequest } from '../newProjectRequest'
 import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, mediaTypeOf, type AssetPurpose } from '../../shared/assetImport'
 import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
@@ -540,21 +540,50 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     loadConversationView(projectDir).then(msgs => {
       if (cancelled) return
       setMessages(msgs) // ストアから来たものを映すだけ（ops は送らない）
-      clientRef.current = makeConvClient(projectDir, applyOpLocally)
+      clientRef.current = makeConvClient(projectDir)
     })
     return () => { cancelled = true }
   }, [projectDir, applyOpLocally])
 
-  // 0.3.50: 🕘「元に戻す」の完了など、main が会話へ直接書き足したこと（backup:restore ハンドラ）を
-  // 画面へ反映する。会話の持ち主は main（convStore.ts・B'-3c）で、main は既に convStore へ
-  // append 済み——ここは**見るだけ**（viewOnly）でよく、ops を送るとまったく同じ1件がもう一度
-  // convStore へ書かれて二重に残ってしまう。開いていない別プロジェクト宛てなら何もしない
-  // （そのプロジェクトを次に開いたとき、load 側で store から読まれるので取りこぼさない）。
+  // ── B-1a: 画面の更新を「main が当てた結果の押し出し」1本にする ─────────────────────
+  //
+  // 以前は2経路あった: ①renderer発の書き換え（client.apply が「画面へ即時反映」と「ops送信」の
+  // 両方をやる）②main のターンの出来事（chatTurn.start の onEvent が「見ているものが何か」を
+  // 確かめずに当てる）。②はターン中にプロジェクトを切り替えると、走っているターンの吹き出しが
+  // 切り替え先の画面に誤配されていた（保存自体は convStore が projectDir 別に正しく持つので、
+  // 壊れるのは見た目だけ）。
+  //
+  // 会話への書き換えは renderer発（ops）・main のターンの出来事・🕘 復元の記録のすべてが必ず
+  // main の convStore.ts を通るので、convStore が「当てた結果」を chat:applied で押し出し、
+  // 画面は「いま見ているプロジェクトの分だけ」受ける形に一本化する。
+  // **projectDir が違う通知はここで捨てる**（誤配の根絶。保存は正しく進んでいるので、
+  // そのプロジェクトを次に開けば全部見える）。
   useEffect(() => {
-    return window.electronAPI.chat.onAppended(({ projectDir: dir, msg }) => {
-      if (dir !== projectDir) return
-      setMessages(prev => [...prev, msg])
+    let cancelled = false // このeffect（＝このprojectDir）が生きている間だけ setMessages してよい
+    let reloading = false // 読み直しの連打防止（進行中なら重ねて読み直さない）
+    const off = window.electronAPI.chat.onApplied(({ projectDir: dir, op, length }) => {
+      if (dir !== projectDir) return // いま見ているプロジェクト宛てだけ受ける（誤配の根絶）
+      let needsReload = false
+      setMessages(prev => {
+        const decision = viewSyncDecision(op as Op, prev.length, length)
+        if (decision === 'reload') { needsReload = true; return prev }
+        // ⚠️ stamp を二重に掛けない: convStore.ts（appliedOpFor）が、当てた直後の
+        // stamp 済みメッセージに差し替えてから通知しているので、この op の msg には
+        // 既に at が入っている。applyToMessages の stamp() は at が既にあれば上書きしない
+        // （chatTime.ts の既存の性質）ので、そのまま当てて問題ない。
+        return op.kind === 'replaceAll' ? op.messages : applyToMessages(prev, op as any)
+      })
+      if (needsReload && !reloading) {
+        // 一致しない＝取りこぼした可能性がある（切替直後の読み込みと押し出しのすれ違い等）。
+        // ストアから読み直して自己修復する。
+        reloading = true
+        loadConversationView(dir).then(msgs => {
+          reloading = false
+          if (!cancelled) setMessages(msgs)
+        })
+      }
     })
+    return () => { cancelled = true; off() }
   }, [projectDir])
 
   // 新規プロジェクト作成（NewProjectModal.tsx）からの依頼をチャットへ流し込む。

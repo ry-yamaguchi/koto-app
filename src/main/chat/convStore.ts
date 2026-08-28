@@ -37,6 +37,50 @@ const DEBOUNCE_MS = 1500
 /** 実体：projectDir → 会話（メモリ）。 */
 const store = new Map<string, Entry>()
 
+// ── B-1a: 画面の更新を「main が当てた結果の押し出し」1本にする ─────────────────────
+//
+// これまで画面の更新経路は2本あった: ①renderer 発の書き換え（renderer が「画面へ即時反映」と
+// 「ops 送信」の両方をやる）②main のターンの出来事（chatTurn.start の onEvent が「見ているものが
+// 何か」を確かめずに当てる）。②はターン中にプロジェクトを切り替えると、走っているターンの吹き出しが
+// 切り替え先の画面へ誤配される（保存は projectDir 別に正しく行われるので、壊れるのは見た目だけ）。
+//
+// 会話への書き換えは renderer 発（chat:ops）も main のターンの出来事（turnRunner.ts）も
+// 🕘 復元の記録（backup.ts）も、**必ずこの applyConversationOps を通る**。ここが「当てた結果」を
+// 通知すれば、画面へ反映する経路も1本になり、通知の projectDir を画面側が確かめることで
+// 誤配は構造的に消える（違うプロジェクト宛てなら画面が受けない。ストアは正しいので、
+// そのプロジェクトを次に開けば全部見える）。
+/** apply のたびに呼ばれる通知先（ipc/chatStore.ts が chat:applied として画面へ配線する）。
+ *  テストでは差し替える（setApplyListener(null) で外す）。 */
+let applyListener: ((projectDir: string, op: Op, length: number) => void) | null = null
+export function setApplyListener(cb: ((projectDir: string, op: Op, length: number) => void) | null): void {
+  applyListener = cb
+}
+
+/**
+ * 通知する op を「実際に当たった内容」に差し替える。
+ *
+ * ── なぜ要るか ────────────────────────────────────────────────────
+ * append/replaceLast は applyToMessages が stamp() で `at` を付けるが、stamp() は
+ * **新しい要素を作るだけで、呼び出し元がくれた msg 自体は書き換えない**（chatTime.ts）。
+ * そのため、呼び出し元の op をそのまま通知すると、画面側がこの op をもう一度
+ * applyToMessages に通したときにもう一度 stamp() が走り、保存された `at` と画面の `at` が
+ * （わずかだが）ずれてしまう。当てた直後の末尾要素（＝実際に保存された stamp 済みの内容）に
+ * 差し替えて渡すことで、画面側の再適用が「既に at がある」を見て上書きしなくなり、一致する。
+ * （replaceLast が空配列に対して何もしなかった場合は末尾要素が無いので、元の op のまま渡す＝
+ *  画面側も同じく何もしない。）
+ */
+function appliedOpFor(op: Op, messagesAfter: TurnMessage[]): Op {
+  if (op.kind === 'append') {
+    const last = messagesAfter[messagesAfter.length - 1]
+    return last ? { kind: 'append', msg: last } : op
+  }
+  if (op.kind === 'replaceLast') {
+    const last = messagesAfter[messagesAfter.length - 1]
+    return last ? { kind: 'replaceLast', msg: last } : op
+  }
+  return op
+}
+
 /** ファイルから読んで配列にする（畳めない・無ければ null）。chatStore/file.ts の
  *  loadProjectChatFile（v1/v2 fold）をそのまま使う。 */
 function readFromFile(projectDir: string): TurnMessage[] | null {
@@ -96,6 +140,9 @@ export function applyConversationOps(projectDir: string, ops: Op[], opts?: { flu
   const entry = ensureEntry(projectDir)
   for (const op of ops) {
     entry.messages = op.kind === 'replaceAll' ? op.messages : applyToMessages(entry.messages, op)
+    // 1 op 当てるごとに通知する（まとめて1回にしない＝replaceLast の連打がそのまま画面にも届くように。
+    // B-1a）。length は当てた直後の件数（画面側の同期照合＝shared/chatEvents.ts の viewSyncDecision に使う）。
+    applyListener?.(projectDir, appliedOpFor(op, entry.messages), entry.messages.length)
   }
   if (opts?.flushNow) {
     // 旧localStorageからの移行など、「元を消す前に必ずファイルへ書き切りたい」書き換えは

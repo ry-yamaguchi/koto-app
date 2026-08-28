@@ -22,7 +22,8 @@ import * as path from 'path'
 import type { IpcDeps } from './types'
 import { projectChatPath, appChatPath, isValidJson } from '../chatStore/paths'
 import { loadProjectChatFile, saveProjectChatFile } from '../chatStore/file'
-import { loadConversation, applyConversationOps, flushConversations, type Op } from '../chat/convStore'
+import { loadConversation, applyConversationOps, flushConversations, setApplyListener, type Op } from '../chat/convStore'
+import { sendToWindow } from '../windowSend'
 
 function readFileOrNull(filePath: string): string | null {
   try {
@@ -41,7 +42,19 @@ function atomicWriteFileSync(filePath: string, content: string) {
   fs.renameSync(tmp, filePath)
 }
 
-export function registerChatStoreHandlers(_deps: IpcDeps) {
+export function registerChatStoreHandlers(deps: IpcDeps) {
+  // ── B-1a: 会話の画面更新を「main のストアからの押し出し」1本にする ─────────────────
+  // convStore.applyConversationOps は renderer 発の書き換え（下の chat:ops）・main のターンの
+  // 出来事（turnRunner.ts）・🕘 復元の記録（backup.ts）のすべてが必ず通る唯一の当て先。
+  // ここで「当てた結果」を chat:applied として押し出せば、画面が受け取る経路も1本になり、
+  // ChatPanel 側で projectDir を確かめてから当てることで、ターン中のプロジェクト切替による
+  // 誤配（走っているターンの吹き出しが切り替え先の画面に混ざる）が構造的に無くなる。
+  // 送信は windowSend.ts の作法（sendToWindow）に合わせる＝ウィンドウが閉じていれば黙って捨てる
+  // （term.ts の deps.getMainWindow() の使い方と同じ）。
+  setApplyListener((projectDir, op, length) => {
+    sendToWindow(deps.getMainWindow(), 'chat:applied', { projectDir, op, length })
+  })
+
   // ⚠️ B'-3c で ChatPanel は chat:load / chat:ops に移った（下）。この2つはもう呼ぶ者が
   // いないが、後方互換のため形を変えずに残す（実体は chatStore/file.ts）。
   ipcMain.handle('chat:loadProject', (_, projectDir: string) => {
