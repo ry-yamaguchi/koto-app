@@ -1,16 +1,19 @@
 // さくらのAI Engine 呼び出しの IPC（sakura:*）。ストリーミング/abort管理の状態（activeChatStreams）はモジュール内に保持する。
 // deps は使わない（apiKey は都度引数で渡される＝方式B）。
+//
+// ── B'-3b（土台の入れ替え・main側 その1）─────────────────────────────
+// LLM 呼び出しの実体（sakuraClient・isContextLimitError・safeMaxTokens・非ストリーミング/
+// ストリーミングのロジック本体）は electron 非依存の src/main/sakura/engine.ts へ移した
+// （main プロセス内で直接ループを走らせる chat/turnRunner.ts からも同じ実体を呼ぶため）。
+// ここに残る2つのハンドラは、その関数を呼んで wc.send する薄い包みに書き直してある
+// （activeChatStreams の管理・チャンネル名・成功/失敗の形は従来のまま）。
+// sakuraClient・isContextLimitError・safeMaxTokens は既存の呼び出し元（claude/tools.ts）が
+// このファイルから import しているため、re-export して壊さないようにする（重複定義はしない）。
 import { ipcMain } from 'electron'
-import OpenAI from 'openai'
 import type { IpcDeps } from './types'
-import { newStreamState, applyChunk, finishedToolCalls } from '../../shared/streamDelta'
-import { pickContent } from '../../shared/chatContent'
+import { sakuraClient, isContextLimitError, safeMaxTokens, runSakuraChat, runSakuraStream } from '../sakura/engine'
 
-const SAKURA_BASE_URL = 'https://api.ai.sakura.ad.jp/v1'
-// C3: delegate_implementation（claude/tools.ts）からも同じクライアント生成を再利用する。
-export function sakuraClient(apiKey: string) {
-  return new OpenAI({ apiKey, baseURL: SAKURA_BASE_URL })
-}
+export { sakuraClient, isContextLimitError, safeMaxTokens }
 
 // ── さくらのAI Engine 呼び出し（メインプロセス経由＝CORS回避） ──
 // content は文字列、または OpenAI互換のマルチモーダル配列（テキスト＋画像）。
@@ -20,22 +23,6 @@ type ChatMsg = {
   content: any
   tool_calls?: any[]
   tool_call_id?: string
-}
-
-// コンテキスト長が小さいモデル（例: llm-jp-3.1-8x13b は 4096＝入力+出力の合計）では、
-// max_tokens=4096 が「コンテキスト超過」で 400 になる。エラー文に書かれた上限から安全値を割り出す。
-// C3: delegate_implementation（claude/tools.ts）でも同じフォールバックを再利用するため export する。
-export function isContextLimitError(msg: string): boolean {
-  return /max_tokens|max_completion_tokens|maximum context length/i.test(msg)
-}
-export function safeMaxTokens(errMsg: string, requested: number): number | null {
-  const ctx = errMsg.match(/maximum context length is (\d+)/i)
-  if (!ctx) return null
-  const contextLen = Number(ctx[1])
-  const inp = errMsg.match(/has (\d+) input tokens/i)
-  const inputTokens = inp ? Number(inp[1]) : 0
-  const safe = contextLen - inputTokens - 32 // 余白を引いた安全な出力上限
-  return safe >= 64 && safe < requested ? safe : null
 }
 
 // さくらのAI Engine（OpenAI SDK）の生エラーを日本語の一言に変換する（純粋関数）。
@@ -74,30 +61,18 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
     }
   })
 
-  // 非ストリーミングのチャット（プロジェクト生成などで使用）
+  // 非ストリーミングのチャット（プロジェクト生成などで使用）。実体は engine.ts の runSakuraChat。
   ipcMain.handle(
     'sakura:chat',
     async (_, args: { apiKey: string; model: string; messages: ChatMsg[]; maxTokens?: number; temperature?: number }) => {
-      const client = sakuraClient(args.apiKey)
-      const requested = args.maxTokens ?? 4096
-      const mk = (maxTokens: number) => client.chat.completions.create({
-        model: args.model, messages: args.messages as any, max_tokens: maxTokens, temperature: args.temperature,
-      })
-      let res
-      try {
-        res = await mk(requested)
-      } catch (err: any) {
-        const safe = isContextLimitError(err?.message ?? '') ? safeMaxTokens(err?.message ?? '', requested) : null
-        if (safe == null) throw err
-        res = await mk(safe) // モデルのコンテキスト上限に合わせて縮めて再試行
-      }
-      // 推論型モデルは本文が空で、答えが reasoning 側に入ることがある（shared/chatContent.ts）。
-      return { content: pickContent(res.choices?.[0]?.message), usage: res.usage ?? null }
+      return runSakuraChat(args)
     }
   )
 
   // ストリーミングのチャット（チャット/AIパネル）。チャンクをイベントで返す。
   // 「⏹ 停止」のため、進行中のストリームをIDで保持して中断できるようにする。
+  // 実体は engine.ts の runSakuraStream。ここは呼んで wc.send するだけの薄い包み
+  // （activeChatStreams の管理・チャンネル名・成功/失敗の形は従来のまま）。
   const activeChatStreams = new Map<string, { abort: () => void }>()
 
   ipcMain.handle(
@@ -106,56 +81,20 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
       const wc = event.sender
       const { id } = args
       try {
-        const client = sakuraClient(args.apiKey)
-        const requested = args.maxTokens ?? 4096
-        const mk = (maxTokens: number) => client.chat.completions.create({
-          model: args.model,
-          messages: args.messages as any,
-          max_tokens: maxTokens,
-          // Qwen推奨のサンプリング設定。既定より出力が安定し、
-          // 他言語トークンの混入（日本語にハングル等が混じる現象）も抑えられる
-          temperature: 0.7,
-          top_p: 0.8,
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(args.tools?.length ? { tools: args.tools } : {}),
-        })
-        let stream
-        try {
-          stream = await mk(requested)
-        } catch (err: any) {
-          // コンテキスト長が小さいモデルは max_tokens=4096 が超過扱いになる → 上限に合わせて縮めて再試行
-          const safe = isContextLimitError(err?.message ?? '') ? safeMaxTokens(err?.message ?? '', requested) : null
-          if (safe == null) throw err
-          stream = await mk(safe)
-        }
-        activeChatStreams.set(id, { abort: () => stream.controller.abort() })
-        let usage: any = null
-        // 推論型モデル（gpt-oss / Kimi 等）は tools 指定時に回答が reasoning_content/reasoning へ流れて
-        // 本文が空になることがある。完了時のフォールバック用に蓄積しつつ、**到着した分はそのつど renderer へも流す**
-        // （2026-08-03 ユーザー要望: 待っている間「いま何をしているか」を見せる。推論モデルは本文が出るまで
-        //  数十秒沈黙することがあり、その間ここだけが唯一の進行の手がかりになる）。
-        // デルタの組み立ては純粋ロジックへ切り出してある（src/shared/streamDelta.ts）。
-        // ここは「届いた差分を renderer へ流す」ことだけを行う。
-        const state = newStreamState()
-        for await (const chunk of stream) {
-          const { contentDelta, reasoningDelta } = applyChunk(state, chunk)
-          if (contentDelta) wc.send(`sakura:chat-chunk:${id}`, contentDelta)
-          if (reasoningDelta) wc.send(`sakura:chat-reasoning:${id}`, reasoningDelta)
-        }
-        usage = state.usage
-        wc.send(`sakura:chat-done:${id}`, {
-          usage,
-          toolCalls: finishedToolCalls(state),
-          reasoningText: state.reasoning || null,
-        })
+        const result = await runSakuraStream(
+          { apiKey: args.apiKey, model: args.model, messages: args.messages, maxTokens: args.maxTokens, tools: args.tools },
+          {
+            onDelta: (d) => wc.send(`sakura:chat-chunk:${id}`, d),
+            onReasoning: (d) => wc.send(`sakura:chat-reasoning:${id}`, d),
+            onAbortReady: (abortFn) => { activeChatStreams.set(id, { abort: abortFn }) },
+          },
+        )
+        // runSakuraStream は正常終了（usage・toolCalls・reasoningText）と、ユーザーによる停止
+        // （{ usage: null, aborted: true }）のどちらも return する（throw しない）。従来どおり
+        // 両方とも chat-done へ送る。他のエラー（throw されたもの）だけ catch 側で chat-error にする。
+        wc.send(`sakura:chat-done:${id}`, result)
       } catch (err: any) {
-        // ユーザーによる停止はエラーではなく正常終了として扱う
-        if (err?.name === 'APIUserAbortError' || /abort/i.test(err?.message ?? '')) {
-          wc.send(`sakura:chat-done:${id}`, { usage: null, aborted: true })
-        } else {
-          wc.send(`sakura:chat-error:${id}`, err?.message ?? String(err))
-        }
+        wc.send(`sakura:chat-error:${id}`, err?.message ?? String(err))
       } finally {
         activeChatStreams.delete(id)
       }

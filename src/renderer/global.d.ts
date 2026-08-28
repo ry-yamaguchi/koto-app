@@ -581,5 +581,27 @@ interface Window {
       loadApp(workspaceDir: string): Promise<{ ok: boolean; json: string | null; message?: string }>
       saveApp(workspaceDir: string, json: string): Promise<{ ok: boolean; message?: string }>
     }
+    /**
+     * AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。
+     * renderer 側の配線（useAiChat.ts 等）はまだこの API を呼ばない（その2で行う）。
+     */
+    chatTurn: {
+      /**
+       * `payload.spec` は直列化可能な形（`import('../shared/chatTurn').EngineTurnSpec`）。
+       * main からの出来事は `handlers.onEvent`（emit）/ `handlers.onActivity` に届く。
+       * main からの問い合わせは `handlers.onAsk(path, args)` を呼び、その結果（reject なら
+       * エラー文言）を main へ返す。返り値の Promise は、そのターンが終わるまで解決しない。
+       */
+      start(
+        payload: import('../shared/chatTurnRpc').TurnStartPayload,
+        handlers: {
+          onEvent: (ev: unknown) => void
+          onActivity: () => void
+          onAsk: (path: string, args: unknown[]) => Promise<unknown> | unknown
+        },
+      ): Promise<{ ok: boolean }>
+      /** 進行中のターンを止める（turnId が無ければ何もしない）。 */
+      abort(turnId: string): Promise<void>
+    }
   }
 }

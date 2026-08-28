@@ -112,14 +112,21 @@ export type TurnHelpers = {
   searchStatusContext(hasSearch: boolean): string
 }
 
-/** 副作用の差し込み口。 */
+/** 副作用の差し込み口。
+ *
+ * ── T | Promise<T> について（B'-3b）────────────────────────────────
+ * main 実装の ports は IPC 往復（async）になる。そこで、元々は同期だったメンバーの
+ * 返り値を `T | Promise<T>` にし、呼び出し側（本文）で必ず `await` する形にした
+ * （同期値をそのまま返す renderer の実装は変更不要。`await 値` は値をそのまま返すため）。
+ * `emit` / `setAbort` / `notifyActivity` は fire-and-forget のままなので対象外
+ *（main 実装は wc.send）。 */
 export type EngineTurnPorts = {
   emit(ev: ChatEvent<TurnMessage>): void
   chatStream(req: StreamRequest, onDelta: (d: string) => void, onAbortReady: (abort: () => void) => void, onThinking: (d: string) => void): Promise<StreamResult>
   chatOnce(req: { apiKey: string; model: string; messages: any[]; maxTokens: number }): Promise<{ content?: string; usage?: { prompt_tokens?: number; completion_tokens?: number } | null }>
-  getHistory(): TurnMessage[]
-  buildSystemPrompt(): string
-  onUserMessage?(text: string, isFirst: boolean): void
+  getHistory(): TurnMessage[] | Promise<TurnMessage[]>
+  buildSystemPrompt(): string | Promise<string>
+  onUserMessage?(text: string, isFirst: boolean): void | Promise<void>
   approveToolCall?(name: string, args: string, scope?: { projectDir?: string | null; writeRoot?: string | null }): Promise<string | null>
   executeTool(name: string, argsJson: string, opts: Record<string, unknown>): Promise<string>
   buildRagBlock?: ((text: string) => Promise<string>) | undefined
@@ -129,23 +136,39 @@ export type EngineTurnPorts = {
   notifyActivity(): void
   setAbort(fn: (() => void) | null): void
   usage: {
-    check(): { allowed: boolean; message?: string }
-    record(model: string, promptTokens: number, completionTokens: number): void
-    estimate(text: string): number
+    check(): { allowed: boolean; message?: string } | Promise<{ allowed: boolean; message?: string }>
+    record(model: string, promptTokens: number, completionTokens: number): void | Promise<void>
+    estimate(text: string): number | Promise<number>
   }
   toolSupport: {
-    shouldSendTools(model: string): boolean
-    isKnownToolCapable(model: string): boolean
-    record(model: string, supported: boolean): void
+    shouldSendTools(model: string): boolean | Promise<boolean>
+    isKnownToolCapable(model: string): boolean | Promise<boolean>
+    record(model: string, supported: boolean): void | Promise<void>
   }
   vision: {
-    shouldTryDirect(model: string): boolean
-    record(model: string, supported: boolean): void
-    defaultModel(): string
+    shouldTryDirect(model: string): boolean | Promise<boolean>
+    record(model: string, supported: boolean): void | Promise<void>
+    defaultModel(): string | Promise<string>
   }
   /** 「まとめ失敗の警告は1度だけ」の印。初回だけ true を返し、以後 false。 */
-  compactWarnOnce(): boolean
+  compactWarnOnce(): boolean | Promise<boolean>
   h: TurnHelpers
+}
+
+/**
+ * Array.prototype.find の非同期版（B'-3b）。
+ *
+ * ── なぜ要るか ──────────────────────────────────────────────────
+ * ports.toolSupport.isKnownToolCapable / shouldSendTools が `T | Promise<T>` になったため、
+ * `ids.find(id => ports.toolSupport.isKnownToolCapable(id))` のように述語の中で呼ぶと、
+ * 素の `.find()` は Promise を（常に truthy として）誤判定してしまう。
+ * 先頭から順に await しながら最初の一致を返す、同じ選び方をする代わり。
+ */
+async function findAsync<T>(items: readonly T[], pred: (item: T) => boolean | Promise<boolean>): Promise<T | undefined> {
+  for (const item of items) {
+    if (await pred(item)) return item
+  }
+  return undefined
 }
 
 /** まったく同じツール呼び出し（名前＋引数）がこの回数だけ連続したら暴走とみなして中断する。
@@ -176,7 +199,7 @@ export async function runCompact(
   const { apiKey, model } = spec
   if (!apiKey || !model) return { error: 'さくらのAI Engine のキーが登録されていないため、まとめを作れません。' }
   // 予算の上限に達しているときは作らない（まとめのために上限を超えない）。
-  if (!ports.usage.check().allowed) {
+  if (!(await ports.usage.check()).allowed) {
     return { error: '今月のさくらのAI Engine の利用額が上限に達しているため、まとめを作れません（上限は ⚙️ 設定で変えられます）。' }
   }
   // 材料には**書き込み・実行の実況も混ぜる**（どのファイルを変えたかは本文に残らない）。
@@ -191,10 +214,10 @@ export async function runCompact(
       // （2026-08-20 実機: 2048 では思考の途中で打ち切られていた）。余裕を持たせる。
       maxTokens: 4096,
     })
-    ports.usage.record(
+    await ports.usage.record(
       model,
-      res.usage?.prompt_tokens ?? ports.usage.estimate(system + user),
-      res.usage?.completion_tokens ?? ports.usage.estimate(res.content ?? ''),
+      res.usage?.prompt_tokens ?? (await ports.usage.estimate(system + user)),
+      res.usage?.completion_tokens ?? (await ports.usage.estimate(res.content ?? '')),
     )
     const text = ports.h.acceptSummary(res.content ?? '')
     if (!text) return { error: `「${ports.h.modelLabel(model)}」から空の返事が返ってきました。別のモデルでお試しください。` }
@@ -219,7 +242,7 @@ async function compactIfNeeded(
   if ('msg' in r) return r.msg
   // ここへ来た時点で、送る量は予算を超えている＝**古いやり取りの一部が送れていない**。
   // 黙って忘れられるより、やり直せる手があることを1度だけ伝える。
-  if (ports.compactWarnOnce()) {
+  if (await ports.compactWarnOnce()) {
     ports.emit({
       kind: 'append',
       msg: {
@@ -245,7 +268,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
   const hasImages = images.length > 0
 
   // 利用上限チェック
-  const budget = ports.usage.check()
+  const budget = await ports.usage.check()
   if (!budget.allowed) {
     const userMsg: TurnMessage = { role: 'user', content: rawText.trim() }
     const budgetMsg: TurnMessage = { role: 'assistant', content: `🛑 ${budget.message}` }
@@ -262,19 +285,19 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
   // 永久に二段構え**になり、1回分よけいに時間と費用がかかる。
   // ツール対応と同じで、**未確認は楽観的にそのまま渡し、結果から学習する**。
   // 既知で非対応のときだけ二段構えにする。
-  const needsVisionHandoff = hasImages && !ports.vision.shouldTryDirect(model)
+  const needsVisionHandoff = hasImages && !(await ports.vision.shouldTryDirect(model))
   const twoStage = needsVisionHandoff && twoStageVision
-  let useModel = needsVisionHandoff && !twoStage ? ports.vision.defaultModel() : model
+  let useModel = needsVisionHandoff && !twoStage ? await ports.vision.defaultModel() : model
   // B: この会話で既にツール作業へ割り振り済みなら、最初からツール対応モデルで実行（再試行を省く）
-  if (!hasImages && routedModel && !ports.toolSupport.shouldSendTools(model)) useModel = routedModel
+  if (!hasImages && routedModel && !(await ports.toolSupport.shouldSendTools(model))) useModel = routedModel
   const switched = useModel !== model
 
   const text = rawText.trim() || (hasImages ? 'この画像について教えてください。' : '')
-  const historyBefore = ports.getHistory()
+  const historyBefore = await ports.getHistory()
   const isFirst = historyBefore.length === 0
   const userMsg: TurnMessage = { role: 'user', content: text, images: hasImages ? images : undefined }
   ports.emit({ kind: 'append', msg: userMsg })
-  ports.onUserMessage?.(text, isFirst)
+  await ports.onUserMessage?.(text, isFirst)
   ports.emit({ kind: 'loading', value: true })
 
   // 会話が長くなっていたら、ここで古いぶんをまとめる（送信に使う履歴もこれに差し替える）。
@@ -286,7 +309,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     history = [...historyBefore, summaryMsg]
   }
 
-  const systemPrompt = ports.buildSystemPrompt()
+  const systemPrompt = await ports.buildSystemPrompt()
   // 費用の見積りは「実際に送るもの」で行う（まとめたのに元の全文で数えると合わない）。
   // 送る履歴は1度だけ組み立てて使い回す（下のエージェントループでも同じものを使う）。
   const pastMessages = ports.h.planSend(history)
@@ -325,7 +348,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
      * @returns 読み取れた説明文。失敗・中断なら null
      */
     const readImagesAsText = async (): Promise<string | null> => {
-      const visionModel = ports.vision.defaultModel()
+      const visionModel = await ports.vision.defaultModel()
       ports.emit({ kind: 'status', value: '🖼 画像を読み取っています…' })
       const visionMessages: ApiMsg[] = [
         { role: 'system', content: 'あなたは画像読み取り係です。添付画像の内容を客観的に詳しく説明してください（画面の構成要素、表示されている文言やエラーメッセージ、状態、気になる点）。修正案や次の行動の提案は書かないでください。' },
@@ -345,7 +368,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         () => { ports.notifyActivity() },
       )
       ports.emit({ kind: 'status', value: '' })
-      ports.usage.record(visionModel, u?.prompt_tokens ?? ports.usage.estimate(text), u?.completion_tokens ?? ports.usage.estimate(acc))
+      await ports.usage.record(visionModel, u?.prompt_tokens ?? (await ports.usage.estimate(text)), u?.completion_tokens ?? (await ports.usage.estimate(acc)))
       if (aborted || !acc.trim()) return null
       return acc
     }
@@ -353,7 +376,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     if (twoStage) {
       // 2段階visionハンドオフ：まず視覚モデルに画像だけ読み取らせ（ツール無し）、
       // その説明文を本来のモデル（ツール使用可）へのプレーンテキストとして渡す。
-      const visionModel = ports.vision.defaultModel()
+      const visionModel = await ports.vision.defaultModel()
       ports.emit({ kind: 'append', msg: { role: 'assistant', content: `🖼 画像を「${ports.h.modelLabel(visionModel)}」で読み取り、「${ports.h.modelLabel(useModel)}」で実行します。`, toolNote: true } })
       ports.emit({ kind: 'status', value: '🖼 画像を読み取っています…' })
       const visionMessages: ApiMsg[] = [
@@ -376,10 +399,10 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         () => { ports.notifyActivity() },
       )
       ports.emit({ kind: 'status', value: '' })
-      ports.usage.record(
+      await ports.usage.record(
         visionModel,
-        visionUsage?.prompt_tokens ?? ports.usage.estimate(text),
-        visionUsage?.completion_tokens ?? ports.usage.estimate(descAcc),
+        visionUsage?.prompt_tokens ?? (await ports.usage.estimate(text)),
+        visionUsage?.completion_tokens ?? (await ports.usage.estimate(descAcc)),
       )
       if (visionAborted) {
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
@@ -409,7 +432,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         // maxTokens=16384: 推論型モデル（Kimi 等）は推論でトークンを消費してから write_file の引数として
         // ファイル全文を吐くため、4096 だと引数JSONが途中で切れて 400 になっていた（2026-07-14）。
         // 上限を超えるモデルは main 側（sakura.ts）が context-limit を検出して自動で縮めて再試行する。
-        { apiKey, model: useModel, messages: apiMessages, maxTokens: 16384, tools: (!noTools && ports.toolSupport.shouldSendTools(useModel)) ? ports.h.toolsFor(toolsProjectDir, !!search, hasRag) : undefined },
+        { apiKey, model: useModel, messages: apiMessages, maxTokens: 16384, tools: (!noTools && (await ports.toolSupport.shouldSendTools(useModel))) ? ports.h.toolsFor(toolsProjectDir, !!search, hasRag) : undefined },
         (delta) => {
           ports.notifyActivity()
           acc += delta
@@ -442,10 +465,10 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc || undefined } })
       }
       // 利用量を記録（usageが無ければ文字数から見積り）
-      ports.usage.record(
+      await ports.usage.record(
         useModel,
-        usage?.prompt_tokens ?? ports.usage.estimate(inputText),
-        usage?.completion_tokens ?? ports.usage.estimate(acc),
+        usage?.prompt_tokens ?? (await ports.usage.estimate(inputText)),
+        usage?.completion_tokens ?? (await ports.usage.estimate(acc)),
       )
       return { content: acc, aborted, toolCalls, toolFailed, hadToolMarkup }
     }
@@ -478,8 +501,8 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       } catch (e: any) {
         // サーバがツール非対応で 400 を返す等 → ツールを外して1回だけ再試行（通常チャットとして応答させる）。
         // 400で判明した以上は既知の事実として記録し、次回以降このモデルへは無駄な400を出さない。
-        if (ports.toolSupport.shouldSendTools(useModel) && !retriedNoTools && ports.h.isToolUnsupportedError(e?.message)) {
-          ports.toolSupport.record(useModel, false)
+        if ((await ports.toolSupport.shouldSendTools(useModel)) && !retriedNoTools && ports.h.isToolUnsupportedError(e?.message)) {
+          await ports.toolSupport.record(useModel, false)
           retriedNoTools = true
           ports.emit({ kind: 'removeLast' })
           r = await streamOnce(apiMessages, /* noTools */ true)
@@ -488,10 +511,10 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           // **その事実を記録して、次回からは最初から二段構えにする。**
           // 混雑や通信の失敗は記録しない（isImageUnsupportedError が弾く）。
           // 今回は視覚モデルへ回して、利用者の手を止めない。
-          ports.vision.record(useModel, false)
+          await ports.vision.record(useModel, false)
           triedVisionFallback = true
           ports.emit({ kind: 'removeLast' })
-          const fallback = ports.vision.defaultModel()
+          const fallback = await ports.vision.defaultModel()
           ports.emit({
             kind: 'append',
             msg: {
@@ -509,15 +532,15 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       }
       if (r.aborted) break
       // 成功の記録：構造化ツール呼び出しが返った＝ツール対応の決定的証拠。次回以降は迷わず送る。
-      if (r.toolCalls?.length) ports.toolSupport.record(useModel, true)
+      if (r.toolCalls?.length) await ports.toolSupport.record(useModel, true)
       // 画像を渡して本文が返った＝**このモデルは画像を受け取れる**という証拠。
       // 次回からは二段構えを挟まない（2026-08-19）
-      if (hasImages && !twoStage && !triedVisionFallback && r.content.trim()) ports.vision.record(useModel, true)
+      if (hasImages && !twoStage && !triedVisionFallback && r.content.trim()) await ports.vision.record(useModel, true)
       // 自己修復：ツールを送ったのに本文もツール呼び出しも無い（=ツール非対応/暴走の兆候）。
       // ツール無しで1回だけ再試行し、通常のテキスト応答を得る。
       // ここでは非対応と記録しない：本文もツール呼び出しも無いのは一時的な失敗（暴走・タイムアウト等）の
       // 可能性もあり、非対応と断定できないため（記録は400のような決定的な証拠があるときだけ行う）。
-      if (ports.toolSupport.shouldSendTools(useModel) && r.toolFailed && !retriedNoTools) {
+      if ((await ports.toolSupport.shouldSendTools(useModel)) && r.toolFailed && !retriedNoTools) {
         retriedNoTools = true
         ports.emit({ kind: 'removeLast' })
         ports.emit({ kind: 'status', value: '応答をやり直しています…' })
@@ -553,15 +576,15 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       }
       if (r.hadToolMarkup && !r.toolCalls?.length && !routed && (!hasImages || imageIsText)) {
         // ツールを送っていた（=構造化ツールを扱えないという決定的な証拠）場合だけ非対応を記録する。
-        if (ports.toolSupport.shouldSendTools(useModel)) ports.toolSupport.record(useModel, false)
+        if (await ports.toolSupport.shouldSendTools(useModel)) await ports.toolSupport.record(useModel, false)
         const ids = models.map(m => m.id)
         const best = ports.h.pickBestModel(ids)
         // 切替先は「既知で対応」を優先し、無ければ「既知で非対応ではない（未確認）」モデルを試す。
         // 直前に非対応と記録した useModel 自身と、既知で非対応のモデルは避ける。
-        const capable = ports.toolSupport.isKnownToolCapable(best)
+        const capable = (await ports.toolSupport.isKnownToolCapable(best))
           ? best
-          : (ids.find(id => ports.toolSupport.isKnownToolCapable(id))
-            ?? ids.find(id => id !== useModel && ports.toolSupport.shouldSendTools(id))
+          : ((await findAsync(ids, id => ports.toolSupport.isKnownToolCapable(id)))
+            ?? (await findAsync(ids, async id => id !== useModel && (await ports.toolSupport.shouldSendTools(id))))
             ?? best)
         if (capable !== useModel) {
           routed = true
@@ -592,7 +615,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           // 読み取りは正しく実行できているので**ツール非対応ではない**。
           // 言っただけである。まず**実際にやらせる**（1回だけ促す）。
           if (ports.h.claimsFileChange(r.content) && !wroteFiles && !askedToActuallyWrite
-              && toolsProjectDir && ports.toolSupport.shouldSendTools(useModel)) {
+              && toolsProjectDir && (await ports.toolSupport.shouldSendTools(useModel))) {
             askedToActuallyWrite = true
             ports.emit({ kind: 'removeLast' }) // 事実と違う報告は残さない
             ports.emit({ kind: 'append', msg: { role: 'assistant', content: '⚠️ 変更が実行されていなかったので、やり直しています…', toolNote: true } })
@@ -680,7 +703,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         if ((ports.h.writingTools as readonly string[]).includes(toolName)) wroteFiles = true
         apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: result })
       }
-      if (!ports.usage.check().allowed) break // 上限到達時はループを止める
+      if (!(await ports.usage.check()).allowed) break // 上限到達時はループを止める
     }
   } catch (err: any) {
     ports.emit({ kind: 'append', msg: { role: 'assistant', content: errorPrefix + ports.h.formatChatError(err?.message ?? String(err)) } })

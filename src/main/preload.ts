@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { TurnStartPayload, TurnAsk, TurnEvent, TurnAnswer } from '../shared/chatTurnRpc'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   fs: {
@@ -410,5 +411,49 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 単独チャット（ChatApp）のセッション一覧（<workspace>/.sakuraide/chats/chat-app.json）
     loadApp: (workspaceDir: string) => ipcRenderer.invoke('chat:loadApp', workspaceDir),
     saveApp: (workspaceDir: string, json: string) => ipcRenderer.invoke('chat:saveApp', workspaceDir, json),
-  }
+  },
+  // AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。
+  // renderer 側の配線（useAiChat.ts 等）はまだこの API を呼ばない（その2で行う）。
+  chatTurn: {
+    // main からの出来事（chatTurn:event:{turnId}）と問い合わせ（chatTurn:ask:{turnId}）を購読し、
+    // 問い合わせには handlers.onAsk の結果を chatTurn:answer で返す。sakura.chatStream の
+    // 「onXxx を購読して invoke が終わったら必ず解除する」流儀と同じにしてある。
+    start: (
+      payload: TurnStartPayload,
+      handlers: {
+        onEvent: (ev: unknown) => void
+        onActivity: () => void
+        onAsk: (path: string, args: unknown[]) => Promise<unknown> | unknown
+      },
+    ): Promise<{ ok: boolean }> => {
+      const { turnId } = payload
+      const eventCh = `chatTurn:event:${turnId}`
+      const askCh = `chatTurn:ask:${turnId}`
+      const onEvent = (_: Electron.IpcRendererEvent, ev: TurnEvent) => {
+        if (ev.type === 'emit') handlers.onEvent(ev.ev)
+        else handlers.onActivity()
+      }
+      const onAsk = (_: Electron.IpcRendererEvent, ask: TurnAsk) => {
+        Promise.resolve()
+          .then(() => handlers.onAsk(ask.path, ask.args))
+          .then(
+            (result) => {
+              const a: TurnAnswer = { turnId, callId: ask.callId, ok: true, result }
+              ipcRenderer.invoke('chatTurn:answer', a)
+            },
+            (e: any) => {
+              const a: TurnAnswer = { turnId, callId: ask.callId, ok: false, error: String(e?.message ?? e) }
+              ipcRenderer.invoke('chatTurn:answer', a)
+            },
+          )
+      }
+      ipcRenderer.on(eventCh, onEvent)
+      ipcRenderer.on(askCh, onAsk)
+      return (ipcRenderer.invoke('chatTurn:start', payload) as Promise<{ ok: boolean }>).finally(() => {
+        ipcRenderer.removeListener(eventCh, onEvent)
+        ipcRenderer.removeListener(askCh, onAsk)
+      })
+    },
+    abort: (turnId: string) => ipcRenderer.invoke('chatTurn:abort', turnId),
+  },
 })

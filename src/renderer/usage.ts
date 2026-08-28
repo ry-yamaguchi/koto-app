@@ -6,34 +6,12 @@
  * ユーザーが設定した月間上限に達したらリクエストを止めるための仕組みです。
  */
 
-/** 利用可能なモデル（UI表示用ラベル付き） */
-// ============================================================================
-// 【メンテナンス】さくらのAI Engine の提供モデル・単価の変化に追従すること
-//   1. 差分チェック:  SAKURA_API_KEY=<キー> npm run check:models
-//      → 提供モデルと下記 MODELS/VISION_MODELS/PRICING を突き合わせ、
-//        新規モデル／提供終了／価格未設定 を一覧表示する（scripts/check-models.mjs）
-//   2. 公開単価はさくらの情報で確認（APIから取れないため手動）:
-//      https://ai.sakura.ad.jp/sakura-ai/ai-engine/ ／ コントロールパネルの提供モデル
-//   3. 差分を MODELS / VISION_MODELS / PRICING に反映し、DEFAULT_MODEL を
-//      「その時点でコード作成に最も適したモデル」に見直す
-//   最終確認: v0.1.0（2026-06 時点の最適は Qwen3-Coder-480B-A35B-Instruct-FP8）
-// ============================================================================
+// 実体は shared へ移した（B'-3b）。MODELS / VISION_MODELS / modelLabel / pickBestModel /
+// estimateTokens は src/shared/modelInfo.ts を参照。ここでは他の関数が使うぶんを import し、
+// 従来どおりの公開API（MODELS 等）は re-export で維持する。
+import { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens } from '../shared/modelInfo'
+export { MODELS, VISION_MODELS, modelLabel, pickBestModel, estimateTokens }
 
-// さくらのAI Engine のモデルID（「Qwen/」等のプレフィックスは付かない）
-export const MODELS: { id: string; label: string }[] = [
-  { id: 'Qwen3-Coder-480B-A35B-Instruct-FP8', label: 'Qwen3-Coder 480B' },
-  { id: 'Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3-Coder 30B' },
-  { id: 'gpt-oss-120b', label: 'GPT-OSS 120B' },
-  { id: 'llm-jp-3.1-8x13b-instruct4', label: 'llm-jp 3.1 8x13b（日本語）' },
-  // 2026-07-14 ユーザー実測（probe-models.mjs）で tools=ok を確認しツール（ファイル参照）対応に昇格。
-  { id: 'preview/Kimi-K2.6', label: 'Kimi K2.6（プレビュー）' },
-]
-
-/** マルチモーダル（画像入力）対応モデル（さくらのAI Engine パブリックプレビュー） */
-export const VISION_MODELS: { id: string; label: string }[] = [
-  { id: 'preview/Qwen3-VL-30B-A3B-Instruct', label: 'Qwen3-VL 30B（画像対応・プレビュー）' },
-  { id: 'preview/Phi-4-multimodal-instruct', label: 'Phi-4 マルチモーダル（プレビュー）' },
-]
 const VISION_IDS = new Set(VISION_MODELS.map(m => m.id))
 
 /** モデルが画像入力に対応しているか（ID命名からも推定）。
@@ -52,10 +30,6 @@ export function getDefaultVisionModel(): string {
   const ids = getCachedModelIds()
   if (ids.includes(DEFAULT_VISION_MODEL)) return DEFAULT_VISION_MODEL
   return ids.find(isVisionModel) ?? DEFAULT_VISION_MODEL
-}
-
-export function modelLabel(id: string): string {
-  return [...MODELS, ...VISION_MODELS].find(m => m.id === id)?.label ?? id
 }
 
 const MODELS_CACHE_KEY = 'sakura_models_cache'
@@ -107,27 +81,13 @@ export type ChatMode = 'ide' | 'chat'
 
 // IDE（コード/エージェント）は品質重視、チャット（会話/調査）は速度重視を既定にする。
 // ※ バージョンアップ時は npm run check:models / probe:models で見直すこと
-const DEFAULT_MODEL = 'Qwen3-Coder-480B-A35B-Instruct-FP8'   // IDE 既定（コード最適）
+// （DEFAULT_MODEL 本体は pickBestModel と一緒に src/shared/modelInfo.ts へ移した。B'-3b）
 const DEFAULT_CHAT_MODEL = 'Qwen3-Coder-30B-A3B-Instruct'    // チャット既定（高速）
 
 export function getDefaultModel(mode: ChatMode = 'ide'): string {
   return localStorage.getItem(MODEL_PREF_KEY[mode])
     ?? localStorage.getItem(LEGACY_MODEL_KEY)                // 旧・共通設定からの移行
     ?? (mode === 'chat' ? DEFAULT_CHAT_MODEL : DEFAULT_MODEL)
-}
-
-/**
- * 提供中のモデル一覧から「コード作成に最適な」モデルを選ぶ。
- * 既定モデルが提供終了した場合のフォールバックに使う（Coder系 → Qwen3系 → 先頭）。
- */
-export function pickBestModel(ids: string[]): string {
-  if (!ids.length) return DEFAULT_MODEL
-  return (
-    ids.find(id => /coder/i.test(id) && /480/.test(id)) ??
-    ids.find(id => /coder/i.test(id)) ??
-    ids.find(id => /^qwen3/i.test(id)) ??
-    ids[0]
-  )
 }
 
 export function setDefaultModel(id: string, mode: ChatMode = 'ide') {
@@ -331,14 +291,6 @@ export function resetThisMonth() {
   const store = readStore()
   delete store[thisMonth()]
   writeStore(store)
-}
-
-/** 大まかなトークン見積り（APIがusageを返さない場合のフォールバック）。 */
-export function estimateTokens(text: string): number {
-  if (!text) return 0
-  let tokens = 0
-  for (const ch of text) tokens += ch.charCodeAt(0) > 0x7f ? 1 : 0.25
-  return Math.ceil(tokens)
 }
 
 export interface BudgetStatus {

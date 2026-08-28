@@ -181,6 +181,42 @@ function makePorts(cfg: PortsConfig): { ports: EngineTurnPorts; log: Log; stream
   return { ports, log, streamRequests }
 }
 
+/**
+ * ports の元々同期だったメンバーを Promise でくるむ（B'-3b のミューテーション試験用）。
+ *
+ * main 実装（IPC 往復）は非同期になるため、chatTurn.ts の該当メンバーは `T | Promise<T>` を
+ * 受けて必ず await する形にした。ここでは偽 ports をこの形で包み、
+ * 「同期実装でも非同期実装でも同じ結果になる（await が透過する）」ことを確かめる。
+ * 呼び出しそのもの（ログを積む副作用）は中の同期関数がそのまま実行するので、
+ * ログの並びは素の（同期）ports と変わらない。
+ */
+function wrapPortsAsync(ports: EngineTurnPorts): EngineTurnPorts {
+  return {
+    ...ports,
+    getHistory: () => Promise.resolve(ports.getHistory()),
+    buildSystemPrompt: () => Promise.resolve(ports.buildSystemPrompt()),
+    onUserMessage: ports.onUserMessage
+      ? (text, isFirst) => Promise.resolve(ports.onUserMessage!(text, isFirst))
+      : undefined,
+    usage: {
+      check: () => Promise.resolve(ports.usage.check()),
+      record: (m, i, o) => Promise.resolve(ports.usage.record(m, i, o)),
+      estimate: (t) => Promise.resolve(ports.usage.estimate(t)),
+    },
+    toolSupport: {
+      shouldSendTools: (m) => Promise.resolve(ports.toolSupport.shouldSendTools(m)),
+      isKnownToolCapable: (m) => Promise.resolve(ports.toolSupport.isKnownToolCapable(m)),
+      record: (m, s) => Promise.resolve(ports.toolSupport.record(m, s)),
+    },
+    vision: {
+      shouldTryDirect: (m) => Promise.resolve(ports.vision.shouldTryDirect(m)),
+      record: (m, s) => Promise.resolve(ports.vision.record(m, s)),
+      defaultModel: () => Promise.resolve(ports.vision.defaultModel()),
+    },
+    compactWarnOnce: () => Promise.resolve(ports.compactWarnOnce()),
+  }
+}
+
 function makeSpec(overrides: Partial<EngineTurnSpec> = {}): EngineTurnSpec {
   return {
     rawText: 'こんにちは',
@@ -684,6 +720,38 @@ describe('runEngineTurn', () => {
     expect(replaces[2]).toEqual({ content: 'A', thinking: '思考' })
     // 4. onDelta('B') → 本文が積み上がる
     expect(replaces[3]).toEqual({ content: 'AB', thinking: '思考' })
+  })
+
+  // 23. async ports（B'-3b）: ports の該当メンバーは main 実装だと IPC 往復で非同期になる。
+  // 元は同期だった偽 ports を全部 Promise でくるんでも、2番（素の応答）と同じ結果になる
+  // ことを確かめる（= 本文中の await が実際に効いていて、async 実装でも壊れないことの証拠）。
+  it('async ports: 全 ports を Promise でくるんでも、素の応答（2番）と同じ結果になる', async () => {
+    const { ports, log } = makePorts({
+      stream: [{ content: 'こんにちは！', toolCalls: null, usage: { prompt_tokens: 10, completion_tokens: 5 } }],
+    })
+    await runEngineTurn(makeSpec(), wrapPortsAsync(ports))
+    expect(log).toEqual([
+      { tag: 'usage.check' },
+      { tag: 'getHistory' },
+      { tag: 'emit', ev: { kind: 'append', msg: { role: 'user', content: 'こんにちは', images: undefined } } },
+      { tag: 'onUserMessage', text: 'こんにちは', isFirst: true },
+      { tag: 'emit', ev: { kind: 'loading', value: true } },
+      { tag: 'buildSystemPrompt' },
+      { tag: 'getSearchConfig' },
+      { tag: 'fetchPagesBlock', urls: [] },
+      { tag: 'autoSearchBlock', text: 'こんにちは', search: null },
+      { tag: 'emit', ev: { kind: 'status', value: '' } },
+      { tag: 'emit', ev: { kind: 'status', value: '' } },
+      { tag: 'emit', ev: { kind: 'append', msg: { role: 'assistant', content: '' } } },
+      { tag: 'chatStream', model: 'modelA', hasTools: true, maxTokens: 16384 },
+      { tag: 'setAbort', has: true },
+      { tag: 'notifyActivity' },
+      { tag: 'emit', ev: { kind: 'replaceLast', msg: { role: 'assistant', content: 'こんにちは！', thinking: undefined } } },
+      { tag: 'usage.record', model: 'modelA', promptTokens: 10, completionTokens: 5 },
+      { tag: 'setAbort', has: false },
+      { tag: 'emit', ev: { kind: 'loading', value: false } },
+      { tag: 'emit', ev: { kind: 'status', value: '' } },
+    ])
   })
 })
 

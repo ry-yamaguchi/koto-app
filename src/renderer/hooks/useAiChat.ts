@@ -9,6 +9,14 @@
 // 次段 B'-3b でこのループを main プロセスで動かす下準備）。このフックは、その入力（spec）と
 // 外部への接点（ports）を組み立てて呼ぶだけになっている。Claude頭脳モード（sendViaClaude）は
 // 従来どおりこのファイルに残る。
+//
+// ── B'-3b（2026-08-28）─────────────────────────────────────────────
+// runEngineTurn のループ本体は main プロセス（src/main/chat/turnRunner.ts）へ移した。
+// send() は window.electronAPI.chatTurn.start() を呼ぶだけになり、renderer は
+// ①出来事（emit）を受けて画面に当てる ②main からの問い合わせ（ask）に答える、の2役だけになる。
+// ask の振り分けは src/renderer/chatTurnBridge.ts の dispatchAsk（buildPorts の実装をそのまま
+// handlers として使う・二重実装しない）。runCompact（compactNow が使う）と buildPorts（handlers
+// の元・compactNow が使う）は今日も renderer に残る。
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
@@ -23,7 +31,9 @@ import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaud
 import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
 import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
-import { runEngineTurn, runCompact, type EngineTurnSpec, type EngineTurnPorts } from '../../shared/chatTurn'
+import { runCompact, type EngineTurnSpec, type EngineTurnPorts } from '../../shared/chatTurn'
+import type { AskPath } from '../../shared/chatTurnRpc'
+import { stripFunctions, dispatchAsk } from '../chatTurnBridge'
 
 export type ChatMessage = {
   role: 'user' | 'assistant'
@@ -458,13 +468,64 @@ export function useAiChat(args: UseAiChatArgs) {
 
       if (!apiKey) return
 
-      // AI Engine 経路の本体（利用上限チェック〜エージェントループ）は chatTurn.ts へ切り出した。
-      // ここでは、そのターンの入力（spec）と外部への接点（ports）を組み立てて呼ぶだけにする。
+      // AI Engine のループは main で走る（B'-3b）。renderer は
+      // ①出来事を受けて emit する ②問い合わせ（ask）に答える、の2役だけ。
       const spec: EngineTurnSpec = {
         rawText, images, assetBlock, apiKey, model, models, maxRounds, toolsProjectDir,
         errorPrefix, twoStageVision, routedModel, hasRag: !!buildRagBlock, turnOpts, snapshotId, snapshotLabel,
       }
-      await runEngineTurn(spec, buildPorts())
+      const turnId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+      const ports = buildPorts() // ask への回答の実体（chatStream/chatOnce は main が直接呼ぶので使われない）
+      // main からの ask（chatTurnBridge.ts の dispatchAsk）へ渡す薄い橋。buildPorts の実装を
+      // そのまま使い、二重実装しない（呼び先を付け替えているだけで、値の鮮度は変わらない）。
+      const handlers = {
+        executeTool: ports.executeTool,
+        approveToolCall: ports.approveToolCall,
+        buildSystemPrompt: ports.buildSystemPrompt,
+        getHistory: ports.getHistory,
+        onUserMessage: ports.onUserMessage,
+        buildRagBlock: ports.buildRagBlock,
+        getSearchConfig: ports.getSearchConfig,
+        fetchPagesBlock: ports.fetchPagesBlock,
+        autoSearchBlock: ports.autoSearchBlock,
+        usageCheck: ports.usage.check,
+        usageRecord: ports.usage.record,
+        toolSupportShouldSendTools: ports.toolSupport.shouldSendTools,
+        toolSupportIsKnownToolCapable: ports.toolSupport.isKnownToolCapable,
+        toolSupportRecord: ports.toolSupport.record,
+        visionShouldTryDirect: ports.vision.shouldTryDirect,
+        visionRecord: ports.vision.record,
+        visionDefaultModel: ports.vision.defaultModel,
+        compactWarnOnce: ports.compactWarnOnce,
+      }
+      // ⚠️ abortRef はターンの間ずっと main への abort 送信関数を指す。今日は「ストリーム中だけ」
+      // だったが、main 側は abort 関数が未登録なら何もしないので、観測できる振る舞いは同じ。
+      abortRef.current = () => { void window.electronAPI.chatTurn.abort(turnId) }
+      try {
+        await window.electronAPI.chatTurn.start(
+          {
+            turnId,
+            spec: { ...spec, turnOpts: stripFunctions(turnOpts) },
+            caps: { approveToolCall: !!approveToolCall, onUserMessage: !!onUserMessage, buildRagBlock: !!buildRagBlock },
+          },
+          {
+            onEvent: (ev) => emit(ev as any),
+            onActivity: () => { lastActivityRef.current = Date.now() },
+            onAsk: (path, args) => dispatchAsk(handlers, turnOpts, path as AskPath, args),
+          },
+        )
+      } finally {
+        abortRef.current = null
+        // ── 終端の状態はここでも確定させる（2026-08-28 実機で「時間がかかっています」が
+        // 消えない事象を確認）────────────────────────────────────────────
+        // main はターンの最後に loading=false / status='' の出来事を送ってから完了を返すが、
+        // **完了（invoke の解決）が最後の出来事を追い越して届く**と、preload が購読を先に
+        // 外してしまい、出来事が失われて「実行中」の表示が残り続ける（Electron は
+        // webContents.send と invoke の返事の到着順を保証しない）。
+        // chatTurn の finally が送るのと同じ値を重ねるだけなので、二重に届いても見た目は変わらない。
+        emit({ kind: 'loading', value: false })
+        emit({ kind: 'status', value: '' })
+      }
     } finally {
       endActivity()
     }

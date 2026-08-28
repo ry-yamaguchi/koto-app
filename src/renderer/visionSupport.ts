@@ -13,6 +13,10 @@
 // **「対応と思ったら非対応」は 400 で救済できるが、「非対応と思ったら実は対応」は
 // 発見する経路が無い。** その非対称性を、ここでも解消する（掟1: 推測で決めない）。
 
+// 実体は shared へ移した（B'-3b）。isImageUnsupportedError は src/shared/modelInfo.ts を参照。
+import { isImageUnsupportedError } from '../shared/modelInfo'
+export { isImageUnsupportedError }
+
 export const VISION_SUPPORT_KEY = 'sakura_model_vision_support'
 
 /** 記録の有効期限。さくら側でモデルが更新されることがあるので、古い判定は捨てて再確認する。 */
@@ -86,16 +90,4 @@ export function visionSupportOf(model: string, now: number = Date.now()): Vision
  */
 export function shouldTryImagesDirectly(model: string, now: number = Date.now()): boolean {
   return visionSupportOf(model, now) !== false
-}
-
-/**
- * 「このモデルは画像を受け付けない」というサーバーの返事か（純関数）。
- *
- * **見分けられないものを非対応と決めつけない。** 通信エラーや混雑（429・500）で
- * 記録してしまうと、対応しているモデルが二段構えのまま固定される。
- */
-export function isImageUnsupportedError(message?: string): boolean {
-  const m = String(message ?? '')
-  if (/\b(429|500|502|503|504)\b|timeout|network|ECONN/i.test(m)) return false
-  return /image|vision|multimodal|image_url|content type|not support.*image|画像.*(対応|使えま)/i.test(m)
 }

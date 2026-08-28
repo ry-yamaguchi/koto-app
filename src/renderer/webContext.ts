@@ -2,14 +2,9 @@
 // ユーザーのメッセージ中のURLを検出し、ページ本文を取得してAIへの送信内容に添付する。
 // （AI側からの参照は aiTools.ts の fetch_url ツールで行う）
 
-const URL_RE = /https?:\/\/[^\s<>"'）)\]」】]+/g
-const MAX_URLS_PER_MESSAGE = 3
-
-/** メッセージ中のURLを抽出（重複除去・最大3件） */
-export function extractUrls(text: string): string[] {
-  const found = text.match(URL_RE) ?? []
-  return [...new Set(found)].slice(0, MAX_URLS_PER_MESSAGE)
-}
+// 実体は shared へ移した（B'-3b）。extractUrls / wantsWebSearch は src/shared/webContextCore.ts を参照。
+import { extractUrls, wantsWebSearch } from '../shared/webContextCore'
+export { extractUrls, wantsWebSearch }
 
 /**
  * URL群のページ本文を取得し、AIに渡す添付ブロック文字列を作る。
@@ -36,11 +31,6 @@ export async function fetchPagesBlock(urls: string[]): Promise<string> {
 }
 
 export type WebSearchConfig = { provider: 'tavily' | 'brave'; key: string }
-
-// 自動Web検索の起動条件（ユーザーが検索を望んでいそうなメッセージか）。
-export function wantsWebSearch(text: string): boolean {
-  return /(検索|調べ|ぐぐっ|ググっ|最新|時事|ニュース|相場|発売|リリース日|公式(サイト|情報|ページ)|現在の|今の)/.test(text)
-}
 
 // メッセージから検索クエリを抽出（「検索して」「表で」等の命令・体裁語を除いて要点を残す）。
 export function searchQueryFromMessage(text: string): string {

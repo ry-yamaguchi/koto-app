@@ -94,7 +94,9 @@ describe('まず今のモデルで試す配線', () => {
   const chatTurn = read('src/shared/chatTurn.ts')
 
   it('★ 名前の一覧ではなく、学習した記録で決める', () => {
-    expect(chatTurn).toMatch(/needsVisionHandoff = hasImages && !ports\.vision\.shouldTryDirect\(model\)/)
+    // B'-3b: ports.vision.shouldTryDirect が非同期にもなり得る形（T | Promise<T>）になったため
+    // await が付いた（実装の判断はそのまま。読み取り方が変わっただけ）。
+    expect(chatTurn).toMatch(/needsVisionHandoff = hasImages && !\(await ports\.vision\.shouldTryDirect\(model\)\)/)
   })
 
   it('★ 受け取れなかったら記録して、その場は視覚モデルへ回す', () => {
