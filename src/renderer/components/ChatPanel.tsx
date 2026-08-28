@@ -109,7 +109,12 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   useEffect(() => { if (pendingImages.length === 0) setAssetChoice(null) }, [pendingImages.length])
   const [writeMode, setWriteMode] = useState<WriteMode>(getWriteMode())
   // 「毎回確認」モードで保存待ちのファイル。resolve(true)=許可 / resolve(false)=拒否
-  const [pendingApproval, setPendingApproval] = useState<{ path: string; resolve: (ok: boolean) => void } | null>(null)
+  // 承認待ちの列。B-1b（並列送信の解禁）で複数プロジェクトのターンが同時に承認を求め得る
+  // ようになったため、単一スロットから列に変えた。単一のままだと、2件目の setPendingApproval が
+  // 1件目を握りつぶし、**1件目の resolve が永遠に呼ばれずターンがハングする**。
+  // 画面に出すのは先頭の1件だけ（答えると次が出る）。
+  const [pendingApprovals, setPendingApprovals] = useState<Array<{ path: string; resolve: (ok: boolean) => void }>>([])
+  const pendingApproval = pendingApprovals[0] ?? null
   const models = useModels(apiKey)
 
   // C2c: チャットの頭脳が Claude か（StatusBar.tsx と同じ判定方式）。Claudeのときは
@@ -442,8 +447,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         try { relPath = JSON.parse(toolArgs || '{}').path ?? '' } catch { /* パス不明でも確認は出す */ }
         const isEdit = toolName === 'edit_file'
         const label = `${relPath || '(不明なファイル)'}${isEdit ? '（部分編集）' : ''}`
-        const approved = await new Promise<boolean>(resolve => setPendingApproval({ path: label, resolve }))
-        setPendingApproval(null)
+        const approved = await new Promise<boolean>(resolve => setPendingApprovals(prev => [...prev, { path: label, resolve }]))
+        setPendingApprovals(prev => prev.slice(1))
         if (!approved) {
           const action = isEdit ? '編集' : '保存'
           return `ユーザーが ${relPath || 'このファイル'} の${action}を許可しませんでした。${action}せずに、どう進めるべきかユーザーに確認してください。`
@@ -468,8 +473,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           // **いつもと違う場所なら、そのことだけを名前で伝える**（2026-08-24 の実害）。
           // パスを読み比べさせない——利用者に難しい判断を押しつけることになる。
           const scopeNote = commandScopeNote(scopeDir, scopeRoot)
-          const approved = await new Promise<boolean>(resolve => setPendingApproval({ path: `コマンド実行: ${cmd || '(不明)'}${scopeNote}${reason}`, resolve }))
-          setPendingApproval(null)
+          const approved = await new Promise<boolean>(resolve => setPendingApprovals(prev => [...prev, { path: `コマンド実行: ${cmd || '(不明)'}${scopeNote}${reason}`, resolve }]))
+          setPendingApprovals(prev => prev.slice(1))
           if (!approved) {
             return `ユーザーがコマンド「${cmd}」の実行を許可しませんでした。実行せずに、どう進めるべきかユーザーに確認してください。`
           }
@@ -534,7 +539,13 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // clientRef が null のため、applyOp は画面だけを更新し ops を送らない）。
   useEffect(() => {
     let cancelled = false
-    setRoutedModel(null) // 会話（プロジェクト）が変わったら割り振りをリセット
+    // ── B-1b: 切替時の setRoutedModel(null) は消した ─────────────────────────
+    // 以前は routedModel が画面全体で1つの状態だったため、プロジェクトを切り替えるたびに
+    // リセットしないと**前のプロジェクトの割り振りが新しいプロジェクトへ漏れて**しまっていた。
+    // いまは routedModel もプロジェクト別（chatTurnRegistry.ts）に持つので、ここでリセットすると
+    // 逆に**戻ってきたときにそのプロジェクト自身の割り振りが消えてしまう**（「この会話では
+    // ツール作業のため切り替えた割り振り先を、会話中は維持する」という routedModel 本来の
+    // 意味に反する）。切替先の routedModel は、切替先の登録鍵からそのまま正しく読み出される。
     clientRef.current = null // 切替では前の client の完了を待たず、ここで捨てる（main 側は projectDir ごとに独立）
     if (!projectDir) { setMessages([]); return }
     loadConversationView(projectDir).then(msgs => {

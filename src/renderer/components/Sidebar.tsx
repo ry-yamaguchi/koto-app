@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import SakuraLogo from './SakuraLogo'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
 import { clearPublishRecord, readHanamiiProjectId, readPublishTargets } from '../publishRecord'
@@ -9,6 +9,7 @@ import { useFileDrag } from '../hooks/useFileDrag'
 import { isPublished, isPublishedTop } from '../../shared/publishExclude'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { isSubmitEnter } from '../keyInput'
+import { subscribe, getSnapshot, loadingKeys } from '../chatTurnRegistry'
 
 interface FileEntry {
   name: string
@@ -212,6 +213,10 @@ function GroupLabel({ text, hint }: { text: string; hint: string }) {
 }
 
 export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject, onOpenHistory, refreshKey = 0 }: Props) {
+  // B-1b: 実行状態の置き場（chatTurnRegistry.ts）を購読し、実行中のプロジェクトに ⏳ を出す。
+  // 値そのものは使わず（購読のたびに loadingKeys() を読み直す）、変わるたびに再描画させるためだけに呼ぶ。
+  useSyncExternalStore(subscribe, getSnapshot)
+  const loadingProjects = new Set(loadingKeys())
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(0)
   // 所見13: 隠しファイル（'.' 始まり）を表示するか。既定=非表示。localStorage に保存する。
@@ -582,6 +587,9 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                 <span className="text-[11px] font-semibold text-ink-secondary group-hover:text-ink uppercase tracking-wide truncate flex-1 text-left">
                   {currentDir.split('/').pop()}
                 </span>
+                {/* B-1b: 実行状態がプロジェクト別になった副産物として、いま見ているプロジェクトが
+                    実行中かどうかが分かるようにする（控えめに絵文字1つだけ）。 */}
+                {loadingProjects.has(currentDir) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
                 <span className="text-[9px] text-ink-muted group-hover:text-sakura flex-none">▾</span>
               </button>
               {projMenu && (
@@ -600,6 +608,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                       >
                         <span className="w-3 flex-none text-sakura">{p === currentDir ? '✓' : ''}</span>
                         <span className="truncate">{p.split('/').pop()}</span>
+                        {loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
                       </button>
                       {/* プロジェクト削除（ワークスペース配下のみ表示。「最近開いた場所」は任意のフォルダを
                           指し得るため対象外＝Finderで操作してもらう）。
@@ -623,6 +632,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                     >
                       <span className="w-3 flex-none text-sakura">{p === currentDir ? '✓' : ''}</span>
                       <span className="truncate">{p.split('/').pop()}</span>
+                      {loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
                     </button>
                   ))}
                   <div className="border-t border-line-soft mt-1 pt-1">

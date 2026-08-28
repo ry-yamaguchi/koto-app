@@ -18,7 +18,7 @@
 // handlers として使う・二重実装しない）。runCompact（compactNow が使う）と buildPorts（handlers
 // の元・compactNow が使う）は今日も renderer に残る。
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
 import { shouldTryImagesDirectly, recordVisionSupport, isImageUnsupportedError } from '../visionSupport'
 import { extractUrls, fetchPagesBlock, autoSearchBlock, wantsWebSearch } from '../webContext'
@@ -34,6 +34,7 @@ import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
 import { runCompact, type EngineTurnSpec, type EngineTurnPorts } from '../../shared/chatTurn'
 import type { AskPath } from '../../shared/chatTurnRpc'
 import { stripFunctions, dispatchAsk } from '../chatTurnBridge'
+import { turnKey, getTurn, updateTurn, resetTurn, subscribe, getSnapshot } from '../chatTurnRegistry'
 
 export type ChatMessage = {
   role: 'user' | 'assistant'
@@ -121,15 +122,30 @@ export function useAiChat(args: UseAiChatArgs) {
     onMessageEvent,
   } = args
 
-  const [isLoading, setIsLoading] = useState(false)
-  // 応答待ち中の補足表示（例: 🔍 Web検索中…）。空なら点だけ。
-  const [statusNote, setStatusNote] = useState('')
-  // B: この会話でツール作業のため切り替えた「割り振り先」モデル（null=未割り振り）。会話中は維持。
-  const [routedModel, setRoutedModel] = useState<string | null>(null)
-  // 停滞検知：ローディング中、一定時間トークンが来なければ「時間がかかっています」を表示（ハングと処理中を区別）
+  // ── B-1b: 実行状態はプロジェクト別の置き場（chatTurnRegistry.ts）から読む ─────────────
+  //
+  // 以前はここに isLoading/statusNote/routedModel の useState があった。ChatPanel は
+  // projectDir が切り替わっても**同じフックインスタンスのまま**（コンポーネントは再マウントしない）
+  // ため、useState では「画面全体で1つ」にしかならず、ターン中に別プロジェクトへ切り替えると
+  // 「考えています…」が付いてきて、入力欄もロックされたままになっていた（実機で確認）。
+  //
+  // useSyncExternalStore（React 18）で registry を購読する。返り値（版数）自体は使わず、
+  // 呼ぶこと自体で「registry が変わるたびにこのコンポーネントを再描画する」購読を張るだけにする
+  // （実際の値は、購読しているかぎり毎回 getTurn(viewKey) で読み直せば常に最新になる）。
+  useSyncExternalStore(subscribe, getSnapshot)
+  // 「いま見ているプロジェクト」の鍵。画面に出す isLoading/statusNote/routedModel・⏹・経過秒は
+  // すべてこの鍵のもの（進行中のターン自身が縛られている鍵とは別物。ターンの鍵は send() 側で固定する）。
+  const viewKey = turnKey(toolsProjectDir)
+  const { isLoading, statusNote, routedModel } = getTurn(viewKey)
+  // setRoutedModel はモデル選択欄からの手動リセットなど、画面の操作から直接呼ばれる。
+  // 「いま見ているプロジェクト」の鍵へ書く（画面から呼ばれる操作なので、現在の view の話でよい）。
+  const setRoutedModel = useCallback((value: string | null) => {
+    updateTurn(turnKey(toolsProjectDir), { routedModel: value })
+  }, [toolsProjectDir])
+  // 停滞検知・経過秒は表示専用のローカル状態のまま（登録先を増やす必要が無いため）。
+  // 中身は「いま見ているプロジェクト」の startedAt/lastActivityAt から毎秒計算し直す（下の effect）。
   const [stalled, setStalled] = useState(false)
-  const lastActivityRef = useRef(Date.now())
-  const abortRef = useRef<(() => void) | null>(null) // 進行中の応答を停止する関数
+  const [elapsedSec, setElapsedSec] = useState(0)
   // Claude頭脳モード（C2a）: 継続会話用のセッションID。プロジェクト単位で永続化し（所見10）、
   // アプリ再起動・プロジェクト再オープンをまたいで会話の続きを resume できるようにする
   // （失効時は main 側 agent.ts が新規セッションへ自動フォールバックするため行き止まりにならない）。
@@ -137,24 +153,33 @@ export function useAiChat(args: UseAiChatArgs) {
 
   // 応答開始からの経過秒数（待ち時間の見える化・2026-08-03 ユーザー要望）。
   // 推論モデルは数十秒沈黙することがあり、「あと少し待つ／止める」の判断材料になる。
-  const [elapsedSec, setElapsedSec] = useState(0)
-
+  //
+  // ── B-1b: 「いま見ている鍵」から毎秒計算し直す ─────────────────────────────
+  // 以前は isLoading が true になった瞬間の Date.now() をローカル変数に閉じ込めて計算していた
+  // （画面全体で1つの状態だったので、それで足りた）。いまは複数のプロジェクトが同時に走りうるので、
+  // registry 側（chatTurnRegistry.ts）が startedAt/lastActivityAt をプロジェクト別に持つ。
+  // ここは「いま見ているプロジェクト」の値を読むだけにする。viewKey が変わるたび
+  // （＝プロジェクトを切り替えるたび）にこの effect が張り直され、**戻ってきたときにそのターンの
+  // 経過秒・停滞判定が正しく見える**（切り替えて戻ってきても古い値のまま、という取りこぼしが無い）。
   useEffect(() => {
     if (!isLoading) { setStalled(false); setElapsedSec(0); return }
-    lastActivityRef.current = Date.now()
-    const startedAt = Date.now()
-    const t = setInterval(() => {
-      setStalled(Date.now() - lastActivityRef.current > 20000)
-      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000))
-    }, 1000)
-    return () => clearInterval(t)
-  }, [isLoading])
+    const tick = () => {
+      const t = getTurn(viewKey)
+      setStalled(Date.now() - t.lastActivityAt > 20000)
+      setElapsedSec(t.startedAt ? Math.floor((Date.now() - t.startedAt) / 1000) : 0)
+    }
+    tick() // 切り替えた瞬間にも正しい値を見せる（1秒待たない）
+    const timer = setInterval(tick, 1000)
+    return () => clearInterval(timer)
+  }, [viewKey, isLoading])
 
   // プロジェクトが変わったら、そのプロジェクトに保存済みのセッションIDを読み込む（所見10）。
   // 単独チャット（toolsProjectDir=null）は Claude 経路を使わないため常に null。
   useEffect(() => { claudeSessionRef.current = getClaudeSessionId(toolsProjectDir) }, [toolsProjectDir])
 
-  const abort = useCallback(() => { abortRef.current?.() }, [])
+  // ⏹ は「いま見ているプロジェクトのターン」を止める（abortRef は廃止。registry に登録された
+  // 関数を、いま見ている鍵から呼ぶ。登録が無ければ何もしない）。
+  const abort = useCallback(() => { getTurn(viewKey).abort?.() }, [viewKey])
 
   // ── emit と viewOnlyEmit の2本立て（B'-3c・B-1a で viewOnlyEmit の中身を見直した）───────
   //
@@ -182,7 +207,16 @@ export function useAiChat(args: UseAiChatArgs) {
   //     今までどおり updateShown 直行のまま変えない（ChatApp は今回のB-1aで触らない対象）。
   //
   // どちらも「画面がどう変わるか」自体は applyToMessages（同じ純粋関数）に委ねる。
+  //
+  // ── B-1b: scalar（loading/status/routed）の書き先 ────────────────────────
+  // ここで turnKey(toolsProjectDir) を読んでいるのは「いま見ているプロジェクト」ではなく、
+  // **この emit/viewOnlyEmit を作った render の toolsProjectDir**（この関数が生きている間ずっと
+  // 変わらない）。emit・viewOnlyEmit は toolsProjectDir が変わるたびに作り直される（下の依存配列）ので、
+  // send() が呼ばれた瞬間に使われる emit は、その後ユーザーが別のプロジェクトへ切り替えても、
+  // 送信した瞬間の鍵を指したまま変わらない（JS のクロージャは作られた後で書き換わらないため。
+  // useAiChat.ts の send() 冒頭で turnOpts を固定するのと同じ理屈）。
   const emit = useCallback((ev: ChatEvent<ChatMessage>) => {
+    const key = turnKey(toolsProjectDir)
     switch (ev.kind) {
       case 'append':
       case 'replaceLast':
@@ -190,14 +224,19 @@ export function useAiChat(args: UseAiChatArgs) {
         if (onMessageEvent) onMessageEvent(ev)
         else updateShown(prev => applyToMessages(prev, ev))
         break
-      case 'loading': setIsLoading(ev.value); break
-      case 'status': setStatusNote(ev.value); break
-      case 'routed': setRoutedModel(ev.value); break
+      case 'loading':
+        if (ev.value) updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now() })
+        else resetTurn(key)
+        break
+      case 'status': updateTurn(key, { statusNote: ev.value }); break
+      case 'routed': updateTurn(key, { routedModel: ev.value }); break
     }
-  }, [onMessageEvent, updateShown])
+  }, [onMessageEvent, updateShown, toolsProjectDir])
 
   // main が書き主のターン（chatTurn.start の onEvent）専用。ops を送り返さない（上のコメント参照）。
   const viewOnlyEmit = useCallback((ev: ChatEvent<ChatMessage>) => {
+    // scalar の鍵の決め方は emit と同じ（このコールバックが生きている間の toolsProjectDir で固定）。
+    const key = turnKey(toolsProjectDir)
     switch (ev.kind) {
       case 'append':
       case 'replaceLast':
@@ -207,9 +246,12 @@ export function useAiChat(args: UseAiChatArgs) {
         // 反映経路として今までどおり当てる（上のコメント参照）。
         if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))
         break
-      case 'loading': setIsLoading(ev.value); break
-      case 'status': setStatusNote(ev.value); break
-      case 'routed': setRoutedModel(ev.value); break
+      case 'loading':
+        if (ev.value) updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now() })
+        else resetTurn(key)
+        break
+      case 'status': updateTurn(key, { statusNote: ev.value }); break
+      case 'routed': updateTurn(key, { routedModel: ev.value }); break
     }
   }, [toolsProjectDir, updateShown])
 
@@ -230,8 +272,13 @@ export function useAiChat(args: UseAiChatArgs) {
    * **呼び出し先を変えただけ**で、値の鮮度は変わらない
    * （getSearchConfig 等は関数のまま渡すので、呼ばれた瞬間に読み直される。
    * apiKey・model 等はこの関数が呼ばれた時点の値を閉じ込める＝以前と同じ）。
+   *
+   * ── B-1b: key を引数で受け取る ────────────────────────────────────
+   * notifyActivity/setAbort は abortRef（廃止）の代わりに registry（chatTurnRegistry.ts）へ書く。
+   * 書き先の鍵は、呼び出し側（send()/compactNow()）が**呼び出し時点の toolsProjectDir**で
+   * 固定して渡す（emit と同じ理屈。呼び出し後に画面が別のプロジェクトへ切り替わっても動かない）。
    */
-  const buildPorts = (): EngineTurnPorts => ({
+  const buildPorts = (key: string): EngineTurnPorts => ({
     emit,
     chatStream: (req, onDelta, onAbortReady, onThinking) =>
       window.electronAPI.sakura.chatStream(req, onDelta, onAbortReady, onThinking),
@@ -245,8 +292,8 @@ export function useAiChat(args: UseAiChatArgs) {
     getSearchConfig,
     fetchPagesBlock,
     autoSearchBlock: (text, search) => autoSearchBlock(text, search as any),
-    notifyActivity: () => { lastActivityRef.current = Date.now() },
-    setAbort: (fn) => { abortRef.current = fn },
+    notifyActivity: () => { updateTurn(key, { lastActivityAt: Date.now() }) },
+    setAbort: (fn) => { updateTurn(key, { abort: fn }) },
     usage: {
       check: () => checkBeforeRequest(apiKey),
       record: (m, i, o) => recordUsage(apiKey, m, i, o),
@@ -306,9 +353,12 @@ export function useAiChat(args: UseAiChatArgs) {
     const history = getHistory()
     const plan = planManualCompact(history)
     if (!plan) return
+    // 呼び出し時点の toolsProjectDir の鍵（emit の scalar と同じものへ書くための buildPorts 引数。
+    // 詳しい理由は send() 冒頭のコメント参照）。
+    const key = turnKey(toolsProjectDir)
     emit({ kind: 'loading', value: true })
     try {
-      const r = await runCompact({ apiKey, model }, buildPorts(), history, plan)
+      const r = await runCompact({ apiKey, model }, buildPorts(key), history, plan)
       // ⏹ 停止（{ aborted: true }）: renderer の chatOnce（window.electronAPI.sakura.chat）には
       // 停止の配線が無い（main の 🗂 まとめ作りだけに足した・0.3.50）ので、この手動まとめの経路で
       // 実際に aborted が返ることは今は無い。型を網羅するためだけの分岐（将来ここにも停止を
@@ -319,7 +369,7 @@ export function useAiChat(args: UseAiChatArgs) {
     } finally {
       emit({ kind: 'loading', value: false })
     }
-  }, [isLoading, getHistory, apiKey, model, appendBubble, emit])
+  }, [isLoading, getHistory, apiKey, model, appendBubble, emit, toolsProjectDir])
 
   // Claude頭脳モード（C2a/C2b/C2d）: Agent SDK 経路での1ターン送信。SDK のストリームイベント
   // （session/text/tool/result/error/openPreview）をチャットの吹き出しへ反映する。
@@ -327,6 +377,10 @@ export function useAiChat(args: UseAiChatArgs) {
   // images は C2d: このターンでユーザーが添付した画像（data URL配列・空配列可）。main側 agent.ts が
   // 1枚以上ならストリーミング入力モードへ切り替え、Claude自身に直接読ませる（2段階visionを経由しない）。
   const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null) => {
+    // 呼び出し時点の projectDir（send() から渡された、送信した瞬間のプロジェクト）の鍵。
+    // このターンの ⏹ 登録・活動通知はここへ書く（emit の scalar も、この呼び出しの間は
+    // 同じ値の toolsProjectDir を指しているので一致する。詳しくは send() 冒頭のコメント参照）。
+    const key = turnKey(projectDir)
     emit({ kind: 'loading', value: true })
     let assistantOpen = false
     let textAcc = ''
@@ -354,7 +408,7 @@ export function useAiChat(args: UseAiChatArgs) {
         const finish = () => { unsubscribe?.(); resolve() }
 
         unsubscribe = window.electronAPI.claude.onStream((ev: ClaudeUiEvent) => {
-          lastActivityRef.current = Date.now()
+          updateTurn(key, { lastActivityAt: Date.now() })
           switch (ev.kind) {
             case 'session':
               // 継続会話用に保持しつつ、プロジェクト単位で永続化する（所見10・再起動後も resume できる）。
@@ -409,11 +463,13 @@ export function useAiChat(args: UseAiChatArgs) {
           }
         })
 
-        abortRef.current = () => {
-          window.electronAPI.claude.chatCancel()
-          appendBubble({ role: 'assistant', content: '（⏹ 停止しました）', toolNote: true })
-          finish()
-        }
+        updateTurn(key, {
+          abort: () => {
+            window.electronAPI.claude.chatCancel()
+            appendBubble({ role: 'assistant', content: '（⏹ 停止しました）', toolNote: true })
+            finish()
+          },
+        })
 
         window.electronAPI.claude.chatStart(projectDir, claudeKey, text, images, snapshotId, claudeSessionRef.current, aiEngineKey, claudeModel)
           .catch((e: any) => {
@@ -422,7 +478,8 @@ export function useAiChat(args: UseAiChatArgs) {
           })
       })
     } finally {
-      abortRef.current = null
+      // abort の登録解除は不要（直後の loading:false → emit 内の resetTurn(key) が
+      // abort ごとアイドルへ戻す。chatTurnRegistry.ts の resetTurn 参照）。
       emit({ kind: 'loading', value: false })
       emit({ kind: 'status', value: '' })
     }
@@ -436,7 +493,21 @@ export function useAiChat(args: UseAiChatArgs) {
    */
   const send = useCallback(async (rawText: string, images: string[], aiOnlyNote?: string) => {
     const hasImages = images.length > 0
+    // 送信ガード: 「いま見ている鍵が実行中か」だけを見る（画面全体の isLoading ではない）。
+    // → 待っていない別プロジェクトからはそのまま送信できる（並列の解禁。同じプロジェクト内は
+    //   従来どおり isLoading が立っている間は弾かれるので1ターンずつ）。
     if ((!rawText.trim() && !hasImages) || isLoading) return
+    // ── B-1b: このターンの行き先（登録鍵）を送信した瞬間に固定する ─────────────────
+    //
+    // なぜ send() の冒頭で固定するか: このあとの処理は非同期（await が並ぶ）で、その間に
+    // 利用者が別のプロジェクトへ切り替えると toolsProjectDir（このフックの props）は
+    // 新しい値に変わる。もし ⏹ の登録や「トークンが届いた」の通知を、そのつど
+    // turnKey(toolsProjectDir) で決め直していたら、切替後は**新しいプロジェクトの鍵**に
+    // 書いてしまい、こっちのターンの ⏹ が消える／別プロジェクトの実行状態を乱してしまう
+    // （turnOpts を送信時に固定するのと同じ理由＝2026-08-24「A の作業が B に付いてくる」の
+    // 実害と同じ形）。ここで一度だけ読み、以後はこの key を使い続けることで、
+    // **始めたプロジェクトの中で終わる**（並列に走らせる形の土台でもある）。
+    const key = turnKey(toolsProjectDir)
     const endActivity = beginActivity('AIが応答中')
     try {
 
@@ -531,7 +602,7 @@ export function useAiChat(args: UseAiChatArgs) {
         errorPrefix, twoStageVision, routedModel, hasRag: !!buildRagBlock, turnOpts, snapshotId, snapshotLabel,
       }
       const turnId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-      const ports = buildPorts() // ask への回答の実体（chatStream/chatOnce は main が直接呼ぶので使われない）
+      const ports = buildPorts(key) // ask への回答の実体（chatStream/chatOnce は main が直接呼ぶので使われない）
       // main からの ask（chatTurnBridge.ts の dispatchAsk）へ渡す薄い橋。buildPorts の実装を
       // そのまま使い、二重実装しない（呼び先を付け替えているだけで、値の鮮度は変わらない）。
       const handlers = {
@@ -554,9 +625,10 @@ export function useAiChat(args: UseAiChatArgs) {
         visionDefaultModel: ports.vision.defaultModel,
         compactWarnOnce: ports.compactWarnOnce,
       }
-      // ⚠️ abortRef はターンの間ずっと main への abort 送信関数を指す。今日は「ストリーム中だけ」
-      // だったが、main 側は abort 関数が未登録なら何もしないので、観測できる振る舞いは同じ。
-      abortRef.current = () => { void window.electronAPI.chatTurn.abort(turnId) }
+      // ⚠️ ターンの間ずっと main への abort 送信関数を this ターンの鍵（key）に登録する。
+      // 今日は「ストリーム中だけ」だったが、main 側は abort 関数が未登録なら何もしないので、
+      // 観測できる振る舞いは同じ（abortRef は廃止。registry（chatTurnRegistry.ts）が持つ）。
+      updateTurn(key, { abort: () => { void window.electronAPI.chatTurn.abort(turnId) } })
       try {
         await window.electronAPI.chatTurn.start(
           {
@@ -569,12 +641,13 @@ export function useAiChat(args: UseAiChatArgs) {
             // 画面へ映すだけの viewOnlyEmit を通す（emit だと onMessageEvent 経由で
             // ops を送り返してしまい、二重書きになる。上の「emit と viewOnlyEmit」コメント参照）。
             onEvent: (ev) => viewOnlyEmit(ev as any),
-            onActivity: () => { lastActivityRef.current = Date.now() },
+            onActivity: () => { updateTurn(key, { lastActivityAt: Date.now() }) },
             onAsk: (path, args) => dispatchAsk(handlers, turnOpts, path as AskPath, args),
           },
         )
       } finally {
-        abortRef.current = null
+        // abort の登録解除は不要（このあとの emit の loading:false → resetTurn(key) が
+        // abort ごとアイドルへ戻す。chatTurnRegistry.ts の resetTurn 参照）。
         // ── 終端の状態はここでも確定させる（2026-08-28 実機で「時間がかかっています」が
         // 消えない事象を確認）────────────────────────────────────────────
         // main はターンの最後に loading=false / status='' の出来事を送ってから完了を返すが、
