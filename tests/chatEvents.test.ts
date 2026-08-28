@@ -224,18 +224,56 @@ const readCode = (rel: string): string =>
     })
     .join('\n')
 
-describe('useAiChat.ts の配線（emit だけが画面に触る）', () => {
-  it('emit の定義の中を除いて setIsLoading( / setStatusNote( / setRoutedModel( / updateShown( が出てこない', () => {
+// ── B'-3c で emit が2本立てになった（emit / viewOnlyEmit）─────────────────
+// 「main が既に書き主のターン（chatTurn.start の onEvent）」専用の viewOnlyEmit を足したため、
+// 「画面に触るのは emit だけ」の判定も、その2つの定義の中を除いて見る形に広げる。
+describe('useAiChat.ts の配線（emit / viewOnlyEmit だけが画面に触る）', () => {
+  it('emit・viewOnlyEmit の定義の中を除いて setIsLoading( / setStatusNote( / setRoutedModel( / updateShown( が出てこない', () => {
     const src = readCode('src/renderer/hooks/useAiChat.ts')
-    // emit の定義（const emit = useCallback(... }, [updateShown]) まで）を取り除いた残りを見る。
-    const emitStart = src.indexOf('const emit = useCallback(')
-    expect(emitStart).toBeGreaterThan(-1)
-    const afterEmitStart = src.indexOf('[updateShown])', emitStart)
-    expect(afterEmitStart).toBeGreaterThan(-1)
-    const rest = src.slice(0, emitStart) + src.slice(afterEmitStart + '[updateShown])'.length)
+    // 各定義（const X = useCallback(... }, [...])）の閉じ（2スペース）までを1ブロックとして取り除く。
+    const closeRe = /\n {2}\}, \[[^\]]*\]\)/
+    const blocks = (['emit', 'viewOnlyEmit'] as const).map(name => {
+      const start = src.indexOf(`const ${name} = useCallback(`)
+      expect(start).toBeGreaterThan(-1)
+      const m = closeRe.exec(src.slice(start))
+      expect(m).not.toBeNull()
+      const end = start + m!.index + m![0].length
+      return [start, end] as const
+    }).sort((a, b) => a[0] - b[0])
+    let rest = ''
+    let cursor = 0
+    for (const [s, e] of blocks) { rest += src.slice(cursor, s); cursor = e }
+    rest += src.slice(cursor)
     expect(rest).not.toContain('setIsLoading(')
     expect(rest).not.toContain('setStatusNote(')
     expect(rest).not.toContain('setRoutedModel(')
     expect(rest).not.toContain('updateShown(')
+  })
+})
+
+// ── 11. B'-3c: emit と viewOnlyEmit の使い分け（二重書き防止）─────────────────
+// renderer 発の message系の出来事（emit）は onMessageEvent（main へ ops 送信）を通す一方、
+// main が既にストアへ当てているAI Engineのターンの出来事（chatTurn.start の onEvent）は
+// viewOnlyEmit（画面へ映すだけ）を通す。ここが emit に戻ると、main が既に保存した書き換えを
+// renderer がもう一度 ops として main へ送り返し、二重書きになる。
+describe("useAiChat.ts の配線（chatTurn.start の onEvent は viewOnlyEmit を通り、emit と分かれている）", () => {
+  const src = readCode('src/renderer/hooks/useAiChat.ts')
+
+  it('emit の message系は onMessageEvent があればそれを呼び、無ければ updateShown する', () => {
+    const start = src.indexOf('const emit = useCallback(')
+    const end = src.indexOf('const viewOnlyEmit = useCallback(', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const block = src.slice(start, end)
+    expect(block).toContain('if (onMessageEvent) onMessageEvent(ev)')
+    expect(block).toContain('else updateShown(prev => applyToMessages(prev, ev))')
+  })
+
+  it('chatTurn.start の onEvent は viewOnlyEmit(ev as any) を呼ぶ（emit ではない）', () => {
+    const at = src.indexOf('await window.electronAPI.chatTurn.start(')
+    expect(at).toBeGreaterThan(-1)
+    const after = src.slice(at, at + 1200)
+    expect(after).toContain('onEvent: (ev) => viewOnlyEmit(ev as any)')
+    expect(after).not.toContain('onEvent: (ev) => emit(ev as any)')
   })
 })

@@ -1,65 +1,25 @@
 // チャット履歴のファイル保存（IPC chat:*）の読み書きと、旧 localStorage 形式からの移行を担う。
 // 優先順位判定などの純粋ロジックは chatMigration.ts に分離してある（ここは IO のみ）。
-// 送信ロジック（useAiChat.ts）には触れない。ChatPanel/ChatApp から呼ばれる薄い永続化層（掟7の範囲内）。
-import type { ChatMessage } from './hooks/useAiChat'
+// 送信ロジック（useAiChat.ts）には触れない。ChatApp から呼ばれる薄い永続化層（掟7の範囲内）。
+//
+// ── B'-3c（プロジェクト別チャットの持ち主が main へ移った）─────────────────
+// IDEのプロジェクト別チャット履歴の読み書き（loadProjectChat / saveProjectChat）はここから
+// 消した。読み込みは src/renderer/chatConvClient.ts の loadConversationView、書き換えは
+// makeConvClient の client.apply（ops として main の convStore.ts へ送る）に置き換わった
+// （ChatPanel.tsx のみが使う）。単独チャット（ChatApp）は今回対象外で、このファイルの
+// loadAppSessions / saveAppSessions がこれまでどおり持ち主のまま。
 import { getWorkspaceDir } from './workspace'
 import { parseJsonArray, resolveChatSource } from './chatMigration'
 import { rescueTargets, withoutImages, droppedNote, stampOf } from '../shared/chatImages'
 import { MATERIALS_DIR } from '../shared/publishExclude'
+import { forStorage } from '../shared/chatStorage'
 
-const LEGACY_PROJECT_PREFIX = 'sakura_chat:'
 const LEGACY_APP_KEY = 'sakura_sessions'
 
-/** IDEのプロジェクト別チャット履歴を読み込む（ファイル優先→localStorage移行→空）。 */
-export async function loadProjectChat(projectDir: string): Promise<ChatMessage[]> {
-  let fileData: ChatMessage[] | null = null
-  try {
-    const res = await window.electronAPI.chat.loadProject(projectDir)
-    if (res.ok) fileData = parseJsonArray(res.json) as ChatMessage[] | null
-  } catch { /* IPC失敗はlocalStorageへフォールバック */ }
-
-  const legacyKey = LEGACY_PROJECT_PREFIX + projectDir
-  const legacyData = parseJsonArray(localStorage.getItem(legacyKey)) as ChatMessage[] | null
-  const resolved = resolveChatSource<ChatMessage>(fileData, legacyData)
-
-  if (resolved.kind === 'file') return resolved.data
-  if (resolved.kind === 'migrate') {
-    void saveProjectChat(projectDir, resolved.data) // 即ファイルへ移行
-    localStorage.removeItem(legacyKey)
-    return resolved.data
-  }
-  return []
-}
-
-/**
- * 保存用にメッセージを整える（純粋関数・テスト対象）。
- * 推論モデルの「思考」（thinking）は表示専用で、本文の何倍にもなることがあるため保存しない
- * （2026-08-03。保存すると chat.json が肥大し、読み込み・GitHub保存にも響く）。
- */
-export function forStorage(messages: ChatMessage[]): ChatMessage[] {
-  return (messages ?? []).map(m => {
-    if (!m || m.thinking === undefined) return m
-    const { thinking, ...rest } = m
-    return rest
-  })
-}
-
-/** IDEのプロジェクト別チャット履歴を保存する。失敗は握りつぶさず console.warn する。 */
-export async function saveProjectChat(projectDir: string, messages: ChatMessage[]): Promise<void> {
-  let json: string
-  try {
-    json = JSON.stringify(forStorage(messages))
-  } catch (e) {
-    console.warn('[chatStorage] チャット履歴の直列化に失敗しました:', e)
-    return
-  }
-  try {
-    const res = await window.electronAPI.chat.saveProject(projectDir, json)
-    if (!res.ok) console.warn('[chatStorage] チャット履歴の保存に失敗しました:', res.message)
-  } catch (e) {
-    console.warn('[chatStorage] チャット履歴の保存に失敗しました:', e)
-  }
-}
+// forStorage は shared（src/shared/chatStorage.ts）へ移した。convStore.ts（main）と
+// ここ（ChatApp の保存）の両方が同じ「thinkingは保存しない」規則を使うため（2026-08-03 の決まり）。
+// import 元を変えずに使えるよう re-export する。
+export { forStorage }
 
 /**
  * 単独チャット（ChatApp）のセッション一覧を読み込む（ファイル優先→localStorage移行→未取得=null）。

@@ -11,6 +11,7 @@ import { ipcMain } from 'electron'
 import type { WebContents } from 'electron'
 import type { IpcDeps } from '../ipc/types'
 import { createAskBridge, type AskBridge } from './askBridge'
+import { applyConversationOps } from './convStore'
 import { runEngineTurn, type EngineTurnPorts, type TurnHelpers } from '../../shared/chatTurn'
 import { runSakuraChat, runSakuraStream } from '../sakura/engine'
 import type { TurnStartPayload, TurnAnswer, TurnAsk } from '../../shared/chatTurnRpc'
@@ -65,7 +66,17 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
   const { bridge } = entry
   const { caps } = payload
   return {
-    emit: (ev) => { if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'emit', ev }) },
+    // B'-3c: message系（append/replaceLast/removeLast）は、まず main の会話ストア
+    // （convStore.ts）へ直接当ててから画面へ送る。renderer を経由しない書き込みの第一歩
+    // （ウィンドウが閉じていても・出来事を取りこぼしても、会話は必ず保存される）。
+    // toolsProjectDir が無いとき（単独チャット・今回対象外）はストアに触らない。
+    // loading/status/routed はストアに関係しないので、これまでどおり send のみ。
+    emit: (ev) => {
+      if ((ev.kind === 'append' || ev.kind === 'replaceLast' || ev.kind === 'removeLast') && payload.spec.toolsProjectDir) {
+        applyConversationOps(payload.spec.toolsProjectDir, [ev])
+      }
+      if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'emit', ev })
+    },
     chatStream: (req, onDelta, onAbortReady, onThinking) =>
       runSakuraStream(req, { onDelta, onReasoning: onThinking, onAbortReady }),
     chatOnce: (req) => runSakuraChat(req),

@@ -576,10 +576,20 @@ interface Window {
     // チャット履歴のファイル保存。IDEのプロジェクト別は `<project>/.sakuraide/chat.json`、
     // 単独チャット（ChatApp）は `<workspace>/.sakuraide/chats/chat-app.json`。JSON文字列をそのまま読み書きする。
     chat: {
+      // ⚠️ B'-3c で持ち主が main（src/main/chat/convStore.ts）へ移り、ChatPanel はもう
+      // loadProject/saveProject を呼ばない（下の load/ops に置き換わった）。
       loadProject(projectDir: string): Promise<{ ok: boolean; json: string | null; message?: string }>
       saveProject(projectDir: string, json: string): Promise<{ ok: boolean; message?: string }>
       loadApp(workspaceDir: string): Promise<{ ok: boolean; json: string | null; message?: string }>
       saveApp(workspaceDir: string, json: string): Promise<{ ok: boolean; message?: string }>
+      /** B'-3c: IDEのプロジェクト別チャットの読み込み。ファイルが無ければ messages は null
+       *  （空配列と区別する。src/renderer/chatConvClient.ts の旧localStorage移行判定に使う）。 */
+      load(projectDir: string): Promise<
+        | { ok: true; messages: import('../shared/chatTurn').TurnMessage[] | null }
+        | { ok: false; messages: null; message: string }
+      >
+      /** B'-3c: 会話への書き換え（src/renderer/chatConvClient.ts の Op と同じ形）を main へ送る。 */
+      ops(projectDir: string, ops: unknown[], opts?: { flushNow?: boolean }): Promise<{ ok: true } | { ok: false; message: string }>
     }
     /**
      * AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。

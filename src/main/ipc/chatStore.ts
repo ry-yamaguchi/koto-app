@@ -12,12 +12,17 @@
 // 呼び出し側（renderer）には常に配列まるごとの JSON 文字列を渡す／受け取るので、ここより外から見た
 // 挙動は変わらない。単独チャット（chat:loadApp/chat:saveApp）は今回の対象外で、これまで通り v1（配列
 // まるごと）を毎回 tmp+rename で書き直す。
-import { ipcMain } from 'electron'
+//
+// ── B'-3c: IDEのプロジェクト別チャットの持ち主が main（convStore.ts）へ移った ─────────
+// ChatPanel はもう chat:loadProject / chat:saveProject を呼ばない（chat:load / chat:ops に移った）。
+// 既存の2つは形を変えずに残す（呼ぶ者がいなくなっても、後方互換のため・仕様書の指示どおり）。
+import { ipcMain, app } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import type { IpcDeps } from './types'
 import { projectChatPath, appChatPath, isValidJson } from '../chatStore/paths'
 import { loadProjectChatFile, saveProjectChatFile } from '../chatStore/file'
+import { loadConversation, applyConversationOps, flushConversations, type Op } from '../chat/convStore'
 
 function readFileOrNull(filePath: string): string | null {
   try {
@@ -37,7 +42,8 @@ function atomicWriteFileSync(filePath: string, content: string) {
 }
 
 export function registerChatStoreHandlers(_deps: IpcDeps) {
-  // IDEのプロジェクト別チャット履歴（実体は chatStore/file.ts）
+  // ⚠️ B'-3c で ChatPanel は chat:load / chat:ops に移った（下）。この2つはもう呼ぶ者が
+  // いないが、後方互換のため形を変えずに残す（実体は chatStore/file.ts）。
   ipcMain.handle('chat:loadProject', (_, projectDir: string) => {
     try {
       const result = loadProjectChatFile(projectChatPath(projectDir))
@@ -61,6 +67,32 @@ export function registerChatStoreHandlers(_deps: IpcDeps) {
       return { ok: false, message: e?.message ?? String(e) }
     }
   })
+
+  // ── B'-3c: IDEのプロジェクト別チャットの持ち主（convStore.ts）を呼ぶ薄い層 ──────────
+  // ChatPanel.tsx（src/renderer/chatConvClient.ts 経由）が使う。単独チャット（ChatApp）は対象外。
+  ipcMain.handle('chat:load', (_, projectDir: string) => {
+    try {
+      return { ok: true, messages: loadConversation(projectDir) }
+    } catch (e: any) {
+      return { ok: false, messages: null, message: e?.message ?? String(e) }
+    }
+  })
+
+  ipcMain.handle('chat:ops', (_, projectDir: string, ops: Op[], opts?: { flushNow?: boolean }) => {
+    // 投げられた例外は { ok:false, message } に変換する（ハンドラの外へ投げ直さない。
+    // chatTurn:start と同じ流儀＝invoke を reject させない）。
+    try {
+      applyConversationOps(projectDir, ops, opts)
+      return { ok: true }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  // quit 時フラッシュ: デバウンス保存待ちの会話を、終了前に必ず書き切る（電源断・強制終了は
+  // 別として、通常のアプリ終了で直前のやり取りを失わないため）。convStore.ts 自身には
+  // electron を持ち込まない（node で直接テストするため）ので、electron 側のこの薄い層で登録する。
+  app.on('before-quit', () => flushConversations())
 
   // 単独チャット（ChatApp）のセッション一覧
   ipcMain.handle('chat:loadApp', (_, workspaceDir: string) => {

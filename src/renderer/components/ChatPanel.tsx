@@ -24,7 +24,8 @@ import ModelSelect from './ModelSelect'
 import BrainToggle from './BrainToggle'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeModel, claudeModelShortLabel, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
-import { loadProjectChat, saveProjectChat } from '../chatStorage'
+import { loadConversationView, makeConvClient, type Op } from '../chatConvClient'
+import { applyToMessages } from '../../shared/chatEvents'
 import { takeNewProjectRequest } from '../newProjectRequest'
 import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, mediaTypeOf, type AssetPurpose } from '../../shared/assetImport'
 import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
@@ -68,6 +69,19 @@ interface Props {
 
 export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile, onExternalFilesChanged, onProjectFilesMoved, activeFile, projectDir }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
+  // ── B'-3c: 会話の持ち主は main（src/main/chat/convStore.ts）───────────────
+  // ここは「画面へ即時反映」しつつ「main へ書き換え（ops）を送る」薄い client（chatConvClient.ts）
+  // を持つだけ。client は projectDir ごとに作り直す（下の読み込み effect）。projectDir が
+  // 定まっていない間（プロジェクト未選択・読み込み中）は client が無いので、画面だけを更新する
+  // （送り先が無いので ops は送らない＝壊れない。読み込み完了までは保存させないガードを兼ねる）。
+  const clientRef = useRef<ReturnType<typeof makeConvClient> | null>(null)
+  const applyOpLocally = useCallback((op: Op) => {
+    setMessages(prev => (op.kind === 'replaceAll' ? op.messages : applyToMessages(prev, op)))
+  }, [])
+  const applyOp = useCallback((op: Op) => {
+    if (clientRef.current) clientRef.current.apply(op)
+    else applyOpLocally(op)
+  }, [applyOpLocally])
   const [input, setInput] = useState('')
   // あいさつ（greet）専用のローディング／中断。送信パイプラインの状態は useAiChat が持つ。
   const [greetLoading, setGreetLoading] = useState(false)
@@ -183,7 +197,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     setClaudeModel(next)
     setClaudeModelId(next)
     if (claudeActive) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `ℹ️ モデル「${claudeModelId}」は提供終了したため、「${claudeModelShortLabel(next, claudeModels)}」に自動で切り替えました。` }])
+      applyOp({ kind: 'append', msg: { role: 'assistant', content: `ℹ️ モデル「${claudeModelId}」は提供終了したため、「${claudeModelShortLabel(next, claudeModels)}」に自動で切り替えました。` } })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claudeModels])
@@ -194,7 +208,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     if (!models.some(m => m.id === model)) {
       const next = pickBestModel(models.map(m => m.id))
       setModel(next)
-      setMessages(prev => [...prev, { role: 'assistant', content: `ℹ️ モデル「${model}」は提供終了したため、「${modelLabel(next)}」に自動で切り替えました。` }])
+      applyOp({ kind: 'append', msg: { role: 'assistant', content: `ℹ️ モデル「${model}」は提供終了したため、「${modelLabel(next)}」に自動で切り替えました。` } })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [models])
@@ -260,17 +274,20 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     // 所見19: 画像以外のファイルが混じっていたら、黙って捨てずに toolNote バブルで案内する
     //（fileToDataUrl は非画像を null で捨てるため、この案内が無いとドロップしても無反応に見えた）。
     if (countNonImageFiles(list) > 0) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: '📎 画像ファイル（PNG/JPEGなど）のみ添付できます。それ以外のファイルは取り込みませんでした。',
-        toolNote: true,
-      }])
+      applyOp({
+        kind: 'append',
+        msg: {
+          role: 'assistant',
+          content: '📎 画像ファイル（PNG/JPEGなど）のみ添付できます。それ以外のファイルは取り込みませんでした。',
+          toolNote: true,
+        },
+      })
     }
     for (const f of list) {
       const url = await fileToDataUrl(f)
       if (url) setPendingImages(prev => [...prev, { url, name: f.name || defaultImageName(f.type) }])
     }
-  }, [])
+  }, [applyOp])
 
   // 画面のどこに落とされても、ここで受け取って添付にする（2026-08-19）。
   // **受け口を2つ持たない**ため、実際の取り込みは addImages に一本化する。
@@ -355,11 +372,14 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       if (next && apiKey) {
         const r = await window.electronAPI.rag.list(apiKey, { pageSize: 1 })
         if (r.ok && (r.documents?.length ?? 0) === 0) {
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: 'まだ資料が登録されていません。画面右上の 📚 から資料を登録すると、'
-              + 'このプロジェクトのチャットで使えるようになります。',
-          }])
+          applyOp({
+            kind: 'append',
+            msg: {
+              role: 'assistant',
+              content: 'まだ資料が登録されていません。画面右上の 📚 から資料を登録すると、'
+                + 'このプロジェクトのチャットで使えるようになります。',
+            },
+          })
           return
         }
       }
@@ -368,7 +388,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     } finally {
       setRagBusy(false)
     }
-  }, [projectDir, ragBusy, ragSettings, apiKey, reloadRagSettings])
+  }, [projectDir, ragBusy, ragSettings, apiKey, reloadRagSettings, applyOp])
 
   // 送信パイプライン（予算・切替・検索・ツールループ・自己修復・モデル割り振り）は共通フックへ集約。
   // 表示はフラットな messages 配列へ反映する。
@@ -458,7 +478,13 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       return null // 許可（または確認不要）
     },
     getHistory: () => messages,
+    // updateShown は「main が既に書き主のターン」（chatTurn.start の onEvent → viewOnlyEmit）専用の
+    // 画面反映口として今も使われる。renderer 発の書き換え（message系）は onMessageEvent（下）が
+    // 先に取るので、こちらは呼ばれない（useAiChat.ts の emit/viewOnlyEmit のコメント参照）。
     updateShown: (updater) => setMessages(prev => updater(prev)),
+    // B'-3c: renderer 発の message系の出来事は client 経由で main（convStore.ts）へ ops として送る
+    // （画面反映も applyOp が行う。updateShown は使われない）。
+    onMessageEvent: (ev) => applyOp(ev),
     twoStageVision: true,
   })
   const { statusNote, stalled, elapsedSec, setRoutedModel } = chat
@@ -485,57 +511,39 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       ...(failed.length ? [`⚠️ 画像を入れられませんでした: ${failed[0]}`] : []),
     ]
     if (!shown.length) return
-    setMessages(prev => [...prev, { role: 'assistant', content: shown.join('\n'), toolNote: true }])
+    applyOp({ kind: 'append', msg: { role: 'assistant', content: shown.join('\n'), toolNote: true } })
     if (!done.length) return
     const forAi = done.map(rel => tellAiAboutAsset(rel, purpose)).join('\n')
     // 応答中に割り込まない（そのときは次の発言で伝わるよう履歴に残すだけ）
     if (chat.isLoading) {
-      setMessages(prev => [...prev, { role: 'user', content: forAi, hidden: true }])
+      applyOp({ kind: 'append', msg: { role: 'user', content: forAi, hidden: true } })
       return
     }
     void chat.send('画像を使えるようにしました。さきほどの依頼を続けてください。', [], forAi)
-  }, [putIntoProject, setMessages, chat])
+  }, [putIntoProject, applyOp, chat])
 
 
   // プロジェクトごとに会話を読み込む（remount/再起動でも継続）。
-  // 保存先は `<project>/.sakuraide/chat.json`（旧 localStorage 形式が残っていれば読み込み時に移行する）。
-  // loadedChatDirRef: 現在 messages に反映済みのプロジェクト（読み込み完了前の誤保存を防ぐガード）。
-  const loadedChatDirRef = useRef<string | null>(null)
-  // messagesRef: 直近の messages を常に最新に保つ（デバウンス/アンマウント時のフラッシュで使う）。
-  const messagesRef = useRef<Message[]>(messages)
-  messagesRef.current = messages
-
+  // 保存先は main の会話ストア（src/main/chat/convStore.ts。実ファイルは `<project>/.sakuraide/chat.json`。
+  // 旧 localStorage 形式が残っていれば loadConversationView が読み込み時に main へ移行する）。
+  //
+  // ── B'-3c: 保存は main の仕事になった ─────────────────────────────────
+  // 以前ここにあった「デバウンス保存」「アンマウント時フラッシュ」の2つの effect は丸ごと消した
+  // （main の convStore.ts が同じ1.5秒デバウンスで保存する）。「読み込み完了までは保存しない」
+  // ガードの意図は、client を projectDir ごとに作り直すことで引き継ぐ（読み込み前・読み込み中は
+  // clientRef が null のため、applyOp は画面だけを更新し ops を送らない）。
   useEffect(() => {
     let cancelled = false
     setRoutedModel(null) // 会話（プロジェクト）が変わったら割り振りをリセット
-    loadedChatDirRef.current = null // 読み込み完了までは保存させない
+    clientRef.current = null // 切替では前の client の完了を待たず、ここで捨てる（main 側は projectDir ごとに独立）
     if (!projectDir) { setMessages([]); return }
-    loadProjectChat(projectDir).then(msgs => {
+    loadConversationView(projectDir).then(msgs => {
       if (cancelled) return
-      setMessages(msgs)
-      loadedChatDirRef.current = projectDir
+      setMessages(msgs) // ストアから来たものを映すだけ（ops は送らない）
+      clientRef.current = makeConvClient(projectDir, applyOpLocally)
     })
     return () => { cancelled = true }
-  }, [projectDir])
-
-  // 会話を保存（デバウンス1.5秒。ストリーミング中は messages がトークン毎に変わるため）。
-  // 読み込みが完了したプロジェクトについてのみ保存する（切替直後の空配列で上書きしないため）。
-  useEffect(() => {
-    if (!projectDir || loadedChatDirRef.current !== projectDir) return
-    const id = window.setTimeout(() => {
-      void saveProjectChat(projectDir, messagesRef.current)
-    }, 1500)
-    return () => window.clearTimeout(id)
-  }, [messages, projectDir])
-
-  // アンマウント・プロジェクト切替時に保存待ちの内容を即座にフラッシュする
-  useEffect(() => {
-    return () => {
-      if (projectDir && loadedChatDirRef.current === projectDir) {
-        void saveProjectChat(projectDir, messagesRef.current)
-      }
-    }
-  }, [projectDir])
+  }, [projectDir, applyOpLocally])
 
   // 新規プロジェクト作成（NewProjectModal.tsx）からの依頼をチャットへ流し込む。
   // sakura-target-changed ハンドラ（下）と同じ作法: buildProjectContext を読み直してから
@@ -669,10 +677,13 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         lastCheckedTarget: lastCheckedTargetRef.current,
       })
       if (!autoCheck) {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: `ℹ️ システムからのお知らせ：公開先を「${label}」に変更しました。今のコードがこの環境で動くか、次のメッセージでAIに確認してもらえます。環境によっては作り直しが必要な場合があります。`,
-        }])
+        applyOp({
+          kind: 'append',
+          msg: {
+            role: 'assistant',
+            content: `ℹ️ システムからのお知らせ：公開先を「${label}」に変更しました。今のコードがこの環境で動くか、次のメッセージでAIに確認してもらえます。環境によっては作り直しが必要な場合があります。`,
+          },
+        })
         return
       }
       lastCheckedTargetRef.current = target as string
@@ -705,10 +716,13 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               staleNote = '\n※ 公開後にコードが変更されています。心配な場合は「この公開先で動くか確認して」と聞いてください。'
             }
           } catch { /* 判定不能なら注記なし */ }
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: `✅ 公開先を「${label}」に変更しました。この公開先には公開済みの実績があります${when ? `（${when} 公開）` : ''}。今のコードのままで再公開できます（③公開から）。${staleNote}`,
-          }])
+          applyOp({
+            kind: 'append',
+            msg: {
+              role: 'assistant',
+              content: `✅ 公開先を「${label}」に変更しました。この公開先には公開済みの実績があります${when ? `（${when} 公開）` : ''}。今のコードのままで再公開できます（③公開から）。${staleNote}`,
+            },
+          })
           return
         }
       }
@@ -725,14 +739,14 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     window.addEventListener('sakura-target-changed', h)
     return () => window.removeEventListener('sakura-target-changed', h)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, projectDir, isLoading, chat])
+  }, [apiKey, projectDir, isLoading, chat, applyOp])
 
   // AIからの最初のあいさつ
   const greet = async () => {
     // AI Engineキーが無い（モードB＝Claudeのみ）場合は、greetのためだけにAPIを呼ばず固定文を出す。
     // Claude自身へのあいさつ生成委譲はしない（greetはAI Engineクライアント専用の従来経路のため）。
     if (!apiKey) {
-      setMessages([{ role: 'assistant', content: 'こんにちは！つくりたいものを日本語で教えてください。' }])
+      applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: 'こんにちは！つくりたいものを日本語で教えてください。' }] })
       return
     }
     const budget = checkBeforeRequest(apiKey)
@@ -745,7 +759,12 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     const sys = IDE_CONTEXT + (ctx ? '\n\n' + ctx : '')
     try {
       let text = ''
-      setMessages([{ role: 'user', content: kickoff, hidden: true }, { role: 'assistant', content: '' }])
+      // ⚠️ ここは kind:'replaceLast' ではなく 'replaceAll' を使う。replaceLast は
+      // applyToMessages が stamp() を通す（at が無ければ現在時刻を付ける）ため、この吹き出しに
+      // 今まで無かった時刻表示（吹き出し下のホバー時刻・日付区切り）が新しく出てしまう
+      // （元の実装は素の setMessages で at を一切付けていなかった。「振る舞いを変えない」を
+      //  優先し、stamp を経由しない replaceAll で同じ中身をそのまま送る＝仕様書で迷った点）。
+      applyOp({ kind: 'replaceAll', messages: [{ role: 'user', content: kickoff, hidden: true }, { role: 'assistant', content: '' }] })
       const { usage } = await window.electronAPI.sakura.chatStream(
         {
           apiKey,
@@ -755,11 +774,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         },
         (delta) => {
           text += delta
-          setMessages(prev => {
-            const n = [...prev]
-            n[n.length - 1] = { role: 'assistant', content: text }
-            return n
-          })
+          applyOp({ kind: 'replaceAll', messages: [{ role: 'user', content: kickoff, hidden: true }, { role: 'assistant', content: text }] })
         },
         (abort) => { greetAbortRef.current = abort },
       )
@@ -768,7 +783,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       // 所見22: あいさつ失敗は致命的でないため、生エラーは出さず穏当な固定文言にフォールバックする。
       // 原因把握のためログにだけ整形済みエラー（formatChatError）を残す。
       console.warn('greet failed:', formatChatError(e?.message ?? String(e)))
-      setMessages([{ role: 'assistant', content: '（あいさつを準備できませんでした。つくりたいものを教えてください。）' }])
+      applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: '（あいさつを準備できませんでした。つくりたいものを教えてください。）' }] })
     } finally {
       greetAbortRef.current = null
       setGreetLoading(false)
@@ -797,13 +812,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       forAi = done.map(rel => tellAiAboutAsset(rel, choice)).join('\n')
       // このターンは forAi で届く。**次のターン以降も覚えておく**ため履歴にも残す
       // （画面には出さない。getHistory は hidden を AI へ送る・toolNote は送らない）
-      if (forAi) setMessages(prev => [...prev, { role: 'user', content: forAi, hidden: true }])
+      if (forAi) applyOp({ kind: 'append', msg: { role: 'user', content: forAi, hidden: true } })
       // 入れられなかったときだけ画面に出す（黙って落とさない）
       if (failed.length) {
-        setMessages(prev => [...prev, {
-          role: 'assistant', toolNote: true,
-          content: `⚠️ ${failed.length}枚をプロジェクトに入れられませんでした: ${failed[0]}`,
-        }])
+        applyOp({
+          kind: 'append',
+          msg: {
+            role: 'assistant', toolNote: true,
+            content: `⚠️ ${failed.length}枚をプロジェクトに入れられませんでした: ${failed[0]}`,
+          },
+        })
       }
     }
     // ── 保存していない画像の案内は、Koto が出す（2026-08-19 実機・Ryosuke 指摘）──
@@ -817,10 +835,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     }
     const turn = chat.send(text, images, forAi || undefined)
     // 案内は**AIの返事のあと**に置く（先に出すと、返事に埋もれて読まれない）
-    if (needHint) void turn.then(() => setMessages(prev => [...prev, {
-      role: 'assistant', toolNote: true, content: useImageHint(attached.length),
-    }]))
-  }, [input, pendingImages, isLoading, chat, assetChoice, projectDir, putIntoProject, setMessages])
+    if (needHint) void turn.then(() => applyOp({
+      kind: 'append',
+      msg: { role: 'assistant', toolNote: true, content: useImageHint(attached.length) },
+    }))
+  }, [input, pendingImages, isLoading, chat, assetChoice, projectDir, putIntoProject, applyOp])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -897,7 +916,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           <button
             onClick={() => {
               if (messages.filter(m => !m.hidden).length === 0) return
-              if (window.confirm('この会話をすべて削除します。よろしいですか？（元に戻せません）')) setMessages([])
+              if (window.confirm('この会話をすべて削除します。よろしいですか？（元に戻せません）')) applyOp({ kind: 'replaceAll', messages: [] })
             }}
             className="text-xs text-ink-muted hover:text-ink"
             title="会話をクリア"

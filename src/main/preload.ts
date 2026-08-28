@@ -406,11 +406,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   chat: {
     // IDEのプロジェクト別チャット履歴（<project>/.sakuraide/chat.json）
+    // ⚠️ B'-3c で持ち主が main（convStore.ts）へ移り、ChatPanel はもう呼ばない
+    // （下の load/ops に置き換わった）。後方互換のため形は変えずに残す。
     loadProject: (projectDir: string) => ipcRenderer.invoke('chat:loadProject', projectDir),
     saveProject: (projectDir: string, json: string) => ipcRenderer.invoke('chat:saveProject', projectDir, json),
     // 単独チャット（ChatApp）のセッション一覧（<workspace>/.sakuraide/chats/chat-app.json）
     loadApp: (workspaceDir: string) => ipcRenderer.invoke('chat:loadApp', workspaceDir),
     saveApp: (workspaceDir: string, json: string) => ipcRenderer.invoke('chat:saveApp', workspaceDir, json),
+    // B'-3c: IDEのプロジェクト別チャットの持ち主（main の convStore.ts）を呼ぶ。
+    // 読み込みは chatConvClient.ts の loadConversationView、書き換えは makeConvClient が使う。
+    load: (projectDir: string) => ipcRenderer.invoke('chat:load', projectDir),
+    ops: (projectDir: string, ops: unknown[], opts?: { flushNow?: boolean }) => ipcRenderer.invoke('chat:ops', projectDir, ops, opts),
   },
   // AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。
   // renderer 側の配線（useAiChat.ts 等）はまだこの API を呼ばない（その2で行う）。

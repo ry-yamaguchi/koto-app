@@ -104,6 +104,13 @@ export type UseAiChatArgs = {
    *  読み直させる（App.tsx の applyRestoreResult 相当。**stale tab のオートセーブ上書きによる
    *  データ喪失防止**・2026-07-11 の致命バグ修正）。ChatApp（プロジェクト無し）は省略可 */
   onExternalFilesChanged?: (relPaths: string[]) => void
+  /**
+   * B'-3c: message系の出来事（append/replaceLast/removeLast）の行き先を差し替える。
+   * 指定があれば emit はこれを呼ぶ（ChatPanel が chatConvClient.ts の client.apply に繋ぎ、
+   * 画面反映＋main（convStore.ts）への ops 送信の両方を行う）。省略時は今までどおり
+   * updateShown(applyToMessages(...)) を直接呼ぶ（ChatApp・変更なし）。
+   */
+  onMessageEvent?: (ev: ChatEvent<ChatMessage>) => void
 }
 
 export function useAiChat(args: UseAiChatArgs) {
@@ -111,6 +118,7 @@ export function useAiChat(args: UseAiChatArgs) {
     apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage,
     errorPrefix = '', twoStageVision = false, buildRagBlock, onExternalFilesChanged,
+    onMessageEvent,
   } = args
 
   const [isLoading, setIsLoading] = useState(false)
@@ -148,8 +156,41 @@ export function useAiChat(args: UseAiChatArgs) {
 
   const abort = useCallback(() => { abortRef.current?.() }, [])
 
-  // 画面に出す「出来事」はすべてここを通す。B'-3 でここが「main へ送る」に変わる。
+  // ── emit と viewOnlyEmit の2本立て（B'-3c）───────────────────────────
+  //
+  // なぜ2つあるか: 「画面がどう変わるか」（shared/chatEvents.ts）は1本のままだが、
+  // 「出来事の**書き主**（persistence の主体）が誰か」が出来事の出どころによって違う。
+  //
+  //   - sendViaClaude / compactNow / abortWithGuidance / 予算超過 などフック内から出す
+  //     message系の出来事は、**renderer が書き主**。まだどこにも保存されていないので、
+  //     画面反映と同時に main（convStore.ts）へ ops として送らないと消えてしまう。
+  //     → emit を使う（onMessageEvent があればそれを呼ぶ＝ChatPanel は client.apply に繋ぎ、
+  //       画面反映＋ops送信の両方を行う。無ければ従来どおり updateShown 直行＝ChatApp）。
+  //
+  //   - AI Engine のターン（main の turnRunner.ts で走っている）の message系の出来事は、
+  //     **main が既にストアへ直接当てている**（buildMainPorts.emit）。この出来事が
+  //     renderer 側の chatTurn.start の onEvent として戻ってきたとき、ここでまた
+  //     onMessageEvent（→ ops 送信）を通すと、同じ書き換えを**二重に**保存してしまう。
+  //     → viewOnlyEmit を使う（B'-2 の形＝updateShown 直行＋scalar setter。ops は送らない。
+  //       「画面へ映すだけ」で、書き込みは main が既に済ませている）。
+  //
+  // どちらも「画面がどう変わるか」自体は applyToMessages（同じ純粋関数）に委ねる。
   const emit = useCallback((ev: ChatEvent<ChatMessage>) => {
+    switch (ev.kind) {
+      case 'append':
+      case 'replaceLast':
+      case 'removeLast':
+        if (onMessageEvent) onMessageEvent(ev)
+        else updateShown(prev => applyToMessages(prev, ev))
+        break
+      case 'loading': setIsLoading(ev.value); break
+      case 'status': setStatusNote(ev.value); break
+      case 'routed': setRoutedModel(ev.value); break
+    }
+  }, [onMessageEvent, updateShown])
+
+  // main が書き主のターン（chatTurn.start の onEvent）専用。ops を送り返さない（上のコメント参照）。
+  const viewOnlyEmit = useCallback((ev: ChatEvent<ChatMessage>) => {
     switch (ev.kind) {
       case 'append':
       case 'replaceLast':
@@ -509,7 +550,10 @@ export function useAiChat(args: UseAiChatArgs) {
             caps: { approveToolCall: !!approveToolCall, onUserMessage: !!onUserMessage, buildRagBlock: !!buildRagBlock },
           },
           {
-            onEvent: (ev) => emit(ev as any),
+            // main が書き主のターン。main は既に convStore.ts へ当てているので、ここは
+            // 画面へ映すだけの viewOnlyEmit を通す（emit だと onMessageEvent 経由で
+            // ops を送り返してしまい、二重書きになる。上の「emit と viewOnlyEmit」コメント参照）。
+            onEvent: (ev) => viewOnlyEmit(ev as any),
             onActivity: () => { lastActivityRef.current = Date.now() },
             onAsk: (path, args) => dispatchAsk(handlers, turnOpts, path as AskPath, args),
           },
@@ -532,7 +576,7 @@ export function useAiChat(args: UseAiChatArgs) {
   }, [
     isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage, errorPrefix,
-    twoStageVision, routedModel, appendBubble, buildRagBlock, sendViaClaude, emit,
+    twoStageVision, routedModel, appendBubble, buildRagBlock, sendViaClaude, emit, viewOnlyEmit,
   ])
 
   // #31: 「さくらのAI Engine に切り替えて続ける」提案ボタンのハンドラ。頭脳をさくらのAI Engineへ
