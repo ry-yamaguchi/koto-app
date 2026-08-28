@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import * as fs from 'fs'
+import * as path from 'path'
 import {
   runEngineTurn, runCompact, REPEAT_LIMIT,
   type EngineTurnSpec, type EngineTurnPorts, type TurnMessage, type TurnHelpers, type CompactPlanLike,
@@ -81,6 +83,8 @@ interface PortsConfig {
   hasBuildRagBlock?: boolean
   stream: StreamScript[]
   chatOnce?: { content?: string; usage?: { prompt_tokens?: number; completion_tokens?: number } | null }
+  /** 指定すると chatOnce がこの内容で reject する（abort 例外・abort 以外の例外の両方を模す）。 */
+  chatOnceThrow?: { message?: string; name?: string }
   usageAllowed?: boolean[] // usage.check() が呼ばれるたびに先頭から消費。尽きたら最後の値を使い続ける
   usageMessage?: string
   executeTool?: (name: string, argsJson: string, opts: any) => Promise<string> | string
@@ -126,6 +130,11 @@ function makePorts(cfg: PortsConfig): { ports: EngineTurnPorts; log: Log; stream
     },
     chatOnce: async (req) => {
       log.push({ tag: 'chatOnce', model: req.model })
+      if (cfg.chatOnceThrow) {
+        const e: any = new Error(cfg.chatOnceThrow.message ?? 'boom')
+        if (cfg.chatOnceThrow.name) e.name = cfg.chatOnceThrow.name
+        throw e
+      }
       return cfg.chatOnce ?? { content: '', usage: null }
     },
     getHistory: () => { log.push({ tag: 'getHistory' }); return cfg.history ?? [] },
@@ -753,6 +762,71 @@ describe('runEngineTurn', () => {
       { tag: 'emit', ev: { kind: 'status', value: '' } },
     ])
   })
+
+  // 24. 🗂 まとめ作り中の ⏹ 停止（0.3.50・roadmap「次の改善2件」その1・本丸）
+  it('🗂 まとめ作り中の ⏹ 停止: chatOnce が abort 例外で reject → chatStream は呼ばれない・（⏹ 停止しました）が append・最後は loading=false/status=\'\'', async () => {
+    // SEND_BUDGET_TOKENS(8000) を超える長さの履歴（planCompact が plan を返す条件。17番と同じ作り）
+    const big = 'あ'.repeat(400)
+    const history: TurnMessage[] = Array.from({ length: 25 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: big }))
+    const { ports, log } = makePorts({
+      history,
+      stream: [{ content: '本文', toolCalls: null }], // 呼ばれてはいけない（呼ばれたらテストが失敗する）
+      chatOnceThrow: { name: 'APIUserAbortError', message: 'Request was aborted.' },
+    })
+    await runEngineTurn(makeSpec(), ports)
+
+    // chatStream は一切呼ばれていない（まとめ作りの段階で打ち切ったので）
+    expect(log.filter((e) => e.tag === 'chatStream').length).toBe(0)
+
+    const idxChatOnce = log.findIndex((e) => e.tag === 'chatOnce')
+    expect(idxChatOnce).toBeGreaterThan(-1)
+    // chatOnce が reject したあとの出来事の並び（固定）:
+    // runCompact の finally で status('') → 呼び出し元で append(⏹停止) → 外側の finally で
+    // setAbort(null) → loading(false) → status('')
+    expect(log.slice(idxChatOnce + 1)).toEqual([
+      { tag: 'emit', ev: { kind: 'status', value: '' } },
+      { tag: 'emit', ev: { kind: 'append', msg: { role: 'assistant', content: '（⏹ 停止しました）' } } },
+      { tag: 'setAbort', has: false },
+      { tag: 'emit', ev: { kind: 'loading', value: false } },
+      { tag: 'emit', ev: { kind: 'status', value: '' } },
+    ])
+    // 画面に残るのはユーザーの発言と「（⏹ 停止しました）」だけ（まとめのバブルは出ていない）
+    const messages = replayMessages(log)
+    expect(messages.map((m) => m.content)).toEqual(['こんにちは', '（⏹ 停止しました）'])
+  })
+
+  // 25. まとめ失敗（abort 以外）は今まで通り（24番の対照実験）
+  it('🗂 まとめ失敗（abort 以外の例外）: chatOnce が通常のエラーで reject しても、従来どおり黙って送信は続き・警告は1度だけ', async () => {
+    const big = 'あ'.repeat(400)
+    const history: TurnMessage[] = Array.from({ length: 25 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: big }))
+    const { ports, log } = makePorts({
+      history,
+      stream: [{ content: '本文', toolCalls: null }],
+      chatOnceThrow: { message: 'network down' }, // name は APIUserAbortError ではなく、abort とも読めない
+    })
+    await runEngineTurn(makeSpec(), ports)
+
+    // 送信は続いている（chatStream が呼ばれ、最終的に本文が画面に残る）
+    expect(log.filter((e) => e.tag === 'chatStream').length).toBe(1)
+    const messages = replayMessages(log)
+    expect(messages[messages.length - 1].content).toBe('本文')
+    // 警告（⚠️ で始まる toolNote）が1度だけ出る
+    const warns = log.filter((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.toolNote && String(e.ev.msg.content).startsWith('⚠️'))
+    expect(warns.length).toBe(1)
+  })
+})
+
+// 配線: turnRunner.ts は electron（ipcMain）を import しているため node のテストから直接
+// 呼び出せない。ソースを読んで、chatOnce が onAbortReady で entry.abort を差し替えている
+// **呼び出しの形そのもの**を固定する（掟10: 「どこかに書いてある」だけでは直し忘れを捕まえられない）。
+describe('配線: turnRunner.ts の chatOnce（🗂 まとめ作り中の ⏹ 停止・main 側）', () => {
+  it('runSakuraChat へ onAbortReady を渡し、entry.abort を差し替えている', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/chat/turnRunner.ts'), 'utf-8')
+    const inCode = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    expect(inCode).toContain('chatOnce: (req) => runSakuraChat(req, { onAbortReady: (abort) => { entry.abort = abort } }),')
+    // 直す前の形（onAbortReady を渡さない）へ戻さない
+    expect(src).not.toContain('chatOnce: (req) => runSakuraChat(req),')
+  })
 })
 
 describe('runCompact', () => {
@@ -781,5 +855,28 @@ describe('runCompact', () => {
     expect(log[1]).toEqual({ tag: 'emit', ev: { kind: 'status', value: '🗂 これまでの内容をまとめています…' } })
     expect(log[log.length - 1]).toEqual({ tag: 'emit', ev: { kind: 'status', value: '' } })
     expect(log.some((e) => e.tag === 'usage.record' && e.model === 'modelA' && e.promptTokens === 3 && e.completionTokens === 4)).toBe(true)
+  })
+
+  // ⏹ 停止（0.3.50・roadmap「次の改善2件」その1）: chatOnce が abort による例外で reject したら、
+  // エラー文言（error）ではなく { aborted: true } を返す。isAbortError の分岐そのものを直接固定する
+  // （runEngineTurn 側の24番・25番はこの分岐が「ターンを正しく終える」ところまでを確かめる）。
+  it('⏹ 停止: chatOnce が abort 例外（APIUserAbortError）で reject → { aborted: true } を返す（エラー文言にしない）', async () => {
+    const { ports, log } = makePorts({ stream: [], chatOnceThrow: { name: 'APIUserAbortError', message: 'Request was aborted.' } })
+    const plan: CompactPlanLike = { base: null, from: 0, to: 2, mark: 'm' }
+    const history: TurnMessage[] = [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }]
+    const r = await runCompact({ apiKey: 'k', model: 'modelA' }, ports, history, plan)
+    expect(r).toEqual({ aborted: true })
+    // status は最後まで出し入れされる（まとめの試み自体は普通に始まり、finally で必ず戻す）
+    expect(log[1]).toEqual({ tag: 'emit', ev: { kind: 'status', value: '🗂 これまでの内容をまとめています…' } })
+    expect(log[log.length - 1]).toEqual({ tag: 'emit', ev: { kind: 'status', value: '' } })
+  })
+
+  // name が付いていない版（openai SDK の版によっては APIUserAbortError という名前が付かないことがある
+  // 想定・engine.ts の isAbortError と同じ判定）でもメッセージの /abort/i だけで検知できることを確かめる。
+  it('⏹ 停止: name の無い abort 例外（メッセージに abort を含む）でも { aborted: true } を返す', async () => {
+    const { ports } = makePorts({ stream: [], chatOnceThrow: { message: 'The user aborted a request.' } })
+    const plan: CompactPlanLike = { base: null, from: 0, to: 2, mark: 'm' }
+    const r = await runCompact({ apiKey: 'k', model: 'modelA' }, ports, [{ role: 'user', content: 'a' }], plan)
+    expect(r).toEqual({ aborted: true })
   })
 })

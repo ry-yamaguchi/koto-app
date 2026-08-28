@@ -299,7 +299,12 @@ export function useAiChat(args: UseAiChatArgs) {
     emit({ kind: 'loading', value: true })
     try {
       const r = await runCompact({ apiKey, model }, buildPorts(), history, plan)
+      // ⏹ 停止（{ aborted: true }）: renderer の chatOnce（window.electronAPI.sakura.chat）には
+      // 停止の配線が無い（main の 🗂 まとめ作りだけに足した・0.3.50）ので、この手動まとめの経路で
+      // 実際に aborted が返ることは今は無い。型を網羅するためだけの分岐（将来ここにも停止を
+      // 配線したとき、この分岐だけ差し替えれば済むように残す）。
       if ('msg' in r) appendBubble(r.msg)
+      else if ('aborted' in r) appendBubble({ role: 'assistant', content: '（⏹ 停止しました）', toolNote: true })
       else appendBubble({ role: 'assistant', toolNote: true, content: `⚠️ ${r.error}` })
     } finally {
       emit({ kind: 'loading', value: false })

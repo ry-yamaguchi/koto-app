@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import http from 'node:http'
 import type { Server } from 'node:http'
-import { runSakuraStream } from '../src/main/sakura/engine'
+import { runSakuraStream, runSakuraChat } from '../src/main/sakura/engine'
 
 // 2026-08-28 発見の不具合: main の runSakuraStream は「⏹ 停止＝例外」を前提にしていたが、
 // openai SDK 4.104.0 はストリーミング中に stream.controller.abort() を呼んでも
@@ -116,5 +116,76 @@ describe('runSakuraStream: ⏹ 停止しても「停止しました」が出な�
     expect(deltas.join('')).toBe('hello world')
     expect(result.usage).toEqual({ prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 })
     expect(result.toolCalls).toBeNull()
+  })
+})
+
+// 0.3.50・roadmap「次の改善2件」その1: 🗂 まとめ作り中（非ストリーミングの runSakuraChat）は
+// これまで abort の配線が無く、⏹ を押しても何も起きなかった（実機で発見）。
+// runSakuraStream と違い、非ストリーミングは abort すると SDK が例外をそのまま投げる設計
+// （engine.ts のコメント参照）。ここも本物の http サーバで実証する（モックしない）。
+describe('runSakuraChat: 🗂 まとめ作り中に ⏹ が効かない不具合の修理', () => {
+  it('応答を遅らせている間に onAbortReady の中断関数を呼ぶと、abort による例外が投げられる（catch せずそのまま投げる）', async () => {
+    const port = await listen((_req, res) => {
+      // わざと応答を遅らせる（この「待っている間」に abort する）
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          id: 'x', object: 'chat.completion', created: 0, model: 'test',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'こんにちは' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }))
+      }, 200)
+    })
+
+    let abortFn: (() => void) | null = null
+    const p = runSakuraChat(
+      { apiKey: 'test-key', model: 'test-model', messages: [{ role: 'user', content: 'hi' }], baseURL: `http://127.0.0.1:${port}/v1` },
+      { onAbortReady: fn => { abortFn = fn } },
+    )
+    // サーバが応答を返す（200ms後）より前に止める
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(abortFn).not.toBeNull()
+    abortFn!()
+
+    let caught: any = null
+    try {
+      await p
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).not.toBeNull()
+    expect(caught?.name === 'APIUserAbortError' || /abort/i.test(caught?.message ?? '')).toBe(true)
+  })
+
+  it('最後まで応答が返れば、abort しなくても普通に content / usage が返る（副作用が無いことの対照）', async () => {
+    const port = await listen((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        id: 'x', object: 'chat.completion', created: 0, model: 'test',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'こんにちは' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }))
+    })
+
+    let abortReadyCalled = false
+    const result = await runSakuraChat(
+      { apiKey: 'test-key', model: 'test-model', messages: [{ role: 'user', content: 'hi' }], baseURL: `http://127.0.0.1:${port}/v1` },
+      { onAbortReady: () => { abortReadyCalled = true } }, // 中断関数を受け取るだけで、呼ばない
+    )
+    expect(abortReadyCalled).toBe(true)
+    expect(result).toEqual({ content: 'こんにちは', usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
+  })
+
+  it('cbs を渡さなくても従来どおり動く（main の sakura:chat 経路は cbs 無しで呼んでいる）', async () => {
+    const port = await listen((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        id: 'x', object: 'chat.completion', created: 0, model: 'test',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }))
+    })
+    const result = await runSakuraChat({ apiKey: 'test-key', model: 'test-model', messages: [{ role: 'user', content: 'hi' }], baseURL: `http://127.0.0.1:${port}/v1` })
+    expect(result.content).toBe('ok')
   })
 })

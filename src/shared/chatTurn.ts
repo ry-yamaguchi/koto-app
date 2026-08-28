@@ -176,8 +176,23 @@ async function findAsync<T>(items: readonly T[], pred: (item: T) => boolean | Pr
  *  2 = 「同じ呼び出しが3回目に入ったら止める」（1回の再試行は正常な挙動として許容する）。 */
 export const REPEAT_LIMIT = 2
 
-/** まとめ作りの結果。手動で押したときは**理由も見せる**ので、失敗を文言で返す。 */
-type CompactOutcome = { msg: TurnMessage } | { error: string }
+/**
+ * ⏹ 停止による例外かどうか（main/sakura/engine.ts の runSakuraStream の catch とまったく同じ判定）。
+ *
+ * ── なぜここに複製するか（0.3.50・roadmap「次の改善2件」その1）─────────────
+ * shared は main（electron 依存）を import できないので、判定ロジックをここへ複製する。
+ * runCompact が呼ぶ ports.chatOnce の実体（main/sakura/engine.ts の runSakuraChat）は、
+ * ⏹ 停止時に openai SDK の APIUserAbortError を **catch せずそのまま投げる**設計にした
+ * （engine.ts のコメント参照）。ここで「それはエラーではなく⏹停止」と判定し直す。
+ * main 側の判定を直したら、ここも合わせて直すこと。
+ */
+function isAbortError(e: any): boolean {
+  return e?.name === 'APIUserAbortError' || /abort/i.test(e?.message ?? '')
+}
+
+/** まとめ作りの結果。手動で押したときは**理由も見せる**ので、失敗を文言で返す。
+ *  ⏹ 停止（isAbortError）はエラー文言にせず別枠で返す：呼び出し元がターンごと終える判断をする。 */
+type CompactOutcome = { msg: TurnMessage } | { error: string } | { aborted: true }
 
 /**
  * 決めた範囲を1件の「まとめ」に畳む（**元の会話は消さない**）。
@@ -223,6 +238,9 @@ export async function runCompact(
     if (!text) return { error: `「${ports.h.modelLabel(model)}」から空の返事が返ってきました。別のモデルでお試しください。` }
     return { msg: { role: 'assistant', content: text, summary: { upTo: plan.to, mark: plan.mark } } }
   } catch (e: any) {
+    // ⏹ 停止はエラーではない。まとめ以外の失敗（ネットワーク断・空応答等）と区別して返す
+    // （呼び出し元の分岐先が全く違う: エラーは「黙って続ける・1度だけ警告」、⏹停止は「ターンごと終える」）。
+    if (isAbortError(e)) return { aborted: true }
     return { error: ports.h.formatChatError(e?.message ?? String(e)) }
   } finally {
     ports.emit({ kind: 'status', value: '' })
@@ -235,10 +253,13 @@ async function compactIfNeeded(
   spec: Pick<EngineTurnSpec, 'apiKey' | 'model'>,
   ports: EngineTurnPorts,
   history: TurnMessage[],
-): Promise<TurnMessage | null> {
+): Promise<TurnMessage | { aborted: true } | null> {
   const plan = ports.h.planCompact(history)
   if (!plan) return null
   const r = await runCompact(spec, ports, history, plan)
+  // ⏹ 停止はそのまま呼び出し元（runEngineTurn）へ伝える。まとめ以外の失敗（下）とは違い、
+  // 「黙って続ける」対象ではない——利用者が止めた以上、ターンごと終える判断は呼び出し元がする。
+  if ('aborted' in r) return r
   if ('msg' in r) return r.msg
   // ここへ来た時点で、送る量は予算を超えている＝**古いやり取りの一部が送れていない**。
   // 黙って忘れられるより、やり直せる手があることを1度だけ伝える。
@@ -300,22 +321,34 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
   await ports.onUserMessage?.(text, isFirst)
   ports.emit({ kind: 'loading', value: true })
 
-  // 会話が長くなっていたら、ここで古いぶんをまとめる（送信に使う履歴もこれに差し替える）。
-  // 先にユーザーの吹き出しを出してから行うので、待っている間も「送れている」ことが分かる。
-  let history = historyBefore
-  const summaryMsg = await compactIfNeeded(spec, ports, historyBefore)
-  if (summaryMsg) {
-    ports.emit({ kind: 'append', msg: { role: 'assistant', content: summaryMsg.content, summary: summaryMsg.summary } })
-    history = [...historyBefore, summaryMsg]
-  }
-
-  const systemPrompt = await ports.buildSystemPrompt()
-  // 費用の見積りは「実際に送るもの」で行う（まとめたのに元の全文で数えると合わない）。
-  // 送る履歴は1度だけ組み立てて使い回す（下のエージェントループでも同じものを使う）。
-  const pastMessages = ports.h.planSend(history)
-  const inputText = systemPrompt + pastMessages.map(m => m.content).join('\n') + text + assetBlock
-
   try {
+    // 会話が長くなっていたら、ここで古いぶんをまとめる（送信に使う履歴もこれに差し替える）。
+    // 先にユーザーの吹き出しを出してから行うので、待っている間も「送れている」ことが分かる。
+    //
+    // ── ⏹ 停止（0.3.50・roadmap「次の改善2件」その1）─────────────────────
+    // まとめ作りは、この try のいちばん先頭で行う。まとめ中に ⏹ が押された
+    // （compactIfNeeded が { aborted: true } を返す）ときは、ここで打ち切ってターンを終える
+    // （chatStream には一切進まない）。後片付け（loading/status を戻す）は下の finally がやる
+    // ——try の中の早期 return でも finally は必ず走るので、わざわざここで繰り返さない。
+    // まとめ以外の失敗（ネットワーク断・空応答等）は従来どおり「黙って続ける・警告は1度だけ」の
+    // ままで変えていない（分岐は compactIfNeeded／runCompact 側で既に済んでいる）。
+    let history = historyBefore
+    const summaryMsg = await compactIfNeeded(spec, ports, historyBefore)
+    if (summaryMsg && 'aborted' in summaryMsg) {
+      ports.emit({ kind: 'append', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
+      return
+    }
+    if (summaryMsg) {
+      ports.emit({ kind: 'append', msg: { role: 'assistant', content: summaryMsg.content, summary: summaryMsg.summary } })
+      history = [...historyBefore, summaryMsg]
+    }
+
+    const systemPrompt = await ports.buildSystemPrompt()
+    // 費用の見積りは「実際に送るもの」で行う（まとめたのに元の全文で数えると合わない）。
+    // 送る履歴は1度だけ組み立てて使い回す（下のエージェントループでも同じものを使う）。
+    const pastMessages = ports.h.planSend(history)
+    const inputText = systemPrompt + pastMessages.map(m => m.content).join('\n') + text + assetBlock
+
     const search = await ports.getSearchConfig() // Web検索設定（未設定なら検索ツールは出さない）
     // ユーザーのメッセージにURLがあれば、IDEがページ本文を取得してこのターンだけAIに添付する
     const pagesBlock = await ports.fetchPagesBlock(ports.h.extractUrls(text))

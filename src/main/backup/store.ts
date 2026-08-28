@@ -224,6 +224,30 @@ export function listSnapshotSummaries(projectDir: string): { ok: boolean; snapsh
   }
 }
 
+/**
+ * 🕘 復元の完了を会話に残す1件を作る（0.3.50・roadmap「次の改善2件」その2）。
+ *
+ * ── なぜ要るか（Ryosuke 指摘）────────────────────────────────────
+ * 🕘 で戻すのはファイルだけで、会話には手を付けていなかった。すると会話には
+ * 「保存しました」が残ったまま実物は戻っている＝**AI の頭とディスクがずれ**、
+ * 次の依頼で（もう無いはずの変更を前提に話すなど）AI が混乱する。
+ *
+ * ── なぜ toolNote を付けないか ─────────────────────────────────────
+ * toolNote は「ツール実行状況の表示専用バブルで、AIへは送らない」印
+ * （shared/chatTurn.ts の TurnMessage のコメント参照）。この1件は逆に
+ * **AI にこそ伝わってほしい**（ディスクとAIの認識を揃えるための記録なので）。
+ * toolNote を付けると次の送信で履歴から除外され、記録する意味が無くなる。
+ */
+export function restoreNoteMessage(
+  opts: { label: string | null; restored: number; deleted: number }
+): { role: 'assistant'; content: string } {
+  const at = opts.label ? `「${opts.label}」の時点` : '選んだ時点'
+  return {
+    role: 'assistant',
+    content: `🕘 ${at}までファイルを戻しました（${opts.restored}件を復元・${opts.deleted}件を削除。会話はそのまま残っています）`,
+  }
+}
+
 export type RestoreResult = {
   ok: boolean
   restored?: string[]

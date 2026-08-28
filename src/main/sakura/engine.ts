@@ -38,21 +38,44 @@ export function safeMaxTokens(errMsg: string, requested: number): number | null 
   return safe >= 64 && safe < requested ? safe : null
 }
 
-/** 非ストリーミング（sakura:chat の中身そのまま）。プロジェクト生成などで使用。 */
+/**
+ * 非ストリーミング（sakura:chat の中身そのまま）。プロジェクト生成・🗂 まとめ作りで使用。
+ *
+ * ── 「⏹ 停止」の配線（0.3.50・roadmap「次の改善2件」その1）─────────────────
+ * 🗂 まとめ作り中は非ストリーミングのこの関数を呼ぶが、これまで abort の配線が無く、
+ * まとめ作り中に ⏹ を押しても何も起きなかった（実機で発見）。runSakuraStream と同じ形
+ * （呼び出し側が cbs.onAbortReady で中断関数を受け取り、あとから呼べるようにする）で
+ * AbortController を足す。
+ *
+ * runSakuraStream と違い、ここでは abort による例外（openai SDK の APIUserAbortError）を
+ * **catch せずそのまま投げる**。呼び出し側（shared/chatTurn.ts の runCompact）が
+ * 「これはエラーではなく⏹停止」と判定して { aborted: true } に変換する
+ * （runSakuraStream 側は abort しても for-await が例外を投げない openai SDK 4.104.0 の実測を
+ * 踏まえてフラグで持つ必要があったが、非ストリーミングの単発リクエストは abort すると
+ * 素直に例外が飛ぶことを確認済み。よって二重の対応は不要）。
+ *
+ * baseURL は tests/sakuraEngine.test.ts がローカルの http サーバへ向けるためだけの差し込み口
+ * （本番の呼び出し側は渡さないので挙動は変わらない。runSakuraStream の args.baseURL と同じ形）。
+ */
 export async function runSakuraChat(
-  args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; temperature?: number },
+  args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; temperature?: number; baseURL?: string },
+  cbs?: { onAbortReady?: (abort: () => void) => void },
 ): Promise<{ content: string; usage: any | null }> {
-  const client = sakuraClient(args.apiKey)
+  const client = sakuraClient(args.apiKey, args.baseURL)
   const requested = args.maxTokens ?? 4096
-  const mk = (maxTokens: number) => client.chat.completions.create({
-    model: args.model, messages: args.messages as any, max_tokens: maxTokens, temperature: args.temperature,
-  })
+  const controller = new AbortController()
+  // リクエストを始める前に中断関数を渡す（応答待ちの間に ⏹ が押されても中断できるように）。
+  cbs?.onAbortReady?.(() => controller.abort())
+  const mk = (maxTokens: number) => client.chat.completions.create(
+    { model: args.model, messages: args.messages as any, max_tokens: maxTokens, temperature: args.temperature },
+    { signal: controller.signal },
+  )
   let res
   try {
     res = await mk(requested)
   } catch (err: any) {
     const safe = isContextLimitError(err?.message ?? '') ? safeMaxTokens(err?.message ?? '', requested) : null
-    if (safe == null) throw err
+    if (safe == null) throw err // abort による例外もここを通ってそのまま投げ直される
     res = await mk(safe) // モデルのコンテキスト上限に合わせて縮めて再試行
   }
   // 推論型モデルは本文が空で、答えが reasoning 側に入ることがある（shared/chatContent.ts）。

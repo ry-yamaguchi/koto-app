@@ -79,7 +79,14 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     },
     chatStream: (req, onDelta, onAbortReady, onThinking) =>
       runSakuraStream(req, { onDelta, onReasoning: onThinking, onAbortReady }),
-    chatOnce: (req) => runSakuraChat(req),
+    // 🗂 まとめ作り中の ⏹ 停止（0.3.50）: runSakuraChat の onAbortReady で受け取った中断関数を
+    // entry.abort へ差し込む（chatTurn:abort → turns.get(turnId)?.abort?.() から呼べるように）。
+    // ports.setAbort は経由しない（EngineTurnPorts.chatOnce の型に abort registration は無く、
+    // まとめ作りは main だけで完結する処理のため、この配線も main 内で完結させる）。
+    // まとめが終わったあとも entry.abort にはこの中断関数が残り続けるが、完了済みリクエストへの
+    // abort は無害（呼んでも何も起きない）。次にストリーミングが始まれば ports.setAbort が
+    // 新しい中断関数で上書きするので、古いものが誤って呼ばれる実害は無い。
+    chatOnce: (req) => runSakuraChat(req, { onAbortReady: (abort) => { entry.abort = abort } }),
     getHistory: () => bridge.ask('getHistory', []) as any,
     buildSystemPrompt: () => bridge.ask('buildSystemPrompt', []) as any,
     onUserMessage: caps.onUserMessage

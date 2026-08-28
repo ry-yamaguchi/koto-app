@@ -545,6 +545,18 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     return () => { cancelled = true }
   }, [projectDir, applyOpLocally])
 
+  // 0.3.50: 🕘「元に戻す」の完了など、main が会話へ直接書き足したこと（backup:restore ハンドラ）を
+  // 画面へ反映する。会話の持ち主は main（convStore.ts・B'-3c）で、main は既に convStore へ
+  // append 済み——ここは**見るだけ**（viewOnly）でよく、ops を送るとまったく同じ1件がもう一度
+  // convStore へ書かれて二重に残ってしまう。開いていない別プロジェクト宛てなら何もしない
+  // （そのプロジェクトを次に開いたとき、load 側で store から読まれるので取りこぼさない）。
+  useEffect(() => {
+    return window.electronAPI.chat.onAppended(({ projectDir: dir, msg }) => {
+      if (dir !== projectDir) return
+      setMessages(prev => [...prev, msg])
+    })
+  }, [projectDir])
+
   // 新規プロジェクト作成（NewProjectModal.tsx）からの依頼をチャットへ流し込む。
   // sakura-target-changed ハンドラ（下）と同じ作法: buildProjectContext を読み直してから
   // chat.send() で送ることで、自動送信でもユーザーが打ったのと同じ扱いでチャット欄に見えるようにする

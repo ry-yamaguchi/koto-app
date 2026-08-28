@@ -590,6 +590,9 @@ interface Window {
       >
       /** B'-3c: 会話への書き換え（src/renderer/chatConvClient.ts の Op と同じ形）を main へ送る。 */
       ops(projectDir: string, ops: unknown[], opts?: { flushNow?: boolean }): Promise<{ ok: true } | { ok: false; message: string }>
+      /** 0.3.50: main が会話へ直接書き足したこと（🕘「元に戻す」の記録など）を画面へ知らせる合図。
+       *  購読解除関数を返す（fs.watchDir と同じ作り）。 */
+      onAppended(cb: (p: { projectDir: string; msg: import('../shared/chatTurn').TurnMessage }) => void): () => void
     }
     /**
      * AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。

@@ -4,7 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import {
   snapshotBeforeWrite, snapshotBeforeChange, listSnapshotSummaries, restoreToSnapshot,
-  snapshotCurrentFiles,
+  snapshotCurrentFiles, restoreNoteMessage,
 } from '../src/main/backup/store'
 import { BACKUP_DIRNAME } from '../src/main/backup/plan'
 
@@ -312,5 +312,36 @@ describe('いま在るものを、そのまま「戻れる起点」にする', (
     expect(r.count).toBe(0)
     expect(r.snapshotId).toBeUndefined()
     expect(listSnapshotSummaries(dir).snapshots).toEqual([])
+  })
+})
+
+// 🕘「元に戻す」の完了を会話に残す1件（0.3.50・roadmap「次の改善2件」その2）。
+// 純粋関数なので実ファイルは使わない（fs 系のテストと同じファイルに置いているのは
+// restoreToSnapshot と対で読む文脈があるため）。
+describe('restoreNoteMessage', () => {
+  it('label があれば「◯◯の時点」、件数を埋め込む', () => {
+    const msg = restoreNoteMessage({ label: 'トップページを青くして', restored: 3, deleted: 1 })
+    expect(msg).toEqual({
+      role: 'assistant',
+      content: '🕘 「トップページを青くして」の時点までファイルを戻しました（3件を復元・1件を削除。会話はそのまま残っています）',
+    })
+  })
+
+  it('label が無ければ「選んだ時点」になる', () => {
+    const msg = restoreNoteMessage({ label: null, restored: 0, deleted: 2 })
+    expect(msg.content).toBe('🕘 選んだ時点までファイルを戻しました（0件を復元・2件を削除。会話はそのまま残っています）')
+  })
+
+  it('件数が0でもそのまま埋め込む（該当なしを隠さない）', () => {
+    const msg = restoreNoteMessage({ label: null, restored: 0, deleted: 0 })
+    expect(msg.content).toContain('0件を復元・0件を削除')
+  })
+
+  // toolNote を付けると AI へ送られなくなり（chatTurn.ts の TurnMessage のコメント参照）、
+  // 「ディスクと会話を揃える」というこの1件の目的そのものが成立しなくなる。最重要の性質。
+  it('toolNote を付けない（AI へ送られる形のまま）', () => {
+    const msg = restoreNoteMessage({ label: 'x', restored: 1, deleted: 0 })
+    expect('toolNote' in msg).toBe(false)
+    expect(msg.role).toBe('assistant')
   })
 })

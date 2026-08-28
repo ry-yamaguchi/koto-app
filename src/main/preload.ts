@@ -417,6 +417,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 読み込みは chatConvClient.ts の loadConversationView、書き換えは makeConvClient が使う。
     load: (projectDir: string) => ipcRenderer.invoke('chat:load', projectDir),
     ops: (projectDir: string, ops: unknown[], opts?: { flushNow?: boolean }) => ipcRenderer.invoke('chat:ops', projectDir, ops, opts),
+    /** 0.3.50: main が会話へ直接書き足したこと（🕘「元に戻す」の記録など）を画面へ知らせる合図。
+     *  fs.watchDir と同じ作法で購読解除関数を返す。対象を絞る id 登録は不要（単発の broadcast。
+     *  受け手は projectDir が一致するものだけを拾う＝app.onOpenCredentials と同じ簡潔な形）。 */
+    onAppended: (cb: (p: { projectDir: string; msg: unknown }) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, p: { projectDir: string; msg: unknown }) => cb(p)
+      ipcRenderer.on('chat:appended', handler)
+      return () => ipcRenderer.removeListener('chat:appended', handler)
+    },
   },
   // AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。
   // renderer 側の配線（useAiChat.ts 等）はまだこの API を呼ばない（その2で行う）。
