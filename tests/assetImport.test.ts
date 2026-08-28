@@ -352,6 +352,8 @@ describe('送信済みの画像にも入れる導線がある', () => {
 describe('添付画像は、送信のときに入れる', () => {
   const panel = readFileSync(join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf-8')
   const chat = readFileSync(join(__dirname, '..', 'src/renderer/hooks/useAiChat.ts'), 'utf-8')
+  // B'-3a（2026-08-28）: apiText の組み立ては AI Engine 経路の本体ごと src/shared/chatTurn.ts へ移った。
+  const chatTurn = readFileSync(join(__dirname, '..', 'src/shared/chatTurn.ts'), 'utf-8')
 
   it('★★ チェックを入れた時点では入れない（印を付けるだけ）', () => {
     const at = panel.indexOf('checked={assetChoice')
@@ -384,9 +386,9 @@ describe('添付画像は、送信のときに入れる', () => {
   it('★★ AI にだけ添えた一言は、吹き出しには出さない', () => {
     // pagesBlock / searchBlock / ragBlock と同じ扱い（吹き出しの content は text のまま）
     expect(chat).toContain('const assetBlock = aiOnlyNote')
-    expect(chat).toMatch(/apiText = text \+ assetBlock/)
+    expect(chatTurn).toMatch(/apiText = text \+ assetBlock/)
     expect(chat).toMatch(/sendViaClaude\(text \+ assetBlock/)
-    expect(chat).not.toMatch(/content: text \+ assetBlock/)
+    expect(chatTurn).not.toMatch(/content: text \+ assetBlock/)
   })
 
   it('★ 印は外せる（チェックを外す）', () => {

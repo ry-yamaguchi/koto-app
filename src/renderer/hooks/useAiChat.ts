@@ -2,25 +2,28 @@
 // 予算チェック → visionモデル自動切替 → Web参照/検索の添付 → ストリーミング → エージェントループ
 // （ツール実行・自己修復・モデル割り振り）までを1本のフックに集約する。
 // 表示先（セッション内 / フラット配列）や承認フロー等の差分は引数のコールバックで吸収する。
+//
+// ── B'-3a（2026-08-28）─────────────────────────────────────────────
+// AI Engine 経路の本体（利用上限チェック〜エージェントループ）は src/shared/chatTurn.ts の
+// runEngineTurn / runCompact へ切り出した（React / window / electron に依存しない形にするため。
+// 次段 B'-3b でこのループを main プロセスで動かす下準備）。このフックは、その入力（spec）と
+// 外部への接点（ports）を組み立てて呼ぶだけになっている。Claude頭脳モード（sendViaClaude）は
+// 従来どおりこのファイルに残る。
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { checkBeforeRequest, recordUsage, estimateTokens, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
+import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
 import { shouldTryImagesDirectly, recordVisionSupport, isImageUnsupportedError } from '../visionSupport'
 import { extractUrls, fetchPagesBlock, autoSearchBlock, wantsWebSearch } from '../webContext'
-import { toolsFor, isToolUnsupportedError, executeTool, toolStatusLabel, getSearchConfig, formatChatError, formatClaudeError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning, claimsFileChange, unexecutedChangeWarning, WRITING_TOOLS, isToolArgsComplete } from '../aiTools'
+import { toolsFor, isToolUnsupportedError, executeTool, toolStatusLabel, getSearchConfig, formatChatError, formatClaudeError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning, claimsFileChange, unexecutedChangeWarning, WRITING_TOOLS, isToolArgsComplete, type ToolContext } from '../aiTools'
 import { shouldSendTools, isKnownToolCapable, recordToolSupport } from '../toolSupport'
-import { planSend, planCompact, planManualCompact, compactPrompt, acceptSummary, compactSource, type CompactMark, type CompactPlan } from '../historyCompact'
+import { planSend, planCompact, planManualCompact, compactPrompt, acceptSummary, compactSource, type CompactMark } from '../historyCompact'
 import { searchStatusContext } from '../aiContext'
 import { getAnthropicToken } from '../components/CredentialsModal'
 import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode } from '../claudeMode'
 import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
 import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
-
-/** まったく同じツール呼び出し（名前＋引数）がこの回数だけ連続したら暴走とみなして中断する。
- *  周回数の上限（maxRounds）を 5→25 に引き上げた代わりの歯止め（2026-07-23）。
- *  2 = 「同じ呼び出しが3回目に入ったら止める」（1回の再試行は正常な挙動として許容する）。 */
-const REPEAT_LIMIT = 2
+import { runEngineTurn, runCompact, type EngineTurnSpec, type EngineTurnPorts } from '../../shared/chatTurn'
 
 export type ChatMessage = {
   role: 'user' | 'assistant'
@@ -93,9 +96,6 @@ export type UseAiChatArgs = {
   onExternalFilesChanged?: (relPaths: string[]) => void
 }
 
-// APIへ送る1メッセージ（tool_calls / tool 結果を含む OpenAI 互換形）
-type ApiMsg = { role: string; content: any; tool_calls?: any[]; tool_call_id?: string }
-
 export function useAiChat(args: UseAiChatArgs) {
   const {
     apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
@@ -157,74 +157,81 @@ export function useAiChat(args: UseAiChatArgs) {
   const replaceLast = useCallback((msg: ChatMessage) => emit({ kind: 'replaceLast', msg }), [emit])
   const removeLast = useCallback(() => emit({ kind: 'removeLast' }), [emit])
 
-  /** まとめ作りの結果。手動で押したときは**理由も見せる**ので、失敗を文言で返す。 */
-  type CompactOutcome = { msg: ChatMessage } | { error: string }
+  /** 「まとめ失敗の警告は1度だけ」の印。chatTurn.ts の runEngineTurn/runCompact へ ports.compactWarnOnce
+   *  として渡す（実体は chatTurn.ts へ移った compactIfNeeded が使う）。 */
+  const compactWarnedRef = useRef(false)
 
   /**
-   * 決めた範囲を1件の「まとめ」に畳む（**元の会話は消さない**）。
+   * AI Engine 経路（src/shared/chatTurn.ts の runEngineTurn / runCompact）へ渡す差し込み口を組み立てる。
    *
-   * ── なぜ（2026-08-20 Ryosuke 指摘）────────────────────────────────
-   * これまでは直近ぶんだけを送り、それより前は黙って捨てていた。
-   * 長い相談ほど「さっき決めたこと」を忘れ、利用者からは物覚えを失ったように見える。
-   *
-   * ・**まとめは「いま選んでいるモデル」で作る**（利用者の知らない経路・料金を使わない）。
-   * ・**黙ってやらない。** 会話に「🗂 ここまでの内容をまとめました」を残す。
-   * ・**失敗しても送信は止めない。** まとめが無いだけで、従来どおり動く。
+   * ── なぜここで組み立てるか（B'-3a）─────────────────────────────
+   * 以前はループの中で直接これらの値・関数を呼んでいた。ここで束ねているものは
+   * **呼び出し先を変えただけ**で、値の鮮度は変わらない
+   * （getSearchConfig 等は関数のまま渡すので、呼ばれた瞬間に読み直される。
+   * apiKey・model 等はこの関数が呼ばれた時点の値を閉じ込める＝以前と同じ）。
    */
-  const runCompact = useCallback(async (history: ChatMessage[], plan: CompactPlan): Promise<CompactOutcome> => {
-    if (!apiKey || !model) return { error: 'さくらのAI Engine のキーが登録されていないため、まとめを作れません。' }
-    // 予算の上限に達しているときは作らない（まとめのために上限を超えない）。
-    if (!checkBeforeRequest(apiKey).allowed) {
-      return { error: '今月のさくらのAI Engine の利用額が上限に達しているため、まとめを作れません（上限は ⚙️ 設定で変えられます）。' }
-    }
-    // 材料には**書き込み・実行の実況も混ぜる**（どのファイルを変えたかは本文に残らない）。
-    const { system, user } = compactPrompt(plan.base, compactSource(history, plan.from, plan.to))
-    emit({ kind: 'status', value: '🗂 これまでの内容をまとめています…' })
-    try {
-      const res = await window.electronAPI.sakura.chat({
-        apiKey,
-        model,
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-        // 推論型モデルは考えるだけで上限に達し、本文にたどり着けないことがある
-        // （2026-08-20 実機: 2048 では思考の途中で打ち切られていた）。余裕を持たせる。
-        maxTokens: 4096,
-      })
-      recordUsage(
-        apiKey,
-        model,
-        res.usage?.prompt_tokens ?? estimateTokens(system + user),
-        res.usage?.completion_tokens ?? estimateTokens(res.content ?? ''),
-      )
-      const text = acceptSummary(res.content ?? '')
-      if (!text) return { error: `「${modelLabel(model)}」から空の返事が返ってきました。別のモデルでお試しください。` }
-      return { msg: { role: 'assistant', content: text, summary: { upTo: plan.to, mark: plan.mark } } }
-    } catch (e: any) {
-      return { error: formatChatError(e?.message ?? String(e)) }
-    } finally {
-      emit({ kind: 'status', value: '' })
-    }
-  }, [apiKey, model, emit])
-
-  /** 送るものが予算を超えていたら、送信の前に自動で畳む。**自動の失敗は黙る**（利用者は
-   *  そもそも「まとめが要る状態」を知らないため）。ただし**実際に送れなくなったときは1度だけ伝える**。 */
-  const compactWarnedRef = useRef(false)
-  const compactIfNeeded = useCallback(async (history: ChatMessage[]): Promise<ChatMessage | null> => {
-    const plan = planCompact(history)
-    if (!plan) return null
-    const r = await runCompact(history, plan)
-    if ('msg' in r) return r.msg
-    // ここへ来た時点で、送る量は予算を超えている＝**古いやり取りの一部が送れていない**。
-    // 黙って忘れられるより、やり直せる手があることを1度だけ伝える。
-    if (!compactWarnedRef.current) {
+  const buildPorts = (): EngineTurnPorts => ({
+    emit,
+    chatStream: (req, onDelta, onAbortReady, onThinking) =>
+      window.electronAPI.sakura.chatStream(req, onDelta, onAbortReady, onThinking),
+    chatOnce: (req) => window.electronAPI.sakura.chat(req),
+    getHistory,
+    buildSystemPrompt,
+    onUserMessage,
+    approveToolCall,
+    executeTool: (name, argsJson, opts) => executeTool(name, argsJson, opts as ToolContext),
+    buildRagBlock,
+    getSearchConfig,
+    fetchPagesBlock,
+    autoSearchBlock: (text, search) => autoSearchBlock(text, search as any),
+    notifyActivity: () => { lastActivityRef.current = Date.now() },
+    setAbort: (fn) => { abortRef.current = fn },
+    usage: {
+      check: () => checkBeforeRequest(apiKey),
+      record: (m, i, o) => recordUsage(apiKey, m, i, o),
+      estimate: (t) => estimateTokens(t),
+    },
+    toolSupport: {
+      shouldSendTools,
+      isKnownToolCapable,
+      record: recordToolSupport,
+    },
+    vision: {
+      shouldTryDirect: shouldTryImagesDirectly,
+      record: recordVisionSupport,
+      defaultModel: getDefaultVisionModel,
+    },
+    compactWarnOnce: () => {
+      if (compactWarnedRef.current) return false
       compactWarnedRef.current = true
-      appendBubble({
-        role: 'assistant', toolNote: true,
-        content: `⚠️ ${r.error}
-そのため、古いやり取りの一部はAIへ送れていません。上の【🗂 まとめる】でやり直せます。`,
-      })
-    }
-    return null
-  }, [runCompact, appendBubble])
+      return true
+    },
+    h: {
+      formatChatError,
+      condenseReasoning,
+      hasTextToolMarkup,
+      stripToolMarkup,
+      unexecutedToolWarning,
+      claimsFileChange,
+      unexecutedChangeWarning,
+      isToolArgsComplete,
+      isToolUnsupportedError,
+      isImageUnsupportedError,
+      toolStatusLabel,
+      modelLabel,
+      pickBestModel,
+      writingTools: WRITING_TOOLS,
+      extractUrls,
+      wantsWebSearch,
+      toolsFor,
+      planSend,
+      planCompact,
+      compactPrompt,
+      acceptSummary,
+      compactSource,
+      searchStatusContext,
+    },
+  })
 
   /**
    * 🗂 手動で「ここまでをまとめる」（2026-08-20 Ryosuke 要望）。
@@ -240,13 +247,13 @@ export function useAiChat(args: UseAiChatArgs) {
     if (!plan) return
     emit({ kind: 'loading', value: true })
     try {
-      const r = await runCompact(history, plan)
+      const r = await runCompact({ apiKey, model }, buildPorts(), history, plan)
       if ('msg' in r) appendBubble(r.msg)
       else appendBubble({ role: 'assistant', toolNote: true, content: `⚠️ ${r.error}` })
     } finally {
       emit({ kind: 'loading', value: false })
     }
-  }, [isLoading, getHistory, runCompact, appendBubble, emit])
+  }, [isLoading, getHistory, apiKey, model, appendBubble, emit])
 
   // Claude頭脳モード（C2a/C2b/C2d）: Agent SDK 経路での1ターン送信。SDK のストリームイベント
   // （session/text/tool/result/error/openPreview）をチャットの吹き出しへ反映する。
@@ -451,441 +458,20 @@ export function useAiChat(args: UseAiChatArgs) {
 
       if (!apiKey) return
 
-      // 利用上限チェック
-      const budget = checkBeforeRequest(apiKey)
-      if (!budget.allowed) {
-        const userMsg: ChatMessage = { role: 'user', content: rawText.trim() }
-        const budgetMsg: ChatMessage = { role: 'assistant', content: `🛑 ${budget.message}` }
-        emit({ kind: 'append', msg: userMsg })
-        emit({ kind: 'append', msg: budgetMsg })
-        return
+      // AI Engine 経路の本体（利用上限チェック〜エージェントループ）は chatTurn.ts へ切り出した。
+      // ここでは、そのターンの入力（spec）と外部への接点（ports）を組み立てて呼ぶだけにする。
+      const spec: EngineTurnSpec = {
+        rawText, images, assetBlock, apiKey, model, models, maxRounds, toolsProjectDir,
+        errorPrefix, twoStageVision, routedModel, hasRag: !!buildRagBlock, turnOpts, snapshotId, snapshotLabel,
       }
-
-      // 画像があり選択中モデルが画像非対応な場合の扱い：
-      // - twoStageVision 有効時は「視覚モデルで読み取り→本来のモデルで実行」の2段階にする（ツールを使えるようにするため）。
-      // - 無効時（従来）は、このターンだけvisionモデルに丸ごと切り替える。
-      // ── まず今のモデルで試す（2026-08-19 Ryosuke 提案）────────────────────
-      // 名前の一覧（isVisionModel）で決め打ちすると、**一覧に載っていない対応モデルは
-      // 永久に二段構え**になり、1回分よけいに時間と費用がかかる。
-      // ツール対応と同じで、**未確認は楽観的にそのまま渡し、結果から学習する**。
-      // 既知で非対応のときだけ二段構えにする。
-      const needsVisionHandoff = hasImages && !shouldTryImagesDirectly(model)
-      const twoStage = needsVisionHandoff && twoStageVision
-      let useModel = needsVisionHandoff && !twoStage ? getDefaultVisionModel() : model
-      // B: この会話で既にツール作業へ割り振り済みなら、最初からツール対応モデルで実行（再試行を省く）
-      if (!hasImages && routedModel && !shouldSendTools(model)) useModel = routedModel
-      const switched = useModel !== model
-
-      const text = rawText.trim() || (hasImages ? 'この画像について教えてください。' : '')
-      const historyBefore = getHistory()
-      const isFirst = historyBefore.length === 0
-      const userMsg: ChatMessage = { role: 'user', content: text, images: hasImages ? images : undefined }
-      appendBubble(userMsg)
-      onUserMessage?.(text, isFirst)
-      emit({ kind: 'loading', value: true })
-
-      // 会話が長くなっていたら、ここで古いぶんをまとめる（送信に使う履歴もこれに差し替える）。
-      // 先にユーザーの吹き出しを出してから行うので、待っている間も「送れている」ことが分かる。
-      let history = historyBefore
-      const summaryMsg = await compactIfNeeded(historyBefore)
-      if (summaryMsg) {
-        appendBubble({ role: 'assistant', content: summaryMsg.content, summary: summaryMsg.summary })
-        history = [...historyBefore, summaryMsg]
-      }
-
-      const systemPrompt = buildSystemPrompt()
-      // 費用の見積りは「実際に送るもの」で行う（まとめたのに元の全文で数えると合わない）。
-      // 送る履歴は1度だけ組み立てて使い回す（下のエージェントループでも同じものを使う）。
-      const pastMessages = planSend(history)
-      const inputText = systemPrompt + pastMessages.map(m => m.content).join('\n') + text + assetBlock
-
-      try {
-        const search = await getSearchConfig() // Web検索設定（未設定なら検索ツールは出さない）
-        // ユーザーのメッセージにURLがあれば、IDEがページ本文を取得してこのターンだけAIに添付する
-        const pagesBlock = await fetchPagesBlock(extractUrls(text))
-        // 実際にIDEが検索するときだけ「🔍 Web検索中…」を出す（autoSearchBlock の起動条件と一致させる）
-        const willSearch = !!search && extractUrls(text).length === 0 && wantsWebSearch(text)
-        if (willSearch) emit({ kind: 'status', value: '🔍 Web検索中…' })
-        const searchBlock = await autoSearchBlock(text, search)
-        emit({ kind: 'status', value: '' })
-        // 📚 資料の自動注入（設定されていれば）。searchBlock と同じ「取得中はstatusNoteを出す」パターン。
-        if (buildRagBlock) emit({ kind: 'status', value: '📚 資料を確認しています…' })
-        const ragBlock = buildRagBlock ? await buildRagBlock(text) : ''
-        emit({ kind: 'status', value: '' })
-
-        // 現在ターンの content（画像があればOpenAI互換のマルチモーダル配列）
-        const apiText = text + assetBlock + pagesBlock + searchBlock + ragBlock
-        let userContent: any = hasImages
-          ? [
-              ...(apiText ? [{ type: 'text', text: apiText }] : []),
-              ...images.map(url => ({ type: 'image_url', image_url: { url } })),
-            ]
-          : apiText
-
-        /**
-         * 画像を「文章」にする（視覚モデルに読み取らせる）。
-         *
-         * 二段構えの1段目で使うほか、**ツールを扱えないモデルに当たって
-         * 差し替えるとき**にも使う（2026-08-19）。画像をそのまま渡している
-         * ターンは、文章にしてからでないと差し替えられない（画像が失われる）。
-         *
-         * @returns 読み取れた説明文。失敗・中断なら null
-         */
-        const readImagesAsText = async (): Promise<string | null> => {
-          const visionModel = getDefaultVisionModel()
-          emit({ kind: 'status', value: '🖼 画像を読み取っています…' })
-          const visionMessages: ApiMsg[] = [
-            { role: 'system', content: 'あなたは画像読み取り係です。添付画像の内容を客観的に詳しく説明してください（画面の構成要素、表示されている文言やエラーメッセージ、状態、気になる点）。修正案や次の行動の提案は書かないでください。' },
-            {
-              role: 'user',
-              content: [
-                ...(text ? [{ type: 'text', text }] : []),
-                ...images.map(url => ({ type: 'image_url', image_url: { url } })),
-              ],
-            },
-          ]
-          let acc = ''
-          const { usage: u, aborted } = await window.electronAPI.sakura.chatStream(
-            { apiKey, model: visionModel, messages: visionMessages, maxTokens: 1024, tools: undefined },
-            (delta) => { lastActivityRef.current = Date.now(); acc += delta },
-            (abortFn) => { abortRef.current = abortFn },
-            () => { lastActivityRef.current = Date.now() },
-          )
-          emit({ kind: 'status', value: '' })
-          recordUsage(apiKey, visionModel, u?.prompt_tokens ?? estimateTokens(text), u?.completion_tokens ?? estimateTokens(acc))
-          if (aborted || !acc.trim()) return null
-          return acc
-        }
-
-        if (twoStage) {
-          // 2段階visionハンドオフ：まず視覚モデルに画像だけ読み取らせ（ツール無し）、
-          // その説明文を本来のモデル（ツール使用可）へのプレーンテキストとして渡す。
-          const visionModel = getDefaultVisionModel()
-          appendBubble({ role: 'assistant', content: `🖼 画像を「${modelLabel(visionModel)}」で読み取り、「${modelLabel(useModel)}」で実行します。`, toolNote: true })
-          emit({ kind: 'status', value: '🖼 画像を読み取っています…' })
-          const visionMessages: ApiMsg[] = [
-            { role: 'system', content: 'あなたは画像読み取り係です。添付画像の内容を客観的に詳しく説明してください（画面の構成要素、表示されている文言やエラーメッセージ、状態、気になる点）。修正案や次の行動の提案は書かないでください。' },
-            {
-              role: 'user',
-              content: [
-                ...(text ? [{ type: 'text', text }] : []),
-                ...images.map(url => ({ type: 'image_url', image_url: { url } })),
-              ],
-            },
-          ]
-          let descAcc = ''
-          const { usage: visionUsage, aborted: visionAborted } = await window.electronAPI.sakura.chatStream(
-            { apiKey, model: visionModel, messages: visionMessages, maxTokens: 1024, tools: undefined },
-            (delta) => { lastActivityRef.current = Date.now(); descAcc += delta }, // 差分は表示しない（statusNoteのみ表示のまま）
-            (abortFn) => { abortRef.current = abortFn },
-            // 画像読み取り（2段階処理の1段目）は statusNote だけを見せる作りなので、思考は表示しない。
-            // 停滞判定のリセットだけ行う（推論モデルが読み取り役のときに「止まった」と誤表示しないため）。
-            () => { lastActivityRef.current = Date.now() },
-          )
-          emit({ kind: 'status', value: '' })
-          recordUsage(
-            apiKey,
-            visionModel,
-            visionUsage?.prompt_tokens ?? estimateTokens(text),
-            visionUsage?.completion_tokens ?? estimateTokens(descAcc),
-          )
-          if (visionAborted) {
-            replaceLast({ role: 'assistant', content: '（⏹ 停止しました）' })
-            return
-          }
-          if (!descAcc.trim()) {
-            replaceLast({ role: 'assistant', content: '（画像の読み取りに失敗しました。もう一度お試しください）' })
-            return
-          }
-          userContent = apiText + '\n\n# 添付画像の内容（AIによる読み取り）\n' + descAcc
-        } else if (switched) {
-          // 自動切替をユーザーに知らせる（画面のみ・AIには送らない）
-          appendBubble(hasImages
-            ? { role: 'assistant', content: `🖼 画像があるため、このメッセージは「${modelLabel(useModel)}」で処理します。` }
-            : { role: 'assistant', content: `🔀 ツール作業のため「${modelLabel(useModel)}」で実行します。`, toolNote: true })
-        }
-
-        // 1回分のストリーミングを実行して本文を返す（吹き出しを1つ追加して流し込む）
-        const streamOnce = async (apiMessages: ApiMsg[], noTools = false): Promise<{ content: string; aborted?: boolean; toolCalls?: any[] | null; toolFailed?: boolean; hadToolMarkup?: boolean }> => {
-          let acc = ''
-          let thinkingAcc = '' // 推論モデルの思考（表示専用。APIにも履歴にも渡さない）
-          appendBubble({ role: 'assistant', content: '' })
-          const { usage, aborted, toolCalls, reasoningText } = await window.electronAPI.sakura.chatStream(
-            // maxTokens=16384: 推論型モデル（Kimi 等）は推論でトークンを消費してから write_file の引数として
-            // ファイル全文を吐くため、4096 だと引数JSONが途中で切れて 400 になっていた（2026-07-14）。
-            // 上限を超えるモデルは main 側（sakura.ts）が context-limit を検出して自動で縮めて再試行する。
-            { apiKey, model: useModel, messages: apiMessages, maxTokens: 16384, tools: (!noTools && shouldSendTools(useModel)) ? toolsFor(toolsProjectDir, !!search, !!buildRagBlock) : undefined },
-            (delta) => {
-              lastActivityRef.current = Date.now()
-              acc += delta
-              replaceLast({ role: 'assistant', content: acc, thinking: thinkingAcc || undefined })
-            },
-            (abortFn) => { abortRef.current = abortFn },
-            (delta) => {
-              // 思考も「進行中」の証拠なので停滞判定をリセットする（従来は本文の到着だけを見ていたため、
-              // 思考中の推論モデルが「⏳ 時間がかかっています」と表示され、止まったように見えていた）。
-              lastActivityRef.current = Date.now()
-              thinkingAcc += delta
-              replaceLast({ role: 'assistant', content: acc, thinking: thinkingAcc })
-            },
-          )
-          if (aborted) {
-            acc += '\n\n（⏹ 停止しました）'
-            replaceLast({ role: 'assistant', content: acc, thinking: thinkingAcc || undefined })
-          }
-          // 失敗の兆候：本文もツール呼び出しも無い（reasoningフォールバックがaccを書き換える前に判定する）
-          const toolFailed = !acc.trim() && !toolCalls?.length
-          // 推論型モデル対策：本文が空でツール呼び出しも無い場合、reasoningに出た回答を本文として使う
-          if (!acc.trim() && !toolCalls?.length && reasoningText?.trim()) {
-            acc = condenseReasoning(reasoningText)
-            replaceLast({ role: 'assistant', content: acc, thinking: thinkingAcc || undefined })
-          }
-          // テキスト形式のツール呼び出し（Kimi 等が本文に吐く特殊トークン）を除去して生マークアップを見せない
-          const hadToolMarkup = hasTextToolMarkup(acc)
-          if (hadToolMarkup) {
-            acc = stripToolMarkup(acc)
-            replaceLast({ role: 'assistant', content: acc, thinking: thinkingAcc || undefined })
-          }
-          // 利用量を記録（usageが無ければ文字数から見積り）
-          recordUsage(
-            apiKey,
-            useModel,
-            usage?.prompt_tokens ?? estimateTokens(inputText),
-            usage?.completion_tokens ?? estimateTokens(acc),
-          )
-          return { content: acc, aborted, toolCalls, toolFailed, hadToolMarkup }
-        }
-
-        // エージェントループ：ツール呼び出しがあれば実行して結果を返し、続きを生成
-        let apiMessages: ApiMsg[] = [
-          { role: 'system', content: systemPrompt + searchStatusContext(!!search) },
-          // 過去ターンはテキストのみで送る（画像は再送しない）。長くなった会話は、
-          // 古いぶんが「まとめ」に畳まれた形で先頭に入る（historyCompact.ts）。
-          ...pastMessages,
-          { role: 'user', content: userContent },
-        ]
-
-        let retriedNoTools = false
-      /** 画像を受け取れず、視覚モデルへ回したか（1回だけ）。 */
-      let triedVisionFallback = false
-        let routed = false
-        let sawToolMarkup = false
-        let usedTools = false // このターンで実際にツールを実行したか
-        let wroteFiles = false // **ファイルを書き換えたか**（読み取りだけでは変わっていない）
-        let askedToActuallyWrite = false // 「実際に変更して」と促したのは1回だけ
-        // 暴走検出: まったく同じツール呼び出し（名前＋引数）が連続したら、周回数の上限を待たずに中断する。
-        // 周回数の上限を引き上げた（5→25）ぶん、無意味なループを早く止める歯止めをここで持つ。
-        let lastCallSig = ''
-        let repeatCount = 0
-        for (let round = 0; round <= maxRounds; round++) {
-          let r
-          try {
-            r = await streamOnce(apiMessages)
-          } catch (e: any) {
-            // サーバがツール非対応で 400 を返す等 → ツールを外して1回だけ再試行（通常チャットとして応答させる）。
-            // 400で判明した以上は既知の事実として記録し、次回以降このモデルへは無駄な400を出さない。
-            if (shouldSendTools(useModel) && !retriedNoTools && isToolUnsupportedError(e?.message)) {
-              recordToolSupport(useModel, false)
-              retriedNoTools = true
-              removeLast()
-              r = await streamOnce(apiMessages, /* noTools */ true)
-            } else if (hasImages && !triedVisionFallback && isImageUnsupportedError(e?.message)) {
-              // ── 画像を受け付けなかった（2026-08-19）────────────────────────
-              // **その事実を記録して、次回からは最初から二段構えにする。**
-              // 混雑や通信の失敗は記録しない（isImageUnsupportedError が弾く）。
-              // 今回は視覚モデルへ回して、利用者の手を止めない。
-              recordVisionSupport(useModel, false)
-              triedVisionFallback = true
-              removeLast()
-              const fallback = getDefaultVisionModel()
-              appendBubble({
-                role: 'assistant',
-                content: `🖼 「${modelLabel(useModel)}」は画像を受け取れませんでした。`
-                  + `「${modelLabel(fallback)}」で読み取ります（次からは最初からそうします）。`,
-                toolNote: true,
-              })
-              useModel = fallback
-              r = await streamOnce(apiMessages)
-            } else {
-              throw e
-            }
-          }
-          if (r.aborted) break
-          // 成功の記録：構造化ツール呼び出しが返った＝ツール対応の決定的証拠。次回以降は迷わず送る。
-          if (r.toolCalls?.length) recordToolSupport(useModel, true)
-          // 画像を渡して本文が返った＝**このモデルは画像を受け取れる**という証拠。
-          // 次回からは二段構えを挟まない（2026-08-19）
-          if (hasImages && !twoStage && !triedVisionFallback && r.content.trim()) recordVisionSupport(useModel, true)
-          // 自己修復：ツールを送ったのに本文もツール呼び出しも無い（=ツール非対応/暴走の兆候）。
-          // ツール無しで1回だけ再試行し、通常のテキスト応答を得る。
-          // ここでは非対応と記録しない：本文もツール呼び出しも無いのは一時的な失敗（暴走・タイムアウト等）の
-          // 可能性もあり、非対応と断定できないため（記録は400のような決定的な証拠があるときだけ行う）。
-          if (shouldSendTools(useModel) && r.toolFailed && !retriedNoTools) {
-            retriedNoTools = true
-            removeLast()
-            emit({ kind: 'status', value: '応答をやり直しています…' })
-            r = await streamOnce(apiMessages, /* noTools */ true)
-            emit({ kind: 'status', value: '' })
-            if (r.aborted) break
-          }
-          if (r.hadToolMarkup) sawToolMarkup = true
-          // モデル割り振り：テキスト形式のツールコールを吐いた＝構造化ツールを扱えない
-          // → そのターンだけツール対応モデルに切り替え、正規の構造化ツールで実際に実行する。
-          // 切替は必ず明示する（黙ってすり替えない）。画像ターンは vision 優先のため除外。
-          // **構造化ツール呼び出しが1件でも返っていれば切り替えない**: そのモデルは実際に動いており、
-          // 本文に混じったマークアップは stripToolMarkup で除去済みの見た目の問題にすぎない。
-          // ここを分けないと、動いているモデルを「非対応」と誤って記録し、勝手に別モデルへ移してしまう。
-          // ── 画像ターンでも切り替える（2026-08-19 実機・Ryosuke 報告）──────────
-          // 「画像ターンは vision 優先」として除外していたが、**二段構えで画像が
-          // 文章になっていれば、あとはただのテキスト依頼**であり、切り替えても
-          // 画像は失われない。除外したままだと、ツールを扱えないモデルが
-          // 「差し替えました」と書くだけで**ファイルは変わらない**（実機で発生）。
-          // 画像をそのまま渡している（配列の）ターンだけは、切り替えると画像を
-          // 落としてしまうので従来どおり見送る。
-          let imageIsText = typeof userContent === 'string'
-          // 画像をそのまま渡しているターンでも、**先に文章にしてから**差し替える
-          //（2026-08-19 実機: Kimi は画像を直接読めるので二段構えにならず、
-          //  ツールを扱えないまま「差し替えました」とだけ答えていた）
-          if (r.hadToolMarkup && !r.toolCalls?.length && !routed && hasImages && !imageIsText) {
-            const desc = await readImagesAsText()
-            if (desc) {
-              userContent = apiText + '\n\n# 添付画像の内容（AIによる読み取り）\n' + desc
-              apiMessages[apiMessages.length - 1] = { role: 'user', content: userContent }
-              imageIsText = true
-            }
-          }
-          if (r.hadToolMarkup && !r.toolCalls?.length && !routed && (!hasImages || imageIsText)) {
-            // ツールを送っていた（=構造化ツールを扱えないという決定的な証拠）場合だけ非対応を記録する。
-            if (shouldSendTools(useModel)) recordToolSupport(useModel, false)
-            const ids = models.map(m => m.id)
-            const best = pickBestModel(ids)
-            // 切替先は「既知で対応」を優先し、無ければ「既知で非対応ではない（未確認）」モデルを試す。
-            // 直前に非対応と記録した useModel 自身と、既知で非対応のモデルは避ける。
-            const capable = isKnownToolCapable(best)
-              ? best
-              : (ids.find(id => isKnownToolCapable(id))
-                ?? ids.find(id => id !== useModel && shouldSendTools(id))
-                ?? best)
-            if (capable !== useModel) {
-              routed = true
-              useModel = capable
-              emit({ kind: 'routed', value: capable }) // B: この会話では以降もこのモデルで実行（再試行を省く）
-              removeLast() // 試行の吹き出しを除去
-              // 切替を明示（表示のみ・APIへは送らない）
-              appendBubble({ role: 'assistant', content: `🔀 この作業にはツールが必要なため、「${modelLabel(capable)}」に切り替えて実行します。`, toolNote: true })
-              continue // 同じ依頼(apiMessages)を、ツール対応モデル＋構造化ツールで正規ループ実行
-            }
-          }
-          const tcs = r.toolCalls ?? []
-          if (!tcs.length) {
-            // 最終応答。空ならその旨を表示（空の吹き出しを残さない）
-            if (!r.content.trim()) {
-              replaceLast({ role: 'assistant', content: sawToolMarkup
-                ? '（このモデルはツール（ファイル参照など）が必要な操作に対応していません。モデルを「Qwen3-Coder」などに切り替えてお試しください）'
-                : '（応答が空でした。もう一度送るか、モデルを変えてお試しください）' })
-            } else {
-              // ── 「変えた」と言っているのに、書き込みが1度も走っていない ──────────
-              // 2026-08-19 実機（Ryosuke）: 会話には「📄 ファイルを読んでいます」だけが出て、
-              // 「✏️ 保存しています」は無いのに「✅ 反映しました」と答えていた。
-              // 読み取りは正しく実行できているので**ツール非対応ではない**。
-              // 言っただけである。まず**実際にやらせる**（1回だけ促す）。
-              if (claimsFileChange(r.content) && !wroteFiles && !askedToActuallyWrite
-                  && toolsProjectDir && shouldSendTools(useModel)) {
-                askedToActuallyWrite = true
-                removeLast() // 事実と違う報告は残さない
-                appendBubble({ role: 'assistant', content: '⚠️ 変更が実行されていなかったので、やり直しています…', toolNote: true })
-                apiMessages.push({ role: 'assistant', content: r.content })
-                apiMessages.push({
-                  role: 'user',
-                  content: '（Koto より）いまの返事ではファイルは実際には変更されていません。'
-                    + '説明や手順を書かず、write_file または edit_file を使って、いますぐ変更を実行してください。',
-                })
-                continue
-              }
-              // 促してもやらなかった場合は、**黙って成功に見せない**
-              const warn = unexecutedChangeWarning(claimsFileChange(r.content), wroteFiles)
-                ?? unexecutedToolWarning(sawToolMarkup, usedTools)
-              if (warn) replaceLast({ role: 'assistant', content: `${r.content}\n\n${warn}` })
-            }
-            break
-          }
-          usedTools = true
-          // ツール引数のJSONが途中で切れていないか検証する。推論型モデルが write_file の引数として
-          // 大きなファイル内容を吐く途中で出力上限に達すると引数が未終端になり、これをそのまま実行/送り返すと
-          // サーバーが「400 Unterminated string」で失敗する（2026-07-14 Kimi K2.6 で発生）。事前に検出して中断する。
-          if (tcs.some(tc => !isToolArgsComplete(tc.function?.arguments))) {
-            replaceLast({
-              role: 'assistant',
-              content: (r.content ? r.content + '\n\n' : '') +
-                '⚠️ ファイルの内容が大きすぎて、AIの一度の出力に収まりませんでした。\n' +
-                '・変更を小さめに分けて依頼する（例: 「まず○○の部分だけ直して」）\n' +
-                '・別のモデル（Qwen3-Coder など）に切り替えて試す\n' +
-                'のいずれかをお試しください。',
-            })
-            break
-          }
-          const note = tcs.map(tc => toolStatusLabel(tc.function?.name ?? '', tc.function?.arguments ?? '')).join('\n')
-          // 暴走検出: 同じツールを同じ引数で REPEAT_LIMIT 回連続で呼んだら中断する
-          // （周回数の上限まで無駄に回して費用と時間を使うのを防ぐ）。
-          const sig = JSON.stringify(tcs.map(tc => [tc.function?.name ?? '', tc.function?.arguments ?? '']))
-          repeatCount = sig === lastCallSig ? repeatCount + 1 : 0
-          lastCallSig = sig
-          if (repeatCount >= REPEAT_LIMIT) {
-            replaceLast({
-              role: 'assistant',
-              content: (r.content ? r.content + '\n\n' : '') +
-                '⚠️ AIが同じ操作を繰り返しているため中断しました。\n' +
-                '・依頼をもう少し具体的に伝える\n' +
-                '・別のモデル（Qwen3-Coder など）に切り替える\n' +
-                'のいずれかをお試しください。',
-            })
-            break
-          }
-          if (round === maxRounds) {
-            // ツール実行の上限に達した。空の吹き出しを残さず理由を表示し、ワンクリックで続けられるようにする
-            replaceLast({
-              role: 'assistant',
-              content: (r.content ? r.content + '\n\n' : '') + '（作業が長くなったのでいったん区切りました。続きから再開できます）',
-              offerContinue: true,
-            })
-            break
-          }
-          // 本文が空（ツール呼び出しのみ）の吹き出しは、実行状況の表示に置き換える
-          replaceLast({ role: 'assistant', content: r.content ? r.content + '\n\n' + note : note, toolNote: true })
-          apiMessages = [...apiMessages, { role: 'assistant', content: r.content ?? '', tool_calls: tcs }]
-          for (const tc of tcs) {
-            const toolName = tc.function?.name ?? ''
-            const toolArgs = tc.function?.arguments ?? ''
-            // 実行前の承認フック（ChatPanel の write_file/run_command 確認UIなど）。
-            // 文字列が返ったら実行せず、その文字列をツール結果としてAIへ返す。
-            if (approveToolCall) {
-              const denial = await approveToolCall(toolName, toolArgs, turnOpts as { projectDir?: string | null; writeRoot?: string | null })
-              if (denial !== null) {
-                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: denial })
-                continue
-              }
-            }
-            const result = await executeTool(toolName, toolArgs, { ...turnOpts, search, snapshotId, snapshotLabel })
-            if ((WRITING_TOOLS as readonly string[]).includes(toolName)) wroteFiles = true
-            apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: result })
-          }
-          if (!checkBeforeRequest(apiKey).allowed) break // 上限到達時はループを止める
-        }
-      } catch (err: any) {
-        appendBubble({ role: 'assistant', content: errorPrefix + formatChatError(err?.message ?? String(err)) })
-      } finally {
-        abortRef.current = null
-        emit({ kind: 'loading', value: false })
-        emit({ kind: 'status', value: '' })
-      }
+      await runEngineTurn(spec, buildPorts())
     } finally {
       endActivity()
     }
   }, [
     isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage, errorPrefix,
-    routedModel, appendBubble, replaceLast, removeLast, buildRagBlock, sendViaClaude,
-    compactIfNeeded, emit,
+    twoStageVision, routedModel, appendBubble, buildRagBlock, sendViaClaude, emit,
   ])
 
   // #31: 「さくらのAI Engine に切り替えて続ける」提案ボタンのハンドラ。頭脳をさくらのAI Engineへ

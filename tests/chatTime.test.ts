@@ -242,10 +242,12 @@ describe('配線: 画面・保存経路がそれぞれ正しい判定を通し�
     expect(events).toContain('next[next.length - 1] = stamp(ev.msg, now)')
   })
 
+  // B'-3a（2026-08-28）でAI Engine経路の本体（この利用上限チェックを含む）が
+  // src/shared/chatTurn.ts の runEngineTurn へ移った。読む先をそちらに変える（意図は変えない）。
   it('利用上限で区切るときのユーザー吹き出し・案内の2件とも emit( の append を通っている', () => {
-    const s = read('src/renderer/hooks/useAiChat.ts')
-    expect(s).toContain("emit({ kind: 'append', msg: userMsg })")
-    expect(s).toContain("emit({ kind: 'append', msg: budgetMsg })")
+    const s = read('src/shared/chatTurn.ts')
+    expect(s).toContain("ports.emit({ kind: 'append', msg: userMsg })")
+    expect(s).toContain("ports.emit({ kind: 'append', msg: budgetMsg })")
   })
 
   it('chatStorage.ts に stamp( が入っていない（古い会話に時刻を付けない）', () => {

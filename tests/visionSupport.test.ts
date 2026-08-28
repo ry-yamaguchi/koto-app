@@ -89,19 +89,21 @@ describe('サーバーの返事を見分ける', () => {
 // ── 配線（判断だけ正しくても、実際に試されなければ意味がない）──────────────
 describe('まず今のモデルで試す配線', () => {
   const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf-8')
-  const chat = read('src/renderer/hooks/useAiChat.ts')
+  // B'-3a（2026-08-28）: この判定・エージェントループ本体は src/shared/chatTurn.ts へ移った
+  // （ports.vision.shouldTryDirect / ports.vision.record 経由で同じ実体を呼ぶ）。
+  const chatTurn = read('src/shared/chatTurn.ts')
 
   it('★ 名前の一覧ではなく、学習した記録で決める', () => {
-    expect(chat).toMatch(/needsVisionHandoff = hasImages && !shouldTryImagesDirectly\(model\)/)
+    expect(chatTurn).toMatch(/needsVisionHandoff = hasImages && !ports\.vision\.shouldTryDirect\(model\)/)
   })
 
   it('★ 受け取れなかったら記録して、その場は視覚モデルへ回す', () => {
-    expect(chat).toMatch(/isImageUnsupportedError[\s\S]{0,200}recordVisionSupport\(useModel, false\)/)
-    expect(chat).toContain('次からは最初からそうします')
+    expect(chatTurn).toMatch(/isImageUnsupportedError[\s\S]{0,200}vision\.record\(useModel, false\)/)
+    expect(chatTurn).toContain('次からは最初からそうします')
   })
 
   it('★ 通ったら「対応」と記録する（次から二段構えを挟まない）', () => {
-    expect(chat).toMatch(/recordVisionSupport\(useModel, true\)/)
+    expect(chatTurn).toMatch(/vision\.record\(useModel, true\)/)
   })
 
   it('説明も、いまのモデルで扱えるかどうかで出し分ける', () => {

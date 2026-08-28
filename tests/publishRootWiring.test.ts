@@ -375,13 +375,16 @@ describe('🕘 履歴の退避の根', () => {
   // 切り替え先へ移り、**A の作業が B に付いてくる**。送信した時点で固定する。
   it('ターンの行き先は、送信した瞬間に固定する', () => {
     const s = read('src/renderer/hooks/useAiChat.ts')
-    const count = (needle: string) => s.split(needle).length - 1
+    // B'-3a（2026-08-28）: turnOpts を実際に使う側（executeTool / approveToolCall 呼び出し）は
+    // AI Engine 経路の本体ごと src/shared/chatTurn.ts へ移った。turnOpts の組み立てはここに残る。
+    const chatTurn = read('src/shared/chatTurn.ts')
+    const count = (needle: string) => chatTurn.split(needle).length - 1
     expect(s).toContain('const turnOpts = buildExecuteOpts()')
     // 道具を呼ぶたびに読み直さない（**これが「作業が付いてくる」の原因だった**）
-    expect(s).not.toContain('{ ...buildExecuteOpts(), search, snapshotId, snapshotLabel }')
+    expect(chatTurn).not.toContain('{ ...buildExecuteOpts(), search, snapshotId, snapshotLabel }')
     expect(count('{ ...turnOpts, search, snapshotId, snapshotLabel }')).toBe(1)
     // 確認も、縛った行き先の話として出す
-    expect(s).toContain('approveToolCall(toolName, toolArgs, turnOpts')
+    expect(chatTurn).toContain('ports.approveToolCall(toolName, toolArgs, turnOpts')
   })
 
   it('確認の中身は、縛った行き先で組む（画面の切り替えに引きずられない）', () => {

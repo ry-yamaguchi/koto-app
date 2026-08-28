@@ -37,8 +37,13 @@ describe('やったと書いてあるが、実行していないとき', () => {
 })
 
 // 掟10「一元化したことと、全経路が実際にそこを通っていることは別」。
+//
+// B'-3a（2026-08-28）: ここで確かめている実行ループ本体（readImagesAsText・usedTools 等）は
+// src/shared/chatTurn.ts の runEngineTurn へ移った。読む先をそちらに変える（意図は変えない。
+// 置き換え表により removeLast() → ports.emit({ kind: 'removeLast' })、
+// WRITING_TOOLS → ports.h.writingTools 等、一部の識別子表記も変わっている）。
 describe('画像ターンでも、ツールを使えるモデルへ切り替える', () => {
-  const chat = readFileSync(join(__dirname, '..', 'src/renderer/hooks/useAiChat.ts'), 'utf-8')
+  const chat = readFileSync(join(__dirname, '..', 'src/shared/chatTurn.ts'), 'utf-8')
 
   // 以前は `&& !hasImages` で、画像ターンだけ切り替えを見送っていた。
   // 二段構え（視覚モデルが読み取り→本文は文章）なら画像は失われないのに、
@@ -136,11 +141,15 @@ describe('変えたと言っているのに書き込みが無いとき', () => {
   })
 })
 
+// B'-3a（2026-08-28）: この一連の判定・エージェントループ本体は src/shared/chatTurn.ts へ移った。
+// 読む先をそちらに変える（意図は変えない。置き換え表により removeLast() → ports.emit({ kind:
+// 'removeLast' })、WRITING_TOOLS → ports.h.writingTools、unexecutedChangeWarning/claimsFileChange →
+// ports.h.unexecutedChangeWarning/ports.h.claimsFileChange と表記が変わっている）。
 describe('まず実際にやらせる（言うだけで終わらせない）', () => {
-  const chat = readFileSync(join(__dirname, '..', 'src/renderer/hooks/useAiChat.ts'), 'utf-8')
+  const chat = readFileSync(join(__dirname, '..', 'src/shared/chatTurn.ts'), 'utf-8')
 
   it('★★ 書き込みが走ったかを、ツールの実行から数えている', () => {
-    expect(chat).toContain('WRITING_TOOLS as readonly string[]).includes(toolName)) wroteFiles = true')
+    expect(chat).toContain('ports.h.writingTools as readonly string[]).includes(toolName)) wroteFiles = true')
   })
 
   it('★★ 1回だけ「いますぐ実行して」と促す（無限に往復しない）', () => {
@@ -151,10 +160,10 @@ describe('まず実際にやらせる（言うだけで終わらせない）', (
 
   it('★★ 事実と違う報告は残さない', () => {
     const at = chat.indexOf('askedToActuallyWrite = true')
-    expect(chat.slice(at, at + 300)).toContain('removeLast()')
+    expect(chat.slice(at, at + 300)).toContain("ports.emit({ kind: 'removeLast' })")
   })
 
   it('★ 促してもやらなければ、警告を付ける', () => {
-    expect(chat).toContain('unexecutedChangeWarning(claimsFileChange(r.content), wroteFiles)')
+    expect(chat).toContain('ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles)')
   })
 })
