@@ -12,6 +12,8 @@
 //
 // このモジュールは fs/electron/DOM に依存しない純粋な定義のみ（renderer からも main からも使える）。
 
+import { PUBLISH_DIR } from './publishRoot'
+
 /**
  * Koto が自分のためにプロジェクト内へ作るフォルダ。**公開物・配布物へ絶対に含めない。**
  * - `.sakuraide`        … チャット履歴（会話の全文。貼り付けたものが何であれ残る）
@@ -149,6 +151,28 @@ export function excludedFileNames(extra: readonly string[] = []): Set<string> {
 export function isPublished(name: string, isDir: boolean, extra: readonly string[] = []): boolean {
   if (isDir) return !publishExcludedDirNames(extra).has(name)
   return !excludedFileNames(extra).has(name) && !isSecretFile(name)
+}
+
+/**
+ * ファイル一覧の**いちばん上の階層**の振り分け（Sidebar.tsx が使う）。
+ *
+ * ── なぜ isPublished と別に要るか（2026-08-27 発見の不具合）─────────────────
+ * `isPublished` は「その名前が除外リストに載っているか」しか見ない。だから
+ * `public/` へ移行したプロジェクト（`hasPublishDir=true`）では、直下の
+ * 普通のファイル（除外リストに載らない `test2.txt` 等）を「公開されるもの」と
+ * 誤って表示していた——実際に公開先へ行くのは `public/` の中身だけなのに。
+ *
+ * `isPublished` **自体の意味は変えない**（公開経路の除外判定として全経路が使っている。
+ * CLAUDE.md 掟10）。ここは「いちばん上の階層で、どちらの見出しに出すか」だけを別に持つ。
+ *
+ * - `hasPublishDir=true`（移行後）: 公開されるのは `public/` ディレクトリそのものだけ
+ *   （`public/` の中身が公開先へ行くのであって、直下の他のファイルは行かない）
+ * - `hasPublishDir=false`（移行前）: 従来どおり `isPublished` で分ける
+ *
+ * @param hasPublishDir その階層に `public/`（PUBLISH_DIR）ディレクトリがあるか
+ */
+export function isPublishedTop(name: string, isDir: boolean, hasPublishDir: boolean): boolean {
+  return hasPublishDir ? (isDir && name === PUBLISH_DIR) : isPublished(name, isDir)
 }
 
 /**

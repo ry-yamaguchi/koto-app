@@ -350,15 +350,22 @@ export default function App() {
   }, [activeFile])
 
   // AIが生成したファイルをプロジェクトに適用（保存→エディタで開く→ツリー更新）
-  const applyAiFile = useCallback(async (relPath: string, content: string) => {
-    let root = currentDir
-    if (!root) {
-      root = await window.electronAPI.fs.pickDirectory()
-      if (!root) throw new Error('保存先のフォルダが選択されていません')
-      setCurrentDir(root)
+  //
+  // root: 書き込む根（省略時は currentDir にフォールバック）。
+  // ── なぜ root を受け取るか（2026-08-27 発見の不具合）─────────────────────
+  // ChatPanel は AI の読み書きの根として writeRoot（public/ があればその中）を
+  // 別に持っている。ここが currentDir 決め打ちだと、public/ を持つプロジェクトで
+  // 「AIが書いたファイルが public/ の外（プロジェクト直下）へ出る」——退避（🕘）の
+  // 記録は public/ 前提で作られるので「元に戻す」も効かなくなる。
+  const applyAiFile = useCallback(async (relPath: string, content: string, root?: string | null) => {
+    let base = root ?? currentDir
+    if (!base) {
+      base = await window.electronAPI.fs.pickDirectory()
+      if (!base) throw new Error('保存先のフォルダが選択されていません')
+      setCurrentDir(base)
     }
     const clean = relPath.replace(/^\.?\//, '').replace(/\.\.(\/|\\)/g, '') // 軽いトラバーサル対策
-    const full = `${root}/${clean}`
+    const full = `${base}/${clean}`
     // AIが書き換えた後の手動編集は、別の履歴として積む（同じグループに入れると
     // 「AIの成果物」が退避されないまま自分の編集で上書きされ、戻せなくなる）
     manualSnapshotRef.current = null

@@ -56,7 +56,7 @@ interface Props {
   apiKey: string
   onSetApiKey: (key: string) => void
   onOpenCredentials: () => void
-  onApplyFile?: (relPath: string, content: string) => Promise<void>
+  onApplyFile?: (relPath: string, content: string, root?: string | null) => Promise<void>
   /** Claudeモードの書き込み後、該当タブをディスクから読み直す（App.tsx の applyRestoreResult 相当。
    *  stale tab のオートセーブ上書きによるデータ喪失防止・2026-07-11） */
   onExternalFilesChanged?: (relPaths: string[]) => void
@@ -1010,7 +1010,9 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
                       <ThinkingBlock text={msg.thinking} live={isLoading && i === messages.length - 1} />
                     )}
                     {msg.role === 'assistant' ? (
-                      <AiMessage content={msg.content} onApplyFile={onApplyFile} />
+                      // コードカードの「💾 プロジェクトに保存」も write_file と同じ穴を持っていた
+                      // （2026-08-27 発見）。ここで公開の根（currentAiRoot）を結んで渡す。
+                      <AiMessage content={msg.content} onApplyFile={onApplyFile ? (rel, content) => onApplyFile(rel, content, currentAiRoot) : undefined} />
                     ) : (
                       msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>
                     )}

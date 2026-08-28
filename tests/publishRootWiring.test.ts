@@ -401,3 +401,43 @@ describe('🕘 履歴の退避の根', () => {
     expect(s).toContain('hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)]')
   })
 })
+
+// ── AIが書いたファイルが public/ の外へ出る（2026-08-27 発見の不具合）─────────────
+// aiTools.ts の write_file / edit_file は、保存の実処理（ctx.applyFile）に
+// writeRoot（ふつうは public/）を渡していなかった。IDE のチャットは必ずこの道を
+// 通るため、常にプロジェクト直下へ書いていた（🕘「元に戻す」が効かない・
+// AI が作ったファイルが公開されない・一覧の「公開されるもの」が嘘をつく、の3実害）。
+// aiToolsApply.test.ts / publishExclude.test.ts が「関数として正しいこと」を、
+// ここでは「実際に呼ばれている場所が、正しい形で呼んでいること」を固定する。
+describe('AIが書いたファイルが public/ の外へ出ない（2026-08-27 発見の不具合）', () => {
+  it('write_file / edit_file の両方が applyFile へ writeRoot を渡す（口ごと見る）', () => {
+    const s = read('src/renderer/aiTools.ts')
+    expect(s).toContain('await ctx.applyFile(rel, content, ctx.writeRoot) // 保存＋エディタ・ツリー反映')
+    expect(s).toContain('await ctx.applyFile(rel, result.next, ctx.writeRoot) // 保存＋エディタ・ツリー反映')
+    // 直す前の形（root を渡さない）へ戻さない
+    expect(s).not.toContain('await ctx.applyFile(rel, content) //')
+    expect(s).not.toContain('await ctx.applyFile(rel, result.next) //')
+  })
+
+  it('App.tsx: applyAiFile は root（渡されなければ currentDir）を書き込みの根にする', () => {
+    const s = read('src/renderer/App.tsx')
+    expect(s).toContain('const applyAiFile = useCallback(async (relPath: string, content: string, root?: string | null) => {')
+    expect(s).toContain('let base = root ?? currentDir')
+    expect(s).toContain('const full = `${base}/${clean}`')
+  })
+
+  it('ChatPanel: コードカードの「反映」ボタンも、公開の根（currentAiRoot）を結んで渡す', () => {
+    const s = read('src/renderer/components/ChatPanel.tsx')
+    expect(s).toContain('onApplyFile={onApplyFile ? (rel, content) => onApplyFile(rel, content, currentAiRoot) : undefined}')
+  })
+
+  it('Sidebar: いちばん上の階層は、public/ の有無をその場で見て isPublishedTop で分ける', () => {
+    const s = read('src/renderer/components/Sidebar.tsx')
+    expect(s).toContain('const hasPublishDir = depth === 0 && visible.some(e => e.isDir && e.name === PUBLISH_DIR)')
+    expect(s).toContain('isPublishedTop(entry.name, entry.isDir, hasPublishDir)')
+    // 「公開されるもの／されないもの」の振り分け・行の表示、どちらもこの判定を使う（片方だけ直して食い違わせない）
+    expect(s).toContain('const shown = visible.filter(e => publishedAt(e))')
+    expect(s).toContain('const kept = visible.filter(e => !publishedAt(e))')
+    expect(s).toContain('const published = publishedAt(entry)')
+  })
+})

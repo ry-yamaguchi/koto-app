@@ -16,8 +16,10 @@ import { pickContent } from '../../shared/chatContent'
 
 const SAKURA_BASE_URL = 'https://api.ai.sakura.ad.jp/v1'
 // C3: delegate_implementation（claude/tools.ts）からも同じクライアント生成を再利用する。
-export function sakuraClient(apiKey: string) {
-  return new OpenAI({ apiKey, baseURL: SAKURA_BASE_URL })
+// baseURL は既定でさくらの本番エンドポイント。第2引数は tests/sakuraEngine.test.ts が
+// ローカルの http サーバへ向けるためだけの差し替え口（本番の呼び出し側は渡さないので挙動は変わらない）。
+export function sakuraClient(apiKey: string, baseURL: string = SAKURA_BASE_URL) {
+  return new OpenAI({ apiKey, baseURL })
 }
 
 // コンテキスト長が小さいモデル（例: llm-jp-3.1-8x13b は 4096＝入力+出力の合計）では、
@@ -63,17 +65,25 @@ export async function runSakuraChat(
  * 「⏹ 停止」のため、開始したらすぐ `cbs.onAbortReady` で中断関数を渡す（呼び出し側が
  * ID などで保持して、あとから呼べるようにする）。
  *
- * ⚠️ ⏹ の不具合（SDK が例外を投げない）はここでは直さない——既知の別件として roadmap に記録済み。
- *
  * abort 判定の catch では `{ usage: null, aborted: true }` を **return** する（例外にしない）。
  * それ以外のエラーは throw する（chat-error にするのは呼び出し側＝ハンドラの仕事のまま）。
+ *
+ * ── なぜ `abortRequested` フラグを持つか（2026-08-28 実測・roadmap 記録）───────────
+ * 上のcatchは「abort＝例外を投げる」openai SDKの版を前提にしている。だが 4.104.0 では
+ * `stream.controller.abort()` を呼んでも **for-await が例外を投げずに静かに終わる**
+ * （ローカルの偽SSEサーバで実証。tests/sakuraEngine.test.ts が同じ形で固定している）。
+ * そのため catch に入らず、`aborted` の付かない普通の完了として返っていた
+ * （＝「（⏹ 停止しました）」が出ない）。例外に依存せず、abortを要求した事実を
+ * フラグで持ち、for-awaitが（例外を投げずに）終わったあとにも見る。
+ * 既存のcatch（例外を投げる版のSDKへの対応）は**そのまま残す**（両対応）。
  */
 export async function runSakuraStream(
-  args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; tools?: any[] },
+  args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; tools?: any[]; baseURL?: string },
   cbs: { onDelta(d: string): void; onReasoning(d: string): void; onAbortReady(abort: () => void): void },
 ): Promise<{ usage: any; aborted?: boolean; toolCalls?: any[] | null; reasoningText?: string | null }> {
+  let abortRequested = false
   try {
-    const client = sakuraClient(args.apiKey)
+    const client = sakuraClient(args.apiKey, args.baseURL)
     const requested = args.maxTokens ?? 4096
     const mk = (maxTokens: number) => client.chat.completions.create({
       model: args.model,
@@ -96,7 +106,7 @@ export async function runSakuraStream(
       if (safe == null) throw err
       stream = await mk(safe)
     }
-    cbs.onAbortReady(() => stream.controller.abort())
+    cbs.onAbortReady(() => { abortRequested = true; stream.controller.abort() })
     let usage: any = null
     // 推論型モデル（gpt-oss / Kimi 等）は tools 指定時に回答が reasoning_content/reasoning へ流れて
     // 本文が空になることがある。完了時のフォールバック用に蓄積しつつ、**到着した分はそのつど呼び出し側へも流す**
@@ -111,6 +121,11 @@ export async function runSakuraStream(
       if (reasoningDelta) cbs.onReasoning(reasoningDelta)
     }
     usage = state.usage
+    // SDK が例外を投げずに静かに終わる版への対応（2026-08-28 実測・openai 4.104.0）。
+    // for-await が正常終了しても、abort を要求していたなら「止めた」ことにする
+    // （でないと本文が空のまま正常終了に見え、renderer が推論フォールバックや
+    //  ツール外し再試行など、止めたのに何か続いて見える動きへ進んでしまう）。
+    if (abortRequested) return { usage: null, aborted: true }
     return {
       usage,
       toolCalls: finishedToolCalls(state),

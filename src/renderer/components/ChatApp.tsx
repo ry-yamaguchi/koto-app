@@ -47,7 +47,7 @@ interface Props {
   apiKey: string
   onSetApiKey: (key: string) => void
   onOpenCredentials: () => void
-  onApplyFile?: (relPath: string, content: string) => Promise<void>
+  onApplyFile?: (relPath: string, content: string, root?: string | null) => Promise<void>
 }
 
 

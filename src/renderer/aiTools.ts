@@ -156,8 +156,11 @@ export interface ToolContext {
   /** プロジェクト直下（**退避と記録の根**）。省略時は `writeRoot` を使う。 */
   projectRoot?: string | null
   search?: SearchConfig | null
-  // ファイル保存の実処理（保存＋エディタ・ツリーへの反映）。App.tsx の applyAiFile を渡す
-  applyFile?: (relPath: string, content: string) => Promise<void>
+  // ファイル保存の実処理（保存＋エディタ・ツリーへの反映）。App.tsx の applyAiFile を渡す。
+  // 第3引数 root は「書き込む根」（省略時は applyAiFile 側が currentDir にフォールバックする）。
+  // ここに ctx.writeRoot（ふつうは public/）を渡さないと、IDE のチャットは
+  // プロジェクト直下へ書いてしまう（2026-08-27 発見の不具合の根っこ）。
+  applyFile?: (relPath: string, content: string, root?: string | null) => Promise<void>
   // 📚 資料の検索（rag:query を呼んで出典付きブロック文字列を返す）。ChatPanel が渡す
   ragSearch?: (query: string) => Promise<string>
   // このAIターンのスナップショットID（useAiChat が send 1回ごとに採番）。
@@ -244,7 +247,10 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
         backedUp = r.ok && r.backedUp
       } catch { /* バックアップ失敗は保存を妨げない */ }
       if (ctx.applyFile) {
-        await ctx.applyFile(rel, content) // 保存＋エディタ・ツリー反映
+        // root（ctx.writeRoot）を必ず渡す。渡さないと applyAiFile 側は
+        // プロジェクト直下へ書いてしまい、public/ を持つプロジェクトで
+        // 「AIが書いたファイルが公開の根の外へ出る」（2026-08-27 発見の不具合）。
+        await ctx.applyFile(rel, content, ctx.writeRoot) // 保存＋エディタ・ツリー反映
       } else {
         await window.electronAPI.fs.writeFileInProject(ctx.writeRoot, rel, content)
       }
@@ -296,7 +302,8 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
         backedUp = r.ok && r.backedUp
       } catch { /* バックアップ失敗は保存を妨げない */ }
       if (ctx.applyFile) {
-        await ctx.applyFile(rel, result.next) // 保存＋エディタ・ツリー反映
+        // write_file とまったく同じ理由で root（ctx.writeRoot）を渡す（掟10・一元化した守りの形）
+        await ctx.applyFile(rel, result.next, ctx.writeRoot) // 保存＋エディタ・ツリー反映
       } else {
         await window.electronAPI.fs.writeFileInProject(ctx.writeRoot, rel, result.next)
       }

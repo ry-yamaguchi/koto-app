@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { publishExcludedDirNames, MATERIALS_DIR,
   KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES, SECRET_FILE_PATTERNS,
   excludedDirNames, excludedFileNames, isSecretFile, rsyncExcludeArgs, zipExcludePatterns,
-  isPublished, BUILD_CONFIG_FILES, servedExcludedFileNames } from '../src/shared/publishExclude'
+  isPublished, isPublishedTop, BUILD_CONFIG_FILES, servedExcludedFileNames } from '../src/shared/publishExclude'
+import { PUBLISH_DIR } from '../src/shared/publishRoot'
 import { SKIP_DIRS, isEnvFileName } from '../src/main/github/enumerate'
 
 // 2026-08-05: レンタルサーバへの公開だけ Koto の内部フォルダの除外が抜けており、
@@ -279,5 +280,33 @@ describe('ビルド設定を外してよい経路・いけない経路', () => {
     // HANAMII では配信されうるので、「公開されない」と言い切れない。
     // **「公開される」と多めに言うのは安全側**だが、逆は危ない（秘密を置かれてしまう）。
     for (const f of BUILD_CONFIG_FILES) expect(isPublished(f, false)).toBe(true)
+  })
+})
+
+// 2026-08-27 発見の不具合: 一覧（Sidebar.tsx）のいちばん上の階層の振り分けが isPublished
+// だけを見ており、public/ の有無を見ていなかった。public/ へ移行したプロジェクトでは、
+// 直下の普通のファイルが「除外リストに無い＝公開される」と誤って表示されていた
+// （実際に公開先へ行くのは public/ の中身だけ）。isPublished 自体の意味は変えず
+// （掟10・公開経路の除外判定として全経路が使っている）、いちばん上の階層専用の
+// 判定を別に置いて直した。
+describe('isPublishedTop: ファイル一覧のいちばん上の階層の振り分け', () => {
+  it('移行後（public/ がある）× public ディレクトリ自身 → 公開される', () => {
+    expect(isPublishedTop(PUBLISH_DIR, true, true)).toBe(true)
+  })
+
+  it('移行後（public/ がある）× 直下の txt → 公開されない（public/ の中身しか公開先へ行かない）', () => {
+    expect(isPublishedTop('test2.txt', false, true)).toBe(false)
+  })
+
+  it('移行前（public/ が無い）× index.html → 公開される（isPublished と同じ結果）', () => {
+    expect(isPublishedTop('index.html', false, false)).toBe(true)
+  })
+
+  it('移行前（public/ が無い）× .env → 公開されない（isPublished と同じ結果）', () => {
+    expect(isPublishedTop('.env', false, false)).toBe(false)
+  })
+
+  it('移行後でも、public/ 以外のディレクトリは公開されない', () => {
+    expect(isPublishedTop('assets', true, true)).toBe(false)
   })
 })

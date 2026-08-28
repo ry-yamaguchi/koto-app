@@ -105,7 +105,7 @@ function FileCard({ path, lang, code, onApply, applyHint }: {
 /** アシスタントメッセージの表示。説明文はテキスト、コードはカードに分離。 */
 export default function AiMessage({ content, onApplyFile, applyHint }: {
   content: string
-  onApplyFile?: (relPath: string, content: string) => Promise<void>
+  onApplyFile?: (relPath: string, content: string, root?: string | null) => Promise<void>
   applyHint?: string
 }) {
   const parts = parseMessage(content)
