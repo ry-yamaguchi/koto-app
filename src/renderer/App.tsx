@@ -20,6 +20,7 @@ import GithubSaveModal from './components/GithubSaveModal'
 import PublishedListModal from './components/PublishedListModal'
 import { useFileDrag } from './hooks/useFileDrag'
 import { resolvePublishRoot } from './publishRootRenderer'
+import { primeLearningMirror } from './learningMirror'
 
 const EditorPanel = lazy(() => import('./components/EditorPanel'))
 
@@ -185,6 +186,11 @@ export default function App() {
     window.addEventListener('sakura:fix-with-ai', h)
     return () => window.removeEventListener('sakura:fix-with-ai', h)
   }, [])
+
+  // 起動時に1度だけ、モデルの学習キャッシュ（ツール対応・画像対応）の写しを作る（B'-3d-1a）。
+  // 読みが要るのは送信時・モデル選択時・ChatPanel の表示ヒントだけで、初回描画の同期読みには
+  // 使われないため、非同期プライムで足りる（learningMirror.ts のコメント参照）。
+  useEffect(() => { primeLearningMirror() }, [])
 
   // メニューバー「認証情報（APIキー）…」から開く
   useEffect(() => {

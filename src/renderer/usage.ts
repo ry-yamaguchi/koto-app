@@ -12,18 +12,10 @@
 import { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens } from '../shared/modelInfo'
 export { MODELS, VISION_MODELS, modelLabel, pickBestModel, estimateTokens }
 
-const VISION_IDS = new Set(VISION_MODELS.map(m => m.id))
-
-/** モデルが画像入力に対応しているか（ID命名からも推定）。
- *  kimi-k2.6: 2026-07-14 ユーザー実測（verify-vision.mjs）で画像を直接読めることを確認（content に回答）→
- *  画像添付時に2段階処理（Qwen3-VLで読み取り→本来モデルで実行）を挟まず、そのまま読ませる。
- *  ※ 提供終了した K2.5 と区別するためバージョンまで含めて判定する。 */
-export function isVisionModel(id: string): boolean {
-  return VISION_IDS.has(id) || /-VL-|multimodal|kimi-k2\.6/i.test(id)
-}
-
-// 画像送信時に既定で使うvisionモデル（コード理解も得意な Qwen3-VL を優先）
-const DEFAULT_VISION_MODEL = 'preview/Qwen3-VL-30B-A3B-Instruct'
+// isVisionModel / DEFAULT_VISION_MODEL は B'-3d-1a で shared/modelInfo.ts へ移した
+// （main のターン実行と両方が使うため。複製しない＝掟10）。ここは従来の呼び出し側のために re-export する。
+export { isVisionModel, DEFAULT_VISION_MODEL } from '../shared/modelInfo'
+import { isVisionModel, DEFAULT_VISION_MODEL } from '../shared/modelInfo'
 
 /** 画像を送るときに使うモデルを決める（提供一覧にある実IDを優先） */
 export function getDefaultVisionModel(): string {

@@ -64,12 +64,6 @@ function makeHandlers() {
     autoSearchBlock: record('autoSearchBlock', 'search-block'),
     usageCheck: record('usageCheck', { allowed: true }),
     usageRecord: record('usageRecord', undefined),
-    toolSupportShouldSendTools: record('toolSupportShouldSendTools', true),
-    toolSupportIsKnownToolCapable: record('toolSupportIsKnownToolCapable', false),
-    toolSupportRecord: record('toolSupportRecord', undefined),
-    visionShouldTryDirect: record('visionShouldTryDirect', true),
-    visionRecord: record('visionRecord', undefined),
-    visionDefaultModel: record('visionDefaultModel', 'vision-model'),
     compactWarnOnce: record('compactWarnOnce', true),
   }
   return { handlers, calls }
@@ -99,12 +93,6 @@ const TABLE: Record<AskPath, { args: unknown[]; handlerKey: string; expectedArgs
   autoSearchBlock: { args: ['text', { engine: 'x' }], handlerKey: 'autoSearchBlock', expectedArgs: ['text', { engine: 'x' }], expectedResult: 'search-block' },
   'usage.check': { args: [], handlerKey: 'usageCheck', expectedArgs: [], expectedResult: { allowed: true } },
   'usage.record': { args: ['model-a', 10, 20], handlerKey: 'usageRecord', expectedArgs: ['model-a', 10, 20], expectedResult: undefined },
-  'toolSupport.shouldSendTools': { args: ['model-a'], handlerKey: 'toolSupportShouldSendTools', expectedArgs: ['model-a'], expectedResult: true },
-  'toolSupport.isKnownToolCapable': { args: ['model-a'], handlerKey: 'toolSupportIsKnownToolCapable', expectedArgs: ['model-a'], expectedResult: false },
-  'toolSupport.record': { args: ['model-a', true], handlerKey: 'toolSupportRecord', expectedArgs: ['model-a', true], expectedResult: undefined },
-  'vision.shouldTryDirect': { args: ['model-a'], handlerKey: 'visionShouldTryDirect', expectedArgs: ['model-a'], expectedResult: true },
-  'vision.record': { args: ['model-a', false], handlerKey: 'visionRecord', expectedArgs: ['model-a', false], expectedResult: undefined },
-  'vision.defaultModel': { args: [], handlerKey: 'visionDefaultModel', expectedArgs: [], expectedResult: 'vision-model' },
   compactWarnOnce: { args: [], handlerKey: 'compactWarnOnce', expectedArgs: [], expectedResult: true },
 }
 

@@ -37,6 +37,22 @@ export function modelLabel(id: string): string {
   return [...MODELS, ...VISION_MODELS].find(m => m.id === id)?.label ?? id
 }
 
+const VISION_IDS = new Set(VISION_MODELS.map(m => m.id))
+
+/** モデルが画像入力に対応しているか（ID命名からも推定）。
+ *  kimi-k2.6: 2026-07-14 ユーザー実測（verify-vision.mjs）で画像を直接読めることを確認（content に回答）→
+ *  画像添付時に2段階処理（Qwen3-VLで読み取り→本来モデルで実行）を挟まず、そのまま読ませる。
+ *  ※ 提供終了した K2.5 と区別するためバージョンまで含めて判定する。
+ *  ── B'-3d-1a で renderer/usage.ts からここ（shared）へ移した。main のターン実行
+ *  （turnRunner.ts の vision.defaultModel）と renderer の両方が使うため。**複製しないこと**
+ *  （掟10: 片方だけ直されて、ずれても誰も気づかない）。 */
+export function isVisionModel(id: string): boolean {
+  return VISION_IDS.has(id) || /-VL-|multimodal|kimi-k2\.6/i.test(id)
+}
+
+// 画像送信時に既定で使うvisionモデル（コード理解も得意な Qwen3-VL を優先）。isVisionModel と同じ理由で shared に置く。
+export const DEFAULT_VISION_MODEL = 'preview/Qwen3-VL-30B-A3B-Instruct'
+
 // IDE（コード/エージェント）は品質重視、チャット（会話/調査）は速度重視を既定にする。
 // ※ バージョンアップ時は npm run check:models / probe:models で見直すこと
 export const DEFAULT_MODEL = 'Qwen3-Coder-480B-A35B-Instruct-FP8'   // IDE 既定（コード最適）

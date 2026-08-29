@@ -1,4 +1,18 @@
-// モデルごとの「ツール（Function Calling）対応」を実測から学習して記憶する。
+// toolSupport.ts — モデルごとの「ツール（Function Calling）対応」学習キャッシュの renderer 側API
+// （B'-3d-1a）。
+//
+// ── 持ち主が main へ移った（この段の変更）─────────────────────────────
+// 判定ロジック・TTL・種（seed）は src/shared/modelLearning.ts の純関数（store を引数に取る形）
+// へ移した。記録の持ち主（読み書き・永続化）は main（src/main/learningStore.ts・
+// userData/learning.json）へ移り、ここは①その写し（src/renderer/learningMirror.ts）を渡して
+// 判定するだけ ②書き込みは写しを楽観更新してから main（learning:record 等）へ fire-and-forget
+// で送るだけ、の薄い層になった。**localStorage はもう読み書きしない**。
+//
+// **公開シグネチャ（呼び出し側から見た形・関数名/引数/返り値）は移設前と変えていない。**
+// 呼び出し側（renderer/hooks/useAiChat.ts の buildPorts・src/shared/chatTurn.ts の ports 経由）
+// を直す必要が無いようにするため。
+//
+// ── なぜこの判定が要るか（元のコメント。判断は変えていないのでそのまま残す）───────────
 // 方針: モデル名の正規表現で決め打ちしない。未確認のモデルはまずツール付きで楽観的に試し、
 // 結果（構造化 tool_calls が返った／400で非対応と判明した）から学習して次回以降に活かす。
 // 専用のプローブ用リクエストは足さない（実際の送信そのものが確認になる。400はトークンを
@@ -10,63 +24,21 @@
 // 「対応と思ったら非対応」は実行時に400を検知して救済できるが、「非対応と思ったら実は対応」
 // だったケースは発見する経路が無かった。本モジュールはその非対称性を解消する。
 
+import { getLearningMirror, setMirrorEntry, clearMirrorEntry } from './learningMirror'
+import {
+  toolSupportOf as toolSupportOfPure,
+  shouldSendTools as shouldSendToolsPure,
+  isKnownToolCapable as isKnownToolCapablePure,
+  TOOL_SUPPORT_TTL_MS,
+  type ToolSupport,
+} from '../shared/modelLearning'
+
+export { TOOL_SUPPORT_TTL_MS }
+export type { ToolSupport }
+
+/** 旧 localStorage のキー。もう読み書きしないが、learningMirror.ts の片道移行が同じ値を
+ *  読むため、定数の値自体は変えずに残す（旧データがどのキーにあったかの記録）。 */
 export const TOOL_SUPPORT_KEY = 'sakura_model_tool_support'
-/** 記録の有効期限。さくら側が後からtool-call-parserを有効化する等、判定が変わることがあるため、
- *  古い判定は捨てて再確認する（30日）。 */
-export const TOOL_SUPPORT_TTL_MS = 30 * 24 * 60 * 60 * 1000
-
-/** true=対応, false=非対応, null=未確認（まだ一度も試していない） */
-export type ToolSupport = boolean | null
-
-interface StoredEntry { supported: boolean; at: number }
-type ToolSupportStore = Record<string, StoredEntry>
-
-/** localStorage から記録済みストアを読む。壊れたJSON・想定外の形は空オブジェクトとして扱う。 */
-export function readToolSupportStore(): ToolSupportStore {
-  try {
-    const raw = localStorage.getItem(TOOL_SUPPORT_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out: ToolSupportStore = {}
-    for (const [model, entry] of Object.entries(parsed as Record<string, any>)) {
-      if (entry && typeof entry.supported === 'boolean' && typeof entry.at === 'number') {
-        out[model] = { supported: entry.supported, at: entry.at }
-      }
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-/** 実測結果を記録する（上書き保存。at を現在時刻に更新）。 */
-export function recordToolSupport(model: string, supported: boolean, now: number = Date.now()): void {
-  const store = readToolSupportStore()
-  store[model] = { supported, at: now }
-  try {
-    localStorage.setItem(TOOL_SUPPORT_KEY, JSON.stringify(store))
-  } catch { /* 保存できなくても致命的ではない（次回また学習し直すだけ） */ }
-}
-
-/** 記録を消す。model省略時は全消去（設定UIからのリセットや不具合時の逃げ道用）。 */
-export function forgetToolSupport(model?: string): void {
-  if (model === undefined) {
-    try { localStorage.removeItem(TOOL_SUPPORT_KEY) } catch { /* noop */ }
-    return
-  }
-  const store = readToolSupportStore()
-  delete store[model]
-  try {
-    localStorage.setItem(TOOL_SUPPORT_KEY, JSON.stringify(store))
-  } catch { /* noop */ }
-}
-
-// 実測で確定している「種」。ここに載っていないモデルは全て null（未確認）として扱い、
-// 実際に試した結果から学習する（旧ブロックリストの preview\/|-VL-|multimodal|kimi|gpt-oss は
-// 「未確認」に含まれる＝今回の誤判定の原因だったため種から外した）。
-const SEED_TRUE = /kimi-k2\.6|gpt-oss-120b/i // 2026-07-14/16 ユーザー実測（probe-models.mjs）: tools=ok
-const SEED_FALSE = /llm-jp/i // 2026-07-14 実測: サーバー側がツール非対応で400
 
 /**
  * モデルのツール対応状況を判定する。判定順:
@@ -75,19 +47,33 @@ const SEED_FALSE = /llm-jp/i // 2026-07-14 実測: サーバー側がツール�
  * 3. null（未確認）
  */
 export function toolSupportOf(model: string, now: number = Date.now()): ToolSupport {
-  const cached = readToolSupportStore()[model]
-  if (cached && now - cached.at < TOOL_SUPPORT_TTL_MS) return cached.supported
-  if (SEED_TRUE.test(model)) return true
-  if (SEED_FALSE.test(model)) return false
-  return null
+  return toolSupportOfPure(getLearningMirror().toolSupport, model, now)
 }
 
 /** ツールを送るべきか。既知で非対応（false）の場合だけ送らない。未確認（null）は楽観的に送る。 */
 export function shouldSendTools(model: string, now: number = Date.now()): boolean {
-  return toolSupportOf(model, now) !== false
+  return shouldSendToolsPure(getLearningMirror().toolSupport, model, now)
 }
 
 /** ツール対応が実測済み（true）のモデルか。切替先モデルを選ぶときに使う。 */
 export function isKnownToolCapable(model: string, now: number = Date.now()): boolean {
-  return toolSupportOf(model, now) === true
+  return isKnownToolCapablePure(getLearningMirror().toolSupport, model, now)
+}
+
+/**
+ * 実測結果を記録する（上書き保存。at を現在時刻に更新）。
+ * ミラーをその場で楽観更新してから、main（learning:record）へ fire-and-forget で送る。
+ * main が唯一の持ち主なので、送信に失敗しても致命的ではない（次回また学習し直すだけ）。
+ */
+export function recordToolSupport(model: string, supported: boolean, now: number = Date.now()): void {
+  setMirrorEntry('tool', model, supported, now)
+  if (typeof window === 'undefined' || !window.electronAPI?.learning) return
+  window.electronAPI.learning.record('tool', model, supported).catch(() => { /* 次回また学習し直すだけ */ })
+}
+
+/** 記録を消す。model省略時は全消去（設定UIからのリセットや不具合時の逃げ道用）。 */
+export function forgetToolSupport(model?: string): void {
+  clearMirrorEntry('tool', model)
+  if (typeof window === 'undefined' || !window.electronAPI?.learning) return
+  window.electronAPI.learning.forget('tool', model).catch(() => { /* noop */ })
 }

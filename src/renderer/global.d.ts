@@ -608,6 +608,28 @@ interface Window {
       }) => void): () => void
     }
     /**
+     * モデルの「ツール対応」「画像対応」学習キャッシュ（B'-3d-1a）。持ち主は main の
+     * src/main/learningStore.ts（userData/learning.json）。renderer は起動時に get() で
+     * 写しを作り、onChanged() の押し出しで最新化する（src/renderer/learningMirror.ts）。
+     */
+    learning: {
+      get(): Promise<{
+        toolSupport: import('../shared/modelLearning').LearnStore
+        visionSupport: import('../shared/modelLearning').LearnStore
+      }>
+      record(kind: 'tool' | 'vision', model: string, supported: boolean): Promise<void>
+      forget(kind: 'tool' | 'vision', model?: string): Promise<void>
+      /** 旧 renderer/localStorage からの片道移行。main 側が「新しい at だけ勝つ」ため、
+       *  何度呼んでも安全（primeLearningMirror が起動のたび呼ぶ）。 */
+      migrate(payload: { toolSupport?: unknown; visionSupport?: unknown }): Promise<void>
+      /** main が学習記録を変えるたび届く通知（chat.onApplied と同じ作法）。
+       *  購読解除関数を返す（fs.watchDir と同じ作り）。 */
+      onChanged(cb: (snapshot: {
+        toolSupport: import('../shared/modelLearning').LearnStore
+        visionSupport: import('../shared/modelLearning').LearnStore
+      }) => void): () => void
+    }
+    /**
      * AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。
      * renderer 側の配線（useAiChat.ts 等）はまだこの API を呼ばない（その2で行う）。
      */

@@ -2,11 +2,12 @@
 // runEngineTurn）を main プロセスで直接走らせる（B'-3b・土台の入れ替え その1・本体）。
 //
 // ── 方針 ─────────────────────────────────────────────────────────────
-// ツール実行・承認・学習記録（localStorage）・システムプロンプト組み立てなど、renderer に
-// しか無い副作用は renderer へ「問い合わせ」（ask・chat/askBridge.ts）て、今のコードを
-// そのまま使う。main が直接持つのは LLM 呼び出し（sakura/engine.ts）・emit・純粋関数の束
-// （h・src/shared 配下の本物の実装）だけ。「見かけが変わらない」を最優先し、直せる不具合が
-// あってもここでは直さない（sakura.ts から移した部分は engine.ts の説明を参照）。
+// ツール実行・承認・システムプロンプト組み立てなど、renderer にしか無い副作用は renderer へ
+// 「問い合わせ」（ask・chat/askBridge.ts）て、今のコードをそのまま使う。main が直接持つのは
+// LLM 呼び出し（sakura/engine.ts）・emit・純粋関数の束（h・src/shared 配下の本物の実装）に加え、
+// 学習キャッシュ（ツール対応・画像対応・B'-3d-1a で main へ移した learningStore.ts）。
+// 「見かけが変わらない」を最優先し、直せる不具合があってもここでは直さない（sakura.ts から
+// 移した部分は engine.ts の説明を参照）。
 import { ipcMain } from 'electron'
 import type { WebContents } from 'electron'
 import type { IpcDeps } from '../ipc/types'
@@ -20,9 +21,11 @@ import {
   claimsFileChange, unexecutedChangeWarning, isToolArgsComplete, isToolUnsupportedError,
   toolStatusLabel, WRITING_TOOLS, toolsFor, searchStatusContext,
 } from '../../shared/aiToolsCore'
-import { estimateTokens, isImageUnsupportedError, modelLabel, pickBestModel } from '../../shared/modelInfo'
+import { estimateTokens, isImageUnsupportedError, modelLabel, pickBestModel, isVisionModel, DEFAULT_VISION_MODEL } from '../../shared/modelInfo'
 import { extractUrls, wantsWebSearch } from '../../shared/webContextCore'
 import { planSend, planCompact, compactPrompt, acceptSummary, compactSource } from '../../shared/historyCompact'
+import { shouldSendTools, isKnownToolCapable, shouldTryImagesDirectly } from '../../shared/modelLearning'
+import { getLearning, recordLearning } from '../learningStore'
 
 // h は shared から**本物の実装**を import して組み立てる（renderer は import できないモジュールなので、
 // ここで初めて main 側から使われる。aiToolsCore / modelInfo / webContextCore / historyCompact /
@@ -51,6 +54,23 @@ const h: TurnHelpers = {
   acceptSummary,
   compactSource,
   searchStatusContext,
+}
+
+// ── vision.defaultModel（B'-3d-1a）: renderer/usage.ts の getDefaultVisionModel と
+// 同じアルゴリズムを main で計算する ──────────────────────────────────────
+//
+// renderer 版（usage.ts）は「キャッシュ済みモデル一覧（getCachedModelIds）」から選ぶが、
+// main はそのキャッシュを持たない。代わりに送信時に renderer が確定させた
+// payload.spec.models（EngineTurnSpec.models）から選ぶ——中身は「そのターンで実際に使える
+// モデル一覧」なので、選ぶ元が違うだけで結果は同じになる。
+// isVisionModel・DEFAULT_VISION_MODEL は shared/modelInfo.ts の一元定義を使う（複製しない・掟10）。
+//
+// export: tests/learningWiring.test.ts が直接呼んで検証する（この関数は electron に触れない
+// 純関数なので、registerChatTurnHandlers を呼ばずにモジュールを import するだけで安全にテストできる）。
+export function defaultVisionModelFor(models: { id: string }[]): string {
+  const ids = models.map(m => m.id)
+  if (ids.includes(DEFAULT_VISION_MODEL)) return DEFAULT_VISION_MODEL
+  return ids.find(isVisionModel) ?? DEFAULT_VISION_MODEL
 }
 
 /** ターンごとの管理表の1件。 */
@@ -118,15 +138,17 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
       record: (model, promptTokens, completionTokens) => bridge.ask('usage.record', [model, promptTokens, completionTokens]) as any,
       estimate: (text) => estimateTokens(text), // 純粋関数。main が直接持つ（往復しない・仕様書の注記）
     },
+    // B'-3d-1a: 学習キャッシュ（ツール対応・画像対応）の持ち主が main の learningStore.ts へ
+    // 移った。renderer へ ask せず、ここで直接読み書きする（ask が6本減った）。
     toolSupport: {
-      shouldSendTools: (model) => bridge.ask('toolSupport.shouldSendTools', [model]) as any,
-      isKnownToolCapable: (model) => bridge.ask('toolSupport.isKnownToolCapable', [model]) as any,
-      record: (model, supported) => bridge.ask('toolSupport.record', [model, supported]) as any,
+      shouldSendTools: (model) => shouldSendTools(getLearning().toolSupport, model),
+      isKnownToolCapable: (model) => isKnownToolCapable(getLearning().toolSupport, model),
+      record: (model, supported) => recordLearning('tool', model, supported),
     },
     vision: {
-      shouldTryDirect: (model) => bridge.ask('vision.shouldTryDirect', [model]) as any,
-      record: (model, supported) => bridge.ask('vision.record', [model, supported]) as any,
-      defaultModel: () => bridge.ask('vision.defaultModel', []) as any,
+      shouldTryDirect: (model) => shouldTryImagesDirectly(getLearning().visionSupport, model),
+      record: (model, supported) => recordLearning('vision', model, supported),
+      defaultModel: () => defaultVisionModelFor(payload.spec.models),
     },
     compactWarnOnce: () => bridge.ask('compactWarnOnce', []) as any,
     h,

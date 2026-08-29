@@ -18,15 +18,20 @@ import type { EngineTurnSpec } from './chatTurn'
  * main → renderer への問い合わせ（ask）の種類。**両側ともこの表だけを使う**。
  *
  * chatTurn.ts の EngineTurnPorts のうち、main が直接持つもの
- * （emit / setAbort / notifyActivity / chatStream / chatOnce / usage.estimate / h）**以外**
+ * （emit / setAbort / notifyActivity / chatStream / chatOnce / usage.estimate / h、
+ * および B'-3d-1a で main 化した toolSupport.* / vision.* の6メンバー）**以外**
  * の全メンバーがここに載っている（tests/chatTurnRpc.test.ts が突き合わせて固定する）。
+ *
+ * ── B'-3d-1a（2026-08-29）: toolSupport.* / vision.* を main が直接持つように ─────────
+ * 学習キャッシュ（ツール対応・画像対応）の持ち主が renderer の localStorage から main の
+ * ファイル（src/main/learningStore.ts・userData/learning.json）へ移った。main のループ
+ * （turnRunner.ts）はもう renderer へ ask せず、learningStore と shared/modelLearning.ts の
+ * 純関数を直接呼ぶ。ask が6本減った（「窓を閉じても作業が続く」＝B'-3d の一部）。
  */
 export const ASK_PATHS = [
   'executeTool', 'approveToolCall', 'buildSystemPrompt', 'getHistory', 'onUserMessage',
   'buildRagBlock', 'getSearchConfig', 'fetchPagesBlock', 'autoSearchBlock',
   'usage.check', 'usage.record',
-  'toolSupport.shouldSendTools', 'toolSupport.isKnownToolCapable', 'toolSupport.record',
-  'vision.shouldTryDirect', 'vision.record', 'vision.defaultModel',
   'compactWarnOnce',
 ] as const
 

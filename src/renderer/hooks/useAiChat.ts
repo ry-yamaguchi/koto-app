@@ -641,12 +641,10 @@ export function useAiChat(args: UseAiChatArgs) {
         autoSearchBlock: ports.autoSearchBlock,
         usageCheck: ports.usage.check,
         usageRecord: ports.usage.record,
-        toolSupportShouldSendTools: ports.toolSupport.shouldSendTools,
-        toolSupportIsKnownToolCapable: ports.toolSupport.isKnownToolCapable,
-        toolSupportRecord: ports.toolSupport.record,
-        visionShouldTryDirect: ports.vision.shouldTryDirect,
-        visionRecord: ports.vision.record,
-        visionDefaultModel: ports.vision.defaultModel,
+        // ⚠️ toolSupport.* / vision.* は B'-3d-1a で main（learningStore.ts）が直接持つように
+        // なり、ask ではなくなった（chatTurnBridge.ts の dispatchAsk にはもう対応する case が
+        // 無い）。ports.toolSupport / ports.vision 自体は buildPorts に残る（compactNow が
+        // 呼ぶ・下のコメント参照）ので、ここから handlers への受け渡しだけを外す。
         compactWarnOnce: ports.compactWarnOnce,
       }
       // ⚠️ ターンの間ずっと main への abort 送信関数を this ターンの鍵（key）に登録する。

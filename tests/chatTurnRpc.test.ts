@@ -7,9 +7,10 @@ import type { EngineTurnPorts, TurnHelpers } from '../src/shared/chatTurn'
 //
 // ── なぜこの形か ─────────────────────────────────────────────────────
 // EngineTurnPorts のうち main が直接持つもの（emit/setAbort/notifyActivity/chatStream/
-// chatOnce/usage.estimate/h）**以外**は、全部 ASK_PATHS に載っていなければならない
-// （載っていないと turnRunner.ts は ask のしようがなく main 実装が組めない）。
-// 逆に ASK_PATHS に載っているのに EngineTurnPorts に無い名前があっても事故のもとになる。
+// chatOnce/usage.estimate/h、B'-3d-1a で main 化した toolSupport.*/vision.* を含む）**以外**
+// は、全部 ASK_PATHS に載っていなければならない（載っていないと turnRunner.ts は ask の
+// しようがなく main 実装が組めない）。逆に ASK_PATHS に載っているのに EngineTurnPorts に
+// 無い名前があっても事故のもとになる。
 //
 // 下のダミー実装は EngineTurnPorts 型で宣言してあるので、EngineTurnPorts にメンバーが
 // 増えたのにここへ足し忘れると `npx tsc -p tsconfig.main.json --noEmit`（またはエディタの
@@ -18,8 +19,18 @@ import type { EngineTurnPorts, TurnHelpers } from '../src/shared/chatTurn'
 // 独立に書いたこの呼び出し列**と突き合わせる（掟10: ASK_PATHS から1つ消すミューテーション試験で、
 // ASK_PATHS 自身から期待値を作っていないことを確かめてある）。
 
-/** main が直接持つもの（仕様書のリストそのまま）。ここに無いものは全部 ASK_PATHS のはず。 */
-const DIRECT_PATHS = ['emit', 'setAbort', 'notifyActivity', 'chatStream', 'chatOnce', 'usage.estimate', 'h']
+/**
+ * main が直接持つもの（仕様書のリストそのまま）。ここに無いものは全部 ASK_PATHS のはず。
+ *
+ * B'-3d-1a: toolSupport.shouldSendTools / toolSupport.isKnownToolCapable / toolSupport.record /
+ * vision.shouldTryDirect / vision.record / vision.defaultModel の6つは、学習キャッシュの
+ * 持ち主が main の learningStore.ts へ移ったことで ASK_PATHS から direct 側へ移った。
+ */
+const DIRECT_PATHS = [
+  'emit', 'setAbort', 'notifyActivity', 'chatStream', 'chatOnce', 'usage.estimate', 'h',
+  'toolSupport.shouldSendTools', 'toolSupport.isKnownToolCapable', 'toolSupport.record',
+  'vision.shouldTryDirect', 'vision.record', 'vision.defaultModel',
+]
 
 describe('ASK_PATHS ⇄ EngineTurnPorts', () => {
   it('EngineTurnPorts の全メンバーのうち、direct 以外は ASK_PATHS に、direct は DIRECT_PATHS に、過不足なく載っている', async () => {

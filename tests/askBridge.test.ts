@@ -100,7 +100,7 @@ describe('createAskBridge', () => {
   it('answer に result が無くても ok:true なら undefined で resolve する', async () => {
     const sent: TurnAsk[] = []
     const bridge = createAskBridge((a) => sent.push(a))
-    const p = bridge.ask('vision.defaultModel', [])
+    const p = bridge.ask('usage.check', [])
     bridge.answer({ callId: sent[0].callId, ok: true })
     await expect(p).resolves.toBeUndefined()
   })

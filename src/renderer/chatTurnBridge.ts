@@ -4,10 +4,14 @@
 // ── なぜ要るか ─────────────────────────────────────────────────────
 // AI Engine のループ本体（runEngineTurn）は main プロセスで走るようになった
 // （src/main/chat/turnRunner.ts）。renderer にしか無い副作用（ツール実行・承認・
-// システムプロンプト組み立て・学習記録の localStorage 等）は、main から IPC 経由の
-// 「問い合わせ」（ask・src/shared/chatTurnRpc.ts の ASK_PATHS）として飛んでくる。
-// このファイルは、その ask を useAiChat.ts の handlers（buildPorts と同じ実装）へ
-// つなぎ直す**だけ**の薄い配線。ロジックの二重実装はしない。
+// システムプロンプト組み立て等）は、main から IPC 経由の「問い合わせ」（ask・
+// src/shared/chatTurnRpc.ts の ASK_PATHS）として飛んでくる。このファイルは、その ask を
+// useAiChat.ts の handlers（buildPorts と同じ実装）へつなぎ直す**だけ**の薄い配線。
+// ロジックの二重実装はしない。
+//
+// ⚠️ 学習記録（toolSupport.* / vision.*）は B'-3d-1a で main（learningStore.ts）へ移り、
+// ask ではなくなった（ASK_PATHS から削除・main の turnRunner.ts が直接呼ぶ）。ここにはもう
+// 対応する case が無い。
 
 import type { AskPath } from '../shared/chatTurnRpc'
 
@@ -43,7 +47,7 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
  *   ask が来たら Error を投げる（caps の食い違い＝バグを黙らせない）。
  *
  * ── handlers の型について ────────────────────────────────────────
- * buildSystemPrompt / getHistory / toolSupport.* / vision.* / compactWarnOnce の返り値を
+ * buildSystemPrompt / getHistory / compactWarnOnce の返り値を
  * `T | Promise<T>` にしてある。renderer の実装（useAiChat.ts の buildPorts）は今日も同期
  * （T のみ）だが、この関数はその ports をそのまま（型を狭め直さずに）handlers として使う
  * ため、EngineTurnPorts（src/shared/chatTurn.ts）の型に合わせてある。
@@ -61,12 +65,6 @@ export function dispatchAsk(
     autoSearchBlock(text: string, search: unknown): Promise<string>
     usageCheck(): unknown
     usageRecord(model: string, p: number, c: number): void
-    toolSupportShouldSendTools(model: string): boolean | Promise<boolean>
-    toolSupportIsKnownToolCapable(model: string): boolean | Promise<boolean>
-    toolSupportRecord(model: string, ok: boolean): void
-    visionShouldTryDirect(model: string): boolean | Promise<boolean>
-    visionRecord(model: string, ok: boolean): void
-    visionDefaultModel(): string | Promise<string>
     compactWarnOnce(): boolean | Promise<boolean>
   },
   turnOptsFull: Record<string, unknown>,
@@ -116,28 +114,6 @@ export function dispatchAsk(
       const [model, p, c] = args as [string, number, number]
       return handlers.usageRecord(model, p, c)
     }
-    case 'toolSupport.shouldSendTools': {
-      const [model] = args as [string]
-      return handlers.toolSupportShouldSendTools(model)
-    }
-    case 'toolSupport.isKnownToolCapable': {
-      const [model] = args as [string]
-      return handlers.toolSupportIsKnownToolCapable(model)
-    }
-    case 'toolSupport.record': {
-      const [model, ok] = args as [string, boolean]
-      return handlers.toolSupportRecord(model, ok)
-    }
-    case 'vision.shouldTryDirect': {
-      const [model] = args as [string]
-      return handlers.visionShouldTryDirect(model)
-    }
-    case 'vision.record': {
-      const [model, ok] = args as [string, boolean]
-      return handlers.visionRecord(model, ok)
-    }
-    case 'vision.defaultModel':
-      return handlers.visionDefaultModel()
     case 'compactWarnOnce':
       return handlers.compactWarnOnce()
     default: {

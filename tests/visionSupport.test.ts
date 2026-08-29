@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  VISION_SUPPORT_KEY, VISION_SUPPORT_TTL_MS,
   visionSupportOf, shouldTryImagesDirectly, recordVisionSupport, forgetVisionSupport,
-  isImageUnsupportedError, VISION_SUPPORT_TTL_MS,
+  isImageUnsupportedError,
 } from '../src/renderer/visionSupport'
+import { resetLearningMirrorForTest, setMirrorEntry } from '../src/renderer/learningMirror'
 
 // ── 2026-08-19 Ryosuke 提案 ─────────────────────────────────────────
 // 「全体を他のモデルにすることは出来ないのか？　以前のように、初めての場合、
@@ -13,18 +15,29 @@ import {
 // 名前の一覧で決め打ちすると、**一覧に載っていない対応モデルは永久に二段構え**に
 // なる（1回分よけいに時間と費用がかかる）。ツール対応（toolSupport.ts）で既に
 // 解いてある問題なので、同じ形にする。
+//
+// B'-3d-1a: 学習キャッシュ（画像対応）の持ち主が main（src/main/learningStore.ts）へ移った。
+// visionSupport.ts は、その写し（src/renderer/learningMirror.ts）を読み書きする薄い層になった
+// （localStorage はもう読み書きしない）。判定ロジック自体（種・TTL）の回帰テストは
+// tests/modelLearning.test.ts（src/shared/modelLearning.ts の純関数）へ移した。
 
-// localStorage の代わり（vitest は node 環境）
-const mem: Record<string, string> = {}
-;(globalThis as any).localStorage = {
-  getItem: (k: string) => mem[k] ?? null,
-  setItem: (k: string, v: string) => { mem[k] = v },
-  removeItem: (k: string) => { delete mem[k] },
-}
+beforeEach(() => {
+  resetLearningMirrorForTest()
+})
+afterEach(() => {
+  delete (globalThis as any).window
+})
 
-beforeEach(() => forgetVisionSupport())
+describe('公開API（キー・TTL）の値は変えていない', () => {
+  it('VISION_SUPPORT_KEY', () => {
+    expect(VISION_SUPPORT_KEY).toBe('sakura_model_vision_support')
+  })
+  it('VISION_SUPPORT_TTL_MS（30日）', () => {
+    expect(VISION_SUPPORT_TTL_MS).toBe(30 * 24 * 60 * 60 * 1000)
+  })
+})
 
-describe('未確認のモデルは、まずそのまま試す', () => {
+describe('未確認のモデルは、まずそのまま試す（ミラー経由）', () => {
   it('★ 未確認は null（決めつけない）', () => {
     expect(visionSupportOf('preview/Kimi-K2.7-Code')).toBeNull()
   })
@@ -39,27 +52,74 @@ describe('未確認のモデルは、まずそのまま試す', () => {
   })
 })
 
-describe('試した結果を覚える', () => {
+describe('ミラーに入れた記録を読み戻せる（main からの learning:changed を想定した setMirrorEntry）', () => {
   it('対応と分かれば、次からそのまま渡す', () => {
-    recordVisionSupport('modelA', true)
+    setMirrorEntry('vision', 'modelA', true, Date.now())
     expect(visionSupportOf('modelA')).toBe(true)
     expect(shouldTryImagesDirectly('modelA')).toBe(true)
   })
 
   it('★ 非対応と分かれば、次からは二段構えにする', () => {
-    recordVisionSupport('modelB', false)
+    setMirrorEntry('vision', 'modelB', false, Date.now())
     expect(shouldTryImagesDirectly('modelB')).toBe(false)
   })
 
   it('古い記録は捨てて、確かめ直す（さくら側で変わることがある）', () => {
     const old = Date.now() - VISION_SUPPORT_TTL_MS - 1000
-    recordVisionSupport('modelC', false, old)
+    setMirrorEntry('vision', 'modelC', false, old)
     expect(visionSupportOf('modelC')).toBeNull()
   })
+})
 
-  it('壊れた記録でも落ちない', () => {
-    ;(globalThis as any).localStorage.setItem('sakura_model_vision_support', 'こわれている')
-    expect(visionSupportOf('modelD')).toBeNull()
+describe('recordVisionSupport: ミラーを楽観更新してから main へ fire-and-forget で送る', () => {
+  it('window（electronAPI）が無い環境でもミラー更新は行われ、例外を投げない', () => {
+    expect(() => recordVisionSupport('modelA', true, 1000)).not.toThrow()
+    expect(visionSupportOf('modelA', 1000)).toBe(true)
+  })
+
+  it('空文字のモデル名は無視する（元の実装と同じガード）', () => {
+    const record = vi.fn()
+    ;(globalThis as any).window = { electronAPI: { learning: { record } } }
+    recordVisionSupport('', true)
+    expect(record).not.toHaveBeenCalled()
+  })
+
+  it('window.electronAPI.learning.record が (kind, model, supported) で呼ばれる', () => {
+    const record = vi.fn().mockResolvedValue(undefined)
+    ;(globalThis as any).window = { electronAPI: { learning: { record } } }
+    recordVisionSupport('modelB', false, 2000)
+    expect(record).toHaveBeenCalledWith('vision', 'modelB', false)
+    expect(visionSupportOf('modelB', 2000)).toBe(false) // 楽観更新済み
+  })
+
+  it('IPC が失敗しても例外は外へ出ない', async () => {
+    const record = vi.fn().mockRejectedValue(new Error('boom'))
+    ;(globalThis as any).window = { electronAPI: { learning: { record } } }
+    expect(() => recordVisionSupport('modelC', true)).not.toThrow()
+    await new Promise((r) => setImmediate(r))
+  })
+})
+
+describe('forgetVisionSupport: ミラーから消し、main へ fire-and-forget で送る', () => {
+  it('モデル指定で該当モデルだけ消える', () => {
+    setMirrorEntry('vision', 'modelA', true, Date.now())
+    setMirrorEntry('vision', 'modelB', false, Date.now())
+    forgetVisionSupport('modelA')
+    expect(visionSupportOf('modelA')).toBeNull()
+    expect(visionSupportOf('modelB')).toBe(false)
+  })
+
+  it('省略時は全消去される', () => {
+    setMirrorEntry('vision', 'modelA', true, Date.now())
+    forgetVisionSupport()
+    expect(visionSupportOf('modelA')).toBeNull()
+  })
+
+  it('window.electronAPI.learning.forget が (kind, model) で呼ばれる', () => {
+    const forget = vi.fn().mockResolvedValue(undefined)
+    ;(globalThis as any).window = { electronAPI: { learning: { forget } } }
+    forgetVisionSupport('modelA')
+    expect(forget).toHaveBeenCalledWith('vision', 'modelA')
   })
 })
 

@@ -1,181 +1,118 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   TOOL_SUPPORT_KEY, TOOL_SUPPORT_TTL_MS,
-  readToolSupportStore, recordToolSupport, forgetToolSupport,
   toolSupportOf, shouldSendTools, isKnownToolCapable,
+  recordToolSupport, forgetToolSupport,
 } from '../src/renderer/toolSupport'
+import { resetLearningMirrorForTest, setMirrorEntry } from '../src/renderer/learningMirror'
 
-// vitest.config.ts のテスト環境は 'node'（DOM非依存の純粋ロジックのみ対象）で、Node組込みの
-// localStorage は既定では未初期化のため、tests/claudeAgent.test.ts と同様の最小インメモリ実装を用意する。
-;(globalThis as any).localStorage = (() => {
-  let store: Record<string, string> = {}
-  return {
-    getItem: (k: string) => (k in store ? store[k] : null),
-    setItem: (k: string, v: string) => { store[k] = String(v) },
-    removeItem: (k: string) => { delete store[k] },
-    clear: () => { store = {} },
-  }
-})()
+// B'-3d-1a: 学習キャッシュ（ツール対応）の持ち主が main（src/main/learningStore.ts）へ移った。
+// toolSupport.ts は、その写し（src/renderer/learningMirror.ts）を読み書きする薄い層になった
+// （localStorage はもう読み書きしない）。判定ロジック自体（種・TTL）の回帰テストは
+// tests/modelLearning.test.ts（src/shared/modelLearning.ts の純関数）へ移した。ここでは
+// 「ミラー経由で判定できること」「record/forget がミラーを楽観更新し、main へ IPC を送ること」
+// を検証する（旧: localStorage の読み書きだったもの）。
 
-// 背景（2026-07-30）: preview/Kimi-K2.7-Code が旧・正規表現ハードコードの判定で
-// 「preview/」「kimi」に一致して非対応と誤判定され、対応モデルなのに毎回旧モデルへ
-// 切り替わってしまった。本テストは「未確認のモデルは null（楽観的に送る）」という
-// 修正後の挙動の回帰テスト。
+beforeEach(() => {
+  resetLearningMirrorForTest()
+})
+afterEach(() => {
+  delete (globalThis as any).window
+})
 
-describe('toolSupportOf（実測の種＋TTL付きキャッシュ）', () => {
-  beforeEach(() => localStorage.clear())
+describe('公開API（キー・TTL）の値は変えていない', () => {
+  it('TOOL_SUPPORT_KEY', () => {
+    expect(TOOL_SUPPORT_KEY).toBe('sakura_model_tool_support')
+  })
+  it('TOOL_SUPPORT_TTL_MS（30日）', () => {
+    expect(TOOL_SUPPORT_TTL_MS).toBe(30 * 24 * 60 * 60 * 1000)
+  })
+})
 
-  it('種: preview/Kimi-K2.6 は実測でツール対応(true)', () => {
+describe('toolSupportOf/shouldSendTools/isKnownToolCapable はミラーを読む', () => {
+  it('ミラーが空でも、種（seed）の判定は効く', () => {
     expect(toolSupportOf('preview/Kimi-K2.6')).toBe(true)
-  })
-
-  it('種: llm-jp系は実測で非対応(false)', () => {
     expect(toolSupportOf('llm-jp-3.1-8x13b-instruct4')).toBe(false)
-  })
-
-  it('回帰: preview/Kimi-K2.7-Code は種に含まれず未確認(null)（今回の不具合の原因だった誤判定の修正確認）', () => {
-    expect(toolSupportOf('preview/Kimi-K2.7-Code')).toBeNull()
-  })
-
-  it('旧ブロックリストにあった preview/・vision系・gpt-oss（120b以外）も、種から外れたため未確認(null)', () => {
-    expect(toolSupportOf('preview/Qwen3-VL-30B-A3B-Instruct')).toBeNull()
-    expect(toolSupportOf('preview/Phi-4-multimodal-instruct')).toBeNull()
-    expect(toolSupportOf('gpt-oss-20b')).toBeNull()
-  })
-
-  it('未知のモデル名は未確認(null)', () => {
     expect(toolSupportOf('some-brand-new-model')).toBeNull()
   })
-})
 
-describe('shouldSendTools（未確認は楽観的に送る）', () => {
-  beforeEach(() => localStorage.clear())
-
-  it('未確認のモデルは true（ツールを送って試す）', () => {
-    expect(shouldSendTools('preview/Kimi-K2.7-Code')).toBe(true)
-  })
-
-  it('既知で対応(true)のモデルは true', () => {
-    expect(shouldSendTools('preview/Kimi-K2.6')).toBe(true)
-  })
-
-  it('既知で非対応(false)のモデルは false', () => {
-    expect(shouldSendTools('llm-jp-3.1-8x13b-instruct4')).toBe(false)
-  })
-})
-
-describe('isKnownToolCapable（実測済みtrueのみ）', () => {
-  beforeEach(() => localStorage.clear())
-
-  it('未確認のモデルは false（切替先の第一候補にはしない）', () => {
-    expect(isKnownToolCapable('preview/Kimi-K2.7-Code')).toBe(false)
-  })
-
-  it('既知で対応(true)のモデルは true', () => {
-    expect(isKnownToolCapable('preview/Kimi-K2.6')).toBe(true)
-  })
-
-  it('既知で非対応(false)のモデルは false', () => {
-    expect(isKnownToolCapable('llm-jp-3.1-8x13b-instruct4')).toBe(false)
-  })
-})
-
-describe('recordToolSupport ⇄ toolSupportOf（記録の往復）', () => {
-  beforeEach(() => localStorage.clear())
-
-  it('true を記録すると読み戻せる（未確認モデルが実測で対応と判明したケース）', () => {
-    expect(toolSupportOf('preview/Kimi-K2.7-Code')).toBeNull()
-    recordToolSupport('preview/Kimi-K2.7-Code', true)
+  it('ミラーに入れた記録を読み戻せる（main からの learning:changed を想定した setMirrorEntry）', () => {
+    setMirrorEntry('tool', 'preview/Kimi-K2.7-Code', true, Date.now())
     expect(toolSupportOf('preview/Kimi-K2.7-Code')).toBe(true)
     expect(shouldSendTools('preview/Kimi-K2.7-Code')).toBe(true)
     expect(isKnownToolCapable('preview/Kimi-K2.7-Code')).toBe(true)
   })
 
-  it('false を記録すると読み戻せる（実測で400＝非対応と判明したケース）', () => {
-    recordToolSupport('some-new-model', false)
-    expect(toolSupportOf('some-new-model')).toBe(false)
-    expect(shouldSendTools('some-new-model')).toBe(false)
-    expect(isKnownToolCapable('some-new-model')).toBe(false)
+  it('未確認は楽観的に送る・実測済み以外は切替候補にしない', () => {
+    expect(shouldSendTools('preview/Kimi-K2.7-Code')).toBe(true)
+    expect(isKnownToolCapable('preview/Kimi-K2.7-Code')).toBe(false)
   })
 
-  it('上書き保存できる（記録済みの判定が後から覆るケース）', () => {
-    recordToolSupport('flip-flop-model', false)
-    expect(toolSupportOf('flip-flop-model')).toBe(false)
-    recordToolSupport('flip-flop-model', true)
-    expect(toolSupportOf('flip-flop-model')).toBe(true)
-  })
-})
-
-describe('TTL（30日）', () => {
-  beforeEach(() => localStorage.clear())
-
-  it('TTL内の記録はそのまま使われる', () => {
-    const now = Date.now()
-    recordToolSupport('recent-model', true, now)
-    expect(toolSupportOf('recent-model', now + TOOL_SUPPORT_TTL_MS - 1)).toBe(true)
-  })
-
-  it('31日前の記録は無視され、種またはnullに戻る', () => {
+  it('TTL: 31日前の記録は無視され、種またはnullに戻る', () => {
     const now = Date.now()
     const THIRTY_ONE_DAYS = 31 * 24 * 60 * 60 * 1000
-    // 種に一致しないモデル名 → 期限切れ後は null に戻る
-    recordToolSupport('stale-unknown-model', true, now - THIRTY_ONE_DAYS)
+    setMirrorEntry('tool', 'stale-unknown-model', true, now - THIRTY_ONE_DAYS)
     expect(toolSupportOf('stale-unknown-model', now)).toBeNull()
-    // 種(false)に一致するモデル名で、キャッシュがそれと矛盾するtrueだったケース → 期限切れ後は種のfalseに戻る
-    recordToolSupport('llm-jp-3.1-8x13b-instruct4', true, now - THIRTY_ONE_DAYS)
-    expect(toolSupportOf('llm-jp-3.1-8x13b-instruct4', now)).toBe(false)
   })
 })
 
-describe('readToolSupportStore（破損耐性）', () => {
-  beforeEach(() => localStorage.clear())
-
-  it('未保存なら空オブジェクト', () => {
-    expect(readToolSupportStore()).toEqual({})
+describe('recordToolSupport: ミラーを楽観更新してから main へ fire-and-forget で送る', () => {
+  it('window（electronAPI）が無い環境でもミラー更新は行われ、例外を投げない', () => {
+    expect(() => recordToolSupport('model-a', true, 1000)).not.toThrow()
+    expect(toolSupportOf('model-a', 1000)).toBe(true)
   })
 
-  it('壊れたJSONでも例外を投げず空オブジェクトを返す', () => {
-    localStorage.setItem(TOOL_SUPPORT_KEY, '{not valid json')
-    expect(() => readToolSupportStore()).not.toThrow()
-    expect(readToolSupportStore()).toEqual({})
+  it('window.electronAPI.learning.record が (kind, model, supported) で呼ばれる', () => {
+    const record = vi.fn().mockResolvedValue(undefined)
+    ;(globalThis as any).window = { electronAPI: { learning: { record } } }
+    recordToolSupport('model-b', false, 2000)
+    expect(record).toHaveBeenCalledWith('tool', 'model-b', false)
+    expect(toolSupportOf('model-b', 2000)).toBe(false) // ミラーは IPC の返事を待たずに更新済み（楽観更新）
   })
 
-  it('想定外の形（配列や文字列）でも空オブジェクトを返す', () => {
-    localStorage.setItem(TOOL_SUPPORT_KEY, JSON.stringify(['not', 'a', 'record']))
-    expect(readToolSupportStore()).toEqual({})
-    localStorage.setItem(TOOL_SUPPORT_KEY, JSON.stringify('just a string'))
-    expect(readToolSupportStore()).toEqual({})
+  it('IPC が失敗しても例外は外へ出ない（次回また学習し直すだけ）', async () => {
+    const record = vi.fn().mockRejectedValue(new Error('boom'))
+    ;(globalThis as any).window = { electronAPI: { learning: { record } } }
+    expect(() => recordToolSupport('model-c', true)).not.toThrow()
+    await new Promise((r) => setImmediate(r)) // catch() が rejection を消費するのを待つ
   })
 
-  it('エントリの形が壊れていれば、そのモデルだけ無視する', () => {
-    localStorage.setItem(TOOL_SUPPORT_KEY, JSON.stringify({
-      'good-model': { supported: true, at: 1000 },
-      'bad-model': { supported: 'yes', at: 1000 }, // supported が boolean でない
-      'bad-model-2': { at: 1000 }, // supported 欠落
-    }))
-    const store = readToolSupportStore()
-    expect(store['good-model']).toEqual({ supported: true, at: 1000 })
-    expect(store['bad-model']).toBeUndefined()
-    expect(store['bad-model-2']).toBeUndefined()
+  it('上書きできる（記録済みの判定が後から覆るケース）', () => {
+    recordToolSupport('flip-flop-model', false, 1000)
+    expect(toolSupportOf('flip-flop-model', 1000)).toBe(false)
+    recordToolSupport('flip-flop-model', true, 2000)
+    expect(toolSupportOf('flip-flop-model', 2000)).toBe(true)
   })
 })
 
-describe('forgetToolSupport（消去）', () => {
-  beforeEach(() => localStorage.clear())
-
+describe('forgetToolSupport: ミラーから消し、main へ fire-and-forget で送る', () => {
   it('モデル指定で該当モデルだけ消える', () => {
-    recordToolSupport('model-a', true)
-    recordToolSupport('model-b', false)
+    setMirrorEntry('tool', 'model-a', true, Date.now())
+    setMirrorEntry('tool', 'model-b', false, Date.now())
     forgetToolSupport('model-a')
     expect(toolSupportOf('model-a')).toBeNull()
     expect(toolSupportOf('model-b')).toBe(false)
   })
 
   it('省略時は全消去される', () => {
-    recordToolSupport('model-a', true)
-    recordToolSupport('model-b', false)
+    setMirrorEntry('tool', 'model-a', true, Date.now())
+    setMirrorEntry('tool', 'model-b', false, Date.now())
     forgetToolSupport()
-    expect(readToolSupportStore()).toEqual({})
     expect(toolSupportOf('model-a')).toBeNull()
+    expect(toolSupportOf('model-b')).toBeNull() // 記録が消えたので、種にも無いモデル名は未確認(null)に戻る
+  })
+
+  it('window.electronAPI.learning.forget が (kind, model) で呼ばれる', () => {
+    const forget = vi.fn().mockResolvedValue(undefined)
+    ;(globalThis as any).window = { electronAPI: { learning: { forget } } }
+    forgetToolSupport('model-a')
+    expect(forget).toHaveBeenCalledWith('tool', 'model-a')
+  })
+
+  it('省略時は forget(kind, undefined) で呼ばれる', () => {
+    const forget = vi.fn().mockResolvedValue(undefined)
+    ;(globalThis as any).window = { electronAPI: { learning: { forget } } }
+    forgetToolSupport()
+    expect(forget).toHaveBeenCalledWith('tool', undefined)
   })
 })

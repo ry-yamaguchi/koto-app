@@ -429,6 +429,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('chat:applied', handler)
     },
   },
+  // モデルの「ツール対応」「画像対応」学習キャッシュ（B'-3d-1a）。持ち主は main の
+  // learningStore.ts（userData/learning.json）。renderer は起動時に get() で写しを作り、
+  // onChanged() の押し出しで最新化する（src/renderer/learningMirror.ts）。
+  learning: {
+    get: () => ipcRenderer.invoke('learning:get'),
+    record: (kind: 'tool' | 'vision', model: string, supported: boolean) =>
+      ipcRenderer.invoke('learning:record', kind, model, supported),
+    forget: (kind: 'tool' | 'vision', model?: string) => ipcRenderer.invoke('learning:forget', kind, model),
+    /** 旧 renderer/localStorage からの片道移行。何度呼んでも安全（main 側が「新しい at だけ勝つ」）。 */
+    migrate: (payload: { toolSupport?: unknown; visionSupport?: unknown }) => ipcRenderer.invoke('learning:migrate', payload),
+    /** main が学習記録を変えるたび届く通知（chat.onApplied と同じ作法・購読解除関数を返す）。 */
+    onChanged: (cb: (snapshot: { toolSupport: unknown; visionSupport: unknown }) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, snapshot: { toolSupport: unknown; visionSupport: unknown }) => cb(snapshot)
+      ipcRenderer.on('learning:changed', handler)
+      return () => ipcRenderer.removeListener('learning:changed', handler)
+    },
+  },
   // AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。
   // renderer 側の配線（useAiChat.ts 等）はまだこの API を呼ばない（その2で行う）。
   chatTurn: {
