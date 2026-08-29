@@ -10,6 +10,7 @@ import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeMode, setClaudeModel } from '../claudeMode'
 import { defaultCreationBrain, pickSavedModel, type CreationBrain } from '../newProjectAgent'
 import { buildNewProjectRequest, stashNewProjectRequest, SITE_TYPES } from '../newProjectRequest'
+import { skipMigrationForTarget } from '../../shared/migratePlan'
 import ImportFromPublishedPanel from './ImportFromPublishedPanel'
 
 const WORKSPACE_KEY = 'sakura_workspace'
@@ -736,6 +737,22 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
       // brain が null（両方のキーとも未登録）のときは false になり、下のローカル雛形分岐へ落ちる。
       const useChat = kind !== 'blank' && (brain === 'claude' ? !!claudeKey : brain === 'sakura' ? !!apiKey : false)
 
+      // 改善1（2026-08-29）: このあとチャットにAIの初期ファイル生成を依頼する場合だけ、
+      // 最初から public/ を掘っておく。無いと writeRoot（AIの書き込み先）は
+      // resolvePublishRoot が public/ 不在と見てプロジェクト直下のままになり、
+      // 生成物が直下へ書かれた直後に「フォルダを整理する（0件を移します）」が出ていた。
+      //
+      // ⚠️ さくらのレンタルサーバだけは対象から外す。newProjectRequest.ts の指示文
+      // （sitePrompt/targetPrompt）は、このAI自身が相対パスへ `public/`（公開）と
+      // `app/`（非公開・DB設定など）を明示的に書き添える前提になっている
+      // （例:「public/index.html」「app/db.php」）。ここで先に public/ を掘って
+      // 書き込みの根をそこへ寄せてしまうと、AIが書く「public/…」は「public/public/…」に
+      // 二重化し、「app/…」は書き込みの根の外になるため**書けなくなる**
+      // （write_file は根の外への脱出を拒む・aiTools.ts の resolveInProject）。
+      // 対して AppRun/HANAMII 等の指示文は public/ という語を一切使わず「見えている場所が
+      // そのままアプリの根」という前提なので、先に public/ を掘るこの改善と噛み合う。
+      const withPublishDir = useChat && !skipMigrationForTarget(target) && target !== 'sakura-rental'
+
       let files: GenFile[]
       if (kind === 'blank') {
         // まっさら: ファイルを一切生成しない（下の隠しメタだけ付与）。依頼も送らない。
@@ -773,7 +790,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
       })
 
       setStatus(`${files.length} 個のファイルを書き込んでいます...`)
-      const result = await window.electronAPI.fs.createProject(parentDir, n, files, allowExisting)
+      const result = await window.electronAPI.fs.createProject(parentDir, n, files, allowExisting, withPublishDir)
 
       // If we merged and the file we wanted to open was skipped (already existed), just open the folder.
       if (result.merged && openRelPath && result.skipped.includes(openRelPath)) {

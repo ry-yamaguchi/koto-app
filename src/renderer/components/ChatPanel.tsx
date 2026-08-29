@@ -618,12 +618,24 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   useEffect(() => {
     const consume = () => {
       if (!projectDir || sentNewProjectDirRef.current === projectDir) return
+      // ⚠️ 作業フォルダ（public/ か直下か）の解決を**待ってから**送る（2026-08-29 実機で発覚）。
+      // 解決は非同期（resolvePublishRoot）で、追いつくまでの currentAiRoot はプロジェクト直下へ
+      // 倒れる。kickoff は自動送信のためほぼ確実に解決より先に走り、**ターン全体の writeRoot が
+      // 直下**になって、AI の成果物が全部「公開されないもの」側へ入った。依頼の保留は
+      // pendingNewProjectRef／モジュール退避が持っているので、aiRoot が解決した再評価
+      // （deps の aiRoot 変化）でここへ戻ってくる。退避の消費より前に返ること（消費すると失われる）。
+      if (aiRoot?.dir !== projectDir) return
       // データの出どころは2つ: ①イベントで直接受け取り済みのもの（pendingNewProjectRef）
       // ②イベントを取りこぼした場合の救済（newProjectRequest.ts のモジュール退避。「初めてのプロジェクト
       //   作成」では ChatPanel がまだマウントされておらずイベントの受け手が無いため、これが唯一の頼り）。
+      // ⚠️ モジュール退避（②）は**必ず消費する**（2026-08-28 実機で発覚）。①（イベント経由の ref）で
+      // 送れたときに②の写しが残っていると、ChatPanel の再マウント（モード切替）で二重送信ガードの
+      // ref が消えたあと、②を拾って**同じ依頼をもう一度送ってしまう**（実機: 新規作成の23分後、
+      // チャットモードから戻った瞬間に kickoff が再送され、AI が初期生成をやり直した）。
+      const fromStash = takeNewProjectRequest(projectDir)
       const prompt = pendingNewProjectRef.current?.dir === projectDir
         ? pendingNewProjectRef.current.prompt
-        : takeNewProjectRequest(projectDir)
+        : fromStash
       if (!prompt) return
       // キーが無ければ送らない（NewProjectModal 側は必ずキーがある場合にだけ依頼するが、claudeActive は
       // キー確認が非同期のため、判定が追いつくまでは ref に保留し直して次の再評価（deps変化）を待つ）。
@@ -647,7 +659,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     consume() // projectDir がこの再描画で追いついた場合、またはイベントを取りこぼしていた場合に備える
     return () => window.removeEventListener('sakura-new-project-request', onRequest)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, claudeActive, projectDir, chat])
+  }, [apiKey, claudeActive, projectDir, chat, aiRoot])
 
   // プロジェクトを開いたら、AI側から最初のあいさつ（要約＋次にやることの質問）を返す
   // ※ projectCtx.dir の一致を必ず確認する（古いプロジェクトの文脈であいさつしないため）

@@ -22,7 +22,7 @@ describe('turnKey', () => {
     expect(turnKey('/Users/x/project')).toBe('/Users/x/project')
   })
 
-  it('null / undefined は単独チャットの鍵になる', () => {
+  it('null / undefined は単独チャットの鍵になる（sessionId も無ければ CHAT_APP_KEY）', () => {
     expect(turnKey(null)).toBe(CHAT_APP_KEY)
     expect(turnKey(undefined)).toBe(CHAT_APP_KEY)
   })
@@ -31,6 +31,31 @@ describe('turnKey', () => {
   // 万一どこかのプロジェクトパスと衝突しうる。衝突しない文字列であることを固定する。
   it('CHAT_APP_KEY はプロジェクトの絶対パス（\'/\' 始まり）と衝突しない', () => {
     expect(CHAT_APP_KEY.startsWith('/')).toBe(false)
+  })
+
+  // ── 改善2（2026-08-29）: 単独チャット（ChatApp）のセッション別の鍵 ──────────────
+  // 仕様書のテスト4をそのまま固定する。
+  describe('sessionId（単独チャットのセッション別化）', () => {
+    it('projectDir が無く sessionId があれば `@chat-app:<sessionId>`', () => {
+      expect(turnKey(null, 'abc')).toBe('@chat-app:abc')
+      expect(turnKey(null, 'abc')).toBe(`${CHAT_APP_KEY}:abc`)
+    })
+
+    it('projectDir があれば、sessionId があってもプロジェクトを優先する', () => {
+      expect(turnKey('/p', 'abc')).toBe('/p')
+    })
+
+    it('どちらも無ければ従来どおり CHAT_APP_KEY', () => {
+      expect(turnKey(null)).toBe(CHAT_APP_KEY)
+    })
+
+    it('sessionId が違えば別の鍵になる（セッション別に独立する）', () => {
+      expect(turnKey(null, 'a')).not.toBe(turnKey(null, 'b'))
+    })
+
+    it('sessionId が空文字なら CHAT_APP_KEY へ落ちる（空鍵を作らない）', () => {
+      expect(turnKey(null, '')).toBe(CHAT_APP_KEY)
+    })
   })
 })
 

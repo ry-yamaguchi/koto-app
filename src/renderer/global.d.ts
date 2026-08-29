@@ -210,11 +210,13 @@ interface Window {
       migrate(projectDir: string, snapshotId: string): Promise<{
         ok: boolean; moved: string[]; restored: boolean; snapshotOk?: boolean; message?: string
       }>
+      /** withPublishDir: 最初から public/ を掘るか（改善1・2026-08-29。NewProjectModal.tsx が判断する）。 */
       createProject(
         parentDir: string,
         name: string,
         files: { path: string; content: string }[],
-        allowExisting?: boolean
+        allowExisting?: boolean,
+        withPublishDir?: boolean
       ): Promise<{ root: string; merged: boolean; skipped: string[] }>
     }
     term: {

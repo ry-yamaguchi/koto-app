@@ -44,9 +44,29 @@ const IDLE: TurnState = {
  *  projectDir は必ず絶対パス（'/' 始まり）なので、この文字列とは衝突しない。 */
 export const CHAT_APP_KEY = '@chat-app'
 
-/** projectDir から登録鍵を作る（null/undefined は単独チャット扱い）。 */
-export function turnKey(projectDir: string | null | undefined): string {
-  return projectDir ?? CHAT_APP_KEY
+/**
+ * projectDir・sessionId から登録鍵を作る。
+ *
+ * ── なぜ sessionId を足したか（改善2・2026-08-29）─────────────────────────
+ * ChatApp（単独チャット）は projectDir を持たないため、これまで全セッションが
+ * `CHAT_APP_KEY` という**1つの鍵**を共有していた（B-1b はプロジェクト別化止まりで、
+ * 単独チャットのセッション別化はまだだった）。そのため、あるセッションが応答中に
+ * 別のセッションへ切り替えても「考えています…」が付いてきて、待っていない
+ * セッションからも送信できなかった。ここを IDE（プロジェクト別）と同じ形に揃える。
+ *
+ * - projectDir があれば、それをそのまま鍵にする（**プロジェクトが最優先**。IDEモードでは
+ *   sessionId を渡さない＝ChatPanel の呼び出しは変えない・注意参照）。
+ * - projectDir が無く、sessionId があれば `${CHAT_APP_KEY}:${sessionId}`（単独チャットの
+ *   セッション別の鍵）。
+ * - どちらも無ければ、従来どおり `CHAT_APP_KEY`（互換のため残す。sessionId 無しの
+ *   呼び出しがあっても壊れない）。
+ */
+export function turnKey(projectDir: string | null | undefined, sessionId?: string): string {
+  // ?? のままにする（旧実装と同じ意味）: projectDir が null/undefined のときだけ次を見る。
+  // 空文字はここでは来ない想定だが、来ても projectDir 優先を崩さない（truthy 判定にしない）。
+  if (projectDir !== null && projectDir !== undefined) return projectDir
+  if (sessionId) return `${CHAT_APP_KEY}:${sessionId}`
+  return CHAT_APP_KEY
 }
 
 const turns = new Map<string, TurnState>()

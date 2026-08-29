@@ -590,11 +590,15 @@ export default function App() {
       )}
 
       <div className="flex-1 overflow-hidden">
-        {mode === 'chat' ? (
-          <div className="h-full fade-in bg-base">
-            <ChatApp apiKey={sakuraApiKey} onSetApiKey={setApiKey} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} />
-          </div>
-        ) : (
+        {/* ⚠️ ChatApp は**アンマウントせず隠す**（2026-08-29 実機で発覚）。
+            単独チャットの会話はまだこの ChatApp の React state が持ち主（B'-3c はプロジェクト
+            会話だけを main に移した）。IDE モードへの切替でアンマウントすると、走っている
+            ターンの返事の行き先とセッション保存の effect が消え、**返事が失われる**。
+            本修理（セッションの持ち主を main へ移す）は B'-3e。 */}
+        <div className={mode === 'chat' ? 'h-full fade-in bg-base' : 'hidden'}>
+          <ChatApp apiKey={sakuraApiKey} onSetApiKey={setApiKey} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} />
+        </div>
+        {mode === 'ide' && (
           <Group
             orientation="horizontal"
             id="sakura-ide-h"

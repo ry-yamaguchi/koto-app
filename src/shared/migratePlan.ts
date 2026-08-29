@@ -67,11 +67,32 @@ export function skipMigrationForTarget(target: string | null | undefined): boole
 /**
  * 移す必要があるか。**移すものが1つも無いなら、案内も出さない**（空のフォルダだけ作らない）。
  * `target` を渡すと、公開しないプロジェクトでは案内しない（`skipMigrationForTarget`）。
+ *
+ * ── 注意: ここは「プロジェクト直下に何かあるか」（件数）しか見ない ──────────────
+ * 実際に**何を**移すか（`plan.move`）までは見ていない。`.sakuraide.json` のような
+ * 隠しメタしか無い新規プロジェクトでも「要る」を返してしまう。案内を実際に出すかどうかの
+ * 最終判定は `shouldOfferMigration`（plan まで見る）で行う。
  */
 export function needsMigration(entries: readonly Entry[], target?: string | null): boolean {
   if (skipMigrationForTarget(target)) return false
   if (alreadyMigrated(entries)) return false
   return (entries ?? []).length > 0
+}
+
+/**
+ * 移す提案を実際に出すか。**移すもの（`plan.move`）が1件も無いなら出さない。**
+ *
+ * ── なぜ `needsMigration` だけでは足りないか（2026-08-29・0.3.52 実機確認）────────
+ * `needsMigration` はプロジェクト直下の**件数**だけで判定するため、`.sakuraide.json`
+ * （隠しメタ・公開対象ではない）しか無い新規プロジェクトでも「要る」と判定してしまう。
+ * このとき実際に移すもの（plan.move）は0件なのに、案内は「0件をその中へ移します」と
+ * 出てしまっていた（改善1-3）。ここで plan（実際に何を移すか）まで見て、0件なら出さない。
+ *
+ * 既に `public/` があるプロジェクトでは `needsMigration` の時点で false になっているので
+ * ここへは来ない＝既存プロジェクトの動きは変えない（影響は「public/ の無い空プロジェクト」だけ）。
+ */
+export function shouldOfferMigration(plan: MigratePlan): boolean {
+  return plan.move.length > 0
 }
 
 /** 案内に出す文面（拒否はできないので、「何が起きるか」だけを書く）。 */

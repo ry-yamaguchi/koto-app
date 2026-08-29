@@ -121,8 +121,10 @@ const CONSUMERS: { name: string; file: string; must: string; mustNot: string; vi
   },
   {
     // 新規プロジェクトも最初からこの形。移行とまったく同じ判断を使う。
+    // 改善1（2026-08-29）: 実処理は project:create（main/ipc/fs.ts）から
+    // projectCreateFs.ts（electron非依存・実ファイルでテストできる）へ切り出した。
     name: '新規プロジェクトの雛形',
-    file: 'src/main/ipc/fs.ts',
+    file: 'src/main/projectCreateFs.ts',
     must: 'placeInProject(f.path,',
     mustNot: 'path.join(root, f.path)',
     // まだ存在しないプロジェクトを作るので、ディスクを見る窓口は通らない。
@@ -232,6 +234,14 @@ describe('移行（既存プロジェクトを新しい形へ）', () => {
 
   it('空になったフォルダを片づける（「移行済み」と誤判定されないように）', () => {
     expect(read('src/main/ipc/migrate.ts')).toContain('fs.rmdirSync(dest)')
+  })
+
+  // 改善1-3（2026-08-29）: 移すものが0件なら案内しない（0.3.52 実機確認）。
+  // 中身（純関数）の検証は tests/migratePlan.test.ts。ここは「実際に呼ばれているか」を固定する。
+  it('project:migrateCheck は plan まで見て、移すもの0件なら needed:false へ倒す', () => {
+    const src = read('src/main/ipc/migrate.ts')
+    expect(src).toContain('const plan = planMigrate(entries, isPublished)')
+    expect(src).toContain('if (!shouldOfferMigration(plan)) return { needed: false, plan }')
   })
 
   it('移行でファイルが動いたら、開いているタブを閉じる', () => {
@@ -439,5 +449,36 @@ describe('AIが書いたファイルが public/ の外へ出ない（2026-08-27 
     expect(s).toContain('const shown = visible.filter(e => publishedAt(e))')
     expect(s).toContain('const kept = visible.filter(e => !publishedAt(e))')
     expect(s).toContain('const published = publishedAt(entry)')
+  })
+})
+
+// ── 改善1（2026-08-29）: 新規プロジェクトを最初から public/ 構成で作る ─────────────
+// 実ファイル・mkdtemp での検証は tests/projectCreateFs.test.ts（project:create の中身、
+// electron 非依存に切り出した projectCreateFs.ts）。ここは呼び出し側の配線を固定する。
+describe('新規プロジェクトを最初から public/ 構成で作る（改善1）', () => {
+  it('project:create（main）は実処理を projectCreateFs.ts の createProjectOnDisk へ委ねる', () => {
+    const s = read('src/main/ipc/fs.ts')
+    expect(s).toContain("import { createProjectOnDisk } from '../projectCreateFs'")
+    expect(s).toContain('withPublishDir = false')
+    expect(s).toContain('createProjectOnDisk(parentDir, name, files, allowExisting, withPublishDir)')
+  })
+
+  it('NewProjectModal: チャットに初期ファイル生成を頼むときだけ withPublishDir を有効にする', () => {
+    const s = read('src/renderer/components/NewProjectModal.tsx')
+    expect(s).toContain("import { skipMigrationForTarget } from '../../shared/migratePlan'")
+    // useChat が false（まっさら／ローカル雛形のみ）なら常に false
+    expect(s).toContain('const withPublishDir = useChat && !skipMigrationForTarget(target) && target !== \'sakura-rental\'')
+    expect(s).toContain('window.electronAPI.fs.createProject(parentDir, n, files, allowExisting, withPublishDir)')
+  })
+
+  // ⚠️ さくらのレンタルサーバは対象から除外している（実装ノート・報告参照）。
+  // newProjectRequest.ts の sitePrompt/targetPrompt が「public/」「app/」を自分で
+  // 相対パスへ書き添える前提になっているため、先に public/ を掘って書き込みの根を
+  // そこへ寄せると二重化（public/public/…）と app/ が書けなくなる問題が起きる
+  // （write_file は書き込みの根の外への脱出を拒む・aiTools.ts の resolveInProject）。
+  it('さくらのレンタルサーバの指示文は、public/ を自分で書く前提のままにしてある', () => {
+    const s = read('src/renderer/newProjectRequest.ts')
+    expect(s).toContain('サイト一式を public/ に置く')
+    expect(s).toContain('公開ファイルは public/ に置く')
   })
 })

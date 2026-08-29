@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
 import SakuraLogo from './SakuraLogo'
 import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
@@ -17,6 +17,7 @@ import BrainToggle from './BrainToggle'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { CHAT_TEXT_WRAP } from '../textWrap'
 import { timelineMarks, bubbleTime } from '../../shared/chatTime'
+import { subscribe, getSnapshot, loadingKeys, turnKey } from '../chatTurnRegistry'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
 function GeoSquares({ className = '' }: { className?: string }) {
@@ -95,6 +96,11 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
 
   const activeSession = sessions.find(s => s.id === activeId) ?? sessions[0]
 
+  // 改善2（2026-08-29）: 実行状態の置き場（chatTurnRegistry.ts）を購読し、稼働中のセッションに
+  // ⏳ を出す（Sidebar.tsx の作法と同じ）。値そのものは使わず、変わるたびに再描画させるためだけに呼ぶ。
+  useSyncExternalStore(subscribe, getSnapshot)
+  const loadingSessionKeys = new Set(loadingKeys())
+
   // モードB（Claudeキーのみ）でもこの画面を表示できるようにするためのゲート判定（ChatPanel.tsx と同じ方式）。
   // ※ 単独チャットはプロジェクト文脈が無くClaudeのツール（ファイル操作等）を使えないため、実際の送信は
   //   従来どおりAI Engine経路のまま（useAiChat.ts が toolsProjectDir=null の場合に案内する）。
@@ -121,6 +127,9 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     maxRounds: 12,
     buildSystemPrompt: () => CHAT_CONTEXT,
     toolsProjectDir: null,
+    // 改善2（2026-08-29）: セッション別に実行状態を持たせる（turnKey(null, sessionId)）。
+    // これで待っていない会話（他のセッション）からも送信できる（並列。IDEと同じ意味論）。
+    sessionId: activeId,
     buildExecuteOpts: () => ({}),
     getHistory: () => activeSession?.messages ?? [],
     updateShown: (updater) => {
@@ -330,6 +339,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
             >
               <span className={`flex-none w-1.5 h-1.5 rounded-full ${s.id === activeId ? 'sakura-gradient' : 'bg-line'}`} />
               <span className="flex-1 text-[13px] truncate">{s.title}</span>
+              {loadingSessionKeys.has(turnKey(null, s.id)) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
               <button
                 onClick={e => { e.stopPropagation(); deleteSession(s.id) }}
                 className="flex-none opacity-0 group-hover:opacity-100 text-ink-muted hover:text-brand-red text-xs px-1 transition-all"

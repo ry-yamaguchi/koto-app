@@ -78,6 +78,15 @@ export type UseAiChatArgs = {
   buildSystemPrompt: () => string
   /** toolsFor() の第1引数（ChatApp=null / ChatPanel=projectDir） */
   toolsProjectDir: string | null
+  /**
+   * 単独チャット（ChatApp）のセッションID（改善2・2026-08-29）。
+   *
+   * `turnKey(toolsProjectDir, sessionId)` の第2引数に渡り、実行状態
+   * （isLoading・statusNote・routedModel・⏹）をセッション別にする。`toolsProjectDir` が
+   * あるとき（ChatPanel）は turnKey がプロジェクトを優先するので、この値は使われない。
+   * **ChatPanel は渡さない**（省略時は undefined＝従来どおり `CHAT_APP_KEY` 単独の鍵。互換のため）。
+   */
+  sessionId?: string
   /** executeTool に渡す追加オプションを作る（search は hook が持つので除く）: ChatApp=()=>({}) / ChatPanel=()=>({ projectDir, applyFile: onApplyFile }) */
   buildExecuteOpts: () => Record<string, unknown>
   /** ツール実行前の承認フック。undefined なら常に許可（ChatApp）。ChatPanel は write_file/run_command の確認UIをここに実装。戻り値: 許可なら null、拒否なら tool 結果として返す文字列 */
@@ -116,7 +125,7 @@ export type UseAiChatArgs = {
 
 export function useAiChat(args: UseAiChatArgs) {
   const {
-    apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
+    apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, sessionId,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage,
     errorPrefix = '', twoStageVision = false, buildRagBlock, onExternalFilesChanged,
     onMessageEvent,
@@ -135,13 +144,13 @@ export function useAiChat(args: UseAiChatArgs) {
   useSyncExternalStore(subscribe, getSnapshot)
   // 「いま見ているプロジェクト」の鍵。画面に出す isLoading/statusNote/routedModel・⏹・経過秒は
   // すべてこの鍵のもの（進行中のターン自身が縛られている鍵とは別物。ターンの鍵は send() 側で固定する）。
-  const viewKey = turnKey(toolsProjectDir)
+  const viewKey = turnKey(toolsProjectDir, sessionId)
   const { isLoading, statusNote, routedModel } = getTurn(viewKey)
   // setRoutedModel はモデル選択欄からの手動リセットなど、画面の操作から直接呼ばれる。
   // 「いま見ているプロジェクト」の鍵へ書く（画面から呼ばれる操作なので、現在の view の話でよい）。
   const setRoutedModel = useCallback((value: string | null) => {
-    updateTurn(turnKey(toolsProjectDir), { routedModel: value })
-  }, [toolsProjectDir])
+    updateTurn(turnKey(toolsProjectDir, sessionId), { routedModel: value })
+  }, [toolsProjectDir, sessionId])
   // 停滞検知・経過秒は表示専用のローカル状態のまま（登録先を増やす必要が無いため）。
   // 中身は「いま見ているプロジェクト」の startedAt/lastActivityAt から毎秒計算し直す（下の effect）。
   const [stalled, setStalled] = useState(false)
@@ -209,14 +218,14 @@ export function useAiChat(args: UseAiChatArgs) {
   // どちらも「画面がどう変わるか」自体は applyToMessages（同じ純粋関数）に委ねる。
   //
   // ── B-1b: scalar（loading/status/routed）の書き先 ────────────────────────
-  // ここで turnKey(toolsProjectDir) を読んでいるのは「いま見ているプロジェクト」ではなく、
-  // **この emit/viewOnlyEmit を作った render の toolsProjectDir**（この関数が生きている間ずっと
-  // 変わらない）。emit・viewOnlyEmit は toolsProjectDir が変わるたびに作り直される（下の依存配列）ので、
+  // ここで turnKey(toolsProjectDir, sessionId) を読んでいるのは「いま見ているプロジェクト」ではなく、
+  // **この emit/viewOnlyEmit を作った render の toolsProjectDir・sessionId**（この関数が生きている間
+  // ずっと変わらない）。emit・viewOnlyEmit はどちらかが変わるたびに作り直される（下の依存配列）ので、
   // send() が呼ばれた瞬間に使われる emit は、その後ユーザーが別のプロジェクトへ切り替えても、
   // 送信した瞬間の鍵を指したまま変わらない（JS のクロージャは作られた後で書き換わらないため。
   // useAiChat.ts の send() 冒頭で turnOpts を固定するのと同じ理屈）。
   const emit = useCallback((ev: ChatEvent<ChatMessage>) => {
-    const key = turnKey(toolsProjectDir)
+    const key = turnKey(toolsProjectDir, sessionId)
     switch (ev.kind) {
       case 'append':
       case 'replaceLast':
@@ -231,12 +240,12 @@ export function useAiChat(args: UseAiChatArgs) {
       case 'status': updateTurn(key, { statusNote: ev.value }); break
       case 'routed': updateTurn(key, { routedModel: ev.value }); break
     }
-  }, [onMessageEvent, updateShown, toolsProjectDir])
+  }, [onMessageEvent, updateShown, toolsProjectDir, sessionId])
 
   // main が書き主のターン（chatTurn.start の onEvent）専用。ops を送り返さない（上のコメント参照）。
   const viewOnlyEmit = useCallback((ev: ChatEvent<ChatMessage>) => {
     // scalar の鍵の決め方は emit と同じ（このコールバックが生きている間の toolsProjectDir で固定）。
-    const key = turnKey(toolsProjectDir)
+    const key = turnKey(toolsProjectDir, sessionId)
     switch (ev.kind) {
       case 'append':
       case 'replaceLast':
@@ -253,7 +262,7 @@ export function useAiChat(args: UseAiChatArgs) {
       case 'status': updateTurn(key, { statusNote: ev.value }); break
       case 'routed': updateTurn(key, { routedModel: ev.value }); break
     }
-  }, [toolsProjectDir, updateShown])
+  }, [toolsProjectDir, sessionId, updateShown])
 
   // 末尾の吹き出し操作ヘルパー（emit を呼ぶだけの薄い包み。呼び出し側は書き換えない）
   const appendBubble = useCallback((msg: ChatMessage) => emit({ kind: 'append', msg }), [emit])
@@ -353,9 +362,9 @@ export function useAiChat(args: UseAiChatArgs) {
     const history = getHistory()
     const plan = planManualCompact(history)
     if (!plan) return
-    // 呼び出し時点の toolsProjectDir の鍵（emit の scalar と同じものへ書くための buildPorts 引数。
-    // 詳しい理由は send() 冒頭のコメント参照）。
-    const key = turnKey(toolsProjectDir)
+    // 呼び出し時点の toolsProjectDir・sessionId の鍵（emit の scalar と同じものへ書くための
+    // buildPorts 引数。詳しい理由は send() 冒頭のコメント参照）。
+    const key = turnKey(toolsProjectDir, sessionId)
     emit({ kind: 'loading', value: true })
     try {
       const r = await runCompact({ apiKey, model }, buildPorts(key), history, plan)
@@ -369,7 +378,7 @@ export function useAiChat(args: UseAiChatArgs) {
     } finally {
       emit({ kind: 'loading', value: false })
     }
-  }, [isLoading, getHistory, apiKey, model, appendBubble, emit, toolsProjectDir])
+  }, [isLoading, getHistory, apiKey, model, appendBubble, emit, toolsProjectDir, sessionId])
 
   // Claude頭脳モード（C2a/C2b/C2d）: Agent SDK 経路での1ターン送信。SDK のストリームイベント
   // （session/text/tool/result/error/openPreview）をチャットの吹き出しへ反映する。
@@ -380,7 +389,10 @@ export function useAiChat(args: UseAiChatArgs) {
     // 呼び出し時点の projectDir（send() から渡された、送信した瞬間のプロジェクト）の鍵。
     // このターンの ⏹ 登録・活動通知はここへ書く（emit の scalar も、この呼び出しの間は
     // 同じ値の toolsProjectDir を指しているので一致する。詳しくは send() 冒頭のコメント参照）。
-    const key = turnKey(projectDir)
+    // ※ Claude経路は toolsProjectDir が無いと呼ばれない（send() の分岐）ので sessionId は
+    //   実質使われないが、鍵の作り方は他と揃える（turnKey は projectDir があれば優先するので
+    //   結果は変わらない）。
+    const key = turnKey(projectDir, sessionId)
     emit({ kind: 'loading', value: true })
     let assistantOpen = false
     let textAcc = ''
@@ -483,7 +495,7 @@ export function useAiChat(args: UseAiChatArgs) {
       emit({ kind: 'loading', value: false })
       emit({ kind: 'status', value: '' })
     }
-  }, [appendBubble, replaceLast, errorPrefix, buildExecuteOpts, apiKey, onExternalFilesChanged, emit])
+  }, [appendBubble, replaceLast, errorPrefix, buildExecuteOpts, apiKey, onExternalFilesChanged, emit, sessionId])
 
   /**
    * @param aiOnlyNote 画面には出さず、AI にだけ添える一言（2026-08-19）。
@@ -502,12 +514,12 @@ export function useAiChat(args: UseAiChatArgs) {
     // なぜ send() の冒頭で固定するか: このあとの処理は非同期（await が並ぶ）で、その間に
     // 利用者が別のプロジェクトへ切り替えると toolsProjectDir（このフックの props）は
     // 新しい値に変わる。もし ⏹ の登録や「トークンが届いた」の通知を、そのつど
-    // turnKey(toolsProjectDir) で決め直していたら、切替後は**新しいプロジェクトの鍵**に
+    // turnKey(toolsProjectDir, sessionId) で決め直していたら、切替後は**新しいプロジェクトの鍵**に
     // 書いてしまい、こっちのターンの ⏹ が消える／別プロジェクトの実行状態を乱してしまう
     // （turnOpts を送信時に固定するのと同じ理由＝2026-08-24「A の作業が B に付いてくる」の
     // 実害と同じ形）。ここで一度だけ読み、以後はこの key を使い続けることで、
     // **始めたプロジェクトの中で終わる**（並列に走らせる形の土台でもある）。
-    const key = turnKey(toolsProjectDir)
+    const key = turnKey(toolsProjectDir, sessionId)
     const endActivity = beginActivity('AIが応答中')
     try {
 
@@ -662,7 +674,7 @@ export function useAiChat(args: UseAiChatArgs) {
       endActivity()
     }
   }, [
-    isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir,
+    isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, sessionId,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage, errorPrefix,
     twoStageVision, routedModel, appendBubble, buildRagBlock, sendViaClaude, emit, viewOnlyEmit,
   ])

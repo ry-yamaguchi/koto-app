@@ -11,7 +11,7 @@ import { ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
-import { planMigrate, needsMigration, type Entry, type MigratePlan } from '../../shared/migratePlan'
+import { planMigrate, needsMigration, shouldOfferMigration, type Entry, type MigratePlan } from '../../shared/migratePlan'
 import { isPublished } from '../../shared/publishExclude'
 import { snapshotBeforeChange } from '../backup/store'
 
@@ -45,7 +45,10 @@ export function registerMigrateHandlers(): void {
     }
     const entries = readEntries(projectDir)
     if (!needsMigration(entries, readTarget(projectDir))) return { needed: false, plan: { move: [], keep: [] } as MigratePlan }
-    return { needed: true, plan: planMigrate(entries, isPublished) }
+    const plan = planMigrate(entries, isPublished)
+    // 改善1-3（2026-08-29）: 移すものが1件も無ければ案内しない（「0件をその中へ移します」を防ぐ）。
+    if (!shouldOfferMigration(plan)) return { needed: false, plan }
+    return { needed: true, plan }
   })
 
   /**

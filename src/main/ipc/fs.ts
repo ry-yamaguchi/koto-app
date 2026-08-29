@@ -9,8 +9,7 @@ import type { IpcDeps } from './types'
 // rel はプロジェクトルートからの相対パス。絶対パスや .. での脱出は拒否する。
 import { destinationDir, uniqueName, isImageFileName, type AssetPurpose } from '../../shared/assetImport'
 import { canTrash } from '../../shared/trashGuard'
-import { placeInProject, topSegment } from '../../shared/publishRoot'
-import { isPublished } from '../../shared/publishExclude'
+import { createProjectOnDisk } from '../projectCreateFs'
 
 function confineToProject(projectDir: string, rel: string): string {
   if (path.isAbsolute(rel)) throw new Error('不正なパスです（絶対パスは指定できません）')
@@ -346,6 +345,8 @@ export function registerFsHandlers(deps: IpcDeps) {
 
   // Create a new project: folder + initial files
   // allowExisting: when true, write into an existing folder WITHOUT overwriting files that already exist.
+  // withPublishDir: 最初から public/ を掘っておくか（改善1・2026-08-29）。実処理は
+  // projectCreateFs.ts（electron非依存・実ファイルでテストできる）に切り出してある。
   ipcMain.handle(
     'project:create',
     async (
@@ -353,33 +354,8 @@ export function registerFsHandlers(deps: IpcDeps) {
       parentDir: string,
       name: string,
       files: { path: string; content: string }[],
-      allowExisting = false
-    ) => {
-      const root = path.join(parentDir, name)
-      const alreadyExisted = fs.existsSync(root)
-      if (alreadyExisted && !allowExisting) {
-        throw new Error(`既に同名のフォルダが存在します: ${root}`)
-      }
-      fs.mkdirSync(root, { recursive: true })
-      const skipped: string[] = []
-      for (const f of files ?? []) {
-        // 新しいプロジェクトは最初から`public/`の形にする（2026-08-20）。
-        // 公開されるもの（index.html 等）はその中へ、公開されないもの（Dockerfile・
-        // 案内ファイル等）は直下へ。**判断は移行とまったく同じ**（placeInProject）。
-        const top = topSegment(f.path)
-        const rel = placeInProject(f.path, isPublished(top, String(f.path).includes('/')))
-        // prevent path traversal outside root
-        const full = path.normalize(path.join(root, rel))
-        if (!full.startsWith(root + path.sep) && full !== root) continue
-        // when merging into an existing folder, never clobber the user's files
-        if (alreadyExisted && fs.existsSync(full)) {
-          skipped.push(rel)
-          continue
-        }
-        fs.mkdirSync(path.dirname(full), { recursive: true })
-        fs.writeFileSync(full, f.content ?? '', 'utf-8')
-      }
-      return { root, merged: alreadyExisted, skipped }
-    }
+      allowExisting = false,
+      withPublishDir = false
+    ) => createProjectOnDisk(parentDir, name, files, allowExisting, withPublishDir)
   )
 }

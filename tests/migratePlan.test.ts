@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planMigrate, alreadyMigrated, needsMigration, migrateNotice, migrateDone, migrateFailed , skipMigrationForTarget } from '../src/shared/migratePlan'
+import { planMigrate, alreadyMigrated, needsMigration, shouldOfferMigration, migrateNotice, migrateDone, migrateFailed , skipMigrationForTarget } from '../src/shared/migratePlan'
 import { PUBLISH_DIR, placeInProject, topSegment } from '../src/shared/publishRoot'
 import { isPublished, MATERIALS_DIR } from '../src/shared/publishExclude'
 
@@ -56,6 +56,35 @@ describe('いつ移行するか', () => {
 
   it('中身があれば案内を出す', () => {
     expect(needsMigration([P('index.html')])).toBe(true)
+  })
+})
+
+// ── 改善1-3（2026-08-29）: 移すものが0件なら、案内そのものを出さない ──────────────
+// needsMigration は「プロジェクト直下に何か（件数）があるか」しか見ないため、
+// .sakuraide.json のような隠しメタしか無い新規プロジェクトでも true を返してしまう。
+// このとき実際に移すもの（plan.move）は0件なのに、案内が「0件をその中へ移します」と
+// 出てしまっていた（0.3.52 の実機確認）。shouldOfferMigration は plan まで見て、この
+// 空振りを止める最終判定（仕様書のテスト2・ミューテーション試験対象）。
+describe('shouldOfferMigration（移すもの0件なら案内しない）', () => {
+  it('move が空なら出さない（.sakuraide.json だけの新規プロジェクト相当）', () => {
+    expect(shouldOfferMigration({ move: [], keep: ['.sakuraide.json'] })).toBe(false)
+  })
+
+  it('keep が空でも move が空なら出さない', () => {
+    expect(shouldOfferMigration({ move: [], keep: [] })).toBe(false)
+  })
+
+  it('move が1件でもあれば出す', () => {
+    expect(shouldOfferMigration({ move: ['index.html'], keep: [] })).toBe(true)
+  })
+
+  it('実際の判定（planMigrate）と組み合わせても同じ結果になる', () => {
+    // .sakuraide.json 相当（公開対象ではない名前）しか無いプロジェクト
+    const metaOnly = planMigrate([P('.sakuraide.json')], judge)
+    expect(shouldOfferMigration(metaOnly)).toBe(false)
+    // 公開されるものが1件でもあれば出す
+    const withContent = planMigrate([P('.sakuraide.json'), P('index.html')], judge)
+    expect(shouldOfferMigration(withContent)).toBe(true)
   })
 })
 
