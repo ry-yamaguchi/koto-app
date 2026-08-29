@@ -153,12 +153,16 @@ export function registerChatTurnHandlers(_deps: IpcDeps): void {
     wc.once('destroyed', onGone)
     wc.on('did-navigate', onGone)
 
+    // ターンの結末（エラーで終わったか）。出来事（chatTurn:event）は invoke の完了に追い越されて
+    // 失われうるため、結末は invoke の返り値でも伝える（chatTurn.ts の runEngineTurn コメント参照・B-2）。
+    let endedWithError = false
     try {
-      await runEngineTurn(payload.spec, buildMainPorts(turnId, wc, payload, entry))
+      endedWithError = (await runEngineTurn(payload.spec, buildMainPorts(turnId, wc, payload, entry))).endedWithError
     } catch (e) {
       // chatTurn.ts 自身がエラーを会話の吹き出しにするので、ここへ来るのは想定外のバグのみ。
       // ハンドラの外へ投げ直さず（invoke を reject させない）、ログにだけ残す（仕様書の注記）。
       console.error('[chatTurn:start] runEngineTurn failed', e)
+      endedWithError = true // 想定外のバグで終わったターンも「見てほしい」対象
     } finally {
       // 破棄済みの WebContents はメソッド呼び出し自体が例外を投げることがある
       // （windowSend.ts の isDestroyed() と同じ注意）。触れなくても実害は無いので無視する。
@@ -166,7 +170,7 @@ export function registerChatTurnHandlers(_deps: IpcDeps): void {
       entry.bridge.rejectAll('ターンが終了しました')
       turns.delete(turnId)
     }
-    return { ok: true }
+    return { ok: true, endedWithError }
   })
 
   // 進行中の応答を止める（sakura:chat-abort と同じ考え方）。turnId が無ければ何もしない。

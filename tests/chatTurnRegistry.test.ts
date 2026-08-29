@@ -64,8 +64,14 @@ describe('getTurn', () => {
     const t = getTurn(freshKey('idle'))
     expect(t).toEqual({
       isLoading: false, statusNote: '', routedModel: null,
-      startedAt: null, lastActivityAt: 0, abort: null,
+      startedAt: null, lastActivityAt: 0, abort: null, attention: null,
     })
+  })
+
+  // ── B-2: 「見てほしい」合図（⚠️） ──────────────────────────────────────
+  // attention は未登録の鍵では null（＝アイドルの既定値。IDLE に含まれる）。
+  it('未登録の鍵は attention も null', () => {
+    expect(getTurn(freshKey('idle-attention')).attention).toBeNull()
   })
 })
 
@@ -89,6 +95,19 @@ describe('updateTurn: 鍵ごとの独立', () => {
     expect(t.isLoading).toBe(true) // 消えていない
     expect(t.routedModel).toBe('qwen3-coder') // 消えていない
     expect(t.statusNote).toBe('📚 資料を確認しています…')
+  })
+
+  // ── B-2: 「見てほしい」合図（⚠️） ──────────────────────────────────────
+  it('updateTurn で attention を \'approval\' に設定できる', () => {
+    const k = freshKey('attention-approval')
+    updateTurn(k, { attention: 'approval' })
+    expect(getTurn(k).attention).toBe('approval')
+  })
+
+  it('updateTurn で attention を \'error\' に設定できる', () => {
+    const k = freshKey('attention-error')
+    updateTurn(k, { attention: 'error' })
+    expect(getTurn(k).attention).toBe('error')
   })
 })
 
@@ -121,6 +140,32 @@ describe('resetTurn', () => {
     const k = freshKey('reset-idle')
     resetTurn(k)
     expect(getTurn(k)).toEqual(getTurn(freshKey('never-touched')))
+  })
+
+  // ── B-2: attention は 'error' だけ引き継ぐ・'approval' は消える ──────────────
+  // 'error' はターンの結果（見ていなければ知らせ続ける必要がある）、'approval' はそのターンの
+  // 最中だけの状態（ダイアログが閉じれば一緒に消えるのが正しい）。chatTurnRegistry.ts のコメント参照。
+  it('resetTurn は attention が \'error\' のときは残す', () => {
+    const k = freshKey('reset-attention-error')
+    updateTurn(k, { isLoading: true, attention: 'error' })
+    resetTurn(k)
+    expect(getTurn(k).attention).toBe('error')
+  })
+
+  it('resetTurn は attention が \'approval\' のときは消す', () => {
+    const k = freshKey('reset-attention-approval')
+    updateTurn(k, { isLoading: true, attention: 'approval' })
+    resetTurn(k)
+    expect(getTurn(k).attention).toBeNull()
+  })
+
+  it('resetTurn しても routedModel は従来どおり残る（attention の追加で崩れていないこと）', () => {
+    const k = freshKey('reset-attention-routed')
+    updateTurn(k, { isLoading: true, routedModel: 'qwen3-coder', attention: 'error' })
+    resetTurn(k)
+    const t = getTurn(k)
+    expect(t.routedModel).toBe('qwen3-coder')
+    expect(t.attention).toBe('error')
   })
 })
 
@@ -199,6 +244,18 @@ describe('subscribe / getSnapshot', () => {
     expect(calls).toBe(0)
     updateTurn('/p', { isLoading: true, lastActivityAt: Date.now() })
     expect(calls).toBe(1)
+    un()
+  })
+
+  // ── B-2: attention の変更で listener が呼ばれる（Sidebar・ChatApp の再描画に必要） ──────
+  it('attention の変更で listener が呼ばれる', () => {
+    const k = freshKey('subscribe-attention')
+    let calls = 0
+    const un = subscribe(() => { calls++ })
+    updateTurn(k, { attention: 'approval' })
+    expect(calls).toBe(1)
+    updateTurn(k, { attention: null })
+    expect(calls).toBe(2)
     un()
   })
 

@@ -442,7 +442,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         onActivity: () => void
         onAsk: (path: string, args: unknown[]) => Promise<unknown> | unknown
       },
-    ): Promise<{ ok: boolean }> => {
+    ): Promise<{ ok: boolean; endedWithError?: boolean }> => {
       const { turnId } = payload
       const eventCh = `chatTurn:event:${turnId}`
       const askCh = `chatTurn:ask:${turnId}`
@@ -466,7 +466,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }
       ipcRenderer.on(eventCh, onEvent)
       ipcRenderer.on(askCh, onAsk)
-      return (ipcRenderer.invoke('chatTurn:start', payload) as Promise<{ ok: boolean }>).finally(() => {
+      return (ipcRenderer.invoke('chatTurn:start', payload) as Promise<{ ok: boolean; endedWithError?: boolean }>).finally(() => {
         ipcRenderer.removeListener(eventCh, onEvent)
         ipcRenderer.removeListener(askCh, onAsk)
       })

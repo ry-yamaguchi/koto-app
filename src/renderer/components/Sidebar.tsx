@@ -9,7 +9,7 @@ import { useFileDrag } from '../hooks/useFileDrag'
 import { isPublished, isPublishedTop } from '../../shared/publishExclude'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { isSubmitEnter } from '../keyInput'
-import { subscribe, getSnapshot, loadingKeys } from '../chatTurnRegistry'
+import { subscribe, getSnapshot, loadingKeys, getTurn } from '../chatTurnRegistry'
 
 interface FileEntry {
   name: string
@@ -608,7 +608,11 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                       >
                         <span className="w-3 flex-none text-sakura">{p === currentDir ? '✓' : ''}</span>
                         <span className="truncate">{p.split('/').pop()}</span>
-                        {loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
+                        {/* ⚠️（見てほしい）は ⏳（作業中）より優先。見ているプロジェクト（currentDir）には
+                            出さない＝吹き出しやダイアログ自体が見えているから（B-2）。 */}
+                        {p !== currentDir && getTurn(p).attention ? (
+                          <span className="flex-none text-[11px]" title={getTurn(p).attention === 'approval' ? 'AIが許可を待っています' : 'エラーで止まりました。開いて確認してください'}>⚠️</span>
+                        ) : loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
                       </button>
                       {/* プロジェクト削除（ワークスペース配下のみ表示。「最近開いた場所」は任意のフォルダを
                           指し得るため対象外＝Finderで操作してもらう）。
@@ -632,7 +636,10 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                     >
                       <span className="w-3 flex-none text-sakura">{p === currentDir ? '✓' : ''}</span>
                       <span className="truncate">{p.split('/').pop()}</span>
-                      {loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
+                      {/* ⚠️ 優先・見ているプロジェクトには出さない（上のワークスペース一覧と同じ理由） */}
+                      {p !== currentDir && getTurn(p).attention ? (
+                        <span className="flex-none text-[11px]" title={getTurn(p).attention === 'approval' ? 'AIが許可を待っています' : 'エラーで止まりました。開いて確認してください'}>⚠️</span>
+                      ) : loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
                     </button>
                   ))}
                   <div className="border-t border-line-soft mt-1 pt-1">

@@ -18,6 +18,7 @@ export type ChatEvent<M> =
   | { kind: 'loading'; value: boolean }
   | { kind: 'status'; value: string }
   | { kind: 'routed'; value: string | null }
+  | { kind: 'attention'; value: 'approval' | 'error' | null } // 「見てほしい」合図。実行状態なので持ち主は chatTurnRegistry
 
 /**
  * 出来事を「メッセージ列」に当てる（メッセージに関係しない出来事なら prev をそのまま返す）。
@@ -85,6 +86,9 @@ export function applyEvent<M extends { at?: string }>(
       return { ...view, statusNote: ev.value }
     case 'routed':
       return { ...view, routedModel: ev.value }
+    case 'attention':
+      // attention は chatTurnRegistry が持ち主。ChatView には反映しない。新しいオブジェクトを返す約束だけ守る。
+      return { ...view }
   }
 }
 

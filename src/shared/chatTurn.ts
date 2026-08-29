@@ -281,7 +281,14 @@ async function compactIfNeeded(
  *
  * @param aiOnlyNote は spec.assetBlock として渡されている（画面には出さず、AI にだけ添える一言）。
  */
-export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts): Promise<void> {
+/**
+ * 返り値 `endedWithError`: このターンがエラーで終わったか（B-2）。
+ * catch は 'attention' の出来事も送るが、main 実行のターンでは**完了（invoke の解決）が
+ * 末尾の出来事を追い越して届くと、preload が購読を先に外して出来事が失われる**
+ * （preload.ts の chatTurn.start・useAiChat.ts の finally の loading:false と同じ競合）。
+ * そのため結末は invoke の結果としても返し、呼び出し側（useAiChat の send）が重ねて立てる。
+ */
+export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts): Promise<{ endedWithError: boolean }> {
   const {
     rawText, images, assetBlock, apiKey, model, models, maxRounds, toolsProjectDir,
     errorPrefix, twoStageVision, routedModel, hasRag, turnOpts, snapshotId, snapshotLabel,
@@ -295,7 +302,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     const budgetMsg: TurnMessage = { role: 'assistant', content: `🛑 ${budget.message}` }
     ports.emit({ kind: 'append', msg: userMsg })
     ports.emit({ kind: 'append', msg: budgetMsg })
-    return
+    return { endedWithError: false } // 上限到達は案内であってエラーではない（⚠️ は立てない）
   }
 
   // 画像があり選択中モデルが画像非対応な場合の扱い：
@@ -336,7 +343,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     const summaryMsg = await compactIfNeeded(spec, ports, historyBefore)
     if (summaryMsg && 'aborted' in summaryMsg) {
       ports.emit({ kind: 'append', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
-      return
+      return { endedWithError: false } // ⏹ 停止はエラーではない
     }
     if (summaryMsg) {
       ports.emit({ kind: 'append', msg: { role: 'assistant', content: summaryMsg.content, summary: summaryMsg.summary } })
@@ -439,11 +446,11 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       )
       if (visionAborted) {
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
-        return
+        return { endedWithError: false } // ⏹ 停止はエラーではない
       }
       if (!descAcc.trim()) {
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: '（画像の読み取りに失敗しました。もう一度お試しください）' } })
-        return
+        return { endedWithError: false } // やり直しの案内で終える（⚠️ を立てるほどではない）
       }
       userContent = apiText + '\n\n# 添付画像の内容（AIによる読み取り）\n' + descAcc
     } else if (switched) {
@@ -740,9 +747,12 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     }
   } catch (err: any) {
     ports.emit({ kind: 'append', msg: { role: 'assistant', content: errorPrefix + ports.h.formatChatError(err?.message ?? String(err)) } })
+    ports.emit({ kind: 'attention', value: 'error' }) // 見ていない会話でも気づけるよう ⚠️ の印を付ける（B-2）。見ている会話では UI が出さない
+    return { endedWithError: true } // 出来事は追い越しで失われうるので、結末は返り値でも伝える（関数コメント参照）
   } finally {
     ports.setAbort(null)
     ports.emit({ kind: 'loading', value: false })
     ports.emit({ kind: 'status', value: '' })
   }
+  return { endedWithError: false }
 }

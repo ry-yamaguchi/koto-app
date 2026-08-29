@@ -17,7 +17,7 @@ import BrainToggle from './BrainToggle'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { CHAT_TEXT_WRAP } from '../textWrap'
 import { timelineMarks, bubbleTime } from '../../shared/chatTime'
-import { subscribe, getSnapshot, loadingKeys, turnKey } from '../chatTurnRegistry'
+import { subscribe, getSnapshot, loadingKeys, turnKey, getTurn } from '../chatTurnRegistry'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
 function GeoSquares({ className = '' }: { className?: string }) {
@@ -339,7 +339,11 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
             >
               <span className={`flex-none w-1.5 h-1.5 rounded-full ${s.id === activeId ? 'sakura-gradient' : 'bg-line'}`} />
               <span className="flex-1 text-[13px] truncate">{s.title}</span>
-              {loadingSessionKeys.has(turnKey(null, s.id)) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
+              {/* ⚠️（見てほしい）は ⏳（作業中）より優先。見ているセッション（activeId）には出さない
+                  ＝エラーの吹き出し自体が見えているから（Sidebar.tsx と同じ作法・B-2）。 */}
+              {s.id !== activeId && getTurn(turnKey(null, s.id)).attention ? (
+                <span className="flex-none text-[11px]" title={getTurn(turnKey(null, s.id)).attention === 'approval' ? 'AIが許可を待っています' : 'エラーで止まりました。開いて確認してください'}>⚠️</span>
+              ) : loadingSessionKeys.has(turnKey(null, s.id)) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
               <button
                 onClick={e => { e.stopPropagation(); deleteSession(s.id) }}
                 className="flex-none opacity-0 group-hover:opacity-100 text-ink-muted hover:text-brand-red text-xs px-1 transition-all"

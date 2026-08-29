@@ -32,6 +32,7 @@ import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
 import { CHAT_TEXT_WRAP } from '../textWrap'
 import { resolvePublishRoot } from '../publishRootRenderer'
 import { timelineMarks, bubbleTime } from '../../shared/chatTime'
+import { turnKey, updateTurn } from '../chatTurnRegistry'
 
 type Message = ChatMessage
 
@@ -112,9 +113,13 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // 承認待ちの列。B-1b（並列送信の解禁）で複数プロジェクトのターンが同時に承認を求め得る
   // ようになったため、単一スロットから列に変えた。単一のままだと、2件目の setPendingApproval が
   // 1件目を握りつぶし、**1件目の resolve が永遠に呼ばれずターンがハングする**。
-  // 画面に出すのは先頭の1件だけ（答えると次が出る）。
-  const [pendingApprovals, setPendingApprovals] = useState<Array<{ path: string; resolve: (ok: boolean) => void }>>([])
-  const pendingApproval = pendingApprovals[0] ?? null
+  // ── ダイアログは持ち場に留める（2026-08-29 v0.4.0 実機確認・Ryosuke 指摘）────────────
+  // 以前は列の先頭を**どのプロジェクトを見ていても**出していた（その場で答えられる利点）が、
+  // 「どのプロジェクトの許可か分からない」混乱のほうが大きかった。⚠️（B-2）ができたので、
+  // 各エントリに dir を持ち、**いま見ているプロジェクトの分だけ**表示する。他所には ⚠️ が
+  // 付き、開くとダイアログが待っている。答えたら**そのエントリ**を外す（先頭とは限らない）。
+  const [pendingApprovals, setPendingApprovals] = useState<Array<{ dir: string | null; path: string; resolve: (ok: boolean) => void }>>([])
+  const pendingApproval = pendingApprovals.find(a => a.dir === projectDir) ?? null
   const models = useModels(apiKey)
 
   // C2c: チャットの頭脳が Claude か（StatusBar.tsx と同じ判定方式）。Claudeのときは
@@ -447,8 +452,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         try { relPath = JSON.parse(toolArgs || '{}').path ?? '' } catch { /* パス不明でも確認は出す */ }
         const isEdit = toolName === 'edit_file'
         const label = `${relPath || '(不明なファイル)'}${isEdit ? '（部分編集）' : ''}`
-        const approved = await new Promise<boolean>(resolve => setPendingApprovals(prev => [...prev, { path: label, resolve }]))
-        setPendingApprovals(prev => prev.slice(1))
+        // ダイアログの持ち主として「答えを待っている」印を registry へ付ける（B-2）。見ている会話では UI が出さない。
+        updateTurn(turnKey(scopeDir), { attention: 'approval' })
+        // dir 付きで列へ（表示は「いま見ているプロジェクトの分だけ」。上の pendingApprovals コメント参照）
+        let entry!: { dir: string | null; path: string; resolve: (ok: boolean) => void }
+        const approved = await new Promise<boolean>(resolve => {
+          entry = { dir: scopeDir ?? null, path: label, resolve }
+          setPendingApprovals(prev => [...prev, entry])
+        })
+        updateTurn(turnKey(scopeDir), { attention: null })
+        setPendingApprovals(prev => prev.filter(a => a !== entry))
         if (!approved) {
           const action = isEdit ? '編集' : '保存'
           return `ユーザーが ${relPath || 'このファイル'} の${action}を許可しませんでした。${action}せずに、どう進めるべきかユーザーに確認してください。`
@@ -473,8 +486,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           // **いつもと違う場所なら、そのことだけを名前で伝える**（2026-08-24 の実害）。
           // パスを読み比べさせない——利用者に難しい判断を押しつけることになる。
           const scopeNote = commandScopeNote(scopeDir, scopeRoot)
-          const approved = await new Promise<boolean>(resolve => setPendingApprovals(prev => [...prev, { path: `コマンド実行: ${cmd || '(不明)'}${scopeNote}${reason}`, resolve }]))
-          setPendingApprovals(prev => prev.slice(1))
+          // ダイアログの持ち主として「答えを待っている」印を registry へ付ける（B-2）。見ている会話では UI が出さない。
+          updateTurn(turnKey(scopeDir), { attention: 'approval' })
+          // dir 付きで列へ（表示は「いま見ているプロジェクトの分だけ」。上の pendingApprovals コメント参照）
+          let entry!: { dir: string | null; path: string; resolve: (ok: boolean) => void }
+          const approved = await new Promise<boolean>(resolve => {
+            entry = { dir: scopeDir ?? null, path: `コマンド実行: ${cmd || '(不明)'}${scopeNote}${reason}`, resolve }
+            setPendingApprovals(prev => [...prev, entry])
+          })
+          updateTurn(turnKey(scopeDir), { attention: null })
+          setPendingApprovals(prev => prev.filter(a => a !== entry))
           if (!approved) {
             return `ユーザーがコマンド「${cmd}」の実行を許可しませんでした。実行せずに、どう進めるべきかユーザーに確認してください。`
           }

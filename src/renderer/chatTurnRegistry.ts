@@ -28,6 +28,10 @@ export type TurnState = {
   lastActivityAt: number
   /** 進行中の応答を止める（main へ chatTurn:abort を送る関数）。無ければ null。 */
   abort: (() => void) | null
+  /** 「見てほしい」合図（B-2）。'approval'=承認ダイアログが答えを待っている（ChatPanel が書く）・
+   *  'error'=ターンがエラーで終わった（ChatEvent 'attention' 経由）。見ている会話では UI 側が出さない
+   *  （エラーの吹き出し自体が見えている・ダイアログを開いている、という理由による）。 */
+  attention: 'approval' | 'error' | null
 }
 
 /** 未登録の鍵（＝アイドル）に対して返す既定値。 */
@@ -38,6 +42,7 @@ const IDLE: TurnState = {
   startedAt: null,
   lastActivityAt: 0,
   abort: null,
+  attention: null,
 }
 
 /** 単独チャット（ChatApp・プロジェクト未選択の ChatPanel）の鍵。
@@ -110,10 +115,17 @@ export function updateTurn(key: string, patch: Partial<TurnState>): void {
  * また同じ再割り振りが起きてしまう（従来から routedModel はターン終了時にリセットしていなかった
  * ＝ useAiChat.ts の emit の 'loading' 分岐は isLoading だけを触っていた）。それ以外
  * （isLoading・statusNote・startedAt・abort）は、そのターン固有の実行中の印なので素直にアイドルへ戻す。
+ *
+ * ── なぜ attention は 'error' のときだけ引き継ぐか（B-2）─────────────────────
+ * 'error' は「そのターンがエラーで終わった」という**ターンの結果**なので、ターンが終わっても
+ * 見ていなければ知らせ続ける必要がある（ここで消すと、見ていない会話のエラーに気づけなくなる）。
+ * 一方 'approval' は「ダイアログが答えを待っている」という**そのターンの最中だけ**の状態で、
+ * ターンが終わる（＝ダイアログも閉じる）ときに一緒に消えるのが正しい。ここで引き継ぐと、
+ * 次のターンに前回の承認待ちの印が誤って残ってしまう。
  */
 export function resetTurn(key: string): void {
   const cur = turns.get(key) ?? IDLE
-  turns.set(key, { ...IDLE, routedModel: cur.routedModel })
+  turns.set(key, { ...IDLE, routedModel: cur.routedModel, attention: cur.attention === 'error' ? 'error' : null })
   notify()
 }
 

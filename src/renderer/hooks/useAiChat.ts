@@ -182,6 +182,12 @@ export function useAiChat(args: UseAiChatArgs) {
     return () => clearInterval(timer)
   }, [viewKey, isLoading])
 
+  // 見てほしい合図（⚠️）は、見た時点で役目を終える（B-2）。エラーの印は会話を開いたら消す。
+  // 'approval' はダイアログへの回答で消える（ChatPanel が書く）ので、ここでは消さない。
+  useEffect(() => {
+    if (getTurn(viewKey).attention === 'error') updateTurn(viewKey, { attention: null })
+  }, [viewKey])
+
   // プロジェクトが変わったら、そのプロジェクトに保存済みのセッションIDを読み込む（所見10）。
   // 単独チャット（toolsProjectDir=null）は Claude 経路を使わないため常に null。
   useEffect(() => { claudeSessionRef.current = getClaudeSessionId(toolsProjectDir) }, [toolsProjectDir])
@@ -234,11 +240,13 @@ export function useAiChat(args: UseAiChatArgs) {
         else updateShown(prev => applyToMessages(prev, ev))
         break
       case 'loading':
-        if (ev.value) updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now() })
+        // 新しいターンが始まったら前回の ⚠️ は役目を終える
+        if (ev.value) updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now(), attention: null })
         else resetTurn(key)
         break
       case 'status': updateTurn(key, { statusNote: ev.value }); break
       case 'routed': updateTurn(key, { routedModel: ev.value }); break
+      case 'attention': updateTurn(key, { attention: ev.value }); break
     }
   }, [onMessageEvent, updateShown, toolsProjectDir, sessionId])
 
@@ -256,11 +264,13 @@ export function useAiChat(args: UseAiChatArgs) {
         if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))
         break
       case 'loading':
-        if (ev.value) updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now() })
+        // 新しいターンが始まったら前回の ⚠️ は役目を終える
+        if (ev.value) updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now(), attention: null })
         else resetTurn(key)
         break
       case 'status': updateTurn(key, { statusNote: ev.value }); break
       case 'routed': updateTurn(key, { routedModel: ev.value }); break
+      case 'attention': updateTurn(key, { attention: ev.value }); break
     }
   }, [toolsProjectDir, sessionId, updateShown])
 
@@ -413,6 +423,8 @@ export function useAiChat(args: UseAiChatArgs) {
       } else {
         appendBubble({ role: 'assistant', content: errorPrefix + formatClaudeError(rawMessage) })
       }
+      // 呼び出し元2箇所（'error' イベント・chatStart の catch）を一度にカバーする（B-2）
+      emit({ kind: 'attention', value: 'error' })
     }
     try {
       await new Promise<void>(resolve => {
@@ -642,7 +654,7 @@ export function useAiChat(args: UseAiChatArgs) {
       // 観測できる振る舞いは同じ（abortRef は廃止。registry（chatTurnRegistry.ts）が持つ）。
       updateTurn(key, { abort: () => { void window.electronAPI.chatTurn.abort(turnId) } })
       try {
-        await window.electronAPI.chatTurn.start(
+        const result = await window.electronAPI.chatTurn.start(
           {
             turnId,
             spec: { ...spec, turnOpts: stripFunctions(turnOpts) },
@@ -657,6 +669,11 @@ export function useAiChat(args: UseAiChatArgs) {
             onAsk: (path, args) => dispatchAsk(handlers, turnOpts, path as AskPath, args),
           },
         )
+        // ── エラーで終わったターンの ⚠️ は、invoke の結果からも重ねて立てる（B-2）──────
+        // main は catch で 'attention' の出来事を送るが、完了（invoke の解決）が末尾の出来事を
+        // 追い越すと、preload が購読を先に外して出来事が失われる（下の finally の loading:false と
+        // 同じ理由・同じ作法。実際に偽サーバ e2e ではこちらの経路しか届かなかった）。
+        if (result?.endedWithError) emit({ kind: 'attention', value: 'error' })
       } finally {
         // abort の登録解除は不要（このあとの emit の loading:false → resetTurn(key) が
         // abort ごとアイドルへ戻す。chatTurnRegistry.ts の resetTurn 参照）。

@@ -625,7 +625,7 @@ interface Window {
           onActivity: () => void
           onAsk: (path: string, args: unknown[]) => Promise<unknown> | unknown
         },
-      ): Promise<{ ok: boolean }>
+      ): Promise<{ ok: boolean; endedWithError?: boolean }>
       /** 進行中のターンを止める（turnId が無ければ何もしない）。 */
       abort(turnId: string): Promise<void>
     }

@@ -45,10 +45,12 @@ describe('useAiChat.ts の配線（B-1b: 実行状態を registry から読む�
       expect(m).not.toBeNull()
       const block = src.slice(start, start + m!.index + m![0].length)
       expect(block).toContain('const key = turnKey(toolsProjectDir, sessionId)')
-      expect(block).toContain("updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now() })")
+      // B-2: 新しいターンが始まったら前回の ⚠️ は役目を終える（attention: null が付く）
+      expect(block).toContain("updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now(), attention: null })")
       expect(block).toContain('resetTurn(key)')
       expect(block).toContain("updateTurn(key, { statusNote: ev.value })")
       expect(block).toContain("updateTurn(key, { routedModel: ev.value })")
+      expect(block).toContain("updateTurn(key, { attention: ev.value })")
     }
   })
 
@@ -150,7 +152,7 @@ describe('Sidebar.tsx の配線（B-1b: ⏳ の印）', () => {
   const src = readCode('src/renderer/components/Sidebar.tsx')
 
   it('chatTurnRegistry を購読している', () => {
-    expect(src).toContain("import { subscribe, getSnapshot, loadingKeys } from '../chatTurnRegistry'")
+    expect(src).toContain("import { subscribe, getSnapshot, loadingKeys, getTurn } from '../chatTurnRegistry'")
     expect(src).toContain('useSyncExternalStore(subscribe, getSnapshot)')
     expect(src).toContain('const loadingProjects = new Set(loadingKeys())')
   })
@@ -159,9 +161,116 @@ describe('Sidebar.tsx の配線（B-1b: ⏳ の印）', () => {
     expect(src).toContain('{loadingProjects.has(currentDir) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}')
   })
 
-  it('プロジェクト切替メニューの行（ワークスペース一覧・最近開いた場所）に ⏳ を出す条件がある', () => {
-    const count = src.split('{loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}').length - 1
+  it('プロジェクト切替メニューの行（ワークスペース一覧・最近開いた場所）は ⚠️ 優先で ⏳ を出す', () => {
+    // B-2 で ⏳ 単独の条件が「⚠️ 優先の三項」に置き換わったため、その末尾（else 側）として数える
+    const count = src.split(': loadingProjects.has(p) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}').length - 1
     expect(count).toBe(2) // workspaceProjects.map と recents.map の2か所
+  })
+})
+
+// ── B-2: 「見てほしい」合図（⚠️）── 承認待ち・エラー終了を、見ていない会話に知らせる ─────────
+// エラーは ChatEvent 経由（useAiChat.ts の emit/viewOnlyEmit → chatTurnRegistry）、
+// 承認待ちはダイアログの持ち主 ChatPanel が registry へ直接書く。見ている会話（吹き出し・
+// ダイアログ自体が見えている）には出さない、という条件をソースの配線として固定する。
+describe('B-2: ⚠️（見てほしい合図）の配線', () => {
+  it('chatTurn.ts: runEngineTurn の catch で attention:\'error\' を emit する（finally より前）', () => {
+    const src = readCode('src/shared/chatTurn.ts')
+    const catchAt = src.indexOf('catch (err: any)')
+    const emitAt = src.indexOf("ports.emit({ kind: 'attention', value: 'error' })")
+    const finallyAt = src.indexOf('} finally {', catchAt)
+    expect(catchAt).toBeGreaterThan(-1)
+    expect(emitAt).toBeGreaterThan(catchAt)
+    expect(finallyAt).toBeGreaterThan(emitAt)
+  })
+
+  it('chatTurn.ts: runCompact には足さない（まとめ失敗はターンのエラーではない）', () => {
+    const src = readCode('src/shared/chatTurn.ts')
+    const start = src.indexOf('export async function runCompact(')
+    const end = src.indexOf('export async function runEngineTurn(')
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    expect(src.slice(start, end)).not.toContain("kind: 'attention'")
+  })
+
+  // ── エラーの結末は invoke の返り値でも伝える（追い越し対策）──────────────────
+  // main 実行のターンでは、invoke の完了が末尾の出来事（chatTurn:event）を追い越すと preload が
+  // 購読を先に外し、catch の 'attention' が失われる（偽サーバ e2e で実際にこちらしか届かなかった。
+  // useAiChat の finally が loading:false を重ねるのと同じ競合・同じ作法）。3点の配線を固定する。
+  it('chatTurn.ts: runEngineTurn は結末（endedWithError）を返す（catch で true・末尾で false）', () => {
+    const src = readCode('src/shared/chatTurn.ts')
+    const catchAt = src.indexOf('catch (err: any)')
+    const trueAt = src.indexOf('return { endedWithError: true }')
+    const finallyAt = src.indexOf('} finally {', catchAt)
+    expect(trueAt).toBeGreaterThan(catchAt)
+    expect(finallyAt).toBeGreaterThan(trueAt)
+    // 正常終了の返し（catch の外・関数末尾）もあること
+    expect(src.indexOf('return { endedWithError: false }', finallyAt)).toBeGreaterThan(finallyAt)
+  })
+
+  it('turnRunner.ts: chatTurn:start は結末を invoke の返り値に載せる（古い { ok: true } だけの形は無い）', () => {
+    const src = readCode('src/main/chat/turnRunner.ts')
+    expect(src).toContain('endedWithError = (await runEngineTurn(payload.spec, buildMainPorts(turnId, wc, payload, entry))).endedWithError')
+    expect(src).toContain('return { ok: true, endedWithError }')
+    expect(src).not.toContain('return { ok: true }')
+  })
+
+  it('useAiChat.ts: send は invoke の結果からも ⚠️ を重ねて立てる', () => {
+    const src = readCode('src/renderer/hooks/useAiChat.ts')
+    expect(src).toContain("if (result?.endedWithError) emit({ kind: 'attention', value: 'error' })")
+  })
+
+  it('useAiChat.ts: emit・viewOnlyEmit の両方に attention の分岐がある（ちょうど2回）', () => {
+    const src = readCode('src/renderer/hooks/useAiChat.ts')
+    const count = src.split("case 'attention': updateTurn(key, { attention: ev.value }); break").length - 1
+    expect(count).toBe(2)
+  })
+
+  it('useAiChat.ts: loading:true の updateTurn に attention: null が含まれる（ちょうど2回）', () => {
+    const src = readCode('src/renderer/hooks/useAiChat.ts')
+    const count = src.split('updateTurn(key, { isLoading: true, startedAt: Date.now(), lastActivityAt: Date.now(), attention: null })').length - 1
+    expect(count).toBe(2)
+  })
+
+  it("useAiChat.ts: viewKey の消し込み effect がある（'error' の印は会話を開いたら消える）", () => {
+    const src = readCode('src/renderer/hooks/useAiChat.ts')
+    expect(src).toContain("if (getTurn(viewKey).attention === 'error') updateTurn(viewKey, { attention: null })")
+  })
+
+  it('useAiChat.ts: showClaudeError の本体に attention の emit がある', () => {
+    const src = readCode('src/renderer/hooks/useAiChat.ts')
+    const start = src.indexOf('const showClaudeError = (rawMessage: string) => {')
+    expect(start).toBeGreaterThan(-1)
+    // 次の const 宣言（try {の直前にある try ブロック開始）までを本体とみなす
+    const end = src.indexOf('\n    try {', start)
+    expect(end).toBeGreaterThan(start)
+    const body = src.slice(start, end)
+    expect(body).toContain("emit({ kind: 'attention', value: 'error' })")
+  })
+
+  it('ChatPanel.tsx: approveToolCall 内で attention: \'approval\' / null が対で、ちょうど2回ずつ', () => {
+    const src = readCode('src/renderer/components/ChatPanel.tsx')
+    expect(src.split("{ attention: 'approval' }").length - 1).toBe(2)
+    expect(src.split('{ attention: null }').length - 1).toBe(2)
+    expect(src).toContain("import { turnKey, updateTurn } from '../chatTurnRegistry'")
+  })
+
+  it('Sidebar.tsx: メニュー行の ⚠️ 条件（p !== currentDir && getTurn(p).attention）がちょうど2回', () => {
+    const src = readCode('src/renderer/components/Sidebar.tsx')
+    expect(src.split('p !== currentDir && getTurn(p).attention').length - 1).toBe(2)
+  })
+
+  it('Sidebar.tsx: 現在プロジェクトのヘッダ行の近くに ⚠️ が無い（見ている会話には出さない）', () => {
+    const src = readCode('src/renderer/components/Sidebar.tsx')
+    const at = src.indexOf('loadingProjects.has(currentDir)')
+    expect(at).toBeGreaterThan(-1)
+    const around = src.slice(Math.max(0, at - 200), at + 200)
+    expect(around).not.toContain('⚠️')
+  })
+
+  it('ChatApp.tsx: 履歴一覧の ⚠️ 条件（s.id !== activeId && getTurn(turnKey(null, s.id)).attention）がちょうど1回', () => {
+    const src = readCode('src/renderer/components/ChatApp.tsx')
+    expect(src.split('s.id !== activeId && getTurn(turnKey(null, s.id)).attention').length - 1).toBe(1)
+    expect(src).toContain("import { subscribe, getSnapshot, loadingKeys, turnKey, getTurn } from '../chatTurnRegistry'")
   })
 })
 
@@ -176,29 +285,42 @@ describe('ChatApp.tsx の配線（改善2: セッション別の実行状態・�
   })
 
   it('chatTurnRegistry を購読している（Sidebar.tsx と同じ作法）', () => {
-    expect(src).toContain("import { subscribe, getSnapshot, loadingKeys, turnKey } from '../chatTurnRegistry'")
+    expect(src).toContain("import { subscribe, getSnapshot, loadingKeys, turnKey, getTurn } from '../chatTurnRegistry'")
     expect(src).toContain('useSyncExternalStore(subscribe, getSnapshot)')
     expect(src).toContain('const loadingSessionKeys = new Set(loadingKeys())')
   })
 
-  it('履歴一覧（セッション一覧）の各行に ⏳ を出す条件があり、鍵は turnKey(null, s.id)', () => {
-    expect(src).toContain('{loadingSessionKeys.has(turnKey(null, s.id)) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}')
+  it('履歴一覧（セッション一覧）の各行は ⚠️ 優先で ⏳ を出し、鍵は turnKey(null, s.id)', () => {
+    // B-2 で ⏳ 単独の条件が「⚠️ 優先の三項」に置き換わったため、その末尾（else 側）として数える
+    expect(src).toContain(': loadingSessionKeys.has(turnKey(null, s.id)) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}')
   })
 })
 
 // ── 承認待ちの列（B-1b の並列解禁に伴う守り）─────────────────────────────
 // 並列で2つのターンが同時に承認を求めると、単一スロットでは2件目が1件目の resolve を
 // 握りつぶし、1件目のターンが永遠にハングする。列であることをソースで固定する。
-describe('ChatPanel: 承認待ちが列になっている', () => {
+// v0.4.0 実機確認（Ryosuke 指摘）で「ダイアログは持ち場に留める」へ変更（掟11: 環境の独立）:
+// エントリは dir を持ち、表示は「いま見ているプロジェクトの分だけ」。答えたらそのエントリを外す。
+describe('ChatPanel: 承認待ちが列になっている（表示は持ち場のぶんだけ）', () => {
   it('pendingApprovals（配列）を使い、単一スロットの setPendingApproval( が残っていない', () => {
     const src = readCode('src/renderer/components/ChatPanel.tsx')
     expect(src).toContain('const [pendingApprovals, setPendingApprovals] = useState<Array<')
-    // 追記と先頭抜きは**2か所ずつ**（ファイル保存・コマンド実行）。toContain だと片方が
+    // 追記と抜き取りは**2か所ずつ**（ファイル保存・コマンド実行）。toContain だと片方が
     // 単一スロットに戻っても通ってしまう（ミューテーション試験で実際に素通りした）ので数で固定する
     const count = (needle: string) => src.split(needle).length - 1
-    expect(count('setPendingApprovals(prev => [...prev, {')).toBe(2)
-    expect(count('setPendingApprovals(prev => prev.slice(1))')).toBe(2)
+    expect(count('setPendingApprovals(prev => [...prev, entry])')).toBe(2)
+    expect(count('setPendingApprovals(prev => prev.filter(a => a !== entry))')).toBe(2)
     expect(src).not.toContain('setPendingApproval(')
+  })
+
+  it('表示は「いま見ているプロジェクトの分だけ」（先頭を無条件に出す古い形は無い）', () => {
+    const src = readCode('src/renderer/components/ChatPanel.tsx')
+    expect(src).toContain('const pendingApproval = pendingApprovals.find(a => a.dir === projectDir) ?? null')
+    expect(src).not.toContain('pendingApprovals[0]')
+    // エントリの dir はターンの行き先（scopeDir）で埋める（見ている画面の projectDir ではない）
+    expect(src.split('entry = { dir: scopeDir ?? null,').length - 1).toBe(2)
+    // 答えたときに外すのは「そのエントリ」（先頭抜き prev.slice(1) に戻っていない）
+    expect(src).not.toContain('prev.slice(1)')
   })
 })
 

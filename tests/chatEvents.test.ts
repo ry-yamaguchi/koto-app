@@ -79,6 +79,12 @@ describe('applyToMessages', () => {
     expect(applyToMessages(prev, { kind: 'status', value: 'x' }, NOW)).toBe(prev)
     expect(applyToMessages(prev, { kind: 'routed', value: 'model' }, NOW)).toBe(prev)
   })
+
+  // ── B-2: attention（「見てほしい」合図）はメッセージに関係しない出来事 ─────────────
+  it('attention: prev と同一参照が返る（メッセージに関係しない出来事）', () => {
+    const prev: Msg[] = [{ id: 1 }]
+    expect(applyToMessages(prev, { kind: 'attention', value: 'error' }, NOW)).toBe(prev)
+  })
 })
 
 describe('applyEvent / applyEvents', () => {
@@ -143,6 +149,17 @@ describe('applyEvent / applyEvents', () => {
 
   it('emptyView() の中身', () => {
     expect(emptyView<Msg>()).toEqual({ messages: [], isLoading: false, statusNote: '', routedModel: null })
+  })
+
+  // ── B-2: attention は chatTurnRegistry が持ち主。ChatView には反映しない ─────────────
+  it('attention: 全フィールド不変・新しいオブジェクトが返る', () => {
+    const view: ChatView<Msg> = { messages: [{ id: 1 }], isLoading: true, statusNote: '進行中', routedModel: 'x' }
+    const next = applyEvent(view, { kind: 'attention', value: 'error' }, NOW)
+    expect(next).not.toBe(view) // 新しいオブジェクト
+    expect(next.messages).toBe(view.messages)
+    expect(next.isLoading).toBe(view.isLoading)
+    expect(next.statusNote).toBe(view.statusNote)
+    expect(next.routedModel).toBe(view.routedModel)
   })
 })
 
