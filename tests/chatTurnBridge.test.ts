@@ -62,9 +62,6 @@ function makeHandlers() {
     getSearchConfig: record('getSearchConfig', { engine: 'x' }),
     fetchPagesBlock: record('fetchPagesBlock', 'pages-block'),
     autoSearchBlock: record('autoSearchBlock', 'search-block'),
-    usageCheck: record('usageCheck', { allowed: true }),
-    usageRecord: record('usageRecord', undefined),
-    compactWarnOnce: record('compactWarnOnce', true),
   }
   return { handlers, calls }
 }
@@ -91,9 +88,6 @@ const TABLE: Record<AskPath, { args: unknown[]; handlerKey: string; expectedArgs
   getSearchConfig: { args: [], handlerKey: 'getSearchConfig', expectedArgs: [], expectedResult: { engine: 'x' } },
   fetchPagesBlock: { args: [['https://a']], handlerKey: 'fetchPagesBlock', expectedArgs: [['https://a']], expectedResult: 'pages-block' },
   autoSearchBlock: { args: ['text', { engine: 'x' }], handlerKey: 'autoSearchBlock', expectedArgs: ['text', { engine: 'x' }], expectedResult: 'search-block' },
-  'usage.check': { args: [], handlerKey: 'usageCheck', expectedArgs: [], expectedResult: { allowed: true } },
-  'usage.record': { args: ['model-a', 10, 20], handlerKey: 'usageRecord', expectedArgs: ['model-a', 10, 20], expectedResult: undefined },
-  compactWarnOnce: { args: [], handlerKey: 'compactWarnOnce', expectedArgs: [], expectedResult: true },
 }
 
 describe('dispatchAsk: ASK_PATHS の全項目', () => {

@@ -19,20 +19,27 @@ import type { EngineTurnSpec } from './chatTurn'
  *
  * chatTurn.ts の EngineTurnPorts のうち、main が直接持つもの
  * （emit / setAbort / notifyActivity / chatStream / chatOnce / usage.estimate / h、
- * および B'-3d-1a で main 化した toolSupport.* / vision.* の6メンバー）**以外**
- * の全メンバーがここに載っている（tests/chatTurnRpc.test.ts が突き合わせて固定する）。
+ * B'-3d-1a で main 化した toolSupport.* / vision.* の6メンバー、
+ * B'-3d-1b で main 化した usage.check / usage.record / compactWarnOnce の3メンバー）
+ * **以外**の全メンバーがここに載っている（tests/chatTurnRpc.test.ts が突き合わせて固定する）。
  *
  * ── B'-3d-1a（2026-08-29）: toolSupport.* / vision.* を main が直接持つように ─────────
  * 学習キャッシュ（ツール対応・画像対応）の持ち主が renderer の localStorage から main の
  * ファイル（src/main/learningStore.ts・userData/learning.json）へ移った。main のループ
  * （turnRunner.ts）はもう renderer へ ask せず、learningStore と shared/modelLearning.ts の
  * 純関数を直接呼ぶ。ask が6本減った（「窓を閉じても作業が続く」＝B'-3d の一部）。
+ *
+ * ── B'-3d-1b（2026-08-30）: usage.check / usage.record / compactWarnOnce を main が直接持つように ──
+ * 予算設定・利用実績（sakura_budget_settings・sakura_usage_by_month）の持ち主が renderer の
+ * localStorage から main のファイル（src/main/usageStore.ts・userData/usage.json）へ移った。
+ * main のループ（turnRunner.ts）はもう renderer へ ask せず、usageStore と
+ * shared/usageBudget.ts の純関数を直接呼ぶ。compactWarnOnce（「まとめ失敗の警告は1度だけ」の印）
+ * も main のモジュール内 Set で直接持つようになった（会話キー別・詳しくは turnRunner.ts の
+ * コメント参照）。ask が3本減った（ASK_PATHS は 12本 → 9本）。
  */
 export const ASK_PATHS = [
   'executeTool', 'approveToolCall', 'buildSystemPrompt', 'getHistory', 'onUserMessage',
   'buildRagBlock', 'getSearchConfig', 'fetchPagesBlock', 'autoSearchBlock',
-  'usage.check', 'usage.record',
-  'compactWarnOnce',
 ] as const
 
 export type AskPath = typeof ASK_PATHS[number]

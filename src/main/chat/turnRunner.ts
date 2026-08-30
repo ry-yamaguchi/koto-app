@@ -5,7 +5,9 @@
 // ツール実行・承認・システムプロンプト組み立てなど、renderer にしか無い副作用は renderer へ
 // 「問い合わせ」（ask・chat/askBridge.ts）て、今のコードをそのまま使う。main が直接持つのは
 // LLM 呼び出し（sakura/engine.ts）・emit・純粋関数の束（h・src/shared 配下の本物の実装）に加え、
-// 学習キャッシュ（ツール対応・画像対応・B'-3d-1a で main へ移した learningStore.ts）。
+// 学習キャッシュ（ツール対応・画像対応・B'-3d-1a で main へ移した learningStore.ts）と、
+// 予算・利用実績（B'-3d-1b で main へ移した usageStore.ts）・compactWarnOnce（同・モジュール内
+// Set で main のプロセス寿命ぶん持つ）。
 // 「見かけが変わらない」を最優先し、直せる不具合があってもここでは直さない（sakura.ts から
 // 移した部分は engine.ts の説明を参照）。
 import { ipcMain } from 'electron'
@@ -26,6 +28,8 @@ import { extractUrls, wantsWebSearch } from '../../shared/webContextCore'
 import { planSend, planCompact, compactPrompt, acceptSummary, compactSource } from '../../shared/historyCompact'
 import { shouldSendTools, isKnownToolCapable, shouldTryImagesDirectly } from '../../shared/modelLearning'
 import { getLearning, recordLearning } from '../learningStore'
+import { hashKey } from '../../shared/usageBudget'
+import { checkBeforeRequest, recordUsage } from '../usageStore'
 
 // h は shared から**本物の実装**を import して組み立てる（renderer は import できないモジュールなので、
 // ここで初めて main 側から使われる。aiToolsCore / modelInfo / webContextCore / historyCompact /
@@ -71,6 +75,24 @@ export function defaultVisionModelFor(models: { id: string }[]): string {
   const ids = models.map(m => m.id)
   if (ids.includes(DEFAULT_VISION_MODEL)) return DEFAULT_VISION_MODEL
   return ids.find(isVisionModel) ?? DEFAULT_VISION_MODEL
+}
+
+// ── compactWarnOnce（B'-3d-1b）: 「まとめ失敗の警告は1度だけ」の印を main が直接持つ ─────────
+//
+// 以前（renderer 側の compactWarnedRef）は「1度だけ」の寿命が **ChatPanel のマウント・
+// モード切替でリセット**されていた（コンポーネントの useRef なので画面が作り直されると消える）。
+// main へ移したことで、寿命は **main プロセスの寿命**（アプリ起動ごと）× **会話キー別**へ変わる。
+// キーは payload.spec.toolsProjectDir（無ければ単独チャット扱いで '@chat-app' に束ねる）。
+// 会話ごとに1つの印を持つようになるぶん、「会話ごとに1度」という本来の意味に近づき、
+// **窓を閉じてもターンが止まらない**（B'-3d の目的そのもの）——renderer 側の印はウィンドウが
+// 生きていないと読み書きできなかったが、main のメモリはウィンドウの有無に関係なく生きている。
+// 永続化はしない（アプリを再起動すれば全会話の印はリセットされる。学習キャッシュ・利用実績と
+// 違い、ファイルに残す価値が無い一過性の状態のため）。
+const compactWarned = new Set<string>()
+
+/** テスト用: モジュール内の Set をリセットする。本番コードはこれを呼ばない。 */
+export function resetCompactWarnedForTest(): void {
+  compactWarned.clear()
 }
 
 /** ターンごとの管理表の1件。 */
@@ -133,9 +155,12 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     autoSearchBlock: (text, search) => bridge.ask('autoSearchBlock', [text, search]) as any,
     notifyActivity: () => { if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'activity' }) },
     setAbort: (fn) => { entry.abort = fn },
+    // B'-3d-1b: 予算・利用実績の持ち主が main の usageStore.ts へ移った。renderer へ ask せず、
+    // ここで直接読み書きする（ask が2本減った）。APIキーは main へ渡らない・保存しない（掟4）
+    // ため、usageStore の API はすべて指紋（fp = hashKey(apiKey)）ベース。
     usage: {
-      check: () => bridge.ask('usage.check', []) as any,
-      record: (model, promptTokens, completionTokens) => bridge.ask('usage.record', [model, promptTokens, completionTokens]) as any,
+      check: () => checkBeforeRequest(hashKey(payload.spec.apiKey)),
+      record: (model, promptTokens, completionTokens) => recordUsage(hashKey(payload.spec.apiKey), model, promptTokens, completionTokens),
       estimate: (text) => estimateTokens(text), // 純粋関数。main が直接持つ（往復しない・仕様書の注記）
     },
     // B'-3d-1a: 学習キャッシュ（ツール対応・画像対応）の持ち主が main の learningStore.ts へ
@@ -150,7 +175,14 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
       record: (model, supported) => recordLearning('vision', model, supported),
       defaultModel: () => defaultVisionModelFor(payload.spec.models),
     },
-    compactWarnOnce: () => bridge.ask('compactWarnOnce', []) as any,
+    // B'-3d-1b: 上のコメント（compactWarned）参照。会話キー（toolsProjectDir。無ければ
+    // 単独チャット扱いで '@chat-app'）ごとに初回だけ true を返す。
+    compactWarnOnce: () => {
+      const key = payload.spec.toolsProjectDir ?? '@chat-app'
+      if (compactWarned.has(key)) return false
+      compactWarned.add(key)
+      return true
+    },
     h,
   }
 }

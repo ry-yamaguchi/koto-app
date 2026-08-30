@@ -4,6 +4,13 @@
  * 注意: 実際の課金はさくらインターネットのアカウントで管理されます。
  * ここでは消費トークンを記録し、内蔵の料金表で利用額を推定して、
  * ユーザーが設定した月間上限に達したらリクエストを止めるための仕組みです。
+ *
+ * ── B'-3d-1b: 予算設定・利用実績の持ち主が main へ移った ──────────────────
+ * 判定・計算の実体（型・数式・メッセージ文言）は src/shared/usageBudget.ts の純関数へ移した。
+ * 記録そのものの持ち主は main（src/main/usageStore.ts・userData/usage.json）で、ここは
+ * 起動時に写す（src/renderer/usageMirror.ts）＋楽観更新＋ IPC fire-and-forget で読み書きする
+ * だけになった。**この呼び出し側の公開シグネチャは1文字も変えていない**（SettingsModal.tsx・
+ * CredentialsModal.tsx・ChatPanel.tsx・securityCheck.ts・useAiChat.ts は無修正のまま動く）。
  */
 
 // 実体は shared へ移した（B'-3b）。MODELS / VISION_MODELS / modelLabel / pickBestModel /
@@ -16,6 +23,26 @@ export { MODELS, VISION_MODELS, modelLabel, pickBestModel, estimateTokens }
 // （main のターン実行と両方が使うため。複製しない＝掟10）。ここは従来の呼び出し側のために re-export する。
 export { isVisionModel, DEFAULT_VISION_MODEL } from '../shared/modelInfo'
 import { isVisionModel, DEFAULT_VISION_MODEL } from '../shared/modelInfo'
+
+// 予算・利用実績の型・定数・判定/計算の純関数は shared へ移した（B'-3d-1b）。
+// hashKey / PRICING / priceFor / DEFAULT_SETTINGS / 型は互換のため re-export する。
+import {
+  hashKey, priceFor, DEFAULT_SETTINGS, thisMonth,
+  computeUsage, computeUsageByModel, computeUsageForKey,
+  budgetStatusOf, budgetStatusForKeyOf, checkBeforeRequestOf,
+  type BudgetSettings, type MonthUsage, type ModelUsageRow, type BudgetStatus,
+} from '../shared/usageBudget'
+export { hashKey, PRICING, priceFor, DEFAULT_SETTINGS } from '../shared/usageBudget'
+export type { BudgetSettings, MonthUsage, ModelUsageRow, BudgetStatus } from '../shared/usageBudget'
+import {
+  getUsageMirror, applyRecordToMirror, setSettingsInMirror, setKeyLimitInMirror, resetMonthInMirror,
+} from './usageMirror'
+
+/** window / electronAPI.usage が無い環境（node のテスト等）では IPC 送信をスキップする
+ *  （楽観更新＝ミラーの書き換えだけ効く。primeUsageMirror と同じガード）。 */
+function hasUsageApi(): boolean {
+  return typeof window !== 'undefined' && !!window.electronAPI?.usage
+}
 
 /** 画像を送るときに使うモデルを決める（提供一覧にある実IDを優先） */
 export function getDefaultVisionModel(): string {
@@ -47,26 +74,6 @@ export async function fetchModels(apiKey: string): Promise<string[]> {
   return ids
 }
 
-/** ¥ / 1,000,000 トークン（2026年時点の従量課金プランの公開単価を基にした概算） */
-export const PRICING: Record<string, { in: number; out: number }> = {
-  // ¥/1,000,000 tokens（公式ページ https://ai.sakura.ad.jp/sakura-ai/ai-engine/ の ¥/1万tok ×100）
-  'Qwen3-Coder-480B-A35B-Instruct-FP8': { in: 30, out: 250 },  // 0.3 / 2.5 円（1万tok）
-  'Qwen3-Coder-30B-A3B-Instruct': { in: 15, out: 75 },         // 0.15 / 0.75
-  'gpt-oss-120b': { in: 15, out: 75 },                         // 0.15 / 0.75
-  'llm-jp-3.1-8x13b-instruct4': { in: 15, out: 75 },           // 0.15 / 0.75
-  'preview/Qwen3-VL-30B-A3B-Instruct': { in: 10, out: 30 },    // 0.1 / 0.3
-  'preview/Phi-4-multimodal-instruct': { in: 10, out: 30 },    // 0.1 / 0.3
-  'preview/Phi-4-mini-instruct-cpu': { in: 1, out: 3 },        // 0.01 / 0.03
-  'preview/Qwen3-0.6B-cpu': { in: 1, out: 3 },                 // 0.01 / 0.03
-  'preview/Qwen3.6-35B-A3B': { in: 30, out: 150 },             // 0.3 / 1.5
-  'preview/Kimi-K2.6': { in: 60, out: 300 },                   // 0.6 / 3
-}
-const DEFAULT_PRICE = { in: 15, out: 75 }
-
-export function priceFor(model: string) {
-  return PRICING[model] ?? DEFAULT_PRICE
-}
-
 const LEGACY_MODEL_KEY = 'sakura_default_model' // 旧・共通設定（IDE/チャット共通だった頃）からの移行用
 const MODEL_PREF_KEY = { ide: 'sakura_model_ide', chat: 'sakura_model_chat' } as const
 export type ChatMode = 'ide' | 'chat'
@@ -87,48 +94,17 @@ export function setDefaultModel(id: string, mode: ChatMode = 'ide') {
   window.dispatchEvent(new Event('sakura-usage-changed'))
 }
 
-export interface BudgetSettings {
-  monthlyLimitYen: number | null // 既定の月間上限（キー個別未設定時に適用。null = 無制限）
-  enforce: boolean // 上限到達時にリクエストを停止する
-  warnRatio: number // この割合で警告（0〜1）
-  perKeyLimits: Record<string, number | null> // キー指紋 → 個別上限（null = 無制限）
-}
+// ── 予算設定 ────────────────────────────────────────────────────
 
-export const DEFAULT_SETTINGS: BudgetSettings = {
-  monthlyLimitYen: 500,
-  enforce: true,
-  warnRatio: 0.8,
-  perKeyLimits: {},
-}
-
-const SETTINGS_KEY = 'sakura_budget_settings'
-const USAGE_KEY = 'sakura_usage_by_month'
-
+/** ミラー（usageMirror.ts）から読む。コピーを返す（現行も毎回 parse し直していたのと同じ意味）。 */
 export function getSettings(): BudgetSettings {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY)
-    const s = raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : { ...DEFAULT_SETTINGS }
-    if (!s.perKeyLimits || typeof s.perKeyLimits !== 'object') s.perKeyLimits = {}
-    return s
-  } catch {
-    return { ...DEFAULT_SETTINGS, perKeyLimits: {} }
-  }
+  const s = getUsageMirror().settings
+  return { ...s, perKeyLimits: { ...s.perKeyLimits } }
 }
 
-export function setSettings(s: BudgetSettings) {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
-  window.dispatchEvent(new Event('sakura-usage-changed'))
-}
-
-/** APIキーの安定した指紋（生のキーは保存しない）。FNV-1a。 */
-export function hashKey(key: string): string {
-  if (!key) return '(none)'
-  let h = 0x811c9dc5
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return 'k' + (h >>> 0).toString(36)
+export function setSettings(s: BudgetSettings): void {
+  setSettingsInMirror(s) // 楽観更新（sanitizeSettings を通ったうえで即座に写しへ反映・イベント発火まで含む）
+  if (hasUsageApi()) void window.electronAPI.usage.setSettings(s).catch(() => { /* 次の get/onChanged で復元される */ })
 }
 
 // ── キー個別の上限 ─────────────────────────────
@@ -139,14 +115,12 @@ export function getKeyLimit(apiKey: string): number | null | undefined {
   return Object.prototype.hasOwnProperty.call(s.perKeyLimits, fp) ? s.perKeyLimits[fp] : undefined
 }
 
-export function setKeyLimit(apiKey: string, limit: number | null | undefined) {
+export function setKeyLimit(apiKey: string, limit: number | null | undefined): void {
   if (!apiKey) return
-  const s = getSettings()
   const fp = hashKey(apiKey)
-  const perKeyLimits = { ...s.perKeyLimits }
-  if (limit === undefined) delete perKeyLimits[fp]
-  else perKeyLimits[fp] = limit
-  setSettings({ ...s, perKeyLimits })
+  setKeyLimitInMirror(fp, limit) // 楽観更新
+  // main 側は undefined を扱えない（IPC 越しでは「省略」と区別しにくいため）ので { clear: true } に変換する。
+  if (hasUsageApi()) void window.electronAPI.usage.setKeyLimit(fp, limit === undefined ? { clear: true } : limit).catch(() => {})
 }
 
 /** 実効上限（個別→既定の順に解決）。null = 無制限 */
@@ -156,177 +130,51 @@ export function effectiveLimit(apiKey: string): number | null {
   return getSettings().monthlyLimitYen
 }
 
-// ── 利用量ストア（月 → キー → モデル） ─────────────
-interface ModelUsage { promptTokens: number; completionTokens: number; costYen: number }
-interface KeyBucket { models: Record<string, ModelUsage> }
-interface MonthBucket { keys: Record<string, KeyBucket> }
-type UsageStore = Record<string, MonthBucket>
-
-function thisMonth(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-
-/** 旧フォーマット（{models}/{promptTokens}）も読み込めるよう正規化する。 */
-function normalizeMonth(raw: any): MonthBucket {
-  if (raw && raw.keys && typeof raw.keys === 'object') return raw as MonthBucket
-  if (raw && raw.models && typeof raw.models === 'object') {
-    return { keys: { '(以前の利用)': { models: raw.models } } }
-  }
-  return { keys: {} }
-}
-
-function readStore(): UsageStore {
-  try {
-    const raw = localStorage.getItem(USAGE_KEY)
-    const parsed = raw ? JSON.parse(raw) : {}
-    const out: UsageStore = {}
-    for (const [month, bucket] of Object.entries(parsed)) out[month] = normalizeMonth(bucket)
-    return out
-  } catch {
-    return {}
-  }
-}
-
-function writeStore(s: UsageStore) {
-  localStorage.setItem(USAGE_KEY, JSON.stringify(s))
-  window.dispatchEvent(new Event('sakura-usage-changed'))
-}
-
-export interface MonthUsage {
-  month: string
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-  costYen: number
-}
-
-export interface ModelUsageRow {
-  model: string
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-  costYen: number
-}
-
-function currentMonth(): MonthBucket {
-  return readStore()[thisMonth()] ?? { keys: {} }
-}
-
-function sumModels(models: Record<string, ModelUsage>) {
-  let p = 0, c = 0, cost = 0
-  for (const u of Object.values(models)) { p += u.promptTokens; c += u.completionTokens; cost += u.costYen }
-  return { promptTokens: p, completionTokens: c, costYen: cost }
-}
+// ── 利用量（ミラーに対して shared/usageBudget.ts の純関数を呼ぶだけ）───────────
 
 /** 今月の全キー・全モデルの合計 */
 export function getUsage(): MonthUsage {
-  const month = currentMonth()
-  let p = 0, c = 0, cost = 0
-  for (const kb of Object.values(month.keys)) {
-    const s = sumModels(kb.models)
-    p += s.promptTokens; c += s.completionTokens; cost += s.costYen
-  }
-  return { month: thisMonth(), promptTokens: p, completionTokens: c, totalTokens: p + c, costYen: cost }
+  return computeUsage(getUsageMirror().months, thisMonth())
 }
 
 /** 今月のモデル別利用（全キー横断・金額の大きい順） */
 export function getUsageByModel(): ModelUsageRow[] {
-  const month = currentMonth()
-  const agg: Record<string, ModelUsage> = {}
-  for (const kb of Object.values(month.keys)) {
-    for (const [model, u] of Object.entries(kb.models)) {
-      const a = agg[model] ?? { promptTokens: 0, completionTokens: 0, costYen: 0 }
-      a.promptTokens += u.promptTokens; a.completionTokens += u.completionTokens; a.costYen += u.costYen
-      agg[model] = a
-    }
-  }
-  return Object.entries(agg)
-    .map(([model, u]) => ({ model, promptTokens: u.promptTokens, completionTokens: u.completionTokens, totalTokens: u.promptTokens + u.completionTokens, costYen: u.costYen }))
-    .sort((a, b) => b.costYen - a.costYen)
+  return computeUsageByModel(getUsageMirror().months, thisMonth())
 }
 
 /** 指定キーの今月の利用 */
 export function getUsageForKey(apiKey: string): MonthUsage {
-  const fp = hashKey(apiKey)
-  const kb = currentMonth().keys[fp] ?? { models: {} }
-  const s = sumModels(kb.models)
-  return { month: thisMonth(), promptTokens: s.promptTokens, completionTokens: s.completionTokens, totalTokens: s.promptTokens + s.completionTokens, costYen: s.costYen }
+  return computeUsageForKey(getUsageMirror().months, thisMonth(), hashKey(apiKey))
 }
 
-/** 1回のAPI利用を記録する（キー指紋＋モデル別）。 */
-export function recordUsage(apiKey: string, model: string, promptTokens: number, completionTokens: number) {
-  // トークン数と課金額は**同じ値から**計算する。以前はトークン数だけ Math.max(0,…) で守られ、
-  // 課金額は生の値を使っていたため、異常な応答（負値）が来ると**利用額が減り**、
-  // 上限に達したキーがまた使えてしまった（2026-08-05 修正・tests/usageBudget.test.ts）。
-  const p = Number.isFinite(promptTokens) ? Math.max(0, Math.round(promptTokens)) : 0
-  const c = Number.isFinite(completionTokens) ? Math.max(0, Math.round(completionTokens)) : 0
-  const price = priceFor(model)
-  const cost = (p / 1_000_000) * price.in + (c / 1_000_000) * price.out
-  const store = readStore()
-  const m = thisMonth()
+/** 1回のAPI利用を記録する（キー指紋＋モデル別）。楽観更新＋ main への fire-and-forget。 */
+export function recordUsage(apiKey: string, model: string, promptTokens: number, completionTokens: number): void {
   const fp = hashKey(apiKey)
-  const month = store[m] ?? { keys: {} }
-  const kb = month.keys[fp] ?? { models: {} }
-  const u = kb.models[model] ?? { promptTokens: 0, completionTokens: 0, costYen: 0 }
-  u.promptTokens += p
-  u.completionTokens += c
-  u.costYen += cost
-  kb.models[model] = u
-  month.keys[fp] = kb
-  store[m] = month
-  writeStore(store)
+  applyRecordToMirror(fp, model, promptTokens, completionTokens) // 楽観更新
+  if (hasUsageApi()) void window.electronAPI.usage.record(fp, model, promptTokens, completionTokens).catch(() => {})
 }
 
 /** 今月分の利用量をリセット */
-export function resetThisMonth() {
-  const store = readStore()
-  delete store[thisMonth()]
-  writeStore(store)
-}
-
-export interface BudgetStatus {
-  limit: number | null
-  cost: number
-  ratio: number | null
-  over: boolean
-  warn: boolean
+export function resetThisMonth(): void {
+  resetMonthInMirror() // 楽観更新
+  if (hasUsageApi()) void window.electronAPI.usage.reset().catch(() => {})
 }
 
 /** 全体の状況（合計コスト vs 既定上限）。設定画面のヘッドライン用。 */
 export function budgetStatus(): BudgetStatus {
-  const s = getSettings()
-  const cost = getUsage().costYen
-  const limit = s.monthlyLimitYen
-  if (limit == null || limit <= 0) return { limit: null, cost, ratio: null, over: false, warn: false }
-  const ratio = cost / limit
-  return { limit, cost, ratio, over: ratio >= 1, warn: ratio >= s.warnRatio }
+  const m = getUsageMirror()
+  return budgetStatusOf(m.settings, m.months, thisMonth())
 }
 
 /** 指定キーの状況（キーのコスト vs 実効上限）。 */
 export function budgetStatusForKey(apiKey: string): BudgetStatus {
-  const s = getSettings()
-  const cost = getUsageForKey(apiKey).costYen
-  const limit = effectiveLimit(apiKey)
-  if (limit == null || limit <= 0) return { limit: null, cost, ratio: null, over: false, warn: false }
-  const ratio = cost / limit
-  return { limit, cost, ratio, over: ratio >= 1, warn: ratio >= s.warnRatio }
+  const m = getUsageMirror()
+  return budgetStatusForKeyOf(m.settings, m.months, thisMonth(), hashKey(apiKey))
 }
 
-/** リクエスト前のチェック（使用中キーの上限で判定）。 */
+/** リクエスト前のチェック（使用中キーの上限で判定）。ミラーに対して同期で判定できる
+ *  （main のターン側は usageStore.ts の checkBeforeRequest を直接呼ぶ・こちらは IPC を経由しない）。 */
 export function checkBeforeRequest(apiKey: string): { allowed: boolean; message?: string } {
-  const s = getSettings()
-  if (!s.enforce) return { allowed: true }
-  const limit = effectiveLimit(apiKey)
-  if (limit == null) return { allowed: true } // 無制限
-  const cost = getUsageForKey(apiKey).costYen
-  if (cost >= limit) {
-    return {
-      allowed: false,
-      message:
-        `このAPIキーの今月の利用額（推定 ¥${cost.toFixed(1)}）が上限 ¥${limit} に達しました。` +
-        `認証情報（⇧⌘,）でこのキーの上限を変更するか、別のキーに切り替えてください。`,
-    }
-  }
-  return { allowed: true }
+  const m = getUsageMirror()
+  return checkBeforeRequestOf(m.settings, m.months, thisMonth(), hashKey(apiKey))
 }

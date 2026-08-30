@@ -10,8 +10,9 @@
 // ロジックの二重実装はしない。
 //
 // ⚠️ 学習記録（toolSupport.* / vision.*）は B'-3d-1a で main（learningStore.ts）へ移り、
-// ask ではなくなった（ASK_PATHS から削除・main の turnRunner.ts が直接呼ぶ）。ここにはもう
-// 対応する case が無い。
+// ask ではなくなった（ASK_PATHS から削除・main の turnRunner.ts が直接呼ぶ）。予算・利用実績
+// （usage.check / usage.record）と compactWarnOnce も B'-3d-1b で main（usageStore.ts・
+// モジュール内 Set）へ移り、同じく ask ではなくなった。ここにはもうそれらに対応する case が無い。
 
 import type { AskPath } from '../shared/chatTurnRpc'
 
@@ -47,7 +48,7 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
  *   ask が来たら Error を投げる（caps の食い違い＝バグを黙らせない）。
  *
  * ── handlers の型について ────────────────────────────────────────
- * buildSystemPrompt / getHistory / compactWarnOnce の返り値を
+ * buildSystemPrompt / getHistory の返り値を
  * `T | Promise<T>` にしてある。renderer の実装（useAiChat.ts の buildPorts）は今日も同期
  * （T のみ）だが、この関数はその ports をそのまま（型を狭め直さずに）handlers として使う
  * ため、EngineTurnPorts（src/shared/chatTurn.ts）の型に合わせてある。
@@ -63,9 +64,6 @@ export function dispatchAsk(
     getSearchConfig(): Promise<unknown>
     fetchPagesBlock(urls: string[]): Promise<string>
     autoSearchBlock(text: string, search: unknown): Promise<string>
-    usageCheck(): unknown
-    usageRecord(model: string, p: number, c: number): void
-    compactWarnOnce(): boolean | Promise<boolean>
   },
   turnOptsFull: Record<string, unknown>,
   path: AskPath,
@@ -108,14 +106,6 @@ export function dispatchAsk(
       const [text, search] = args as [string, unknown]
       return handlers.autoSearchBlock(text, search)
     }
-    case 'usage.check':
-      return handlers.usageCheck()
-    case 'usage.record': {
-      const [model, p, c] = args as [string, number, number]
-      return handlers.usageRecord(model, p, c)
-    }
-    case 'compactWarnOnce':
-      return handlers.compactWarnOnce()
     default: {
       // ASK_PATHS（src/shared/chatTurnRpc.ts）に新しい path が増えたのに、ここへ
       // case を足し忘れると、この行は `path` を `never` へ代入できずコンパイルエラーになる

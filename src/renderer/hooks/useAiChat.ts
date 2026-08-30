@@ -639,13 +639,13 @@ export function useAiChat(args: UseAiChatArgs) {
         getSearchConfig: ports.getSearchConfig,
         fetchPagesBlock: ports.fetchPagesBlock,
         autoSearchBlock: ports.autoSearchBlock,
-        usageCheck: ports.usage.check,
-        usageRecord: ports.usage.record,
         // ⚠️ toolSupport.* / vision.* は B'-3d-1a で main（learningStore.ts）が直接持つように
         // なり、ask ではなくなった（chatTurnBridge.ts の dispatchAsk にはもう対応する case が
-        // 無い）。ports.toolSupport / ports.vision 自体は buildPorts に残る（compactNow が
-        // 呼ぶ・下のコメント参照）ので、ここから handlers への受け渡しだけを外す。
-        compactWarnOnce: ports.compactWarnOnce,
+        // 無い）。usage.check / usage.record / compactWarnOnce も B'-3d-1b で main
+        // （usageStore.ts・モジュール内 Set）が直接持つようになり、同じく ask ではなくなった。
+        // ports.toolSupport / ports.vision / ports.usage / ports.compactWarnOnce 自体は
+        // buildPorts に残る（compactNow が呼ぶ・compactNow は main のターンを経由せず
+        // renderer だけで完結する処理のため）ので、ここから handlers への受け渡しだけを外す。
       }
       // ⚠️ ターンの間ずっと main への abort 送信関数を this ターンの鍵（key）に登録する。
       // 今日は「ストリーム中だけ」だったが、main 側は abort 関数が未登録なら何もしないので、

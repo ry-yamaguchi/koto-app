@@ -23,6 +23,7 @@ import { registerChatStoreHandlers } from './chatStore'
 import { registerUpdateHandlers } from './update'
 import { registerMigrateHandlers } from './migrate'
 import { registerLearningHandlers } from './learning'
+import { registerUsageHandlers } from './usage'
 import { registerChatTurnHandlers } from '../chat/turnRunner'
 
 export type { IpcDeps } from './types'
@@ -50,5 +51,6 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerChatStoreHandlers(deps)
   registerUpdateHandlers(deps)
   registerLearningHandlers(deps)
+  registerUsageHandlers(deps)
   registerChatTurnHandlers(deps)
 }

@@ -446,6 +446,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('learning:changed', handler)
     },
   },
+  // 予算設定・利用実績（B'-3d-1b）。持ち主は main の usageStore.ts（userData/usage.json）。
+  // renderer は起動時に get() で写しを作り、onChanged() の押し出しで最新化する
+  // （src/renderer/usageMirror.ts）。usage:check は無い（main のターンは usageStore を直接
+  // 呼び、renderer 側の読み取りもミラーに対して shared/usageBudget.ts の純関数を直接呼ぶ）。
+  usage: {
+    get: () => ipcRenderer.invoke('usage:get'),
+    record: (fp: string, model: string, promptTokens: number, completionTokens: number) =>
+      ipcRenderer.invoke('usage:record', fp, model, promptTokens, completionTokens),
+    setSettings: (raw: unknown) => ipcRenderer.invoke('usage:setSettings', raw),
+    /** 消すときは { clear: true } を渡す（undefined は IPC で「省略」と区別しにくいため）。 */
+    setKeyLimit: (fp: string, limit: number | null | { clear: true }) => ipcRenderer.invoke('usage:setKeyLimit', fp, limit),
+    reset: () => ipcRenderer.invoke('usage:reset'),
+    /** 旧 renderer/localStorage からの片道移行。main 側の migrated フラグが縛るため、
+     *  何度呼んでも二重計上しない（ただし二重に呼んでよいことを保証するのは main 側の責務）。 */
+    migrate: (payload: { settings?: unknown; months?: unknown }) => ipcRenderer.invoke('usage:migrate', payload),
+    /** main が設定・実績を変えるたび届く通知（learning.onChanged と同じ作法・購読解除関数を返す）。 */
+    onChanged: (cb: (snapshot: { settings: unknown; months: unknown }) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, snapshot: { settings: unknown; months: unknown }) => cb(snapshot)
+      ipcRenderer.on('usage:changed', handler)
+      return () => ipcRenderer.removeListener('usage:changed', handler)
+    },
+  },
   // AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。
   // renderer 側の配線（useAiChat.ts 等）はまだこの API を呼ばない（その2で行う）。
   chatTurn: {
