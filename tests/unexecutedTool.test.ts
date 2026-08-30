@@ -115,6 +115,21 @@ describe('変えたと言っているか', () => {
       'まず read_file で確認します',
     ]) expect(claimsFileChange(t)).toBe(false)
   })
+
+  // 2026-08-30 実機（v0.4.5）: 「lsを実行して」への返答が過去のターンの作業に触れただけで
+  // 誤検知し、確認の往復が毎ターン走った。過去参照を含む**文**は完了報告と見なさない。
+  it('★★ 過去のターンの話は捕まえない（実行結果の報告を邪魔しない）', () => {
+    for (const t of [
+      'text.txt は先ほど更新した内容が保存されています',
+      '先ほど保存しました。ls の結果は text.txt の1件です',
+      '前のターンで作成しました',
+      'すでに更新しました。内容は変わっていません',
+    ]) expect(claimsFileChange(t)).toBe(false)
+  })
+
+  it('★★ 文ごとに見る: 過去の話の隣に、このターンの完了報告があれば捕まえる', () => {
+    expect(claimsFileChange('先ほど text.txt を作りました。今回は style.css を更新しました')).toBe(true)
+  })
 })
 
 describe('変えたと言っているのに書き込みが無いとき', () => {
@@ -152,15 +167,30 @@ describe('まず実際にやらせる（言うだけで終わらせない）', (
     expect(chat).toContain('ports.h.writingTools as readonly string[]).includes(toolName)) wroteFiles = true')
   })
 
-  it('★★ 1回だけ「いますぐ実行して」と促す（無限に往復しない）', () => {
+  it('★★ 1回だけ「いま実行して」と促す（無限に往復しない）。逃げ道（不要なら実行しない）も必ず添える', () => {
     expect(chat).toContain('askedToActuallyWrite = true')
     expect(chat).toContain('!askedToActuallyWrite')
-    expect(chat).toContain('いますぐ変更を実行してください')
+    expect(chat).toContain('write_file または edit_file でいま実行してください')
+    // （0.4.5）逃げ道が無いと、誤検知のときに「頼まれていない書き込みのでっち上げ」を
+    // 誘発する（2026-08-30 実機: 「lsを実行して」で text.txt へ勝手に追記された）
+    expect(chat).toContain('変更が不要な場合（結果の報告や説明だけで、ファイルの変更を求められていないとき）は、ファイルを変更せず、その旨を短く答えてください')
+    // 「以前のターンで完了済み」という例は**書かない**（同日実機: この例を悪用して
+    // 「前のターンで更新済みです」と答え、頼まれた書き込みを逃げた）
+    expect(chat).not.toContain('以前のターンで完了済みのとき')
   })
 
-  it('★★ 事実と違う報告は残さない', () => {
+  it('★★ 促しに書かず終えたら、事実（変更なし）だけを短く添える（嘘の「更新済みです」を利用者が見抜ける）', () => {
+    expect(chat).toContain("} else if (askedToActuallyWrite && !wroteFiles) {")
+    expect(chat).toContain('ℹ️ このターンでは、ファイルは変更されていません。')
+  })
+
+  it('★★ 誤検知でも本物の答えを消さない（2026-08-30・v0.4.5 で非破壊化）', () => {
+    // かつては removeLast で「事実と違う報告は残さない」形だったが、誤検知のとき
+    // 本物の答え（ls の結果の報告）まで消していた。返事は残し、下に確認中の印を添える。
     const at = chat.indexOf('askedToActuallyWrite = true')
-    expect(chat.slice(at, at + 300)).toContain("ports.emit({ kind: 'removeLast' })")
+    expect(at).toBeGreaterThan(-1)
+    expect(chat.slice(at, at + 400)).not.toContain("ports.emit({ kind: 'removeLast' })")
+    expect(chat.slice(at, at + 400)).toContain('実際に変更が必要か確かめています…')
   })
 
   it('★ 促してもやらなければ、警告を付ける', () => {

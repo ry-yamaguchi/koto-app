@@ -477,7 +477,10 @@ describe('runEngineTurn', () => {
   })
 
   // 11. 「変えた」と言って書いていない
-  it('「変えた」と言って書いていない: removeLast → ⚠️ append → 促しの user メッセージが足されて continue。2回目も書かなければ警告が本文に付く', async () => {
+  // （0.4.5 で非破壊化: removeLast をやめた。2026-08-30 実機で「lsを実行して」への返答が
+  //  誤検知で消され、強制指示が頼まれていない書き込みを誘発したため。真陽性の効き目は
+  //  このシナリオのとおり維持——促されて書かなければ警告が本文に付く）
+  it('「変えた」と言って書いていない: 返事は消さず ⚠️ append → 促しの user メッセージが足されて continue。2回目も書かなければ警告が本文に付く', async () => {
     let requests: any[] = []
     const { ports, log } = makePorts({
       stream: [
@@ -492,15 +495,59 @@ describe('runEngineTurn', () => {
     }
     await runEngineTurn(makeSpec(), ports)
 
-    const idxAsked = log.findIndex((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.content === '⚠️ 変更が実行されていなかったので、やり直しています…')
+    // （0.4.5 作り直し）確認中の印は吹き出しでなく一時ステータス（会話に積まれない）
+    const idxAsked = log.findIndex((e) => e.tag === 'emit' && e.ev.kind === 'status' && e.ev.value === '実際に変更が必要か確かめています…')
     expect(idxAsked).toBeGreaterThan(-1)
-    expect(log[idxAsked - 1]).toEqual({ tag: 'emit', ev: { kind: 'removeLast' } })
-    // 促しの user メッセージが2回目の chatStream の messages に入っている
-    expect(requests[1].some((m: any) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('いますぐ変更を実行してください'))).toBe(true)
+    // （0.4.5）誤検知でも本物の答えを消さない: 確認より前に removeLast が1度も出ていない
+    expect(log.slice(0, idxAsked).some((e) => e.tag === 'emit' && e.ev.kind === 'removeLast')).toBe(false)
+    // 促しの user メッセージが2回目の chatStream の messages に入っている（実行の指示と、
+    // 「不要なら実行しない」逃げ道の両方＝でっち上げ書き込みの防止）
+    expect(requests[1].some((m: any) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('write_file または edit_file でいま実行してください'))).toBe(true)
+    expect(requests[1].some((m: any) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('変更が不要な場合'))).toBe(true)
     // 2回目も書かなければ、最終本文に警告が付く
     const finalReplace = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast' && typeof e.ev.msg.content === 'string' && e.ev.msg.content.startsWith('index.html を修正しました'))
     expect(finalReplace).toBeTruthy()
     expect(finalReplace.ev.msg.content).toContain('実際には書き込みが行われていません')
+  })
+
+  // 11b. 誤検知の発生源対策（2026-08-30 実機・v0.4.5）: 完了表現が**過去のターンの話**
+  // （「先ほど保存しました」）なら、そもそも促しの往復すら走らず、1回で正常に終わる。
+  it('過去のターンの話は促し自体が走らない: 1回で終了・書き込みも確認ステータスも無し', async () => {
+    const { ports, log } = makePorts({
+      stream: [
+        { content: 'text.txt は先ほど保存しました。ls の結果は text.txt の1件です', toolCalls: null },
+      ],
+    })
+    await runEngineTurn(makeSpec(), ports)
+    expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'removeLast')).toBe(false)
+    expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'status' && e.ev.value === '実際に変更が必要か確かめています…')).toBe(false)
+    expect(log.some((e) => e.tag === 'executeTool')).toBe(false)
+    expect(log.filter((e) => e.tag === 'chatStream').length).toBe(1) // 往復が増えていない
+    // 返事はそのまま・警告なし
+    const last = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast')
+    expect(last.ev.msg.content).toBe('text.txt は先ほど保存しました。ls の結果は text.txt の1件です')
+  })
+
+  // 11c. 促しに「変更は不要」と書かずに答え直した場合: でっち上げ書き込みはせず、
+  // 事実（このターンは変更なし）だけを短く添える（嘘の「更新済みです」を利用者が見抜ける）。
+  it('促しに書かず答え直したら: 書き込みゼロ・警告なし・ℹ️ の事実だけ添える（本物の答えは消えない）', async () => {
+    const { ports, log } = makePorts({
+      stream: [
+        { content: 'text.txt を更新しました', toolCalls: null },
+        { content: '変更は不要です', toolCalls: null },
+      ],
+    })
+    await runEngineTurn(makeSpec(), ports)
+    // 1回目の返事が消されていない
+    expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'removeLast')).toBe(false)
+    expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast' && e.ev.msg.content === 'text.txt を更新しました')).toBe(true)
+    // ツール（書き込み）は1度も実行されていない
+    expect(log.some((e) => e.tag === 'executeTool')).toBe(false)
+    // 2回目の返事はそのまま（警告は付かない）で、ℹ️ の事実が別の吹き出しで続く
+    expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast' && e.ev.msg.content === '変更は不要です')).toBe(true)
+    const info = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg?.content === 'ℹ️ このターンでは、ファイルは変更されていません。')
+    expect(info).toBeTruthy()
+    expect(info.ev.msg.toolNote).toBe(true)
   })
 
   // 12. ルーティング

@@ -654,23 +654,49 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           // 「✏️ 保存しています」は無いのに「✅ 反映しました」と答えていた。
           // 読み取りは正しく実行できているので**ツール非対応ではない**。
           // 言っただけである。まず**実際にやらせる**（1回だけ促す）。
+          //
+          // ⚠️ この判定は**誤検知しうる**（2026-08-30 実機・Ryosuke・v0.4.5 で改めた）:
+          // 「lsを実行して」への返答（実行結果の報告）が、過去のターンの話として
+          // 「保存しました」等の完了表現を含んだだけで真になった。かつての形
+          // （removeLast で返答を消す＋「いますぐ変更を実行して」と命じる）は、
+          // 誤検知のとき**本物の答えを消し**、さらに**頼まれていない書き込みの
+          // でっち上げ**を誘発した（モデルは命令に従って text.txt へ追記した）。
+          // だから守りを非破壊にする: ①返答は消さない（下に確認中の印を添える）
+          // ②指示に「変更が不要なら実行せず、その旨を答える」逃げ道を用意する。
+          // 真陽性（嘘の完了報告）への効き目は変わらない——促されて書けば実行され、
+          // 書かなければ下の unexecutedChangeWarning が従来どおり本文に付く。
           if (ports.h.claimsFileChange(r.content) && !wroteFiles && !askedToActuallyWrite
               && toolsProjectDir && (await ports.toolSupport.shouldSendTools(useModel))) {
             askedToActuallyWrite = true
-            ports.emit({ kind: 'removeLast' }) // 事実と違う報告は残さない
-            ports.emit({ kind: 'append', msg: { role: 'assistant', content: '⚠️ 変更が実行されていなかったので、やり直しています…', toolNote: true } })
+            // 確認中の印は吹き出しでなく一時ステータスで（2026-08-30 実機・v0.4.5 の作り直し:
+            // ⚠️ の吹き出しが確認のたび会話に積まれてうるさかった。結末は下の分岐——実行・
+            // 標準の警告・ℹ️ の事実——が必ず何かを残すので、途中経過は消えてよい）
+            ports.emit({ kind: 'status', value: '実際に変更が必要か確かめています…' })
             apiMessages.push({ role: 'assistant', content: r.content })
             apiMessages.push({
               role: 'user',
-              content: '（Koto より）いまの返事ではファイルは実際には変更されていません。'
-                + '説明や手順を書かず、write_file または edit_file を使って、いますぐ変更を実行してください。',
+              content: '（Koto より）このターンでは、ファイルへの書き込みはまだ実行されていません。'
+                + '本当にファイルの変更が必要なら、説明や手順を書かず、write_file または edit_file でいま実行してください。'
+                // ⚠️ 逃げ道の例に「過去のターンで済んでいる」の形を**入れない**（2026-08-30 実機:
+                // 「今の時刻を記載して」への嘘の完了報告を促したら、モデルがその例を
+                // 悪用して「前のターンで更新済みです」と答え、実行を逃げた。
+                // 文言の固定は tests/unexecutedTool.test.ts——注釈に同じ語を書くと
+                // not.toContain が注釈に当たるので、ここでは言い換えている）
+                + '変更が不要な場合（結果の報告や説明だけで、ファイルの変更を求められていないとき）は、ファイルを変更せず、その旨を短く答えてください。',
             })
             continue
           }
           // 促してもやらなかった場合は、**黙って成功に見せない**
           const warn = ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles)
             ?? ports.h.unexecutedToolWarning(sawToolMarkup, usedTools)
-          if (warn) ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: `${r.content}\n\n${warn}` } })
+          if (warn) {
+            ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: `${r.content}\n\n${warn}` } })
+          } else if (askedToActuallyWrite && !wroteFiles) {
+            // 促しに対して「変更は不要」等で書かずに終えた。正しい辞退か嘘の逃げかは
+            // Koto には判定できないので、**事実だけ**を短く添える（利用者が
+            // 「更新済みです」という答えと突き合わせて矛盾に気づける・2026-08-30 実機）。
+            ports.emit({ kind: 'append', msg: { role: 'assistant', content: 'ℹ️ このターンでは、ファイルは変更されていません。', toolNote: true } })
+          }
         }
         break
       }
