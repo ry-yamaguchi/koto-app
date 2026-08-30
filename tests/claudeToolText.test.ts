@@ -22,6 +22,13 @@ import {
 } from '../src/main/claude/toolText'
 import { buildRagBlockText as rendererBuildRagBlockText } from '../src/renderer/ragContext'
 
+// wrapUntrusted（src/shared/untrustedBlock.ts）は呼び出しごとに乱数の境界トークン（nonce）を
+// 生成するため、同じ入力でも呼び出しごとに出力の nonce 部分が変わる。
+// 「境界トークンの位置・sourceLabel・本文まで含めて完全に同じ整形をしている」ことは
+// 引き続き固定したいので、比較の前に nonce 部分だけを正規化する
+// （nonce の値そのものは意図的にランダムなので比較対象から外すのが正しい）。
+const stripNonce = (s: string) => s.replace(/KOTO-EXT-[0-9a-f]{8}/g, 'KOTO-EXT-NONCE')
+
 // ── ツール名の修飾規則（mcp__<server>__<tool>） ────────────────────────
 describe('MCP tool name qualification', () => {
   it('qualifies a tool name as mcp__<server>__<tool>', () => {
@@ -86,7 +93,8 @@ describe('buildRagBlockText (main copy)', () => {
 
   it('produces exactly the same output as the renderer buildRagBlockText (相互参照の複製)', () => {
     const hits = [hit('資料A', 'コンテンツ1'), hit(null, 'x'.repeat(2100))]
-    expect(buildRagBlockText(hits)).toBe(rendererBuildRagBlockText(hits as any))
+    // wrapUntrusted の nonce は互いに独立して生成されるため、nonce だけ正規化して比較する。
+    expect(stripNonce(buildRagBlockText(hits))).toBe(stripNonce(rendererBuildRagBlockText(hits as any)))
   })
 })
 
@@ -118,15 +126,18 @@ describe('parseRagTags', () => {
 })
 
 // ── fetch_url ──────────────────────────────────────────────────────
+// formatFetchedPage は wrapUntrusted（src/shared/untrustedBlock.ts）で外部ページの本文を
+// 境界トークンで囲む（renderer 版 executeTool の fetch_url 分岐と同じ整形）。
+// nonce は毎回変わるため、正規化した上で完全な形（境界トークン・sourceLabel・本文）を固定する。
 describe('formatFetchedPage', () => {
   it('formats url + title + content (renderer 版 executeTool と同じ整形)', () => {
-    expect(formatFetchedPage({ url: 'https://a.example', title: 'タイトル', content: '本文' }))
-      .toBe('ページ: https://a.example（タイトル）\n\n本文')
+    const out = formatFetchedPage({ url: 'https://a.example', title: 'タイトル', content: '本文' })
+    expect(stripNonce(out)).toBe('<<<KOTO-EXT-NONCE>>> ページ: https://a.example（タイトル）\n本文\n<<<END-KOTO-EXT-NONCE>>>')
   })
 
   it('omits the title parentheses when the title is empty', () => {
-    expect(formatFetchedPage({ url: 'https://a.example', title: '', content: '本文' }))
-      .toBe('ページ: https://a.example\n\n本文')
+    const out = formatFetchedPage({ url: 'https://a.example', title: '', content: '本文' })
+    expect(stripNonce(out)).toBe('<<<KOTO-EXT-NONCE>>> ページ: https://a.example\n本文\n<<<END-KOTO-EXT-NONCE>>>')
   })
 })
 

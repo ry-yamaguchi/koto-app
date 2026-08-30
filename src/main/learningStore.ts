@@ -88,6 +88,11 @@ function notify(): void {
   listener?.(snapshot())
 }
 
+/** kind が想定の2値か（IPC 越しに不正値が来ても visionStore へ化けさせない・掟10 の守り）。 */
+function isValidKind(kind: unknown): kind is LearningKind {
+  return kind === 'tool' || kind === 'vision'
+}
+
 function storeFor(kind: LearningKind): LearnStore {
   return kind === 'tool' ? toolStore : visionStore
 }
@@ -120,6 +125,7 @@ export function getLearning(): LearningSnapshot {
 
 /** 実測結果を記録する（上書き保存。at を現在時刻に更新）。 */
 export function recordLearning(kind: LearningKind, model: string, supported: boolean, now: number = Date.now()): void {
+  if (!isValidKind(kind) || typeof model !== 'string' || model === '') return
   ensureLoaded()
   storeFor(kind)[model] = { supported, at: now }
   scheduleSave()
@@ -128,6 +134,7 @@ export function recordLearning(kind: LearningKind, model: string, supported: boo
 
 /** 記録を消す。model省略時は全消去（設定UIからのリセットや不具合時の逃げ道用）。 */
 export function forgetLearning(kind: LearningKind, model?: string): void {
+  if (!isValidKind(kind)) return
   ensureLoaded()
   if (model === undefined) {
     if (kind === 'tool') toolStore = {}

@@ -32,6 +32,8 @@ import { isDangerousCommand } from './guard'
 import { mapSdkMessage, type UiEvent } from './events'
 import { buildIdeToolsServer } from './tools'
 import { IDE_MCP_SERVER_NAME, IDE_MCP_TOOL_NAMES, DELEGATION_GUIDANCE } from './toolText'
+import { UNTRUSTED_RULE } from '../../shared/untrustedBlock'
+import { nowContext } from '../../shared/chatTime'
 import { snapshotBeforeWrite, snapshotBeforeChange } from '../backup/store'
 import { buildUserContent } from './vision'
 import { isProtectedWritePath, protectedWriteMessage } from '../../shared/protectedPaths'
@@ -255,9 +257,16 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
     },
     abortController,
     pathToClaudeCodeExecutable: resolveClaudeBinary() ?? undefined,
-    // C3: モードA（AI Engineキーあり）のときだけ委譲指針をシステムプロンプトへ追記する。
+    // 外部データの境界ガード（掟10）はモードに関わらず常に付ける（fetch_url は両モードで使えるため）。
+    // C3: モードA（AI Engineキーあり）のときだけ委譲指針も追記する。
     // モードB（Claudeのみ）では delegate_implementation ツール自体が登録されないため付けない。
-    ...(aiEngineKey ? { systemPrompt: { type: 'preset', preset: 'claude_code', append: DELEGATION_GUIDANCE } } : {}),
+    // 現在日時（この端末のローカル時刻）も添える（AIに今日を推測させない・chatTime.ts の nowContext）。
+    // ここは main なので new Date() はエージェント起動＝送信ごとに評価され、常に最新になる。
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: (aiEngineKey ? `${UNTRUSTED_RULE}\n\n${DELEGATION_GUIDANCE}` : UNTRUSTED_RULE) + `\n\n${nowContext()}`,
+    },
   }
 
   void (async () => {

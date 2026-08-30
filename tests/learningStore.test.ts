@@ -66,6 +66,27 @@ describe('learningStore: recordLearning ⇄ getLearning（記録の往復）', (
     const s2 = getLearning()
     expect(s2.toolSupport['a']).toEqual({ supported: true, at: 1000 })
   })
+
+  // ── 不正な kind を弾く（2026-08-30 セキュリティ点検）─────────────────────
+  // IPC 越し（learning:record/forget）に想定外の kind が来ても、visionStore へ化けさせない。
+  it('不正な kind の record は無視する（tool/vision どちらも汚さない）', () => {
+    recordLearning('bogus' as any, 'x', true, 1000)
+    const s = getLearning()
+    expect(s.toolSupport).toEqual({})
+    expect(s.visionSupport).toEqual({})
+  })
+
+  it('空文字のモデル名は記録しない', () => {
+    recordLearning('tool', '', true, 1000)
+    expect(getLearning().toolSupport).toEqual({})
+  })
+
+  it('不正な kind の forget は何もしない（既存記録を消さない）', () => {
+    recordLearning('vision', 'keep', true, 1000)
+    forgetLearning('bogus' as any)
+    forgetLearning('bogus' as any, 'keep')
+    expect(getLearning().visionSupport).toEqual({ keep: { supported: true, at: 1000 } })
+  })
 })
 
 describe('learningStore: 保存（デバウンス・quit時フラッシュ・ファイルの形）', () => {

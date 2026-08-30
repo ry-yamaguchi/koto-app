@@ -8,6 +8,7 @@ import { isDangerousCommand, leavesWorkingDir } from '../shared/commandGuard'
 import { PUBLISH_DIR_LABEL, backupRelPath } from '../shared/publishRoot'
 import { applyEdit } from './editFile'
 import { isProtectedWritePath, protectedWriteMessage } from '../shared/protectedPaths'
+import { wrapUntrusted } from '../shared/untrustedBlock'
 // 実体は shared へ移した（B'-3b）。ツール定義（toolsFor 他）・純粋な補助関数は
 // src/shared/aiToolsCore.ts を参照。
 import {
@@ -179,7 +180,7 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
     const url = String(args.url ?? '')
     try {
       const page = await window.electronAPI.web.fetchPage(url)
-      return `ページ: ${page.url}${page.title ? `（${page.title}）` : ''}\n\n${page.content}`
+      return wrapUntrusted(`ページ: ${page.url}${page.title ? `（${page.title}）` : ''}`, page.content)
     } catch (e: any) {
       return `エラー: ページを取得できませんでした（${e?.message ?? e}）`
     }
@@ -194,7 +195,7 @@ export async function executeTool(name: string, argsJson: string, ctx: ToolConte
       if (!results.length) return `「${query}」の検索結果はありませんでした`
       return (
         `「${query}」の検索結果:\n\n` +
-        results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.description}`).join('\n\n') +
+        wrapUntrusted(`Web検索結果（クエリ: "${query}"）`, results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.description}`).join('\n\n')) +
         '\n\n（詳細が必要なページは fetch_url で本文を取得できます）'
       )
     } catch (e: any) {

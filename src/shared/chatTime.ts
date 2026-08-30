@@ -111,3 +111,30 @@ export function bubbleTime(at: string | undefined): string | null {
   if (!d) return null
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
+
+const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土']
+
+/**
+ * AI へ渡す「今の日時」1行（この端末＝利用者のローカル時刻）。
+ *
+ * ── なぜ要るか（2026-08-27 実機・Ryosuke 発見 → 2026-08-30 実装）──────────────
+ * Koto は AI に「今日が何日か」を渡していなかったため、AI は学習内容や検索結果から
+ * 日付を**推測**していた（実機: 8/27 に「2026年8月26日時点の」と回答）。ここで現在時刻を
+ * 明示的に渡す。NTP は使わない（吹き出しの時刻・ファイル更新時刻・git など Koto の他の
+ * 時刻はすべて OS の時計を見ており、AI にだけ別ソースを渡すとズレて混乱が増えるため。
+ * macOS の時計は OS レベルで NTP 同期済み・2026-08-30 Ryosuke と合意）。
+ *
+ * systemPrompt は**送信ごと**に組まれるので、送信の瞬間の now を渡せば常に最新になる
+ * （キャッシュ不要。窓を開けっぱなしで日付が変わっても次の送信で更新される）。getHours 等は
+ * ローカルタイムゾーンで返るので、利用者の時間帯そのままになる。純関数（now を引数に取る）。
+ */
+export function nowContext(now: Date = new Date()): string {
+  const y = now.getFullYear()
+  const m = now.getMonth() + 1
+  const d = now.getDate()
+  const w = WEEKDAYS_JA[now.getDay()]
+  const hh = String(now.getHours()).padStart(2, '0')
+  const mm = String(now.getMinutes()).padStart(2, '0')
+  return `【現在の日時】${y}年${m}月${d}日（${w}）${hh}:${mm}（利用者の端末のローカル時刻）。` +
+    `日付や時刻・曜日に言及するときは推測せず、必ずこの時刻を基準にすること。`
+}

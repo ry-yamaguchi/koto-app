@@ -128,10 +128,16 @@ export function shouldTryImagesDirectly(store: LearnStore, model: string, now: n
  * readVisionSupportStore にあった検証部を、tool/vision で共通化したもの
  * （main の learningStore.ts・renderer の learningMirror.ts の両方から使う）。
  */
+/** キーとして受け付けないモデル名（プロトタイプ汚染の芽を摘む）。
+ *  learning.json や移行ペイロードは外部由来ではないが、入力パースの関門では
+ *  安全側に倒す（`out['__proto__'] = ...` は out 自身の prototype を差し替える）。 */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
 export function sanitizeStore(raw: unknown): LearnStore {
   if (!raw || typeof raw !== 'object') return {}
   const out: LearnStore = {}
   for (const [model, entry] of Object.entries(raw as Record<string, any>)) {
+    if (UNSAFE_KEYS.has(model)) continue
     if (entry && typeof entry.supported === 'boolean' && typeof entry.at === 'number') {
       out[model] = { supported: entry.supported, at: entry.at }
     }

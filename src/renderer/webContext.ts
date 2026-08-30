@@ -4,6 +4,7 @@
 
 // 実体は shared へ移した（B'-3b）。extractUrls / wantsWebSearch は src/shared/webContextCore.ts を参照。
 import { extractUrls, wantsWebSearch } from '../shared/webContextCore'
+import { wrapUntrusted } from '../shared/untrustedBlock'
 export { extractUrls, wantsWebSearch }
 
 /**
@@ -16,10 +17,7 @@ export async function fetchPagesBlock(urls: string[]): Promise<string> {
   for (const url of urls) {
     try {
       const page = await window.electronAPI.web.fetchPage(url)
-      parts.push(
-        `--- 参照ページ: ${page.url}${page.title ? `（${page.title}）` : ''} ---\n` +
-        page.content
-      )
+      parts.push(wrapUntrusted(`参照ページ: ${page.url}${page.title ? `（${page.title}）` : ''}`, page.content))
     } catch (e: any) {
       parts.push(`--- 参照ページ: ${url} ---\n（取得できませんでした: ${e?.message ?? e}）`)
     }
@@ -59,7 +57,7 @@ export async function autoSearchBlock(text: string, config: WebSearchConfig | nu
     const body = results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.description}`).join('\n\n')
     return (
       `\n\n# IDEが実行したWeb検索の結果（クエリ: "${query}"・ユーザーには表示されない参考情報）\n` +
-      body +
+      wrapUntrusted(`Web検索結果（クエリ: "${query}"）`, body) +
       `\n\nこの検索結果を根拠に回答してください。結果に無い事実は推測で創作しないこと。さらに詳しいページ本文が必要なら fetch_url（対応モデルのみ）で取得できます。`
     )
   } catch (e: any) {

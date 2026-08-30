@@ -16,7 +16,7 @@ import { isClaudeModeEnabled, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsabl
 import BrainToggle from './BrainToggle'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { CHAT_TEXT_WRAP } from '../textWrap'
-import { timelineMarks, bubbleTime } from '../../shared/chatTime'
+import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { subscribe, getSnapshot, loadingKeys, turnKey, getTurn } from '../chatTurnRegistry'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
@@ -125,7 +125,8 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     // 12: チャットモードは相談役でファイル操作を持たないぶん IDE より少なめだが、
     // 3 では資料検索やWeb取得を数回するだけで尽きていた（ユーザー報告 2026-07-23）。
     maxRounds: 12,
-    buildSystemPrompt: () => CHAT_CONTEXT,
+    // 現在日時（この端末のローカル時刻）を毎回の送信で先頭に添える（AIに今日を推測させない・chatTime.ts）
+    buildSystemPrompt: () => nowContext() + '\n\n' + CHAT_CONTEXT,
     toolsProjectDir: null,
     // 改善2（2026-08-29）: セッション別に実行状態を持たせる（turnKey(null, sessionId)）。
     // これで待っていない会話（他のセッション）からも送信できる（並列。IDEと同じ意味論）。

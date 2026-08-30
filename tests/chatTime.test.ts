@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { stamp, timelineMarks, bubbleTime, type TimelineMark } from '../src/shared/chatTime'
+import { stamp, timelineMarks, bubbleTime, nowContext, type TimelineMark } from '../src/shared/chatTime'
 
 // 会話がいつのものか分からず、あとで見返したときに「これはなんだっけ？」となる（利用者からの要望）。
 // 日付の区切りと、吹き出しに触れたときの時刻表示のための純粋ロジックを固定する。
@@ -176,9 +176,54 @@ describe('bubbleTime（吹き出しに触れたときの文字列）', () => {
   })
 })
 
+describe('nowContext（AIへ渡す現在日時・ローカル時刻）', () => {
+  it('年月日・曜日・時刻を、渡した now から作る（推測しない）', () => {
+    // 2026-08-30 は日曜日・14:05
+    const s = nowContext(new Date(2026, 7, 30, 14, 5, 0))
+    expect(s).toContain('2026年8月30日')
+    expect(s).toContain('（日）')
+    expect(s).toContain('14:05')
+    expect(s).toContain('ローカル時刻')
+  })
+
+  it('曜日は getDay に対応する（日=0 … 土=6）', () => {
+    expect(nowContext(new Date(2026, 7, 29, 0, 0, 0))).toContain('（土）') // 2026-08-29 は土
+    expect(nowContext(new Date(2026, 7, 30, 0, 0, 0))).toContain('（日）') // 翌日は日
+  })
+
+  it('1桁の時・分をゼロ埋めし、月・日はゼロ埋めしない', () => {
+    const s = nowContext(new Date(2026, 0, 5, 9, 3, 0)) // 1月5日 09:03
+    expect(s).toContain('2026年1月5日')
+    expect(s).toContain('09:03')
+  })
+
+  it('推測を禁じる指示を含む', () => {
+    expect(nowContext(new Date())).toContain('推測せず')
+  })
+})
+
 // ── 配線（画面は import できないのでソースを読んで固定。掟10）──────────────
 describe('配線: 画面・保存経路がそれぞれ正しい判定を通している', () => {
   const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+  // ── 現在日時の注入（3経路: IDEチャット・単独チャット・Claude経路）────────────
+  // どこか1つでも落ちると、その経路の AI だけが日付を推測してしまう（掟10: 全経路を固定）。
+  it('IDEチャット（ChatPanel）の buildSystemPrompt が nowContext を先頭に添える', () => {
+    const s = read('src/renderer/components/ChatPanel.tsx')
+    expect(s).toContain("import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'")
+    expect(s).toContain("return nowContext() + '\\n\\n' + IDE_CONTEXT")
+  })
+
+  it('単独チャット（ChatApp）の buildSystemPrompt が nowContext を先頭に添える', () => {
+    const s = read('src/renderer/components/ChatApp.tsx')
+    expect(s).toContain("buildSystemPrompt: () => nowContext() + '\\n\\n' + CHAT_CONTEXT")
+  })
+
+  it('Claude経路（agent.ts）の systemPrompt.append に nowContext を足す', () => {
+    const s = read('src/main/claude/agent.ts')
+    expect(s).toContain("import { nowContext } from '../../shared/chatTime'")
+    expect(s).toContain('`\\n\\n${nowContext()}`')
+  })
 
   it('ChatPanel.tsx が timelineMarks / bubbleTime を呼んでいる', () => {
     const s = read('src/renderer/components/ChatPanel.tsx')

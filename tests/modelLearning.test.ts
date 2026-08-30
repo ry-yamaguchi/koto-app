@@ -201,4 +201,20 @@ describe('sanitizeStore（破損耐性）', () => {
     const store = sanitizeStore({ 'preview/Kimi-K2.7-Code': { supported: true, at: Date.now() } })
     expect(toolSupportOf(store, 'preview/Kimi-K2.7-Code')).toBe(true)
   })
+
+  // ── プロトタイプ汚染の芽を摘む（2026-08-30 セキュリティ点検）───────────────
+  // learning.json / 移行ペイロードは外部由来ではないが、入力パースの関門では安全側に倒す。
+  // `out['__proto__'] = {...}` は out 自身の prototype を差し替えるため、危険なキーは弾く。
+  it('__proto__ / constructor / prototype をキーにしたエントリは取り込まない', () => {
+    const out = sanitizeStore({
+      '__proto__': { supported: true, at: 1000 },
+      'constructor': { supported: true, at: 1000 },
+      'prototype': { supported: true, at: 1000 },
+      'safe-model': { supported: true, at: 1000 },
+    })
+    expect(out).toEqual({ 'safe-model': { supported: true, at: 1000 } })
+    // out の prototype が差し替わっていない（素の Object.prototype のまま）
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype)
+    expect(('supported' in out) && (out as any).supported).toBeFalsy()
+  })
 })

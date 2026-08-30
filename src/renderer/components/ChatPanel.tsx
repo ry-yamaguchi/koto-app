@@ -31,7 +31,7 @@ import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, media
 import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
 import { CHAT_TEXT_WRAP } from '../textWrap'
 import { resolvePublishRoot } from '../publishRootRenderer'
-import { timelineMarks, bubbleTime } from '../../shared/chatTime'
+import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { turnKey, updateTurn } from '../chatTurnRegistry'
 
 type Message = ChatMessage
@@ -414,7 +414,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         ? `\n\n# 開いているファイル: ${activeFile.name} (${activeFile.language})\n\`\`\`${activeFile.language}\n${activeFile.content.slice(0, 4000)}\n\`\`\``
         : ''
       const ctx = ctxFor(projectDir)
-      return IDE_CONTEXT + (ctx ? '\n\n' + ctx : '') + openFileBlock + ragStatusContext(ragEnabled)
+      // 現在日時（この端末のローカル時刻）を毎回の送信で先頭に添える（AIに今日を推測させない・chatTime.ts）
+      return nowContext() + '\n\n' + IDE_CONTEXT + (ctx ? '\n\n' + ctx : '') + openFileBlock + ragStatusContext(ragEnabled)
     },
     toolsProjectDir: projectDir ?? null,
     onExternalFilesChanged,
