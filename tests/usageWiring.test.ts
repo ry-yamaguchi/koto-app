@@ -57,10 +57,13 @@ describe('shared/chatTurnRpc.ts: ASK_PATHS から usage.*/compactWarnOnce が消
     expect(src).not.toContain("'compactWarnOnce'")
   })
 
-  it('ASK_PATHS は9本（B\'-3d-1a で12本→本ステップでさらに3本減って9本）', () => {
-    expect(ASK_PATHS).toHaveLength(9)
+  // ⚠️ B'-3d-2b（このステップより後）で executeTool も main 直呼びになり、ASK_PATHS は
+  // さらに 9本→8本 へ減った。当時（B'-3d-1b 時点）の9本という数え方の意味は保ったまま、
+  // 現在の中身（executeTool を含まない8本）に合わせて更新する。
+  it('ASK_PATHS は8本（B\'-3d-1a で12本→9本→B\'-3d-2b でさらに1本減って8本）', () => {
+    expect(ASK_PATHS).toHaveLength(8)
     expect(ASK_PATHS).toEqual([
-      'executeTool', 'approveToolCall', 'buildSystemPrompt', 'getHistory', 'onUserMessage',
+      'approveToolCall', 'buildSystemPrompt', 'getHistory', 'onUserMessage',
       'buildRagBlock', 'getSearchConfig', 'fetchPagesBlock', 'autoSearchBlock',
     ])
   })

@@ -53,7 +53,6 @@ function makeHandlers() {
     return ret
   }
   const handlers = {
-    executeTool: record('executeTool', 'exec-result'),
     approveToolCall: record('approveToolCall', 'approve-result'),
     buildSystemPrompt: record('buildSystemPrompt', 'system-prompt'),
     getHistory: record('getHistory', ['h1']),
@@ -66,15 +65,9 @@ function makeHandlers() {
   return { handlers, calls }
 }
 
-// executeTool は turnOptsFull を敷く合成があるため、ここでは turnOptsFull を空にして
-// 「opts がそのまま渡る」ことだけを見る（合成そのものは次の describe で別途固定する）。
+// B'-3d-2b: executeTool は main 直呼びになり ASK_PATHS から外れた（dispatchAsk に case が無い・
+// 下の「知らない path」describe で確かめる）。この表からは executeTool のエントリを外した。
 const TABLE: Record<AskPath, { args: unknown[]; handlerKey: string; expectedArgs: unknown[]; expectedResult: unknown }> = {
-  executeTool: {
-    args: ['write_file', '{"a":1}', { search: { engine: 'x' } }],
-    handlerKey: 'executeTool',
-    expectedArgs: ['write_file', '{"a":1}', { search: { engine: 'x' } }],
-    expectedResult: 'exec-result',
-  },
   approveToolCall: {
     args: ['write_file', '{"a":1}', { projectDir: '/p' }],
     handlerKey: 'approveToolCall',
@@ -99,7 +92,7 @@ describe('dispatchAsk: ASK_PATHS の全項目', () => {
     it(`${p}: 対応する handler が正しい引数で1回だけ呼ばれ、返り値がそのまま返る`, async () => {
       const { handlers, calls } = makeHandlers()
       const entry = TABLE[p]
-      const result = await dispatchAsk(handlers, {}, p, entry.args)
+      const result = await dispatchAsk(handlers, p, entry.args)
       expect(calls).toHaveLength(1)
       expect(calls[0].handler).toBe(entry.handlerKey)
       expect(calls[0].args).toEqual(entry.expectedArgs)
@@ -108,47 +101,27 @@ describe('dispatchAsk: ASK_PATHS の全項目', () => {
   }
 })
 
-// ── executeTool の合成（turnOptsFull を敷く）─────────────────────────
-describe('dispatchAsk: executeTool の合成', () => {
-  it('turnOptsFull の関数（applyFile/ragSearch）が生きたまま、main からの値で上書きされる', async () => {
-    const applyFile = async () => {}
-    const ragSearch = async (q: string) => q
-    const turnOptsFull = { writeRoot: '/w', projectRoot: '/p', applyFile, ragSearch }
-    const mainOpts = { writeRoot: '/w', projectRoot: '/p', search: { engine: 'x' }, snapshotId: 's', snapshotLabel: 'l' }
-
-    let received: Record<string, unknown> | null = null
-    const { handlers } = makeHandlers()
-    handlers.executeTool = (async (name: string, argsJson: string, opts: Record<string, unknown>) => {
-      received = opts
-      return 'ok'
-    }) as typeof handlers.executeTool
-
-    const result = await dispatchAsk(handlers, turnOptsFull, 'executeTool', ['write_file', '{}', mainOpts])
-
-    expect(result).toBe('ok')
-    expect(received).not.toBeNull()
-    // 関数が生きている（同一参照のまま）こと
-    expect(received!.applyFile).toBe(applyFile)
-    expect(received!.ragSearch).toBe(ragSearch)
-    // 値の項目は main からの opts の値になっている
-    expect(received!.writeRoot).toBe('/w')
-    expect(received!.projectRoot).toBe('/p')
-    expect(received!.search).toEqual({ engine: 'x' })
-    expect(received!.snapshotId).toBe('s')
-    expect(received!.snapshotLabel).toBe('l')
-    // 今日の executeTool(name, args, { ...turnOpts, search, snapshotId, snapshotLabel }) と
-    // 完全に一致することの証明（関数を含むオブジェクト同士の比較。同一参照なので toEqual で通る）
-    expect(received).toEqual({ ...turnOptsFull, search: mainOpts.search, snapshotId: mainOpts.snapshotId, snapshotLabel: mainOpts.snapshotLabel })
-  })
-})
-
 // ── 知らない path ────────────────────────────────────────────────
 describe('dispatchAsk: 知らない path', () => {
   it('throw する（黙って undefined を返さない）', async () => {
     const { handlers } = makeHandlers()
     let threw = false
     try {
-      await dispatchAsk(handlers, {}, 'noSuchPath' as AskPath, [])
+      await dispatchAsk(handlers, 'noSuchPath' as AskPath, [])
+    } catch {
+      threw = true
+    }
+    expect(threw).toBe(true)
+  })
+
+  // B'-3d-2b: executeTool は main 直呼びになり、ASK_PATHS からも dispatchAsk の case からも
+  // 消えた。もし main 側の実装ミスで 'executeTool' という path が ask として飛んできても、
+  // 「知らない path」として throw する（黙って undefined を返さない・型を経由しない実行時の値）。
+  it("'executeTool' も「知らない path」として throw する（main 直呼びになり ask ではない）", async () => {
+    const { handlers } = makeHandlers()
+    let threw = false
+    try {
+      await dispatchAsk(handlers, 'executeTool' as AskPath, ['write_file', '{}', {}])
     } catch {
       threw = true
     }
@@ -169,7 +142,7 @@ describe('dispatchAsk: optional な handler が undefined', () => {
       ;(handlers as Record<string, unknown>)[p] = undefined
       let threw = false
       try {
-        await dispatchAsk(handlers, {}, p, args)
+        await dispatchAsk(handlers, p, args)
       } catch {
         threw = true
       }

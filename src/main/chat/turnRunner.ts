@@ -7,11 +7,20 @@
 // LLM 呼び出し（sakura/engine.ts）・emit・純粋関数の束（h・src/shared 配下の本物の実装）に加え、
 // 学習キャッシュ（ツール対応・画像対応・B'-3d-1a で main へ移した learningStore.ts）と、
 // 予算・利用実績（B'-3d-1b で main へ移した usageStore.ts）・compactWarnOnce（同・モジュール内
-// Set で main のプロセス寿命ぶん持つ）。
+// Set で main のプロセス寿命ぶん持つ）、そして executeTool（B'-3d-2b・下記コメント）。
 // 「見かけが変わらない」を最優先し、直せる不具合があってもここでは直さない（sakura.ts から
 // 移した部分は engine.ts の説明を参照）。
-import { ipcMain } from 'electron'
+//
+// ── B'-3d-2b（2026-08-30）: executeTool を main が直呼びで実行する ───────────────
+// これまで executeTool は renderer への ask（'executeTool'）だった。今回、本体
+// （shared/toolExecCore.ts の executeToolCore・B'-3d-2a で切り出し済み）を main が直接呼ぶ
+// ように変える。ask だった間はウィンドウが生きていないとツールを実行できず、「窓を閉じても
+// 作業が続く」（B'-3d）の最大の障害だった。io（副作用の束）は buildMainIo が組み立てる
+// （renderer 側の aiTools.ts buildIo と対になる main 版・中身は各 main 実装への直呼び）。
+import { ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
+import * as fs from 'fs'
+import * as path from 'path'
 import type { IpcDeps } from '../ipc/types'
 import { createAskBridge, type AskBridge } from './askBridge'
 import { applyConversationOps } from './convStore'
@@ -20,7 +29,7 @@ import { runSakuraChat, runSakuraStream } from '../sakura/engine'
 import type { TurnStartPayload, TurnAnswer, TurnAsk } from '../../shared/chatTurnRpc'
 import {
   formatChatError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning,
-  claimsFileChange, unexecutedChangeWarning, isToolArgsComplete, isToolUnsupportedError,
+  claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, isToolArgsComplete, isToolUnsupportedError,
   toolStatusLabel, WRITING_TOOLS, toolsFor, searchStatusContext,
 } from '../../shared/aiToolsCore'
 import { estimateTokens, isImageUnsupportedError, modelLabel, pickBestModel, isVisionModel, DEFAULT_VISION_MODEL } from '../../shared/modelInfo'
@@ -30,6 +39,15 @@ import { shouldSendTools, isKnownToolCapable, shouldTryImagesDirectly } from '..
 import { getLearning, recordLearning } from '../learningStore'
 import { hashKey } from '../../shared/usageBudget'
 import { checkBeforeRequest, recordUsage } from '../usageStore'
+// B'-3d-2b: executeTool の main 直呼び用の追加インポート ──────────────────────
+import { executeToolCore, type CoreToolContext, type ToolIo, type SearchConfig } from '../../shared/toolExecCore'
+import { cleanAiRelPath } from '../../shared/publishRoot'
+import { fetchUrlPage, webSearch } from '../ipc/web'
+import { readFileInProjectFs, writeFileInProjectFs, projectFilesFs, searchInProjectFs } from '../ipc/fs'
+import { runProjectCommand } from '../ipc/shell'
+import { snapshotBeforeWrite as snapshotBeforeWriteOnDisk } from '../backup/store'
+import * as ragClient from '../rag/client'
+import { buildRagBlockText } from '../claude/toolText'
 
 // h は shared から**本物の実装**を import して組み立てる（renderer は import できないモジュールなので、
 // ここで初めて main 側から使われる。aiToolsCore / modelInfo / webContextCore / historyCompact /
@@ -42,6 +60,7 @@ const h: TurnHelpers = {
   unexecutedToolWarning,
   claimsFileChange,
   unexecutedChangeWarning,
+  stripRepeatedGuidance,
   isToolArgsComplete,
   isToolUnsupportedError,
   isImageUnsupportedError,
@@ -102,32 +121,112 @@ type TurnEntry = {
   abort: (() => void) | null
 }
 
+// ── B'-3d-2b: executeTool の main 直呼び ────────────────────────────────
+//
+// chatTurn.ts（runEngineTurn）は `ports.executeTool(toolName, toolArgs,
+// { ...turnOpts, search, snapshotId, snapshotLabel })` の形で呼ぶ（turnOpts は
+// renderer が送った spec.turnOpts＝ChatPanel の buildExecuteOpts() から関数を落とした
+// 直列化可能な値。B'-3d-2b 以降は元から関数を含まない＝writeRoot/projectRoot/rag のみ）。
+// この opts から CoreToolContext（coreCtx）と ToolIo（buildMainIo）を組み立てる。
+
+/** opts（executeTool 呼び出しの第3引数）から CoreToolContext を取り出す。 */
+function coreCtx(opts: Record<string, unknown>): CoreToolContext {
+  return {
+    writeRoot: opts.writeRoot as string | null | undefined,
+    projectRoot: opts.projectRoot as string | null | undefined,
+    search: opts.search as SearchConfig | null | undefined,
+    snapshotId: opts.snapshotId as string | undefined,
+    snapshotLabel: opts.snapshotLabel as string | undefined,
+  }
+}
+
+/**
+ * main の io（副作用の束）を直呼びの実装で組み立てる。renderer の皮（aiTools.ts の buildIo）と
+ * 対になる main 版——中身は window.electronAPI.* の代わりに、各 main 実装（ipc/fs.ts・
+ * ipc/shell.ts・ipc/web.ts・backup/store.ts）を直接呼ぶだけ。
+ *
+ * @param opts   executeTool 呼び出しの第3引数（coreCtx と同じ出どころ）。rag: { tags } | null を含む。
+ * @param payload このターンの開始要求（apiKey を ragSearch が使う）。
+ * @param emit   buildMainPorts の emit と同じもの（applyFile 完了後に aiFileWritten を通知する）。
+ *
+ * export: tests/toolExecMainIo.test.ts が実ファイルシステムで直接検証する。
+ */
+export function buildMainIo(
+  opts: Record<string, unknown>,
+  payload: TurnStartPayload,
+  emit: EngineTurnPorts['emit'],
+): ToolIo {
+  const rag = opts.rag as { tags: string[] } | null | undefined
+  return {
+    fetchPage: (url) => fetchUrlPage(url),
+    webSearch: (provider, key, query) => webSearch(provider, key, query),
+    projectFiles: async (root) => projectFilesFs(root),
+    readFileInProject: async (root, rel) => readFileInProjectFs(root, rel),
+    writeFileInProject: async (root, rel, content) => { writeFileInProjectFs(root, rel, content) },
+    // 保存＋エディタ・ツリー反映（renderer 版 io.applyFile と同じ役割）。main は「保存」だけを
+    // ここで直接行い（fs:writeFile ハンドラと同じ書き方）、エディタへの反映は renderer 側
+    // （App.tsx の showAiFileInEditor）に任せる（掟11: いま見ているプロジェクトの分だけ開く
+    // 判定は renderer 側でしかできない）。そのための通知が ChatEvent 'aiFileWritten'。
+    applyFile: async (rel, content) => {
+      const full = path.join(String(opts.writeRoot ?? ''), cleanAiRelPath(rel))
+      fs.mkdirSync(path.dirname(full), { recursive: true }) // 親フォルダが無ければ作成
+      fs.writeFileSync(full, content, 'utf-8')
+      emit({ kind: 'aiFileWritten', rel, full })
+    },
+    snapshotBeforeWrite: async (root, snapshotId, rel, newContent, label) =>
+      snapshotBeforeWriteOnDisk(root, snapshotId, rel, newContent, label),
+    runCommand: runProjectCommand,
+    // 📚 資料の検索（search_docs）。renderer ChatPanel の buildExecuteOpts().ragSearch
+    // （2026-08-30 時点）と一字一句同じパラメータ（query.slice(0,1000)・tags・topK 3）で組む。
+    // rag（opts.rag）が無ければ undefined＝core が「資料検索は現在利用できません」を返す
+    // （renderer 側で ctx.ragSearch が無いときと同じ振る舞い）。失敗は ''（renderer 版と同じ）。
+    ragSearch: rag ? async (query: string) => {
+      try {
+        const hits = await ragClient.queryDocuments(payload.spec.apiKey, query.slice(0, 1000), {
+          tags: rag.tags.length ? rag.tags : undefined,
+          topK: 3,
+        })
+        return buildRagBlockText(hits)
+      } catch {
+        return ''
+      }
+    } : undefined,
+    searchInProject: async (root, query, pathPattern) => searchInProjectFs(root, query, pathPattern),
+    exists: async (p) => fs.existsSync(p),
+    openPath: async (p) => { await shell.openPath(p) },
+  }
+}
+
 /** renderer にしか無い副作用を ask で組み立てる。optional な ports は caps が false なら undefined にする
  *  （無いのに ask すると挙動が変わるため・仕様書の注記）。 */
 function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPayload, entry: TurnEntry): EngineTurnPorts {
   const { bridge } = entry
   const { caps } = payload
+  // B'-3c: message系（append/replaceLast/removeLast）は、まず main の会話ストア
+  // （convStore.ts）へ直接当ててから画面へ送る。renderer を経由しない書き込みの第一歩
+  // （ウィンドウが閉じていても・出来事を取りこぼしても、会話は必ず保存される）。
+  // toolsProjectDir が無いとき（単独チャット・今回対象外）はストアに触らない。
+  // loading/status/routed はストアに関係しないので、これまでどおり send のみ。
+  //
+  // ── B-1a（2026-08-28）: 画面反映は chat:applied へ一本化・ここでの2重送信はそのまま残す ──
+  // applyConversationOps がここで当たると、convStore.ts の通知口（setApplyListener）経由で
+  // chat:applied が自動的に画面へ飛ぶ。toolsProjectDir があるとき（ChatPanel）は、下の
+  // wc.send（chatTurn:event）で運ばれる message系の ev は renderer 側でもう使われない
+  // （useAiChat.ts の viewOnlyEmit は toolsProjectDir がある間 message系を捨てる）。
+  // それでも send 自体はここでは変えない（toolsProjectDir が無いとき＝単独チャット ChatApp は
+  // convStore に一切触れない＝chat:applied も届かないため、この send が唯一の反映経路のまま。
+  // scalar/activity も引き続きこの経路が必要。仕様外の削減をしない）。
+  //
+  // B'-3d-2b: buildMainIo（aiFileWritten の emit）からも同じ emit を使うため、ここで局所変数に
+  // 取り出しておく（下の executeTool の組み立てで参照する）。
+  const emit: EngineTurnPorts['emit'] = (ev) => {
+    if ((ev.kind === 'append' || ev.kind === 'replaceLast' || ev.kind === 'removeLast') && payload.spec.toolsProjectDir) {
+      applyConversationOps(payload.spec.toolsProjectDir, [ev])
+    }
+    if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'emit', ev })
+  }
   return {
-    // B'-3c: message系（append/replaceLast/removeLast）は、まず main の会話ストア
-    // （convStore.ts）へ直接当ててから画面へ送る。renderer を経由しない書き込みの第一歩
-    // （ウィンドウが閉じていても・出来事を取りこぼしても、会話は必ず保存される）。
-    // toolsProjectDir が無いとき（単独チャット・今回対象外）はストアに触らない。
-    // loading/status/routed はストアに関係しないので、これまでどおり send のみ。
-    //
-    // ── B-1a（2026-08-28）: 画面反映は chat:applied へ一本化・ここでの2重送信はそのまま残す ──
-    // applyConversationOps がここで当たると、convStore.ts の通知口（setApplyListener）経由で
-    // chat:applied が自動的に画面へ飛ぶ。toolsProjectDir があるとき（ChatPanel）は、下の
-    // wc.send（chatTurn:event）で運ばれる message系の ev は renderer 側でもう使われない
-    // （useAiChat.ts の viewOnlyEmit は toolsProjectDir がある間 message系を捨てる）。
-    // それでも send 自体はここでは変えない（toolsProjectDir が無いとき＝単独チャット ChatApp は
-    // convStore に一切触れない＝chat:applied も届かないため、この send が唯一の反映経路のまま。
-    // scalar/activity も引き続きこの経路が必要。仕様外の削減をしない）。
-    emit: (ev) => {
-      if ((ev.kind === 'append' || ev.kind === 'replaceLast' || ev.kind === 'removeLast') && payload.spec.toolsProjectDir) {
-        applyConversationOps(payload.spec.toolsProjectDir, [ev])
-      }
-      if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'emit', ev })
-    },
+    emit,
     chatStream: (req, onDelta, onAbortReady, onThinking) =>
       runSakuraStream(req, { onDelta, onReasoning: onThinking, onAbortReady }),
     // 🗂 まとめ作り中の ⏹ 停止（0.3.50）: runSakuraChat の onAbortReady で受け取った中断関数を
@@ -146,7 +245,9 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     approveToolCall: caps.approveToolCall
       ? (name, argsJson, scope) => bridge.ask('approveToolCall', [name, argsJson, scope]) as any
       : undefined,
-    executeTool: (name, argsJson, opts) => bridge.ask('executeTool', [name, argsJson, opts]) as any,
+    // B'-3d-2b: ask('executeTool', ...) から直呼びへ。本体（判定順序・結果文言）は
+    // shared/toolExecCore.ts の executeToolCore（renderer と共有・複製ゼロ）。
+    executeTool: (name, argsJson, opts) => executeToolCore(name, argsJson, coreCtx(opts), buildMainIo(opts, payload, emit)),
     buildRagBlock: caps.buildRagBlock
       ? (text) => bridge.ask('buildRagBlock', [text]) as any
       : undefined,

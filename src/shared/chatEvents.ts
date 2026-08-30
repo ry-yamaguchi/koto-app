@@ -19,6 +19,10 @@ export type ChatEvent<M> =
   | { kind: 'status'; value: string }
   | { kind: 'routed'; value: string | null }
   | { kind: 'attention'; value: 'approval' | 'error' | null } // 「見てほしい」合図。実行状態なので持ち主は chatTurnRegistry
+  // B'-3d-2b: main（io.applyFile）がAIのファイル保存を終えた通知。エディタ反映のトリガー。
+  // attention と同じ「副作用系」の出来事（ChatView は持たない。持ち主は renderer 側の
+  // useAiChat.ts viewOnlyEmit → onAiFileWritten）。
+  | { kind: 'aiFileWritten'; rel: string; full: string }
 
 /**
  * 出来事を「メッセージ列」に当てる（メッセージに関係しない出来事なら prev をそのまま返す）。
@@ -88,6 +92,10 @@ export function applyEvent<M extends { at?: string }>(
       return { ...view, routedModel: ev.value }
     case 'attention':
       // attention は chatTurnRegistry が持ち主。ChatView には反映しない。新しいオブジェクトを返す約束だけ守る。
+      return { ...view }
+    case 'aiFileWritten':
+      // attention と同様、この出来事の持ち主は ChatView ではない（エディタの反映は
+      // useAiChat.ts の viewOnlyEmit が担う）。新しいオブジェクトだけ返す。
       return { ...view }
   }
 }

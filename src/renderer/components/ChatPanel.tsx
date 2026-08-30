@@ -18,7 +18,7 @@ import { IDE_CONTEXT, buildProjectContext, ragStatusContext } from '../aiContext
 import { getTargetProfile, shouldAutoCheckTarget } from '../targetProfiles'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
 import { requiresConfirmation, confirmReason, formatChatError } from '../aiTools'
-import { parseRagSettings, autoRagBlock, buildRagBlockText, type RagSettings } from '../ragContext'
+import { parseRagSettings, autoRagBlock, type RagSettings } from '../ragContext'
 import { buildPublishStatusRows, parseApprunLegacy, formatPublishedAt, isStale } from '../publishStatus'
 import ModelSelect from './ModelSelect'
 import BrainToggle from './BrainToggle'
@@ -58,6 +58,12 @@ interface Props {
   onSetApiKey: (key: string) => void
   onOpenCredentials: () => void
   onApplyFile?: (relPath: string, content: string, root?: string | null) => Promise<void>
+  /**
+   * B'-3d-2b: main（AI Engine 経路の write_file/edit_file）がAIのファイル保存を main 側で
+   * 終えた直後の通知（full はディスク上の絶対パス）を受けて、エディタへ反映する
+   * （App.tsx の showAiFileInEditor）。
+   */
+  onAiFileWritten?: (full: string) => void
   /** Claudeモードの書き込み後、該当タブをディスクから読み直す（App.tsx の applyRestoreResult 相当。
    *  stale tab のオートセーブ上書きによるデータ喪失防止・2026-07-11） */
   onExternalFilesChanged?: (relPaths: string[]) => void
@@ -68,7 +74,7 @@ interface Props {
 }
 
 
-export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile, onExternalFilesChanged, onProjectFilesMoved, activeFile, projectDir }: Props) {
+export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile, onAiFileWritten, onExternalFilesChanged, onProjectFilesMoved, activeFile, projectDir }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   // ── B'-3c: 会話の持ち主は main（src/main/chat/convStore.ts）───────────────
   // ここは「画面へ即時反映」しつつ「main へ書き換え（ops）を送る」薄い client（chatConvClient.ts）
@@ -419,6 +425,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     },
     toolsProjectDir: projectDir ?? null,
     onExternalFilesChanged,
+    // B'-3d-2b: main が io.applyFile を直呼びで実行するようになったので、AI Engine 経路の
+    // 保存＋エディタ反映（旧 applyFile 関数）はここから外れた——main は「保存」だけを行い、
+    // エディタへの反映は ChatEvent 'aiFileWritten' を経由して onAiFileWritten（下）が担う。
+    // 掟11: 「いま見ているプロジェクトの分だけ」開く。他所はスキップしても、開けばディスクから
+    // 読むので失われない（roadmap 設計に明記済み）。
+    onAiFileWritten: onAiFileWritten
+      ? (full: string) => {
+          if (projectDir && (full === projectDir || full.startsWith(`${projectDir}/`))) onAiFileWritten(full)
+        }
+      : undefined,
     buildExecuteOpts: () => ({
       // AI のファイル操作・コマンド・プレビューは、すべてこの根を基準にする。
       writeRoot: currentAiRoot,
@@ -426,17 +442,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       // 退避が `public/.sakuraide-backup` へ行き、履歴の一覧に一切出なかった
       // （＝「元に戻す」が効かない）。2026-08-24 に実害を確認して分けた。
       projectRoot: projectDir,
-      applyFile: onApplyFile,
-      // 📚 資料検索ツール（search_docs）の実体。rag:query を呼び、出典付きブロックに整形して返す。
-      ragSearch: ragEnabled ? async (query: string) => {
-        const r = await window.electronAPI.rag.query(apiKey, {
-          query: query.slice(0, 1000),
-          tags: ragSettings!.tags.length ? ragSettings!.tags : undefined,
-          topK: 3,
-        })
-        if (!r.ok) return ''
-        return buildRagBlockText(r.hits ?? [])
-      } : undefined,
+      // 📚 資料検索（search_docs）は main の io.ragSearch が queryDocuments + buildRagBlockText
+      // で直接組む（main/chat/turnRunner.ts の buildMainIo）。ここは main が使うタグだけを渡す
+      // （関数ではなくデータ・B'-3d-2b の turnOpts 宣言化）。
+      rag: ragEnabled ? { tags: ragSettings!.tags } : null,
     }),
     // 📚 資料の自動注入（IDE主導）。無効時は未指定にし、useAiChat の従来動作（注入なし）を維持する。
     buildRagBlock: ragEnabled ? (text: string) => autoRagBlock(text, apiKey, ragSettings) : undefined,

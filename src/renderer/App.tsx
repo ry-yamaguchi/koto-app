@@ -20,6 +20,7 @@ import GithubSaveModal from './components/GithubSaveModal'
 import PublishedListModal from './components/PublishedListModal'
 import { useFileDrag } from './hooks/useFileDrag'
 import { resolvePublishRoot } from './publishRootRenderer'
+import { cleanAiRelPath } from '../shared/publishRoot'
 import { primeLearningMirror } from './learningMirror'
 import { primeUsageMirror } from './usageMirror'
 
@@ -372,7 +373,7 @@ export default function App() {
       if (!base) throw new Error('保存先のフォルダが選択されていません')
       setCurrentDir(base)
     }
-    const clean = relPath.replace(/^\.?\//, '').replace(/\.\.(\/|\\)/g, '') // 軽いトラバーサル対策
+    const clean = cleanAiRelPath(relPath) // 一元定義（shared/publishRoot.ts・掟10）
     const full = `${base}/${clean}`
     // AIが書き換えた後の手動編集は、別の履歴として積む（同じグループに入れると
     // 「AIの成果物」が退避されないまま自分の編集で上書きされ、戻せなくなる）
@@ -388,6 +389,31 @@ export default function App() {
     })
     setActiveFile(full)
   }, [currentDir])
+
+  // AIがmainプロセス側（B'-3d-2b・チャットの main 直実行）で書いたファイルを、エディタへ反映する。
+  //
+  // ── applyAiFile と何が違うか ─────────────────────────────────────────
+  // applyAiFile は「保存も表示も renderer が行う」経路（手元にある content をそのまま使う）。
+  // こちらは main の io.applyFile が既にディスクへ保存し終えたあとの通知（ChatEvent
+  // 'aiFileWritten'）を受けて、**表示だけ**を行う。手元に content が無いため、必ずディスクから
+  // 読み直す（loadOpenFile。applyRestoreResult と同じ作法）。
+  //
+  // 掟11（環境の独立）: このイベントは「いま見ているプロジェクトの分だけ」開く。呼び出し側
+  // （ChatPanel）が projectDir の一致を確認してから呼ぶので、ここでは常に「いま見ている分」として扱う。
+  const showAiFileInEditor = useCallback(async (full: string) => {
+    // AIが書き換えた後の手動編集は、別の履歴として積む（applyAiFile と同じ理由）
+    manualSnapshotRef.current = null
+    setTreeRefresh(n => n + 1)
+    try {
+      const file = await loadOpenFile(full)
+      setOpenFiles(prev => {
+        const ex = prev.find(f => f.path === full)
+        if (ex) return prev.map(f => f.path === full ? file : f)
+        return [...prev, file]
+      })
+      setActiveFile(full)
+    } catch { /* 直後に消える等で読めなくても、開いていなければ実害は無い */ }
+  }, [])
 
   // 「🕘 履歴」からの復元結果をエディタ・ツリーへ反映する。
   // 復元されたタブはディスクから読み直し（isDirty:false ＝ オートセーブが古い内容で上書きしないように）、
@@ -706,7 +732,7 @@ export default function App() {
                 <Separator className="sep sep-v" />
                 <Panel id="chat" defaultSize="24%" minSize="16%" maxSize="45%">
                   <div className="h-full bg-surface">
-                    <ChatPanel apiKey={sakuraApiKey} onSetApiKey={setApiKey} activeFile={activeFileObj} projectDir={currentDir} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} onExternalFilesChanged={rels => { void applyRestoreResult(rels, []) }}
+                    <ChatPanel apiKey={sakuraApiKey} onSetApiKey={setApiKey} activeFile={activeFileObj} projectDir={currentDir} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} onAiFileWritten={showAiFileInEditor} onExternalFilesChanged={rels => { void applyRestoreResult(rels, []) }}
                       onProjectFilesMoved={() => {
                         // フォルダの整理でファイルが動いた。開いているタブは古い場所を
                         // 指したままなので、**保存で元の場所に復活させないよう全部閉じる**

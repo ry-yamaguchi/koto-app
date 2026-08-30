@@ -9,7 +9,7 @@ import {
 // 本物の純粋関数（掟1: 推測で実装しない。node で動く前例は unexecutedTool.test.ts 等に多数ある）。
 import {
   formatChatError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning,
-  claimsFileChange, unexecutedChangeWarning, isToolArgsComplete, isToolUnsupportedError,
+  claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, isToolArgsComplete, isToolUnsupportedError,
   toolStatusLabel, WRITING_TOOLS, toolsFor,
 } from '../src/renderer/aiTools'
 import { isImageUnsupportedError } from '../src/renderer/visionSupport'
@@ -40,6 +40,7 @@ const h: TurnHelpers = {
   unexecutedToolWarning,
   claimsFileChange,
   unexecutedChangeWarning,
+  stripRepeatedGuidance,
   isToolArgsComplete,
   isToolUnsupportedError,
   isImageUnsupportedError,
@@ -548,6 +549,26 @@ describe('runEngineTurn', () => {
     const info = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg?.content === 'ℹ️ このターンでは、ファイルは変更されていません。')
     expect(info).toBeTruthy()
     expect(info.ev.msg.toolNote).toBe(true)
+  })
+
+  // 11d. 案内定型文の重複除去（2026-08-30 実機・Ryosuke 指摘: プロンプトの「連続で
+  // 繰り返さない」を Kimi K2.7 が無視。Koto 側で機械的に抑止する）。
+  it('直前の返事と同一の案内定型文は、確定時の replaceLast で取り除かれる', async () => {
+    const guide = '画面上部の【② 試す】ボタンで、text.txt の内容を確認してみてください。'
+    const { ports, log } = makePorts({
+      history: [
+        { role: 'user', content: '保存して' },
+        { role: 'assistant', content: `保存しました\n\n${guide}` },
+      ],
+      stream: [
+        { content: `ls の結果は text.txt の1件です。\n\n${guide}`, toolCalls: null },
+      ],
+    })
+    await runEngineTurn(makeSpec(), ports)
+    // 最後の replaceLast は案内が取り除かれた本文になっている
+    const last = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast')
+    expect(last.ev.msg.content).toBe('ls の結果は text.txt の1件です。')
+    expect(last.ev.msg.content).not.toContain('② 試す')
   })
 
   // 12. ルーティング

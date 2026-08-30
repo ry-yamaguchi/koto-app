@@ -85,6 +85,12 @@ describe('applyToMessages', () => {
     const prev: Msg[] = [{ id: 1 }]
     expect(applyToMessages(prev, { kind: 'attention', value: 'error' }, NOW)).toBe(prev)
   })
+
+  // ── B'-3d-2b: aiFileWritten（main の io.applyFile 完了通知）もメッセージに関係しない出来事 ──
+  it('aiFileWritten: prev と同一参照が返る（メッセージに関係しない出来事）', () => {
+    const prev: Msg[] = [{ id: 1 }]
+    expect(applyToMessages(prev, { kind: 'aiFileWritten', rel: 'a.txt', full: '/w/a.txt' }, NOW)).toBe(prev)
+  })
 })
 
 describe('applyEvent / applyEvents', () => {
@@ -155,6 +161,17 @@ describe('applyEvent / applyEvents', () => {
   it('attention: 全フィールド不変・新しいオブジェクトが返る', () => {
     const view: ChatView<Msg> = { messages: [{ id: 1 }], isLoading: true, statusNote: '進行中', routedModel: 'x' }
     const next = applyEvent(view, { kind: 'attention', value: 'error' }, NOW)
+    expect(next).not.toBe(view) // 新しいオブジェクト
+    expect(next.messages).toBe(view.messages)
+    expect(next.isLoading).toBe(view.isLoading)
+    expect(next.statusNote).toBe(view.statusNote)
+    expect(next.routedModel).toBe(view.routedModel)
+  })
+
+  // ── B'-3d-2b: aiFileWritten も attention と同じ「副作用系」。ChatView には反映しない ─────
+  it('aiFileWritten: 全フィールド不変・新しいオブジェクトが返る', () => {
+    const view: ChatView<Msg> = { messages: [{ id: 1 }], isLoading: true, statusNote: '進行中', routedModel: 'x' }
+    const next = applyEvent(view, { kind: 'aiFileWritten', rel: 'a.txt', full: '/w/a.txt' }, NOW)
     expect(next).not.toBe(view) // 新しいオブジェクト
     expect(next.messages).toBe(view.messages)
     expect(next.isLoading).toBe(view.isLoading)

@@ -59,6 +59,73 @@ function walkProjectFiles(
   return { count, truncated }
 }
 
+// ── AIツール実行の main 直呼び用（B'-3d-2b）─────────────────────────────
+// 中身は従来のハンドラをそのまま関数として切り出したもの（振る舞いは1文字も変えない）。
+// ipcMain.handle 側はこれらを呼ぶだけの薄い形にする。main/chat/turnRunner.ts の
+// buildMainIo が io.readFileInProject / io.writeFileInProject / io.projectFiles /
+// io.searchInProject としてそのまま使う。
+
+export function readFileInProjectFs(projectDir: string, rel: string): string {
+  return fs.readFileSync(confineToProject(projectDir, rel), 'utf-8')
+}
+
+export function writeFileInProjectFs(projectDir: string, rel: string, content: string): void {
+  const full = confineToProject(projectDir, rel)
+  fs.mkdirSync(path.dirname(full), { recursive: true })
+  fs.writeFileSync(full, content, 'utf-8')
+}
+
+/** プロジェクトのファイル一覧（AIへ渡す構成把握用。重いフォルダは除外）。fs:projectFiles の実体。 */
+export function projectFilesFs(dir: string, maxFiles = 200): string[] {
+  const out: string[] = []
+  walkProjectFiles(dir, maxFiles, (rel) => { out.push(rel) })
+  return out
+}
+
+/** AIの search_in_files ツール：プロジェクト内の全文検索。fs:searchInProject の実体（下のハンドラと同じ規則）。 */
+export function searchInProjectFs(
+  projectDir: string, query: string, pathPattern?: string
+): { ok: boolean; matches: { path: string; line: number; text: string }[]; scanned: number; truncated: boolean; message?: string } {
+  const MAX_SCAN = 500
+  const MAX_MATCHES = 100
+  const MAX_FILE_BYTES = 1024 * 1024 // 1MB
+  const MAX_LINE_CHARS = 200
+  try {
+    const q = String(query ?? '')
+    if (!q.trim()) return { ok: false, matches: [], scanned: 0, truncated: false, message: '検索文字列が空です' }
+    const qLower = q.toLowerCase()
+    // 簡易パターン（* のみワイルドカード）→ 正規表現。他の記号はすべてエスケープしリテラル扱いにする。
+    const pat = (pathPattern ?? '').trim()
+    const patRe = pat
+      ? new RegExp(pat.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*'), 'i')
+      : null
+
+    const matches: { path: string; line: number; text: string }[] = []
+    let matchLimitHit = false
+    const { count: scanned, truncated: scanTruncated } = walkProjectFiles(projectDir, MAX_SCAN, (rel, full) => {
+      if (patRe && !patRe.test(rel)) return
+      let stat: fs.Stats
+      try { stat = fs.statSync(full) } catch { return }
+      if (stat.size > MAX_FILE_BYTES) return
+      let content: string
+      try { content = fs.readFileSync(full, 'utf-8') } catch { return }
+      if (content.includes('\u0000')) return // バイナリらしきファイルは飛ばす
+      const lines = content.split('\n')
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(qLower)) {
+          let text = lines[i].trim()
+          if (text.length > MAX_LINE_CHARS) text = text.slice(0, MAX_LINE_CHARS - 1) + '…'
+          matches.push({ path: rel, line: i + 1, text })
+          if (matches.length >= MAX_MATCHES) { matchLimitHit = true; return false }
+        }
+      }
+    })
+    return { ok: true, matches, scanned, truncated: scanTruncated || matchLimitHit }
+  } catch (e: any) {
+    return { ok: false, matches: [], scanned: 0, truncated: false, message: e?.message ?? String(e) }
+  }
+}
+
 export function registerFsHandlers(deps: IpcDeps) {
   // File system IPC
   ipcMain.handle('fs:readFile', async (_, filePath: string) => {
@@ -70,14 +137,10 @@ export function registerFsHandlers(deps: IpcDeps) {
     fs.writeFileSync(filePath, content, 'utf-8')
   })
 
-  ipcMain.handle('fs:readFileInProject', (_, projectDir: string, rel: string) =>
-    fs.readFileSync(confineToProject(projectDir, rel), 'utf-8'))
+  ipcMain.handle('fs:readFileInProject', (_, projectDir: string, rel: string) => readFileInProjectFs(projectDir, rel))
 
-  ipcMain.handle('fs:writeFileInProject', (_, projectDir: string, rel: string, content: string) => {
-    const full = confineToProject(projectDir, rel)
-    fs.mkdirSync(path.dirname(full), { recursive: true })
-    fs.writeFileSync(full, content, 'utf-8')
-  })
+  ipcMain.handle('fs:writeFileInProject', (_, projectDir: string, rel: string, content: string) =>
+    writeFileInProjectFs(projectDir, rel, content))
 
   ipcMain.handle('fs:openDialog', async (_, opts?: { filters?: { name: string; extensions: string[] }[] }) => {
     const result = await dialog.showOpenDialog(deps.getMainWindow()!, {
@@ -229,55 +292,13 @@ export function registerFsHandlers(deps: IpcDeps) {
   ipcMain.handle('fs:homeDir', () => app.getPath('home'))
 
   // プロジェクトのファイル一覧（AIへ渡す構成把握用。重いフォルダは除外）
-  ipcMain.handle('fs:projectFiles', async (_, dir: string, maxFiles = 200) => {
-    const out: string[] = []
-    walkProjectFiles(dir, maxFiles, (rel) => { out.push(rel) })
-    return out
-  })
+  ipcMain.handle('fs:projectFiles', async (_, dir: string, maxFiles = 200) => projectFilesFs(dir, maxFiles))
 
   // AIの search_in_files ツール：プロジェクト内の全文検索（単純な部分一致・大文字小文字は区別しない。
   // 正規表現は受け付けない）。走査は fs:projectFiles と同じ除外規則（walkProjectFiles）を共有する。
   // バイナリ（NUL文字を含む内容）・1MB超のファイルは飛ばす。走査500件・マッチ100件で打ち切る。
-  ipcMain.handle('fs:searchInProject', async (_, projectDir: string, query: string, pathPattern?: string) => {
-    const MAX_SCAN = 500
-    const MAX_MATCHES = 100
-    const MAX_FILE_BYTES = 1024 * 1024 // 1MB
-    const MAX_LINE_CHARS = 200
-    try {
-      const q = String(query ?? '')
-      if (!q.trim()) return { ok: false, matches: [], scanned: 0, truncated: false, message: '検索文字列が空です' }
-      const qLower = q.toLowerCase()
-      // 簡易パターン（* のみワイルドカード）→ 正規表現。他の記号はすべてエスケープしリテラル扱いにする。
-      const pat = (pathPattern ?? '').trim()
-      const patRe = pat
-        ? new RegExp(pat.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*'), 'i')
-        : null
-
-      const matches: { path: string; line: number; text: string }[] = []
-      let matchLimitHit = false
-      const { count: scanned, truncated: scanTruncated } = walkProjectFiles(projectDir, MAX_SCAN, (rel, full) => {
-        if (patRe && !patRe.test(rel)) return
-        let stat: fs.Stats
-        try { stat = fs.statSync(full) } catch { return }
-        if (stat.size > MAX_FILE_BYTES) return
-        let content: string
-        try { content = fs.readFileSync(full, 'utf-8') } catch { return }
-        if (content.includes('\u0000')) return // バイナリらしきファイルは飛ばす
-        const lines = content.split('\n')
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].toLowerCase().includes(qLower)) {
-            let text = lines[i].trim()
-            if (text.length > MAX_LINE_CHARS) text = text.slice(0, MAX_LINE_CHARS - 1) + '…'
-            matches.push({ path: rel, line: i + 1, text })
-            if (matches.length >= MAX_MATCHES) { matchLimitHit = true; return false }
-          }
-        }
-      })
-      return { ok: true, matches, scanned, truncated: scanTruncated || matchLimitHit }
-    } catch (e: any) {
-      return { ok: false, matches: [], scanned: 0, truncated: false, message: e?.message ?? String(e) }
-    }
-  })
+  ipcMain.handle('fs:searchInProject', async (_, projectDir: string, query: string, pathPattern?: string) =>
+    searchInProjectFs(projectDir, query, pathPattern))
 
   // プロジェクトの最終変更時刻（③公開の「公開状況」表示で、公開後にコードが変わっていないかの判定に使う）。
   // 「📡 公開したもの一覧」（PublishedListModal）用: ワークスペース配下の各プロジェクトから

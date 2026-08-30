@@ -259,10 +259,14 @@ describe('9. turnRunner: message系 emit が applyConversationOps を通る（to
     expect(src).toContain("import { applyConversationOps } from './convStore'")
   })
 
-  it('emit: の定義（buildMainPorts の中）が applyConversationOps(payload.spec.toolsProjectDir, [ev]) を、wc.send より前に呼ぶ', () => {
-    const start = src.indexOf('emit: (ev) => {')
+  // B'-3d-2b: emit はオブジェクトリテラルの中の直書きプロパティ（emit: (ev) => {...}）から、
+  // buildMainPorts 内の局所 const（const emit: EngineTurnPorts['emit'] = (ev) => {...}）へ
+  // 形が変わった（executeTool の io（buildMainIo）からも同じ emit を参照するため）。
+  // 中身の判定順序・条件は1文字も変えていない——探す形だけをこの新しい形に合わせる。
+  it("emit の定義（buildMainPorts の中の const emit）が applyConversationOps(payload.spec.toolsProjectDir, [ev]) を、wc.send より前に呼ぶ", () => {
+    const start = src.indexOf("const emit: EngineTurnPorts['emit'] = (ev) => {")
     expect(start).toBeGreaterThan(-1)
-    const closeIdx = src.indexOf('\n    },', start) // このプロパティの閉じ（4スペース）
+    const closeIdx = src.indexOf('\n  }', start) // この const の閉じ（2スペース・関数直下）
     expect(closeIdx).toBeGreaterThan(-1)
     const block = src.slice(start, closeIdx)
     expect(block).toContain('applyConversationOps(payload.spec.toolsProjectDir, [ev])')
@@ -271,6 +275,10 @@ describe('9. turnRunner: message系 emit が applyConversationOps を通る（to
     expect(block).toContain("ev.kind === 'append'")
     expect(block).toContain("ev.kind === 'replaceLast'")
     expect(block).toContain("ev.kind === 'removeLast'")
+  })
+
+  it('返り値の EngineTurnPorts オブジェクトは、この const emit をそのまま使っている（複製していない）', () => {
+    expect(src).toContain('return {\n    emit,')
   })
 })
 

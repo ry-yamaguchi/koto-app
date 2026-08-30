@@ -22,7 +22,7 @@ import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from '
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
 import { shouldTryImagesDirectly, recordVisionSupport, isImageUnsupportedError } from '../visionSupport'
 import { extractUrls, fetchPagesBlock, autoSearchBlock, wantsWebSearch } from '../webContext'
-import { toolsFor, isToolUnsupportedError, executeTool, toolStatusLabel, getSearchConfig, formatChatError, formatClaudeError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning, claimsFileChange, unexecutedChangeWarning, WRITING_TOOLS, isToolArgsComplete, type ToolContext } from '../aiTools'
+import { toolsFor, isToolUnsupportedError, executeTool, toolStatusLabel, getSearchConfig, formatChatError, formatClaudeError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning, claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, WRITING_TOOLS, isToolArgsComplete, type ToolContext } from '../aiTools'
 import { shouldSendTools, isKnownToolCapable, recordToolSupport } from '../toolSupport'
 import { planSend, planCompact, planManualCompact, compactPrompt, acceptSummary, compactSource, type CompactMark } from '../historyCompact'
 import { searchStatusContext } from '../aiContext'
@@ -121,6 +121,13 @@ export type UseAiChatArgs = {
    * updateShown(applyToMessages(...)) を直接呼ぶ（ChatApp・変更なし）。
    */
   onMessageEvent?: (ev: ChatEvent<ChatMessage>) => void
+  /**
+   * B'-3d-2b: main（io.applyFile）がAIのファイル保存を終えた通知（ChatEvent 'aiFileWritten'）を
+   * 受けたら呼ぶ。full はディスク上の絶対パス。ChatApp（プロジェクト無し）は省略可。
+   * 掟11: 「いま見ているプロジェクトの分だけ」開く判定は、呼び出し側（ChatPanel）が
+   * projectDir と full を突き合わせて行う（このフックは判定せずそのまま渡す）。
+   */
+  onAiFileWritten?: (full: string) => void
 }
 
 export function useAiChat(args: UseAiChatArgs) {
@@ -128,7 +135,7 @@ export function useAiChat(args: UseAiChatArgs) {
     apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, sessionId,
     buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage,
     errorPrefix = '', twoStageVision = false, buildRagBlock, onExternalFilesChanged,
-    onMessageEvent,
+    onMessageEvent, onAiFileWritten,
   } = args
 
   // ── B-1b: 実行状態はプロジェクト別の置き場（chatTurnRegistry.ts）から読む ─────────────
@@ -271,8 +278,14 @@ export function useAiChat(args: UseAiChatArgs) {
       case 'status': updateTurn(key, { statusNote: ev.value }); break
       case 'routed': updateTurn(key, { routedModel: ev.value }); break
       case 'attention': updateTurn(key, { attention: ev.value }); break
+      case 'aiFileWritten':
+        // B'-3d-2b: main の io.applyFile が保存を終えた通知。エディタへの反映は呼び出し側
+        // （ChatPanel）に委ねる（掟11: 「いま見ているプロジェクトの分だけ」の判定は
+        // projectDir を持つ ChatPanel 側でしかできない。このフックは判定せずそのまま渡す）。
+        onAiFileWritten?.(ev.full)
+        break
     }
-  }, [toolsProjectDir, sessionId, updateShown])
+  }, [toolsProjectDir, sessionId, updateShown, onAiFileWritten])
 
   // 末尾の吹き出し操作ヘルパー（emit を呼ぶだけの薄い包み。呼び出し側は書き換えない）
   const appendBubble = useCallback((msg: ChatMessage) => emit({ kind: 'append', msg }), [emit])
@@ -341,6 +354,7 @@ export function useAiChat(args: UseAiChatArgs) {
       unexecutedToolWarning,
       claimsFileChange,
       unexecutedChangeWarning,
+      stripRepeatedGuidance,
       isToolArgsComplete,
       isToolUnsupportedError,
       isImageUnsupportedError,
@@ -630,7 +644,6 @@ export function useAiChat(args: UseAiChatArgs) {
       // main からの ask（chatTurnBridge.ts の dispatchAsk）へ渡す薄い橋。buildPorts の実装を
       // そのまま使い、二重実装しない（呼び先を付け替えているだけで、値の鮮度は変わらない）。
       const handlers = {
-        executeTool: ports.executeTool,
         approveToolCall: ports.approveToolCall,
         buildSystemPrompt: ports.buildSystemPrompt,
         getHistory: ports.getHistory,
@@ -643,9 +656,13 @@ export function useAiChat(args: UseAiChatArgs) {
         // なり、ask ではなくなった（chatTurnBridge.ts の dispatchAsk にはもう対応する case が
         // 無い）。usage.check / usage.record / compactWarnOnce も B'-3d-1b で main
         // （usageStore.ts・モジュール内 Set）が直接持つようになり、同じく ask ではなくなった。
-        // ports.toolSupport / ports.vision / ports.usage / ports.compactWarnOnce 自体は
+        // executeTool も B'-3d-2b で main（buildMainIo・turnRunner.ts）が直呼びするようになり、
+        // 同じく ask ではなくなった（ports.executeTool 自体は buildPorts に残る。EngineTurnPorts
+        // の型完全性のためと、sendViaClaude の openPreview 処理が renderer の aiTools.executeTool
+        // を直接使う現行が無変更のため）。ここから handlers への受け渡しだけを外す。
+        // ports.toolSupport / ports.vision / ports.usage / ports.compactWarnOnce も同様に
         // buildPorts に残る（compactNow が呼ぶ・compactNow は main のターンを経由せず
-        // renderer だけで完結する処理のため）ので、ここから handlers への受け渡しだけを外す。
+        // renderer だけで完結する処理のため）。
       }
       // ⚠️ ターンの間ずっと main への abort 送信関数を this ターンの鍵（key）に登録する。
       // 今日は「ストリーム中だけ」だったが、main 側は abort 関数が未登録なら何もしないので、
@@ -664,7 +681,7 @@ export function useAiChat(args: UseAiChatArgs) {
             // ops を送り返してしまい、二重書きになる。上の「emit と viewOnlyEmit」コメント参照）。
             onEvent: (ev) => viewOnlyEmit(ev as any),
             onActivity: () => { updateTurn(key, { lastActivityAt: Date.now() }) },
-            onAsk: (path, args) => dispatchAsk(handlers, turnOpts, path as AskPath, args),
+            onAsk: (path, args) => dispatchAsk(handlers, path as AskPath, args),
           },
         )
         // ── エラーで終わったターンの ⚠️ は、invoke の結果からも重ねて立てる（B-2）──────

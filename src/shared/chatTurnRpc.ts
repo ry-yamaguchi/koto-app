@@ -20,7 +20,8 @@ import type { EngineTurnSpec } from './chatTurn'
  * chatTurn.ts の EngineTurnPorts のうち、main が直接持つもの
  * （emit / setAbort / notifyActivity / chatStream / chatOnce / usage.estimate / h、
  * B'-3d-1a で main 化した toolSupport.* / vision.* の6メンバー、
- * B'-3d-1b で main 化した usage.check / usage.record / compactWarnOnce の3メンバー）
+ * B'-3d-1b で main 化した usage.check / usage.record / compactWarnOnce の3メンバー、
+ * B'-3d-2b で main 化した executeTool）
  * **以外**の全メンバーがここに載っている（tests/chatTurnRpc.test.ts が突き合わせて固定する）。
  *
  * ── B'-3d-1a（2026-08-29）: toolSupport.* / vision.* を main が直接持つように ─────────
@@ -36,9 +37,18 @@ import type { EngineTurnSpec } from './chatTurn'
  * shared/usageBudget.ts の純関数を直接呼ぶ。compactWarnOnce（「まとめ失敗の警告は1度だけ」の印）
  * も main のモジュール内 Set で直接持つようになった（会話キー別・詳しくは turnRunner.ts の
  * コメント参照）。ask が3本減った（ASK_PATHS は 12本 → 9本）。
+ *
+ * ── B'-3d-2b（2026-08-30）: executeTool を main が直接持つように ─────────────────
+ * AIツール実行（fetch_url / read_file / write_file / run_command 等）の本体
+ * （shared/toolExecCore.ts の executeToolCore・B'-3d-2a で切り出し済み）を main が直接呼ぶ。
+ * main のループ（turnRunner.ts）はもう renderer へ ask せず、各 main 実装（ipc/fs.ts・
+ * ipc/shell.ts・ipc/web.ts・backup/store.ts・rag/client.ts）を io（buildMainIo）として直接
+ * 組み立てて渡す。「窓を閉じても作業が続く」（B'-3d）の最大の一歩（ask が1本減って ASK_PATHS
+ * は 9本 → 8本）。ファイル保存後のエディタ反映は renderer が引き続き担う（新 ChatEvent
+ * 'aiFileWritten' 経由・掟11: いま見ているプロジェクトの分だけ）。
  */
 export const ASK_PATHS = [
-  'executeTool', 'approveToolCall', 'buildSystemPrompt', 'getHistory', 'onUserMessage',
+  'approveToolCall', 'buildSystemPrompt', 'getHistory', 'onUserMessage',
   'buildRagBlock', 'getSearchConfig', 'fetchPagesBlock', 'autoSearchBlock',
 ] as const
 

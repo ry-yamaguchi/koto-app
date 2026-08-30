@@ -11,13 +11,13 @@ import { PUBLISH_DIR_LABEL } from '../shared/publishRoot'
 import {
   toolsFor, WRITING_TOOLS, isToolUnsupportedError, toolStatusLabel, formatChatError,
   condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning,
-  claimsFileChange, unexecutedChangeWarning, isToolArgsComplete,
+  claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, isToolArgsComplete,
 } from '../shared/aiToolsCore'
 export { isDangerousCommand }
 export {
   toolsFor, WRITING_TOOLS, isToolUnsupportedError, toolStatusLabel, formatChatError,
   condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning,
-  claimsFileChange, unexecutedChangeWarning, isToolArgsComplete,
+  claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, isToolArgsComplete,
 }
 
 // executeTool の本体（executeToolCore）・SearchConfig 型・io の型は shared へ移した（B'-3d-2a）。

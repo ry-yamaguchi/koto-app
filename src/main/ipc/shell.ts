@@ -3,6 +3,33 @@ import { app, ipcMain, shell } from 'electron'
 import { exec, execSync } from 'child_process'
 import type { IpcDeps } from './types'
 
+// ── AIのrun_commandツール用：プロジェクト内でコマンドを実行し、出力を返す ──
+// 常駐プロセス向きではない（60秒でタイムアウト）。出力は上限つきで切詰める。
+// B'-3d-2b: main の io（buildMainIo・src/main/chat/turnRunner.ts）が io.runCommand として
+// そのまま直呼びする。中身は proc:run ハンドラの実処理をそのまま関数として切り出したもの
+// （PROC_OUTPUT_MAX・timeout・maxBuffer・shell・返り値の形、すべて現行そのまま）。
+const PROC_OUTPUT_MAX = 8000
+export function runProjectCommand(
+  cwd: string, command: string
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise(resolve => {
+    exec(command, {
+      cwd,
+      timeout: 60000,
+      maxBuffer: 1024 * 1024,
+      shell: process.env.SHELL || '/bin/zsh',
+      env: process.env,
+    }, (err: any, stdout, stderr) => {
+      resolve({
+        code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        timedOut: !!(err && err.killed),
+        stdout: String(stdout ?? '').slice(0, PROC_OUTPUT_MAX),
+        stderr: String(stderr ?? '').slice(0, PROC_OUTPUT_MAX),
+      })
+    })
+  })
+}
+
 export function registerShellHandlers(_deps: IpcDeps) {
   // アプリのバージョンをレンダラへ
   ipcMain.handle('app:version', () => app.getVersion())
@@ -26,25 +53,5 @@ export function registerShellHandlers(_deps: IpcDeps) {
     }
   })
 
-  // ── AIのrun_commandツール用：プロジェクト内でコマンドを実行し、出力を返す ──
-  // 常駐プロセス向きではない（60秒でタイムアウト）。出力は上限つきで切詰める。
-  const PROC_OUTPUT_MAX = 8000
-  ipcMain.handle('proc:run', (_, args: { cwd: string; command: string }) => {
-    return new Promise(resolve => {
-      exec(args.command, {
-        cwd: args.cwd,
-        timeout: 60000,
-        maxBuffer: 1024 * 1024,
-        shell: process.env.SHELL || '/bin/zsh',
-        env: process.env,
-      }, (err: any, stdout, stderr) => {
-        resolve({
-          code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
-          timedOut: !!(err && err.killed),
-          stdout: String(stdout ?? '').slice(0, PROC_OUTPUT_MAX),
-          stderr: String(stderr ?? '').slice(0, PROC_OUTPUT_MAX),
-        })
-      })
-    })
-  })
+  ipcMain.handle('proc:run', (_, args: { cwd: string; command: string }) => runProjectCommand(args.cwd, args.command))
 }

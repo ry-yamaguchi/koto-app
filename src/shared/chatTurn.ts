@@ -84,6 +84,8 @@ export type TurnHelpers = {
   unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean): string | null
   claimsFileChange(text: string): boolean
   unexecutedChangeWarning(claims: boolean, wrote: boolean): string | null
+  /** 直前の返事と同一の案内段落（②試す等の定型文）を取り除く（2026-08-30・aiToolsCore.ts）。 */
+  stripRepeatedGuidance(content: string, prevAssistant: string | null | undefined): string
   // ⚠️ 仕様書は (name, argsJson) の2引数としていたが、実体（aiTools.ts）は
   // isToolArgsComplete(args) の1引数。呼び出し側（tc.function?.arguments のみ渡す）に合わせた。
   isToolArgsComplete(argsJson: string | undefined | null): boolean
@@ -340,6 +342,10 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     // まとめ以外の失敗（ネットワーク断・空応答等）は従来どおり「黙って続ける・警告は1度だけ」の
     // ままで変えていない（分岐は compactIfNeeded／runCompact 側で既に済んでいる）。
     let history = historyBefore
+    // 直前のアシスタントの返事（案内定型文の重複除去 stripRepeatedGuidance の比較対象）。
+    // toolNote（実況・⚠️等）は案内の持ち主ではないので飛ばす。
+    const prevAssistantContent = [...historyBefore].reverse()
+      .find(m => m.role === 'assistant' && !m.toolNote && m.content)?.content ?? null
     const summaryMsg = await compactIfNeeded(spec, ports, historyBefore)
     if (summaryMsg && 'aborted' in summaryMsg) {
       ports.emit({ kind: 'append', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
@@ -686,11 +692,16 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             })
             continue
           }
+          // 直前の返事と同一の案内定型文（②試す等）は取り除く（2026-08-30 実機・Ryosuke 指摘:
+          // プロンプトの「連続で繰り返さない」指示を Kimi K2.7 が無視して毎ターン付けてきた。
+          // 判定はコードで＝stripToolMarkup と同じ発想。h.stripRepeatedGuidance のコメント参照）。
+          const shown = ports.h.stripRepeatedGuidance(r.content, prevAssistantContent)
+          if (shown !== r.content) ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: shown } })
           // 促してもやらなかった場合は、**黙って成功に見せない**
           const warn = ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles)
             ?? ports.h.unexecutedToolWarning(sawToolMarkup, usedTools)
           if (warn) {
-            ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: `${r.content}\n\n${warn}` } })
+            ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: `${shown}\n\n${warn}` } })
           } else if (askedToActuallyWrite && !wroteFiles) {
             // 促しに対して「変更は不要」等で書かずに終えた。正しい辞退か嘘の逃げかは
             // Koto には判定できないので、**事実だけ**を短く添える（利用者が

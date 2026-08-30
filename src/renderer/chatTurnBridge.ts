@@ -3,7 +3,7 @@
 //
 // ── なぜ要るか ─────────────────────────────────────────────────────
 // AI Engine のループ本体（runEngineTurn）は main プロセスで走るようになった
-// （src/main/chat/turnRunner.ts）。renderer にしか無い副作用（ツール実行・承認・
+// （src/main/chat/turnRunner.ts）。renderer にしか無い副作用（承認・
 // システムプロンプト組み立て等）は、main から IPC 経由の「問い合わせ」（ask・
 // src/shared/chatTurnRpc.ts の ASK_PATHS）として飛んでくる。このファイルは、その ask を
 // useAiChat.ts の handlers（buildPorts と同じ実装）へつなぎ直す**だけ**の薄い配線。
@@ -12,7 +12,9 @@
 // ⚠️ 学習記録（toolSupport.* / vision.*）は B'-3d-1a で main（learningStore.ts）へ移り、
 // ask ではなくなった（ASK_PATHS から削除・main の turnRunner.ts が直接呼ぶ）。予算・利用実績
 // （usage.check / usage.record）と compactWarnOnce も B'-3d-1b で main（usageStore.ts・
-// モジュール内 Set）へ移り、同じく ask ではなくなった。ここにはもうそれらに対応する case が無い。
+// モジュール内 Set）へ移り、同じく ask ではなくなった。executeTool も B'-3d-2b で
+// main（buildMainIo・turnRunner.ts）が直呼びするようになり、ask ではなくなった。
+// ここにはもうそれらに対応する case が無い。
 
 import type { AskPath } from '../shared/chatTurnRpc'
 
@@ -20,11 +22,15 @@ import type { AskPath } from '../shared/chatTurnRpc'
  * spec.turnOpts を IPC に載せられる形にする（関数の項目を落とす。値はそのまま）。
  *
  * ── なぜ要るか ─────────────────────────────────────────────────────
- * turnOpts（buildExecuteOpts() の返り値）には applyFile / ragSearch のような
- * 関数が入っている。electron の IPC（構造化複製）は関数を運べないため、main へ渡す
- * spec.turnOpts からは関数を落とす。落とした関数は、executeTool の ask を受けたとき
- * （dispatchAsk）に turnOptsFull（この関数を通していない、そのままの turnOpts）を
- * 敷き直すことで復元する。
+ * turnOpts（buildExecuteOpts() の返り値）は、electron の IPC（構造化複製）が運べない
+ * 関数を含むことがある値。main へ渡す spec.turnOpts からは関数を落とす。
+ *
+ * ── B'-3d-2b: executeTool が main 直呼びになった後も残す理由（安全網） ────────────
+ * 以前は「落とした関数（applyFile/ragSearch）を、executeTool の ask を受けたとき
+ * （dispatchAsk）に turnOptsFull を敷き直して復元する」ためにここが必須だった。
+ * いま buildExecuteOpts() はそもそも関数を含まない（applyFile/ragSearch を外し、
+ * rag: {tags} | null という値だけを持つ・ChatPanel.tsx）ため、通常はここで落ちるものは無い。
+ * それでも「万一 turnOpts に関数が紛れ込んでも IPC を壊さない」安全網として残す。
  */
 export function stripFunctions(o: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -38,10 +44,6 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
 /**
  * main からの ask を、renderer の実装（buildPorts の中身と同じもの）へ振り分ける。
  *
- * - executeTool だけ特別: main から来た opts の**前に** turnOptsFull を敷く
- *   （{...turnOptsFull, ...opts}）。関数の項目（applyFile / ragSearch）はここで復元される。
- *   値の項目は main 側の opts が同じ値で上書きするので、結果は今までの
- *   executeTool(name, args, {...turnOpts, search, snapshotId, snapshotLabel}) と完全に一致する。
  * - approveToolCall は main から来た scope をそのまま渡す。
  * - 知らない path は Error を投げる（黙って undefined を返さない）。
  * - optional（approveToolCall / onUserMessage / buildRagBlock）が undefined のまま
@@ -52,10 +54,15 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
  * `T | Promise<T>` にしてある。renderer の実装（useAiChat.ts の buildPorts）は今日も同期
  * （T のみ）だが、この関数はその ports をそのまま（型を狭め直さずに）handlers として使う
  * ため、EngineTurnPorts（src/shared/chatTurn.ts）の型に合わせてある。
+ *
+ * ── B'-3d-2b: executeTool を外した ─────────────────────────────────
+ * executeTool は main（buildMainIo・turnRunner.ts）が直呼びするようになり、ASK_PATHS から
+ * 消えた。ここには case が無く、handlers 型にも executeTool は無い。turnOptsFull を敷く
+ * 合成（{...turnOptsFull, ...opts}）は executeTool のためだけの仕組みだったため、残る ask
+ * のどれも使っていないことを確認したうえで、この関数の引数からも turnOptsFull を外した。
  */
 export function dispatchAsk(
   handlers: {
-    executeTool(name: string, argsJson: string, opts: Record<string, unknown>): Promise<string>
     approveToolCall?(name: string, args: string, scope?: unknown): Promise<string | null>
     buildSystemPrompt(): string | Promise<string>
     getHistory(): unknown[] | Promise<unknown[]>
@@ -65,18 +72,10 @@ export function dispatchAsk(
     fetchPagesBlock(urls: string[]): Promise<string>
     autoSearchBlock(text: string, search: unknown): Promise<string>
   },
-  turnOptsFull: Record<string, unknown>,
   path: AskPath,
   args: unknown[],
 ): unknown | Promise<unknown> {
   switch (path) {
-    case 'executeTool': {
-      const [name, argsJson, opts] = args as [string, string, Record<string, unknown>]
-      // main からの opts の**前に** turnOptsFull を敷く。値の項目（search/snapshotId/
-      // snapshotLabel 等）は main 側の opts が同じ値で上書きするので、今までの
-      // { ...turnOpts, search, snapshotId, snapshotLabel } と完全に一致する。
-      return handlers.executeTool(name, argsJson, { ...turnOptsFull, ...opts })
-    }
     case 'approveToolCall': {
       if (!handlers.approveToolCall) throw new Error(`ask '${path}' に対応する handler がありません（caps の食い違い）`)
       const [name, argsStr, scope] = args as [string, string, unknown]

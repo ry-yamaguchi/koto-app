@@ -160,10 +160,18 @@ export async function fetchUrlPage(url: string, opts?: { maxChars?: number }): P
   return { url: res.url || current, title: '', content: raw.slice(0, maxChars) }
 }
 
+/**
+ * Web検索を実行する（web:search ハンドラの実体）。provider 分岐は現行のまま。
+ * B'-3d-2b: main の io（buildMainIo・src/main/chat/turnRunner.ts）が io.webSearch として
+ * そのまま直呼びする。
+ */
+export async function webSearch(provider: 'tavily' | 'brave', key: string, query: string): Promise<SearchResult[]> {
+  return provider === 'tavily' ? searchTavily(key, query) : searchBrave(key, query)
+}
+
 export function registerWebHandlers(_deps: IpcDeps) {
   ipcMain.handle('web:fetch', async (_, url: string, opts?: { maxChars?: number }) => fetchUrlPage(url, opts))
 
-  ipcMain.handle('web:search', async (_, args: { provider: 'tavily' | 'brave'; key: string; query: string }) => {
-    return args.provider === 'tavily' ? searchTavily(args.key, args.query) : searchBrave(args.key, args.query)
-  })
+  ipcMain.handle('web:search', async (_, args: { provider: 'tavily' | 'brave'; key: string; query: string }) =>
+    webSearch(args.provider, args.key, args.query))
 }

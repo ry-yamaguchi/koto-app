@@ -373,6 +373,33 @@ export function unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean): s
     + 'モデルを「Qwen3-Coder」などツールを使えるものに切り替えて、もう一度お試しください。'
 }
 
+/**
+ * 直前の返事と**同一の案内段落**（「②試す で確認してみてください」等の定型文）を取り除く（純関数）。
+ *
+ * ── なぜ（2026-08-30 実機・Ryosuke 指摘）──────────────────────────────
+ * システムプロンプトは初心者向けに「作業がひと区切りしたら次にやることを案内」と指示している。
+ * 「同じ案内を連続で繰り返さない」という指示も足したが、モデル（Kimi K2.7）は**無視して**
+ * 毎ターン一字一句同じ定型文を付けてきた。プロンプトで従わせるのは諦め、Koto 側で機械的に
+ * 抑止する（stripToolMarkup と同じ発想: モデル任せにせず、判定はコードで）。
+ *
+ * 消すのは「①案内の形をした段落（GUIDANCE_RE）で、かつ ②直前のアシスタントの返事に
+ * **同じ段落がそのまま**在るもの」だけ。新しい内容の案内（初出）は残る。
+ * 全段落が消える場合は元のまま返す（空の返事にしない）。
+ */
+const GUIDANCE_RE = /画面上部の【[②③]|次にやることを1つ案内します/
+export function stripRepeatedGuidance(content: string, prevAssistant: string | null | undefined): string {
+  if (!content || !prevAssistant) return content
+  const prevParas = new Set(prevAssistant.split(/\n{2,}/).map(p => p.trim()).filter(Boolean))
+  const paras = content.split(/\n{2,}/)
+  const kept = paras.filter(p => {
+    const t = p.trim()
+    return !(GUIDANCE_RE.test(t) && prevParas.has(t))
+  })
+  if (kept.length === paras.length) return content // 何も消さないなら原文をそのまま（空行の形も保つ）
+  const next = kept.join('\n\n').trim()
+  return next === '' ? content : next
+}
+
 /** モデルが本文に吐いたツール呼び出しの特殊トークン／マークアップを除去し、人が読める本文だけにする。 */
 export function stripToolMarkup(text: string): string {
   if (!text) return text

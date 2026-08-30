@@ -132,3 +132,18 @@ export function backupRelPath(projectRoot: string, writeRoot: string, rel: strin
   const sub = w.slice(p.length + 1)
   return sub ? `${sub}${sep}${rel}` : rel
 }
+
+/**
+ * AI が指定した相対パスを軽く正規化する（App.tsx の applyAiFile と、main の
+ * io.applyFile（src/main/chat/turnRunner.ts）の共通定義・B'-3d-2b）。
+ *
+ * ── なぜ1箇所にするか（掟10）────────────────────────────────────────
+ * これまでは App.tsx の applyAiFile がこの式を単独で持っていた。今回 main も同じ書き先
+ * （`${writeRoot}/${clean}`）へ直接書き込むようになるため、定義を1箇所に集める。
+ * ※ resolveForWrite（shared/toolExecCore.ts の resolveInProject/isProtectedWritePath）の
+ * ガード（`..` を含むパス・絶対パスの拒否）がこれより前段にあるため、実際にここまで通る
+ * rel では clean の前後で差は出ない——それでも「定義は1つ」を守る。
+ */
+export function cleanAiRelPath(relPath: string): string {
+  return relPath.replace(/^\.?\//, '').replace(/\.\.(\/|\\)/g, '') // 軽いトラバーサル対策
+}
