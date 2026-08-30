@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyEdit } from '../src/renderer/editFile'
+import { applyEdit } from '../src/shared/editFile'
 
 // edit_file ツール（部分編集）の置換ロジック。write_file の全文書き直しに代わる新ツールで、
 // old_string は正規表現ではなく単純なリテラル文字列一致で扱う（重要: 特殊文字がそのまま一致すること）。

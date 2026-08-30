@@ -335,11 +335,16 @@ describe('🕘 履歴の退避の根', () => {
 
   // ⚠️ 退避の口は**2つある**（write_file と edit_file）。`toContain` だけだと
   // **片方だけ古い形に戻しても素通りする**（掟10 の戒め）。数で固定する。
+  //
+  // B'-3d-2a: この配線（write_file/edit_file の本体）は src/renderer/aiTools.ts から
+  // src/shared/toolExecCore.ts へ移った。呼び先も window.electronAPI.backup.snapshotBeforeWrite(...)
+  // → io.snapshotBeforeWrite(...) に付け替わった（io の実装＝window.electronAPI 呼び出しそのものは
+  // renderer/aiTools.ts の buildIo に1箇所だけ残る）。
   it('退避はプロジェクト直下へ置き、根のずれを足し戻す（両方の口で）', () => {
-    const s = read('src/renderer/aiTools.ts')
+    const s = read('src/shared/toolExecCore.ts')
     const count = (needle: string) => s.split(needle).length - 1
     // 退避の口の数（増減したらこのテストを見直す＝気づける）
-    expect(count('backup.snapshotBeforeWrite(')).toBe(2)
+    expect(count('io.snapshotBeforeWrite(')).toBe(2)
     // 根は writeRoot ではなく projectRoot（省略時だけ writeRoot に落ちる）
     expect(count('const root = ctx.projectRoot ?? ctx.writeRoot')).toBe(2)
     // パスはプロジェクト直下からの相対に直す（public/ を足し戻す）
@@ -420,13 +425,15 @@ describe('🕘 履歴の退避の根', () => {
 // aiToolsApply.test.ts / publishExclude.test.ts が「関数として正しいこと」を、
 // ここでは「実際に呼ばれている場所が、正しい形で呼んでいること」を固定する。
 describe('AIが書いたファイルが public/ の外へ出ない（2026-08-27 発見の不具合）', () => {
+  // B'-3d-2a: この配線も src/shared/toolExecCore.ts へ移り、ctx.applyFile(...) →
+  // io.applyFile(...) に付け替わった（io.applyFile は buildIo で ctx.applyFile をそのまま渡す）。
   it('write_file / edit_file の両方が applyFile へ writeRoot を渡す（口ごと見る）', () => {
-    const s = read('src/renderer/aiTools.ts')
-    expect(s).toContain('await ctx.applyFile(rel, content, ctx.writeRoot) // 保存＋エディタ・ツリー反映')
-    expect(s).toContain('await ctx.applyFile(rel, result.next, ctx.writeRoot) // 保存＋エディタ・ツリー反映')
+    const s = read('src/shared/toolExecCore.ts')
+    expect(s).toContain('await io.applyFile(rel, content, ctx.writeRoot) // 保存＋エディタ・ツリー反映')
+    expect(s).toContain('await io.applyFile(rel, result.next, ctx.writeRoot) // 保存＋エディタ・ツリー反映')
     // 直す前の形（root を渡さない）へ戻さない
-    expect(s).not.toContain('await ctx.applyFile(rel, content) //')
-    expect(s).not.toContain('await ctx.applyFile(rel, result.next) //')
+    expect(s).not.toContain('await io.applyFile(rel, content) //')
+    expect(s).not.toContain('await io.applyFile(rel, result.next) //')
   })
 
   it('App.tsx: applyAiFile は root（渡されなければ currentDir）を書き込みの根にする', () => {

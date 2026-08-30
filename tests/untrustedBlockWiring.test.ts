@@ -47,14 +47,17 @@ const INJECTION_POINTS: { name: string; file: string; must: string; mustNot: str
     mustNot: '\n      body +\n',
   },
   {
-    name: 'aiTools.ts / fetch_url ツール',
-    file: 'src/renderer/aiTools.ts',
+    // B'-3d-2a: executeTool 本体が shared/toolExecCore.ts へ移り、呼び出し先も
+    // window.electronAPI.web.fetchPage(url) → io.fetchPage(url) に付け替わった。
+    name: 'toolExecCore.ts / fetch_url ツール',
+    file: 'src/shared/toolExecCore.ts',
     must: "return wrapUntrusted(`ページ: ${page.url}${page.title ? `（${page.title}）` : ''}`, page.content)",
     mustNot: "return `ページ: ${page.url}${page.title ? `（${page.title}）` : ''}\\n\\n${page.content}`",
   },
   {
-    name: 'aiTools.ts / search_web ツール',
-    file: 'src/renderer/aiTools.ts',
+    // 同上（B'-3d-2a）: window.electronAPI.web.search(...) → io.webSearch(...) に付け替わった。
+    name: 'toolExecCore.ts / search_web ツール',
+    file: 'src/shared/toolExecCore.ts',
     must: "wrapUntrusted(`Web検索結果（クエリ: \"${query}\"）`, results.map((r, i) => `${i + 1}. ${r.title}\\n   ${r.url}\\n   ${r.description}`).join('\\n\\n'))",
     mustNot: ".join('\\n\\n') +\n        '\\n\\n（詳細が必要なページは fetch_url",
   },
@@ -107,22 +110,31 @@ describe('外部データの境界ガード: 6箇所の注入点が漏れなく 
 })
 
 describe('search_docs は二重wrapしない（buildRagBlockText 側で既に1回 wrap 済みのため）', () => {
-  it('renderer aiTools.ts の search_docs 分岐に wrapUntrusted 呼び出しが無い', () => {
-    const src = read('src/renderer/aiTools.ts')
+  // B'-3d-2a: executeTool 本体が shared/toolExecCore.ts へ移り、ctx.ragSearch(query) の
+  // 呼び出しも io.ragSearch(query) に付け替わった。
+  it('toolExecCore.ts の search_docs 分岐に wrapUntrusted 呼び出しが無い', () => {
+    const src = read('src/shared/toolExecCore.ts')
     const start = src.indexOf("if (name === 'search_docs')")
     const end = src.indexOf("if (name === 'search_in_files')")
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
     const branch = src.slice(start, end)
     expect(branch).not.toContain('wrapUntrusted')
-    // ctx.ragSearch(query) の戻り値をそのまま返しているだけであることも確認する
-    expect(branch).toContain('const result = await ctx.ragSearch(query)')
+    // io.ragSearch(query) の戻り値をそのまま返しているだけであることも確認する
+    expect(branch).toContain('const result = await io.ragSearch(query)')
     expect(branch).toContain("return result || '該当する資料が見つかりませんでした'")
   })
 
-  it('aiTools.ts 全体では wrapUntrusted 呼び出しは fetch_url・search_web の2箇所だけ', () => {
-    const src = read('src/renderer/aiTools.ts')
+  it('toolExecCore.ts 全体では wrapUntrusted 呼び出しは fetch_url・search_web の2箇所だけ', () => {
+    const src = read('src/shared/toolExecCore.ts')
     expect(src.split('wrapUntrusted(').length - 1).toBe(2)
+  })
+
+  // 皮（renderer/aiTools.ts）に古い実装（wrapUntrusted の直呼び）が戻る退行を禁じる
+  // （B'-3d-2a・掟10: 移した先に穴が空いても、移す前の場所に「元に戻った形」が残っていないかを確認する）。
+  it('renderer/aiTools.ts に wrapUntrusted 呼び出しは0箇所（本体は shared/toolExecCore.ts へ移った）', () => {
+    const src = read('src/renderer/aiTools.ts')
+    expect(src.split('wrapUntrusted(').length - 1).toBe(0)
   })
 })
 
