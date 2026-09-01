@@ -24,6 +24,7 @@ import { registerUpdateHandlers } from './update'
 import { registerMigrateHandlers } from './migrate'
 import { registerLearningHandlers } from './learning'
 import { registerUsageHandlers } from './usage'
+import { registerApprovalHandlers } from './approval'
 import { registerChatTurnHandlers } from '../chat/turnRunner'
 
 export type { IpcDeps } from './types'
@@ -52,5 +53,6 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerUpdateHandlers(deps)
   registerLearningHandlers(deps)
   registerUsageHandlers(deps)
+  registerApprovalHandlers(deps)
   registerChatTurnHandlers(deps)
 }

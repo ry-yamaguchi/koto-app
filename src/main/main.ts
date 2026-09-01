@@ -20,9 +20,15 @@ let mainWindow: BrowserWindow | null = null
 let hasUnsavedChanges = false
 let forceQuit = false
 // 実行中フラグ（AI応答・公開処理・VPS操作・プロジェクト作成）。renderer の activity.ts が
-// win:busy で通知する。終了時、未保存確認より先にこちらを確認する（実行中の中断は実害が大きいため）。
+// win:busy で通知する。自動更新の再起動ゲート（isBusy()/busyLabel()・アプリごと終了するので
+// AI応答も含めて見る）に使う。
 let isBusy = false
 let busyLabel = ''
+// 「窓を閉じると本当に中断される」実行中フラグ（B'-3d-3）。公開処理・VPS操作・プロジェクト作成
+// だけが対象（AI応答は main でターンが完走するようになったため対象外・activity.ts の
+// blocksClose コメント参照）。終了確認ダイアログはこちらだけを見る。
+let closeBlockingBusy = false
+let closeBlockingLabel = ''
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -82,11 +88,17 @@ function createWindow() {
   wc.on('will-attach-webview', (e) => e.preventDefault())
 
   // 終了時の確認。① 実行中なら最優先で確認（中断されることを明示）→ ② 未保存の変更（既存ロジック）。
+  //
+  // ── B'-3d-3: ①が見るのは closeBlockingBusy だけ（isBusy 全体ではない）─────────────
+  // AI応答は main でターンが完走するようになり、窓を閉じても中断されない（activity.ts の
+  // blocksClose コメント参照）。isBusy（自動更新の再起動ゲート用・AI応答も含む）をそのまま
+  // ここで見ると、「実際には中断されないのに中断すると警告する」誤りになるため、
+  // 「本当に閉じると中断されるもの」だけを別に持つ closeBlockingBusy を見る。
   mainWindow.on('close', async (e) => {
     if (forceQuit) return
 
-    // ① 実行中なら最優先で確認する（AI応答・公開処理・VPS操作・プロジェクト作成の途中で閉じると中断される）
-    if (isBusy) {
+    // ① 実行中なら最優先で確認する（公開処理・VPS操作・プロジェクト作成の途中で閉じると中断される）
+    if (closeBlockingBusy) {
       e.preventDefault()
       const { response } = await dialog.showMessageBox(mainWindow!, {
         type: 'warning',
@@ -94,11 +106,11 @@ function createWindow() {
         defaultId: 1,
         cancelId: 1,
         message: '処理を実行中です',
-        detail: `${busyLabel || '処理'}が進行中です。いま閉じると中断されます。よろしいですか？`,
+        detail: `${closeBlockingLabel || '処理'}が進行中です。いま閉じると中断されます。よろしいですか？`,
       })
       if (response === 1) return // キャンセル＝閉じない
       // 中断を承諾 → busyを解除して閉じ直す（次の再入で未保存確認に進む or そのまま終了）
-      isBusy = false
+      closeBlockingBusy = false
       mainWindow!.close()
       return
     }
@@ -134,7 +146,12 @@ registerAllHandlers({
     hasUnsavedChanges = false
     mainWindow?.close()
   },
-  setBusy: (busy: boolean, label: string) => { isBusy = busy; busyLabel = label },
+  setBusy: (busy: boolean, label: string, closeBlocking: boolean, closeBlockingLabelArg: string) => {
+    isBusy = busy
+    busyLabel = label
+    closeBlockingBusy = closeBlocking
+    closeBlockingLabel = closeBlockingLabelArg
+  },
   hasUnsavedChanges: () => hasUnsavedChanges,
   isBusy: () => isBusy,
   busyLabel: () => busyLabel,

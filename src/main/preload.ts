@@ -384,8 +384,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   win: {
     // 未保存状態をメインプロセスに通知（終了時の警告に使う）
     setDirty: (dirty: boolean) => ipcRenderer.send('win:dirty', dirty),
-    // 実行中状態をメインプロセスに通知（終了時の「実行中です」警告に使う）。label は実行中の処理名。
-    setBusy: (busy: boolean, label: string) => ipcRenderer.send('win:busy', busy, label),
+    // 実行中状態をメインプロセスに通知。busy/label は「何かしら実行中か」（自動更新の再起動
+    // ゲートに使う）、closeBlockingBusy/closeBlockingLabel は「閉じると本当に中断されるか」
+    // （終了時の「実行中です」警告に使う。B'-3d-3: AI応答は main で完走するため対象外になった）。
+    setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string) =>
+      ipcRenderer.send('win:busy', busy, label, closeBlockingBusy, closeBlockingLabel),
     // 「保存して終了」選択時にメインから呼ばれる
     onSaveAll: (cb: () => void) => {
       const handler = () => cb()
@@ -466,6 +469,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_: Electron.IpcRendererEvent, snapshot: { settings: unknown; months: unknown }) => cb(snapshot)
       ipcRenderer.on('usage:changed', handler)
       return () => ipcRenderer.removeListener('usage:changed', handler)
+    },
+  },
+  // 承認（approveToolCall）の main 一元化＋駐機（B'-3d-3）。持ち主は main の
+  // src/main/chat/approvalStore.ts（メモリのみ・永続化しない）。要否判定・文面組み立ては
+  // main（turnRunner.ts）が src/shared/approvalPlan.ts の純関数で行い、renderer は
+  // 「渡された文面のダイアログを出して答えるだけ」の純UI（ChatPanel.tsx）になる。
+  approval: {
+    /** 承認待ち一覧（画面が（再）起動したときの取りこぼし回収＝駐機の再提示に使う）。 */
+    list: () => ipcRenderer.invoke('approval:list'),
+    /** 許可=true／拒否=false で回答する。知らない id・二重回答は false が返る（無視）。 */
+    answer: (id: string, approved: boolean) => ipcRenderer.invoke('approval:answer', id, approved),
+    /** main が一覧を変えるたび届く通知（learning.onChanged と同じ作法・購読解除関数を返す）。 */
+    onChanged: (cb: (list: { id: string; dir: string | null; label: string }[]) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, list: { id: string; dir: string | null; label: string }[]) => cb(list)
+      ipcRenderer.on('approval:changed', handler)
+      return () => ipcRenderer.removeListener('approval:changed', handler)
     },
   },
   // AI Engine 経路の1ターンを main で走らせる（B'-3b・土台の入れ替え その1）。

@@ -4,6 +4,13 @@
 //
 // なぜ shared にあるか（B'-3b）: 次の段で main プロセスで動くループ（chatTurn.ts）の
 // ports.h を、renderer からも main からも同じ実装で組み立てられるようにするため。
+//
+// ── B'-3d-3（2026-08-30）: 承認の要否判定に使う関数を renderer/aiTools.ts から移した ──────
+// requiresConfirmation / confirmReason / installTargetsFromCommand / isSensitiveCommand は、
+// 承認（approveToolCall）を main へ一元化する（掟10）ための材料。main（turnRunner.ts）・
+// renderer（aiTools.ts が re-export・互換維持）の両方から同じ実装を呼べるようにする。
+import { isDangerousCommand, leavesWorkingDir } from './commandGuard'
+import { PUBLISH_DIR_LABEL } from './publishRoot'
 
 const FETCH_URL_TOOL = {
   type: 'function',
@@ -185,6 +192,65 @@ export function toolsFor(projectDir?: string | null, hasSearch?: boolean, hasRag
 // モデルのツール（Function Calling）対応判定は src/renderer/toolSupport.ts へ移行した
 // （旧: モデル名の正規表現によるハードコードで、新モデルが preview/・kimi 等の語に一致して
 //   誤って非対応判定されていた。2026-07-30、実測から学習する方式に置き換え）。
+
+/** インストール・通信・コード直接実行・システム設定変更など、おまかせモードでも確認すべきコマンドか
+ *  （旧 renderer/aiTools.ts から移した・B'-3d-3）。 */
+export function isSensitiveCommand(cmd: string): boolean {
+  return (
+    // パッケージインストール（postinstall等で任意コード実行の恐れ）
+    /\b(npm|pnpm|yarn)\s+(i|install|add|exec|dlx)\b|\bnpx\b|\b(pip|pip3)\s+install\b|\bbrew\s+(install|tap)\b|\bgem\s+install\b|\bcargo\s+install\b|\bgo\s+(install|get)\b|\bcomposer\s+(require|install)\b|\bpoetry\s+add\b|\bapt(-get)?\s+install\b/i.test(cmd) ||
+    // ネットワーク通信
+    /\bcurl\b|\bwget\b|\bnc\b|\bncat\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd) ||
+    // コードの直接実行（ワンライナー）
+    /\b(python3?|node|ruby|perl|php)\s+-(c|e)\b|\bosascript\b|\beval\b|\bbase64\s+-{1,2}d\b/i.test(cmd) ||
+    // システム/ホーム設定の変更
+    />>?\s*~|~\/\.(zshrc|bashrc|bash_profile|zprofile|profile|ssh)|\bcrontab\b|\blaunchctl\b|\bdefaults\s+write\b/i.test(cmd)
+  )
+}
+
+/** run_command 実行前にユーザー確認が必要か（破壊的 or 上記カテゴリ）（旧 renderer/aiTools.ts から移した・B'-3d-3）。 */
+export function requiresConfirmation(cmd: string): boolean {
+  // 作業フォルダの外へ出るコマンドも一度は目に入れる（止めはしない・2026-08-20）。
+  return isDangerousCommand(cmd) || isSensitiveCommand(cmd) || leavesWorkingDir(cmd)
+}
+
+/**
+ * インストールするライブラリの名前をコマンドから読み取る（純関数）（旧 renderer/aiTools.ts から移した・B'-3d-3）。
+ *
+ * ── なぜ要るか（2026-08-18 Ryosuke 指摘）────────────────────────────
+ * 「インターネットからプログラムを取得して実行します」とだけ出しても、
+ * **何が入るのかが分からない**。名前が分かるなら見せる。
+ * `npm install`（名前なし）は package.json を見ないと分からないので、
+ * その場合は呼び出し側が渡す。
+ */
+export function installTargetsFromCommand(cmd: string): string[] {
+  const t = String(cmd ?? '').trim()
+  const m = /^(?:npm|pnpm|yarn|bun)\s+(?:install|i|add)\s+(.+)$/i.exec(t)
+  if (!m) return []
+  return m[1]
+    .split(/\s+/)
+    .filter(a => a && !a.startsWith('-'))   // オプションは名前ではない
+    .slice(0, 20)
+}
+
+/** なぜ確認するのかを初心者向けに一言で説明する（旧 renderer/aiTools.ts から移した・B'-3d-3）。 */
+export function confirmReason(cmd: string, opts?: { dependencies?: readonly string[] }): string {
+  if (isDangerousCommand(cmd)) return 'この操作はファイルやシステムを壊す可能性があります。'
+  if (/\binstall\b|\badd\b|\bnpx\b|\bget\b|\brequire\b|\btap\b/i.test(cmd)) {
+    // **何が入るのかを見せる**（2026-08-18 Ryosuke 指摘）
+    const named = installTargetsFromCommand(cmd)
+    const names = named.length > 0 ? named : (opts?.dependencies ?? [])
+    const list = names.length > 0
+      ? `（${names.slice(0, 5).join('、')}${names.length > 5 ? ` ほか${names.length - 5}件` : ''}）`
+      : ''
+    return `インターネットからプログラム${list}を取得して実行します。`
+  }
+  if (/\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd)) return '外部と通信します。'
+  // 止めはしないが、一度は目に入れる（2026-08-20）。
+  if (leavesWorkingDir(cmd)) return `作業フォルダ（${PUBLISH_DIR_LABEL}）の外を操作しようとしています。`
+  if (/-(c|e)\b|\bosascript\b|\beval\b|\bbase64\b/i.test(cmd)) return 'コードを直接実行します。'
+  return 'システムやホームの設定を変更する可能性があります。'
+}
 
 // サーバがツール呼び出しに非対応のときの 400 エラー文言を判定する（実測前の楽観送信が外れたときの救済用）。
 export function isToolUnsupportedError(message?: string): boolean {

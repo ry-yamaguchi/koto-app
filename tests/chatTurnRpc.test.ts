@@ -32,13 +32,16 @@ import type { EngineTurnPorts, TurnHelpers } from '../src/shared/chatTurn'
  *
  * B'-3d-2b: executeTool は、本体（shared/toolExecCore.ts の executeToolCore）を main が
  * 直呼びするようになったことで ASK_PATHS から direct 側へ移った（ASK_PATHS は 9本 → 8本）。
+ *
+ * B'-3d-3: approveToolCall は、要否判定（shared/approvalPlan.ts）＋駐機（chat/approvalStore.ts）
+ * を main が直接持つようになったことで ASK_PATHS から direct 側へ移った（ASK_PATHS は 8本 → 7本）。
  */
 const DIRECT_PATHS = [
   'emit', 'setAbort', 'notifyActivity', 'chatStream', 'chatOnce', 'usage.estimate', 'h',
   'toolSupport.shouldSendTools', 'toolSupport.isKnownToolCapable', 'toolSupport.record',
   'vision.shouldTryDirect', 'vision.record', 'vision.defaultModel',
   'usage.check', 'usage.record', 'compactWarnOnce',
-  'executeTool',
+  'executeTool', 'approveToolCall',
 ]
 
 describe('ASK_PATHS ⇄ EngineTurnPorts', () => {
@@ -123,9 +126,9 @@ describe('ASK_PATHS ⇄ EngineTurnPorts', () => {
 
   it('AskPath 型は ASK_PATHS の要素と一致する（型レベルの往復）', () => {
     // 型注釈が通ること自体が確認（実行時のアサーションは無い）。
-    // B'-3d-2b: executeTool は main 直呼びになり ASK_PATHS から外れたため、
-    // 別の（今も ask のままの）path で型の往復を確認する。
-    const p: AskPath = 'approveToolCall'
+    // B'-3d-2b で executeTool、B'-3d-3 で approveToolCall がそれぞれ main 直呼びになり
+    // ASK_PATHS から外れたため、別の（今も ask のままの）path で型の往復を確認する。
+    const p: AskPath = 'getHistory'
     expect(ASK_PATHS).toContain(p)
   })
 

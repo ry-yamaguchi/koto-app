@@ -3,17 +3,19 @@
 //
 // ── なぜ要るか ─────────────────────────────────────────────────────
 // AI Engine のループ本体（runEngineTurn）は main プロセスで走るようになった
-// （src/main/chat/turnRunner.ts）。renderer にしか無い副作用（承認・
-// システムプロンプト組み立て等）は、main から IPC 経由の「問い合わせ」（ask・
-// src/shared/chatTurnRpc.ts の ASK_PATHS）として飛んでくる。このファイルは、その ask を
-// useAiChat.ts の handlers（buildPorts と同じ実装）へつなぎ直す**だけ**の薄い配線。
-// ロジックの二重実装はしない。
+// （src/main/chat/turnRunner.ts）。renderer にしか無い副作用（システムプロンプト組み立て等）は、
+// main から IPC 経由の「問い合わせ」（ask・src/shared/chatTurnRpc.ts の ASK_PATHS）として
+// 飛んでくる。このファイルは、その ask を useAiChat.ts の handlers（buildPorts と同じ実装）へ
+// つなぎ直す**だけ**の薄い配線。ロジックの二重実装はしない。
+// （承認 approveToolCall は B'-3d-3 で main 側が直接持つようになり、もう ask ではない。下のコメント参照）
 //
 // ⚠️ 学習記録（toolSupport.* / vision.*）は B'-3d-1a で main（learningStore.ts）へ移り、
 // ask ではなくなった（ASK_PATHS から削除・main の turnRunner.ts が直接呼ぶ）。予算・利用実績
 // （usage.check / usage.record）と compactWarnOnce も B'-3d-1b で main（usageStore.ts・
 // モジュール内 Set）へ移り、同じく ask ではなくなった。executeTool も B'-3d-2b で
 // main（buildMainIo・turnRunner.ts）が直呼びするようになり、ask ではなくなった。
+// approveToolCall も B'-3d-3 で main（shared/approvalPlan.ts の判定＋chat/approvalStore.ts
+// の駐機・turnRunner.ts）が直判定するようになり、ask ではなくなった。
 // ここにはもうそれらに対応する case が無い。
 
 import type { AskPath } from '../shared/chatTurnRpc'
@@ -44,9 +46,8 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
 /**
  * main からの ask を、renderer の実装（buildPorts の中身と同じもの）へ振り分ける。
  *
- * - approveToolCall は main から来た scope をそのまま渡す。
  * - 知らない path は Error を投げる（黙って undefined を返さない）。
- * - optional（approveToolCall / onUserMessage / buildRagBlock）が undefined のまま
+ * - optional（onUserMessage / buildRagBlock）が undefined のまま
  *   ask が来たら Error を投げる（caps の食い違い＝バグを黙らせない）。
  *
  * ── handlers の型について ────────────────────────────────────────
@@ -60,10 +61,13 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
  * 消えた。ここには case が無く、handlers 型にも executeTool は無い。turnOptsFull を敷く
  * 合成（{...turnOptsFull, ...opts}）は executeTool のためだけの仕組みだったため、残る ask
  * のどれも使っていないことを確認したうえで、この関数の引数からも turnOptsFull を外した。
+ *
+ * ── B'-3d-3: approveToolCall を外した ─────────────────────────────────
+ * 承認は main（shared/approvalPlan.ts の判定＋chat/approvalStore.ts の駐機）が直接持つ
+ * ようになり、ASK_PATHS から消えた。handlers 型にも approveToolCall は無い。
  */
 export function dispatchAsk(
   handlers: {
-    approveToolCall?(name: string, args: string, scope?: unknown): Promise<string | null>
     buildSystemPrompt(): string | Promise<string>
     getHistory(): unknown[] | Promise<unknown[]>
     onUserMessage?(text: string, isFirst: boolean): void
@@ -76,11 +80,6 @@ export function dispatchAsk(
   args: unknown[],
 ): unknown | Promise<unknown> {
   switch (path) {
-    case 'approveToolCall': {
-      if (!handlers.approveToolCall) throw new Error(`ask '${path}' に対応する handler がありません（caps の食い違い）`)
-      const [name, argsStr, scope] = args as [string, string, unknown]
-      return handlers.approveToolCall(name, argsStr, scope)
-    }
     case 'buildSystemPrompt':
       return handlers.buildSystemPrompt()
     case 'getHistory':

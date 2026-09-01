@@ -7,7 +7,8 @@
 // LLM 呼び出し（sakura/engine.ts）・emit・純粋関数の束（h・src/shared 配下の本物の実装）に加え、
 // 学習キャッシュ（ツール対応・画像対応・B'-3d-1a で main へ移した learningStore.ts）と、
 // 予算・利用実績（B'-3d-1b で main へ移した usageStore.ts）・compactWarnOnce（同・モジュール内
-// Set で main のプロセス寿命ぶん持つ）、そして executeTool（B'-3d-2b・下記コメント）。
+// Set で main のプロセス寿命ぶん持つ）、executeTool（B'-3d-2b・下記コメント）、
+// そして承認 approveToolCall（B'-3d-3・さらに下のコメント）。
 // 「見かけが変わらない」を最優先し、直せる不具合があってもここでは直さない（sakura.ts から
 // 移した部分は engine.ts の説明を参照）。
 //
@@ -17,20 +18,31 @@
 // ように変える。ask だった間はウィンドウが生きていないとツールを実行できず、「窓を閉じても
 // 作業が続く」（B'-3d）の最大の障害だった。io（副作用の束）は buildMainIo が組み立てる
 // （renderer 側の aiTools.ts buildIo と対になる main 版・中身は各 main 実装への直呼び）。
+//
+// ── B'-3d-3（2026-08-30）: approveToolCall を main が直呼びで判定・駐機する ─────────
+// 承認は「人が要る ask」の最後の1つだった。ask のままだと、窓を閉じる・リロードした瞬間に
+// 未回答の承認ごとターンが死ぬ（chatTurn:start の onGone → bridge.rejectAll）。ここからは
+// 要否判定・文面組み立てを shared/approvalPlan.ts の純関数（planApproval）で main が行い、
+// 承認そのもの（保留＋答えを待つ）は専用マネージャ（chat/approvalStore.ts・メモリのみ）に
+// **駐機**させる——タイムアウトしない。窓が閉じていても、renderer が approval:answer を
+// 呼ぶまでずっと待つ。getHistory も、プロジェクト会話（toolsProjectDir あり）なら
+// convStore.loadConversation を直読みするように変えた（ChatApp＝toolsProjectDir null は
+// 引き続き ask。B'-3e で単独チャットも main 化したら解消する）。
 import { ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import type { IpcDeps } from '../ipc/types'
 import { createAskBridge, type AskBridge } from './askBridge'
-import { applyConversationOps } from './convStore'
+import { applyConversationOps, loadConversation } from './convStore'
+import { requestApproval } from './approvalStore'
 import { runEngineTurn, type EngineTurnPorts, type TurnHelpers } from '../../shared/chatTurn'
 import { runSakuraChat, runSakuraStream } from '../sakura/engine'
 import type { TurnStartPayload, TurnAnswer, TurnAsk } from '../../shared/chatTurnRpc'
 import {
   formatChatError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning,
   claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, isToolArgsComplete, isToolUnsupportedError,
-  toolStatusLabel, WRITING_TOOLS, toolsFor, searchStatusContext,
+  toolStatusLabel, WRITING_TOOLS, toolsFor, searchStatusContext, requiresConfirmation,
 } from '../../shared/aiToolsCore'
 import { estimateTokens, isImageUnsupportedError, modelLabel, pickBestModel, isVisionModel, DEFAULT_VISION_MODEL } from '../../shared/modelInfo'
 import { extractUrls, wantsWebSearch } from '../../shared/webContextCore'
@@ -48,6 +60,8 @@ import { runProjectCommand } from '../ipc/shell'
 import { snapshotBeforeWrite as snapshotBeforeWriteOnDisk } from '../backup/store'
 import * as ragClient from '../rag/client'
 import { buildRagBlockText } from '../claude/toolText'
+// B'-3d-3: approveToolCall の main 直呼び用の追加インポート ────────────────────
+import { planApproval, writeDenialMessage, runCommandDenialMessage, type WriteMode } from '../../shared/approvalPlan'
 
 // h は shared から**本物の実装**を import して組み立てる（renderer は import できないモジュールなので、
 // ここで初めて main 側から使われる。aiToolsCore / modelInfo / webContextCore / historyCompact /
@@ -197,6 +211,54 @@ export function buildMainIo(
   }
 }
 
+// ── B'-3d-3: 承認の判定〜駐機〜拒否文面までの一連の流れ ─────────────────────────
+//
+// scope は chatTurn.ts が turnOpts（ChatPanel の buildExecuteOpts() の返り値。
+// writeRoot/projectRoot/rag/writeMode を持つ）をそのまま渡してくる（型は
+// projectDir/writeRoot だけを謳っているが、turnOpts に projectDir というキーは無い——
+// 旧 renderer 版の `scope?.projectDir ?? projectDir` が常に後者に落ちていたのと同じ理由で、
+// ここでも scopeDir は「このターンが縛られているプロジェクト」＝payload.spec.toolsProjectDir
+// を使う。scopeRoot は scope.writeRoot（turnOpts に実在するキー）をそのまま使う。
+//
+// export: tests/approvalWiring.test.ts が**実駆動**で検証する（初回のミューテーション試験で、
+// ソース読みだけの固定は「plan を無視して素通りする」変異を捕まえられないと実測したため。
+// approvalStore のリスナーを差し替えれば、electron 非依存のまま request→answer の往復を試せる）。
+export async function decideApproval(
+  name: string,
+  argsJson: string,
+  scope: { writeRoot?: string | null } | undefined,
+  payload: TurnStartPayload,
+  turnId: string,
+): Promise<string | null> {
+  const scopeDir = payload.spec.toolsProjectDir
+  const scopeRoot = (scope?.writeRoot ?? null) as string | null
+  const writeMode: WriteMode = (payload.spec.turnOpts as { writeMode?: string })?.writeMode === 'confirm' ? 'confirm' : 'auto'
+
+  // install 系コマンドの依存名（package.json 読み取り）は、確認が要るときだけ読む
+  // （旧 renderer 版と同じ節約。読めなければ名前なしで確認する）。
+  let deps: string[] = []
+  if (name === 'run_command') {
+    let cmd = ''
+    try { cmd = JSON.parse(argsJson || '{}')?.command ?? '' } catch { /* 不明でも確認は出す */ }
+    if (writeMode === 'confirm' || requiresConfirmation(cmd)) {
+      try {
+        if (scopeDir && /\b(install|i|add)\b/.test(cmd)) {
+          const raw = fs.readFileSync(`${scopeDir}/package.json`, 'utf-8')
+          const d = JSON.parse(raw)?.dependencies
+          deps = d && typeof d === 'object' ? Object.keys(d) : []
+        }
+      } catch { /* 読めなければ名前なしで確認する */ }
+    }
+  }
+
+  const plan = planApproval(name, argsJson, { writeMode, scopeDir, scopeRoot, deps })
+  if (!plan) return null // 承認不要（現行と同じ）
+
+  const approved = await requestApproval({ turnId, dir: scopeDir, label: plan.label })
+  if (approved) return null
+  return name === 'run_command' ? runCommandDenialMessage(argsJson) : writeDenialMessage(name, argsJson)
+}
+
 /** renderer にしか無い副作用を ask で組み立てる。optional な ports は caps が false なら undefined にする
  *  （無いのに ask すると挙動が変わるため・仕様書の注記）。 */
 function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPayload, entry: TurnEntry): EngineTurnPorts {
@@ -237,14 +299,19 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     // abort は無害（呼んでも何も起きない）。次にストリーミングが始まれば ports.setAbort が
     // 新しい中断関数で上書きするので、古いものが誤って呼ばれる実害は無い。
     chatOnce: (req) => runSakuraChat(req, { onAbortReady: (abort) => { entry.abort = abort } }),
-    getHistory: () => bridge.ask('getHistory', []) as any,
+    // B'-3d-3: プロジェクト会話（toolsProjectDir あり）は convStore を直読みする（ask ではない）。
+    // 単独チャット（ChatApp・toolsProjectDir が null）は今回対象外なので、従来どおり ask する
+    // （ASK_PATHS に 'getHistory' を残してある。コメントは chatTurnRpc.ts 参照）。
+    getHistory: () => {
+      const dir = payload.spec.toolsProjectDir
+      return dir ? (loadConversation(dir) ?? []) : (bridge.ask('getHistory', []) as any)
+    },
     buildSystemPrompt: () => bridge.ask('buildSystemPrompt', []) as any,
     onUserMessage: caps.onUserMessage
       ? (text, isFirst) => bridge.ask('onUserMessage', [text, isFirst]) as any
       : undefined,
-    approveToolCall: caps.approveToolCall
-      ? (name, argsJson, scope) => bridge.ask('approveToolCall', [name, argsJson, scope]) as any
-      : undefined,
+    // B'-3d-3: ask('approveToolCall', ...) から main 直判定＋駐機へ（実体は decideApproval・下記）。
+    approveToolCall: (name, argsJson, scope) => decideApproval(name, argsJson, scope, payload, turnId),
     // B'-3d-2b: ask('executeTool', ...) から直呼びへ。本体（判定順序・結果文言）は
     // shared/toolExecCore.ts の executeToolCore（renderer と共有・複製ゼロ）。
     executeTool: (name, argsJson, opts) => executeToolCore(name, argsJson, coreCtx(opts), buildMainIo(opts, payload, emit)),

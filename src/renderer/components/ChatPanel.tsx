@@ -5,7 +5,6 @@ import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
 import MigrateNotice from './MigrateNotice'
 import type { MigratePlan } from '../../shared/migratePlan'
-import { commandScopeNote } from '../../shared/commandGuard'
 import { saveRagSettings } from '../ragContext'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
@@ -17,7 +16,7 @@ import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { IDE_CONTEXT, buildProjectContext, ragStatusContext } from '../aiContext'
 import { getTargetProfile, shouldAutoCheckTarget } from '../targetProfiles'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
-import { requiresConfirmation, confirmReason, formatChatError } from '../aiTools'
+import { formatChatError } from '../aiTools'
 import { parseRagSettings, autoRagBlock, type RagSettings } from '../ragContext'
 import { buildPublishStatusRows, parseApprunLegacy, formatPublishedAt, isStale } from '../publishStatus'
 import ModelSelect from './ModelSelect'
@@ -115,17 +114,45 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // 添付が無くなったら印も外す（次に付けた画像に、前の印が残らないように）
   useEffect(() => { if (pendingImages.length === 0) setAssetChoice(null) }, [pendingImages.length])
   const [writeMode, setWriteMode] = useState<WriteMode>(getWriteMode())
-  // 「毎回確認」モードで保存待ちのファイル。resolve(true)=許可 / resolve(false)=拒否
-  // 承認待ちの列。B-1b（並列送信の解禁）で複数プロジェクトのターンが同時に承認を求め得る
-  // ようになったため、単一スロットから列に変えた。単一のままだと、2件目の setPendingApproval が
-  // 1件目を握りつぶし、**1件目の resolve が永遠に呼ばれずターンがハングする**。
+  // ── 承認（approveToolCall）は main が持ち主（B'-3d-3）──────────────────────
+  // 判定・文面組み立ては main（shared/approvalPlan.ts・chat/approvalStore.ts）が行う。
+  // ChatPanel はもう判定を持たず、main から push される「いま承認待ちのもの全部」の一覧を
+  // 映すだけの純UI。「窓を閉じても承認は main で駐機し続け、リロード・窓再作成の両方を
+  // 下のマウント時 approval:list（取りこぼし回収）で再提示できる」がこの変更の本体。
+  //
   // ── ダイアログは持ち場に留める（2026-08-29 v0.4.0 実機確認・Ryosuke 指摘）────────────
-  // 以前は列の先頭を**どのプロジェクトを見ていても**出していた（その場で答えられる利点）が、
-  // 「どのプロジェクトの許可か分からない」混乱のほうが大きかった。⚠️（B-2）ができたので、
-  // 各エントリに dir を持ち、**いま見ているプロジェクトの分だけ**表示する。他所には ⚠️ が
-  // 付き、開くとダイアログが待っている。答えたら**そのエントリ**を外す（先頭とは限らない）。
-  const [pendingApprovals, setPendingApprovals] = useState<Array<{ dir: string | null; path: string; resolve: (ok: boolean) => void }>>([])
+  // 一覧の中で「どのプロジェクトの許可か分からない」混乱を避けるため、各エントリに dir を持ち、
+  // **いま見ているプロジェクトの分だけ**表示する。他所には ⚠️ が付き、開くとダイアログが待っている。
+  const [pendingApprovals, setPendingApprovals] = useState<Array<{ id: string; dir: string | null; label: string }>>([])
   const pendingApproval = pendingApprovals.find(a => a.dir === projectDir) ?? null
+  // マウント時に approval:list で取りこぼしを回収し（**これが駐機の再提示**。リロード・窓再作成の
+  // 両方をこれで賄う）、以後は approval:changed の push で最新化する（learningMirror.ts と同じ作法）。
+  // ChatPanel は projectDir が切り替わってもアンマウントされない（掟7 コメント参照）ので、
+  // このマウント時 effect は「アプリ起動につき1回」の意味を持つ。
+  useEffect(() => {
+    let alive = true
+    window.electronAPI.approval.list().then(list => { if (alive) setPendingApprovals(list) }).catch(() => { /* 取得できなくても致命的ではない（push を待てば復帰する） */ })
+    const off = window.electronAPI.approval.onChanged(list => setPendingApprovals(list))
+    return () => { alive = false; off() }
+  }, [])
+  // 承認待ちの一覧が変わるたび、registry の「見てほしい」印（B-2）を dir ごとに同期する。
+  // 旧実装（approveToolCall クロージャ内）は Promise の開始/終了に合わせて命令的に
+  // updateTurn していたが、いまは main からの push（一覧）を受け取るだけなので、
+  // 「いま一覧にある dir すべてに立て、前回あって今は無い dir から外す」形で追随する。
+  const prevApprovalDirsRef = useRef<Set<string | null>>(new Set())
+  useEffect(() => {
+    const dirs = new Set(pendingApprovals.map(a => a.dir))
+    for (const dir of dirs) updateTurn(turnKey(dir), { attention: 'approval' })
+    for (const dir of prevApprovalDirsRef.current) {
+      if (!dirs.has(dir)) updateTurn(turnKey(dir), { attention: null })
+    }
+    prevApprovalDirsRef.current = dirs
+  }, [pendingApprovals])
+  // 回答（許可=true／拒否=false）。main の帳簿が解決し、approval:changed の push で
+  // この一覧からも消える（知らない id・二重回答は main 側が false を返して無視する）。
+  const answerApproval = useCallback((id: string, approved: boolean) => {
+    void window.electronAPI.approval.answer(id, approved)
+  }, [])
   const models = useModels(apiKey)
 
   // C2c: チャットの頭脳が Claude か（StatusBar.tsx と同じ判定方式）。Claudeのときは
@@ -446,73 +473,19 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       // で直接組む（main/chat/turnRunner.ts の buildMainIo）。ここは main が使うタグだけを渡す
       // （関数ではなくデータ・B'-3d-2b の turnOpts 宣言化）。
       rag: ragEnabled ? { tags: ragSettings!.tags } : null,
+      // B'-3d-3: 承認の要否判定（main の shared/approvalPlan.ts）が使う「毎回確認」モード。
+      // **送信時点のスナップショット**（turnOpts は main へ直列化されて渡り、ターンの間ずっと
+      // このターンが縛られている行き先として使われる）。旧実装は approveToolCall 呼び出しの
+      // たびに getWriteMode() を都度読み直していたので「途中でモード切替が即反映」されたが、
+      // main 一元化（判定の複製を作らない・掟10）を優先し、このトレードオフを受け入れる
+      // （roadmap 3d-3 設計で明記済み）。
+      writeMode: getWriteMode(),
     }),
     // 📚 資料の自動注入（IDE主導）。無効時は未指定にし、useAiChat の従来動作（注入なし）を維持する。
     buildRagBlock: ragEnabled ? (text: string) => autoRagBlock(text, apiKey, ragSettings) : undefined,
-    approveToolCall: async (toolName, toolArgs, scope) => {
-      // **確認は「このターンが縛られている行き先」の話として出す**（2026-08-24）。
-      // 画面が別のプロジェクトへ切り替わっていても、聞いている中身は変わらない。
-      const scopeDir = scope?.projectDir ?? projectDir
-      const scopeRoot = scope?.writeRoot ?? currentAiRoot
-      // 「毎回確認」モードでは、ファイル保存（全文上書き／部分編集）の前にユーザーの許可を取る
-      // （localStorageから都度読む＝会話の途中でモードを切り替えても即反映）。
-      // edit_file も write_file と同じくファイルを書き換える破壊的操作のため、同じ扱いにする。
-      if ((toolName === 'write_file' || toolName === 'edit_file') && getWriteMode() === 'confirm') {
-        let relPath = ''
-        try { relPath = JSON.parse(toolArgs || '{}').path ?? '' } catch { /* パス不明でも確認は出す */ }
-        const isEdit = toolName === 'edit_file'
-        const label = `${relPath || '(不明なファイル)'}${isEdit ? '（部分編集）' : ''}`
-        // ダイアログの持ち主として「答えを待っている」印を registry へ付ける（B-2）。見ている会話では UI が出さない。
-        updateTurn(turnKey(scopeDir), { attention: 'approval' })
-        // dir 付きで列へ（表示は「いま見ているプロジェクトの分だけ」。上の pendingApprovals コメント参照）
-        let entry!: { dir: string | null; path: string; resolve: (ok: boolean) => void }
-        const approved = await new Promise<boolean>(resolve => {
-          entry = { dir: scopeDir ?? null, path: label, resolve }
-          setPendingApprovals(prev => [...prev, entry])
-        })
-        updateTurn(turnKey(scopeDir), { attention: null })
-        setPendingApprovals(prev => prev.filter(a => a !== entry))
-        if (!approved) {
-          const action = isEdit ? '編集' : '保存'
-          return `ユーザーが ${relPath || 'このファイル'} の${action}を許可しませんでした。${action}せずに、どう進めるべきかユーザーに確認してください。`
-        }
-      }
-      // コマンド実行：危険なコマンドは常に、また「毎回確認」モードでは全コマンドで許可を取る
-      if (toolName === 'run_command') {
-        let cmd = ''
-        try { cmd = JSON.parse(toolArgs || '{}').command ?? '' } catch { /* 不明でも確認は出す */ }
-        if (getWriteMode() === 'confirm' || requiresConfirmation(cmd)) {
-          // 名前の書かれていない `npm install` は、package.json を見ないと
-          // **何が入るのか分からない**（2026-08-18 Ryosuke 指摘）
-          let deps: string[] = []
-          try {
-            if (scopeDir && /\b(install|i|add)\b/.test(cmd)) {
-              const raw = await window.electronAPI.fs.readFile(`${scopeDir}/package.json`)
-              const d = JSON.parse(raw)?.dependencies
-              deps = d && typeof d === 'object' ? Object.keys(d) : []
-            }
-          } catch { /* 読めなければ名前なしで確認する */ }
-          const reason = requiresConfirmation(cmd) ? `\n理由: ${confirmReason(cmd, { dependencies: deps })}` : ''
-          // **いつもと違う場所なら、そのことだけを名前で伝える**（2026-08-24 の実害）。
-          // パスを読み比べさせない——利用者に難しい判断を押しつけることになる。
-          const scopeNote = commandScopeNote(scopeDir, scopeRoot)
-          // ダイアログの持ち主として「答えを待っている」印を registry へ付ける（B-2）。見ている会話では UI が出さない。
-          updateTurn(turnKey(scopeDir), { attention: 'approval' })
-          // dir 付きで列へ（表示は「いま見ているプロジェクトの分だけ」。上の pendingApprovals コメント参照）
-          let entry!: { dir: string | null; path: string; resolve: (ok: boolean) => void }
-          const approved = await new Promise<boolean>(resolve => {
-            entry = { dir: scopeDir ?? null, path: `コマンド実行: ${cmd || '(不明)'}${scopeNote}${reason}`, resolve }
-            setPendingApprovals(prev => [...prev, entry])
-          })
-          updateTurn(turnKey(scopeDir), { attention: null })
-          setPendingApprovals(prev => prev.filter(a => a !== entry))
-          if (!approved) {
-            return `ユーザーがコマンド「${cmd}」の実行を許可しませんでした。実行せずに、どう進めるべきかユーザーに確認してください。`
-          }
-        }
-      }
-      return null // 許可（または確認不要）
-    },
+    // ⚠️ 承認（approveToolCall）は B'-3d-3 で main（shared/approvalPlan.ts の判定＋
+    // chat/approvalStore.ts の駐機・turnRunner.ts）へ一元化した。ChatPanel はもう判定を持たず、
+    // 承認ダイアログの表示・回答は下の approval:changed 購読（pendingApprovals）が担う純UIになった。
     getHistory: () => messages,
     // updateShown は「main が既に書き主のターン」（chatTurn.start の onEvent → viewOnlyEmit）専用の
     // 画面反映口として今も使われる。renderer 発の書き換え（message系）は onMessageEvent（下）が
@@ -1143,14 +1116,14 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         {pendingApproval && (
           <div className="flex justify-start">
             <div className="bg-elevated border border-sakura/60 rounded-2xl rounded-tl-md px-3 py-2.5 max-w-[90%]">
-              <p className="text-sm text-ink mb-2">✋ AIが次の操作の許可を求めています: <span className="font-mono text-sakura">{pendingApproval.path}</span></p>
+              <p className="text-sm text-ink mb-2">✋ AIが次の操作の許可を求めています: <span className="font-mono text-sakura">{pendingApproval.label}</span></p>
               <div className="flex gap-2">
                 <button
-                  onClick={() => pendingApproval.resolve(true)}
+                  onClick={() => answerApproval(pendingApproval.id, true)}
                   className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
                 >許可する</button>
                 <button
-                  onClick={() => pendingApproval.resolve(false)}
+                  onClick={() => answerApproval(pendingApproval.id, false)}
                   className="bg-overlay text-ink border border-line rounded-lg px-3 py-1.5 text-xs font-medium hover:border-sakura"
                 >拒否</button>
               </div>

@@ -247,11 +247,29 @@ describe('B-2: ⚠️（見てほしい合図）の配線', () => {
     expect(body).toContain("emit({ kind: 'attention', value: 'error' })")
   })
 
-  it('ChatPanel.tsx: approveToolCall 内で attention: \'approval\' / null が対で、ちょうど2回ずつ', () => {
+  // B'-3d-3: 承認（approveToolCall）は main が一元的に持つようになり、ChatPanel には
+  // もう判定クロージャが無い。attention の張り/外しは、承認一覧（approval:changed の push）が
+  // 変わるたびに同期する1つの effect（dir ごとに走査）へ形が変わった——2つの判定枝それぞれに
+  // 張り/外しのペアがあった旧形とは異なり、いまは張り側・外し側それぞれ1箇所ずつ（dirs の
+  // 走査がすべての pending dir を1回のループでカバーするため）。
+  it("ChatPanel.tsx: 承認一覧の同期 effect で dir ごとに attention: 'approval' / null を張る/外す（B'-3d-3）", () => {
     const src = readCode('src/renderer/components/ChatPanel.tsx')
-    expect(src.split("{ attention: 'approval' }").length - 1).toBe(2)
-    expect(src.split('{ attention: null }').length - 1).toBe(2)
+    const start = src.indexOf('const prevApprovalDirsRef = useRef<Set<string | null>>(new Set())')
+    expect(start).toBeGreaterThan(-1)
+    const end = src.indexOf('}, [pendingApprovals])', start)
+    expect(end).toBeGreaterThan(start)
+    const block = src.slice(start, end)
+    expect(block).toContain("updateTurn(turnKey(dir), { attention: 'approval' })")
+    expect(block).toContain('updateTurn(turnKey(dir), { attention: null })')
+    expect(block).toContain('!dirs.has(dir)') // 「一覧から消えた dir だけ外す」判定
     expect(src).toContain("import { turnKey, updateTurn } from '../chatTurnRegistry'")
+  })
+
+  // 旧 approveToolCall クロージャ（main 一元化前の判定）が残っていないことも確かめる
+  // （掟10: 直す前の形に戻っても素通りしないよう、当て先を明示する）。
+  it('ChatPanel.tsx: 旧 approveToolCall クロージャが無い', () => {
+    const src = readCode('src/renderer/components/ChatPanel.tsx')
+    expect(src).not.toContain('approveToolCall: async (toolName, toolArgs, scope) => {')
   })
 
   it('Sidebar.tsx: メニュー行の ⚠️ 条件（p !== currentDir && getTurn(p).attention）がちょうど2回', () => {
@@ -301,25 +319,36 @@ describe('ChatApp.tsx の配線（改善2: セッション別の実行状態・�
 // 握りつぶし、1件目のターンが永遠にハングする。列であることをソースで固定する。
 // v0.4.0 実機確認（Ryosuke 指摘）で「ダイアログは持ち場に留める」へ変更（掟11: 環境の独立）:
 // エントリは dir を持ち、表示は「いま見ているプロジェクトの分だけ」。答えたらそのエントリを外す。
-describe('ChatPanel: 承認待ちが列になっている（表示は持ち場のぶんだけ）', () => {
+// B'-3d-3: 承認待ちの持ち主が main（chat/approvalStore.ts）へ移り、ChatPanel は
+// approval:list（取りこぼし回収）／approval:changed（push）を映すだけの純UIになった。
+// 以前は ChatPanel 自身が Promise の resolve を抱えて列を出し入れしていたが、いまは
+// main から届く「いま承認待ちのもの全部」の一覧で**丸ごと**置き換える（learningMirror.ts と
+// 同じ push-replace の作法）。
+describe('ChatPanel: 承認待ちの列は main からの push を映すだけ（表示は持ち場のぶんだけ）', () => {
   it('pendingApprovals（配列）を使い、単一スロットの setPendingApproval( が残っていない', () => {
     const src = readCode('src/renderer/components/ChatPanel.tsx')
-    expect(src).toContain('const [pendingApprovals, setPendingApprovals] = useState<Array<')
-    // 追記と抜き取りは**2か所ずつ**（ファイル保存・コマンド実行）。toContain だと片方が
-    // 単一スロットに戻っても通ってしまう（ミューテーション試験で実際に素通りした）ので数で固定する
-    const count = (needle: string) => src.split(needle).length - 1
-    expect(count('setPendingApprovals(prev => [...prev, entry])')).toBe(2)
-    expect(count('setPendingApprovals(prev => prev.filter(a => a !== entry))')).toBe(2)
+    expect(src).toContain('const [pendingApprovals, setPendingApprovals] = useState<Array<{ id: string; dir: string | null; label: string }>>([])')
     expect(src).not.toContain('setPendingApproval(')
+  })
+
+  it('approval:list（マウント時の取りこぼし回収）と approval:changed（push）の両方が一覧を丸ごと置き換える', () => {
+    const src = readCode('src/renderer/components/ChatPanel.tsx')
+    // toContain だと片方が消えても片方だけで通ってしまうので、それぞれの呼び先ごと数で固定する
+    // （掟10: 当て先が他の行に出ないか）。
+    expect(src).toContain('window.electronAPI.approval.list().then(list => { if (alive) setPendingApprovals(list) })')
+    expect(src).toContain('const off = window.electronAPI.approval.onChanged(list => setPendingApprovals(list))')
+  })
+
+  it('回答は id 指定（answerApproval）。main 側が知らない id・二重回答を無視するので、ここでは列を自分で書き換えない', () => {
+    const src = readCode('src/renderer/components/ChatPanel.tsx')
+    expect(src).toContain('const answerApproval = useCallback((id: string, approved: boolean) => {')
+    expect(src).toContain('void window.electronAPI.approval.answer(id, approved)')
   })
 
   it('表示は「いま見ているプロジェクトの分だけ」（先頭を無条件に出す古い形は無い）', () => {
     const src = readCode('src/renderer/components/ChatPanel.tsx')
     expect(src).toContain('const pendingApproval = pendingApprovals.find(a => a.dir === projectDir) ?? null')
     expect(src).not.toContain('pendingApprovals[0]')
-    // エントリの dir はターンの行き先（scopeDir）で埋める（見ている画面の projectDir ではない）
-    expect(src.split('entry = { dir: scopeDir ?? null,').length - 1).toBe(2)
-    // 答えたときに外すのは「そのエントリ」（先頭抜き prev.slice(1) に戻っていない）
     expect(src).not.toContain('prev.slice(1)')
   })
 })

@@ -251,8 +251,10 @@ describe('移行（既存プロジェクトを新しい形へ）', () => {
     expect(read('src/renderer/components/ChatPanel.tsx')).toContain('onProjectFilesMoved?.()')
   })
 
+  // B'-3d-3: requiresConfirmation の実体は shared/aiToolsCore.ts へ移った
+  // （renderer/aiTools.ts は re-export のみ・承認判定の main 一元化のため）。
   it('外へ出るコマンドは、止めずに確認だけ出す', () => {
-    const src = read('src/renderer/aiTools.ts')
+    const src = read('src/shared/aiToolsCore.ts')
     // **requiresConfirmation の中**を見る。confirmReason にも同じ呼び出しがあるので、
     // 単に `leavesWorkingDir(cmd)` を探すと素通りする（2026-08-20、実際に素通りした）。
     expect(src).toContain('isSensitiveCommand(cmd) || leavesWorkingDir(cmd)')
@@ -402,13 +404,19 @@ describe('🕘 履歴の退避の根', () => {
     expect(chatTurn).toContain('ports.approveToolCall(toolName, toolArgs, turnOpts')
   })
 
-  it('確認の中身は、縛った行き先で組む（画面の切り替えに引きずられない）', () => {
-    const s = read('src/renderer/components/ChatPanel.tsx')
-    expect(s).toContain('const scopeDir = scope?.projectDir ?? projectDir')
-    expect(s).toContain('const scopeRoot = scope?.writeRoot ?? currentAiRoot')
-    expect(s).toContain('commandScopeNote(scopeDir, scopeRoot)')
-    // package.json を読む先も縛った側
-    expect(s).toContain('fs.readFile(`${scopeDir}/package.json`)')
+  // B'-3d-3: 承認（approveToolCall）の判定は main（turnRunner.ts）へ一元化された。
+  // 「縛った行き先で組む」の実体は、いま main 側にある——ChatPanel の live な projectDir では
+  // なく、このターン自身が持つ payload.spec.toolsProjectDir を使う（画面の切り替えに
+  // 引きずられない、という元の意図をそのまま main 側で引き継ぐ）。
+  it('確認の中身は、縛った行き先で組む（main 側・画面の切り替えに引きずられない）', () => {
+    const s = read('src/main/chat/turnRunner.ts')
+    expect(s).toContain('const scopeDir = payload.spec.toolsProjectDir')
+    expect(s).toContain('const scopeRoot = (scope?.writeRoot ?? null) as string | null')
+    // package.json を読む先も縛った側（scopeDir）
+    expect(s).toContain('fs.readFileSync(`${scopeDir}/package.json`, \'utf-8\')')
+    // 文面組み立て（commandScopeNote）は shared/approvalPlan.ts の純関数が行う
+    const plan = read('src/shared/approvalPlan.ts')
+    expect(plan).toContain('commandScopeNote(opts.scopeDir, opts.scopeRoot)')
   })
 
   it('Claude 経路は先に分けてあり、その形を崩さない', () => {

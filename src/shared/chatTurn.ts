@@ -362,17 +362,26 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     const pastMessages = ports.h.planSend(history)
     const inputText = systemPrompt + pastMessages.map(m => m.content).join('\n') + text + assetBlock
 
-    const search = await ports.getSearchConfig() // Web検索設定（未設定なら検索ツールは出さない）
+    // ── 開始時の「文脈の飾り」系 ask は、失敗してもターンを殺さない（2026-08-31 実機）────
+    // 「今の時刻にして下さい」の「今の」が wantsWebSearch に一致 → renderer が実 Web 検索
+    // （HTTP 1〜3秒）を実行中に ⌘W で画面が閉じられ、ask の全滅（rejectAll）がターンごと
+    // エラーにした。検索結果・参照ページ・資料の自動注入・検索設定は**無くても依頼の本体は
+    // 成立する飾り**なので、取れなければ諦めて続行する（B'-3d「窓を閉じても作業が続く」の一部。
+    // buildSystemPrompt だけは内容の質が変わるため対象外＝同期的で露出は ms 単位）。
+    const quiet = async <T>(fn: () => Promise<T> | T, fallback: T): Promise<T> => {
+      try { return await fn() } catch { return fallback }
+    }
+    const search = await quiet(() => ports.getSearchConfig(), null as unknown) // Web検索設定（未設定なら検索ツールは出さない）
     // ユーザーのメッセージにURLがあれば、IDEがページ本文を取得してこのターンだけAIに添付する
-    const pagesBlock = await ports.fetchPagesBlock(ports.h.extractUrls(text))
+    const pagesBlock = await quiet(() => ports.fetchPagesBlock(ports.h.extractUrls(text)), '')
     // 実際にIDEが検索するときだけ「🔍 Web検索中…」を出す（autoSearchBlock の起動条件と一致させる）
     const willSearch = !!search && ports.h.extractUrls(text).length === 0 && ports.h.wantsWebSearch(text)
     if (willSearch) ports.emit({ kind: 'status', value: '🔍 Web検索中…' })
-    const searchBlock = await ports.autoSearchBlock(text, search)
+    const searchBlock = await quiet(() => ports.autoSearchBlock(text, search), '')
     ports.emit({ kind: 'status', value: '' })
     // 📚 資料の自動注入（設定されていれば）。searchBlock と同じ「取得中はstatusNoteを出す」パターン。
     if (ports.buildRagBlock) ports.emit({ kind: 'status', value: '📚 資料を確認しています…' })
-    const ragBlock = ports.buildRagBlock ? await ports.buildRagBlock(text) : ''
+    const ragBlock = ports.buildRagBlock ? await quiet(() => ports.buildRagBlock!(text), '') : ''
     ports.emit({ kind: 'status', value: '' })
 
     // 現在ターンの content（画像があればOpenAI互換のマルチモーダル配列）
@@ -519,12 +528,25 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       return { content: acc, aborted, toolCalls, toolFailed, hadToolMarkup }
     }
 
+    // ── まとめ等の system 行は、先頭の system に畳み込む（2026-08-31 実機・Ryosuke）────
+    // planSend は 🗂まとめ・省略の注記を role:'system' で返すが、これをそのまま並べると
+    // system が2つ目以降にも現れる形になり、厳格な OpenAI 互換サーバ（実測: preview/
+    // Qwen3.6-35B）が「400 System message must be at the beginning.」で**会話全体を拒否**する
+    // （寛容なモデルでは通っていたため、まとめ機能の実装以来ずっと潜在していた）。
+    // 意味の順序（まとめは履歴より前）は、先頭 system の末尾へ足すことで保たれる。
+    const sysExtras = pastMessages.filter(m => m.role === 'system').map(m => m.content)
+    const pastNonSystem = pastMessages.filter(m => m.role !== 'system')
+
     // エージェントループ：ツール呼び出しがあれば実行して結果を返し、続きを生成
     let apiMessages: ApiMsg[] = [
-      { role: 'system', content: systemPrompt + ports.h.searchStatusContext(!!search) },
+      {
+        role: 'system',
+        content: systemPrompt + ports.h.searchStatusContext(!!search)
+          + (sysExtras.length ? '\n\n' + sysExtras.join('\n\n') : ''),
+      },
       // 過去ターンはテキストのみで送る（画像は再送しない）。長くなった会話は、
-      // 古いぶんが「まとめ」に畳まれた形で先頭に入る（historyCompact.ts）。
-      ...pastMessages,
+      // 古いぶんが「まとめ」に畳まれた形で**先頭 system の末尾**に入る（historyCompact.ts＋上記）。
+      ...pastNonSystem,
       { role: 'user', content: userContent },
     ]
 

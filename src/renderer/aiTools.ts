@@ -4,20 +4,24 @@
 // ※相互参照: Claude頭脳モード（C2b）の src/main/claude/tools.ts が fetch_url / search_docs / open_preview の
 //   説明文言と結果整形（toolText.ts）を踏襲している。これらの文言・挙動を変更したら main 側も追随させること。
 
-import { isDangerousCommand, leavesWorkingDir } from '../shared/commandGuard'
-import { PUBLISH_DIR_LABEL } from '../shared/publishRoot'
+import { isDangerousCommand } from '../shared/commandGuard'
 // 実体は shared へ移した（B'-3b）。ツール定義（toolsFor 他）・純粋な補助関数は
 // src/shared/aiToolsCore.ts を参照。
+// requiresConfirmation / confirmReason / installTargetsFromCommand / isSensitiveCommand は
+// B'-3d-3 で shared/aiToolsCore.ts へ移した（承認の要否判定を main へ一元化するため）。
+// ここは re-export（呼び出し側の互換維持・掟10: 判定の複製を作らない）。
 import {
   toolsFor, WRITING_TOOLS, isToolUnsupportedError, toolStatusLabel, formatChatError,
   condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning,
   claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, isToolArgsComplete,
+  isSensitiveCommand, requiresConfirmation, installTargetsFromCommand, confirmReason,
 } from '../shared/aiToolsCore'
 export { isDangerousCommand }
 export {
   toolsFor, WRITING_TOOLS, isToolUnsupportedError, toolStatusLabel, formatChatError,
   condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning,
   claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, isToolArgsComplete,
+  isSensitiveCommand, requiresConfirmation, installTargetsFromCommand, confirmReason,
 }
 
 // executeTool の本体（executeToolCore）・SearchConfig 型・io の型は shared へ移した（B'-3d-2a）。
@@ -64,64 +68,6 @@ export async function getSearchConfig(): Promise<SearchConfig | null> {
 /** Claude 頭脳モードのエラー整形（formatChatError の engine='claude' 版・呼び出し側の可読性のため）。 */
 export function formatClaudeError(message: string): string {
   return formatChatError(message, 'claude')
-}
-
-/** インストール・通信・コード直接実行・システム設定変更など、おまかせモードでも確認すべきコマンドか */
-export function isSensitiveCommand(cmd: string): boolean {
-  return (
-    // パッケージインストール（postinstall等で任意コード実行の恐れ）
-    /\b(npm|pnpm|yarn)\s+(i|install|add|exec|dlx)\b|\bnpx\b|\b(pip|pip3)\s+install\b|\bbrew\s+(install|tap)\b|\bgem\s+install\b|\bcargo\s+install\b|\bgo\s+(install|get)\b|\bcomposer\s+(require|install)\b|\bpoetry\s+add\b|\bapt(-get)?\s+install\b/i.test(cmd) ||
-    // ネットワーク通信
-    /\bcurl\b|\bwget\b|\bnc\b|\bncat\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd) ||
-    // コードの直接実行（ワンライナー）
-    /\b(python3?|node|ruby|perl|php)\s+-(c|e)\b|\bosascript\b|\beval\b|\bbase64\s+-{1,2}d\b/i.test(cmd) ||
-    // システム/ホーム設定の変更
-    />>?\s*~|~\/\.(zshrc|bashrc|bash_profile|zprofile|profile|ssh)|\bcrontab\b|\blaunchctl\b|\bdefaults\s+write\b/i.test(cmd)
-  )
-}
-
-/** run_command 実行前にユーザー確認が必要か（破壊的 or 上記カテゴリ） */
-export function requiresConfirmation(cmd: string): boolean {
-  // 作業フォルダの外へ出るコマンドも一度は目に入れる（止めはしない・2026-08-20）。
-  return isDangerousCommand(cmd) || isSensitiveCommand(cmd) || leavesWorkingDir(cmd)
-}
-
-/**
- * インストールするライブラリの名前をコマンドから読み取る（純関数）。
- *
- * ── なぜ要るか（2026-08-18 Ryosuke 指摘）────────────────────────────
- * 「インターネットからプログラムを取得して実行します」とだけ出しても、
- * **何が入るのかが分からない**。名前が分かるなら見せる。
- * `npm install`（名前なし）は package.json を見ないと分からないので、
- * その場合は呼び出し側が渡す。
- */
-export function installTargetsFromCommand(cmd: string): string[] {
-  const t = String(cmd ?? '').trim()
-  const m = /^(?:npm|pnpm|yarn|bun)\s+(?:install|i|add)\s+(.+)$/i.exec(t)
-  if (!m) return []
-  return m[1]
-    .split(/\s+/)
-    .filter(a => a && !a.startsWith('-'))   // オプションは名前ではない
-    .slice(0, 20)
-}
-
-/** なぜ確認するのかを初心者向けに一言で説明する */
-export function confirmReason(cmd: string, opts?: { dependencies?: readonly string[] }): string {
-  if (isDangerousCommand(cmd)) return 'この操作はファイルやシステムを壊す可能性があります。'
-  if (/\binstall\b|\badd\b|\bnpx\b|\bget\b|\brequire\b|\btap\b/i.test(cmd)) {
-    // **何が入るのかを見せる**（2026-08-18 Ryosuke 指摘）
-    const named = installTargetsFromCommand(cmd)
-    const names = named.length > 0 ? named : (opts?.dependencies ?? [])
-    const list = names.length > 0
-      ? `（${names.slice(0, 5).join('、')}${names.length > 5 ? ` ほか${names.length - 5}件` : ''}）`
-      : ''
-    return `インターネットからプログラム${list}を取得して実行します。`
-  }
-  if (/\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd)) return '外部と通信します。'
-  // 止めはしないが、一度は目に入れる（2026-08-20）。
-  if (leavesWorkingDir(cmd)) return `作業フォルダ（${PUBLISH_DIR_LABEL}）の外を操作しようとしています。`
-  if (/-(c|e)\b|\bosascript\b|\beval\b|\bbase64\b/i.test(cmd)) return 'コードを直接実行します。'
-  return 'システムやホームの設定を変更する可能性があります。'
 }
 
 export interface ToolContext {

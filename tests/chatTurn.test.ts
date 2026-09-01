@@ -571,6 +571,51 @@ describe('runEngineTurn', () => {
     expect(last.ev.msg.content).not.toContain('② 試す')
   })
 
+  // 11e. 開始時の「文脈の飾り」系 ask が失敗してもターンは死なない（2026-08-31 実機:
+  // 「今の」が wantsWebSearch に一致→実検索中の ⌘W で ask 全滅→ターンごとエラーになった）。
+  it('文脈の飾り（検索設定・ページ取得・自動検索・資料注入）が reject しても、ターンは完走してエラー吹き出しを出さない', async () => {
+    const { ports, log } = makePorts({
+      stream: [{ content: 'できました', toolCalls: null }],
+      hasBuildRagBlock: true,
+    })
+    // 4つの飾り ask を全部 reject させる（画面喪失の rejectAll を模す）
+    ports.getSearchConfig = async () => { log.push({ tag: 'getSearchConfig' }); throw new Error('画面が閉じられました') }
+    ports.fetchPagesBlock = async () => { throw new Error('画面が閉じられました') }
+    ports.autoSearchBlock = async () => { throw new Error('画面が閉じられました') }
+    ports.buildRagBlock = async () => { throw new Error('画面が閉じられました') }
+    const r = await runEngineTurn(makeSpec(), ports)
+    expect(r.endedWithError).toBe(false)
+    // 最終返信が出ている（本体は完走）
+    expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast' && e.ev.msg.content === 'できました')).toBe(true)
+    // エラー吹き出しが無い
+    expect(log.some((e) => e.tag === 'emit' && (e.ev.kind === 'append' || e.ev.kind === 'replaceLast') && typeof e.ev.msg?.content === 'string' && e.ev.msg.content.includes('エラー'))).toBe(false)
+  })
+
+  // 11f. 🗂まとめは2つ目の system として送らない（2026-08-31 実機: preview/Qwen3.6-35B が
+  // 「400 System message must be at the beginning.」で会話全体を拒否した。まとめ機能以来の潜在バグ）。
+  it('まとめ持ちの履歴でも、送る messages の system は先頭の1つだけ（まとめは先頭 system に畳み込む）', async () => {
+    // planSend が summary を role:'system' で返す形を、実物の履歴形（summary マーク付き）で作る
+    const history: TurnMessage[] = [
+      { role: 'user', content: '古い依頼' },
+      // mark は「まとめが覆う最後の本文メッセージ」の markOf と一致していないと無効扱いになる
+      // （currentSummary の食い違い検査）。実物と同じ式で作る。
+      { role: 'assistant', content: '昔の作業のまとめです', summary: { upTo: 1, mark: 'user:' + '古い依頼'.length + ':古い依頼' } } as any,
+      { role: 'user', content: '最近の依頼' },
+      { role: 'assistant', content: '最近の返事' },
+    ]
+    const { ports, streamRequests } = makePorts({
+      history,
+      stream: [{ content: 'ok', toolCalls: null }],
+    })
+    await runEngineTurn(makeSpec(), ports)
+    const msgs = streamRequests[0].messages
+    const systemIdxs = msgs.map((m: any, i: number) => (m.role === 'system' ? i : -1)).filter((i: number) => i >= 0)
+    expect(systemIdxs).toEqual([0]) // system は先頭の1つだけ
+    expect(msgs[0].content).toContain('昔の作業のまとめです') // まとめは先頭 system に畳まれている
+    // 履歴の user/assistant は従来どおり並んでいる
+    expect(msgs.some((m: any) => m.role === 'user' && String(m.content).includes('最近の依頼'))).toBe(true)
+  })
+
   // 12. ルーティング
   it('ルーティング: hadToolMarkup かつ isKnownToolCapable のモデルがある → routed イベント → removeLast → 🔀 append → そのモデルで再実行', async () => {
     const { ports, log } = makePorts({

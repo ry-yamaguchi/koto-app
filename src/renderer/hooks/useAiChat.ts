@@ -89,15 +89,10 @@ export type UseAiChatArgs = {
   sessionId?: string
   /** executeTool に渡す追加オプションを作る（search は hook が持つので除く）: ChatApp=()=>({}) / ChatPanel=()=>({ projectDir, applyFile: onApplyFile }) */
   buildExecuteOpts: () => Record<string, unknown>
-  /** ツール実行前の承認フック。undefined なら常に許可（ChatApp）。ChatPanel は write_file/run_command の確認UIをここに実装。戻り値: 許可なら null、拒否なら tool 結果として返す文字列 */
-  /**
-   * 実行の許可を取る。`scope` は**このターンが縛られている行き先**（送信時に固定したもの）。
-   * 画面が別のプロジェクトへ切り替わっていても、**確認は始めたプロジェクトの話**として出す。
-   */
-  approveToolCall?: (
-    name: string, args: string,
-    scope?: { projectDir?: string | null; writeRoot?: string | null },
-  ) => Promise<string | null>
+  // ⚠️ ツール実行前の承認（approveToolCall）は B'-3d-3 で main（shared/approvalPlan.ts の
+  // 判定＋chat/approvalStore.ts の駐機・turnRunner.ts）が直接持つようになった。renderer は
+  // もう承認の要否を判定せず、main が組み立てた文面のダイアログを出して答えるだけの純UI
+  // （ChatPanel.tsx が approval:changed を購読する）。このフックへの受け渡しはここから外した。
   /** APIへ送る過去履歴を返す（**加工前の生配列**。表示専用の除外・まとめの適用は hook 内の planSend が行う） */
   getHistory: () => ChatMessage[]
   /** 画面のメッセージ列を関数型更新する（ChatApp はアクティブセッション内、ChatPanel はフラット配列に適用） */
@@ -133,7 +128,7 @@ export type UseAiChatArgs = {
 export function useAiChat(args: UseAiChatArgs) {
   const {
     apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, sessionId,
-    buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage,
+    buildExecuteOpts, getHistory, updateShown, onUserMessage,
     errorPrefix = '', twoStageVision = false, buildRagBlock, onExternalFilesChanged,
     onMessageEvent, onAiFileWritten,
   } = args
@@ -318,7 +313,8 @@ export function useAiChat(args: UseAiChatArgs) {
     getHistory,
     buildSystemPrompt,
     onUserMessage,
-    approveToolCall,
+    // ⚠️ approveToolCall は B'-3d-3 で main が直接持つようになり、renderer の ports には
+    // もう無い（EngineTurnPorts.approveToolCall は optional なので省略してよい）。
     executeTool: (name, argsJson, opts) => executeTool(name, argsJson, opts as ToolContext),
     buildRagBlock,
     getSearchConfig,
@@ -546,7 +542,10 @@ export function useAiChat(args: UseAiChatArgs) {
     // 実害と同じ形）。ここで一度だけ読み、以後はこの key を使い続けることで、
     // **始めたプロジェクトの中で終わる**（並列に走らせる形の土台でもある）。
     const key = turnKey(toolsProjectDir, sessionId)
-    const endActivity = beginActivity('AIが応答中')
+    // B'-3d-3: AI応答は main でターンが走り、窓を閉じても完走する（approveToolCall も main が
+    // 駐機する）。「実行中」には引き続き数える（自動更新の再起動ゲートはアプリごと終了するため
+    // 対象のまま）が、閉じる前の確認ダイアログの対象からは外す（blocksClose: false）。
+    const endActivity = beginActivity('AIが応答中', { blocksClose: false })
     try {
 
       // このAIターンのスナップショットID（send 1回＝1ターン）。同一ターン内の複数 write_file の
@@ -644,7 +643,6 @@ export function useAiChat(args: UseAiChatArgs) {
       // main からの ask（chatTurnBridge.ts の dispatchAsk）へ渡す薄い橋。buildPorts の実装を
       // そのまま使い、二重実装しない（呼び先を付け替えているだけで、値の鮮度は変わらない）。
       const handlers = {
-        approveToolCall: ports.approveToolCall,
         buildSystemPrompt: ports.buildSystemPrompt,
         getHistory: ports.getHistory,
         onUserMessage: ports.onUserMessage,
@@ -659,10 +657,12 @@ export function useAiChat(args: UseAiChatArgs) {
         // executeTool も B'-3d-2b で main（buildMainIo・turnRunner.ts）が直呼びするようになり、
         // 同じく ask ではなくなった（ports.executeTool 自体は buildPorts に残る。EngineTurnPorts
         // の型完全性のためと、sendViaClaude の openPreview 処理が renderer の aiTools.executeTool
-        // を直接使う現行が無変更のため）。ここから handlers への受け渡しだけを外す。
-        // ports.toolSupport / ports.vision / ports.usage / ports.compactWarnOnce も同様に
-        // buildPorts に残る（compactNow が呼ぶ・compactNow は main のターンを経由せず
-        // renderer だけで完結する処理のため）。
+        // を直接使う現行が無変更のため）。approveToolCall も B'-3d-3 で main
+        // （shared/approvalPlan.ts の判定＋chat/approvalStore.ts の駐機）が直接持つようになり、
+        // 同じく ask ではなくなった（ports にそもそも無い・上のコメント参照）。
+        // ここから handlers への受け渡しだけを外す。ports.toolSupport / ports.vision /
+        // ports.usage / ports.compactWarnOnce も同様に buildPorts に残る（compactNow が呼ぶ・
+        // compactNow は main のターンを経由せず renderer だけで完結する処理のため）。
       }
       // ⚠️ ターンの間ずっと main への abort 送信関数を this ターンの鍵（key）に登録する。
       // 今日は「ストリーム中だけ」だったが、main 側は abort 関数が未登録なら何もしないので、
@@ -673,7 +673,9 @@ export function useAiChat(args: UseAiChatArgs) {
           {
             turnId,
             spec: { ...spec, turnOpts: stripFunctions(turnOpts) },
-            caps: { approveToolCall: !!approveToolCall, onUserMessage: !!onUserMessage, buildRagBlock: !!buildRagBlock },
+            // ⚠️ approveToolCall は B'-3d-3 で TurnStartPayload.caps から外れた（main が承認を
+            // 常に直接持つため、renderer 側の対応可否という概念自体が無い）。
+            caps: { onUserMessage: !!onUserMessage, buildRagBlock: !!buildRagBlock },
           },
           {
             // main が書き主のターン。main は既に convStore.ts へ当てているので、ここは
@@ -707,7 +709,7 @@ export function useAiChat(args: UseAiChatArgs) {
     }
   }, [
     isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, sessionId,
-    buildExecuteOpts, approveToolCall, getHistory, updateShown, onUserMessage, errorPrefix,
+    buildExecuteOpts, getHistory, updateShown, onUserMessage, errorPrefix,
     twoStageVision, routedModel, appendBubble, buildRagBlock, sendViaClaude, emit, viewOnlyEmit,
   ])
 

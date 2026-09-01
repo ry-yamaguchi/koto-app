@@ -46,9 +46,20 @@ import type { EngineTurnSpec } from './chatTurn'
  * 組み立てて渡す。「窓を閉じても作業が続く」（B'-3d）の最大の一歩（ask が1本減って ASK_PATHS
  * は 9本 → 8本）。ファイル保存後のエディタ反映は renderer が引き続き担う（新 ChatEvent
  * 'aiFileWritten' 経由・掟11: いま見ているプロジェクトの分だけ）。
+ *
+ * ── B'-3d-3（2026-08-30）: approveToolCall を main が直接持つように ─────────────────
+ * 「人が要る ask」のうち承認だけは、ask（bridge.ask('approveToolCall', ...)）を完全に
+ * やめた。要否判定・文面組み立て（write/edit の confirm モード・run_command の
+ * requiresConfirmation・install の package.json 読み・commandScopeNote）を main
+ * （turnRunner.ts）が shared/approvalPlan.ts の純関数で行い、承認そのものは main の専用
+ * マネージャ（src/main/chat/approvalStore.ts・メモリのみ）が持つ。ask と違い**タイムアウトせず、
+ * 窓が閉じていても答えが来るまで待ち続ける**（駐機）——「窓を閉じても作業が続く」（B'-3d）の
+ * 最後の一歩。renderer には approval:list（画面が（再）起動したときの取りこぼし回収）・
+ * approval:answer（回答）・approval:changed（push）という別枠の IPC がある（chatTurn:* の
+ * 外・turnId に紐づかない）。ASK_PATHS は 8本 → 7本。
  */
 export const ASK_PATHS = [
-  'approveToolCall', 'buildSystemPrompt', 'getHistory', 'onUserMessage',
+  'buildSystemPrompt', 'getHistory', 'onUserMessage',
   'buildRagBlock', 'getSearchConfig', 'fetchPagesBlock', 'autoSearchBlock',
 ] as const
 
@@ -57,10 +68,14 @@ export type AskPath = typeof ASK_PATHS[number]
 /** turnRunner が renderer から受け取る、直列化できる開始要求。 */
 export type TurnStartPayload = {
   turnId: string
-  /** turnOpts は関数を落とした直列化可能な形（renderer 側の仕事・その2）。 */
+  /** turnOpts は関数を落とした直列化可能な形（renderer 側の仕事・その2）。
+   *  B'-3d-3: ChatPanel の buildExecuteOpts() が `writeMode: 'auto' | 'confirm'` を
+   *  スナップショットとして乗せる（承認の要否判定に使う。送信時点の値に固定される）。 */
   spec: EngineTurnSpec
-  /** optional な ports を renderer が持っているか（無いのに ask すると挙動が変わるため明示する）。 */
-  caps: { approveToolCall: boolean; onUserMessage: boolean; buildRagBlock: boolean }
+  /** optional な ports を renderer が持っているか（無いのに ask すると挙動が変わるため明示する）。
+   *  B'-3d-3: approveToolCall は main が直接持つようになり、renderer の対応可否に関係なく
+   *  常に main 側で判定・駐機するため、ここから外した（caps の食い違いという概念自体が無い）。 */
+  caps: { onUserMessage: boolean; buildRagBlock: boolean }
 }
 
 /** main → renderer への1回の問い合わせ。 */

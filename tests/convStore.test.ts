@@ -256,7 +256,8 @@ describe('9. turnRunner: message系 emit が applyConversationOps を通る（to
   const src = readCode('src/main/chat/turnRunner.ts')
 
   it('import している', () => {
-    expect(src).toContain("import { applyConversationOps } from './convStore'")
+    // B'-3d-3: getHistory が convStore.loadConversation も直読みするようになり、同じ import 文に相乗り
+    expect(src).toContain("import { applyConversationOps, loadConversation } from './convStore'")
   })
 
   // B'-3d-2b: emit はオブジェクトリテラルの中の直書きプロパティ（emit: (ev) => {...}）から、

@@ -53,7 +53,6 @@ function makeHandlers() {
     return ret
   }
   const handlers = {
-    approveToolCall: record('approveToolCall', 'approve-result'),
     buildSystemPrompt: record('buildSystemPrompt', 'system-prompt'),
     getHistory: record('getHistory', ['h1']),
     onUserMessage: record('onUserMessage', undefined),
@@ -66,14 +65,9 @@ function makeHandlers() {
 }
 
 // B'-3d-2b: executeTool は main 直呼びになり ASK_PATHS から外れた（dispatchAsk に case が無い・
-// 下の「知らない path」describe で確かめる）。この表からは executeTool のエントリを外した。
+// 下の「知らない path」describe で確かめる）。B'-3d-3: approveToolCall も同じ理由で外れた。
+// この表からは executeTool・approveToolCall のエントリを外した。
 const TABLE: Record<AskPath, { args: unknown[]; handlerKey: string; expectedArgs: unknown[]; expectedResult: unknown }> = {
-  approveToolCall: {
-    args: ['write_file', '{"a":1}', { projectDir: '/p' }],
-    handlerKey: 'approveToolCall',
-    expectedArgs: ['write_file', '{"a":1}', { projectDir: '/p' }],
-    expectedResult: 'approve-result',
-  },
   buildSystemPrompt: { args: [], handlerKey: 'buildSystemPrompt', expectedArgs: [], expectedResult: 'system-prompt' },
   getHistory: { args: [], handlerKey: 'getHistory', expectedArgs: [], expectedResult: ['h1'] },
   onUserMessage: { args: ['hello', true], handlerKey: 'onUserMessage', expectedArgs: ['hello', true], expectedResult: undefined },
@@ -127,12 +121,24 @@ describe('dispatchAsk: 知らない path', () => {
     }
     expect(threw).toBe(true)
   })
+
+  // B'-3d-3: approveToolCall も同じ理由（main 直判定＋駐機になり ask ではない）で
+  // 「知らない path」として throw する。
+  it("'approveToolCall' も「知らない path」として throw する（main 直判定になり ask ではない）", async () => {
+    const { handlers } = makeHandlers()
+    let threw = false
+    try {
+      await dispatchAsk(handlers, 'approveToolCall' as AskPath, ['write_file', '{}', {}])
+    } catch {
+      threw = true
+    }
+    expect(threw).toBe(true)
+  })
 })
 
 // ── optional な handler が undefined のまま ask が来た ───────────────
 describe('dispatchAsk: optional な handler が undefined', () => {
   const cases: [AskPath, unknown[]][] = [
-    ['approveToolCall', ['write_file', '{}']],
     ['onUserMessage', ['hi', true]],
     ['buildRagBlock', ['q']],
   ]
@@ -176,8 +182,14 @@ describe('useAiChat.ts の配線（send() が main のターンを呼ぶ）', ()
     expect(src).toContain('window.electronAPI.chatTurn.start(')
   })
 
-  it('caps の3項目が !!approveToolCall 等から作られている', () => {
-    expect(src).toContain('caps: { approveToolCall: !!approveToolCall, onUserMessage: !!onUserMessage, buildRagBlock: !!buildRagBlock }')
+  // B'-3d-3: approveToolCall は main が常に直接持つようになり、renderer 側の対応可否と
+  // いう概念自体が無くなったため caps から外れた（TurnStartPayload.caps も2項目になった）。
+  it('caps の2項目（onUserMessage / buildRagBlock）が作られている', () => {
+    expect(src).toContain('caps: { onUserMessage: !!onUserMessage, buildRagBlock: !!buildRagBlock }')
+  })
+
+  it('caps に approveToolCall が無い', () => {
+    expect(src).not.toContain('approveToolCall: !!approveToolCall')
   })
 })
 

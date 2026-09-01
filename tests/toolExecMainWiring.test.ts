@@ -39,7 +39,7 @@ describe('turnRunner.ts: executeTool はもう bridge.ask ではない（execute
   })
 })
 
-describe('shared/chatTurnRpc.ts: ASK_PATHS から executeTool が消え、8本になっている', () => {
+describe('shared/chatTurnRpc.ts: ASK_PATHS から executeTool が消えている（当時8本。B\'-3d-3 でさらに減って現在7本）', () => {
   const src = readCode('src/shared/chatTurnRpc.ts')
 
   it("'executeTool' という要素が ASK_PATHS 配列に無い", () => {
