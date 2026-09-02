@@ -236,6 +236,7 @@ interface Window {
       openPath(p: string): Promise<string>
       showInFolder(p: string): Promise<void>
       which(cmd: string): Promise<string | null>
+      portOpen(port: number): Promise<boolean>
     }
     proc: {
       run(cwd: string, command: string): Promise<{ code: number; timedOut: boolean; stdout: string; stderr: string }>

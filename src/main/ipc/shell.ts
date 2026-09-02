@@ -1,6 +1,7 @@
 // シェル/OS連携の IPC（shell:* / app:version / proc:run）。deps は使わない（app/shell はグローバル）。
 import { app, ipcMain, shell } from 'electron'
 import { exec, execSync } from 'child_process'
+import * as net from 'net'
 import type { IpcDeps } from './types'
 
 // ── AIのrun_commandツール用：プロジェクト内でコマンドを実行し、出力を返す ──
@@ -30,6 +31,31 @@ export function runProjectCommand(
   })
 }
 
+// ── ②試すの疎通確認（2026-09-01・実機の教訓）────────────────────────────
+// 従来は「コマンドを実行した」＝「サーバーが起動した」とみなし、固定1.5秒後に
+// 問答無用でブラウザを開いていた。依存が欠けて即クラッシュするケース（helmet 欠け等）では
+// 利用者に「接続が拒否されました」だけが見えてしまう。ここでは実際にポートへ接続できるか
+// 確かめてから開くための土台を提供する（WorkflowBar.tsx が 500ms 間隔でポーリングする）。
+//
+// 127.0.0.1 に接続でき次第 true。エラー、または 500ms 経っても繋がらなければ false。
+// ソケットは必ず destroy する（開いたまま放置しない）。
+export function isPortOpen(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    let settled = false
+    const socket = net.connect({ host: '127.0.0.1', port })
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.destroy()
+      resolve(ok)
+    }
+    const timer = setTimeout(() => finish(false), 500)
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+  })
+}
+
 export function registerShellHandlers(_deps: IpcDeps) {
   // アプリのバージョンをレンダラへ
   ipcMain.handle('app:version', () => app.getVersion())
@@ -54,4 +80,7 @@ export function registerShellHandlers(_deps: IpcDeps) {
   })
 
   ipcMain.handle('proc:run', (_, args: { cwd: string; command: string }) => runProjectCommand(args.cwd, args.command))
+
+  // ②試すの疎通確認（ポートが開通したか）。中身は isPortOpen（electron 非依存）。
+  ipcMain.handle('shell:portOpen', (_, port: number) => isPortOpen(port))
 }

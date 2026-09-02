@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openPath: (p: string) => ipcRenderer.invoke('shell:openPath', p),
     showInFolder: (p: string) => ipcRenderer.invoke('shell:showInFolder', p),
     which: (cmd: string) => ipcRenderer.invoke('shell:which', cmd),
+    portOpen: (port: number) => ipcRenderer.invoke('shell:portOpen', port),
   },
   proc: {
     // AIのrun_commandツール用（プロジェクト内でコマンド実行）

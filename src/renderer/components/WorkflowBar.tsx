@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { planRun } from '../runPlan'
+import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { TARGET_PROFILES, getTargetProfile, isAvailableTarget, TargetId } from '../targetProfiles'
 import { resolvePublishRoot } from '../publishRootRenderer'
 
@@ -50,12 +52,18 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
   const [serverRunning, setServerRunning] = useState(false)
   // 実行方法が見つからなかった時のインラインヒント表示フラグ
   const [showHint, setShowHint] = useState(false)
+  // ②疎通確認がタイムアウトした時のインラインヒント表示フラグ（showHint と同じ8秒自動消去の作法・別枠）
+  const [showPortHint, setShowPortHint] = useState(false)
   // 実行に必要なランタイムが見つからない時の導入パネル（runtime と Homebrew の有無）
   const [missingRuntime, setMissingRuntime] = useState<{ runtime: 'php' | 'node' | 'python3'; hasBrew: boolean } | null>(null)
   // ヒント自動消去用タイマー
   const hintTimer = useRef<number | null>(null)
+  // 疎通確認タイムアウトヒント自動消去用タイマー
+  const portHintTimer = useRef<number | null>(null)
   // バー全体の参照（外側クリック判定用）
   const containerRef = useRef<HTMLDivElement | null>(null)
+  // ②疎通確認のポーリングを打ち切るフラグ（プロジェクト切替・アンマウントで真にする。下の effect 参照）
+  const pollCancelledRef = useRef(false)
 
   // ヒントを表示し、8秒後に自動で消すタイマーをセット
   function openHint() {
@@ -77,21 +85,49 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
     }
   }
 
+  // ②疎通確認タイムアウト用ヒント。openHint/closeHint と同じ作法（8秒で自動消去）
+  function openPortHint() {
+    setShowPortHint(true)
+    if (portHintTimer.current !== null) {
+      window.clearTimeout(portHintTimer.current)
+    }
+    portHintTimer.current = window.setTimeout(() => {
+      setShowPortHint(false)
+      portHintTimer.current = null
+    }, 8000)
+  }
+
+  function closePortHint() {
+    setShowPortHint(false)
+    if (portHintTimer.current !== null) {
+      window.clearTimeout(portHintTimer.current)
+      portHintTimer.current = null
+    }
+  }
+
   // ヒント・ランタイム導入パネル表示中に外側をクリックしたら閉じる
   useEffect(() => {
-    if (!showHint && !missingRuntime) return
+    if (!showHint && !missingRuntime && !showPortHint) return
     function onDocClick(e: MouseEvent) {
       if (containerRef.current && e.target instanceof Node && !containerRef.current.contains(e.target)) {
         closeHint()
+        closePortHint()
         setMissingRuntime(null)
       }
     }
     document.addEventListener('mousedown', onDocClick)
     return () => document.removeEventListener('mousedown', onDocClick)
-  }, [showHint, missingRuntime])
+  }, [showHint, missingRuntime, showPortHint])
 
   // プロジェクトが切り替わったらサーバー実行中フラグをリセット
   useEffect(() => { setServerRunning(false) }, [projectDir])
+
+  // ②疎通確認のポーリング中断フラグ。プロジェクトが切り替わる・アンマウントされる直前の
+  // クリーンアップで真にし、進行中のポーリングを止める（root effect と同じ cancelled の作法）。
+  useEffect(() => {
+    pollCancelledRef.current = false
+    return () => { pollCancelledRef.current = true }
+  }, [projectDir])
 
   // 「② 試す」で動かすのは**実際に公開されるもの**（`public/`。無ければ直下）。
   // ここがずれると「試すと動くのに、公開すると別の中身」になる（2026-08-20）。
@@ -109,8 +145,31 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
       if (hintTimer.current !== null) {
         window.clearTimeout(hintTimer.current)
       }
+      if (portHintTimer.current !== null) {
+        window.clearTimeout(portHintTimer.current)
+      }
     }
   }, [])
+
+  // ②疎通確認: ポートが開通するまで500ms間隔・最大40回（20秒。npm install の時間を見込む）ポーリングし、
+  // 開通したらブラウザを開く。開通しないまま終わればインラインで案内する
+  // （2026-09-01 実機・helmet 欠けでサーバーが即クラッシュし、旧実装の固定1.5秒待ちでは
+  // 「接続が拒否されました」だけが見えていた）。
+  // serverRunning は戻さない——タイムアウトしても npm install 自体は進行中かもしれないため、
+  // ⏹停止ボタンは出したままにする。
+  async function waitForPortThenOpen(openUrl: string) {
+    const port = Number(new URL(openUrl).port)
+    const api = window.electronAPI
+    for (let i = 0; i < 40; i++) {
+      if (pollCancelledRef.current) return // プロジェクト切替・アンマウントで打ち切り
+      if (await api.shell.portOpen(port)) {
+        window.open(openUrl)
+        return
+      }
+      await new Promise(r => setTimeout(r, 500))
+    }
+    if (!pollCancelledRef.current) openPortHint()
+  }
 
   // 実行に必要なランタイムが無ければ導入パネルを出し、あれば cmd を実行する。
   async function ensureRuntimeThenRun(runtime: 'php' | 'node' | 'python3', cmd: string, openUrl?: string) {
@@ -127,61 +186,70 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
     onRunCmd(cmd)
     setServerRunning(true)
     if (openUrl) {
-      window.setTimeout(() => window.open(openUrl), 1500)
+      void waitForPortThenOpen(openUrl)
     }
   }
 
-  // ② 試す: 優先順位順にファイルの存在を確認し、適切な実行方法を選ぶ
+  // ② 試す: ファイルの実体から実行方法を決める。判定の本体は runPlan.ts の planRun（純粋・テスト対象）。
+  //
+  // ── 2026-09-01（Ryosuke の調査依頼）: 判定順を「サーバー優先」へ反転した ─────────
+  // 従来はここに静的優先（index.html → … → server.js）の判定が埋め込まれており、
+  // server.js＋index.html を持つ Node アプリ（AppRun 向け kickoff の標準形）で
+  // サーバーを起動せず file:// で index.html を開いてしまっていた。理由と新しい順序は
+  // runPlan.ts の冒頭コメントを参照。コマンドの文字列・ensureRuntimeThenRun の呼び方は
+  // 従来と同一（順序と package.json の scripts.start 条件だけが変わった）。
+  //
+  // ── 2026-09-01（同日・実機の追加調査）: needsInstall で npm install を前置 ──────
+  // 実機の ScheduleAPP（server.js・package.json に express+helmet）で試したところ、
+  // node_modules に helmet が欠けており node server.js が即クラッシュしていた。
+  // needsInstall のときは `npm install &&` を前置してから起動する（判定は runPlan.ts）。
   async function handleRun() {
     if (running) return
     setRunning(true)
     closeHint()
+    closePortHint()
     setMissingRuntime(null)
     try {
       const api = window.electronAPI
       const join = (p: string) => `${root}/${p}`
-
-      // 1. index.html → ブラウザで開く
-      if (await api.fs.exists(join('index.html'))) {
-        await api.shell.openPath(join('index.html'))
-        return
+      const plan = await planRun({
+        exists: (rel) => api.fs.exists(join(rel)),
+        readFile: (rel) => api.fs.readFile(join(rel)),
+      })
+      switch (plan.kind) {
+        case 'node-server': {
+          const cmd = plan.needsInstall
+            ? `cd "${root}" && npm install && node server.js`
+            : `cd "${root}" && node server.js`
+          // 開く先は疎通確認と同じ 127.0.0.1（2026-09-01 実機: サーバーが IPv4（0.0.0.0）のみで
+          // 待ち受けていると、ブラウザの localhost は ::1（IPv6）を先に試して「接続が拒否されました」に
+          // なることがある。確認した先と開く先を一致させる）
+          await ensureRuntimeThenRun('node', cmd, 'http://127.0.0.1:8080')
+          return
+        }
+        case 'python':
+          // ポートは様々なのでブラウザは自動で開かない
+          await ensureRuntimeThenRun('python3', `cd "${root}" && python3 ${plan.entry}`)
+          return
+        case 'npm-start': {
+          const cmd = plan.needsInstall
+            ? `cd "${root}" && npm install && npm start`
+            : `cd "${root}" && npm start`
+          await ensureRuntimeThenRun('node', cmd)
+          return
+        }
+        case 'php':
+          await ensureRuntimeThenRun('php',
+            // バインドも開く先も 127.0.0.1 に固定（localhost は解決結果依存で IPv6 とずれうる・上の node と同じ理由）
+            plan.docroot === 'publish' ? `cd "${root}" && php -S 127.0.0.1:8000 -t ${PUBLISH_DIR}` : `cd "${root}" && php -S 127.0.0.1:8000`,
+            'http://127.0.0.1:8000')
+          return
+        case 'open':
+          await api.shell.openPath(join(plan.rel))
+          return
+        case 'none':
+          openHint()
       }
-      // 2. public/index.html → ブラウザで開く
-      if (await api.fs.exists(join('public/index.html'))) {
-        await api.shell.openPath(join('public/index.html'))
-        return
-      }
-      // 3. public/index.php → PHP ビルトインサーバ (public 配下)
-      if (await api.fs.exists(join('public/index.php'))) {
-        await ensureRuntimeThenRun('php', `cd "${root}" && php -S localhost:8000 -t public`, 'http://localhost:8000')
-        return
-      }
-      // 4. index.php → PHP ビルトインサーバ (ルート)
-      if (await api.fs.exists(join('index.php'))) {
-        await ensureRuntimeThenRun('php', `cd "${root}" && php -S localhost:8000`, 'http://localhost:8000')
-        return
-      }
-      // 5. server.js → node 実行
-      if (await api.fs.exists(join('server.js'))) {
-        await ensureRuntimeThenRun('node', `cd "${root}" && node server.js`, 'http://localhost:8080')
-        return
-      }
-      // 6. main.py / app.py → python3 実行（ポートは様々なのでブラウザは自動で開かない）
-      if (await api.fs.exists(join('main.py'))) {
-        await ensureRuntimeThenRun('python3', `cd "${root}" && python3 main.py`)
-        return
-      }
-      if (await api.fs.exists(join('app.py'))) {
-        await ensureRuntimeThenRun('python3', `cd "${root}" && python3 app.py`)
-        return
-      }
-      // 7. package.json → npm start
-      if (await api.fs.exists(join('package.json'))) {
-        await ensureRuntimeThenRun('node', `cd "${root}" && npm start`)
-        return
-      }
-      // 8. 何も該当しない → インラインヒントを表示
-      openHint()
     } finally {
       setRunning(false)
     }
@@ -362,6 +430,22 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
             className="mt-2 rounded-md px-2 py-1 text-xs font-semibold sakura-gradient text-white hover:opacity-90 transition-colors"
           >
             AIに聞く
+          </button>
+        </div>
+      )}
+
+      {/* ②疎通確認がタイムアウトした時のインラインヒント（window.alert は使わない・8秒で自動消去） */}
+      {showPortHint && (
+        <div className="absolute left-3 top-full mt-1 z-10 bg-elevated border border-line-soft rounded-lg px-3 py-2 shadow-lg max-w-md">
+          <p className="text-xs text-ink-secondary leading-snug">
+            サーバーの起動を確認できませんでした。下のターミナルにエラーが出ていないか確認してください
+          </p>
+          <button
+            type="button"
+            onClick={closePortHint}
+            className="mt-2 text-[10px] text-ink-muted hover:text-ink-secondary whitespace-nowrap"
+          >
+            閉じる
           </button>
         </div>
       )}
