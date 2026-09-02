@@ -624,11 +624,13 @@ export default function App() {
       )}
 
       <div className="flex-1 overflow-hidden">
-        {/* ⚠️ ChatApp は**アンマウントせず隠す**（2026-08-29 実機で発覚）。
-            単独チャットの会話はまだこの ChatApp の React state が持ち主（B'-3c はプロジェクト
-            会話だけを main に移した）。IDE モードへの切替でアンマウントすると、走っている
-            ターンの返事の行き先とセッション保存の effect が消え、**返事が失われる**。
-            本修理（セッションの持ち主を main へ移す）は B'-3e。 */}
+        {/* ⚠️ ChatApp は**アンマウントせず隠す**（2026-08-29 実機で発覚。応急処置）。
+            会話の保存先は B'-3e-a で main（convStore.ts・appSessionsStore.ts）へ移ったが、
+            AIのターン（送信ループ）自体はまだ renderer（useAiChat.ts）の中で走っている
+            （toolsProjectDir=null のまま・ターンの main 直結は B'-3e-b）。IDE モードへの
+            切替でアンマウントすると、走っているターンの返事の行き先（React state）が消え、
+            画面上は返事が失われて見える（保存自体は main 側に届いていれば失われない）。
+            この隠す化は害が無いのでそのまま残す（撤去は B'-3e-b 後の任意の後片づけ）。 */}
         <div className={mode === 'chat' ? 'h-full fade-in bg-base' : 'hidden'}>
           <ChatApp apiKey={sakuraApiKey} onSetApiKey={setApiKey} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} />
         </div>

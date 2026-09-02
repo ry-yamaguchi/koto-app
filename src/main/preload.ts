@@ -450,6 +450,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('learning:changed', handler)
     },
   },
+  // 単独チャット（ChatApp）のセッション索引（B'-3e-a）。持ち主は main の
+  // src/main/appSessionsStore.ts（`<workspace>/.sakuraide-app-chat/sessions.json`）。
+  // メッセージ本文は含まない（各セッションの擬似 dir を convStore.ts へそのまま渡して読み書きする。
+  // chatConvClient.ts の loadConversationView/makeConvClient を再利用する）。
+  appSessions: {
+    list: (workspaceDir: string) => ipcRenderer.invoke('appSessions:list', workspaceDir),
+    create: (workspaceDir: string, meta: { id: string; title: string; model: string; createdAt: number }) =>
+      ipcRenderer.invoke('appSessions:create', workspaceDir, meta),
+    rename: (workspaceDir: string, id: string, title: string) =>
+      ipcRenderer.invoke('appSessions:rename', workspaceDir, id, title),
+    setModel: (workspaceDir: string, id: string, model: string) =>
+      ipcRenderer.invoke('appSessions:setModel', workspaceDir, id, model),
+    delete: (workspaceDir: string, id: string) => ipcRenderer.invoke('appSessions:delete', workspaceDir, id),
+    /** main が索引を変えるたび届く通知（learning.onChanged と同じ作法・購読解除関数を返す）。 */
+    onChanged: (cb: (p: { workspaceDir: string; sessions: { id: string; title: string; model: string; createdAt: number }[] }) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, p: { workspaceDir: string; sessions: { id: string; title: string; model: string; createdAt: number }[] }) => cb(p)
+      ipcRenderer.on('appSessions:changed', handler)
+      return () => ipcRenderer.removeListener('appSessions:changed', handler)
+    },
+  },
   // 予算設定・利用実績（B'-3d-1b）。持ち主は main の usageStore.ts（userData/usage.json）。
   // renderer は起動時に get() で写しを作り、onChanged() の押し出しで最新化する
   // （src/renderer/usageMirror.ts）。usage:check は無い（main のターンは usageStore を直接

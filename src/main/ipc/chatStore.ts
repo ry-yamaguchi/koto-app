@@ -1,7 +1,7 @@
 // チャット履歴のファイル保存（chat:*）。IDEのプロジェクト別チャットは `<project>/.sakuraide/chat.json`、
-// 単独チャット（ChatApp）は `<workspace>/.sakuraide/chats/chat-app.json` に保存する。
+// 単独チャット（ChatApp）の旧形式は `<workspace>/.sakuraide/chats/chat-app.json` に保存していた。
 // 保存内容の意味（messages配列 / sessions配列）は関知せず、JSON文字列をそのまま読み書きするだけの薄い層にする
-// （チャットの送信ロジックは掟どおり useAiChat.ts のみを触る。永続化はここと renderer/chatStorage.ts）。
+// （チャットの送信ロジックは掟どおり useAiChat.ts のみを触る）。
 //
 // IDEのプロジェクト別チャット（chat:loadProject/chat:saveProject）は v2（追記式JSONL）で読み書きする。
 // 実体（fs・cache・書き直し/追記の判断）は chatStore/file.ts に切り出してある。electron に依存しない
@@ -10,12 +10,18 @@
 // ミューテーションを検知できなかった＝実測で確認済み）。ここは projectChatPath() の組み立てと
 // isValidJson / fs.existsSync(projectDir) のガードを掛けて file.ts の2関数を呼ぶだけの薄い層にする。
 // 呼び出し側（renderer）には常に配列まるごとの JSON 文字列を渡す／受け取るので、ここより外から見た
-// 挙動は変わらない。単独チャット（chat:loadApp/chat:saveApp）は今回の対象外で、これまで通り v1（配列
-// まるごと）を毎回 tmp+rename で書き直す。
+// 挙動は変わらない。
 //
 // ── B'-3c: IDEのプロジェクト別チャットの持ち主が main（convStore.ts）へ移った ─────────
 // ChatPanel はもう chat:loadProject / chat:saveProject を呼ばない（chat:load / chat:ops に移った）。
 // 既存の2つは形を変えずに残す（呼ぶ者がいなくなっても、後方互換のため・仕様書の指示どおり）。
+//
+// ── B'-3e-a: 単独チャットの持ち主も main（appSessionsStore.ts・convStore.ts）へ移った ─────
+// ChatApp はもう chat:loadApp / chat:saveApp を呼ばない（appSessions:* ＋ chat:load/chat:ops へ
+// 置き換わった。renderer/chatStorage.ts は削除済み）。旧2つは chat:loadProject/saveProject と
+// 同じ理由（後方互換・呼び出しが無くても実装が壊れているわけではない）で、形を変えずに残す。
+// 旧ファイル自体は appSessionsStore.ts の一度きりの移行が読みに行く（appChatPath は
+// chatStore/paths.ts に定義があり、そちらからも import される）。
 import { ipcMain, app } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'

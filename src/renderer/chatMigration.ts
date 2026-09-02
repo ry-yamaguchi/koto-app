@@ -1,6 +1,7 @@
 // チャット履歴の読み込み優先順位（ファイル→localStorage(旧形式・移行)→空）を決める純粋ロジック。
 // window/electronAPI/localStorage に一切触れないため、Vitest（node環境）でそのままテストできる。
-// 実際のIO（ファイル読み込み・localStorage参照・移行後の保存＆旧キー削除）は chatStorage.ts が担う。
+// 実際のIO（ファイル読み込み・localStorage参照・移行後の保存＆旧キー削除）は chatConvClient.ts
+// （IDEのプロジェクト別チャット・B'-3e-a 以降は単独チャットのセッションも同様）が担う。
 
 /** JSON文字列を配列としてパースする。null/未指定/配列でない/パース不能なら null。 */
 export function parseJsonArray(raw: string | null | undefined): any[] | null {

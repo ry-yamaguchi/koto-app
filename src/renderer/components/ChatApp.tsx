@@ -10,7 +10,9 @@ import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { CHAT_CONTEXT } from '../aiContext'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
 import ModelSelect from './ModelSelect'
-import { loadAppSessions, saveAppSessions } from '../chatStorage'
+import { loadConversationView, makeConvClient, type Op } from '../chatConvClient'
+import { sessionDir } from '../../shared/appChatDirs'
+import { getWorkspaceDir } from '../workspace'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
 import BrainToggle from './BrainToggle'
@@ -60,6 +62,34 @@ function titleFromMessage(content: string): string {
   return content.slice(0, 40) + (content.length > 40 ? '…' : '')
 }
 
+/**
+ * before→after の差分から convStore の Op を作る（B'-3e-a）。
+ *
+ * ── なぜ diff するか ─────────────────────────────────────────────
+ * useAiChat.ts の updateShown は「メッセージ配列を書き換える updater 関数」しか渡してこない
+ * （出来事そのもの＝ChatEvent は渡らない）。だが updater は必ず shared/chatEvents.ts の
+ * applyToMessages 相当の変化（append/replaceLast/removeLast のいずれか）しか起こさないため、
+ * before/after の件数差から一意に Op を組み立てられる（複製ではなく、同じ制約を利用する再構成）。
+ * 何も変わっていなければ null（convStore へは何も送らない）。
+ */
+// export: tests/deriveOp.test.ts が直接検証する（画面の状態差分→convStore の Op という
+// 「書き換えの翻訳」は守りに近く、ソース読みだけでは変異を捕まえられないため実駆動で固定する）。
+export function deriveOp(before: Message[], after: Message[]): Op | null {
+  if (after.length === before.length + 1) return { kind: 'append', msg: after[after.length - 1] }
+  if (after.length === before.length - 1) return { kind: 'removeLast' }
+  if (after.length === before.length) {
+    if (after.length === 0) return null // 空→空。chatEvents.ts の replaceLast 仕様どおり「何も起きない」
+    // 末尾以外が書き換わっていたら replaceLast では嘘になる（現行の呼び出しは全部末尾操作だが、
+    // 想定外の中間編集を黙って壊すより丸ごと送る方が安全側）。
+    for (let i = 0; i < after.length - 1; i++) {
+      if (after[i] !== before[i]) return { kind: 'replaceAll', messages: after }
+    }
+    return { kind: 'replaceLast', msg: after[after.length - 1] }
+  }
+  // 通常はここへ来ない（想定外の一括差し替えへの保険。取りこぼすより丸ごと送る方が安全側）。
+  return { kind: 'replaceAll', messages: after }
+}
+
 function SakuraAvatar() {
   return (
     <div className="flex-none w-8 h-8 rounded-xl bg-white border border-line flex items-center justify-center shadow-sm">
@@ -83,8 +113,9 @@ function MessageCopyButton({ text, side }: { text: string; side: 'left' | 'right
 export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile }: Props) {
   const [sessions, setSessions] = useState<Session[]>(() => [newSession()])
   const [activeId, setActiveId] = useState<string>(() => sessions[0]?.id ?? '')
-  // 保存先ワークスペース（`<workspace>/.sakuraide/chats/chat-app.json`）。読み込み完了までは null＝保存しない
-  // （切替直後の初期セッション1件でファイルを上書きしないためのガード）。
+  // 保存先ワークスペース（各セッションの擬似 dir は `<workspace>/.sakuraide-app-chat/sessions/<id>`。
+  // src/shared/appChatDirs.ts）。読み込み完了までは null＝convStore 経由の読み書きをまだ行わない
+  // （getConvClient・切替時の読み込み effect の両方がこれをガードにする）。
   const [chatWorkspace, setChatWorkspace] = useState<string | null>(null)
   const models = useModels(apiKey)
   const [input, setInput] = useState('')
@@ -116,6 +147,45 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     return () => { alive = false; window.removeEventListener('sakura:credentials-changed', refresh) }
   }, [])
 
+  // ── B'-3e-a: 会話の持ち主は main（convStore.ts。プロジェクト別チャットと複製ゼロで共有）───
+  // ここは「読み込む」（loadConversationView）と「書き換えを ops として main へ送る」
+  // （makeConvClient）薄い client を持つだけ（ChatPanel.tsx と同じ役割分担）。ただしチャットモードは
+  // 複数セッションが並行して動きうる（改善2・並列送信）ため、client は projectDir 単位ではなく
+  // **セッション単位**で持ち、そのセッションが削除されるまで使い回す（直列化のため。
+  // chatConvClient.ts の「なぜ送信を直列化するか」参照）。
+  const convClientsRef = useRef<Map<string, ReturnType<typeof makeConvClient>>>(new Map())
+  const getConvClient = useCallback((id: string) => {
+    if (!chatWorkspace) return null
+    let c = convClientsRef.current.get(id)
+    if (!c) {
+      c = makeConvClient(sessionDir(chatWorkspace, id))
+      convClientsRef.current.set(id, c)
+    }
+    return c
+  }, [chatWorkspace])
+
+  /**
+   * アクティブセッションのメッセージへ updater を当て、画面へ即時反映しつつ、変化を convStore へ
+   * ops として送る（見かけは即時反映のまま・保存の形だけが「全量書き→追記＋索引」へ変わる）。
+   *
+   * ── なぜ activeId を閉じ込めるか ─────────────────────────────────
+   * useAiChat.ts の emit/viewOnlyEmit は「この関数が作られた render の toolsProjectDir・sessionId」
+   * を使い続ける（ターン開始後にユーザーが別セッションへ切り替えても、始めたセッションの中で終わる
+   * ため）。updateShown（＝この関数）もそれに合わせ、呼ばれた時点の「いま見ているセッション」ではなく
+   * **この関数が作られた時点の activeId** へ当てる（useCallback の依存に activeId を持つことで、
+   * activeId が変わるたびに新しいクロージャが作られ、古いクロージャは古い activeId を指したまま
+   * 動き続ける＝並列ターンの取り違えが起きない。既存の updateShown も同じ性質を持っていた）。
+   */
+  const updateActiveMessages = useCallback((updater: (prev: Message[]) => Message[]) => {
+    setSessions(prev => prev.map(s => {
+      if (s.id !== activeId) return s
+      const next = updater(s.messages)
+      const op = deriveOp(s.messages, next)
+      if (op) getConvClient(activeId)?.apply(op)
+      return { ...s, messages: next }
+    }))
+  }, [activeId, getConvClient])
+
   // 送信パイプライン（予算・切替・検索・ツールループ）は共通フックへ集約。
   // 表示はアクティブセッション内のメッセージ列へ反映する。
   const chat = useAiChat({
@@ -133,11 +203,12 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     sessionId: activeId,
     buildExecuteOpts: () => ({}),
     getHistory: () => activeSession?.messages ?? [],
-    updateShown: (updater) => {
-      setSessions(prev => prev.map(s => s.id === activeId ? { ...s, messages: updater(s.messages) } : s))
-    },
+    updateShown: updateActiveMessages,
+    // タイトルの自動命名も updateSession を経由させ、索引（appSessions:rename）へも
+    // 反映する（updateSession は下で定義。JSのクロージャは呼ばれるまで参照を解決しないため、
+    // 定義順はこのコールバックの実行タイミングに影響しない）。
     onUserMessage: (text, isFirst) => {
-      if (isFirst) setSessions(prev => prev.map(s => s.id === activeId ? { ...s, title: titleFromMessage(text || '画像') } : s))
+      if (isFirst) updateSession(activeId, { title: titleFromMessage(text || '画像') })
     },
     errorPrefix: '⚠️ ',
   })
@@ -159,71 +230,60 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     // 所見19: 画像以外のファイルが混じっていたら、黙って捨てずにアクティブな会話へ toolNote バブルで案内する
     //（fileToDataUrl は非画像を null で捨てるため、この案内が無いとドロップしても無反応に見えた）。
     if (countNonImageFiles(list) > 0) {
-      setSessions(prev => prev.map(s => s.id === activeId ? {
-        ...s,
-        messages: [...s.messages, {
-          role: 'assistant',
-          content: '📎 画像ファイル（PNG/JPEGなど）のみ添付できます。それ以外のファイルは取り込みませんでした。',
-          toolNote: true,
-        }],
-      } : s))
+      updateActiveMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '📎 画像ファイル（PNG/JPEGなど）のみ添付できます。それ以外のファイルは取り込みませんでした。',
+        toolNote: true,
+      }])
     }
     for (const f of list) {
       const url = await fileToDataUrl(f)
       if (url) setPendingImages(prev => [...prev, url])
     }
-  }, [activeId])
+  }, [updateActiveMessages])
 
-  // 起動時にセッション一覧を読み込む（`<workspace>/.sakuraide/chats/chat-app.json` 優先→
-  // 旧 localStorage 形式 `sakura_sessions` があれば移行→どちらも無ければ初期状態のまま）。
+  // ── B'-3e-a: 起動時はまず「索引」だけを読む（メッセージ本文は含まない）─────────────
+  // 索引が1件以上あれば、それで sessions を置き換える（本文はまだ空のまま。切替時 effect が読む）。
+  // 索引が空（初回起動・移行対象も無い）なら、画面に最初から出している既定セッション
+  // （useState の初期値・newSession()）をそのまま使う。ただしこの既定セッションも main 側の
+  // 索引へ登録しておく必要がある——擬似 dir を先に用意しないと、最初の送信が convStore へ
+  // 保存されない（appSessionsStore.createSession が擬似 dir を掘る）。
   useEffect(() => {
     let cancelled = false
-    loadAppSessions<Session>().then(({ workspaceDir, sessions: loaded }) => {
+    void (async () => {
+      const workspaceDir = await getWorkspaceDir()
+      const list = await window.electronAPI.appSessions.list(workspaceDir)
       if (cancelled) return
-      if (loaded && loaded.length > 0) {
-        setSessions(loaded)
-        setActiveId(loaded[0].id)
+      if (list.length > 0) {
+        setSessions(list.map(m => ({ id: m.id, title: m.title, model: m.model, createdAt: m.createdAt, messages: [] })))
+        setActiveId(list[0].id)
+      } else {
+        const first = sessions[0]
+        if (first) {
+          void window.electronAPI.appSessions.create(workspaceDir, {
+            id: first.id, title: first.title, model: first.model, createdAt: first.createdAt,
+          })
+        }
       }
-      setChatWorkspace(workspaceDir) // ここから保存が有効になる
+      setChatWorkspace(workspaceDir) // ここから convStore 経由の保存・読み込みが有効になる
+    })()
+    return () => { cancelled = true }
+    // 起動時に1回だけ（sessions は useState の初期値だけを使う・以後の変化は見ない）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // セッションを切り替えたら（起動直後の初回切替も含む）、そのセッションの本文を convStore から読む
+  // （ChatPanel.tsx がプロジェクト切替のたびに loadConversationView を呼ぶのと同じ形）。
+  useEffect(() => {
+    if (!chatWorkspace || !activeId) return
+    let cancelled = false
+    loadConversationView(sessionDir(chatWorkspace, activeId)).then(msgs => {
+      if (cancelled) return
+      setSessions(prev => prev.map(s => s.id === activeId ? { ...s, messages: msgs } : s))
     })
     return () => { cancelled = true }
-  }, [])
+  }, [chatWorkspace, activeId])
 
-  // 保存（デバウンス1.5秒。ストリーミング中は messages がトークン毎に変わるため）。
-  // 画像でサイズ超過等の失敗時は、**先に画像をファイルへ書き出してから**落とす。
-  // 落としたことは黙らず、会話に出す（2026-08-20。以前は console.warn だけで、
-  // 利用者は理由も分からないまま画像を失っていた）。
-  // sessionsRef: 直近の sessions を常に保持（アンマウント時のフラッシュ用）。
-  const sessionsRef = useRef<Session[]>(sessions)
-  sessionsRef.current = sessions
-  // 保存は間引いて遅れて走るので、そのときの「いま開いている会話」を ref で持つ。
-  const activeIdRef = useRef<string>(activeId)
-  activeIdRef.current = activeId
-
-  /** 保存して、画像を落としていたらその事実を会話に出す（同じ知らせは重ねない）。 */
-  const droppedNotedRef = useRef(false)
-  const saveAndReport = useCallback(async (ws: string, list: Session[]) => {
-    const r = await saveAppSessions(ws, list)
-    if (!('droppedImages' in r) || droppedNotedRef.current) return
-    droppedNotedRef.current = true
-    setSessions(prev => prev.map(sess => sess.id === activeIdRef.current
-      ? { ...sess, messages: [...sess.messages, { role: 'assistant', content: r.note, toolNote: true } as ChatMessage] }
-      : sess))
-  }, [])
-  useEffect(() => {
-    if (!chatWorkspace) return
-    const id = window.setTimeout(() => {
-      void saveAndReport(chatWorkspace, sessionsRef.current)
-    }, 1500)
-    return () => window.clearTimeout(id)
-  }, [sessions, chatWorkspace])
-
-  // アンマウント時に保存待ちの内容を即座にフラッシュする
-  useEffect(() => {
-    return () => {
-      if (chatWorkspace) void saveAndReport(chatWorkspace, sessionsRef.current)
-    }
-  }, [chatWorkspace])
   // B: セッション（会話）を切り替えたら割り振りをリセット
   useEffect(() => { setRoutedModel(null) }, [activeId])
   // scrollIntoView は祖先（文書全体）まで横スクロールさせることがあるため、一覧コンテナの内側だけを
@@ -233,27 +293,51 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' })
   }, [activeSession?.messages, isLoading])
 
+  // セッション作成/改名/モデル変更/削除は appSessions IPC 経由（索引の持ち主は main）＋
+  // ローカル state 即時反映（楽観・IPC の完了は待たない）。
   const updateSession = useCallback((id: string, patch: Partial<Session>) => {
     setSessions(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s))
-  }, [])
+    if (!chatWorkspace) return
+    if (patch.model !== undefined) void window.electronAPI.appSessions.setModel(chatWorkspace, id, patch.model)
+    if (patch.title !== undefined) void window.electronAPI.appSessions.rename(chatWorkspace, id, patch.title)
+  }, [chatWorkspace])
 
   const createSession = () => {
     const s = newSession(activeSession?.model ?? MODELS[0].id)
     setSessions(prev => [s, ...prev])
     setActiveId(s.id)
     setInput('')
+    if (chatWorkspace) {
+      void window.electronAPI.appSessions.create(chatWorkspace, {
+        id: s.id, title: s.title, model: s.model, createdAt: s.createdAt,
+      })
+    }
   }
 
-  const deleteSession = (id: string) => {
+  const deleteSession = async (id: string) => {
     const target = sessions.find(s => s.id === id)
-    if (target && target.messages.length > 0) {
+    if (!target) return
+    // 見かけ不変: 「本当に中身があるか」で確認ダイアログの要否を決める（従来どおり）。
+    // アクティブなセッションは既に本文を読み込み済みなのでそのまま見る。そうでなければ
+    // （索引にはメッセージ件数を持たせない設計のため）convStore へ読みに行って確かめる。
+    const hasMessages = id === activeId || !chatWorkspace
+      ? target.messages.length > 0
+      : (await loadConversationView(sessionDir(chatWorkspace, id))).length > 0
+    if (hasMessages) {
       if (!window.confirm(`「${target.title}」を削除します。よろしいですか？（元に戻せません）`)) return
     }
+    convClientsRef.current.delete(id) // このセッション宛ての直列化クライアントも使い終わり
+    if (chatWorkspace) void window.electronAPI.appSessions.delete(chatWorkspace, id)
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id)
       if (next.length === 0) {
         const fresh = newSession()
         setActiveId(fresh.id)
+        if (chatWorkspace) {
+          void window.electronAPI.appSessions.create(chatWorkspace, {
+            id: fresh.id, title: fresh.title, model: fresh.model, createdAt: fresh.createdAt,
+          })
+        }
         return [fresh]
       }
       if (id === activeId) setActiveId(next[0].id)
@@ -346,7 +430,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                 <span className="flex-none text-[11px]" title={getTurn(turnKey(null, s.id)).attention === 'approval' ? 'AIが許可を待っています' : 'エラーで止まりました。開いて確認してください'}>⚠️</span>
               ) : loadingSessionKeys.has(turnKey(null, s.id)) && <span className="flex-none text-[11px]" title="AIが作業中です">⏳</span>}
               <button
-                onClick={e => { e.stopPropagation(); deleteSession(s.id) }}
+                onClick={e => { e.stopPropagation(); void deleteSession(s.id) }}
                 className="flex-none opacity-0 group-hover:opacity-100 text-ink-muted hover:text-brand-red text-xs px-1 transition-all"
               >✕</button>
             </div>

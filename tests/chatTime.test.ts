@@ -295,8 +295,14 @@ describe('配線: 画面・保存経路がそれぞれ正しい判定を通し�
     expect(s).toContain("ports.emit({ kind: 'append', msg: budgetMsg })")
   })
 
-  it('chatStorage.ts に stamp( が入っていない（古い会話に時刻を付けない）', () => {
-    const s = read('src/renderer/chatStorage.ts')
-    expect(s).not.toContain('stamp(')
+  // ⚠️ B'-3e-a で src/renderer/chatStorage.ts を削除した（単独チャットの保存が main の
+  // convStore.ts 経由へ移ったため）。「古い会話に時刻を付けない」という同じ方針は、いまは
+  // 単独チャットの一度きりの移行（appSessionsStore.ts の migrateLegacyIfPresent）が
+  // 引き継いでいる——'append' ではなく 'replaceAll' を使うことで、stamp() を経由せず
+  // 旧メッセージの `at` の有無をそのまま持ち込む（掟10・下のテストが固定）。
+  it("appSessionsStore.ts の移行は 'replaceAll' を使い、stamp( を呼ぶ 'append' を経由しない（古い会話に時刻を付けない）", () => {
+    const s = read('src/main/appSessionsStore.ts')
+    expect(s).toContain("applyConversationOps(dir, [{ kind: 'replaceAll', messages: msgs }])")
+    expect(s).not.toContain("applyConversationOps(dir, [{ kind: 'append'")
   })
 })

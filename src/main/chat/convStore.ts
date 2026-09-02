@@ -172,3 +172,22 @@ export function resetConversations(): void {
   }
   store.clear()
 }
+
+/**
+ * 指定した1件だけキャッシュ（メモリ上のエントリ・保存待ちタイマー）を破棄する（B'-3e-a）。
+ *
+ * ── なぜ要るか ────────────────────────────────────────────────────
+ * 単独チャット（ChatApp）のセッション削除は、擬似 dir（appSessionsStore.ts）ごとフォルダを
+ * 再帰削除する。そのとき convStore がこの dir のエントリをメモリに持ったままだと、
+ * ①保存待ちタイマーが後から発火して（もう存在しない）フォルダへ書こうとする
+ * （saveNow の existsSync ガードで実害は無いが、無駄なタイマーが残り続ける）、
+ * ②同じ dir 文字列が万一再利用されたとき、消したはずの古い内容がメモリから復活する——
+ * という2つの取りこぼしがある。resetConversations は全プロジェクトを巻き込むため使えず、
+ * この1件だけを狙って落とす口を最小追加する（既存の関数・挙動は一切変えない）。
+ */
+export function dropConversation(projectDir: string): void {
+  const entry = store.get(projectDir)
+  if (!entry) return
+  if (entry.timer) clearTimeout(entry.timer)
+  store.delete(projectDir)
+}

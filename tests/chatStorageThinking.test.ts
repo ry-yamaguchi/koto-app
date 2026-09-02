@@ -1,9 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { forStorage } from '../src/renderer/chatStorage'
+import { forStorage } from '../src/shared/chatStorage'
 import type { ChatMessage } from '../src/renderer/hooks/useAiChat'
 
 // 2026-08-03: 推論モデルの「思考」は表示専用。本文の何倍にもなり得るため、
 // チャット履歴ファイル（.sakuraide/chat.json）には保存しない。
+//
+// ⚠️ B'-3e-a で src/renderer/chatStorage.ts を削除した（単独チャットの保存が main の
+// convStore.ts 経由へ移り、呼び出しが無くなったため）。forStorage の実体はもともと
+// src/shared/chatStorage.ts にあり、renderer/chatStorage.ts はそれを re-export していた
+// だけなので、import 元をそちらへ直す（検証している中身は一字一句変わらない）。
 
 describe('forStorage（保存前に思考を落とす）', () => {
   it('thinking を落とし、他のフィールドは残す', () => {

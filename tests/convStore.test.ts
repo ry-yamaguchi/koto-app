@@ -7,7 +7,7 @@ import * as path from 'path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   loadConversation, applyConversationOps, flushConversations, resetConversations,
-  setApplyListener, type Op,
+  setApplyListener, dropConversation, type Op,
 } from '../src/main/chat/convStore'
 import { projectChatPath } from '../src/main/chatStore/paths'
 import { loadProjectChatFile, saveProjectChatFile, resetChatLogCache } from '../src/main/chatStore/file'
@@ -236,6 +236,53 @@ describe('convStore: 保存（デバウンス・quit時フラッシュ・削除�
     flushConversations()
     resetConversations()
     expect(loadConversation(dir)).toEqual([msg])
+  })
+})
+
+// B'-3e-a: 単独チャット（ChatApp）のセッション削除で、擬似 dir のフォルダを消すのと合わせて
+// convStore のメモリ（保存待ちタイマー含む）も落とせるようにするための最小追加。
+// resetConversations は全プロジェクトを巻き込むため使えず、この1件だけを狙って落とす。
+describe("convStore: dropConversation（B'-3e-a・1件だけキャッシュを破棄）", () => {
+  it('保存待ち（デバウンス中）のタイマーごと落ちる。drop後に flush してもファイルは書かれない', () => {
+    const dir = mkProjectDir()
+    applyConversationOps(dir, [{ kind: 'append', msg: { role: 'user', content: 'a' } }])
+    expect(fs.existsSync(projectChatPath(dir))).toBe(false) // まだデバウンス中
+
+    dropConversation(dir)
+    flushConversations() // drop 済みなので、この dir 分の保存は走らない
+    expect(fs.existsSync(projectChatPath(dir))).toBe(false)
+  })
+
+  it('drop 後に同じ dir へ ops を送ると、メモリが無い状態から作り直される（フォルダが実在すれば普通に保存できる）', () => {
+    const dir = mkProjectDir()
+    applyConversationOps(dir, [{ kind: 'append', msg: { role: 'user', content: 'a' } }])
+    flushConversations()
+    dropConversation(dir)
+
+    applyConversationOps(dir, [{ kind: 'append', msg: { role: 'user', content: 'b' } }])
+    flushConversations()
+    resetConversations()
+    // drop 前の 'a' はファイルに残ったまま（ensureEntry がファイルから読み直して積み増す）。
+    // 消えたのはメモリのキャッシュだけで、ディスクの内容は壊れていないことの確認。
+    const reloaded = loadConversation(dir)
+    expect(reloaded).toHaveLength(2)
+    expect(reloaded![1]).toMatchObject({ content: 'b' })
+  })
+
+  it('未ロードの dir に対しては何もしない（例外を投げない）', () => {
+    const dir = mkProjectDir()
+    expect(() => dropConversation(dir)).not.toThrow()
+  })
+
+  it('他の dir のキャッシュには影響しない', () => {
+    const a = mkProjectDir()
+    const b = mkProjectDir()
+    applyConversationOps(a, [{ kind: 'append', msg: { role: 'user', content: 'a' } }])
+    applyConversationOps(b, [{ kind: 'append', msg: { role: 'user', content: 'b' } }])
+    dropConversation(a)
+    flushConversations()
+    expect(fs.existsSync(projectChatPath(a))).toBe(false) // a は drop 済み → 保存されない
+    expect(fs.existsSync(projectChatPath(b))).toBe(true) // b は無事に保存される
   })
 })
 

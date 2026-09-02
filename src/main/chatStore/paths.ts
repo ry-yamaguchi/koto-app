@@ -11,7 +11,10 @@
 // IDEのプロジェクト別チャット（chat.json）は中身の形式が2種類ある（読み書きは chatStore/log.ts）:
 //   - v1: 配列まるごとの JSON（先頭の非空白文字が '['）
 //   - v2: 1行1レコードの JSONL（追記式。1.5秒ごとの自動保存で配列を丸ごと書き直さないようにした）
-// このファイル名・場所自体は v1/v2 どちらでも変わらない。単独チャット（chat-app.json）は今回の対象外で v1 のまま。
+// このファイル名・場所自体は v1/v2 どちらでも変わらない。単独チャット（chat-app.json）は v1（配列
+// まるごと）のまま——ただし B'-3e-a 以降、この形式は「旧」形式になった（現行の保存先は
+// src/shared/appChatDirs.ts の sessionDir/sessionsIndexPath）。appChatPath はいまも
+// appSessionsStore.ts の一度きりの移行が旧ファイルを見つけるために使う。
 import * as path from 'path'
 
 /** root 配下に閉じ込めたパスを組み立てる（ipc/backup.ts の confineToProject と同等の防御）。 */
