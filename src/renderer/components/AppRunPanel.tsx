@@ -8,6 +8,7 @@ import { beginActivity } from '../activity'
 import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import SecurityCheckSection from './SecurityCheckSection'
+import UnusedFilesSection from './UnusedFilesSection'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryDeleteDefault, adoptedRegistryNote, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
@@ -1094,6 +1095,9 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
 
       {/* ③′ セキュリティチェック（事前チェックの次・2026-08-21 Ryosuke 指定） */}
       <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
+
+      {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
+      <UnusedFilesSection projectDir={projectDir} />
 
       {/* ④ 公開・破棄（apply / teardown） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">

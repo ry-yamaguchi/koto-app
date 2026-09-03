@@ -72,7 +72,10 @@ const MAX_BATCHES = 6
 // 巨大なフォルダで走査そのものが固まらないための最後の歯止め）。
 const SECURITY_CHECK_MAX_FILES = 5000
 // チェック対象（コード・設定ファイルを優先）
-const TARGET_RE = /\.(html?|php|js|mjs|cjs|css|json|ya?ml|sh)$|(^|\/)(Dockerfile|\.htaccess)$/i
+// md・txt・svg を含める（2026-09-03 Ryosuke 決定・案1）: どれもテキストなのでAIが読める。
+// README.md やメモに個人情報・接続情報が書かれる実例があり、対象外のままでは警告できない。
+// svg はXMLテキストでスクリプト混入がありうるため、同じ理由で中身を読む対象にする。
+const TARGET_RE = /\.(html?|php|js|mjs|cjs|css|json|ya?ml|sh|md|txt|svg)$|(^|\/)(Dockerfile|\.htaccess)$/i
 // 中身を読むまでもなく公開NGなファイル名。判定の中心は publishExclude.ts の isSecretFile
 // （公開から除外する定義と同じものを使う）。名前に credentials / secret を含むものも足す。
 const SECRET_HINT_RE = /credentials|secret/i
@@ -156,12 +159,30 @@ export function capList(names: readonly string[], n: number): string[] {
  * `.md` `.txt` はここに入れない。README.md やメモは普通に置かれるものであり、
  * 毎回警告すると狼少年になる（「止めすぎも害」）。ここに入れるのは、公開されると
  * 中身がまるごと・構造化された形で丸見えになる危険度が明確なものだけ。
+ * （md/txt は TARGET_RE 側に入っており、中身はAIが読んで確認する。2026-09-03 追記）
  */
 export const DATA_FILE_RE = /\.(sql|db|sqlite|sqlite3|csv|tsv|bak|old|log|dump|zip|tar|gz|tgz|7z)$|~$|\.orig$/i
 
+// ── 対象外ファイルを3分類にする（2026-09-03 Ryosuke 決定・案1）───────────────
+// 実機 v0.6.1 で、画像が「※ 中身を確認していないファイル」に名指しで並ぶ違和感が
+// 指摘された。画像はそもそもテキストとして中身を確認する対象になり得ない「表示用の
+// 資産」であり、残骸の疑いがある others と同じ袋に入れると混乱の元になる。そこで
+// assets を独立させ、名指しせず件数だけを伝える（mergeCheckResults）。
+
+/**
+ * 表示用の「資産」ファイル（一元定義）。画像・フォント・音声・動画など、そもそも
+ * テキストとして中身を確認する対象になり得ないもの。
+ *
+ * svg はここに含めない（XMLテキストでスクリプト混入がありうるため TARGET_RE 側で読む）。
+ * pdf もここに含めない（文書なので others に残し、名前だけで判定させる）。
+ */
+export const ASSET_FILE_RE = /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|woff2?|ttf|otf|eot|mp3|wav|ogg|m4a|mp4|webm|mov|avi)$/i
+
 /**
  * 検査対象（targets）にも、名前だけで公開NGと分かるもの（secretFiles）にも入らなかった
- * 残りを、危険度で dataLike（機械的に警告する）／others（名前だけAIに判定させる）へ分ける（純関数）。
+ * 残りを、dataLike（機械的に警告する）／assets（表示用の資産・名指ししない）／
+ * others（名前だけAIに判定させる）の3つへ分ける（純関数）。
+ * 判定順は dataLike → assets → others（先勝ち。DATA_FILE_RE に合致すればそちらを優先する）。
  *
  * Koto 自身のビルド設定（Dockerfile 等）は targets と同じ理由でここでも除く
  * （利用者には直せない・Koto の設計と矛盾する助言になるため。2026-08-21 rc.2 決定）。
@@ -170,15 +191,18 @@ export function classifyUnchecked(
   files: readonly string[],
   targets: readonly string[],
   secretFiles: readonly string[],
-): { dataLike: string[]; others: string[] } {
+): { dataLike: string[]; assets: string[]; others: string[] } {
   const checked = new Set<string>([...targets, ...secretFiles])
   const dataLike: string[] = []
+  const assets: string[] = []
   const others: string[] = []
   for (const f of files) {
     if (checked.has(f) || isKotoBuildConfig(f)) continue
-    ;(DATA_FILE_RE.test(f) ? dataLike : others).push(f)
+    if (DATA_FILE_RE.test(f)) dataLike.push(f)
+    else if (ASSET_FILE_RE.test(f)) assets.push(f)
+    else others.push(f)
   }
-  return { dataLike, others }
+  return { dataLike, assets, others }
 }
 
 /** AIへ渡すかたまり。長いファイルは複数に分かれる。 */
@@ -248,6 +272,12 @@ export function packBatches(
  * `truncated`（ファイル一覧そのものが打ち切られていた）も同様に要確認へ倒す。
  * 中身を確認していない事実（dataLike・others）は、判定に関わらず必ず末尾へ書く
  * （黙って落とさない。packBatches の skipped と同じ形）。
+ *
+ * ── assets は名指ししない（2026-09-03 Ryosuke 決定・案1）─────────────────
+ * 画像・フォント・音声等の「表示用の資産」は、そもそも中身を確認する対象になり
+ * 得ないので、dataLike・others と同じ「確認していないファイル」一覧には**含めず**、
+ * 件数だけの1行にする。`assets` だけがあって dataLike・others・AIの指摘が無くても、
+ * 判定は要確認に倒さない（資産の存在自体は正常なので forceWarn には含めない）。
  */
 export function mergeCheckResults(
   results: readonly { verdict: 'ok' | 'warn' | 'skip'; report: string }[],
@@ -257,13 +287,16 @@ export function mergeCheckResults(
     skipped: readonly string[]
     /** 中身を確認していない「データっぽい」ファイル（classifyUnchecked）。1件でもあれば要確認に倒す。 */
     dataLike?: readonly string[]
-    /** 中身を確認していない、データっぽくもないその他のファイル（名前だけAIに判定させる対象）。 */
+    /** 表示用の「資産」ファイル（classifyUnchecked）。名指しせず件数だけを報告し、判定は左右しない。 */
+    assets?: readonly string[]
+    /** 中身を確認していない、データっぽくも資産でもないその他のファイル（名前だけAIに判定させる対象）。 */
     others?: readonly string[]
     /** ファイル一覧そのものが打ち切られていたか（fs:projectFilesInfo の truncated）。あれば要確認に倒す。 */
     truncated?: boolean
   },
 ): { verdict: 'ok' | 'warn' | 'skip'; report: string } {
   const dataLike = info.dataLike ?? []
+  const assets = info.assets ?? []
   const others = info.others ?? []
   const truncated = info.truncated ?? false
   const forceWarn = dataLike.length > 0 || truncated
@@ -303,13 +336,20 @@ export function mergeCheckResults(
   const truncatedNote = truncated
     ? ['※ ファイルが多いため一覧は途中までです。チェックも全体の一部にとどまります']
     : []
-  const uncheckedFiles = [...dataLike, ...others]
-  const uncheckedNote = uncheckedFiles.length
-    ? [`※ 中身を確認していないファイル: ${capList(uncheckedFiles, UNCHECKED_NOTE_LIMIT).join(', ')}`]
+  // assets は名指ししない（画像等の存在は雑音になる。件数だけ伝える。2026-09-03 案1）
+  const assetsNote = assets.length
+    ? [`※ 画像・フォント・音声など ${assets.length} 件は、中身の確認の対象外です`]
+    : []
+  // 末尾の明示は others だけ（2026-09-03 Ryosuke 指摘の反映その2）:
+  // ・dataLike は上の警告行が既に名指し＋「中身は確認していません」と書いており、二重になる
+  // ・文言は「なぜ確認しなかったのか」（種類が分からない・読めない種類）を主語にする
+  //   （「名前だけで判定」は理由ではなく代わりにやったこと）
+  const uncheckedNote = others.length
+    ? [`※ 中身を確認できない種類のファイルです（名前だけで判定しました）: ${capList(others, UNCHECKED_NOTE_LIMIT).join(', ')}`]
     : []
   return {
     verdict,
-    report: [head, ...(note ? [note] : []), ...skipNote, ...dataLikeNote, ...lines, ...truncatedNote, ...uncheckedNote].join('\n'),
+    report: [head, ...(note ? [note] : []), ...skipNote, ...dataLikeNote, ...lines, ...truncatedNote, ...assetsNote, ...uncheckedNote].join('\n'),
   }
 }
 
@@ -366,6 +406,10 @@ export function buildCheckPrompt(opts: {
     // 並んでいた。**指摘欄には問題だけ**を書かせる（2026-08-21 Ryosuke 報告）
     '- 「要確認」のときは、指摘欄には**問題がある項目だけ**を書く（問題の無い確認結果は書かない）\n' +
     '- セキュリティに関係しない指摘（体裁・表記・リンク切れ・属性の書き方など）は書かない\n' +
+    // 不要ファイルの片づけは「使われていないファイル」機能（画面の移動ボタン・🕘で戻せる）が担当する。
+    // AI が「削除してください」と勧めると、戻せない削除と戻せる移動の**競合する2つの案内**が
+    // 並んでしまう（2026-09-03 実機・Ryosuke 指摘）。削除の提案はさせない。
+    '- 不要そうなファイルがあっても**削除は提案しない**（片づけは別機能が「公開されない場所への移動」で担当します。疑わしい名前の指摘までは書いてよい）\n' +
     '- 報告以外の文章（思考の経過・英語のメモ）は書かない\n\n' +
     // 切ったのは Koto の都合。**それを指摘として書かせない**（rc.3 実機で
     // 「全文を取得して確認すること」が指摘欄を埋めていた）
@@ -478,7 +522,7 @@ export async function runSecurityCheck(
   const { targets, secretFiles } = pickCheckTargets(files, entry)
   // 対象外の残り（拡張子の許可リストに合わないもの）を「素通り」させない（roadmap #17・案2）。
   // dataLike は機械的に警告、others は名前だけAIに判定させる（中身は渡さない）。
-  const { dataLike, others } = classifyUnchecked(files, targets, secretFiles)
+  const { dataLike, assets, others } = classifyUnchecked(files, targets, secretFiles)
   if (!targets.length && !secretFiles.length && !dataLike.length && !others.length) {
     return { verdict: 'skip', report: 'チェック対象のコードファイルが見つかりませんでした。' }
   }
@@ -547,6 +591,7 @@ export async function runSecurityCheck(
     batches: batches.length,
     skipped,
     dataLike,
+    assets,
     others,
     truncated,
   })

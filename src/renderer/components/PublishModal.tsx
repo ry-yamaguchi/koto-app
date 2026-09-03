@@ -5,6 +5,7 @@ import { withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE, buildPublis
 import { clearPublishPending } from '../publishPending'
 import { rsyncExcludeArgs } from '../../shared/publishExclude'
 import SecurityCheckSection from './SecurityCheckSection'
+import UnusedFilesSection from './UnusedFilesSection'
 import AppRunPanel from './AppRunPanel'
 import HanamiiPanel from './HanamiiPanel'
 import VercelPanel from './VercelPanel'
@@ -414,6 +415,8 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             </p>
             {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
             <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
+            {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
+            <UnusedFilesSection projectDir={projectDir} />
             {error && <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2">{error}</p>}
             <div className="flex justify-between items-center">
               <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>

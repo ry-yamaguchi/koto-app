@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, checkRecordKey, formatCheckRecord, DATA_FILE_RE, classifyUnchecked, capList } from '../src/renderer/securityCheck'
+import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, checkRecordKey, formatCheckRecord, DATA_FILE_RE, ASSET_FILE_RE, classifyUnchecked, capList } from '../src/renderer/securityCheck'
 
 // 2026-08-09 の総点検で見つかった2件の回帰テスト。
 // 公開前セキュリティチェックは「守り」のコードなのに、テストが1件も無かった（掟10）。
@@ -62,6 +62,16 @@ describe('チェックにかけるファイルの選び方', () => {
     const { targets } = pickCheckTargets(['logo.png', 'font.woff2', 'index.html'])
     expect(targets).toEqual(['index.html'])
   })
+
+  // ── 対象外ファイルの3分類化（2026-09-03 Ryosuke 決定・案1）─────────────────
+  // md/txt/svg はテキストなのでAIが読める。メモに個人情報・接続情報が書かれる
+  // 実例があるため、対象外のままにしない。svg もXMLテキストでスクリプト混入が
+  // ありうるので同様に読む。
+  it('md・txt・svg はテキストとして中身を確認する（対象外にしない）', () => {
+    const { targets } = pickCheckTargets(['README.md', 'メモ.txt', 'icon.svg', 'logo.png'])
+    expect(targets).toEqual(['README.md', 'メモ.txt', 'icon.svg'])
+    expect(targets).not.toContain('logo.png')
+  })
 })
 
 // ── 対象外ファイルの「素通り」をふさぐ（roadmap #17・2026-09-03 Ryosuke 発見・案2）───
@@ -83,7 +93,7 @@ describe('DATA_FILE_RE（公開先で丸見えになると危険度が高い拡�
   })
 })
 
-describe('classifyUnchecked（検査対象・secretFiles の残りを dataLike / others に仕分ける）', () => {
+describe('classifyUnchecked（検査対象・secretFiles の残りを dataLike / assets / others に仕分ける）', () => {
   it('データっぽい拡張子は dataLike に入る（実測で完全素通りしていたもの）', () => {
     const files = ['dump.sql', 'backup.zip', 'site.bak', 'index.html']
     const { targets } = pickCheckTargets(files)
@@ -91,11 +101,13 @@ describe('classifyUnchecked（検査対象・secretFiles の残りを dataLike /
     expect(dataLike).toEqual(['dump.sql', 'backup.zip', 'site.bak'])
   })
 
-  it('データっぽくない対象外ファイルは others に入る', () => {
-    const files = ['README.md', 'メモ.txt', 'server.py', 'index.html']
+  // 2026-09-03 3分類化: md/txt は TARGET_RE 側で中身を読むようになったため、
+  // others に残るのは拡張子から判定できない・資産でもないファイルだけになる。
+  it('データっぽくも資産でもない対象外ファイルは others に入る（md/txt は targets へ移動済み）', () => {
+    const files = ['test001', 'server.py', 'index.html']
     const { targets } = pickCheckTargets(files)
     const { others } = classifyUnchecked(files, targets, [])
-    expect(others).toEqual(['README.md', 'メモ.txt', 'server.py'])
+    expect(others).toEqual(['test001', 'server.py'])
   })
 
   it('検査対象（targets）はどちらにも入らない', () => {
@@ -122,6 +134,62 @@ describe('classifyUnchecked（検査対象・secretFiles の残りを dataLike /
     const { dataLike, others } = classifyUnchecked(files, targets, secretFiles)
     expect(dataLike).toEqual([])
     expect(others).toEqual([])
+  })
+
+  // ── 3分類の追加テスト（2026-09-03 Ryosuke 決定・案1）───────────────────────
+  it('画像・フォント・音声・動画は assets に入る（名指ししない「表示用の資産」）', () => {
+    const files = ['logo.png', 'photo.jpg', 'font.woff2', 'font2.ttf', 'movie.mp4', 'audio.mp3', 'index.html']
+    const { targets } = pickCheckTargets(files)
+    const { assets, dataLike, others } = classifyUnchecked(files, targets, [])
+    expect(assets).toEqual(['logo.png', 'photo.jpg', 'font.woff2', 'font2.ttf', 'movie.mp4', 'audio.mp3'])
+    expect(dataLike).toEqual([])
+    expect(others).toEqual([])
+  })
+
+  it('データっぽい拡張子は assets ではなく dataLike のまま（DATA_FILE_RE が先勝ち）', () => {
+    const files = ['dump.sql', 'backup.csv', 'index.html']
+    const { targets } = pickCheckTargets(files)
+    const { dataLike, assets } = classifyUnchecked(files, targets, [])
+    expect(dataLike).toEqual(['dump.sql', 'backup.csv'])
+    expect(assets).toEqual([])
+  })
+
+  it('残骸っぽい名前・拡張子なし・pdf は others に入る（assets ではない）', () => {
+    const files = ['test001', 'notes.pdf', 'index.html']
+    const { targets } = pickCheckTargets(files)
+    const { others, assets } = classifyUnchecked(files, targets, [])
+    expect(others).toEqual(['test001', 'notes.pdf'])
+    expect(assets).toEqual([])
+  })
+
+  it('svg・md・txt はどの分類にも入らず targets に入る（テキストなのでAIが読む）', () => {
+    const files = ['icon.svg', 'README.md', 'メモ.txt', 'index.html']
+    const { targets } = pickCheckTargets(files)
+    expect(targets).toEqual(['icon.svg', 'README.md', 'メモ.txt', 'index.html'])
+    const { dataLike, assets, others } = classifyUnchecked(files, targets, [])
+    expect(dataLike).toEqual([])
+    expect(assets).toEqual([])
+    expect(others).toEqual([])
+  })
+})
+
+// ── ASSET_FILE_RE（表示用の資産ファイルの一元定義。2026-09-03 案1）─────────
+describe('ASSET_FILE_RE（表示用の資産ファイルの一元定義）', () => {
+  it('止める例（＝資産と認識する）: 画像・フォント・音声・動画', () => {
+    for (const f of [
+      'logo.png', 'photo.jpeg', 'photo.jpg', 'anim.gif', 'pic.webp', 'a.avif', 'favicon.ico', 'x.bmp', 'y.tiff', 'z.tif',
+      'font.woff', 'font.woff2', 'font.ttf', 'font.otf', 'font.eot',
+      'song.mp3', 'audio.wav', 'audio.ogg', 'audio.m4a', 'movie.mp4', 'clip.webm', 'clip.mov', 'clip.avi',
+    ]) {
+      expect(ASSET_FILE_RE.test(f)).toBe(true)
+    }
+  })
+
+  // svg・pdf は資産扱いにしない（svg は中身を読む＝targets、pdf は名前だけ判定＝others）
+  it('通す例（＝資産ではない）: svg・pdf・コード・データファイル', () => {
+    for (const f of ['icon.svg', 'doc.pdf', 'index.html', 'dump.sql', 'README.md']) {
+      expect(ASSET_FILE_RE.test(f)).toBe(false)
+    }
   })
 })
 
@@ -403,12 +471,13 @@ describe('セキュリティチェックの配線', () => {
     expect(s).not.toContain('fs.projectFilesInfo(projectDir)')
   })
 
-  it('対象外ファイルを classifyUnchecked で仕分け、mergeCheckResults へ渡している', () => {
+  it('対象外ファイルを classifyUnchecked で仕分け（3分類）、mergeCheckResults へ渡している', () => {
     const s = read('src/renderer/securityCheck.ts')
-    expect(s).toContain('const { dataLike, others } = classifyUnchecked(files, targets, secretFiles)')
+    expect(s).toContain('const { dataLike, assets, others } = classifyUnchecked(files, targets, secretFiles)')
     const at = s.indexOf('const merged = mergeCheckResults(results, {')
     const call = s.slice(at, s.indexOf('})', at))
     expect(call).toContain('dataLike,')
+    expect(call).toContain('assets,')
     expect(call).toContain('others,')
     expect(call).toContain('truncated,')
   })
@@ -673,15 +742,19 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
     expect(dataLikeIdx).toBeLessThan(aiIdx)
   })
 
-  it('others だけなら判定はAIのまま。末尾に「確認していない」一覧が必ず出る', () => {
+  it('others だけなら判定はAIのまま。末尾に「確認できない種類」一覧が必ず出る', () => {
     const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: ['server.py', 'メモ.txt'] })
     expect(m.verdict).toBe('ok')
-    expect(m.report).toContain('※ 中身を確認していないファイル: server.py, メモ.txt')
+    expect(m.report).toContain('※ 中身を確認できない種類のファイルです（名前だけで判定しました）: server.py, メモ.txt')
   })
 
-  it('末尾の「確認していない」一覧は dataLike・others の両方を含む', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: ['server.py'] })
-    expect(m.report).toContain('※ 中身を確認していないファイル: dump.sql, server.py')
+  it('末尾の「確認できない種類」一覧は others だけ（dataLike は警告行と二重になるので含めない・assets も含めない）', () => {
+    // 2026-09-03 Ryosuke 指摘の反映: dataLike（dump.sql）は上の警告行が名指し済みなので末尾に重複させない
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: ['server.py'], assets: ['logo.png'] })
+    expect(m.report).toContain('※ 中身を確認できない種類のファイルです（名前だけで判定しました）: server.py')
+    const tail = m.report.split('※ 中身を確認できない種類のファイルです')[1]
+    expect(tail).not.toContain('dump.sql')
+    expect(m.report).not.toContain('logo.png')
   })
 
   // ── 名前一覧の肥大防止（roadmap #17 追補）: dataLike は capList(20)、
@@ -695,18 +768,62 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
     expect(fixedLine).toContain('d19.sql') // 20件目までは出す
   })
 
-  it('末尾の「確認していないファイル」一覧は、dataLike+others 合算で50件を超えたら「ほかN件」にまとめる', () => {
-    const dataLike = Array.from({ length: 30 }, (_, i) => `d${i}.sql`)
-    const others = Array.from({ length: 30 }, (_, i) => `o${i}.txt`)
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike, others })
-    expect(m.report).toContain('※ 中身を確認していないファイル:')
+  it('末尾の「確認できない種類」一覧は、others が50件を超えたら「ほかN件」にまとめる', () => {
+    const others = Array.from({ length: 60 }, (_, i) => `o${i}.txt`)
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others })
+    expect(m.report).toContain('※ 中身を確認できない種類のファイルです（名前だけで判定しました）:')
     expect(m.report).toContain('ほか10件')
-    expect(m.report).not.toContain('o29.txt')
+    expect(m.report).not.toContain('o59.txt')
   })
 
-  it('dataLike・others が無ければ「確認していないファイル」は書かない（狼少年にしない）', () => {
+  it('others が無ければ「確認できない種類」の一覧は書かない（狼少年にしない）', () => {
     const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [] })
-    expect(m.report).not.toContain('確認していないファイル')
+    expect(m.report).not.toContain('確認できない種類のファイル')
+  })
+
+  // ── assets（表示用の資産）は名指ししない（2026-09-03 Ryosuke 決定・案1）───────
+  it('assets が1件以上あれば、末尾に件数だけの1行を出す（ファイル名は出さない）', () => {
+    const m = mergeCheckResults([okReport], {
+      files: 1, batches: 1, skipped: [],
+      dataLike: ['dump.sql'], others: ['server.py'],
+      assets: ['logo.png', 'font.woff2', 'movie.mp4'],
+    })
+    expect(m.report).toContain('※ 画像・フォント・音声など 3 件は、中身の確認の対象外です')
+    // ファイル名は報告のどの行にも出ない（当て先が他行に漏れないかも確認・掟10）
+    expect(m.report).not.toContain('logo.png')
+    expect(m.report).not.toContain('font.woff2')
+    expect(m.report).not.toContain('movie.mp4')
+  })
+
+  it('assets が無ければ、その注記は入れない', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [] })
+    expect(m.report).not.toContain('中身の確認の対象外です')
+  })
+
+  it('assets の注記は「確認していないファイル」一覧より前（末尾側だが、その手前）に入る', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: ['server.py'], assets: ['logo.png'] })
+    const assetsIdx = m.report.indexOf('画像・フォント・音声など')
+    const uncheckedIdx = m.report.indexOf('確認できない種類のファイルです（名前だけで判定しました）')
+    expect(assetsIdx).toBeGreaterThan(-1)
+    expect(uncheckedIdx).toBeGreaterThan(-1)
+    expect(assetsIdx).toBeLessThan(uncheckedIdx)
+  })
+
+  // assets だけがあって dataLike/others/AIの指摘が無い場合、資産の存在自体は正常なので
+  // 判定を要確認に倒さない（forceWarn に含めない）
+  it('assets だけがあり dataLike・others が無ければ、判定は要確認にしない（資産の存在は正常）', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: [], assets: ['logo.png', 'font.woff2'] })
+    expect(m.verdict).toBe('ok')
+    expect(m.report).toContain('※ 画像・フォント・音声など 2 件は、中身の確認の対象外です')
+    // dataLike/others が無いので「確認していないファイル」一覧自体は出さない
+    expect(m.report).not.toContain('確認していないファイル（名前だけで判定しました）')
+  })
+
+  it('AIが要確認でも、assets の1行は指摘（AIの本文）とは独立して末尾に出る', () => {
+    const m = mergeCheckResults([warnReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: [], assets: ['logo.png'] })
+    expect(m.verdict).toBe('warn')
+    expect(m.report).toContain('app.js: APIキーが直書きされています')
+    expect(m.report).toContain('※ 画像・フォント・音声など 1 件は、中身の確認の対象外です')
   })
 
   it('truncated（一覧打ち切り）は判定を要確認に倒し、専用の文言を明示する', () => {

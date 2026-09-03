@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import SecurityCheckSection from './SecurityCheckSection'
+import UnusedFilesSection from './UnusedFilesSection'
 import { getVercelToken, getVercelTokenById, getVercelTeamId, getVercelTeamIdById, listVercelTokenEntries } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
 import { beginActivity } from '../activity'
@@ -245,6 +246,9 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
 
       {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
       <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
+
+      {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
+      <UnusedFilesSection projectDir={projectDir} />
 
       {/* ② 公開 */}
         {/* 公開できるかの確認。**駄目なものには「どうすればよいか」まで書く**

@@ -65,6 +65,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     migrateCheck: (projectDir: string) => ipcRenderer.invoke('project:migrateCheck', projectDir),
     /** 実際に移す。失敗したら移した分を元へ戻す。 */
     migrate: (projectDir: string, snapshotId: string) => ipcRenderer.invoke('project:migrate', projectDir, snapshotId),
+    /** 未使用ファイルを調べる（**何も変えない**。静的サイトのみ対応。roadmap #18）。 */
+    unusedCheck: (projectDir: string) => ipcRenderer.invoke('project:unusedCheck', projectDir),
+    /** 調べた未使用ファイルを「素材（公開しません）」へ移す。🕘 履歴から戻せる。 */
+    moveToMaterials: (projectDir: string, files: string[]) => ipcRenderer.invoke('project:moveToMaterials', projectDir, files),
   },
   term: {
     create: (cwd?: string) => ipcRenderer.invoke('term:create', cwd),

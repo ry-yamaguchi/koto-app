@@ -1,0 +1,243 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
+import { checkUnusedFiles, moveToMaterialsFs } from '../src/main/ipc/unused'
+import { listSnapshotSummaries } from '../src/main/backup/store'
+import { MATERIALS_DIR } from '../src/shared/publishExclude'
+
+// src/main/ipc/unused.ts はトップレベルで 'electron' を import しているが、
+// **import されるだけでは electron の実体には触れない**（tests/fs.test.ts / tests/portOpen.test.ts
+// と同じ事情）。checkUnusedFiles / moveToMaterialsFs 自体は fs/path しか使わないので、
+// electron 非依存のまま本物の一時フォルダで実駆動できる。
+
+// ── ロールバック検証用の fs.renameSync フック ────────────────────────────
+// ESM では `vi.spyOn(fs, 'renameSync')` が使えない（モジュール名前空間は書き換え不可）。
+// 代わりに 'fs' モジュール自体を「既定では本物へそのまま委譲するラッパー」に差し替え、
+// renameSync だけをテストごとに差し替え可能にする。既定（impl:null）では本物の
+// fs.renameSync がそのまま動くので、他のテストの実駆動には影響しない。
+const renameHook = vi.hoisted(() => ({
+  impl: null as null | ((from: fs.PathLike, to: fs.PathLike) => void),
+  real: null as null | ((from: fs.PathLike, to: fs.PathLike) => void),
+}))
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>()
+  renameHook.real = actual.renameSync
+  return {
+    ...actual,
+    renameSync: (from: fs.PathLike, to: fs.PathLike) => {
+      if (renameHook.impl) return renameHook.impl(from, to)
+      return actual.renameSync(from, to)
+    },
+  }
+})
+
+let dir = ''
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-unused-'))
+})
+afterEach(() => {
+  renameHook.impl = null
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+function write(rel: string, content = 'x'): void {
+  const full = path.join(dir, rel)
+  fs.mkdirSync(path.dirname(full), { recursive: true })
+  fs.writeFileSync(full, content, 'utf-8')
+}
+const exists = (rel: string) => fs.existsSync(path.join(dir, rel))
+const read = (rel: string) => fs.readFileSync(path.join(dir, rel), 'utf-8')
+
+describe('checkUnusedFiles: 対応範囲（静的サイトのみ）', () => {
+  it('静的サイト（package.json 無し）は supported:true で未使用ファイルを返す', () => {
+    write('index.html', '<a href="menu.html">メニュー</a>')
+    write('menu.html', '<p>メニュー</p>')
+    write('old.html', '<p>古い</p>') // どこからも参照されていない
+    const r = checkUnusedFiles(dir)
+    expect(r.supported).toBe(true)
+    expect(r.unused).toContain('old.html')
+    expect(r.unused).not.toContain('menu.html')
+    expect(r.unused).not.toContain('index.html') // ALWAYS_USED
+  })
+
+  it('Node アプリ（package.json + server.js）は supported:false（第一段は静的サイト限定）', () => {
+    write('package.json', JSON.stringify({ scripts: { start: 'node server.js' } }))
+    write('server.js', 'require("http").createServer().listen(3000)')
+    write('old.html', '<p>古い</p>')
+    const r = checkUnusedFiles(dir)
+    expect(r.supported).toBe(false)
+    expect(r.unused).toEqual([])
+  })
+
+  it('public/ があれば、その中を根として見る（resolvePublishRoot と同じ判断）', () => {
+    write('README.md', 'これは直下。無視される') // public/ の外
+    write('public/index.html', '<a href="menu.html">メニュー</a>')
+    write('public/menu.html', '<p>メニュー</p>')
+    write('public/old.html', '<p>古い</p>')
+    const r = checkUnusedFiles(dir)
+    expect(r.supported).toBe(true)
+    expect(r.unused).toEqual(['old.html']) // public/ からの相対パスで返る
+  })
+
+  it('存在しないプロジェクトフォルダは supported:false（例外を投げない）', () => {
+    const r = checkUnusedFiles(path.join(dir, 'no-such-dir'))
+    expect(r.supported).toBe(true) // package.json が読めない＝静的として扱う
+    expect(r.unused).toEqual([])
+  })
+
+  it('絶対パスでない projectDir は supported:false', () => {
+    const r = checkUnusedFiles('not-absolute')
+    expect(r).toEqual({ supported: false, unused: [] })
+  })
+})
+
+describe('moveToMaterialsFs: 実際に動かす', () => {
+  it('未使用ファイルを MATERIALS_DIR の直下へ移す（サブフォルダのファイルは basename で直下へ）', () => {
+    write('old.html', '古い')
+    write('images/unused.jpg', 'バイナリのふり')
+    const r = moveToMaterialsFs(dir, ['old.html', 'images/unused.jpg'])
+    expect(r.ok).toBe(true)
+    expect(r.moved.sort()).toEqual(['images/unused.jpg', 'old.html'])
+    expect(exists('old.html')).toBe(false)
+    expect(exists('images/unused.jpg')).toBe(false)
+    expect(exists(`${MATERIALS_DIR}/old.html`)).toBe(true)
+    expect(exists(`${MATERIALS_DIR}/unused.jpg`)).toBe(true)
+    expect(read(`${MATERIALS_DIR}/old.html`)).toBe('古い')
+  })
+
+  it('移動元の親フォルダが空になったら片づける', () => {
+    write('images/unused.jpg', 'x')
+    const r = moveToMaterialsFs(dir, ['images/unused.jpg'])
+    expect(r.ok).toBe(true)
+    expect(exists('images')).toBe(false) // 空になった images/ ごと消える
+  })
+
+  it('移動元の親フォルダに他のファイルが残っていれば片づけない', () => {
+    write('images/unused.jpg', 'x')
+    write('images/kept.jpg', 'y')
+    const r = moveToMaterialsFs(dir, ['images/unused.jpg'])
+    expect(r.ok).toBe(true)
+    expect(exists('images')).toBe(true)
+    expect(exists('images/kept.jpg')).toBe(true)
+  })
+
+  it('0件の呼び出しは何もせず ok:true', () => {
+    const r = moveToMaterialsFs(dir, [])
+    expect(r).toEqual({ ok: true, moved: [], snapshotOk: true })
+  })
+
+  it('public/ 配下からの相対パスでも、実ファイルは projectDir 直下から正しく動かす', () => {
+    write('public/old.html', '古い')
+    // checkUnusedFiles が返す形（public/ からの相対）をそのまま渡す
+    const r = moveToMaterialsFs(dir, ['old.html'])
+    expect(r.ok).toBe(true)
+    expect(exists('public/old.html')).toBe(false)
+    expect(exists(`${MATERIALS_DIR}/old.html`)).toBe(true)
+  })
+})
+
+describe('moveToMaterialsFs: 上書き拒否（同名衝突は全体を中止する）', () => {
+  it('移動先に同名が既にあれば、1件も動かさず ok:false', () => {
+    write('a.html', 'A')
+    write('b.html', 'B')
+    write(`${MATERIALS_DIR}/b.html`, '既にある')
+    const r = moveToMaterialsFs(dir, ['a.html', 'b.html'])
+    expect(r.ok).toBe(false)
+    expect(r.moved).toEqual([])
+    expect(r.message).toContain('b.html')
+    // a.html は動かない（1件でも弾ければ全体を中止する）
+    expect(exists('a.html')).toBe(true)
+    expect(exists(`${MATERIALS_DIR}/a.html`)).toBe(false)
+  })
+
+  it('複数の対象が同じ basename に集約される（別フォルダの同名ファイル）場合も中止する', () => {
+    write('a/logo.png', 'A')
+    write('b/logo.png', 'B')
+    const r = moveToMaterialsFs(dir, ['a/logo.png', 'b/logo.png'])
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('logo.png')
+    expect(exists('a/logo.png')).toBe(true)
+    expect(exists('b/logo.png')).toBe(true)
+  })
+})
+
+describe('moveToMaterialsFs: 保護パス拒否（isProtectedWritePath）', () => {
+  it('移動元が保護パス（.env）なら拒否する', () => {
+    write('.env', 'SECRET=1')
+    const r = moveToMaterialsFs(dir, ['.env'])
+    expect(r.ok).toBe(false)
+    expect(r.moved).toEqual([])
+    expect(exists('.env')).toBe(true) // 触られていない
+  })
+
+  it('移動元が Koto の管理領域（.sakuraide-backup 配下）なら拒否する', () => {
+    write('.sakuraide-backup/whatever.json', '{}')
+    const r = moveToMaterialsFs(dir, ['.sakuraide-backup/whatever.json'])
+    expect(r.ok).toBe(false)
+    expect(exists('.sakuraide-backup/whatever.json')).toBe(true)
+  })
+
+  it('.. を含む相対パスは脱出として拒否する（プロジェクトの外は操作できない）', () => {
+    const r = moveToMaterialsFs(dir, ['../outside.txt'])
+    expect(r.ok).toBe(false)
+    expect(r.moved).toEqual([])
+  })
+})
+
+describe('moveToMaterialsFs: 🕘 履歴（移動元・移動先の両方を退避する）', () => {
+  it('移動元（内容退避）・移動先（まだ無かった印）の両方がスナップショットに記録される', () => {
+    write('old.html', '古い内容')
+    const r = moveToMaterialsFs(dir, ['old.html'])
+    expect(r.ok).toBe(true)
+    expect(r.snapshotOk).toBe(true)
+    const { snapshots } = listSnapshotSummaries(dir)
+    expect(snapshots).toHaveLength(1)
+    const paths = snapshots[0].files.map(f => f.path).sort()
+    expect(paths).toEqual(['old.html', `${MATERIALS_DIR}/old.html`].sort())
+    const byPath = Object.fromEntries(snapshots[0].files.map(f => [f.path, f.action]))
+    expect(byPath['old.html']).toBe('overwrite') // 内容があった＝退避
+    expect(byPath[`${MATERIALS_DIR}/old.html`]).toBe('create') // まだ無かった
+  })
+
+  it('その時点へ戻すと、移動そのものが取り消される形になる（restoreToSnapshot と組み合わせ）', async () => {
+    const { restoreToSnapshot } = await import('../src/main/backup/store')
+    write('old.html', '古い内容')
+    const r = moveToMaterialsFs(dir, ['old.html'])
+    const snapshotId = listSnapshotSummaries(dir).snapshots[0].id
+    const restored = restoreToSnapshot(dir, snapshotId)
+    expect(restored.ok).toBe(true)
+    expect(exists('old.html')).toBe(true)
+    expect(read('old.html')).toBe('古い内容')
+    expect(exists(`${MATERIALS_DIR}/old.html`)).toBe(false) // 先（移動先）は無かった扱いなので削除される
+    void r
+  })
+})
+
+describe('moveToMaterialsFs: 途中失敗のロールバック', () => {
+  it('2件目の移動が失敗したら、1件目も元へ戻す（半分だけ動いた状態を残さない）', () => {
+    write('a.html', 'A')
+    write('b.html', 'B')
+
+    // 事前検証（存在チェック）はすべて通したうえで、実際の rename 実行段だけを
+    // 2回目に失敗させる（1回目・ロールバックの巻き戻しは本物の fs.renameSync を通す）。
+    let calls = 0
+    renameHook.impl = (from, to) => {
+      calls++
+      if (calls === 2) throw new Error('わざと失敗させた')
+      return renameHook.real!(from, to)
+    }
+
+    const r = moveToMaterialsFs(dir, ['a.html', 'b.html'])
+
+    expect(r.ok).toBe(false)
+    expect(r.moved).toEqual([])
+    // 1件目（a.html）は動いたあと、元へ戻っている
+    expect(exists('a.html')).toBe(true)
+    expect(exists(`${MATERIALS_DIR}/a.html`)).toBe(false)
+    // 2件目（b.html）はそもそも動いていない
+    expect(exists('b.html')).toBe(true)
+    expect(exists(`${MATERIALS_DIR}/b.html`)).toBe(false)
+  })
+})

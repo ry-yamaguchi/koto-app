@@ -22,6 +22,7 @@ import { registerClaudeHandlers } from './claude'
 import { registerChatStoreHandlers } from './chatStore'
 import { registerUpdateHandlers } from './update'
 import { registerMigrateHandlers } from './migrate'
+import { registerUnusedHandlers } from './unused'
 import { registerLearningHandlers } from './learning'
 import { registerUsageHandlers } from './usage'
 import { registerApprovalHandlers } from './approval'
@@ -33,6 +34,7 @@ export type { IpcDeps } from './types'
 export function registerAllHandlers(deps: IpcDeps) {
   registerWindowHandlers(deps)
   registerMigrateHandlers()
+  registerUnusedHandlers()
   registerShellHandlers(deps)
   registerWebHandlers(deps)
   registerRemoteHandlers(deps)

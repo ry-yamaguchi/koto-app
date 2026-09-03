@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import SecurityCheckSection from './SecurityCheckSection'
+import UnusedFilesSection from './UnusedFilesSection'
 import { getHanamiiToken, getHanamiiTokenById, listHanamiiTokenEntries } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
 import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
@@ -561,6 +562,9 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
 
       {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
       <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
+
+      {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
+      <UnusedFilesSection projectDir={projectDir} />
 
       {/* ③ 公開 */}
       {token && (

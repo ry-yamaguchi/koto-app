@@ -219,6 +219,21 @@ interface Window {
       migrate(projectDir: string, snapshotId: string): Promise<{
         ok: boolean; moved: string[]; restored: boolean; snapshotOk?: boolean; message?: string
       }>
+      /**
+       * 未使用ファイルの検出（roadmap #18・**静的サイトのみ対応**。何も変えない）。
+       * `unused` は projectFilesInfo(publishView:true) の一覧のうち、どこからも参照が
+       * 見つからなかったもの（相対パスは公開の根＝resolvePublishRoot からの相対）。
+       * `supported: false` は静的サイト以外（Node/PHP 等・動的参照は誤検知しやすいため対象外）。
+       */
+      unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[] }>
+      /**
+       * 未使用ファイルを「素材（公開しません）」へ移す。**同名衝突が1件でもあれば全体を中止する**
+       * （中途半端に動かさない）。移す前に 🕘 履歴へ退避するので、あとから元に戻せる。
+       * `snapshotOk` はその退避を残せたか。
+       */
+      moveToMaterials(projectDir: string, files: string[]): Promise<{
+        ok: boolean; moved: string[]; snapshotOk: boolean; message?: string
+      }>
       /** withPublishDir: 最初から public/ を掘るか（改善1・2026-08-29。NewProjectModal.tsx が判断する）。 */
       createProject(
         parentDir: string,
