@@ -46,8 +46,15 @@ describe('配線', () => {
   const fsIpc = readFileSync(join(__dirname, '..', 'src/main/ipc/fs.ts'), 'utf-8')
 
   it('★★ fs:trash がこの判断を通っている', () => {
-    expect(fsIpc).toContain("canTrash(app.getPath('home')")
+    // home は os.homedir()（$HOME を尊重）。app.getPath('home') は macOS で $HOME を
+    // 見ないため、e2e の HOME 隔離時に fs:homeDir 側の home とズレる（2026-09-02 実測）
+    expect(fsIpc).toContain('canTrash(os.homedir()')
     expect(fsIpc).toContain('if (!check.ok) throw new Error(check.reason)')
+  })
+
+  it('★★ fs:homeDir は $HOME を尊重する os.homedir() を返す', () => {
+    expect(fsIpc).toContain("ipcMain.handle('fs:homeDir', () => os.homedir())")
+    expect(fsIpc).not.toContain("ipcMain.handle('fs:homeDir', () => app.getPath('home'))")
   })
 })
 

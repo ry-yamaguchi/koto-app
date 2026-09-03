@@ -237,6 +237,7 @@ function makeSpec(overrides: Partial<EngineTurnSpec> = {}): EngineTurnSpec {
     models: [{ id: 'modelA' }, { id: 'modelB' }],
     maxRounds: 5,
     toolsProjectDir: '/proj',
+    convDir: '/proj',
     errorPrefix: '',
     twoStageVision: false,
     routedModel: null,

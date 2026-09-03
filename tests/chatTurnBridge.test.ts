@@ -54,7 +54,6 @@ function makeHandlers() {
   }
   const handlers = {
     buildSystemPrompt: record('buildSystemPrompt', 'system-prompt'),
-    getHistory: record('getHistory', ['h1']),
     onUserMessage: record('onUserMessage', undefined),
     buildRagBlock: record('buildRagBlock', 'rag-block'),
     getSearchConfig: record('getSearchConfig', { engine: 'x' }),
@@ -66,10 +65,10 @@ function makeHandlers() {
 
 // B'-3d-2b: executeTool は main 直呼びになり ASK_PATHS から外れた（dispatchAsk に case が無い・
 // 下の「知らない path」describe で確かめる）。B'-3d-3: approveToolCall も同じ理由で外れた。
-// この表からは executeTool・approveToolCall のエントリを外した。
+// B'-3e-b: getHistory も同じ理由で外れた。この表からは executeTool・approveToolCall・
+// getHistory のエントリを外した。
 const TABLE: Record<AskPath, { args: unknown[]; handlerKey: string; expectedArgs: unknown[]; expectedResult: unknown }> = {
   buildSystemPrompt: { args: [], handlerKey: 'buildSystemPrompt', expectedArgs: [], expectedResult: 'system-prompt' },
-  getHistory: { args: [], handlerKey: 'getHistory', expectedArgs: [], expectedResult: ['h1'] },
   onUserMessage: { args: ['hello', true], handlerKey: 'onUserMessage', expectedArgs: ['hello', true], expectedResult: undefined },
   buildRagBlock: { args: ['query'], handlerKey: 'buildRagBlock', expectedArgs: ['query'], expectedResult: 'rag-block' },
   getSearchConfig: { args: [], handlerKey: 'getSearchConfig', expectedArgs: [], expectedResult: { engine: 'x' } },
@@ -129,6 +128,20 @@ describe('dispatchAsk: 知らない path', () => {
     let threw = false
     try {
       await dispatchAsk(handlers, 'approveToolCall' as AskPath, ['write_file', '{}', {}])
+    } catch {
+      threw = true
+    }
+    expect(threw).toBe(true)
+  })
+
+  // B'-3e-b: getHistory も main 直呼び（convDir で convStore を直読み）になり、ASK_PATHS からも
+  // dispatchAsk の case からも消えた。もし main 側の実装ミスで 'getHistory' が ask として
+  // 飛んできても、「知らない path」として throw する（黙って undefined を返さない）。
+  it("'getHistory' も「知らない path」として throw する（main 直呼びになり ask ではない）", async () => {
+    const { handlers } = makeHandlers()
+    let threw = false
+    try {
+      await dispatchAsk(handlers, 'getHistory' as AskPath, [])
     } catch {
       threw = true
     }

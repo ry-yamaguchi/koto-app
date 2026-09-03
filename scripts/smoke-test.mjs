@@ -29,6 +29,9 @@ if (!fs.existsSync(APP)) {
 //
 // 起動できるかを見るのが目的なので、**使い捨ての保存領域**で十分である。
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-smoke-profile-'))
+// 起動しただけで実ワークスペース（既定のホーム配下）へ移行が走るため、HOMEごと使い捨てにする
+// （main の fs:homeDir は os.homedir() 実装のため $HOME の差し替えが効く）。
+const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-smoke-home-'))
 
 const out = fs.openSync(LOG, 'w')
 const child = spawn(APP, [`--user-data-dir=${PROFILE}`], {
@@ -36,6 +39,7 @@ const child = spawn(APP, [`--user-data-dir=${PROFILE}`], {
   detached: true,
   env: {
     ...process.env,
+    HOME: HOME_DIR,
     ELECTRON_ENABLE_LOGGING: '1', // レンダラのconsoleをstdout/stderrへ
     SMOKE_CLAUDE_BINARY_CHECK: '1', // C系 C1-4: Claude Agent SDK のネイティブバイナリがパッケージから実行できるか検証
   },
@@ -80,5 +84,6 @@ if (!lines.some(l => l.includes('[claude-binary-check] ok'))) {
 }
 
 try { fs.rmSync(PROFILE, { recursive: true, force: true }) } catch { /* 消せなくても害は無い */ }
+try { fs.rmSync(HOME_DIR, { recursive: true, force: true }) } catch { /* 消せなくても害は無い */ }
 
 console.log(`✅ スモークテスト成功（起動${WAIT_MS / 1000}秒・レンダラ/メインに致命的エラーなし・Claudeバイナリ実行OK）`)

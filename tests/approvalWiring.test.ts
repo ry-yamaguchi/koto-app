@@ -48,41 +48,49 @@ describe('turnRunner.ts: approveToolCall はもう bridge.ask ではない', () 
   })
 })
 
-describe('turnRunner.ts: getHistory は convStore 直読み（プロジェクト会話）／ask（ChatApp）の分岐', () => {
+describe('turnRunner.ts: getHistory は convStore 直読み（B\'-3e-b・ask はもう無い）', () => {
   const src = readCode('src/main/chat/turnRunner.ts')
 
   it('convStore.loadConversation を import している', () => {
     expect(src).toContain("import { applyConversationOps, loadConversation } from './convStore'")
   })
 
-  it('toolsProjectDir があれば直読み、無ければ ask（ChatApp 専用）', () => {
+  // B'-3e-b: 単独チャット（ChatApp）も main が書き主になり、getHistory はもう
+  // toolsProjectDir の有無で ask に分岐しない。convDir から直読みするだけになった。
+  it('convDir から直読みするだけ（ask を呼ばない・toolsProjectDir では分岐しない）', () => {
     const start = src.indexOf('getHistory: () => {')
     expect(start).toBeGreaterThan(-1)
     const end = src.indexOf('buildSystemPrompt:', start)
     expect(end).toBeGreaterThan(start)
     const block = src.slice(start, end)
-    expect(block).toContain('const dir = payload.spec.toolsProjectDir')
-    expect(block).toContain("return dir ? (loadConversation(dir) ?? []) : (bridge.ask('getHistory', []) as any)")
+    expect(block).toContain('const dir = payload.spec.convDir')
+    expect(block).toContain('return dir ? (loadConversation(dir) ?? []) : []')
+    expect(block).not.toContain("bridge.ask('getHistory'")
+    expect(block).not.toContain('payload.spec.toolsProjectDir')
+  })
+
+  it("bridge.ask('getHistory' がソース全体に存在しない（main はもう ask しない）", () => {
+    expect(src).not.toContain("bridge.ask('getHistory'")
   })
 })
 
-describe('shared/chatTurnRpc.ts: ASK_PATHS から approveToolCall が消え、7本になっている', () => {
+describe('shared/chatTurnRpc.ts: ASK_PATHS から approveToolCall・getHistory が消え、6本になっている', () => {
   const src = readCode('src/shared/chatTurnRpc.ts')
 
-  it("'approveToolCall' という要素が ASK_PATHS 配列に無い（getHistory は残る）", () => {
+  it("'approveToolCall' / 'getHistory' という要素が ASK_PATHS 配列に無い", () => {
     const start = src.indexOf('export const ASK_PATHS = [')
     const end = src.indexOf('] as const', start)
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
     const arrayLiteral = src.slice(start, end)
     expect(arrayLiteral).not.toContain("'approveToolCall'")
-    expect(arrayLiteral).toContain("'getHistory'")
+    expect(arrayLiteral).not.toContain("'getHistory'")
   })
 
-  it('実体（ASK_PATHS）も7本で、内容が期待どおり', () => {
-    expect(ASK_PATHS).toHaveLength(7)
+  it('実体（ASK_PATHS）も6本で、内容が期待どおり', () => {
+    expect(ASK_PATHS).toHaveLength(6)
     expect(ASK_PATHS).toEqual([
-      'buildSystemPrompt', 'getHistory', 'onUserMessage',
+      'buildSystemPrompt', 'onUserMessage',
       'buildRagBlock', 'getSearchConfig', 'fetchPagesBlock', 'autoSearchBlock',
     ])
   })

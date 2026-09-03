@@ -299,7 +299,7 @@ const readCode = (rel: string): string =>
     })
     .join('\n')
 
-describe('9. turnRunner: message系 emit が applyConversationOps を通る（toolsProjectDir あり時）', () => {
+describe('9. turnRunner: message系 emit が applyConversationOps を通る（convDir あり時・B\'-3e-b）', () => {
   const src = readCode('src/main/chat/turnRunner.ts')
 
   it('import している', () => {
@@ -311,13 +311,17 @@ describe('9. turnRunner: message系 emit が applyConversationOps を通る（to
   // buildMainPorts 内の局所 const（const emit: EngineTurnPorts['emit'] = (ev) => {...}）へ
   // 形が変わった（executeTool の io（buildMainIo）からも同じ emit を参照するため）。
   // 中身の判定順序・条件は1文字も変えていない——探す形だけをこの新しい形に合わせる。
-  it("emit の定義（buildMainPorts の中の const emit）が applyConversationOps(payload.spec.toolsProjectDir, [ev]) を、wc.send より前に呼ぶ", () => {
+  //
+  // B'-3e-b: 判定・書き込み先を toolsProjectDir から convDir へ変えた（単独チャットも
+  // main が書き主になった。会話の置き場＝convDir と、ツールの根＝toolsProjectDir は別物）。
+  it("emit の定義（buildMainPorts の中の const emit）が applyConversationOps(payload.spec.convDir, [ev]) を、wc.send より前に呼ぶ", () => {
     const start = src.indexOf("const emit: EngineTurnPorts['emit'] = (ev) => {")
     expect(start).toBeGreaterThan(-1)
     const closeIdx = src.indexOf('\n  }', start) // この const の閉じ（2スペース・関数直下）
     expect(closeIdx).toBeGreaterThan(-1)
     const block = src.slice(start, closeIdx)
-    expect(block).toContain('applyConversationOps(payload.spec.toolsProjectDir, [ev])')
+    expect(block).toContain('applyConversationOps(payload.spec.convDir, [ev])')
+    expect(block).not.toContain('applyConversationOps(payload.spec.toolsProjectDir, [ev])')
     expect(block.indexOf('applyConversationOps(')).toBeLessThan(block.indexOf('wc.send('))
     // message系（append/replaceLast/removeLast）だけを対象にしている条件があること
     expect(block).toContain("ev.kind === 'append'")

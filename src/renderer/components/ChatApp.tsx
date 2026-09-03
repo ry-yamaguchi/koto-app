@@ -11,7 +11,8 @@ import { CHAT_CONTEXT } from '../aiContext'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
 import ModelSelect from './ModelSelect'
 import { loadConversationView, makeConvClient, type Op } from '../chatConvClient'
-import { sessionDir } from '../../shared/appChatDirs'
+import { applyToMessages, viewSyncDecision } from '../../shared/chatEvents'
+import { sessionDir, sessionIdFromDir } from '../../shared/appChatDirs'
 import { getWorkspaceDir } from '../workspace'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
@@ -60,34 +61,6 @@ function newSession(model: string = getDefaultModel('chat')): Session {
 
 function titleFromMessage(content: string): string {
   return content.slice(0, 40) + (content.length > 40 ? '…' : '')
-}
-
-/**
- * before→after の差分から convStore の Op を作る（B'-3e-a）。
- *
- * ── なぜ diff するか ─────────────────────────────────────────────
- * useAiChat.ts の updateShown は「メッセージ配列を書き換える updater 関数」しか渡してこない
- * （出来事そのもの＝ChatEvent は渡らない）。だが updater は必ず shared/chatEvents.ts の
- * applyToMessages 相当の変化（append/replaceLast/removeLast のいずれか）しか起こさないため、
- * before/after の件数差から一意に Op を組み立てられる（複製ではなく、同じ制約を利用する再構成）。
- * 何も変わっていなければ null（convStore へは何も送らない）。
- */
-// export: tests/deriveOp.test.ts が直接検証する（画面の状態差分→convStore の Op という
-// 「書き換えの翻訳」は守りに近く、ソース読みだけでは変異を捕まえられないため実駆動で固定する）。
-export function deriveOp(before: Message[], after: Message[]): Op | null {
-  if (after.length === before.length + 1) return { kind: 'append', msg: after[after.length - 1] }
-  if (after.length === before.length - 1) return { kind: 'removeLast' }
-  if (after.length === before.length) {
-    if (after.length === 0) return null // 空→空。chatEvents.ts の replaceLast 仕様どおり「何も起きない」
-    // 末尾以外が書き換わっていたら replaceLast では嘘になる（現行の呼び出しは全部末尾操作だが、
-    // 想定外の中間編集を黙って壊すより丸ごと送る方が安全側）。
-    for (let i = 0; i < after.length - 1; i++) {
-      if (after[i] !== before[i]) return { kind: 'replaceAll', messages: after }
-    }
-    return { kind: 'replaceLast', msg: after[after.length - 1] }
-  }
-  // 通常はここへ来ない（想定外の一括差し替えへの保険。取りこぼすより丸ごと送る方が安全側）。
-  return { kind: 'replaceAll', messages: after }
 }
 
 function SakuraAvatar() {
@@ -165,8 +138,11 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   }, [chatWorkspace])
 
   /**
-   * アクティブセッションのメッセージへ updater を当て、画面へ即時反映しつつ、変化を convStore へ
-   * ops として送る（見かけは即時反映のまま・保存の形だけが「全量書き→追記＋索引」へ変わる）。
+   * 画面へ反映するだけの純粋な形（B'-3e-b: 単独チャットも main が書き主になったため、
+   * deriveOp で ops を組み立てて送る責務はもう持たない——それは onMessageEvent
+   * （下の useAiChat 呼び出し。applyOp・さらに下で定義）が担う）。
+   * convDir がまだ定まっていない間（起動直後・chatWorkspace 読み込み中）の受け皿として、
+   * viewOnlyEmit・applyOp の両方から直接当てられることがある。
    *
    * ── なぜ activeId を閉じ込めるか ─────────────────────────────────
    * useAiChat.ts の emit/viewOnlyEmit は「この関数が作られた render の toolsProjectDir・sessionId」
@@ -174,17 +150,23 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
    * ため）。updateShown（＝この関数）もそれに合わせ、呼ばれた時点の「いま見ているセッション」ではなく
    * **この関数が作られた時点の activeId** へ当てる（useCallback の依存に activeId を持つことで、
    * activeId が変わるたびに新しいクロージャが作られ、古いクロージャは古い activeId を指したまま
-   * 動き続ける＝並列ターンの取り違えが起きない。既存の updateShown も同じ性質を持っていた）。
+   * 動き続ける＝並列ターンの取り違えが起きない）。
    */
-  const updateActiveMessages = useCallback((updater: (prev: Message[]) => Message[]) => {
-    setSessions(prev => prev.map(s => {
-      if (s.id !== activeId) return s
-      const next = updater(s.messages)
-      const op = deriveOp(s.messages, next)
-      if (op) getConvClient(activeId)?.apply(op)
-      return { ...s, messages: next }
-    }))
-  }, [activeId, getConvClient])
+  const updateShown = useCallback((updater: (prev: Message[]) => Message[]) => {
+    setSessions(prev => prev.map(s => s.id === activeId ? { ...s, messages: updater(s.messages) } : s))
+  }, [activeId])
+
+  /**
+   * renderer 発の書き換えを main へ ops として送る。ただし convClient がまだ無い間
+   * （chatWorkspace 読み込み中・getConvClient(activeId) が null）は、送り先が無いので
+   * updateShown で画面だけ直接更新する（ChatPanel.tsx の applyOp/applyOpLocally と
+   * 同じフォールバック。読み込み中に出したい案内バブルを黙って消さないため）。
+   */
+  const applyOp = useCallback((op: Op) => {
+    const client = getConvClient(activeId)
+    if (client) client.apply(op)
+    else updateShown(prev => (op.kind === 'replaceAll' ? op.messages : applyToMessages(prev, op as any)))
+  }, [activeId, getConvClient, updateShown])
 
   // 送信パイプライン（予算・切替・検索・ツールループ）は共通フックへ集約。
   // 表示はアクティブセッション内のメッセージ列へ反映する。
@@ -198,12 +180,22 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     // 現在日時（この端末のローカル時刻）を毎回の送信で先頭に添える（AIに今日を推測させない・chatTime.ts）
     buildSystemPrompt: () => nowContext() + '\n\n' + CHAT_CONTEXT,
     toolsProjectDir: null,
+    // 会話の置き場（main の convStore.ts の dir キー・B'-3e-b）。chatWorkspace が読み込み済み
+    // になるまでは null（main はストアに触らず、getHistory は空履歴で始まる）。この間は
+    // 送信そのものをゲートする（下の送信ガード参照。convDir 無しで送っても保存されないため）。
+    convDir: chatWorkspace ? sessionDir(chatWorkspace, activeId) : null,
     // 改善2（2026-08-29）: セッション別に実行状態を持たせる（turnKey(null, sessionId)）。
     // これで待っていない会話（他のセッション）からも送信できる（並列。IDEと同じ意味論）。
     sessionId: activeId,
     buildExecuteOpts: () => ({}),
     getHistory: () => activeSession?.messages ?? [],
-    updateShown: updateActiveMessages,
+    // main が既に書き主のターンの画面反映は viewOnlyEmit（下の chat.onApplied 購読）に
+    // 一本化した。ここは「画面へ反映するだけ」の純粋な形（上の updateShown 参照）。
+    updateShown,
+    // renderer 発の message系（ユーザー吹き出し・案内 toolNote 等）は ops として main へ
+    // 送るだけにする（画面反映は chat:applied の押し出しに任せる。ChatPanel の client.apply
+    // と同じ B-1a パターン）。
+    onMessageEvent: (ev) => applyOp(ev),
     // タイトルの自動命名も updateSession を経由させ、索引（appSessions:rename）へも
     // 反映する（updateSession は下で定義。JSのクロージャは呼ばれるまで参照を解決しないため、
     // 定義順はこのコールバックの実行タイミングに影響しない）。
@@ -229,18 +221,23 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     const list = Array.from(files)
     // 所見19: 画像以外のファイルが混じっていたら、黙って捨てずにアクティブな会話へ toolNote バブルで案内する
     //（fileToDataUrl は非画像を null で捨てるため、この案内が無いとドロップしても無反応に見えた）。
+    // B'-3e-b: 永続化が要る書き換えは op を組んで main へ送るだけにする（画面反映は chat:applied。
+    // convClient がまだ無い間は applyOp が画面直接更新へフォールバックする）。
     if (countNonImageFiles(list) > 0) {
-      updateActiveMessages(prev => [...prev, {
-        role: 'assistant',
-        content: '📎 画像ファイル（PNG/JPEGなど）のみ添付できます。それ以外のファイルは取り込みませんでした。',
-        toolNote: true,
-      }])
+      applyOp({
+        kind: 'append',
+        msg: {
+          role: 'assistant',
+          content: '📎 画像ファイル（PNG/JPEGなど）のみ添付できます。それ以外のファイルは取り込みませんでした。',
+          toolNote: true,
+        },
+      })
     }
     for (const f of list) {
       const url = await fileToDataUrl(f)
       if (url) setPendingImages(prev => [...prev, url])
     }
-  }, [updateActiveMessages])
+  }, [applyOp])
 
   // ── B'-3e-a: 起動時はまず「索引」だけを読む（メッセージ本文は含まない）─────────────
   // 索引が1件以上あれば、それで sessions を置き換える（本文はまだ空のまま。切替時 effect が読む）。
@@ -283,6 +280,44 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     })
     return () => { cancelled = true }
   }, [chatWorkspace, activeId])
+
+  // ── B'-3e-b: main が書き主になった会話の押し出しを購読する（ChatPanel の B-1a パターンの踏襲）──
+  // main（convStore.ts）はセッションの保存先（convDir＝セッション擬似 dir）へ書き込むたびに
+  // chat:applied を送る。ChatPanel は「dir === projectDir」の単純比較で済むが、ChatApp は
+  // 複数セッションを同時に持つため、dir から「どのセッションか」を逆算する
+  // （sessionIdFromDir・appChatDirs.ts に一元化・sessionDir の逆関数）。
+  // **アクティブでないセッションも含めて**当てる（改善2の並列送信と辻褄を合わせる・掟11の
+  // 例外＝「見てほしい」印は他所にも出してよいのと同じ理由で、中身の反映自体は持ち場ごとに正しく
+  // 行う。表示は引き続き「いま見ているセッションだけ」がユーザーに見える）。
+  useEffect(() => {
+    if (!chatWorkspace) return
+    let cancelled = false
+    const reloadingIds = new Set<string>() // 読み直しの連打防止（セッションごとに独立）
+    const off = window.electronAPI.chat.onApplied(({ projectDir: dir, op, length }) => {
+      const sid = sessionIdFromDir(chatWorkspace, dir)
+      if (!sid) return // 自分のワークスペースの、どのセッションでもない
+      let needsReload = false
+      setSessions(prev => prev.map(s => {
+        if (s.id !== sid) return s
+        const decision = viewSyncDecision(op as Op, s.messages.length, length)
+        if (decision === 'reload') { needsReload = true; return s }
+        // ⚠️ stamp を二重に掛けない: convStore.ts（appliedOpFor）が、当てた直後の
+        // stamp 済みメッセージに差し替えてから通知しているので、この op の msg には
+        // 既に at が入っている（ChatPanel.tsx の同じ購読と同じ理由）。
+        const next = op.kind === 'replaceAll' ? op.messages : applyToMessages(s.messages, op as any)
+        return { ...s, messages: next }
+      }))
+      if (needsReload && !reloadingIds.has(sid)) {
+        // 一致しない＝取りこぼした可能性がある。ストアから読み直して自己修復する。
+        reloadingIds.add(sid)
+        loadConversationView(dir).then(msgs => {
+          reloadingIds.delete(sid)
+          if (!cancelled) setSessions(prev => prev.map(s => s.id === sid ? { ...s, messages: msgs } : s))
+        })
+      }
+    })
+    return () => { cancelled = true; off() }
+  }, [chatWorkspace])
 
   // B: セッション（会話）を切り替えたら割り振りをリセット
   useEffect(() => { setRoutedModel(null) }, [activeId])
@@ -349,12 +384,14 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     if (!activeSession) return
     const text = input
     const images = pendingImages
-    if ((!text.trim() && images.length === 0) || isLoading) return
+    // 送信ゲート: chatWorkspace が null の間（起動直後の読み込み中）は送らせない
+    // （convDir が null のまま送ると main に保存されないため。B'-3e-b）。
+    if ((!text.trim() && images.length === 0) || isLoading || !chatWorkspace) return
     setInput('')
     setPendingImages([])
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     void chat.send(text, images)
-  }, [activeSession, input, pendingImages, isLoading, chat])
+  }, [activeSession, input, pendingImages, isLoading, chatWorkspace, chat])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send() }
@@ -493,23 +530,27 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
             <div className="flex flex-col items-center justify-center h-full gap-4 px-4 relative overflow-hidden">
               <GeoSquares className="top-12 right-16 opacity-70" />
               <GeoSquares className="bottom-16 left-16 rotate-180 opacity-50" />
-              <SakuraLogo size={72} />
-              <h2 className="text-3xl font-bold text-ink">Koto <span className="text-sakura">AI</span></h2>
-              {/* 単独チャットは常にAI Engine経路（Claudeはプロジェクトのツールが前提のためIDEモード限定）。
-                  apiKeyが無い＝モードBでここへ来た場合は、その旨とIDEモードへの案内を先に伝える。 */}
-              <p className="text-sm text-ink-secondary">
-                {apiKey ? 'さくらのAI Engineに何でも聞いてください' : 'Claudeモードは、プロジェクトを開いた画面（IDEモード）でご利用ください'}
-              </p>
-              <div className="grid grid-cols-2 gap-2.5 mt-4 max-w-xl w-full">
-                {['コードのレビューをお願いします', 'Pythonでスクレイピングを書いて', 'このエラーの原因は何ですか？', 'TypeScriptの型定義を教えて'].map(s => (
-                  <button
-                    key={s}
-                    onClick={() => { setInput(s); textareaRef.current?.focus() }}
-                    className="text-left px-4 py-3 rounded-xl bg-surface hover:bg-elevated text-[13px] text-ink-secondary hover:text-ink transition-colors border border-line hover:border-sakura"
-                  >
-                    {s}
-                  </button>
-                ))}
+              {/* 飾り（GeoSquares・absolute）より文字とボタンを前に出す（relative z-10。
+                  キー未登録画面のカードと同じ作法・2026-09-02 Ryosuke 指摘）。 */}
+              <div className="relative z-10 flex flex-col items-center gap-4 max-w-xl w-full">
+                <SakuraLogo size={72} />
+                <h2 className="text-3xl font-bold text-ink">Koto <span className="text-sakura">AI</span></h2>
+                {/* 単独チャットは常にAI Engine経路（Claudeはプロジェクトのツールが前提のためIDEモード限定）。
+                    apiKeyが無い＝モードBでここへ来た場合は、その旨とIDEモードへの案内を先に伝える。 */}
+                <p className="text-sm text-ink-secondary">
+                  {apiKey ? 'さくらのAI Engineに何でも聞いてください' : 'Claudeモードは、プロジェクトを開いた画面（IDEモード）でご利用ください'}
+                </p>
+                <div className="grid grid-cols-2 gap-2.5 mt-4 w-full">
+                  {['コードのレビューをお願いします', 'Pythonでスクレイピングを書いて', 'このエラーの原因は何ですか？', 'TypeScriptの型定義を教えて'].map(s => (
+                    <button
+                      key={s}
+                      onClick={() => { setInput(s); textareaRef.current?.focus() }}
+                      className="text-left px-4 py-3 rounded-xl bg-surface hover:bg-elevated text-[13px] text-ink-secondary hover:text-ink transition-colors border border-line hover:border-sakura"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           ) : (
@@ -681,7 +722,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
               ) : (
                 <button
                   onClick={send}
-                  disabled={!input.trim() && pendingImages.length === 0}
+                  disabled={(!input.trim() && pendingImages.length === 0) || !chatWorkspace}
                   className="flex-none w-8 h-8 sakura-gradient text-white rounded-xl flex items-center justify-center hover:opacity-90 disabled:opacity-30 transition-opacity shadow-sm"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">

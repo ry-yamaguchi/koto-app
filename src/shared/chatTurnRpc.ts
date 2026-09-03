@@ -21,7 +21,8 @@ import type { EngineTurnSpec } from './chatTurn'
  * （emit / setAbort / notifyActivity / chatStream / chatOnce / usage.estimate / h、
  * B'-3d-1a で main 化した toolSupport.* / vision.* の6メンバー、
  * B'-3d-1b で main 化した usage.check / usage.record / compactWarnOnce の3メンバー、
- * B'-3d-2b で main 化した executeTool）
+ * B'-3d-2b で main 化した executeTool、B'-3d-3 で main 化した approveToolCall、
+ * B'-3e-b で main 化した getHistory）
  * **以外**の全メンバーがここに載っている（tests/chatTurnRpc.test.ts が突き合わせて固定する）。
  *
  * ── B'-3d-1a（2026-08-29）: toolSupport.* / vision.* を main が直接持つように ─────────
@@ -57,9 +58,18 @@ import type { EngineTurnSpec } from './chatTurn'
  * 最後の一歩。renderer には approval:list（画面が（再）起動したときの取りこぼし回収）・
  * approval:answer（回答）・approval:changed（push）という別枠の IPC がある（chatTurn:* の
  * 外・turnId に紐づかない）。ASK_PATHS は 8本 → 7本。
+ *
+ * ── B'-3e-b（2026-09-03）: getHistory を main が直接持つように ───────────────────
+ * 単独チャット（ChatApp）も main が書き主になった（EngineTurnSpec.convDir・turnRunner.ts の
+ * emit がストアへ直接当てる。B'-3e-a で確立した convStore への擬似 dir 保存を、書き主の側にも
+ * 適用した）。getHistory は「その会話の保存先（convDir）から読む」だけで完結するようになり、
+ * renderer へ ask する理由が無くなった（ChatPanel は元々 convDir＝toolsProjectDir を直読みして
+ * いた。ChatApp も convDir を持つようになったことで同じ経路に揃う）。convDir が無い異常系
+ * （読み込み中など）は空履歴で開始する——renderer の記憶を頼らない（窓を閉じても関係ない）。
+ * ASK_PATHS は 7本 → 6本。
  */
 export const ASK_PATHS = [
-  'buildSystemPrompt', 'getHistory', 'onUserMessage',
+  'buildSystemPrompt', 'onUserMessage',
   'buildRagBlock', 'getSearchConfig', 'fetchPagesBlock', 'autoSearchBlock',
 ] as const
 

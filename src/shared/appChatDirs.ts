@@ -33,6 +33,27 @@ export function sessionDir(workspaceDir: string, sessionId: string): string {
   return `${workspaceDir}/${APP_CHAT_DIRNAME}/sessions/${sessionId}`
 }
 
+/**
+ * sessionDir() の逆関数（B'-3e-b）: main（convStore.ts）が押し出す chat:applied の
+ * dir（実体は convStore のキー文字列。projectDir というフィールド名だが ChatApp では
+ * セッション擬似 dir が入る）が、このワークスペースのどのセッションの擬似 dir かを判定する。
+ *
+ * ── なぜ要るか ────────────────────────────────────────────────────
+ * ChatApp は main が書き主になったことで chat:applied を購読する（ChatPanel と同じ
+ * B-1a パターン）。ただし ChatPanel は「dir === projectDir」の単純比較で済むのに対し、
+ * ChatApp は複数セッションを同時に持つため「この dir はどのセッションのものか」を
+ * 逆算する必要がある。組み立て（sessionDir）と判定を同じファイルに集約する（掟10）。
+ *
+ * @returns 一致するセッションIDがあればそれ。ワークスペース不一致・セッション直下ではない
+ *  形（ネストしすぎ・空）なら null。
+ */
+export function sessionIdFromDir(workspaceDir: string, dir: string): string | null {
+  const prefix = `${workspaceDir}/${APP_CHAT_DIRNAME}/sessions/`
+  if (!dir.startsWith(prefix)) return null
+  const rest = dir.slice(prefix.length)
+  return isValidSessionId(rest) ? rest : null
+}
+
 /** セッション索引（id/title/model/createdAt）の保存先。メッセージ本文は含めない。 */
 export function sessionsIndexPath(workspaceDir: string): string {
   return `${workspaceDir}/${APP_CHAT_DIRNAME}/sessions.json`
@@ -50,5 +71,23 @@ export function isValidSessionId(id: unknown): id is string {
   if (typeof id !== 'string' || id.length === 0) return false
   if (id === '.' || id === '..') return false
   if (id.includes('/') || id.includes('\\')) return false
+  return true
+}
+
+/**
+ * IPC 越しに渡ってくる workspaceDir の検証（掟10: 「守り」の一元化・#16）。
+ *
+ * 空でない・NUL を含まない・`/` 始まりの絶対パス・パス区切りで分割したどのセグメントも
+ * `..` ではない、を確かめる。sessionId と違い workspaceDir は「絶対パスであるべき」値
+ * （相対パスを許すと、cwd 相対の思わぬ場所へ書く）。**なぜ守るか**: 実際に「相対パス
+ * `"undefined"` が cwd 相対に書いた」事故があった（appSessionsStore.ts が workspaceDir を
+ * 検証せずに使っていたため）。isValidSessionId と同じ流儀で、main 側が実際に使う前に
+ * 必ずここを通す。
+ */
+export function isValidWorkspaceDir(dir: unknown): dir is string {
+  if (typeof dir !== 'string' || dir.length === 0) return false
+  if (dir.includes('\0')) return false
+  if (!dir.startsWith('/')) return false
+  if (dir.split('/').includes('..')) return false
   return true
 }

@@ -79,6 +79,16 @@ export type UseAiChatArgs = {
   /** toolsFor() の第1引数（ChatApp=null / ChatPanel=projectDir） */
   toolsProjectDir: string | null
   /**
+   * 会話の置き場（main の convStore.ts が読み書きする dir キー・B'-3e-b）。
+   * ChatPanel は projectDir、ChatApp はセッション擬似 dir（shared/appChatDirs.ts の
+   * sessionDir）を渡す。ツールの根 toolsProjectDir とは別物（ChatApp は toolsProjectDir が
+   * 常に null でも convDir は必ず持つ）。main の書き主判定（chatTurn:start の emit・
+   * getHistory）と、このフックの viewOnlyEmit の「もう画面へは当てない」判定は、両方とも
+   * この値の有無で揃える。**必須**にしているのは渡し忘れを型で止めるため
+   * （CLAUDE.md 掟10「任意の引数で機能を繋ぐと渡し忘れても誰も気づかない」の教訓）。
+   */
+  convDir: string | null
+  /**
    * 単独チャット（ChatApp）のセッションID（改善2・2026-08-29）。
    *
    * `turnKey(toolsProjectDir, sessionId)` の第2引数に渡り、実行状態
@@ -127,7 +137,7 @@ export type UseAiChatArgs = {
 
 export function useAiChat(args: UseAiChatArgs) {
   const {
-    apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, sessionId,
+    apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, convDir, sessionId,
     buildExecuteOpts, getHistory, updateShown, onUserMessage,
     errorPrefix = '', twoStageVision = false, buildRagBlock, onExternalFilesChanged,
     onMessageEvent, onAiFileWritten,
@@ -206,22 +216,22 @@ export function useAiChat(args: UseAiChatArgs) {
   //   - sendViaClaude / compactNow / abortWithGuidance / 予算超過 などフック内から出す
   //     message系の出来事は、**renderer が書き主**。まだどこにも保存されていないので、
   //     画面反映と同時に main（convStore.ts）へ ops として送らないと消えてしまう。
-  //     → emit を使う（onMessageEvent があればそれを呼ぶ＝ChatPanel は client.apply に繋ぎ、
-  //       main へ ops を送るだけ。画面反映は chat:applied 側で行う。無ければ従来どおり
-  //       updateShown 直行＝ChatApp）。
+  //     → emit を使う（onMessageEvent があればそれを呼ぶ＝ChatPanel・ChatApp とも
+  //       client.apply（getConvClient(...).apply）に繋ぎ、main へ ops を送るだけ。画面反映は
+  //       chat:applied 側で行う。onMessageEvent が無い呼び出し元だけ、従来どおり updateShown
+  //       直行にフォールバックする）。
   //
   //   - AI Engine のターン（main の turnRunner.ts で走っている）の message系の出来事は、
-  //     **toolsProjectDir があるとき**（ChatPanel）は main が既にストアへ直接当てている
-  //     （buildMainPorts.emit）。この出来事が renderer 側の chatTurn.start の onEvent として
-  //     戻ってきたときにここでも当ててしまうと、「main のストアの押し出し」（chat:applied）と
-  //     二重になり、しかも「見ているものが何か」を確かめずに当てるため、ターン中に
-  //     プロジェクトを切り替えると誤配される（B-1a が直した不具合そのもの）。
-  //     → viewOnlyEmit を使い、toolsProjectDir があるときは message系を捨てる（画面反映は
+  //     **convDir があるとき**（ChatPanel・B'-3e-b からは ChatApp も）は main が既にストアへ
+  //     直接当てている（buildMainPorts.emit・payload.spec.convDir で判定）。この出来事が
+  //     renderer 側の chatTurn.start の onEvent として戻ってきたときにここでも当ててしまうと、
+  //     「main のストアの押し出し」（chat:applied）と二重になり、しかも「見ているものが何か」を
+  //     確かめずに当てるため、ターン中に会話を切り替えると誤配される（B-1a が直した不具合そのもの）。
+  //     → viewOnlyEmit を使い、convDir があるときは message系を捨てる（画面反映は
   //       chat:applied 一本に任せる）。
-  //     **toolsProjectDir が無いとき**（ChatApp・単独チャット・convStore の対象外）は、
-  //     main は convStore に一切書かない（turnRunner.ts の payload.spec.toolsProjectDir
-  //     ガード）ため chat:applied も届かない。ChatApp にとってはここが唯一の反映経路なので、
-  //     今までどおり updateShown 直行のまま変えない（ChatApp は今回のB-1aで触らない対象）。
+  //     **convDir が無いとき**（会話の置き場が定まっていない読み込み中などの異常系）は、
+  //     main は convStore に一切書かない（turnRunner.ts の payload.spec.convDir ガード）ため
+  //     chat:applied も届かない。そのときだけここが唯一の反映経路として当てる（フォールバック）。
   //
   // どちらも「画面がどう変わるか」自体は applyToMessages（同じ純粋関数）に委ねる。
   //
@@ -260,10 +270,10 @@ export function useAiChat(args: UseAiChatArgs) {
       case 'append':
       case 'replaceLast':
       case 'removeLast':
-        // toolsProjectDir があるとき（ChatPanel）は convStore.ts への書き込み＋chat:applied の
-        // 押し出しに一本化したので、ここでは何もしない。無いとき（ChatApp）だけ、唯一の
-        // 反映経路として今までどおり当てる（上のコメント参照）。
-        if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))
+        // convDir があるとき（ChatPanel・ChatApp とも）は convStore.ts への書き込み＋
+        // chat:applied の押し出しに一本化したので、ここでは何もしない。無いとき
+        // （会話の置き場が定まっていない異常系）だけ、唯一の反映経路として当てる（上のコメント参照）。
+        if (!convDir) updateShown(prev => applyToMessages(prev, ev))
         break
       case 'loading':
         // 新しいターンが始まったら前回の ⚠️ は役目を終える
@@ -280,7 +290,7 @@ export function useAiChat(args: UseAiChatArgs) {
         onAiFileWritten?.(ev.full)
         break
     }
-  }, [toolsProjectDir, sessionId, updateShown, onAiFileWritten])
+  }, [toolsProjectDir, sessionId, convDir, updateShown, onAiFileWritten])
 
   // 末尾の吹き出し操作ヘルパー（emit を呼ぶだけの薄い包み。呼び出し側は書き換えない）
   const appendBubble = useCallback((msg: ChatMessage) => emit({ kind: 'append', msg }), [emit])
@@ -635,7 +645,7 @@ export function useAiChat(args: UseAiChatArgs) {
       // AI Engine のループは main で走る（B'-3b）。renderer は
       // ①出来事を受けて emit する ②問い合わせ（ask）に答える、の2役だけ。
       const spec: EngineTurnSpec = {
-        rawText, images, assetBlock, apiKey, model, models, maxRounds, toolsProjectDir,
+        rawText, images, assetBlock, apiKey, model, models, maxRounds, toolsProjectDir, convDir,
         errorPrefix, twoStageVision, routedModel, hasRag: !!buildRagBlock, turnOpts, snapshotId, snapshotLabel,
       }
       const turnId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -644,7 +654,6 @@ export function useAiChat(args: UseAiChatArgs) {
       // そのまま使い、二重実装しない（呼び先を付け替えているだけで、値の鮮度は変わらない）。
       const handlers = {
         buildSystemPrompt: ports.buildSystemPrompt,
-        getHistory: ports.getHistory,
         onUserMessage: ports.onUserMessage,
         buildRagBlock: ports.buildRagBlock,
         getSearchConfig: ports.getSearchConfig,
@@ -659,10 +668,14 @@ export function useAiChat(args: UseAiChatArgs) {
         // の型完全性のためと、sendViaClaude の openPreview 処理が renderer の aiTools.executeTool
         // を直接使う現行が無変更のため）。approveToolCall も B'-3d-3 で main
         // （shared/approvalPlan.ts の判定＋chat/approvalStore.ts の駐機）が直接持つようになり、
-        // 同じく ask ではなくなった（ports にそもそも無い・上のコメント参照）。
-        // ここから handlers への受け渡しだけを外す。ports.toolSupport / ports.vision /
-        // ports.usage / ports.compactWarnOnce も同様に buildPorts に残る（compactNow が呼ぶ・
-        // compactNow は main のターンを経由せず renderer だけで完結する処理のため）。
+        // 同じく ask ではなくなった（ports にそもそも無い・上のコメント参照）。getHistory も
+        // B'-3e-b で main（convStore.ts を convDir で直読み・turnRunner.ts）が直接持つように
+        // なり、同じく ask ではなくなった。
+        // ここから handlers への受け渡しだけを外す。ports.getHistory / ports.toolSupport /
+        // ports.vision / ports.usage / ports.compactWarnOnce も同様に buildPorts に残る
+        // （ports.getHistory は EngineTurnPorts の型完全性のため必ず必要な項目・compactNow は
+        // main のターンを経由せず renderer だけで完結する処理のため ports.usage /
+        // ports.compactWarnOnce を直接使う）。
       }
       // ⚠️ ターンの間ずっと main への abort 送信関数を this ターンの鍵（key）に登録する。
       // 今日は「ストリーム中だけ」だったが、main 側は abort 関数が未登録なら何もしないので、
@@ -708,7 +721,7 @@ export function useAiChat(args: UseAiChatArgs) {
       endActivity()
     }
   }, [
-    isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, sessionId,
+    isLoading, apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, convDir, sessionId,
     buildExecuteOpts, getHistory, updateShown, onUserMessage, errorPrefix,
     twoStageVision, routedModel, appendBubble, buildRagBlock, sendViaClaude, emit, viewOnlyEmit,
   ])

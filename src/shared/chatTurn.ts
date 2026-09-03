@@ -63,6 +63,12 @@ export type EngineTurnSpec = {
   models: { id: string }[]
   maxRounds: number
   toolsProjectDir: string | null
+  /** 会話の置き場（main の convStore.ts が読み書きする dir キー）。ChatPanel は projectDir、
+   *  ChatApp はセッション擬似 dir（shared/appChatDirs.ts の sessionDir）を渡す（B'-3e-b）。
+   *  ツールの根 toolsProjectDir とは別物（例: ChatApp は toolsProjectDir が常に null でも、
+   *  convDir は必ず持つ）。**必須**にしているのは、渡し忘れを型で止めるため
+   *  （CLAUDE.md 掟10「任意の引数で機能を繋ぐと渡し忘れても誰も気づかない」の教訓）。 */
+  convDir: string | null
   errorPrefix: string
   twoStageVision: boolean
   routedModel: string | null

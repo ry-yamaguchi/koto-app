@@ -36,11 +36,14 @@ if (!OUT || !PROJECT) {
 }
 const WS = path.dirname(PROJECT)
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-look-'))
+// 起動しただけで実ワークスペース（既定のホーム配下）へ移行が走るため、HOMEごと使い捨てにする
+// （main の fs:homeDir は os.homedir() 実装のため $HOME の差し替えが効く）。
+const HOME_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-look-home-'))
 const PORT = 9333 + Math.floor(Math.random() * 200)
 
 const child = spawn('npx', ['electron', '.', `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`], {
   cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, ELECTRON_ENABLE_LOGGING: '1' },
+  env: { ...process.env, HOME: HOME_DIR, ELECTRON_ENABLE_LOGGING: '1' },
 })
 let log = ''
 child.stdout.on('data', d => { log += d })
@@ -49,6 +52,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 const cleanup = () => {
   try { execSync(`pkill -f "user-data-dir=${PROFILE}"`, { stdio: 'ignore' }) } catch {}
   try { fs.rmSync(PROFILE, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(HOME_DIR, { recursive: true, force: true }) } catch {}
 }
 process.on('exit', cleanup)
 setTimeout(() => { console.log('⏱ 時間切れ'); cleanup(); process.exit(1) }, 100000)

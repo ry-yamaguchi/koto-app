@@ -8,7 +8,7 @@
 // 学習キャッシュ（ツール対応・画像対応・B'-3d-1a で main へ移した learningStore.ts）と、
 // 予算・利用実績（B'-3d-1b で main へ移した usageStore.ts）・compactWarnOnce（同・モジュール内
 // Set で main のプロセス寿命ぶん持つ）、executeTool（B'-3d-2b・下記コメント）、
-// そして承認 approveToolCall（B'-3d-3・さらに下のコメント）。
+// 承認 approveToolCall（B'-3d-3・さらに下のコメント）、そして getHistory（B'-3e-b・さらに下）。
 // 「見かけが変わらない」を最優先し、直せる不具合があってもここでは直さない（sakura.ts から
 // 移した部分は engine.ts の説明を参照）。
 //
@@ -25,9 +25,14 @@
 // 要否判定・文面組み立てを shared/approvalPlan.ts の純関数（planApproval）で main が行い、
 // 承認そのもの（保留＋答えを待つ）は専用マネージャ（chat/approvalStore.ts・メモリのみ）に
 // **駐機**させる——タイムアウトしない。窓が閉じていても、renderer が approval:answer を
-// 呼ぶまでずっと待つ。getHistory も、プロジェクト会話（toolsProjectDir あり）なら
-// convStore.loadConversation を直読みするように変えた（ChatApp＝toolsProjectDir null は
-// 引き続き ask。B'-3e で単独チャットも main 化したら解消する）。
+// 呼ぶまでずっと待つ。
+//
+// ── B'-3e-b（2026-09-03）: getHistory を main が直呼びで convDir から読む ─────────
+// 単独チャット（ChatApp）も main が書き主になった（EngineTurnSpec.convDir・下の buildMainPorts
+// の emit・compactWarnOnce 参照）。getHistory はもう「toolsProjectDir があるかどうか」では
+// 分岐しない——convDir（会話の置き場。ChatPanel は projectDir、ChatApp はセッション擬似 dir）
+// から convStore.loadConversation を直読みするだけになり、renderer への ask（'getHistory'）は
+// 完全に無くなった。
 import { ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
 import * as fs from 'fs'
@@ -267,23 +272,27 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
   // B'-3c: message系（append/replaceLast/removeLast）は、まず main の会話ストア
   // （convStore.ts）へ直接当ててから画面へ送る。renderer を経由しない書き込みの第一歩
   // （ウィンドウが閉じていても・出来事を取りこぼしても、会話は必ず保存される）。
-  // toolsProjectDir が無いとき（単独チャット・今回対象外）はストアに触らない。
   // loading/status/routed はストアに関係しないので、これまでどおり send のみ。
+  //
+  // ── B'-3e-b（2026-09-03）: 単独チャット（ChatApp）も main が書き主に ─────────────
+  // 判定は toolsProjectDir ではなく spec.convDir で行う（会話の置き場と、ツールの根は別物。
+  // ChatApp は toolsProjectDir が常に null でも convDir はセッション擬似 dir を持つ）。
+  // convDir が無い（読み込み中などの異常系）ときだけストアに触らない。
   //
   // ── B-1a（2026-08-28）: 画面反映は chat:applied へ一本化・ここでの2重送信はそのまま残す ──
   // applyConversationOps がここで当たると、convStore.ts の通知口（setApplyListener）経由で
-  // chat:applied が自動的に画面へ飛ぶ。toolsProjectDir があるとき（ChatPanel）は、下の
+  // chat:applied が自動的に画面へ飛ぶ。convDir があるとき（ChatPanel・ChatApp とも）は、下の
   // wc.send（chatTurn:event）で運ばれる message系の ev は renderer 側でもう使われない
-  // （useAiChat.ts の viewOnlyEmit は toolsProjectDir がある間 message系を捨てる）。
-  // それでも send 自体はここでは変えない（toolsProjectDir が無いとき＝単独チャット ChatApp は
+  // （useAiChat.ts の viewOnlyEmit は convDir がある間 message系を捨てる）。
+  // それでも send 自体はここでは変えない（convDir が無いとき＝読み込み中などの異常系は
   // convStore に一切触れない＝chat:applied も届かないため、この send が唯一の反映経路のまま。
   // scalar/activity も引き続きこの経路が必要。仕様外の削減をしない）。
   //
   // B'-3d-2b: buildMainIo（aiFileWritten の emit）からも同じ emit を使うため、ここで局所変数に
   // 取り出しておく（下の executeTool の組み立てで参照する）。
   const emit: EngineTurnPorts['emit'] = (ev) => {
-    if ((ev.kind === 'append' || ev.kind === 'replaceLast' || ev.kind === 'removeLast') && payload.spec.toolsProjectDir) {
-      applyConversationOps(payload.spec.toolsProjectDir, [ev])
+    if ((ev.kind === 'append' || ev.kind === 'replaceLast' || ev.kind === 'removeLast') && payload.spec.convDir) {
+      applyConversationOps(payload.spec.convDir, [ev])
     }
     if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'emit', ev })
   }
@@ -299,12 +308,13 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     // abort は無害（呼んでも何も起きない）。次にストリーミングが始まれば ports.setAbort が
     // 新しい中断関数で上書きするので、古いものが誤って呼ばれる実害は無い。
     chatOnce: (req) => runSakuraChat(req, { onAbortReady: (abort) => { entry.abort = abort } }),
-    // B'-3d-3: プロジェクト会話（toolsProjectDir あり）は convStore を直読みする（ask ではない）。
-    // 単独チャット（ChatApp・toolsProjectDir が null）は今回対象外なので、従来どおり ask する
-    // （ASK_PATHS に 'getHistory' を残してある。コメントは chatTurnRpc.ts 参照）。
+    // B'-3e-b: 会話の保存先（convDir）を convStore から直読みする（ask ではない）。
+    // 単独チャット（ChatApp）も main が書き主になったため、もう renderer の記憶を頼らない
+    // （ASK_PATHS から 'getHistory' を外した。コメントは chatTurnRpc.ts 参照）。
+    // convDir が無い（会話の置き場が無い）異常系は空履歴で開始する。
     getHistory: () => {
-      const dir = payload.spec.toolsProjectDir
-      return dir ? (loadConversation(dir) ?? []) : (bridge.ask('getHistory', []) as any)
+      const dir = payload.spec.convDir
+      return dir ? (loadConversation(dir) ?? []) : []
     },
     buildSystemPrompt: () => bridge.ask('buildSystemPrompt', []) as any,
     onUserMessage: caps.onUserMessage
@@ -343,10 +353,11 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
       record: (model, supported) => recordLearning('vision', model, supported),
       defaultModel: () => defaultVisionModelFor(payload.spec.models),
     },
-    // B'-3d-1b: 上のコメント（compactWarned）参照。会話キー（toolsProjectDir。無ければ
-    // 単独チャット扱いで '@chat-app'）ごとに初回だけ true を返す。
+    // B'-3d-1b: 上のコメント（compactWarned）参照。会話キー（convDir。B'-3e-b: 単独チャットも
+    // セッション擬似 dir を convDir に持つため、常に会話ごとに固有の鍵になる。convDir が無い
+    // 異常系だけ '@chat-app' に束ねる）ごとに初回だけ true を返す。
     compactWarnOnce: () => {
-      const key = payload.spec.toolsProjectDir ?? '@chat-app'
+      const key = payload.spec.convDir ?? '@chat-app'
       if (compactWarned.has(key)) return false
       compactWarned.add(key)
       return true

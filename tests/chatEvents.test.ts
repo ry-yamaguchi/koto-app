@@ -333,11 +333,11 @@ describe('useAiChat.ts の配線（emit / viewOnlyEmit だけが画面に触る�
 // viewOnlyEmit（画面へ映すだけ）を通す。ここが emit に戻ると、main が既に保存した書き換えを
 // renderer がもう一度 ops として main へ送り返し、二重書きになる。
 //
-// B-1a: toolsProjectDir があるとき（ChatPanel）の message系は、main が convStore.ts へ
-// 当てた結果を chat:applied が押し出す1本の経路に揃えたので、viewOnlyEmit はここでは
-// 何もしない（画面へ当ててしまうと、projectDir を確かめない旧経路が復活し、ターン中の
-// プロジェクト切替で誤配する）。toolsProjectDir が無いとき（ChatApp・convStore の対象外）は
-// chat:applied が届かないため、今までどおりここが唯一の反映経路として当て続ける。
+// B-1a/B'-3e-b: convDir があるとき（ChatPanel・ChatApp とも）の message系は、main が
+// convStore.ts へ当てた結果を chat:applied が押し出す1本の経路に揃えたので、viewOnlyEmit
+// はここでは何もしない（画面へ当ててしまうと、convDir を確かめない旧経路が復活し、ターン中の
+// 会話切替で誤配する）。convDir が無いとき（会話の置き場が定まっていない異常系）は
+// chat:applied が届かないため、ここが唯一の反映経路として当て続ける。
 describe("useAiChat.ts の配線（chatTurn.start の onEvent は viewOnlyEmit を通り、emit と分かれている）", () => {
   const src = readCode('src/renderer/hooks/useAiChat.ts')
 
@@ -359,14 +359,15 @@ describe("useAiChat.ts の配線（chatTurn.start の onEvent は viewOnlyEmit �
     expect(after).not.toContain('onEvent: (ev) => emit(ev as any)')
   })
 
-  it('B-1a: viewOnlyEmit の message系は toolsProjectDir が無いときだけ当てる（無条件に当てる形へ戻さない）', () => {
+  it('B-1a/B\'-3e-b: viewOnlyEmit の message系は convDir が無いときだけ当てる（無条件に当てる形へ戻さない）', () => {
     const start = src.indexOf('const viewOnlyEmit = useCallback(')
     expect(start).toBeGreaterThan(-1)
     const m = /\n {2}\}, \[[^\]]*\]\)/.exec(src.slice(start))
     expect(m).not.toBeNull()
     const block = src.slice(start, start + m!.index + m![0].length)
-    expect(block).toContain('if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))')
-    // 直す前の形（条件無しで当てる）が残っていない
+    expect(block).toContain('if (!convDir) updateShown(prev => applyToMessages(prev, ev))')
+    // 直す前の形（条件無しで当てる・toolsProjectDir 基準）が残っていない
     expect(block).not.toContain('        updateShown(prev => applyToMessages(prev, ev))\n        break')
+    expect(block).not.toContain('if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))')
   })
 })

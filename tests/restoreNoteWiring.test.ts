@@ -128,15 +128,17 @@ describe('配線: chatConvClient / useAiChat に画面へのローカル反映�
     expect(block).not.toContain('applyToMessages')
   })
 
-  it('useAiChat.ts の viewOnlyEmit は toolsProjectDir があるとき message系を捨てる', () => {
+  it('useAiChat.ts の viewOnlyEmit は convDir があるとき message系を捨てる（B\'-3e-b）', () => {
     const src = stripped('src/renderer/hooks/useAiChat.ts')
     const start = src.indexOf('const viewOnlyEmit = useCallback(')
     expect(start).toBeGreaterThan(-1)
     const m = /\n {2}\}, \[[^\]]*\]\)/.exec(src.slice(start))
     expect(m).not.toBeNull()
     const block = src.slice(start, start + m!.index + m![0].length)
-    // toolsProjectDir が無いとき（ChatApp）だけ当てる、という条件付きの形になっていること
-    expect(block).toContain('if (!toolsProjectDir) updateShown(prev => applyToMessages(prev, ev))')
+    // convDir が無いとき（会話の置き場が定まっていない異常系）だけ当てる、という条件付きの形
+    // になっていること（B'-3e-b: 単独チャットも main が書き主になったため toolsProjectDir では
+    // なく convDir で判定する）
+    expect(block).toContain('if (!convDir) updateShown(prev => applyToMessages(prev, ev))')
   })
 })
 

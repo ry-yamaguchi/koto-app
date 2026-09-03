@@ -3,6 +3,7 @@
 import { app, dialog, ipcMain, shell } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
+import * as os from 'os'
 import type { IpcDeps } from './types'
 
 // ── AI専用：プロジェクト内に閉じ込めたファイル読み書き（多層防御） ──
@@ -246,7 +247,9 @@ export function registerFsHandlers(deps: IpcDeps) {
   // どんな絶対パスでも送れる作りだった。到達する道はいま無いが、1枚目の守りに
   // 頼り切らない。判断は shared/trashGuard.ts（テスト付き）。
   ipcMain.handle('fs:trash', async (_, p: string) => {
-    const check = canTrash(app.getPath('home'), path.resolve(String(p ?? '')), path.sep)
+    // home は fs:homeDir と同じ os.homedir() を使う（別ソースだと HOME 差し替え時に
+    // ワークスペースの home とガードの home がズレる）
+    const check = canTrash(os.homedir(), path.resolve(String(p ?? '')), path.sep)
     if (!check.ok) throw new Error(check.reason)
     return shell.trashItem(path.resolve(String(p)))
   })
@@ -289,7 +292,10 @@ export function registerFsHandlers(deps: IpcDeps) {
   })
 
   // Home directory (used to derive the default workspace root)
-  ipcMain.handle('fs:homeDir', () => app.getPath('home'))
+  // ⚠️ app.getPath('home') は macOS では $HOME を見ない（passwd 由来・2026-09-02 実測）。
+  // os.homedir() は $HOME を尊重するため、smoke / e2e driver が env の HOME 差し替えで
+  // 実ワークスペース（~/SAKURAIDE）を使い捨て領域へ隔離できる。通常利用では両者は同値。
+  ipcMain.handle('fs:homeDir', () => os.homedir())
 
   // プロジェクトのファイル一覧（AIへ渡す構成把握用。重いフォルダは除外）
   ipcMain.handle('fs:projectFiles', async (_, dir: string, maxFiles = 200) => projectFilesFs(dir, maxFiles))

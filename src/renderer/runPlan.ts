@@ -29,7 +29,7 @@
 import { PUBLISH_DIR } from '../shared/publishRoot'
 
 export type RunPlan =
-  | { kind: 'node-server'; needsInstall: boolean }   // node server.js（http://localhost:8080 を開く）
+  | { kind: 'node-server'; needsInstall: boolean }   // node server.js（http://127.0.0.1:8080 を開く）
   | { kind: 'python'; entry: 'main.py' | 'app.py' }  // python3 <entry>（ポート不定・自動では開かない）
   | { kind: 'npm-start'; needsInstall: boolean }     // npm start（scripts.start があるときだけ）
   | { kind: 'php'; docroot: 'publish' | 'root' }     // php -S（publish＝PUBLISH_DIR 配下・root＝直下）

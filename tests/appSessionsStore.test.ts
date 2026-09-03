@@ -45,6 +45,33 @@ describe('appSessionsStore: listSessions（未保存・索引ファイルも旧�
   })
 })
 
+// ── #16・掟10: workspaceDir の検証を全公開関数の入口で行う（appChatDirs.ts の
+// isValidWorkspaceDir が唯一の定義。実事故「相対パス "undefined" が cwd 相対に書いた」の
+// 再発防止・behavioral：実際に呼んで例外になることを確かめる）。
+describe('appSessionsStore: 不正な workspaceDir はすべての公開関数で例外になる', () => {
+  it('相対パス（"undefined" 等）は listSessions/createSession/renameSession/setSessionModel/deleteSession すべてで例外', () => {
+    expect(() => listSessions('undefined')).toThrow()
+    expect(() => createSession('undefined', meta('a'))).toThrow()
+    expect(() => renameSession('undefined', 'a', 'x')).toThrow()
+    expect(() => setSessionModel('undefined', 'a', 'x')).toThrow()
+    expect(() => deleteSession('undefined', 'a')).toThrow()
+  })
+
+  it('絶対パスでも .. セグメントを含むものは例外', () => {
+    expect(() => listSessions('/tmp/../etc')).toThrow()
+  })
+
+  it('空文字・NUL混入も例外', () => {
+    expect(() => listSessions('')).toThrow()
+    expect(() => listSessions('/tmp/x\0/evil')).toThrow()
+  })
+
+  it('正しい絶対パスの workspaceDir は例外にならない（実在フォルダである必要は無い）', () => {
+    const ws = mkWorkspaceDir()
+    expect(() => listSessions(ws)).not.toThrow()
+  })
+})
+
 describe('appSessionsStore: CRUD（作成・改名・モデル変更・削除の往復）', () => {
   it('createSession → listSessions で読み戻せる（先頭に足される）', () => {
     const ws = mkWorkspaceDir()

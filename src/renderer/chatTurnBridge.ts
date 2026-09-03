@@ -16,6 +16,8 @@
 // main（buildMainIo・turnRunner.ts）が直呼びするようになり、ask ではなくなった。
 // approveToolCall も B'-3d-3 で main（shared/approvalPlan.ts の判定＋chat/approvalStore.ts
 // の駐機・turnRunner.ts）が直判定するようになり、ask ではなくなった。
+// getHistory も B'-3e-b で main（convStore.ts を convDir で直読み・turnRunner.ts）が
+// 直接持つようになり、ask ではなくなった。
 // ここにはもうそれらに対応する case が無い。
 
 import type { AskPath } from '../shared/chatTurnRpc'
@@ -51,7 +53,7 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
  *   ask が来たら Error を投げる（caps の食い違い＝バグを黙らせない）。
  *
  * ── handlers の型について ────────────────────────────────────────
- * buildSystemPrompt / getHistory の返り値を
+ * buildSystemPrompt の返り値を
  * `T | Promise<T>` にしてある。renderer の実装（useAiChat.ts の buildPorts）は今日も同期
  * （T のみ）だが、この関数はその ports をそのまま（型を狭め直さずに）handlers として使う
  * ため、EngineTurnPorts（src/shared/chatTurn.ts）の型に合わせてある。
@@ -65,11 +67,14 @@ export function stripFunctions(o: Record<string, unknown>): Record<string, unkno
  * ── B'-3d-3: approveToolCall を外した ─────────────────────────────────
  * 承認は main（shared/approvalPlan.ts の判定＋chat/approvalStore.ts の駐機）が直接持つ
  * ようになり、ASK_PATHS から消えた。handlers 型にも approveToolCall は無い。
+ *
+ * ── B'-3e-b: getHistory を外した ───────────────────────────────────
+ * getHistory は main（convStore.ts を convDir で直読み・turnRunner.ts）が直接持つように
+ * なり、ASK_PATHS から消えた。handlers 型にも getHistory は無い。
  */
 export function dispatchAsk(
   handlers: {
     buildSystemPrompt(): string | Promise<string>
-    getHistory(): unknown[] | Promise<unknown[]>
     onUserMessage?(text: string, isFirst: boolean): void
     buildRagBlock?(text: string): Promise<string>
     getSearchConfig(): Promise<unknown>
@@ -82,8 +87,6 @@ export function dispatchAsk(
   switch (path) {
     case 'buildSystemPrompt':
       return handlers.buildSystemPrompt()
-    case 'getHistory':
-      return handlers.getHistory()
     case 'onUserMessage': {
       if (!handlers.onUserMessage) throw new Error(`ask '${path}' に対応する handler がありません（caps の食い違い）`)
       const [text, isFirst] = args as [string, boolean]

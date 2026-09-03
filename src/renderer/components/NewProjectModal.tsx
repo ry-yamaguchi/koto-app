@@ -107,7 +107,7 @@ function localTemplate(base: string, name: string, description: string): GenFile
     case 'node':
       return [
         { path: 'package.json', content: `{\n  "name": "${name}",\n  "version": "0.1.0",\n  "type": "module",\n  "scripts": { "start": "node index.js" },\n  "dependencies": { "express": "^4.19.0" }\n}\n` },
-        { path: 'index.js', content: `import express from 'express'\n\nconst app = express()\napp.get('/', (req, res) => res.json({ message: 'Hello from ${name}' }))\napp.listen(3000, () => console.log('http://localhost:3000'))\n` },
+        { path: 'index.js', content: `import express from 'express'\n\nconst app = express()\napp.get('/', (req, res) => res.json({ message: 'Hello from ${name}' }))\napp.listen(3000, () => console.log('http://127.0.0.1:3000'))\n` },
         readme('## 使い方\n\n```bash\nnpm install\nnpm start\n```'),
       ]
     default: // blank
@@ -346,7 +346,7 @@ ${name}/
 PHPが入っていれば、組み込みサーバで確認できます：
 
 \`\`\`bash
-php -S localhost:8000 -t public
+php -S 127.0.0.1:8000 -t public
 \`\`\`
 
 ## 活用できるレンタルサーバの機能
@@ -465,7 +465,7 @@ ${name}/
 ## ローカルで確認
 
 \`\`\`bash
-node server.js        # http://localhost:8080
+node server.js        # http://127.0.0.1:8080
 # または Docker で
 docker build --platform linux/amd64 -t ${name} .
 docker run -p 8080:8080 ${name}

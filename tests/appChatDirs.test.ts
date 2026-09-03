@@ -1,7 +1,10 @@
-// B'-3e-a: 単独チャット（ChatApp）のセッション置き場の一元定義（src/shared/appChatDirs.ts）。
+// B'-3e-a/B'-3e-b: 単独チャット（ChatApp）のセッション置き場の一元定義（src/shared/appChatDirs.ts）。
 // 純関数のみ・electron 非依存なので実ファイルシステムを介さず直接検証できる。
 import { describe, it, expect } from 'vitest'
-import { APP_CHAT_DIRNAME, sessionDir, sessionsIndexPath, isValidSessionId } from '../src/shared/appChatDirs'
+import {
+  APP_CHAT_DIRNAME, sessionDir, sessionIdFromDir, sessionsIndexPath,
+  isValidSessionId, isValidWorkspaceDir,
+} from '../src/shared/appChatDirs'
 
 describe('appChatDirs: APP_CHAT_DIRNAME', () => {
   it('ドット始まり（公開物・通常表示に混ざらない場所）', () => {
@@ -20,6 +23,31 @@ describe('appChatDirs: sessionDir', () => {
     const a = sessionDir('/ws', '1')
     const b = sessionDir('/ws', '2')
     expect(a).not.toBe(b)
+  })
+})
+
+describe('appChatDirs: sessionIdFromDir（sessionDir の逆関数・B\'-3e-b）', () => {
+  it('★★ 正しい dir → 対応する sessionId', () => {
+    expect(sessionIdFromDir('/ws', sessionDir('/ws', 'abc123'))).toBe('abc123')
+  })
+
+  it('★★ 他所（別ワークスペース）の dir → null', () => {
+    expect(sessionIdFromDir('/other-ws', sessionDir('/ws', 'abc123'))).toBeNull()
+  })
+
+  it('★★ ワークスペース直下（sessions/<id>）ではない形 → null', () => {
+    // セッション一覧の索引（sessions.json 自体）
+    expect(sessionIdFromDir('/ws', sessionsIndexPath('/ws'))).toBeNull()
+    // sessions/ の直下ではなく、さらにネストしている
+    expect(sessionIdFromDir('/ws', `/ws/${APP_CHAT_DIRNAME}/sessions/a/b`)).toBeNull()
+    // sessions/ 自体（id が空）
+    expect(sessionIdFromDir('/ws', `/ws/${APP_CHAT_DIRNAME}/sessions/`)).toBeNull()
+    // 全く関係ないパス
+    expect(sessionIdFromDir('/ws', '/ws/some/other/path')).toBeNull()
+  })
+
+  it('id に .. や / を含む不正な形は通さない（sessionDir が組み立てない形をここでも拒む）', () => {
+    expect(sessionIdFromDir('/ws', `/ws/${APP_CHAT_DIRNAME}/sessions/..`)).toBeNull()
   })
 })
 
@@ -72,6 +100,37 @@ describe('appChatDirs: isValidSessionId — 通すべき例', () => {
       expect(dir.startsWith('/ws/')).toBe(true)
       expect(dir).not.toContain('..')
     }
+  })
+})
+
+// ── isValidWorkspaceDir（#16・掟10）──────────────────────────────────────
+// appSessionsStore.ts の全公開関数の入口で使う「守り」。実事故（相対パス "undefined" が
+// cwd 相対に書いた）を再発させないための検証。
+describe('appChatDirs: isValidWorkspaceDir — 止めるべき例', () => {
+  it.each([
+    ['空文字', ''],
+    ['相対パス', 'undefined'],
+    ['相対パス（サブパス付き）', 'SAKURAIDE/myproj'],
+    ['.. を含む（絶対パスの中でも）', '/Users/x/../etc'],
+    ['.. そのもの', '..'],
+    ['NUL を含む', '/Users/x\0/evil'],
+    ['数値（文字列でない）', 123 as any],
+    ['null', null as any],
+    ['undefined 値', undefined as any],
+    ['オブジェクト', { dir: '/x' } as any],
+  ])('%s は拒否する', (_label, dir) => {
+    expect(isValidWorkspaceDir(dir)).toBe(false)
+  })
+})
+
+describe('appChatDirs: isValidWorkspaceDir — 通すべき例', () => {
+  it.each([
+    ['単純な絶対パス', '/Users/x/SAKURAIDE'],
+    ['ルート直下', '/tmp'],
+    ['ドットを含むが親参照ではない', '/Users/x/my.workspace'],
+    ['末尾スラッシュあり', '/Users/x/SAKURAIDE/'],
+  ])('%s は許可する', (_label, dir) => {
+    expect(isValidWorkspaceDir(dir)).toBe(true)
   })
 })
 

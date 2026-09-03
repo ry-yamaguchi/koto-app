@@ -14,9 +14,23 @@
 // アプリ全体で1つのファイルなので違う作法だった）。
 import * as fs from 'fs'
 import * as path from 'path'
-import { sessionDir, sessionsIndexPath, isValidSessionId } from '../shared/appChatDirs'
+import { sessionDir, sessionsIndexPath, isValidSessionId, isValidWorkspaceDir } from '../shared/appChatDirs'
 import { appChatPath } from './chatStore/paths'
 import { applyConversationOps, flushConversations, dropConversation } from './chat/convStore'
+
+/**
+ * 外部（IPC）から渡ってくる workspaceDir の最後の砦（掟10・#16）。
+ *
+ * ── なぜここで止めるか ────────────────────────────────────────────
+ * ipc/appSessions.ts は薄い配線（型注釈だけ）で workspaceDir を検証していない。
+ * 相対パスや不正な値がそのまま渡ると、この下の fs 呼び出しが cwd 相対の思わぬ場所へ
+ * 書きかねない（実際に「相対パス "undefined" が cwd 相対に書いた」事故があった）。
+ * すべての公開関数（listSessions/createSession/renameSession/setSessionModel/deleteSession）
+ * の入口で呼ぶ。
+ */
+function assertValidWorkspaceDir(dir: unknown): asserts dir is string {
+  if (!isValidWorkspaceDir(dir)) throw new Error('不正なワークスペースパスです')
+}
 
 export type AppSessionMeta = { id: string; title: string; model: string; createdAt: number }
 
@@ -182,12 +196,14 @@ function scheduleSave(workspaceDir: string, entry: Entry): void {
 
 /** 一覧（main が list の初回に一度きりの移行を行う。roadmap 3e 設計の4点目）。 */
 export function listSessions(workspaceDir: string): AppSessionMeta[] {
+  assertValidWorkspaceDir(workspaceDir)
   return [...ensureEntry(workspaceDir).sessions]
 }
 
 /** 新規セッションを索引の先頭へ足す（renderer の `setSessions(prev => [s, ...prev])` と同じ並び）。
  *  擬似 dir も先に掘っておく（次の送信が convStore へ保存されるために必須）。 */
 export function createSession(workspaceDir: string, meta: AppSessionMeta): void {
+  assertValidWorkspaceDir(workspaceDir)
   if (!isValidSessionId(meta?.id)) return
   const entry = ensureEntry(workspaceDir)
   fs.mkdirSync(sessionDir(workspaceDir, meta.id), { recursive: true })
@@ -200,6 +216,7 @@ export function createSession(workspaceDir: string, meta: AppSessionMeta): void 
 }
 
 export function renameSession(workspaceDir: string, id: string, title: string): void {
+  assertValidWorkspaceDir(workspaceDir)
   if (!isValidSessionId(id) || typeof title !== 'string') return
   const entry = ensureEntry(workspaceDir)
   const target = entry.sessions.find(s => s.id === id)
@@ -210,6 +227,7 @@ export function renameSession(workspaceDir: string, id: string, title: string): 
 }
 
 export function setSessionModel(workspaceDir: string, id: string, model: string): void {
+  assertValidWorkspaceDir(workspaceDir)
   if (!isValidSessionId(id) || typeof model !== 'string') return
   const entry = ensureEntry(workspaceDir)
   const target = entry.sessions.find(s => s.id === id)
@@ -221,6 +239,7 @@ export function setSessionModel(workspaceDir: string, id: string, model: string)
 
 /** セッションを削除する: 索引から消し、擬似 dir を再帰削除し、convStore のキャッシュも落とす。 */
 export function deleteSession(workspaceDir: string, id: string): void {
+  assertValidWorkspaceDir(workspaceDir)
   if (!isValidSessionId(id)) return
   const entry = ensureEntry(workspaceDir)
   if (!entry.sessions.some(s => s.id === id)) return

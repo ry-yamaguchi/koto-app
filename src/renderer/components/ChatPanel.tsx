@@ -451,6 +451,9 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       return nowContext() + '\n\n' + IDE_CONTEXT + (ctx ? '\n\n' + ctx : '') + openFileBlock + ragStatusContext(ragEnabled)
     },
     toolsProjectDir: projectDir ?? null,
+    // 会話の置き場（main の convStore.ts の dir キー・B'-3e-b）。IDE では projectDir と
+    // toolsProjectDir は同じ値になる（ツールの根＝会話の置き場）。
+    convDir: projectDir ?? null,
     onExternalFilesChanged,
     // B'-3d-2b: main が io.applyFile を直呼びで実行するようになったので、AI Engine 経路の
     // 保存＋エディタ反映（旧 applyFile 関数）はここから外れた——main は「保存」だけを行い、
