@@ -63,6 +63,14 @@ const CHUNK_CHARS = 6000
 const BATCH_CHARS = 24000
 /** 問い合わせの回数の上限。**利用量が青天井にならないための歯止め**。 */
 const MAX_BATCHES = 6
+
+// ── 一覧取得の上限（roadmap #17 追補・2026-09-03 Ryosuke「200件で打ち切るのは正しいのか」）──
+// fs:projectFilesInfo の既定 maxFiles=200 は「AIへ構成を伝える用途」の値で、この用途には
+// そのまま流用してよい値ではなかった。コストが高いのは**中身をAIへ送る**ほうで、そこは
+// 上の MAX_BATCHES × BATCH_CHARS が別に歯止めを持っている。**名前だけの走査**は数千件でも
+// 安価なので、チェック用途では上限を実質撤廃する（5,000件。無制限にしないのは、極端に
+// 巨大なフォルダで走査そのものが固まらないための最後の歯止め）。
+const SECURITY_CHECK_MAX_FILES = 5000
 // チェック対象（コード・設定ファイルを優先）
 const TARGET_RE = /\.(html?|php|js|mjs|cjs|css|json|ya?ml|sh)$|(^|\/)(Dockerfile|\.htaccess)$/i
 // 中身を読むまでもなく公開NGなファイル名。判定の中心は publishExclude.ts の isSecretFile
@@ -110,6 +118,67 @@ export function pickCheckTargets(files: readonly string[], entry?: string | null
     targets = [entry, ...targets.filter(f => f !== entry)]
   }
   return { targets, secretFiles }
+}
+
+// ── 名前一覧の肥大防止（roadmap #17 追補・2026-09-03）──────────────────────
+// projectFilesInfo の上限を 200 → 5,000 へ引き上げた（下記 SECURITY_CHECK_MAX_FILES）ため、
+// dataLike・others（名前しか使わない一覧）をそのまま依頼文・報告文に埋め込むと、
+// 数千件規模のプロジェクトで文言が際限なく膨らむ。**件数そのものでは絞らない**
+// （絞ると、それらのファイルの存在自体が利用者に伝わらなくなる＝黙って落とすのと同じ）。
+// 表示件数だけを capList で抑え、超過分は「ほかN件」で必ず件数を残す。
+/** AIへの依頼文に載せる others の上限。 */
+const OTHERS_PROMPT_LIMIT = 80
+/** 報告末尾「中身を確認していないファイル」に載せる上限（dataLike + others 合算）。 */
+const UNCHECKED_NOTE_LIMIT = 50
+/** 報告先頭の dataLike 固定文に載せる上限。 */
+const DATA_LIKE_NOTE_LIMIT = 20
+
+/**
+ * 名前一覧を先頭 n 件に切り、超過分は「ほかN件」の1行にまとめる（純関数）。
+ * 上限以下ならそのまま返す（「ほか0件」のような無意味な注記は付けない）。
+ */
+export function capList(names: readonly string[], n: number): string[] {
+  if (names.length <= n) return [...names]
+  return [...names.slice(0, n), `ほか${names.length - n}件`]
+}
+
+// ── 対象外ファイルの「素通り」をふさぐ（roadmap #17・2026-09-03 Ryosuke 発見・案2）───
+// pickCheckTargets は拡張子の許可リストだけで検査対象を選ぶため、txt/csv/sql/db/bak/log/zip/py 等の
+// **対象外ファイルは、公開されるのに検査もされず「確認していない」ことすら報告されていなかった**
+// （実測: customers.csv・dump.sql・app.db・backup.zip・server.py が完全素通り。名前すらAIに渡らない）。
+// 「量が多くて飛ばした」（packBatches の skipped）だけは正直に書く仕組みがあるのに、
+// 「種類の対象外」は黙って落ちる——2026-08-21 rc.5 で直した「黙って落とさない」と同じ形の穴。
+
+/**
+ * 「公開先で丸見えになると危険度が高い」データ・残骸っぽい拡張子（一元定義）。
+ *
+ * ── 止めすぎない（CLAUDE.md 掟10）────────────────────────────────────────
+ * `.md` `.txt` はここに入れない。README.md やメモは普通に置かれるものであり、
+ * 毎回警告すると狼少年になる（「止めすぎも害」）。ここに入れるのは、公開されると
+ * 中身がまるごと・構造化された形で丸見えになる危険度が明確なものだけ。
+ */
+export const DATA_FILE_RE = /\.(sql|db|sqlite|sqlite3|csv|tsv|bak|old|log|dump|zip|tar|gz|tgz|7z)$|~$|\.orig$/i
+
+/**
+ * 検査対象（targets）にも、名前だけで公開NGと分かるもの（secretFiles）にも入らなかった
+ * 残りを、危険度で dataLike（機械的に警告する）／others（名前だけAIに判定させる）へ分ける（純関数）。
+ *
+ * Koto 自身のビルド設定（Dockerfile 等）は targets と同じ理由でここでも除く
+ * （利用者には直せない・Koto の設計と矛盾する助言になるため。2026-08-21 rc.2 決定）。
+ */
+export function classifyUnchecked(
+  files: readonly string[],
+  targets: readonly string[],
+  secretFiles: readonly string[],
+): { dataLike: string[]; others: string[] } {
+  const checked = new Set<string>([...targets, ...secretFiles])
+  const dataLike: string[] = []
+  const others: string[] = []
+  for (const f of files) {
+    if (checked.has(f) || isKotoBuildConfig(f)) continue
+    ;(DATA_FILE_RE.test(f) ? dataLike : others).push(f)
+  }
+  return { dataLike, others }
 }
 
 /** AIへ渡すかたまり。長いファイルは複数に分かれる。 */
@@ -172,33 +241,76 @@ export function packBatches(
  * 判定は**安全側**（1回でも「要確認」なら全体で「要確認」）。
  * 本文は、その判定に対応する回のものだけを集める（「要確認」の中に
  * 「問題ありませんでした」を混ぜない）。同じ指摘の重複も落とす。
+ *
+ * ── 対象外ファイルの正直化を合成する（roadmap #17・案2）───────────────────
+ * `dataLike`（machine 判定・classifyUnchecked）が1件でもあれば、**AIの判定に
+ * 関わらず**全体を「要確認」に倒す（安全側・「迷ったら警告」・CLAUDE.md 掟10）。
+ * `truncated`（ファイル一覧そのものが打ち切られていた）も同様に要確認へ倒す。
+ * 中身を確認していない事実（dataLike・others）は、判定に関わらず必ず末尾へ書く
+ * （黙って落とさない。packBatches の skipped と同じ形）。
  */
 export function mergeCheckResults(
   results: readonly { verdict: 'ok' | 'warn' | 'skip'; report: string }[],
-  info: { files: number; batches: number; skipped: readonly string[] },
+  info: {
+    files: number
+    batches: number
+    skipped: readonly string[]
+    /** 中身を確認していない「データっぽい」ファイル（classifyUnchecked）。1件でもあれば要確認に倒す。 */
+    dataLike?: readonly string[]
+    /** 中身を確認していない、データっぽくもないその他のファイル（名前だけAIに判定させる対象）。 */
+    others?: readonly string[]
+    /** ファイル一覧そのものが打ち切られていたか（fs:projectFilesInfo の truncated）。あれば要確認に倒す。 */
+    truncated?: boolean
+  },
 ): { verdict: 'ok' | 'warn' | 'skip'; report: string } {
-  const verdict: 'ok' | 'warn' | 'skip' =
+  const dataLike = info.dataLike ?? []
+  const others = info.others ?? []
+  const truncated = info.truncated ?? false
+  const forceWarn = dataLike.length > 0 || truncated
+
+  const aiVerdict: 'ok' | 'warn' | 'skip' =
     results.some(r => r.verdict === 'warn') ? 'warn'
       : results.some(r => r.verdict === 'ok') ? 'ok' : 'skip'
+  const verdict: 'ok' | 'warn' | 'skip' = forceWarn ? 'warn' : aiVerdict
+
   if (verdict === 'skip') {
     return { verdict, report: results[0]?.report ?? 'チェックを実施できませんでした。' }
   }
-  const bodies = results
-    .filter(r => r.verdict === verdict)
-    .map(r => r.report.split('\n').slice(1).join('\n').trim())
+
+  // AIが未実施（機械的な理由だけで要確認に格上げされた）ときは、AIの本文を混ぜない
+  const bodies = aiVerdict === 'skip'
+    ? []
+    : results.filter(r => r.verdict === aiVerdict).map(r => r.report.split('\n').slice(1).join('\n').trim())
   const lines: string[] = []
   for (const b of bodies) for (const line of b.split('\n')) {
     const s = line.trim()
     if (s && !lines.includes(s)) lines.push(s)
   }
   const head = verdict === 'warn' ? '判定: 要確認' : '判定: 問題なし'
-  const note = info.batches > 1
-    ? `（${info.files}個のファイルを${info.batches}回に分けて確認しました）`
-    : `（${info.files}個のファイルを確認しました）`
+  const note = aiVerdict === 'skip'
+    ? null // AIは未実施なので「N個のファイルを確認しました」とは書かない（嘘になる）
+    : info.batches > 1
+      ? `（${info.files}個のファイルを${info.batches}回に分けて確認しました）`
+      : `（${info.files}個のファイルを確認しました）`
   const skipNote = info.skipped.length
     ? [`※ 量が多いため、次のファイルは確認していません: ${info.skipped.join(', ')}`]
     : []
-  return { verdict, report: [head, note, ...skipNote, ...lines].join('\n') }
+  // 指摘欄の先頭に固定文で入れる（AIの指摘より前・件数や打ち切り注記より後）。
+  // 件数の肥大防止は capList（上限を超えても件数そのものは「ほかN件」で必ず残す）。
+  const dataLikeNote = dataLike.length
+    ? [`${capList(dataLike, DATA_LIKE_NOTE_LIMIT).join('、')}: 公開するとデータの中身が丸見えになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください`]
+    : []
+  const truncatedNote = truncated
+    ? ['※ ファイルが多いため一覧は途中までです。チェックも全体の一部にとどまります']
+    : []
+  const uncheckedFiles = [...dataLike, ...others]
+  const uncheckedNote = uncheckedFiles.length
+    ? [`※ 中身を確認していないファイル: ${capList(uncheckedFiles, UNCHECKED_NOTE_LIMIT).join(', ')}`]
+    : []
+  return {
+    verdict,
+    report: [head, ...(note ? [note] : []), ...skipNote, ...dataLikeNote, ...lines, ...truncatedNote, ...uncheckedNote].join('\n'),
+  }
 }
 
 /**
@@ -233,6 +345,12 @@ export function buildCheckPrompt(opts: {
   parts: readonly string[]
   /** 分けて渡しているか。AIに伝えて「途中で切れている」と指摘させない。 */
   split?: boolean
+  /**
+   * 検査対象にも secretFiles にも入らなかった、その他のファイル名（classifyUnchecked の others）。
+   * **中身は絶対に渡さない**（2026-08-09 の .env 事故の原則）。名前だけを見せ、
+   * 名前から疑いがあるものだけを指摘させる。
+   */
+  others?: readonly string[]
 }): string {
   const intro = opts.mode === 'node'
     ? `以下は公開予定のアプリ（サーバーで実行される Node.js。入口は ${opts.entry ?? '不明'}）のファイルです。公開前のセキュリティチェックをしてください。`
@@ -255,6 +373,10 @@ export function buildCheckPrompt(opts: {
       ? '※ ファイルは複数回に分けてお渡ししています（見出しの（1/2）等がその印）。**渡された範囲だけで判断し、「途中で切れている」「全文を確認せよ」とは書かないでください**（こちらの都合です。ほかの部分は別の回に確認します）。\n\n'
       : '') +
     (opts.secretFiles.length ? `※ 次のファイルは名前からして公開NGの可能性が高い: ${opts.secretFiles.join(', ')}\n\n` : '') +
+    // 対象外ファイルの「素通り」対策（roadmap #17・案2）。中身はコードとして確認しないが、
+    // 名前だけは渡し、そこから疑わしいものがあれば拾わせる（中身は絶対に渡さない）。
+    // 件数の肥大防止は capList（上限を超えても件数そのものは「ほかN件」で必ず残す）。
+    (opts.others?.length ? `※ 次のファイルは公開されますが、中身はコードとして確認していません。名前から個人情報・秘密・残骸（不要なバックアップ等）の疑いがあるものだけ指摘してください（中身は見なくてよい）: ${capList(opts.others, OTHERS_PROMPT_LIMIT).join(', ')}\n\n` : '') +
     opts.parts.join('\n\n')
   )
 }
@@ -329,7 +451,19 @@ export async function runSecurityCheck(
 
   onProgress?.('「公開されるもの」を調べています…')
   let files: string[] = []
-  try { files = await window.electronAPI.fs.projectFiles(projectDir) } catch { /* 取得失敗は下でskip */ }
+  // truncated: SECURITY_CHECK_MAX_FILES（5,000件）を超えた、または走査の深さ上限に
+  // 実在するフォルダが引っかかった等で、一覧そのものが途中までしか取れていないか。
+  // 部分検査が完全検査の顔をしないよう、正直に報告へ回す（roadmap #17・案2、追補で上限緩和）。
+  let truncated = false
+  try {
+    // publishView: true で、除外規則を「公開と同じ定義」に揃える（roadmap #17 追補）。
+    // 既定の走査は dist/build/out 等の非ドットフォルダやドット始まりフォルダを丸ごと
+    // 飛ばすため、実際の公開経路（vercel/client.ts の collectDeployFiles・imageBuild.ts の
+    // copyTree）が拾う中身がチェックの視界に入っていなかった（dist の sourcemap 等がすり抜けの典型）。
+    const info = await window.electronAPI.fs.projectFilesInfo(projectDir, { maxFiles: SECURITY_CHECK_MAX_FILES, publishView: true })
+    files = info.files
+    truncated = info.truncated
+  } catch { /* 取得失敗は下でskip */ }
 
   // サイトかアプリかを自動で決める（判定は runtimeDetect に一元化。ここで独自に見ない）。
   // 「package.json はあるのに入口が見つからない」（unsupported）は作りかけのアプリと
@@ -342,7 +476,10 @@ export async function runSecurityCheck(
 
   // 機械的に分かる危険（.env等）は名前だけを指摘に含める。**中身は送らない。**
   const { targets, secretFiles } = pickCheckTargets(files, entry)
-  if (!targets.length && !secretFiles.length) {
+  // 対象外の残り（拡張子の許可リストに合わないもの）を「素通り」させない（roadmap #17・案2）。
+  // dataLike は機械的に警告、others は名前だけAIに判定させる（中身は渡さない）。
+  const { dataLike, others } = classifyUnchecked(files, targets, secretFiles)
+  if (!targets.length && !secretFiles.length && !dataLike.length && !others.length) {
     return { verdict: 'skip', report: 'チェック対象のコードファイルが見つかりませんでした。' }
   }
 
@@ -354,6 +491,10 @@ export async function runSecurityCheck(
     } catch { /* 読めないファイルはスキップ */ }
   }
   const { batches, skipped } = packBatches(pieces)
+  // 読む中身が無くても、secretFiles・others の「名前だけ」をAIへ見せたいことがある
+  // （例: プロジェクトが customers.csv・server.py だけで、コードとして読む対象が無い）。
+  // その場合も最低1回はAIに渡す（そうしないと、それらの指摘が一度もAIの目に触れない）。
+  if (!batches.length && (secretFiles.length || others.length)) batches.push([])
   const split = pieces.some(p => p.total > 1) || batches.length > 1
 
   const model = getDefaultModel()
@@ -367,10 +508,11 @@ export async function runSecurityCheck(
     onProgress?.(mode === 'node'
       ? `AIがアプリとして確認しています…${nth}`
       : `AIがサイトとして確認しています…${nth}`)
-    // 秘密ファイルの名前は1回目にだけ載せる（毎回載せると同じ指摘が並ぶ）
+    // 秘密ファイル・対象外ファイルの名前は1回目にだけ載せる（毎回載せると同じ指摘が並ぶ）
     const userPrompt = buildCheckPrompt({
       mode, entry, split,
       secretFiles: i === 0 ? secretFiles : [],
+      others: i === 0 ? others : [],
       parts: batches[i].map(p => `${pieceHeader(p)}\n${p.text}`),
     })
     try {
@@ -404,6 +546,9 @@ export async function runSecurityCheck(
     files: targets.length,
     batches: batches.length,
     skipped,
+    dataLike,
+    others,
+    truncated,
   })
   return { ...merged, mode }
 }

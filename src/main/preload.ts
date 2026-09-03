@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     homeDir: () => ipcRenderer.invoke('fs:homeDir'),
     projectFiles: (dir: string) => ipcRenderer.invoke('fs:projectFiles', dir),
+    // 同上＋一覧そのものが打ち切られたか（公開前セキュリティチェック用。fs:projectFiles は互換のため残す）。
+    // opts.publishView: true で除外規則を「公開と同じ定義」に差し替える（roadmap #17 追補）。
+    projectFilesInfo: (dir: string, opts?: { maxFiles?: number; publishView?: boolean }) =>
+      ipcRenderer.invoke('fs:projectFilesInfo', dir, opts),
     // AIの search_in_files ツール用：プロジェクト内の全文検索（単純な部分一致）
     searchInProject: (projectDir: string, query: string, pathPattern?: string) =>
       ipcRenderer.invoke('fs:searchInProject', projectDir, query, pathPattern),

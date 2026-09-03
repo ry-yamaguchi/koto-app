@@ -10,6 +10,7 @@ import { isPublished, isPublishedTop } from '../../shared/publishExclude'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { isSubmitEnter } from '../keyInput'
 import { subscribe, getSnapshot, loadingKeys, getTurn } from '../chatTurnRegistry'
+import { getWorkspaceDir } from '../workspace'
 
 interface FileEntry {
   name: string
@@ -262,7 +263,10 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     })
   }, [currentDir])
 
-  // ワークスペース(~/SAKURAIDE)のプロジェクト一覧を読み直す（スイッチャー表示時・未オープン時）。
+  // ワークスペースのプロジェクト一覧を読み直す（スイッチャー表示時・未オープン時）。
+  // 置き場は getWorkspaceDir()（選び直されていればそれ・無ければ既定の ~/SAKURAIDE）。
+  // 以前は `~/SAKURAIDE` を直に組んでいて、ワークスペースを選び直した利用者には
+  // 別の場所の一覧が出ていた（roadmap #7・2026-09-03 修正）。
   // 世代カウンタ: 並行して複数回呼ばれたとき、古い呼び出しのディスク読み取り結果が最新の状態
   // （例: 削除直後にフィルタ済みの一覧）を上書きして「削除したプロジェクトが復活して見える」のを防ぐ
   // （2026-07-13 ユーザー報告）。最新の呼び出しの結果だけを反映する。
@@ -270,8 +274,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   const loadWorkspaceProjects = async () => {
     const seq = ++wsLoadSeq.current
     try {
-      const home = await window.electronAPI.fs.homeDir()
-      const ws = `${home}/SAKURAIDE`
+      const ws = await getWorkspaceDir()
       if (await window.electronAPI.fs.exists(ws)) {
         const entries = await window.electronAPI.fs.readDir(ws)
         if (seq !== wsLoadSeq.current) return

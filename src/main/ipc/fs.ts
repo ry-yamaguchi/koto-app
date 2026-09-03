@@ -11,6 +11,7 @@ import type { IpcDeps } from './types'
 import { destinationDir, uniqueName, isImageFileName, type AssetPurpose } from '../../shared/assetImport'
 import { canTrash } from '../../shared/trashGuard'
 import { createProjectOnDisk } from '../projectCreateFs'
+import { publishExcludedDirNames, excludedFileNames } from '../../shared/publishExclude'
 
 function confineToProject(projectDir: string, rel: string): string {
   if (path.isAbsolute(rel)) throw new Error('不正なパスです（絶対パスは指定できません）')
@@ -27,30 +28,72 @@ function confineToProject(projectDir: string, rel: string): string {
 // fs:searchInProject（横断検索）の両方がこの関数を通して同じ除外規則を共有する（二重に持たない）。
 const WALK_IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'vendor', '__pycache__', '.venv', 'bin', 'lib', 'include', '.next', 'out'])
 
+/** フォルダ／ファイルを歩くときにどれを飛ばすかの規則。呼び出し側ごとに差し替えられる。 */
+type WalkRule = {
+  /** true を返したフォルダは丸ごと飛ばす（配下は歩かない）。 */
+  skipDir: (name: string) => boolean
+  /** true を返したファイルは一覧に含めない。 */
+  skipFile: (name: string) => boolean
+}
+
+/**
+ * 既定の除外規則（従来どおり・1文字も変えない）。
+ * WALK_IGNORE_DIRS ＋ ドット始まりフォルダを丸ごと除外。ファイルは `.sakuraide.json` のみ除外
+ * （`.DS_Store` 等はここでは除外しない＝fs:projectFiles / fs:searchInProject の挙動を変えないため）。
+ */
+const DEFAULT_WALK_RULE: WalkRule = {
+  skipDir: (name) => WALK_IGNORE_DIRS.has(name) || name.startsWith('.'),
+  skipFile: (name) => name === '.sakuraide.json',
+}
+
+// ── 公開基準の除外規則（roadmap #17 追補・2026-09-03）──────────────────────
+// 公開前セキュリティチェックが「見ている一覧」と「実際に公開されるもの」がずれていた
+// （dist/build/out/.well-known 等のドット始まりでないフォルダ・build/out 等は、
+// 実際の公開経路（vercel/client.ts の collectDeployFiles・imageBuild.ts の copyTree）では
+// 除外されていないのに、既定の WALK_IGNORE_DIRS が広く飛ばしていたため検査の目に入らなかった）。
+// **一元定義（publishExclude.ts）をそのまま使う**（掟10: 除外リストは手で並べ直さない）。
+// フォルダは publishExcludedDirNames()（HEAVY_DIRS＋KOTO_INTERNAL_DIRS＋PUBLISH_ONLY_DIRS）だけを飛ばし、
+// ドット始まりの一律除外はやめる。ファイルは excludedFileNames()（NOISE_FILES＋KOTO_INTERNAL_FILES）を飛ばす
+// （どちらも公開されないため。秘密ファイルの判定はここでは行わない＝securityCheck.ts 側が中身を見ずに判定する）。
+const PUBLISH_VIEW_DIR_NAMES = publishExcludedDirNames()
+const PUBLISH_VIEW_FILE_NAMES = excludedFileNames()
+const PUBLISH_VIEW_WALK_RULE: WalkRule = {
+  skipDir: (name) => PUBLISH_VIEW_DIR_NAMES.has(name),
+  skipFile: (name) => PUBLISH_VIEW_FILE_NAMES.has(name),
+}
+
 /**
  * プロジェクト配下を再帰的に走査し、対象ファイル（相対パス・絶対パス）を1件ずつ onFile へ渡す。
  * onFile が false を返した時点で走査を打ち切る（マッチ数上限などで早期終了したいときに使う）。
- * 戻り値: 実際に走査したファイル数と、上限（maxFiles/onFileの早期終了）で打ち切ったかどうか。
+ * 戻り値: 実際に走査したファイル数と、上限（maxFiles/深さ/onFileの早期終了）で打ち切ったかどうか。
+ *
+ * `truncated` は「一覧が全件ではない」ことを表す。以前は maxFiles 到達時にしか立たなかったが、
+ * **深さの打ち切り（maxDepth）で実在するフォルダを黙って捨てるケースも truncated に含める**
+ * （2026-09-03・roadmap #17 追補。黙って欠けない＝掟10）。searchInProjectFs の truncated の意味は
+ * 「マッチ上限 or 走査上限」から「走査しきれていない」へわずかに広がるが、意味としては正しくなる。
  */
 function walkProjectFiles(
   dir: string,
   maxFiles: number,
   onFile: (rel: string, full: string) => boolean | void,
-  maxDepth = 6
+  opts: { maxDepth?: number; rule?: WalkRule } = {}
 ): { count: number; truncated: boolean } {
+  const maxDepth = opts.maxDepth ?? 6
+  const rule = opts.rule ?? DEFAULT_WALK_RULE
   let count = 0
   let truncated = false
   let stoppedByCallback = false
   const walk = (d: string, rel: string, depth: number) => {
-    if (stoppedByCallback || depth > maxDepth) return
+    if (stoppedByCallback) return
+    if (depth > maxDepth) { truncated = true; return } // 実在するフォルダを深さで捨てた＝正直に truncated
     let entries: fs.Dirent[]
     try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
     for (const e of entries) {
       if (stoppedByCallback) return
       if (count >= maxFiles) { truncated = true; return }
       if (e.isDirectory()) {
-        if (!WALK_IGNORE_DIRS.has(e.name) && !e.name.startsWith('.')) walk(path.join(d, e.name), rel + e.name + '/', depth + 1)
-      } else if (e.name !== '.sakuraide.json') {
+        if (!rule.skipDir(e.name)) walk(path.join(d, e.name), rel + e.name + '/', depth + 1)
+      } else if (!rule.skipFile(e.name)) {
         count++
         if (onFile(rel + e.name, path.join(d, e.name)) === false) { stoppedByCallback = true; return }
       }
@@ -81,6 +124,29 @@ export function projectFilesFs(dir: string, maxFiles = 200): string[] {
   const out: string[] = []
   walkProjectFiles(dir, maxFiles, (rel) => { out.push(rel) })
   return out
+}
+
+/**
+ * プロジェクトのファイル一覧＋**一覧そのものが打ち切られたか**。fs:projectFilesInfo の実体。
+ *
+ * `projectFilesFs`（fs:projectFiles）は walkProjectFiles が返す truncated を捨てているため、
+ * 呼び出し側は「200件（既定）で打ち切られた部分検査」を「全件を見た完全な検査」と区別できない
+ * （公開前セキュリティチェック・roadmap #17 で判明。互換性のため fs:projectFiles 自体は残す）。
+ *
+ * `opts.publishView`（既定 false）: true のとき、除外規則を**公開と同じ定義**
+ * （PUBLISH_VIEW_WALK_RULE＝publishExcludedDirNames()＋excludedFileNames()）に差し替える。
+ * false（既定）のときは従来どおり DEFAULT_WALK_RULE（WALK_IGNORE_DIRS＋ドット始まり全除外）のまま。
+ * `opts.maxFiles`（既定 200）はそのまま渡す。
+ */
+export function projectFilesInfoFs(
+  dir: string,
+  opts?: { maxFiles?: number; publishView?: boolean }
+): { files: string[]; truncated: boolean } {
+  const maxFiles = opts?.maxFiles ?? 200
+  const rule = opts?.publishView ? PUBLISH_VIEW_WALK_RULE : undefined
+  const out: string[] = []
+  const { truncated } = walkProjectFiles(dir, maxFiles, (rel) => { out.push(rel) }, { rule })
+  return { files: out, truncated }
 }
 
 /** AIの search_in_files ツール：プロジェクト内の全文検索。fs:searchInProject の実体（下のハンドラと同じ規則）。 */
@@ -299,6 +365,12 @@ export function registerFsHandlers(deps: IpcDeps) {
 
   // プロジェクトのファイル一覧（AIへ渡す構成把握用。重いフォルダは除外）
   ipcMain.handle('fs:projectFiles', async (_, dir: string, maxFiles = 200) => projectFilesFs(dir, maxFiles))
+
+  // 同上＋一覧そのものが打ち切られたか（公開前セキュリティチェックが「部分検査を完全検査の
+  // 顔で報告しない」ために使う。fs:projectFiles は互換のためそのまま残す）。
+  // opts.publishView: true で除外規則を「公開と同じ定義」に差し替える（roadmap #17 追補）。
+  ipcMain.handle('fs:projectFilesInfo', async (_, dir: string, opts?: { maxFiles?: number; publishView?: boolean }) =>
+    projectFilesInfoFs(dir, opts))
 
   // AIの search_in_files ツール：プロジェクト内の全文検索（単純な部分一致・大文字小文字は区別しない。
   // 正規表現は受け付けない）。走査は fs:projectFiles と同じ除外規則（walkProjectFiles）を共有する。

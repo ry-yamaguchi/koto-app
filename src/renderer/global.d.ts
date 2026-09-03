@@ -180,6 +180,15 @@ interface Window {
       watchDir(dir: string, cb: () => void): () => void
       homeDir(): Promise<string>
       projectFiles(dir: string): Promise<string[]>
+      /**
+       * 同上＋一覧そのものが打ち切られたか（`maxFiles` 既定200件を超えた・深さ上限を超えた等）。
+       * 公開前セキュリティチェックが「部分検査を完全検査の顔で報告しない」ために使う。
+       *
+       * `opts.publishView`（既定 false）: true のとき、除外規則を**公開と同じ定義**
+       * （`src/shared/publishExclude.ts` の publishExcludedDirNames/excludedFileNames）に差し替える。
+       * 既定（false）は従来どおり fs:projectFiles と同じ除外規則のまま（roadmap #17 追補）。
+       */
+      projectFilesInfo(dir: string, opts?: { maxFiles?: number; publishView?: boolean }): Promise<{ files: string[]; truncated: boolean }>
       // AIの search_in_files ツール用：プロジェクト内の全文検索（単純な部分一致・大文字小文字は区別しない）
       searchInProject(projectDir: string, query: string, pathPattern?: string): Promise<{
         ok: boolean

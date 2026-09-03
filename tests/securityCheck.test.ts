@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, checkRecordKey, formatCheckRecord } from '../src/renderer/securityCheck'
+import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, checkRecordKey, formatCheckRecord, DATA_FILE_RE, classifyUnchecked, capList } from '../src/renderer/securityCheck'
 
 // 2026-08-09 の総点検で見つかった2件の回帰テスト。
 // 公開前セキュリティチェックは「守り」のコードなのに、テストが1件も無かった（掟10）。
@@ -61,6 +61,90 @@ describe('チェックにかけるファイルの選び方', () => {
   it('画像やフォントは対象外', () => {
     const { targets } = pickCheckTargets(['logo.png', 'font.woff2', 'index.html'])
     expect(targets).toEqual(['index.html'])
+  })
+})
+
+// ── 対象外ファイルの「素通り」をふさぐ（roadmap #17・2026-09-03 Ryosuke 発見・案2）───
+// pickCheckTargets の対象外（txt/csv/sql/db/bak/log/zip/py 等）は、公開されるのに検査もされず
+// 「確認していない」ことすら報告されていなかった（実測: customers.csv・dump.sql・app.db・
+// backup.zip・server.py が完全素通り）。ここではその仕分けを固定する。
+describe('DATA_FILE_RE（公開先で丸見えになると危険度が高い拡張子の一元定義）', () => {
+  it('止める例: データベースの書き出し・バックアップ・残骸っぽい拡張子は対象にする', () => {
+    for (const f of ['dump.sql', 'backup.zip', 'site.bak', 'app.db', 'export.csv', 'data.tsv', 'app.sqlite3', 'access.log', 'archive.tar.gz', 'index.html~', 'config.js.orig']) {
+      expect(DATA_FILE_RE.test(f)).toBe(true)
+    }
+  })
+
+  // 止めすぎると狼少年になる（CLAUDE.md 掟10）。README.md やメモを毎回警告しない。
+  it('通す例: md/txt/py 等は対象にしない（止めすぎない）', () => {
+    for (const f of ['README.md', 'メモ.txt', 'server.py', 'index.html', 'app.js']) {
+      expect(DATA_FILE_RE.test(f)).toBe(false)
+    }
+  })
+})
+
+describe('classifyUnchecked（検査対象・secretFiles の残りを dataLike / others に仕分ける）', () => {
+  it('データっぽい拡張子は dataLike に入る（実測で完全素通りしていたもの）', () => {
+    const files = ['dump.sql', 'backup.zip', 'site.bak', 'index.html']
+    const { targets } = pickCheckTargets(files)
+    const { dataLike } = classifyUnchecked(files, targets, [])
+    expect(dataLike).toEqual(['dump.sql', 'backup.zip', 'site.bak'])
+  })
+
+  it('データっぽくない対象外ファイルは others に入る', () => {
+    const files = ['README.md', 'メモ.txt', 'server.py', 'index.html']
+    const { targets } = pickCheckTargets(files)
+    const { others } = classifyUnchecked(files, targets, [])
+    expect(others).toEqual(['README.md', 'メモ.txt', 'server.py'])
+  })
+
+  it('検査対象（targets）はどちらにも入らない', () => {
+    const files = ['index.html', 'app.js', 'dump.sql', 'server.py']
+    const { targets } = pickCheckTargets(files)
+    const { dataLike, others } = classifyUnchecked(files, targets, [])
+    expect(dataLike).not.toContain('index.html')
+    expect(dataLike).not.toContain('app.js')
+    expect(others).not.toContain('index.html')
+    expect(others).not.toContain('app.js')
+  })
+
+  it('secretFiles（.env 等）はどちらにも入らない（二重に指摘しない）', () => {
+    const files = ['.env', 'index.html']
+    const { targets, secretFiles } = pickCheckTargets(files)
+    const { dataLike, others } = classifyUnchecked(files, targets, secretFiles)
+    expect(dataLike).not.toContain('.env')
+    expect(others).not.toContain('.env')
+  })
+
+  it('Koto のビルド設定（Dockerfile 等）は対象外（targets と同じ理由。利用者には直せない）', () => {
+    const files = ['Dockerfile', 'nginx.conf', '.dockerignore', 'index.html']
+    const { targets, secretFiles } = pickCheckTargets(files)
+    const { dataLike, others } = classifyUnchecked(files, targets, secretFiles)
+    expect(dataLike).toEqual([])
+    expect(others).toEqual([])
+  })
+})
+
+// ── 名前一覧の肥大防止（roadmap #17 追補・2026-09-03）──────────────────────
+// projectFilesInfo の上限を 200 → 5,000 に緩和したため、dataLike・others をそのまま
+// 依頼文・報告文へ埋め込むと文言が際限なく膨らむ。件数そのものでは絞らず（黙って落とさない）、
+// 表示件数だけを capList で抑え、超過分は「ほかN件」で必ず件数を残す。
+describe('capList（名前一覧の肥大防止）', () => {
+  it('上限以下ならそのまま（「ほか」は付けない）', () => {
+    expect(capList(['a', 'b', 'c'], 5)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('ちょうど上限なら「ほか」を付けない（境界値）', () => {
+    expect(capList(['a', 'b'], 2)).toEqual(['a', 'b'])
+  })
+
+  it('超過分は「ほかN件」の1行にまとめる', () => {
+    const names = Array.from({ length: 10 }, (_, i) => `f${i}.txt`)
+    expect(capList(names, 3)).toEqual(['f0.txt', 'f1.txt', 'f2.txt', 'ほか7件'])
+  })
+
+  it('空配列は空配列のまま', () => {
+    expect(capList([], 10)).toEqual([])
   })
 })
 
@@ -144,6 +228,36 @@ describe('AIへの依頼文', () => {
   it('出力形式（判定の1行目）を必ず要求する', () => {
     const p = buildCheckPrompt({ mode: 'node', entry: 'a.js', secretFiles: [], parts: [] })
     expect(p).toContain('「判定: 問題なし」または「判定: 要確認」')
+  })
+
+  // ── others（対象外・データ系でもないファイル名）の名前だけ判定（roadmap #17・案2）───
+  it('others の名前を伝え、名前だけで疑いがあるものだけ指摘するよう指示する', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], others: ['server.py', 'メモ.txt'] })
+    expect(p).toContain('server.py, メモ.txt')
+    expect(p).toContain('名前から個人情報・秘密・残骸')
+    expect(p).toContain('中身は見なくてよい')
+  })
+
+  // 中身は絶対に送らない（2026-08-09 の .env 事故の原則）。others に渡すのは名前一覧だけ
+  // ── parts（実際のファイル内容）を空にしても、others の名前は独立に依頼文へ載る。
+  it('others に渡すのは名前一覧だけ（parts が空でも名前は載る＝中身に依存しない）', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], others: ['customers.csv'] })
+    expect(p).toContain('customers.csv')
+    expect(buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })).not.toContain('customers.csv')
+  })
+
+  it('others が無ければ、その案内は入れない', () => {
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
+    expect(p).not.toContain('名前から個人情報・秘密・残骸')
+  })
+
+  // ── 名前一覧の肥大防止（roadmap #17 追補）: others は capList(80) を通す ─────────
+  it('others が80件を超えたら、依頼文では81件目以降を「ほかN件」にまとめる', () => {
+    const others = Array.from({ length: 90 }, (_, i) => `f${i}.txt`)
+    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], others })
+    expect(p).toContain('ほか10件')
+    expect(p).not.toContain('f89.txt') // 81件目以降は個別には出さない
+    expect(p).toContain('f79.txt') // 80件目までは出す
   })
 })
 
@@ -252,6 +366,61 @@ describe('セキュリティチェックの配線', () => {
     const s = read('src/renderer/securityCheck.ts')
     expect(s).toContain('detectRuntime({ packageJson, fileNames: files.filter(f => !f.includes(')
     expect(s).not.toContain('scripts.start') // 入口の推定ロジックを複製しない
+  })
+
+  // ── 対象外ファイルの「素通り」対策の配線（roadmap #17・案2）─────────────────
+  it('IPCの3点セット（fs:projectFilesInfo）が揃っている（掟6）', () => {
+    const main = read('src/main/ipc/fs.ts')
+    const preload = read('src/main/preload.ts')
+    const dts = read('src/renderer/global.d.ts')
+    expect(main).toContain("ipcMain.handle('fs:projectFilesInfo', async (_, dir: string, opts?: { maxFiles?: number; publishView?: boolean }) =>")
+    expect(main).toContain('projectFilesInfoFs(dir, opts))')
+    expect(preload).toContain('projectFilesInfo: (dir: string, opts?: { maxFiles?: number; publishView?: boolean }) =>')
+    expect(preload).toContain("ipcRenderer.invoke('fs:projectFilesInfo', dir, opts)")
+    expect(dts).toContain('projectFilesInfo(dir: string, opts?: { maxFiles?: number; publishView?: boolean }): Promise<{ files: string[]; truncated: boolean }>')
+  })
+
+  it('既存の fs:projectFiles は互換のため残っている', () => {
+    const main = read('src/main/ipc/fs.ts')
+    expect(main).toContain("ipcMain.handle('fs:projectFiles', async (_, dir: string, maxFiles = 200) => projectFilesFs(dir, maxFiles))")
+  })
+
+  it('一覧の打ち切りを捨てない、正直な一覧（projectFilesInfo）を使っている', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain('await window.electronAPI.fs.projectFilesInfo(projectDir, { maxFiles: SECURITY_CHECK_MAX_FILES, publishView: true })')
+    expect(s).not.toContain('await window.electronAPI.fs.projectFiles(projectDir)')
+  })
+
+  // ── 一覧取得は「公開と同じ除外定義」を使う（roadmap #17 追補・2026-09-03）─────────
+  // 以前の既定の走査（WALK_IGNORE_DIRS＋ドット始まり全除外）は、実際の公開経路
+  // （vercel/client.ts の collectDeployFiles・imageBuild.ts の copyTree）が除外しない
+  // dist/build/out 等を黙って視界の外に置いていた。publishView: true でその穴をふさぐ。
+  it('publishView: true で公開と同じ除外定義を使い、200件の上限を流用しない', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain('publishView: true')
+    expect(s).toContain('const SECURITY_CHECK_MAX_FILES = 5000')
+    // 200 を既定のまま流用していないこと（呼び出しの形ごと確認済みの上のテストと対）
+    expect(s).not.toContain('fs.projectFilesInfo(projectDir)')
+  })
+
+  it('対象外ファイルを classifyUnchecked で仕分け、mergeCheckResults へ渡している', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain('const { dataLike, others } = classifyUnchecked(files, targets, secretFiles)')
+    const at = s.indexOf('const merged = mergeCheckResults(results, {')
+    const call = s.slice(at, s.indexOf('})', at))
+    expect(call).toContain('dataLike,')
+    expect(call).toContain('others,')
+    expect(call).toContain('truncated,')
+  })
+
+  it('others は buildCheckPrompt へ渡り、中身（parts）とは別立てで名前だけ送られる', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain('others: i === 0 ? others : [],')
+  })
+
+  it('secretFiles・others の名前しか無いプロジェクトでも、最低1回はAIに渡す（黙って落とさない）', () => {
+    const s = read('src/renderer/securityCheck.ts')
+    expect(s).toContain("if (!batches.length && (secretFiles.length || others.length)) batches.push([])")
   })
 })
 
@@ -473,6 +642,94 @@ describe('複数回の結果をまとめる', () => {
     )
     expect(m.report).toContain('（3個のファイルを確認しました）')
     expect(m.report).not.toContain('回に分けて')
+  })
+})
+
+// ── 対象外ファイルの正直化を合成する（roadmap #17・案2・mergeCheckResults の拡張）───
+// dataLike / others / truncated を渡さない既存呼び出し（上のテスト群）は、
+// 挙動が1文字も変わらないことも合わせて確かめる（新しい任意項目は既定で無害）。
+describe('対象外ファイルの正直化を合成する（mergeCheckResults の拡張）', () => {
+  const okReport = { verdict: 'ok' as const, report: '判定: 問題なし\n- 全ファイル: 問題ありませんでした' }
+  const warnReport = { verdict: 'warn' as const, report: '判定: 要確認\n- app.js: APIキーが直書きされています' }
+
+  it('dataLike が1件でもあれば、AIが「問題なし」でも全体は「要確認」になる（安全側）', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: [] })
+    expect(m.verdict).toBe('warn')
+    expect(m.report.split('\n')[0]).toBe('判定: 要確認')
+    expect(m.report).toContain('dump.sql: 公開するとデータの中身が丸見えになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください')
+  })
+
+  it('複数件の dataLike は1行にまとめる', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql', 'backup.zip'], others: [] })
+    expect(m.report).toContain('dump.sql、backup.zip: 公開するとデータの中身が丸見えになる種類のファイルです')
+  })
+
+  it('固定文は指摘欄の先頭（AIの指摘より前）に入る', () => {
+    const m = mergeCheckResults([warnReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: [] })
+    const dataLikeIdx = m.report.indexOf('dump.sql: 公開すると')
+    const aiIdx = m.report.indexOf('app.js: APIキーが直書きされています')
+    expect(dataLikeIdx).toBeGreaterThan(-1)
+    expect(aiIdx).toBeGreaterThan(-1)
+    expect(dataLikeIdx).toBeLessThan(aiIdx)
+  })
+
+  it('others だけなら判定はAIのまま。末尾に「確認していない」一覧が必ず出る', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: ['server.py', 'メモ.txt'] })
+    expect(m.verdict).toBe('ok')
+    expect(m.report).toContain('※ 中身を確認していないファイル: server.py, メモ.txt')
+  })
+
+  it('末尾の「確認していない」一覧は dataLike・others の両方を含む', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: ['server.py'] })
+    expect(m.report).toContain('※ 中身を確認していないファイル: dump.sql, server.py')
+  })
+
+  // ── 名前一覧の肥大防止（roadmap #17 追補）: dataLike は capList(20)、
+  // 末尾の「確認していない」一覧（dataLike+others）は capList(50) を通す ─────────
+  it('dataLike が20件を超えたら、指摘欄の固定文では21件目以降を「ほかN件」にまとめる（末尾一覧は別枠なので含めない）', () => {
+    const dataLike = Array.from({ length: 25 }, (_, i) => `d${i}.sql`)
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike, others: [] })
+    const fixedLine = m.report.split('\n').find(l => l.endsWith('公開が不要なら公開されるフォルダから移動してください'))
+    expect(fixedLine).toContain('ほか5件')
+    expect(fixedLine).not.toContain('d24.sql')
+    expect(fixedLine).toContain('d19.sql') // 20件目までは出す
+  })
+
+  it('末尾の「確認していないファイル」一覧は、dataLike+others 合算で50件を超えたら「ほかN件」にまとめる', () => {
+    const dataLike = Array.from({ length: 30 }, (_, i) => `d${i}.sql`)
+    const others = Array.from({ length: 30 }, (_, i) => `o${i}.txt`)
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike, others })
+    expect(m.report).toContain('※ 中身を確認していないファイル:')
+    expect(m.report).toContain('ほか10件')
+    expect(m.report).not.toContain('o29.txt')
+  })
+
+  it('dataLike・others が無ければ「確認していないファイル」は書かない（狼少年にしない）', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [] })
+    expect(m.report).not.toContain('確認していないファイル')
+  })
+
+  it('truncated（一覧打ち切り）は判定を要確認に倒し、専用の文言を明示する', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: [], truncated: true })
+    expect(m.verdict).toBe('warn')
+    expect(m.report).toContain('※ ファイルが多いため一覧は途中までです。チェックも全体の一部にとどまります')
+  })
+
+  it('truncated が無ければ、その文言は入れない', () => {
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [] })
+    expect(m.report).not.toContain('一覧は途中までです')
+  })
+
+  it('AIが未実施（skip）でも、dataLike があれば機械的な理由で「要確認」にする', () => {
+    const m = mergeCheckResults([], { files: 0, batches: 0, skipped: [], dataLike: ['dump.sql'], others: [] })
+    expect(m.verdict).toBe('warn')
+    expect(m.report).toContain('dump.sql: 公開するとデータの中身が丸見えになる種類のファイルです')
+  })
+
+  it('AIが未実施で、機械的な理由（dataLike・truncated）も無ければ、従来どおり skip のまま', () => {
+    const m = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（timeout）。' }], { files: 0, batches: 0, skipped: [], dataLike: [], others: ['server.py'] })
+    expect(m.verdict).toBe('skip')
+    expect(m.report).toBe('チェックに失敗しました（timeout）。')
   })
 })
 
