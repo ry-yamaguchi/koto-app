@@ -143,9 +143,16 @@ describe('src/main/appSessionsStore.ts: convStore.dropConversation を delete �
     expect(src).toContain('if (!isValidWorkspaceDir(dir)) throw new Error(')
   })
 
-  it('assertValidWorkspaceDir(workspaceDir) の呼び出しが、listSessions/createSession/renameSession/setSessionModel/deleteSession の5関数すべてにある（掟10: 呼び出し形ごと・当て先が定義自身に当たらないことも確認済み）', () => {
+  it('assertValidWorkspaceDir(workspaceDir) の呼び出しが、listSessions/createSession/renameSession/setSessionModel/deleteSession/ensureSessionProject の6関数すべてにある（掟10: 呼び出し形ごと・当て先が定義自身に当たらないことも確認済み）', () => {
+    // ensureSessionProject はもう1引数（projectWorkspaceDir）も同じ検証を通すが、
+    // それは呼び出しの文字列が異なる（assertValidWorkspaceDir(projectWorkspaceDir)）ため、
+    // ここでの単純な文字列カウントには乗らない。専用のテストを下に置く。
     const count = src.split('assertValidWorkspaceDir(workspaceDir)').length - 1
-    expect(count).toBe(5)
+    expect(count).toBe(6)
+  })
+
+  it('ensureSessionProject が projectWorkspaceDir も assertValidWorkspaceDir で検証している', () => {
+    expect(src).toContain('assertValidWorkspaceDir(projectWorkspaceDir)')
   })
 })
 
@@ -213,5 +220,62 @@ describe('src/renderer/components/ChatApp.tsx: 単独チャットも main が書
 
   it('送信ボタンの disabled にも chatWorkspace の有無が入っている', () => {
     expect(src).toContain('disabled={(!input.trim() && pendingImages.length === 0) || !chatWorkspace}')
+  })
+})
+
+// ── 2026-09-04 Ryosuke 決定: チャット（ChatApp）内の「保存」を会話専用の新規プロジェクトへ
+// 向ける（掟11: 環境の独立。applyAiFile の base = root ?? currentDir が、IDE で最後に開いていた
+// 無関係なプロジェクトへ書き込んでいた不具合の修正）。
+describe('appSessions:ensureProject の3点セット（main / preload.ts / global.d.ts）', () => {
+  it('main（ipc/appSessions.ts）がハンドラを登録している', () => {
+    const src = readCode('src/main/ipc/appSessions.ts')
+    expect(src).toContain("ipcMain.handle('appSessions:ensureProject', (_, workspaceDir: string, id: string, projectWorkspaceDir: string, title: string) =>")
+    expect(src).toContain('ensureSessionProject(workspaceDir, id, projectWorkspaceDir, title))')
+  })
+
+  it('preload.ts が appSessions:ensureProject を invoke している', () => {
+    const src = readCode('src/main/preload.ts')
+    expect(src).toContain('ensureProject: (workspaceDir: string, id: string, projectWorkspaceDir: string, title: string) =>')
+    expect(src).toContain("ipcRenderer.invoke('appSessions:ensureProject', workspaceDir, id, projectWorkspaceDir, title)")
+  })
+
+  it('global.d.ts に ensureProject の型がある', () => {
+    const src = readCode('src/renderer/global.d.ts')
+    expect(src).toContain('ensureProject(workspaceDir: string, id: string, projectWorkspaceDir: string, title: string): Promise<{')
+  })
+})
+
+describe('ChatApp.tsx: AiMessage への onApplyFile はラッパ（handleApplyFile）経由（掟11）', () => {
+  const src = readCode('src/renderer/components/ChatApp.tsx')
+
+  it('旧形（onApplyFile をそのまま渡す）はもう無い（mustNot）', () => {
+    expect(src).not.toContain('onApplyFile={onApplyFile}')
+  })
+
+  it('AiMessage には handleApplyFile を渡している', () => {
+    expect(src).toContain('<AiMessage content={msg.content} onApplyFile={handleApplyFile}')
+  })
+
+  it('handleApplyFile が appSessions.ensureProject を呼び、projectDir + \'/public\' を root として渡している', () => {
+    expect(src).toContain('window.electronAPI.appSessions.ensureProject(chatWorkspace, activeId, ws, activeSession?.title ?? ')
+    expect(src).toContain("r.projectDir + '/public'")
+    expect(src).toContain('{ openProjectDir: r.projectDir }')
+  })
+})
+
+describe('App.tsx: applyAiFile の opts.openProjectDir 経路（掟11・チャット専用プロジェクトへの切替）', () => {
+  const src = readCode('src/renderer/App.tsx')
+
+  it('未保存の編集があるプロジェクトは切り替えない（isDirty ガード）', () => {
+    expect(src).toContain('if (openFiles.some(f => f.isDirty)) return')
+  })
+
+  it('pendingOpenAfterSwitchRef へ退避してから setCurrentDir し、切替 effect の最後で dir 一致のときだけ消費する', () => {
+    expect(src).toContain('const pendingOpenAfterSwitchRef = useRef<{ dir: string; full: string } | null>(null)')
+    expect(src).toContain('pendingOpenAfterSwitchRef.current = { dir: switchTarget, full }')
+    expect(src).toContain('setCurrentDir(switchTarget)')
+    expect(src).toContain('const pending = pendingOpenAfterSwitchRef.current')
+    expect(src).toContain('if (pending && pending.dir === currentDir) {')
+    expect(src).toContain('pendingOpenAfterSwitchRef.current = null')
   })
 })

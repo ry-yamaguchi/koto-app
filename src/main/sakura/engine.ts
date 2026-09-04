@@ -13,6 +13,7 @@
 import OpenAI from 'openai'
 import { newStreamState, applyChunk, finishedToolCalls } from '../../shared/streamDelta'
 import { pickContent } from '../../shared/chatContent'
+import { foldSystemForModel } from '../../shared/modelInfo'
 
 const SAKURA_BASE_URL = 'https://api.ai.sakura.ad.jp/v1'
 // C3: delegate_implementation（claude/tools.ts）からも同じクライアント生成を再利用する。
@@ -66,8 +67,10 @@ export async function runSakuraChat(
   const controller = new AbortController()
   // リクエストを始める前に中断関数を渡す（応答待ちの間に ⏹ が押されても中断できるように）。
   cbs?.onAbortReady?.(() => controller.abort())
+  // system が捨てられるモデルは user への畳み込みを通す（roadmap #21・foldSystemForModel のコメント参照）
+  const messages = foldSystemForModel(args.model, args.messages)
   const mk = (maxTokens: number) => client.chat.completions.create(
-    { model: args.model, messages: args.messages as any, max_tokens: maxTokens, temperature: args.temperature },
+    { model: args.model, messages: messages as any, max_tokens: maxTokens, temperature: args.temperature },
     { signal: controller.signal },
   )
   let res
@@ -108,9 +111,11 @@ export async function runSakuraStream(
   try {
     const client = sakuraClient(args.apiKey, args.baseURL)
     const requested = args.maxTokens ?? 4096
+    // system が捨てられるモデルは user への畳み込みを通す（roadmap #21・foldSystemForModel のコメント参照）
+    const messages = foldSystemForModel(args.model, args.messages)
     const mk = (maxTokens: number) => client.chat.completions.create({
       model: args.model,
-      messages: args.messages as any,
+      messages: messages as any,
       max_tokens: maxTokens,
       // Qwen推奨のサンプリング設定。既定より出力が安定し、
       // 他言語トークンの混入（日本語にハングル等が混じる現象）も抑えられる

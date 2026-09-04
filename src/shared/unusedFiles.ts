@@ -27,8 +27,13 @@
  * 各種サービス連携（Apple Pay・ドメイン所有確認等）が既定のパスとして直接読むため、
  * 中身のファイル名を問わず配下すべてを対象にする。
  */
+// 2026-09-04 追加: 検索エンジンのサイト所有確認ファイル（google<英数>.html・BingSiteAuth.xml）と
+// 広告の管理ファイル（ads.txt / app-ads.txt）。いずれも「コードからは参照されないが、
+// 外部のクローラーが決まった名前で直接読みにくる」正当なファイル。こうした慣習ファイルは
+// 種類が有限なので、利用者に「外部利用マーク」のような新しい概念を課すのではなく、
+// この許可リストで吸収する（Ryosuke と合意）。
 export const ALWAYS_USED_RE =
-  /(^|\/)(index\.html|404\.html|favicon\.ico|robots\.txt|sitemap\.xml|manifest\.json|apple-touch-icon[^/]*|og[^/]*\.(?:png|jpe?g)|CNAME|\.htaccess|nginx\.conf|Dockerfile|\.dockerignore)$|(^|\/)\.well-known\//i
+  /(^|\/)(index\.html|404\.html|favicon\.ico|robots\.txt|sitemap\.xml|manifest\.json|apple-touch-icon[^/]*|og[^/]*\.(?:png|jpe?g)|CNAME|\.htaccess|nginx\.conf|Dockerfile|\.dockerignore|ads\.txt|app-ads\.txt|google[0-9a-z]+\.html|BingSiteAuth\.xml)$|(^|\/)\.well-known\//i
 
 /** 中身を「参照コーパス」に使うテキスト系の拡張子（バイナリは読まない）。 */
 const TEXT_EXTS = new Set([

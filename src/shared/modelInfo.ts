@@ -14,23 +14,32 @@
 //      https://ai.sakura.ad.jp/sakura-ai/ai-engine/ ／ コントロールパネルの提供モデル
 //   3. 差分を MODELS / VISION_MODELS / PRICING に反映し、DEFAULT_MODEL を
 //      「その時点でコード作成に最も適したモデル」に見直す
-//   最終確認: v0.1.0（2026-06 時点の最適は Qwen3-Coder-480B-A35B-Instruct-FP8）
+//   最終確認: v0.1.0（2026-06 時点の最適は旧世代のコード特化480Bモデル）
+//   2026-09-04 見直し: 旧世代のコード特化モデル（480B/30B）が提供終了。check:models 実測で
+//     8モデルへ世代交代（詳細は下の MODELS のコメント）。
 // ============================================================================
 
 // さくらのAI Engine のモデルID（「Qwen/」等のプレフィックスは付かない）
+// 2026-09-04 世代交代: 旧世代のコード特化モデル（480B版・30B版の2件）は提供終了
+// （480B は実 API で「This model is not available」を確認）。check:models 実測の
+// 提供モデルへ置き換えた。tools 実測（probe-models.mjs）: Kimi-K2.7-Code / Qwen3.6-35B-A3B /
+// gemma-4-31B-it は ok(tool_call)、Phi-4-mini-instruct-cpu / Qwen3-0.6B-cpu は 400（非対応）。
 export const MODELS: { id: string; label: string }[] = [
-  { id: 'Qwen3-Coder-480B-A35B-Instruct-FP8', label: 'Qwen3-Coder 480B' },
-  { id: 'Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3-Coder 30B' },
+  { id: 'preview/Kimi-K2.7-Code', label: 'Kimi K2.7 Code（プレビュー）' },
+  { id: 'preview/Qwen3.6-35B-A3B', label: 'Qwen3.6 35B（プレビュー）' },
+  { id: 'preview/gemma-4-31B-it', label: 'Gemma 4 31B（プレビュー）' },
   { id: 'gpt-oss-120b', label: 'GPT-OSS 120B' },
   { id: 'llm-jp-3.1-8x13b-instruct4', label: 'llm-jp 3.1 8x13b（日本語）' },
   // 2026-07-14 ユーザー実測（probe-models.mjs）で tools=ok を確認しツール（ファイル参照）対応に昇格。
   { id: 'preview/Kimi-K2.6', label: 'Kimi K2.6（プレビュー）' },
+  { id: 'preview/Qwen3-0.6B-cpu', label: 'Qwen3 0.6B（CPU・プレビュー）' },
+  { id: 'preview/Phi-4-mini-instruct-cpu', label: 'Phi-4 mini（CPU・プレビュー）' },
 ]
 
 /** マルチモーダル（画像入力）対応モデル（さくらのAI Engine パブリックプレビュー） */
+// 2026-09-04: preview/Phi-4-multimodal-instruct は提供終了のため削除。Qwen3-VL は継続提供。
 export const VISION_MODELS: { id: string; label: string }[] = [
   { id: 'preview/Qwen3-VL-30B-A3B-Instruct', label: 'Qwen3-VL 30B（画像対応・プレビュー）' },
-  { id: 'preview/Phi-4-multimodal-instruct', label: 'Phi-4 マルチモーダル（プレビュー）' },
 ]
 
 export function modelLabel(id: string): string {
@@ -55,20 +64,62 @@ export const DEFAULT_VISION_MODEL = 'preview/Qwen3-VL-30B-A3B-Instruct'
 
 // IDE（コード/エージェント）は品質重視、チャット（会話/調査）は速度重視を既定にする。
 // ※ バージョンアップ時は npm run check:models / probe:models で見直すこと
-export const DEFAULT_MODEL = 'Qwen3-Coder-480B-A35B-Instruct-FP8'   // IDE 既定（コード最適）
+// 2026-09-04 見直し。旧コード特化モデルの提供終了に伴い、実測で tools ok のコード系へ
+export const DEFAULT_MODEL = 'preview/Kimi-K2.7-Code'   // IDE 既定（コード最適）
 
 /**
  * 提供中のモデル一覧から「コード作成に最適な」モデルを選ぶ。
- * 既定モデルが提供終了した場合のフォールバックに使う（Coder系 → Qwen3系 → 先頭）。
+ * 既定モデルが提供終了した場合のフォールバックに使う
+ * （Kimi-K2.x-Code系 → coder系 → Qwen3系（-cpu の小型版・VL の画像用は除外） → 先頭）。
+ * qwen3 の枝で -cpu/VL を除外するのは、0.6B（preview/Qwen3-0.6B-cpu）のような
+ * 非力な小型モデルが既定に選ばれる事故を防ぐため。
  */
 export function pickBestModel(ids: string[]): string {
   if (!ids.length) return DEFAULT_MODEL
   return (
-    ids.find(id => /coder/i.test(id) && /480/.test(id)) ??
+    ids.find(id => /kimi-k2[.\d]*-code/i.test(id)) ??
     ids.find(id => /coder/i.test(id)) ??
-    ids.find(id => /^qwen3/i.test(id)) ??
+    ids.find(id => /qwen3/i.test(id) && !/-cpu|vl/i.test(id)) ??
     ids[0]
   )
+}
+
+/**
+ * system ロールの**本文がテンプレートで捨てられる**モデル（2026-09-04 Ryosuke 実測で確定）。
+ *
+ * 証跡（llm-jp）: ①probe-openfile の実測で、system に4,000字を注入しても prompt_tokens が
+ * user 文＋雑費ぶんしか増えない ②「にゃテスト」= system の「語尾ににゃ」を完全無視、
+ * **同じ指示を user ロールに入れると完全に従う**（対の実測）＝指示追従の弱さではなくロールの問題。
+ * このままでは境界ガード（untrustedBlock）・現在日時・IDEの全指示が届かないため、
+ * 送信の一元の通り道（main/sakura/engine.ts）で user への畳み込みを行う（roadmap #21）。
+ */
+export const SYSTEM_ROLE_UNSUPPORTED = ['llm-jp-3.1-8x13b-instruct4']
+
+/**
+ * system が捨てられるモデル向けに、先頭の system メッセージを
+ * 「user（指示）→ assistant（了解）」の往復へ畳み込む（純関数・roadmap #21）。
+ *
+ * 対象外のモデル・先頭に system が無い場合は、渡された配列をそのまま返す（複製しない）。
+ * 万一 2つ目以降に system が混ざっていた場合も、user へ変換して落とさない（防御・
+ * 本来は v0.5.0 の「先頭 system へ畳み込み」で先頭1つに揃っている）。
+ */
+export function foldSystemForModel(
+  model: string,
+  messages: { role: string; content: any }[],
+): { role: string; content: any }[] {
+  if (!SYSTEM_ROLE_UNSUPPORTED.includes(model)) return messages
+  if (!messages.some(m => m.role === 'system')) return messages
+  const out: { role: string; content: any }[] = []
+  let foldedFirst = false
+  for (const m of messages) {
+    if (m.role !== 'system') { out.push(m); continue }
+    out.push({ role: 'user', content: `（Koto からの実行指示。以降のやり取り全体に必ず適用すること）\n\n${m.content}` })
+    if (!foldedFirst) {
+      foldedFirst = true
+      out.push({ role: 'assistant', content: 'わかりました。指示に従います。' })
+    }
+  }
+  return out
 }
 
 /** 大まかなトークン見積り（APIがusageを返さない場合のフォールバック）。 */

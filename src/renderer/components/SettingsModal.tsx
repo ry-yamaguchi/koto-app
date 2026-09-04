@@ -434,7 +434,7 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
             <div className="mt-2 space-y-1">
               <p>内蔵の概算単価（¥/100万トークン）で利用額を推定しています：</p>
               <ul className="space-y-0.5">
-                {/* 所見29: 内部モデルID（Qwen3-Coder-480B…）の生表示を避け、表示名に揃える。 */}
+                {/* 所見29: 内部モデルID（preview/Kimi-K2.7-Code…）の生表示を避け、表示名に揃える。 */}
                 {Object.entries(PRICING).map(([m, p]) => (
                   <li key={m}>・{modelLabel(m)}: 入力 ¥{p.in} / 出力 ¥{p.out}</li>
                 ))}

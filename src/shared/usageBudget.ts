@@ -33,16 +33,17 @@ export function hashKey(key: string): string {
 /** ¥ / 1,000,000 トークン（2026年時点の従量課金プランの公開単価を基にした概算） */
 export const PRICING: Record<string, { in: number; out: number }> = {
   // ¥/1,000,000 tokens（公式ページ https://ai.sakura.ad.jp/sakura-ai/ai-engine/ の ¥/1万tok ×100）
-  'Qwen3-Coder-480B-A35B-Instruct-FP8': { in: 30, out: 250 },  // 0.3 / 2.5 円（1万tok）
-  'Qwen3-Coder-30B-A3B-Instruct': { in: 15, out: 75 },         // 0.15 / 0.75
+  // 2026-09-04: 旧コード特化モデル（480B/30B）/ preview/Phi-4-multimodal-instruct は
+  // 提供終了のため削除。
   'gpt-oss-120b': { in: 15, out: 75 },                         // 0.15 / 0.75
   'llm-jp-3.1-8x13b-instruct4': { in: 15, out: 75 },           // 0.15 / 0.75
   'preview/Qwen3-VL-30B-A3B-Instruct': { in: 10, out: 30 },    // 0.1 / 0.3
-  'preview/Phi-4-multimodal-instruct': { in: 10, out: 30 },    // 0.1 / 0.3
   'preview/Phi-4-mini-instruct-cpu': { in: 1, out: 3 },        // 0.01 / 0.03
   'preview/Qwen3-0.6B-cpu': { in: 1, out: 3 },                 // 0.01 / 0.03
   'preview/Qwen3.6-35B-A3B': { in: 30, out: 150 },             // 0.3 / 1.5
   'preview/Kimi-K2.6': { in: 60, out: 300 },                   // 0.6 / 3
+  'preview/Kimi-K2.7-Code': { in: 52, out: 504 },  // 0.52 / 5.04 円（1万tok）2026-09-04 公式ページ
+  'preview/gemma-4-31B-it': { in: 24, out: 96 },   // 0.24 / 0.96
 }
 export const DEFAULT_PRICE = { in: 15, out: 75 }
 

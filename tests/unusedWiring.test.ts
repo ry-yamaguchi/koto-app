@@ -145,8 +145,12 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     expect(src()).toContain('className="rounded-xl border border-line bg-surface p-4 space-y-3"')
   })
 
-  it('0件・非対応のときは何も描画しない（雑音を出さない）', () => {
-    expect(src()).toContain('if (!supported || unused.length === 0) return null')
+  it('非対応（静的サイト以外）のときだけ何も描画しない。0件でも節は常時表示する（2026-09-04 Ryosuke 要望）', () => {
+    expect(src()).toContain('if (!supported) return null')
+    // 0件で消える旧形へ戻さない（常時表示: 「確認した上で問題なし」が利用者に見えること）
+    expect(src()).not.toContain('if (!supported || unused.length === 0) return null')
+    expect(src()).toContain('✅ すべてのファイルが、どこかのページ・コードから使われています。')
+    expect(src()).toContain('🧹 使われていないファイルの確認')
   })
 
   it('ファイル名一覧は最初から表示する（隠さない・折りたたみが無い）', () => {

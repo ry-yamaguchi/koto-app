@@ -7,7 +7,8 @@ import * as path from 'path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   listSessions, createSession, renameSession, setSessionModel, deleteSession,
-  flushAppSessions, setAppSessionsListener, resetAppSessionsStore, type AppSessionMeta,
+  flushAppSessions, setAppSessionsListener, resetAppSessionsStore,
+  ensureSessionProject, sanitizeChatProjectName, type AppSessionMeta,
 } from '../src/main/appSessionsStore'
 import { sessionDir, sessionsIndexPath } from '../src/shared/appChatDirs'
 import { appChatPath } from '../src/main/chatStore/paths'
@@ -295,5 +296,105 @@ describe('appSessionsStore: 一度きりの移行（旧 chat-app.json → 各セ
       { id: 'ok', title: '正常', model: 'm', createdAt: 2, messages: [] },
     ])
     expect(listSessions(ws)).toEqual([{ id: 'ok', title: '正常', model: 'm', createdAt: 2 }])
+  })
+})
+
+// ── 2026-09-04 Ryosuke 決定: チャット（ChatApp）の「保存」を、会話専用の新規プロジェクトへ
+// 向ける（掟11: 環境の独立。base = root ?? currentDir が無関係な最後に開いたプロジェクトへ
+// 書き込んでいた不具合の修正）。
+describe('sanitizeChatProjectName: 会話タイトル → プロジェクトフォルダ名', () => {
+  it('"/" と NUL を除去する', () => {
+    expect(sanitizeChatProjectName('a/b\0c')).toBe('abc')
+  })
+
+  it('前後の空白を trim する', () => {
+    expect(sanitizeChatProjectName('  タイトル  ')).toBe('タイトル')
+  })
+
+  it('先頭のドット（連続分すべて）を除去する', () => {
+    expect(sanitizeChatProjectName('...隠しっぽい名前')).toBe('隠しっぽい名前')
+  })
+
+  it('30文字で切る', () => {
+    const long = 'あ'.repeat(40)
+    expect(sanitizeChatProjectName(long)).toBe('あ'.repeat(30))
+  })
+
+  it('全部除去して空になったら既定名「チャット」', () => {
+    expect(sanitizeChatProjectName('///...')).toBe('チャット')
+    expect(sanitizeChatProjectName('')).toBe('チャット')
+  })
+})
+
+describe('ensureSessionProject: 会話専用プロジェクトの用意', () => {
+  it('新規作成: <projectWorkspaceDir>/<タイトルから作った名前>/public ができ、索引にも記録される', () => {
+    const ws = mkWorkspaceDir()
+    const projectWs = mkWorkspaceDir()
+    createSession(ws, meta('a', { title: 'はじめての会話' }))
+
+    const r = ensureSessionProject(ws, 'a', projectWs, 'はじめての会話')
+    expect(r.ok).toBe(true)
+    expect(r.created).toBe(true)
+    expect(r.name).toBe('はじめての会話')
+    expect(r.projectDir).toBe(path.join(projectWs, 'はじめての会話'))
+    expect(fs.existsSync(path.join(r.projectDir!, 'public'))).toBe(true)
+
+    // 索引（listSessions）にも projectDir が記録されている。ファイルへ書き切って
+    // メモリを空にしても（プロセス再起動を模す）読み戻せる（sanitizeIndex が projectDir を拾う）。
+    flushAppSessions()
+    resetAppSessionsStore()
+    expect(listSessions(ws).find(s => s.id === 'a')?.projectDir).toBe(r.projectDir)
+  })
+
+  it('同じ id への2回目の呼び出しは、作り直さず同じ projectDir を返す（created:false）', () => {
+    const ws = mkWorkspaceDir()
+    const projectWs = mkWorkspaceDir()
+    createSession(ws, meta('a', { title: '会話' }))
+
+    const first = ensureSessionProject(ws, 'a', projectWs, '会話')
+    const second = ensureSessionProject(ws, 'a', projectWs, '会話')
+    expect(second.ok).toBe(true)
+    expect(second.created).toBe(false)
+    expect(second.projectDir).toBe(first.projectDir)
+
+    // ディレクトリの数は1つだけ（作り直していない証拠）
+    expect(fs.readdirSync(projectWs)).toEqual(['会話'])
+  })
+
+  it('タイトルが衝突する別セッションは「名前-2」で回避する', () => {
+    const ws = mkWorkspaceDir()
+    const projectWs = mkWorkspaceDir()
+    createSession(ws, meta('a', { title: '同じ名前' }))
+    createSession(ws, meta('b', { title: '同じ名前' }))
+
+    const ra = ensureSessionProject(ws, 'a', projectWs, '同じ名前')
+    const rb = ensureSessionProject(ws, 'b', projectWs, '同じ名前')
+    expect(ra.name).toBe('同じ名前')
+    expect(rb.name).toBe('同じ名前-2')
+    expect(rb.projectDir).toBe(path.join(projectWs, '同じ名前-2'))
+    expect(fs.existsSync(path.join(rb.projectDir!, 'public'))).toBe(true)
+  })
+
+  it('不正な sessionId は ok:false（作られない）', () => {
+    const ws = mkWorkspaceDir()
+    const projectWs = mkWorkspaceDir()
+    const r = ensureSessionProject(ws, '../evil', projectWs, 'x')
+    expect(r.ok).toBe(false)
+    expect(r.projectDir).toBeUndefined()
+    expect(fs.readdirSync(projectWs)).toEqual([])
+  })
+
+  it('相対パスの projectWorkspaceDir は ok:false（workspaceDir と同じ検証を通す）', () => {
+    const ws = mkWorkspaceDir()
+    createSession(ws, meta('a'))
+    const r = ensureSessionProject(ws, 'a', 'relative/path', 'x')
+    expect(r.ok).toBe(false)
+  })
+
+  it('索引にまだ無い（未登録の）id は ok:false（例外にはならない）', () => {
+    const ws = mkWorkspaceDir()
+    const projectWs = mkWorkspaceDir()
+    expect(() => ensureSessionProject(ws, 'ghost', projectWs, 'x')).not.toThrow()
+    expect(ensureSessionProject(ws, 'ghost', projectWs, 'x').ok).toBe(false)
   })
 })

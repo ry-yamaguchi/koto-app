@@ -414,7 +414,7 @@ export function unexecutedChangeWarning(claims: boolean, wrote: boolean): string
   // Koto が確かめた事実である、と分かる書き方にする。
   return '⚠️ AI は「保存しました」と書いていますが、**実際には書き込みが行われていません**'
     + '（Koto がこのやり取りを確認しました。AI の説明の方が誤りです）。\n'
-    + 'もう一度「実際に変更して」と伝えるか、上のモデル選択を「Qwen3-Coder」などに'
+    + 'もう一度「実際に変更して」と伝えるか、上のモデル選択を「Kimi K2.7 Code」などに'
     + '切り替えてからお試しください。'
 }
 
@@ -436,7 +436,7 @@ export function unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean): s
   if (!sawMarkup || usedTools) return null
   return '⚠️ このモデルはファイルの書き換えを実行できませんでした。'
     + '**上の説明どおりには変わっていません。**'
-    + 'モデルを「Qwen3-Coder」などツールを使えるものに切り替えて、もう一度お試しください。'
+    + 'モデルを「Kimi K2.7 Code」などツールを使えるものに切り替えて、もう一度お試しください。'
 }
 
 /**

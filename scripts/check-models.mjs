@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 /*
  * 定期メンテ用: さくらのAI Engine の「現在の提供モデル」と、アプリ側の固定設定
- * （src/renderer/usage.ts の MODELS / VISION_MODELS / PRICING / DEFAULT_MODEL）を
- * 突き合わせ、更新が必要な差分を一覧表示する。
+ * （src/shared/modelInfo.ts の MODELS / VISION_MODELS / DEFAULT_MODEL と、
+ *   src/shared/usageBudget.ts の PRICING）を突き合わせ、更新が必要な差分を一覧表示する。
+ *
+ * ⚠️ 2026-09-04: 読み先を usage.ts → shared へ修正した。B'-3d-1a（2026-08-29 ごろ）で
+ * 一覧の実体が shared へ移った際、このスクリプトが追従しておらず「アプリ既知: 0件」と
+ * 全モデルを新規扱いする誤診をしていた（Ryosuke の実行で発覚）。再発防止として、
+ * 抽出が0件のときは差分を出さずエラーで止まる（沈黙の誤診をしない）。
  *
  * 使い方:
  *   SAKURA_API_KEY=<キー> npm run check:models
@@ -17,11 +22,12 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const MODELS_URL = 'https://api.ai.sakura.ad.jp/v1/models'
-// usage.ts の NON_CHAT と一致させること（チャット用途でないモデルを除外）
+// renderer/usage.ts の NON_CHAT と一致させること（チャット用途でないモデルを除外）
 const NON_CHAT = /whisper|embed|e5-|voicevox|tts|speech|rerank|transcrib/i
 
 const here = dirname(fileURLToPath(import.meta.url))
-const USAGE_PATH = resolve(here, '../src/renderer/usage.ts')
+const MODEL_INFO_PATH = resolve(here, '../src/shared/modelInfo.ts')   // MODELS / VISION_MODELS / DEFAULT_MODEL
+const USAGE_BUDGET_PATH = resolve(here, '../src/shared/usageBudget.ts') // PRICING
 
 const key = process.env.SAKURA_API_KEY || process.argv[2]
 if (!key) {
@@ -29,24 +35,34 @@ if (!key) {
   process.exit(2)
 }
 
-// ── usage.ts から固定設定を抽出（データファイル化していないため正規表現で読む） ──
-function readUsageConfig() {
-  const src = readFileSync(USAGE_PATH, 'utf-8')
+// ── shared から固定設定を抽出（データファイル化していないため正規表現で読む） ──
+function readAppConfig() {
+  const modelInfo = readFileSync(MODEL_INFO_PATH, 'utf-8')
+  const usageBudget = readFileSync(USAGE_BUDGET_PATH, 'utf-8')
   const idsIn = (name) => {
-    const block = src.match(new RegExp(`export const ${name}[^=]*=\\s*\\[([\\s\\S]*?)\\]`))
+    const block = modelInfo.match(new RegExp(`export const ${name}[^=]*=\\s*\\[([\\s\\S]*?)\\]`))
     return block ? [...block[1].matchAll(/id:\s*'([^']+)'/g)].map((m) => m[1]) : []
   }
   const pricingKeys = (() => {
-    const block = src.match(/export const PRICING[^=]*=\s*\{([\s\S]*?)\n\}/)
+    const block = usageBudget.match(/export const PRICING[^=]*=\s*\{([\s\S]*?)\n\}/)
     return block ? [...block[1].matchAll(/^\s*'([^']+)'\s*:/gm)].map((m) => m[1]) : []
   })()
-  const def = src.match(/const DEFAULT_MODEL\s*=\s*'([^']+)'/)
-  return {
+  const def = modelInfo.match(/const DEFAULT_MODEL\s*=\s*'([^']+)'/)
+  const cfg = {
     models: idsIn('MODELS'),
     visionModels: idsIn('VISION_MODELS'),
     pricing: pricingKeys,
     defaultModel: def ? def[1] : null,
   }
+  // 沈黙の誤診をしない: 抽出0件は「モデルが無い」ではなく「読み先がずれた」。
+  // （2026-09-04 実発: 一覧の移設にこのスクリプトが追従せず、全モデルを新規扱いした）
+  if (!cfg.models.length || !cfg.pricing.length || !cfg.defaultModel) {
+    throw new Error(
+      '固定設定を読み取れませんでした。定義が移動していないか確認してください: '
+      + `MODELS=${cfg.models.length}件(${MODEL_INFO_PATH}) / PRICING=${cfg.pricing.length}件(${USAGE_BUDGET_PATH}) / DEFAULT_MODEL=${cfg.defaultModel ?? '無し'}`
+    )
+  }
+  return cfg
 }
 
 async function fetchLiveModels() {
@@ -68,7 +84,7 @@ const section = (title, items, note) => {
 }
 
 try {
-  const cfg = readUsageConfig()
+  const cfg = readAppConfig()
   const liveAll = await fetchLiveModels()
   const liveChat = liveAll.filter((id) => !NON_CHAT.test(id))
   const known = [...new Set([...cfg.models, ...cfg.visionModels])]
@@ -79,13 +95,13 @@ try {
   let needsUpdate = false
   // 1) 新規モデル（提供されているがアプリの一覧に無い）→ ラベル/価格/tools・vision の検討
   needsUpdate = section(
-    '新規モデル（usage.ts の MODELS/VISION_MODELS に追加検討）',
+    '新規モデル（modelInfo.ts の MODELS/VISION_MODELS に追加検討）',
     diff(liveChat, known),
     'ラベルを付け、価格(PRICING)・画像対応(isVisionModel)・ツール対応(supportsTools)を確認すること。',
   ) || needsUpdate
   // 2) 提供終了（アプリの一覧にあるが、もう提供されていない）→ 削除候補
   needsUpdate = section(
-    '提供終了モデル（usage.ts から削除検討）',
+    '提供終了モデル（modelInfo.ts / usageBudget.ts から削除検討）',
     diff(known, liveAll),
     '提供一覧に無い。MODELS/VISION_MODELS/PRICING から削除してよい（既定モデルなら DEFAULT_MODEL も見直し）。',
   ) || needsUpdate
@@ -113,7 +129,7 @@ try {
     console.log('\n✅ 差分なし。MODELS / VISION_MODELS / PRICING / DEFAULT_MODEL は最新です。')
     process.exit(0)
   }
-  console.log('\n⚠️ 上記を src/renderer/usage.ts に反映してください（価格はさくらの公開単価を確認）。')
+  console.log('\n⚠️ 上記を src/shared/modelInfo.ts（一覧・既定モデル）と src/shared/usageBudget.ts（PRICING）に反映してください（価格はさくらの公開単価を確認）。')
   process.exit(1)
 } catch (e) {
   console.error(`\n❌ ${e?.message ?? e}`)

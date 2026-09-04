@@ -572,6 +572,42 @@ describe('runEngineTurn', () => {
     expect(last.ev.msg.content).not.toContain('② 試す')
   })
 
+  // 11d-2. 促し→答え直しでも案内定型文の重複除去が効く（roadmap #12・2026-08-30 実機で観測:
+  // claimsFileChange の促しが走ると、1回目の返事と答え直しの返事の両方に同じ案内が付き、
+  // 案内が2回表示されうる。stripRepeatedGuidance の比較相手に「このターン内の直前の返事」も含める）。
+  it('促し→答え直しでも、ターン内1回目と同一の案内定型文は答え直しから取り除かれる（#12）', async () => {
+    const guide = '画面上部の【② 試す】ボタンで、text.txt の内容を確認してみてください。'
+    const { ports, log } = makePorts({
+      stream: [
+        { content: `text.txt を更新しました\n\n${guide}`, toolCalls: null },
+        { content: `変更は不要です\n\n${guide}`, toolCalls: null },
+      ],
+    })
+    await runEngineTurn(makeSpec(), ports)
+    // 最後の replaceLast は案内が取り除かれ、答え直し本文だけが残っている
+    const last = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast')
+    expect(last.ev.msg.content).toBe('変更は不要です')
+    // 1回目の返事（案内付き）は非破壊のまま残っている
+    const first = log.find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast' && typeof e.ev.msg.content === 'string' && e.ev.msg.content.startsWith('text.txt を更新しました'))
+    expect(first).toBeTruthy()
+    expect(first.ev.msg.content).toContain('② 試す')
+  })
+
+  // 11d-3. 答え直しに付いた初出の案内は消えない（消しすぎない側の対）。
+  it('答え直しに付いた初出の案内は消えない（消しすぎない側の対）', async () => {
+    const guide1 = '画面上部の【② 試す】ボタンで、text.txt の内容を確認してみてください。'
+    const guide2 = '画面上部の【③ 公開】ボタンから公開できます。'
+    const { ports, log } = makePorts({
+      stream: [
+        { content: `text.txt を更新しました\n\n${guide1}`, toolCalls: null },
+        { content: `変更は不要です\n\n${guide2}`, toolCalls: null },
+      ],
+    })
+    await runEngineTurn(makeSpec(), ports)
+    const last = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast')
+    expect(last.ev.msg.content).toBe(`変更は不要です\n\n${guide2}`)
+  })
+
   // 11e. 開始時の「文脈の飾り」系 ask が失敗してもターンは死なない（2026-08-31 実機:
   // 「今の」が wantsWebSearch に一致→実検索中の ⌘W で ask 全滅→ターンごとエラーになった）。
   it('文脈の飾り（検索設定・ページ取得・自動検索・資料注入）が reject しても、ターンは完走してエラー吹き出しを出さない', async () => {

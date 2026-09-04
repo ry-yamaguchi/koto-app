@@ -3,7 +3,7 @@ import SecurityCheckSection from './SecurityCheckSection'
 import UnusedFilesSection from './UnusedFilesSection'
 import { getVercelToken, getVercelTokenById, getVercelTeamId, getVercelTeamIdById, listVercelTokenEntries } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
-import { beginActivity } from '../activity'
+import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import { askAiAboutCheck } from '../../shared/preflight'
@@ -161,7 +161,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
     // ＝どんな失敗経路でもボタンが「公開中…」で固まらないようにする。
     const unsubscribe = window.electronAPI.vercel.onProgress((m) => setProgress(m))
     // 実行中フラグ（終了確認ダイアログ用）。中断・失敗でも必ず解除されるよう最外の finally で呼ぶ。
-    const endActivity = beginActivity('公開処理')
+    const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
       // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。
       // API呼び出しが成功/失敗いずれで終わっても finally で必ず消す。

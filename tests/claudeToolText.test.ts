@@ -164,9 +164,11 @@ describe('normalizePreviewPath', () => {
 
 // ── delegate_implementation（C3） ─────────────────────────────────────
 describe('DELEGATE_MODELS / DELEGATE_DEFAULT_MODEL', () => {
-  it('lists the two Qwen3-Coder models with the 480B model as default (matches usage.ts PRICING keys)', () => {
-    expect(DELEGATE_MODELS).toEqual(['Qwen3-Coder-480B-A35B-Instruct-FP8', 'Qwen3-Coder-30B-A3B-Instruct'])
-    expect(DELEGATE_DEFAULT_MODEL).toBe('Qwen3-Coder-480B-A35B-Instruct-FP8')
+  // 2026-09-04 世代交代: 旧コード特化モデル（480B/30B）は提供終了。委譲先を
+  // Kimi-K2.7-Code / Qwen3.6-35B-A3B（いずれも実測で tools=ok）へ置き換えた。
+  it('lists Kimi-K2.7-Code and Qwen3.6-35B-A3B with Kimi-K2.7-Code as default (matches usageBudget.ts PRICING keys)', () => {
+    expect(DELEGATE_MODELS).toEqual(['preview/Kimi-K2.7-Code', 'preview/Qwen3.6-35B-A3B'])
+    expect(DELEGATE_DEFAULT_MODEL).toBe('preview/Kimi-K2.7-Code')
   })
 })
 

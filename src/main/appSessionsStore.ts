@@ -32,7 +32,15 @@ function assertValidWorkspaceDir(dir: unknown): asserts dir is string {
   if (!isValidWorkspaceDir(dir)) throw new Error('不正なワークスペースパスです')
 }
 
-export type AppSessionMeta = { id: string; title: string; model: string; createdAt: number }
+export type AppSessionMeta = {
+  id: string
+  title: string
+  model: string
+  createdAt: number
+  /** この会話専用に作られたプロジェクトの絶対パス（掟11: チャットからの保存の流れ込み防止）。
+   *  最初のファイル保存が行われるまでは無い（ensureSessionProject が最初の呼び出しで作る）。 */
+  projectDir?: string
+}
 
 type Entry = {
   sessions: AppSessionMeta[]
@@ -78,11 +86,13 @@ function sanitizeIndex(raw: unknown): AppSessionMeta[] {
     const title = (item as any).title
     const model = (item as any).model
     const createdAt = (item as any).createdAt
+    const projectDir = (item as any).projectDir
     out.push({
       id,
       title: typeof title === 'string' ? title : '新しい会話',
       model: typeof model === 'string' ? model : '',
       createdAt: typeof createdAt === 'number' ? createdAt : Date.now(),
+      ...(typeof projectDir === 'string' ? { projectDir } : {}),
     })
   }
   return out
@@ -253,6 +263,83 @@ export function deleteSession(workspaceDir: string, id: string): void {
   entry.sessions = entry.sessions.filter(s => s.id !== id)
   scheduleSave(workspaceDir, entry)
   notify(workspaceDir, entry.sessions)
+}
+
+/**
+ * 会話のタイトルから、専用プロジェクトのフォルダ名を作る（掟10・単体テスト可能に export）。
+ *
+ * 手順: NUL と '/' を除去 → 前後空白を trim → 先頭のドット（連続分すべて）を除去 →
+ * 30文字で切る → それでも空なら既定名「チャット」。
+ *
+ * ── なぜ手厚く削るか ──────────────────────────────────────────────
+ * title は利用者が会話中に自由に打った文字列（最初のメッセージの先頭40文字・titleFromMessage）
+ * がそのまま来る。フォルダ名としてそのまま使うと、`/` を含めば意図しない階層を作りかねず、
+ * 先頭が `.` だと隠しフォルダになってしまう（Finder 等で見えなくなる＝利用者が迷う）。
+ */
+export function sanitizeChatProjectName(title: string): string {
+  let s = typeof title === 'string' ? title : ''
+  s = s.replace(/\0/g, '').replace(/\//g, '')
+  s = s.trim()
+  s = s.replace(/^\.+/, '')
+  s = s.slice(0, 30)
+  return s || 'チャット'
+}
+
+/**
+ * チャット（ChatApp）の会話1件専用のプロジェクトを用意する（2026-09-04 Ryosuke 決定・
+ * applyAiFile の base = root ?? currentDir が「IDEで最後に開いていた無関係なプロジェクト」へ
+ * 書き込んでいた不具合の修正。掟11: 環境の独立）。
+ *
+ * 既にそのセッションへ projectDir が紐付いていて、実際にまだ存在するなら**作り直さず**それを返す
+ * （同じ会話での2回目以降の保存を同じプロジェクトへ集める）。無ければ、タイトルから作った名前
+ * （衝突したら「名前-2」…）で `<projectWorkspaceDir>/<名前>/public` を掘り、索引へ記録する。
+ *
+ * workspaceDir・projectWorkspaceDir はどちらも他の公開関数と同じ検証（assertValidWorkspaceDir）を
+ * 通す。失敗は throw ではなく { ok:false, message } で返す（呼び出し元の IPC ハンドラで
+ * renderer を落とさないため）。
+ */
+export function ensureSessionProject(
+  workspaceDir: string,
+  id: string,
+  projectWorkspaceDir: string,
+  title: string,
+): { ok: boolean; projectDir?: string; created?: boolean; name?: string; message?: string } {
+  try {
+    assertValidWorkspaceDir(workspaceDir)
+    assertValidWorkspaceDir(projectWorkspaceDir)
+  } catch (e: any) {
+    return { ok: false, message: e?.message ?? '不正なワークスペースパスです' }
+  }
+  if (!isValidSessionId(id)) return { ok: false, message: '不正な会話IDです' }
+
+  const entry = ensureEntry(workspaceDir)
+  const target = entry.sessions.find(s => s.id === id)
+  if (!target) return { ok: false, message: 'この会話がまだ登録されていません。少し待ってからもう一度お試しください' }
+
+  // 既にこのセッション専用のプロジェクトがあり、実在するなら作り直さない。
+  if (target.projectDir && fs.existsSync(target.projectDir)) {
+    return { ok: true, projectDir: target.projectDir, created: false, name: path.basename(target.projectDir) }
+  }
+
+  const base = sanitizeChatProjectName(title)
+  let name = base
+  let dir = path.join(projectWorkspaceDir, name)
+  for (let n = 2; fs.existsSync(dir); n++) {
+    name = `${base}-${n}`
+    dir = path.join(projectWorkspaceDir, name)
+  }
+
+  try {
+    fs.mkdirSync(path.join(dir, 'public'), { recursive: true }) // public/ 構成で始める（IDE の作業フォルダの作法）
+  } catch (e: any) {
+    return { ok: false, message: e?.message ?? 'プロジェクトの作成に失敗しました' }
+  }
+
+  entry.sessions = entry.sessions.map(s => s.id === id ? { ...s, projectDir: dir } : s)
+  scheduleSave(workspaceDir, entry)
+  notify(workspaceDir, entry.sessions) // rename 等と同じく、変更のたび appSessions:changed が飛ぶ
+
+  return { ok: true, projectDir: dir, created: true, name }
 }
 
 /** 保存待ちを即座に書き切る（quit 時・テスト用。learningStore.flushLearningNow と同じ作法）。 */

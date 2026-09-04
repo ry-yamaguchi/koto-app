@@ -10,6 +10,7 @@ import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
 import { shouldTryImagesDirectly } from '../visionSupport'
+import { shouldSendTools } from '../toolSupport'
 import { useModels } from '../hooks/useModels'
 import { useClaudeModels } from '../hooks/useClaudeModels'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
@@ -443,8 +444,20 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     // 引き上げた（ユーザー報告 2026-07-23）。暴走は同一ツール連続検出・停止ボタン・月間予算で防ぐ。
     maxRounds: 25,
     buildSystemPrompt: () => {
+      // ── 開いているファイルの注入は出し分ける（C・#15 の実測 docs/measure-openfile.md・2026-09-04）──
+      // ツール対応モデル＋ファイルが AI ルート内 → **AI相対パスの1行だけ**。中身は AI が read_file で
+      // 読む（中身4000字の常時注入は毎ラウンド再送で高くつき、basename 表示が「style.css」への
+      // 誤パス呼び出しまで誘発していた。相対パス1行が全シナリオで最速・最安・全勝）。
+      // それ以外（ツール非対応モデル・ルート外のファイル・ルート未解決の瞬間）→ 従来どおり中身つき
+      // （内容へ届く手段が他に無い。ルート未解決はバグ⑤と同じレースなので保守側＝従来形に倒す）。
+      const rootReady = aiRoot && aiRoot.dir === projectDir ? aiRoot.root : null
+      const aiRel = rootReady && activeFile && activeFile.path.startsWith(rootReady + '/')
+        ? activeFile.path.slice(rootReady.length + 1)
+        : null
       const openFileBlock = activeFile
-        ? `\n\n# 開いているファイル: ${activeFile.name} (${activeFile.language})\n\`\`\`${activeFile.language}\n${activeFile.content.slice(0, 4000)}\n\`\`\``
+        ? ((claudeActive || shouldSendTools(model)) && aiRel
+          ? `\n\n# 開いているファイル: ${aiRel} (${activeFile.language})`
+          : `\n\n# 開いているファイル: ${activeFile.name} (${activeFile.language})\n\`\`\`${activeFile.language}\n${activeFile.content.slice(0, 4000)}\n\`\`\``)
         : ''
       const ctx = ctxFor(projectDir)
       // 現在日時（この端末のローカル時刻）を毎回の送信で先頭に添える（AIに今日を推測させない・chatTime.ts）

@@ -366,7 +366,15 @@ export default function App() {
   // 別に持っている。ここが currentDir 決め打ちだと、public/ を持つプロジェクトで
   // 「AIが書いたファイルが public/ の外（プロジェクト直下）へ出る」——退避（🕘）の
   // 記録は public/ 前提で作られるので「元に戻す」も効かなくなる。
-  const applyAiFile = useCallback(async (relPath: string, content: string, root?: string | null) => {
+  //
+  // opts.openProjectDir: チャットモード（ChatApp）専用の経路（2026-09-04・掟11）。
+  // ChatApp は保存のたび、会話専用の新規プロジェクト（root の親）を openProjectDir として渡す。
+  // それが今の currentDir と違うプロジェクトなら、書き込みはそのまま root 基準で行いつつ、
+  // 未保存の編集（isDirty）が無いときだけそのプロジェクトへ画面ごと切り替える。ChatPanel 等の
+  // 従来経路（opts 無し）はこの分岐を一切通らない＝これまでどおり。
+  const applyAiFile = useCallback(async (
+    relPath: string, content: string, root?: string | null, opts?: { openProjectDir?: string },
+  ) => {
     let base = root ?? currentDir
     if (!base) {
       base = await window.electronAPI.fs.pickDirectory()
@@ -380,6 +388,17 @@ export default function App() {
     manualSnapshotRef.current = null
     await window.electronAPI.fs.writeFile(full, content)
     setTreeRefresh(n => n + 1)
+
+    const switchTarget = opts?.openProjectDir && opts.openProjectDir !== currentDir ? opts.openProjectDir : null
+    if (switchTarget) {
+      // 未保存の編集があるプロジェクトを見ている間は切り替えない（利用者の編集を落とさない・掟11）。
+      // 書き込みとツリー更新だけ行い、エディタ・activeFile には触れない。
+      if (openFiles.some(f => f.isDirty)) return
+      pendingOpenAfterSwitchRef.current = { dir: switchTarget, full }
+      setCurrentDir(switchTarget)
+      return
+    }
+
     // エディタで開く / 既に開いていれば内容を更新
     const name = full.split('/').pop() ?? full
     setOpenFiles(prev => {
@@ -388,7 +407,7 @@ export default function App() {
       return [...prev, { path: full, name, content, isDirty: false, language: detectLanguage(name) }]
     })
     setActiveFile(full)
-  }, [currentDir])
+  }, [currentDir, openFiles])
 
   // AIがmainプロセス側（B'-3d-2b・チャットの main 直実行）で書いたファイルを、エディタへ反映する。
   //
@@ -445,6 +464,13 @@ export default function App() {
   // いま openFiles がどのプロジェクトのものか。切替中の誤保存を避けるために保持する。
   const loadedDirRef = useRef<string | null>(null)
   const tabsKey = (dir: string) => `sakura_tabs:${dir}`
+
+  // AIチャット（ChatApp）が会話専用の新規プロジェクトへ保存した直後、そのプロジェクトへ
+  // 切り替えてから開くファイルの退避（ChatPanel.tsx の pendingNewProjectRef と同じ
+  // 「退避→setCurrentDir→再評価で消費」の作法）。applyAiFile が setCurrentDir する時点では
+  // まだ currentDir は古いプロジェクトのままなので、下のプロジェクト切替 effect が
+  // 新しい currentDir で走った最後に、dir が一致するときだけ消費する。
+  const pendingOpenAfterSwitchRef = useRef<{ dir: string; full: string } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -504,6 +530,24 @@ export default function App() {
       setOpenFiles(files)
       setActiveFile(files.some(f => f.path === active) ? active : (files.length ? files[files.length - 1].path : null))
       loadedDirRef.current = currentDir
+
+      // AIチャット（ChatApp）が新規プロジェクトへ保存した直後の切替なら、退避しておいたファイルを
+      // 開く（掟11・pendingNewProjectRef と同じ「退避→再評価で消費」の作法。dir が一致するときだけ）。
+      const pending = pendingOpenAfterSwitchRef.current
+      if (pending && pending.dir === currentDir) {
+        pendingOpenAfterSwitchRef.current = null
+        try {
+          const file = await loadOpenFile(pending.full)
+          if (!cancelled) {
+            setOpenFiles(prev => {
+              const ex = prev.find(f => f.path === file.path)
+              if (ex) return prev.map(f => f.path === file.path ? file : f)
+              return [...prev, file]
+            })
+            setActiveFile(file.path)
+          }
+        } catch { /* 直後に消える等で読めなくても、開いていなければ実害は無い */ }
+      }
     })()
     return () => { cancelled = true }
   }, [currentDir, restored])

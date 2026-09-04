@@ -189,3 +189,50 @@ describe('runSakuraChat: 🗂 まとめ作り中に ⏹ が効かない不具合
     expect(result.content).toBe('ok')
   })
 })
+
+// ── roadmap #21: system が捨てられるモデルへの畳み込み（2026-09-04 実測で確定）──────────
+// llm-jp はサービス側テンプレートが system の本文を捨てる（「にゃテスト」＋対の user ロール検証）。
+// 送信の一元の通り道（runSakuraChat / runSakuraStream）で、サーバへ**実際に届く** messages が
+// 畳み込まれていることを、本物の http サーバが受け取った body で確かめる。
+describe('runSakuraChat: system が捨てられるモデルでは user へ畳み込んで送る（#21）', () => {
+  const okResponse = JSON.stringify({
+    id: 'x', object: 'chat.completion', created: 0, model: 'test',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  })
+  const capture = (received: any[]) => (req: http.IncomingMessage, res: http.ServerResponse) => {
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      try { received.push(JSON.parse(body)) } catch { /* 検証側の expect で気づける */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(okResponse)
+    })
+  }
+
+  it('llm-jp: サーバに届く messages に system が無く、先頭が「user（指示）→ assistant（了解）」になる', async () => {
+    const received: any[] = []
+    const port = await listen(capture(received))
+    await runSakuraChat({
+      apiKey: 'test-key', model: 'llm-jp-3.1-8x13b-instruct4', baseURL: `http://127.0.0.1:${port}/v1`,
+      messages: [{ role: 'system', content: '境界ガードの指示' }, { role: 'user', content: 'こんにちは' }],
+    })
+    const msgs = received[0]?.messages
+    expect(msgs.map((m: any) => m.role)).toEqual(['user', 'assistant', 'user'])
+    expect(msgs[0].content).toContain('境界ガードの指示')
+    expect(msgs[0].content).toContain('Koto からの実行指示')
+    expect(msgs[2].content).toBe('こんにちは')
+  })
+
+  it('対照: 他のモデルでは messages がそのまま届く（system が残る）', async () => {
+    const received: any[] = []
+    const port = await listen(capture(received))
+    await runSakuraChat({
+      apiKey: 'test-key', model: 'gpt-oss-120b', baseURL: `http://127.0.0.1:${port}/v1`,
+      messages: [{ role: 'system', content: '境界ガードの指示' }, { role: 'user', content: 'こんにちは' }],
+    })
+    const msgs = received[0]?.messages
+    expect(msgs.map((m: any) => m.role)).toEqual(['system', 'user'])
+    expect(msgs[0].content).toBe('境界ガードの指示')
+  })
+})

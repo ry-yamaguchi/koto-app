@@ -200,6 +200,13 @@ describe('nowContext（AIへ渡す現在日時・ローカル時刻）', () => {
   it('推測を禁じる指示を含む', () => {
     expect(nowContext(new Date())).toContain('推測せず')
   })
+
+  // roadmap #11（2026-08-30 実機: 過去に日付を手入力した会話で、履歴の古い日付に引きずられた）
+  it('履歴の古い日付より現在日時を最優先させる指示を含む', () => {
+    const s = nowContext(new Date())
+    expect(s).toContain('過去のやり取りの時点のもの')
+    expect(s).toContain('最優先')
+  })
 })
 
 // ── 配線（画面は import できないのでソースを読んで固定。掟10）──────────────

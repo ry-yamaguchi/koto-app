@@ -52,6 +52,21 @@ describe('findUnusedFiles: CSS の url() 参照で使用中 / 未参照は未使
   })
 })
 
+describe('ALWAYS_USED_RE: 外部クローラーが直接読みにくる慣習ファイル（2026-09-04 追加分）', () => {
+  // 検索エンジンの所有確認・広告管理ファイルは、コードから参照されなくても置いておく正当なもの。
+  // 「外部利用マーク」機能ではなく許可リストで吸収する（Ryosuke と合意）。対で固定する。
+  it('★★ 検証ファイル・広告ファイルは参照が無くても使用中', () => {
+    const files = ['google1a2b3c4d.html', 'BingSiteAuth.xml', 'ads.txt', 'app-ads.txt', 'index.html']
+    const unused = findUnusedFiles(files, readerOf({ 'index.html': '' }))
+    expect(unused).toEqual([])
+  })
+  it('（対） 名前が似ているだけのページ（mygoogle.html）は許可されず、未参照なら未使用', () => {
+    const files = ['mygoogle.html', 'index.html']
+    const unused = findUnusedFiles(files, readerOf({ 'index.html': '' }))
+    expect(unused).toContain('mygoogle.html')
+  })
+})
+
 describe('findUnusedFiles: サブフォルダ内から**ファイル名だけ**で参照されるケース', () => {
   // 実世界で普通にある形: images/gallery.html が同じフォルダの hero.jpg を `src="hero.jpg"` と書く。
   // このときプロジェクト相対パス（images/hero.jpg）は本文のどこにも現れない——

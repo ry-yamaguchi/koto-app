@@ -592,7 +592,8 @@ interface Window {
       // 実行中状態をメインプロセスに通知。busy/label は「何かしら実行中か」（自動更新の再起動
       // ゲートに使う）、closeBlockingBusy/closeBlockingLabel は「閉じると本当に中断されるか」
       // （終了時の「実行中です」警告に使う。B'-3d-3: AI応答は main で完走するため対象外）。
-      setBusy(busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string): void
+      // closeBlockingDetail/closeBlockingConfirm はその警告文言の差し替え（roadmap #14）。
+      setBusy(busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string, closeBlockingDetail: string, closeBlockingConfirm: string): void
       onSaveAll(cb: () => void): () => void
       quitAfterSave(): Promise<void>
     }
@@ -668,6 +669,11 @@ interface Window {
       rename(workspaceDir: string, id: string, title: string): Promise<void>
       setModel(workspaceDir: string, id: string, model: string): Promise<void>
       delete(workspaceDir: string, id: string): Promise<void>
+      /** その会話専用のプロジェクトを用意する（2026-09-04・掟11: チャットからの保存を無関係な
+       *  プロジェクトへ流し込ませないための修正）。既にあれば作り直さず同じものを返す（created:false）。 */
+      ensureProject(workspaceDir: string, id: string, projectWorkspaceDir: string, title: string): Promise<{
+        ok: boolean; projectDir?: string; created?: boolean; name?: string; message?: string
+      }>
       /** main が索引を変えるたび届く通知（learning.onChanged と同じ作法）。購読解除関数を返す。 */
       onChanged(cb: (p: { workspaceDir: string; sessions: { id: string; title: string; model: string; createdAt: number }[] }) => void): () => void
     }

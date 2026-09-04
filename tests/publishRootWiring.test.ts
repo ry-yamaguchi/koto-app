@@ -446,7 +446,9 @@ describe('AIが書いたファイルが public/ の外へ出ない（2026-08-27 
 
   it('App.tsx: applyAiFile は root（渡されなければ currentDir）を書き込みの根にする', () => {
     const s = read('src/renderer/App.tsx')
-    expect(s).toContain('const applyAiFile = useCallback(async (relPath: string, content: string, root?: string | null) => {')
+    // 2026-09-04: opts?: { openProjectDir?: string } が加わり、シグネチャが複数行になった（掟11）。
+    expect(s).toContain('const applyAiFile = useCallback(async (')
+    expect(s).toContain('relPath: string, content: string, root?: string | null, opts?: { openProjectDir?: string },')
     expect(s).toContain('let base = root ?? currentDir')
     expect(s).toContain('const full = `${base}/${clean}`')
   })

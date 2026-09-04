@@ -15,7 +15,7 @@
 // - open_preview → 副作用のみ（onOpenPreview コールバック経由で renderer に通知し、renderer が
 //   従来の open_preview ツールと同じ処理＝aiTools.ts executeTool の open_preview 分岐で開く）
 // - delegate_implementation（C3・モードA限定） → src/main/ipc/sakura.ts の sakuraClient を再利用して
-//   さくらのAI Engine（Qwen3-Coder）へ実装を依頼し、応答をこのツールが直接ファイルへ書き込む。
+//   さくらのAI Engine（コード系モデル・Kimi K2.7 Code）へ実装を依頼し、応答をこのツールが直接ファイルへ書き込む。
 //   Claudeへは summarizeDelegateResult の「要約のみ」を返す（設計方針: Claudeの文脈へ生成物本体を
 //   持ち込まない＝Opusトークンの二重消費を防ぐ）。
 
@@ -70,10 +70,8 @@ export type IdeToolsParams = {
 
 // delegate_implementation の1回のリクエストで許可する最大出力トークン数。
 // 根拠: renderer の通常チャット既定（sakura.ts / useAiChat.ts）は 4096 だが、delegate は複数ファイルの
-// 全文をJSONで返させるため、その数倍の余裕が要る。公開情報では Qwen3-Coder-480B-A35B-Instruct-FP8 の
-// さくらのAI Engine上のコンテキスト長は 128K token 程度、max_tokens は 65536 まで実用例がある
-// （2026-07 時点のコミュニティ報告。さくらの公式APIリファレンスには明記が無いため一次情報ではなく参考値）。
-// 128K全体を出力側に振ると入力（タスク仕様＋最大10ファイル×50KB分の文脈）に残せる余地が過小になるため、
+// 全文をJSONで返させるため、その数倍の余裕が要る。委譲先モデルの出力上限に合わせた余裕を見つつ、
+// 入力側（タスク仕様＋最大10ファイル×50KB分の文脈）に残せる余地も過小にならないよう、
 // 実用上十分に大きい 16384（renderer既定の4倍）を要求値とし、コンテキスト超過エラー時は sakura.ts と
 // 同じ safeMaxTokens フォールバックで縮めて再試行する（固定値を決め打ちしてハードエラーにしない）。
 const DELEGATE_MAX_TOKENS = 16384
@@ -169,12 +167,12 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
     }
   )
 
-  // C3・モードA限定: 実装作業をさくらのAI Engine（Qwen3-Coder）へ委譲し、直接ファイルへ書き込む。
+  // C3・モードA限定: 実装作業をさくらのAI Engine（コード系モデル・Kimi K2.7 Code）へ委譲し、直接ファイルへ書き込む。
   // このツール自体、aiEngineKey が無いモード（B）では tools 配列に含めない（下の if 分岐）。
   const delegateImplementationTool = sdk.tool(
     'delegate_implementation',
     'まとまった実装作業（新規ファイル作成・複数ファイルの機械的変更・テスト作成・類似ページ量産）を、' +
-      '低コストのさくらのAI Engine（Qwen3-Coder）に任せて直接ファイルへ書き込む。' +
+      '低コストのさくらのAI Engine（コード系モデル）に任せて直接ファイルへ書き込む。' +
       'タスクは対象ファイル・要件・受け入れ条件を含む自己完結の仕様で渡すこと。結果の検証は自分で行うこと。',
     {
       task: z.string().describe('自己完結した実装仕様（対象ファイル・要件・受け入れ条件を含む）'),

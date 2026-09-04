@@ -111,8 +111,10 @@ export function normalizePreviewPath(input?: string): string | null {
 // が返す「要約のみ」（ファイル一覧＋バイト数＋notes＋トークン数。content は含めない）を返す。
 // こうすることで Claude（高コストな出力トークン）が生成物本体を読み返さずに済む。
 
-/** delegate_implementation が使える AI Engine のモデル（既定=先頭。usage.ts の PRICING と同じ表記）。 */
-export const DELEGATE_MODELS = ['Qwen3-Coder-480B-A35B-Instruct-FP8', 'Qwen3-Coder-30B-A3B-Instruct'] as const
+/** delegate_implementation が使える AI Engine のモデル（既定=先頭。usage.ts の PRICING と同じ表記）。
+ *  2026-09-04 世代交代。旧コード特化モデル2件は提供終了で、委譲が「This model is not available」で
+ *  必ず失敗する状態だった。 */
+export const DELEGATE_MODELS = ['preview/Kimi-K2.7-Code', 'preview/Qwen3.6-35B-A3B'] as const
 export type DelegateModel = (typeof DELEGATE_MODELS)[number]
 export const DELEGATE_DEFAULT_MODEL: DelegateModel = DELEGATE_MODELS[0]
 
@@ -133,7 +135,7 @@ export const DELEGATION_GUIDANCE =
 export type DelegateContextFile = { path: string; content: string }
 
 /**
- * delegate_implementation ツールが AI Engine（Qwen3-Coder）へ渡すプロンプトを構築する（純粋関数）。
+ * delegate_implementation ツールが AI Engine（コード系モデル・Kimi K2.7 Code）へ渡すプロンプトを構築する（純粋関数）。
  * 出力形式を厳密なJSONのみに固定する（コードフェンス・説明文は一切出力させない）。
  * 実際の抽出・検証は parseDelegateOutput / validateDelegatePath が別途担当する。
  */

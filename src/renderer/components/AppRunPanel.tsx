@@ -4,7 +4,7 @@ import { getTargetProfile } from '../targetProfiles'
 import { foldRecheck } from '../../shared/appHealth'
 import { clearPublishRecord } from '../publishRecord'
 import { isNameConflictError, isCreationLimitError, suggestAlternativeName } from '../nameConflict'
-import { beginActivity } from '../activity'
+import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import SecurityCheckSection from './SecurityCheckSection'
@@ -561,7 +561,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     // 構築中の進捗メッセージを購読（最新行を表示）。完了/失敗後に解除する。
     const unsubscribe = window.electronAPI.cloud.onApplyProgress(msg => setProgress(msg))
     // 実行中フラグ（終了確認ダイアログ用）。中断・失敗でも必ず解除されるよう最外の finally で呼ぶ。
-    const endActivity = beginActivity('公開処理')
+    const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
       // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。
       // API呼び出しが成功/失敗いずれで終わっても finally で必ず消す。

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { beginActivity, _activeCount, _blockingCount } from '../src/renderer/activity'
+import { describe, it, expect, afterEach } from 'vitest'
+import { beginActivity, _activeCount, _blockingCount, PUBLISH_CLOSE_WARNING } from '../src/renderer/activity'
 
 // window.electronAPI はテスト環境では未定義。activity.ts の report() は try/catch で吸収する
 // 設計のため、モック無しでも例外にならないはず（そのこと自体もここで検証する）。
@@ -98,5 +98,66 @@ describe('beginActivity: blocksClose（B\'-3d-3）', () => {
     end()
     expect(_activeCount()).toBe(0)
     expect(_blockingCount()).toBe(0)
+  })
+})
+
+// ── closeWarning の通し（#14）─────────────────────────────────────────
+// report() が window.electronAPI.win.setBusy へ渡す6引数のうち、closeBlockingDetail/
+// closeBlockingConfirm が closeWarning の内容と一致することを固定する。
+describe('closeWarning の通し（#14）', () => {
+  let calls: unknown[][] = []
+
+  afterEach(() => {
+    calls = []
+    // 既存の「window 未定義でも例外にならない」テストを壊さないよう、必ず後片づけする
+    delete (globalThis as any).window
+  })
+
+  function installWindowMock() {
+    calls = []
+    ;(globalThis as any).window = {
+      electronAPI: {
+        win: {
+          setBusy: (...a: unknown[]) => { calls.push(a) },
+        },
+      },
+    }
+  }
+
+  it('closeWarning 指定時: setBusy が6引数で呼ばれ、[4]/[5] が detail/confirmLabel と一致する。end() 後は空に戻る', () => {
+    installWindowMock()
+    const end = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
+    const last = calls[calls.length - 1]
+    expect(last).toHaveLength(6)
+    expect(last[4]).toBe(PUBLISH_CLOSE_WARNING.detail)
+    expect(last[5]).toBe(PUBLISH_CLOSE_WARNING.confirmLabel)
+    end()
+    const afterEnd = calls[calls.length - 1]
+    expect(afterEnd[2]).toBe(false)
+    expect(afterEnd[4]).toBe('')
+    expect(afterEnd[5]).toBe('')
+  })
+
+  it('closeWarning 無し: [4]/[5] は既定の空文字（main 側の従来文言に任せる）', () => {
+    installWindowMock()
+    const end = beginActivity('処理A')
+    const last = calls[calls.length - 1]
+    expect(last[4]).toBe('')
+    expect(last[5]).toBe('')
+    end()
+  })
+
+  it('入れ子（警告付き→警告なし）: 最後に始めたものが勝ち、内側を end() すると外側の警告に戻る', () => {
+    installWindowMock()
+    const endOuter = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
+    const endInner = beginActivity('処理A')
+    const withInner = calls[calls.length - 1]
+    expect(withInner[4]).toBe('')
+    expect(withInner[5]).toBe('')
+    endInner()
+    const backToOuter = calls[calls.length - 1]
+    expect(backToOuter[4]).toBe(PUBLISH_CLOSE_WARNING.detail)
+    expect(backToOuter[5]).toBe(PUBLISH_CLOSE_WARNING.confirmLabel)
+    endOuter()
   })
 })

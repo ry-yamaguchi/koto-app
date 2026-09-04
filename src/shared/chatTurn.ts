@@ -350,7 +350,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     let history = historyBefore
     // 直前のアシスタントの返事（案内定型文の重複除去 stripRepeatedGuidance の比較対象）。
     // toolNote（実況・⚠️等）は案内の持ち主ではないので飛ばす。
-    const prevAssistantContent = [...historyBefore].reverse()
+    let prevAssistantContent = [...historyBefore].reverse()
       .find(m => m.role === 'assistant' && !m.toolNote && m.content)?.content ?? null
     const summaryMsg = await compactIfNeeded(spec, ports, historyBefore)
     if (summaryMsg && 'aborted' in summaryMsg) {
@@ -678,7 +678,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             kind: 'replaceLast',
             msg: {
               role: 'assistant', content: sawToolMarkup
-                ? '（このモデルはツール（ファイル参照など）が必要な操作に対応していません。モデルを「Qwen3-Coder」などに切り替えてお試しください）'
+                ? '（このモデルはツール（ファイル参照など）が必要な操作に対応していません。モデルを「Kimi K2.7 Code」などに切り替えてお試しください）'
                 : '（応答が空でした。もう一度送るか、モデルを変えてお試しください）',
             },
           })
@@ -707,6 +707,10 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             // 標準の警告・ℹ️ の事実——が必ず何かを残すので、途中経過は消えてよい）
             ports.emit({ kind: 'status', value: '実際に変更が必要か確かめています…' })
             apiMessages.push({ role: 'assistant', content: r.content })
+            // 答え直し（この下の continue）のあとの返事は、**このターン内の1回目の返事**とも比較して
+            // 案内定型文を取り除く（roadmap #12。stripRepeatedGuidance の比較相手は従来「前のターンの
+            // 返事」だけで、促し→答え直しの2通とも同じ案内が付くと2回表示された・2026-08-30 実機で観測）。
+            prevAssistantContent = [prevAssistantContent, r.content].filter(Boolean).join('\n\n')
             apiMessages.push({
               role: 'user',
               content: '（Koto より）このターンでは、ファイルへの書き込みはまだ実行されていません。'
@@ -751,7 +755,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             content: (r.content ? r.content + '\n\n' : '') +
               '⚠️ ファイルの内容が大きすぎて、AIの一度の出力に収まりませんでした。\n' +
               '・変更を小さめに分けて依頼する（例: 「まず○○の部分だけ直して」）\n' +
-              '・別のモデル（Qwen3-Coder など）に切り替えて試す\n' +
+              '・別のモデル（Kimi K2.7 Code など）に切り替えて試す\n' +
               'のいずれかをお試しください。',
           },
         })
@@ -771,7 +775,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             content: (r.content ? r.content + '\n\n' : '') +
               '⚠️ AIが同じ操作を繰り返しているため中断しました。\n' +
               '・依頼をもう少し具体的に伝える\n' +
-              '・別のモデル（Qwen3-Coder など）に切り替える\n' +
+              '・別のモデル（Kimi K2.7 Code など）に切り替える\n' +
               'のいずれかをお試しください。',
           },
         })

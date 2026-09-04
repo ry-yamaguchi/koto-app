@@ -99,13 +99,15 @@ describe('formatApproxChars', () => {
 })
 
 describe('estimatePackCostPerTurnYen', () => {
+  // 2026-09-04 世代交代: 旧コード特化モデル（480B/30B）は提供終了・PRICING から削除済みのため、
+  // 現行提供モデルのIDへ差し替えた。
   it('returns a positive number for a known model', () => {
-    const yen = estimatePackCostPerTurnYen('Qwen3-Coder-480B-A35B-Instruct-FP8')
+    const yen = estimatePackCostPerTurnYen('preview/Kimi-K2.7-Code')
     expect(yen).toBeGreaterThan(0)
   })
 
   it('scales with the model input price (a pricier model costs more per turn)', () => {
-    const cheap = estimatePackCostPerTurnYen('Qwen3-Coder-30B-A3B-Instruct') // in: 15
+    const cheap = estimatePackCostPerTurnYen('gpt-oss-120b') // in: 15
     const pricey = estimatePackCostPerTurnYen('preview/Kimi-K2.6') // in: 60
     expect(pricey).toBeGreaterThan(cheap)
   })

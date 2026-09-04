@@ -139,7 +139,7 @@ describe('変えたと言っているのに書き込みが無いとき', () => {
     const w = unexecutedChangeWarning(true, false)
     expect(w).toContain('実際には書き込みが行われていません')
     expect(w).toContain('Koto がこのやり取りを確認しました')
-    expect(w).toContain('Qwen3-Coder')
+    expect(w).toContain('Kimi K2.7 Code')
   })
 
   it('★ 書き込んだなら何も言わない', () => {

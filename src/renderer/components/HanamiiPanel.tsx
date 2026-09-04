@@ -4,7 +4,7 @@ import UnusedFilesSection from './UnusedFilesSection'
 import { getHanamiiToken, getHanamiiTokenById, listHanamiiTokenEntries } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
 import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
-import { beginActivity } from '../activity'
+import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import { clearPublishRecord } from '../publishRecord'
@@ -294,7 +294,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     const { sendEnvs, persistEnvs, healthCheck, emptySecretKey } = buildEnvsAndHealthCheck(envs, hcEnabled, hcPath)
     if (emptySecretKey) { setMsg(`シークレット環境変数「${emptySecretKey}」の値が未入力です。値を入力してから公開してください（シークレットは保存されないため公開のたびに入力が必要です）。`); return }
     // 実行中フラグ（終了確認ダイアログ用）。中断・失敗でも必ず解除されるよう最外の finally で呼ぶ。
-    const endActivity = beginActivity('公開処理')
+    const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
       setPublishing(true); setMsg(''); setStatus({ url: null, readyState: 'BUILDING' })
       // 公開名: 入力があればそれを、無ければフォルダ名を使う（いずれも safeName で正規化）

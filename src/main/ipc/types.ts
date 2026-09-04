@@ -19,8 +19,13 @@ export interface IpcDeps {
    * 自動更新の再起動ゲート `isBusy()`/`busyLabel()` はアプリごと終了するので、これを見る）。
    * closeBlockingBusy/closeBlockingLabel は「窓を閉じると本当に中断されるか」だけ（公開処理・
    * VPS操作・プロジェクト作成。AI応答は main でターンが完走するため対象外・終了確認ダイアログが見る）。
+   *
+   * closeBlockingDetail/closeBlockingConfirm は、その close ダイアログの文言差し替え（roadmap #14）。
+   * 公開処理は main の1 invoke で完走するため「中断されます」が実態と合わない——失われるのは
+   * 結果の表示と、renderer 側で書く公開の記録（activity.ts の PUBLISH_CLOSE_WARNING 参照）。
+   * 未指定（空文字）なら main 側の従来文言のまま。
    */
-  setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string) => void
+  setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string, closeBlockingDetail: string, closeBlockingConfirm: string) => void
 
   // ── 読み取り側（2026-08-10 自動更新のために追加）──────────────────────
   // 「いま再起動して更新を適用してよいか」の判定に要る。書き込みだけ用意して

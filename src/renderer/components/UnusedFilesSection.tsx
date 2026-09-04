@@ -34,8 +34,10 @@ export default function UnusedFilesSection({ projectDir }: { projectDir: string 
     if (projectDir) void check(projectDir)
   }, [projectDir, check])
 
-  // 対象外・0件のときは雑音を出さない。
-  if (!supported || unused.length === 0) return null
+  // 対象外（静的サイト以外）のときだけ出さない（出しても行動できない箱になるため）。
+  // 0件でも節は**常時表示**する（2026-09-04 Ryosuke 要望）: 出ないと「確認した上で
+  // 問題なし」なのか「機能が働いていない」のか利用者に区別が付かない。
+  if (!supported) return null
 
   const move = async () => {
     const head = unused.slice(0, 8).map(f => `・${f}`).join('\n')
@@ -64,19 +66,28 @@ export default function UnusedFilesSection({ projectDir }: { projectDir: string 
 
   return (
     <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-      <p className="text-sm font-semibold text-ink">🧹 使われていないかもしれないファイルが {unused.length} 件あります</p>
-      <p className="text-[11px] text-ink-muted leading-relaxed">
-        どのページ・コードからも名前が参照されていないファイルです。素材置き場（公開されません）へ移動できます。🕘 元に戻すで戻せます
-      </p>
-      <ul className="text-xs text-ink-secondary space-y-0.5 max-h-40 overflow-y-auto select-text">
-        {unused.map(f => <li key={f}>・{f}</li>)}
-      </ul>
+      <p className="text-sm font-semibold text-ink">🧹 使われていないファイルの確認</p>
+      {unused.length === 0 ? (
+        <p className="text-xs text-ink-secondary">✅ すべてのファイルが、どこかのページ・コードから使われています。</p>
+      ) : (
+        <>
+          <p className="text-xs text-ink">使われていないかもしれないファイルが {unused.length} 件あります</p>
+          <p className="text-[11px] text-ink-muted leading-relaxed">
+            どのページ・コードからも名前が参照されていないファイルです。素材置き場（公開されません）へ移動できます。🕘 元に戻すで戻せます
+          </p>
+          <ul className="text-xs text-ink-secondary space-y-0.5 max-h-40 overflow-y-auto select-text">
+            {unused.map(f => <li key={f}>・{f}</li>)}
+          </ul>
+        </>
+      )}
       {note && <p className="text-xs text-ink whitespace-pre-wrap select-text">{note}</p>}
-      <button
-        onClick={() => { void move() }}
-        disabled={moving}
-        className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-      >{moving ? '移動しています…' : '素材置き場へ移動'}</button>
+      {unused.length > 0 && (
+        <button
+          onClick={() => { void move() }}
+          disabled={moving}
+          className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+        >{moving ? '移動しています…' : '素材置き場へ移動'}</button>
+      )}
     </section>
   )
 }

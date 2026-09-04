@@ -170,8 +170,8 @@ describe('close ダイアログの実態合わせ（AI応答は対象外・公�
     const files = [
       ['src/renderer/components/NewProjectModal.tsx', "beginActivity('プロジェクトの作成')"],
       ['src/renderer/components/ImportFromPublishedPanel.tsx', "beginActivity('公開しているもののインポート')"],
-      ['src/renderer/components/HanamiiPanel.tsx', "beginActivity('公開処理')"],
-      ['src/renderer/components/VercelPanel.tsx', "beginActivity('公開処理')"],
+      ['src/renderer/components/HanamiiPanel.tsx', "beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })"],
+      ['src/renderer/components/VercelPanel.tsx', "beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })"],
       ['src/renderer/components/VpsPanel.tsx', "beginActivity('VPSの処理')"],
     ] as const
     for (const [file, needle] of files) {
@@ -183,7 +183,8 @@ describe('close ダイアログの実態合わせ（AI応答は対象外・公�
   it('activity.ts: blocksClose: false は _blockingCount に数えない（_activeCount には数える）', () => {
     const src = readCode('src/renderer/activity.ts')
     expect(src).toContain('const blocksClose = opts?.blocksClose !== false')
-    expect(src).toContain('if (blocksClose) { blockingCount++; blockingLabels.push(label) }')
+    expect(src).toContain('blockingCount++')
+    expect(src).toContain('blockingEntries.push({')
   })
 
   it('main.ts: close ハンドラは closeBlockingBusy を見る（isBusy 全体ではない）', () => {
@@ -199,11 +200,13 @@ describe('close ダイアログの実態合わせ（AI応答は対象外・公�
     expect(block).toContain('closeBlockingBusy = false')
   })
 
-  it('main.ts: setBusy は4引数（busy/label は自動更新ゲート用・closeBlockingBusy/Label は close 用）を受け取る', () => {
+  it('main.ts: setBusy は6引数（busy/label は自動更新ゲート用・closeBlockingBusy/Label/Detail/Confirm は close 用）を受け取る', () => {
     const src = readCode('src/main/main.ts')
-    expect(src).toContain('setBusy: (busy: boolean, label: string, closeBlocking: boolean, closeBlockingLabelArg: string) => {')
+    expect(src).toContain('setBusy: (busy: boolean, label: string, closeBlocking: boolean, closeBlockingLabelArg: string, closeBlockingDetailArg: string, closeBlockingConfirmArg: string) => {')
     expect(src).toContain('isBusy = busy')
     expect(src).toContain('closeBlockingBusy = closeBlocking')
+    expect(src).toContain('closeBlockingDetail = closeBlockingDetailArg')
+    expect(src).toContain('closeBlockingConfirm = closeBlockingConfirmArg')
   })
 
   it('main.ts: 自動更新ゲート isBusy()/busyLabel() は従来どおり（AI応答も含めて見る）', () => {
@@ -212,17 +215,17 @@ describe('close ダイアログの実態合わせ（AI応答は対象外・公�
     expect(src).toContain('busyLabel: () => busyLabel,')
   })
 
-  it('IPC 3点セット: win:busy が4引数で通っている（ipc/window.ts・preload.ts・global.d.ts）', () => {
+  it('IPC 3点セット: win:busy が6引数で通っている（ipc/window.ts・preload.ts・global.d.ts）', () => {
     const win = readCode('src/main/ipc/window.ts')
-    expect(win).toContain("ipcMain.on('win:busy', (_, busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string) => {")
-    expect(win).toContain('deps.setBusy(busy, label, closeBlockingBusy, closeBlockingLabel)')
+    expect(win).toContain("ipcMain.on('win:busy', (_, busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string, closeBlockingDetail: string, closeBlockingConfirm: string) => {")
+    expect(win).toContain('deps.setBusy(busy, label, closeBlockingBusy, closeBlockingLabel, closeBlockingDetail, closeBlockingConfirm)')
 
     const preload = readCode('src/main/preload.ts')
-    expect(preload).toContain('setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string) =>')
-    expect(preload).toContain("ipcRenderer.send('win:busy', busy, label, closeBlockingBusy, closeBlockingLabel)")
+    expect(preload).toContain('setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string, closeBlockingDetail: string, closeBlockingConfirm: string) =>')
+    expect(preload).toContain("ipcRenderer.send('win:busy', busy, label, closeBlockingBusy, closeBlockingLabel, closeBlockingDetail, closeBlockingConfirm)")
 
     const dts = readCode('src/renderer/global.d.ts')
-    expect(dts).toContain('setBusy(busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string): void')
+    expect(dts).toContain('setBusy(busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string, closeBlockingDetail: string, closeBlockingConfirm: string): void')
   })
 })
 

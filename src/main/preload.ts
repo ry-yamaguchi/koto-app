@@ -396,8 +396,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 実行中状態をメインプロセスに通知。busy/label は「何かしら実行中か」（自動更新の再起動
     // ゲートに使う）、closeBlockingBusy/closeBlockingLabel は「閉じると本当に中断されるか」
     // （終了時の「実行中です」警告に使う。B'-3d-3: AI応答は main で完走するため対象外になった）。
-    setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string) =>
-      ipcRenderer.send('win:busy', busy, label, closeBlockingBusy, closeBlockingLabel),
+    // closeBlockingDetail/closeBlockingConfirm はその警告文言の差し替え（roadmap #14）。
+    setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string, closeBlockingDetail: string, closeBlockingConfirm: string) =>
+      ipcRenderer.send('win:busy', busy, label, closeBlockingBusy, closeBlockingLabel, closeBlockingDetail, closeBlockingConfirm),
     // 「保存して終了」選択時にメインから呼ばれる
     onSaveAll: (cb: () => void) => {
       const handler = () => cb()
@@ -471,6 +472,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setModel: (workspaceDir: string, id: string, model: string) =>
       ipcRenderer.invoke('appSessions:setModel', workspaceDir, id, model),
     delete: (workspaceDir: string, id: string) => ipcRenderer.invoke('appSessions:delete', workspaceDir, id),
+    // その会話専用のプロジェクトを用意する（2026-09-04・掟11）。既に有れば作り直さず同じものを返す。
+    ensureProject: (workspaceDir: string, id: string, projectWorkspaceDir: string, title: string) =>
+      ipcRenderer.invoke('appSessions:ensureProject', workspaceDir, id, projectWorkspaceDir, title),
     /** main が索引を変えるたび届く通知（learning.onChanged と同じ作法・購読解除関数を返す）。 */
     onChanged: (cb: (p: { workspaceDir: string; sessions: { id: string; title: string; model: string; createdAt: number }[] }) => void) => {
       const handler = (_: Electron.IpcRendererEvent, p: { workspaceDir: string; sessions: { id: string; title: string; model: string; createdAt: number }[] }) => cb(p)

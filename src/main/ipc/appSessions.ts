@@ -6,7 +6,7 @@ import { ipcMain, app } from 'electron'
 import type { IpcDeps } from './types'
 import {
   listSessions, createSession, renameSession, setSessionModel, deleteSession,
-  flushAppSessions, setAppSessionsListener, type AppSessionMeta,
+  flushAppSessions, setAppSessionsListener, ensureSessionProject, type AppSessionMeta,
 } from '../appSessionsStore'
 import { sendToWindow } from '../windowSend'
 
@@ -35,6 +35,11 @@ export function registerAppSessionsHandlers(deps: IpcDeps): void {
   ipcMain.handle('appSessions:delete', (_, workspaceDir: string, id: string) => {
     deleteSession(workspaceDir, id)
   })
+
+  // その会話専用のプロジェクトを用意する（2026-09-04・掟11: チャットからの保存を無関係な
+  // プロジェクトへ流し込ませないための修正。src/main/appSessionsStore.ts の ensureSessionProject）。
+  ipcMain.handle('appSessions:ensureProject', (_, workspaceDir: string, id: string, projectWorkspaceDir: string, title: string) =>
+    ensureSessionProject(workspaceDir, id, projectWorkspaceDir, title))
 
   // quit 時フラッシュ: デバウンス保存待ちの索引を、終了前に必ず書き切る
   // （ipc/learning.ts・ipc/chatStore.ts と同じ理由。appSessionsStore.ts 自身には electron を

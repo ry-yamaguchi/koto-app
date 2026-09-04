@@ -29,6 +29,10 @@ let busyLabel = ''
 // blocksClose コメント参照）。終了確認ダイアログはこちらだけを見る。
 let closeBlockingBusy = false
 let closeBlockingLabel = ''
+// close 警告文の差し替え（roadmap #14）。公開処理は main の1 invoke で完走するため
+// 「中断されます」が実態と合わない——空文字（未指定）なら従来文言のまま。
+let closeBlockingDetail = ''
+let closeBlockingConfirm = ''
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -100,13 +104,15 @@ function createWindow() {
     // ① 実行中なら最優先で確認する（公開処理・VPS操作・プロジェクト作成の途中で閉じると中断される）
     if (closeBlockingBusy) {
       e.preventDefault()
+      // 公開処理は文言差し替え（roadmap #14）。closeBlockingDetail/closeBlockingConfirm が
+      // 空（未指定）のときだけ、従来どおり「中断されます」の一律文言にフォールバックする。
       const { response } = await dialog.showMessageBox(mainWindow!, {
         type: 'warning',
-        buttons: ['中断して終了', 'キャンセル'],
+        buttons: [closeBlockingConfirm || '中断して終了', 'キャンセル'],
         defaultId: 1,
         cancelId: 1,
         message: '処理を実行中です',
-        detail: `${closeBlockingLabel || '処理'}が進行中です。いま閉じると中断されます。よろしいですか？`,
+        detail: closeBlockingDetail || `${closeBlockingLabel || '処理'}が進行中です。いま閉じると中断されます。よろしいですか？`,
       })
       if (response === 1) return // キャンセル＝閉じない
       // 中断を承諾 → busyを解除して閉じ直す（次の再入で未保存確認に進む or そのまま終了）
@@ -146,11 +152,13 @@ registerAllHandlers({
     hasUnsavedChanges = false
     mainWindow?.close()
   },
-  setBusy: (busy: boolean, label: string, closeBlocking: boolean, closeBlockingLabelArg: string) => {
+  setBusy: (busy: boolean, label: string, closeBlocking: boolean, closeBlockingLabelArg: string, closeBlockingDetailArg: string, closeBlockingConfirmArg: string) => {
     isBusy = busy
     busyLabel = label
     closeBlockingBusy = closeBlocking
     closeBlockingLabel = closeBlockingLabelArg
+    closeBlockingDetail = closeBlockingDetailArg
+    closeBlockingConfirm = closeBlockingConfirmArg
   },
   hasUnsavedChanges: () => hasUnsavedChanges,
   isBusy: () => isBusy,

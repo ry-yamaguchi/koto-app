@@ -135,6 +135,9 @@ export function nowContext(now: Date = new Date()): string {
   const w = WEEKDAYS_JA[now.getDay()]
   const hh = String(now.getHours()).padStart(2, '0')
   const mm = String(now.getMinutes()).padStart(2, '0')
+  // roadmap #11（2026-08-30 実機: 過去に日付を手入力した会話で、履歴の古い日付に引きずられた。
+  // 「古い案内は真似しない」と同じ手法で、履歴より現在日時を優先させる一文を足す）
   return `【現在の日時】${y}年${m}月${d}日（${w}）${hh}:${mm}（利用者の端末のローカル時刻）。` +
-    `日付や時刻・曜日に言及するときは推測せず、必ずこの時刻を基準にすること。`
+    `日付や時刻・曜日に言及するときは推測せず、必ずこの時刻を基準にすること。` +
+    `会話の履歴に別の日付・時刻が書かれていても、それは過去のやり取りの時点のもの。現在を答えるときはこの値を最優先すること。`
 }
