@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ALWAYS_USED_RE, findUnusedFiles } from '../src/shared/unusedFiles'
+import { ALWAYS_USED_RE, findUnusedFiles, nextFreeMaterialName } from '../src/shared/unusedFiles'
 
 // findUnusedFiles（roadmap #18）の判定は「参照らしき文字列が出現するか」という
 // 控えめな判定（真の到達グラフではない）。誤る方向は「未使用と言いすぎない」側に
@@ -170,5 +170,42 @@ describe('findUnusedFiles: その他の性質', () => {
     const files = ['a.jpg', 'index.html']
     const unused = findUnusedFiles(files, readerOf({ 'index.html': '' }))
     expect(unused).toContain('a.jpg')
+  })
+})
+
+// 2026-09-04 実機: 素材置き場に同名があると一括移動そのものが失敗していた不具合の修理。
+// nextFreeMaterialName は「移す」判断はせず、空いている名前を選ぶだけの純関数。
+describe('nextFreeMaterialName: 素材置き場で使う、空いているファイル名を選ぶ', () => {
+  it('衝突が無ければ base をそのまま返す', () => {
+    expect(nextFreeMaterialName('test002', () => false)).toBe('test002')
+  })
+
+  it('★★ 拡張子の無い名前が埋まっていれば stem-2 の形（test002 → test002-2）', () => {
+    const taken = new Set(['test002'])
+    expect(nextFreeMaterialName('test002', (n) => taken.has(n))).toBe('test002-2')
+  })
+
+  it('★★ 拡張子は保ったまま stem だけへ -2 を付ける（a.png → a-2.png）', () => {
+    const taken = new Set(['a.png'])
+    expect(nextFreeMaterialName('a.png', (n) => taken.has(n))).toBe('a-2.png')
+  })
+
+  it('★★ 先頭にしかドットが無い名前は全体を stem 扱い（.htaccess → .htaccess-2）', () => {
+    const taken = new Set(['.htaccess'])
+    expect(nextFreeMaterialName('.htaccess', (n) => taken.has(n))).toBe('.htaccess-2')
+  })
+
+  it('（対） 末尾がドットの名前も全体を stem 扱い（foo. → foo.-2）', () => {
+    const taken = new Set(['foo.'])
+    expect(nextFreeMaterialName('foo.', (n) => taken.has(n))).toBe('foo.-2')
+  })
+
+  it('-2 も埋まっていれば -3 まで進む', () => {
+    const taken = new Set(['a.png', 'a-2.png'])
+    expect(nextFreeMaterialName('a.png', (n) => taken.has(n))).toBe('a-3.png')
+  })
+
+  it('999件試しても空きが無ければ throw する（Date.now 等の非決定的なフォールバックは使わない）', () => {
+    expect(() => nextFreeMaterialName('a.png', () => true)).toThrow()
   })
 })

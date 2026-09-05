@@ -138,6 +138,10 @@ type TurnEntry = {
   bridge: AskBridge
   /** 進行中の応答を止める関数（ports.setAbort が差し込む）。未設定・停止済みは null。 */
   abort: (() => void) | null
+  /** ⏹ が押された事実（ラッチ）。2026-09-04 実機: abort はいま流れているストリームの中断関数
+   *  でしかなく、ツール実行中・ラウンドの合間に押すと空振りしてループが止まらなかった。
+   *  ここは一度立てたら（chatTurn:abort が押されるたび）ターンが終わるまで true のまま。 */
+  stopRequested: boolean
 }
 
 // ── B'-3d-2b: executeTool の main 直呼び ────────────────────────────────
@@ -301,7 +305,8 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     chatStream: (req, onDelta, onAbortReady, onThinking) =>
       runSakuraStream(req, { onDelta, onReasoning: onThinking, onAbortReady }),
     // 🗂 まとめ作り中の ⏹ 停止（0.3.50）: runSakuraChat の onAbortReady で受け取った中断関数を
-    // entry.abort へ差し込む（chatTurn:abort → turns.get(turnId)?.abort?.() から呼べるように）。
+    // entry.abort へ差し込む（chatTurn:abort ハンドラの e.abort?.() から呼べるように。
+    // 2026-09-04: 同ハンドラは e.stopRequested = true の設定と併用する形に変わった。下記参照）。
     // ports.setAbort は経由しない（EngineTurnPorts.chatOnce の型に abort registration は無く、
     // まとめ作りは main だけで完結する処理のため、この配線も main 内で完結させる）。
     // まとめが終わったあとも entry.abort にはこの中断関数が残り続けるが、完了済みリクエストへの
@@ -333,6 +338,8 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     autoSearchBlock: (text, search) => bridge.ask('autoSearchBlock', [text, search]) as any,
     notifyActivity: () => { if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'activity' }) },
     setAbort: (fn) => { entry.abort = fn },
+    // ⏹ 停止のラッチ（2026-09-04 実機・上の chatTurn:abort ハンドラのコメント参照）。
+    stopRequested: () => entry.stopRequested,
     // B'-3d-1b: 予算・利用実績の持ち主が main の usageStore.ts へ移った。renderer へ ask せず、
     // ここで直接読み書きする（ask が2本減った）。APIキーは main へ渡らない・保存しない（掟4）
     // ため、usageStore の API はすべて指紋（fp = hashKey(apiKey)）ベース。
@@ -375,6 +382,7 @@ export function registerChatTurnHandlers(_deps: IpcDeps): void {
     const entry: TurnEntry = {
       bridge: createAskBridge((ask: TurnAsk) => { if (!wc.isDestroyed()) wc.send(`chatTurn:ask:${turnId}`, ask) }),
       abort: null,
+      stopRequested: false,
     }
     turns.set(turnId, entry)
 
@@ -407,8 +415,13 @@ export function registerChatTurnHandlers(_deps: IpcDeps): void {
   })
 
   // 進行中の応答を止める（sakura:chat-abort と同じ考え方）。turnId が無ければ何もしない。
+  // ── ⏹ 停止のラッチ化（2026-09-04 実機）─────────────────────────────
+  // フラグ（stopRequested）が本命: エージェントループは各ラウンドの冒頭でこれを見て確実に
+  // 止まる。abort はストリーム中断の即効の補助（いま流れているストリームがあれば、そこで
+  // 待たせず切れる）——ストリームが無い瞬間に押されても空振りするだけで実害は無い。
   ipcMain.handle('chatTurn:abort', (_, turnId: string) => {
-    turns.get(turnId)?.abort?.()
+    const e = turns.get(turnId)
+    if (e) { e.stopRequested = true; e.abort?.() }
   })
 
   // renderer からの ask への回答。該当 turn の帳簿へ渡す（無ければ何もしない）。

@@ -105,3 +105,47 @@ export function findUnusedFiles(
   }
   return unused
 }
+
+/** 拡張子を最後のドットで分ける（nextFreeMaterialName 専用）。
+ *  先頭にしかドットが無い名前（`.htaccess` 等）・末尾がドットの名前（`foo.`）は、
+ *  「ドットの後ろ」を切り出すと空文字や不自然な分割になるため、全体を stem として扱う。 */
+function splitExt(name: string): { stem: string; ext: string } {
+  const i = name.lastIndexOf('.')
+  if (i <= 0 || i === name.length - 1) return { stem: name, ext: '' }
+  return { stem: name.slice(0, i), ext: name.slice(i) }
+}
+
+/**
+ * 素材置き場（MATERIALS_DIR）へ移すときの、空いているファイル名を1つ選ぶ。
+ *
+ * ── なぜ要るか（2026-09-04 実機で判明・未使用ファイルの移動が一括で失敗する不具合） ──────
+ * 移動先は MATERIALS_DIR 直下の平置き。以前の ipc/unused.ts は
+ *   ①素材置き場に既に同名がある ②同じ一括の中で basename が重複する
+ * のどちらも throw で**一括全体を拒否**していた（migrate.ts の「同名衝突は全体を中止する」
+ * 方針をそのまま踏襲したもの）。ところが実機では、以前 Koto で移動した test002 が
+ * 素材置き場に残っているというだけで、**新しい test002 を二度と移動できなくなった**
+ * （しかも他の対象まで巻き添えで拒否される）。migrate.ts の「取り込み前のプロジェクトを
+ * 壊さない」場面と違い、ここは Koto 自身が用意した置き場所への移動なので、
+ * 全体を止めるのではなく**空いている名前を自動で採る**ほうが利用者の意図（未使用ファイルを
+ * どかしたい）に合う。
+ *
+ * base をそのまま試し、埋まっていれば「stem-2.ext」「stem-3.ext」… と最初に空いている名前を
+ * 返す。呼び出し側（ipc/unused.ts）はこれで採った名前を移動先に使い、base と違えば
+ * 利用者に「改名しました」と伝える。
+ *
+ * @param base    素材置き場に置きたいファイル名（basename。拡張子込み）
+ * @param isTaken その候補名が既に使われているか（呼び出し側が、同じ一括内で予約済みの名前と
+ *                実ディスクの両方を見て判定する）
+ * @returns 実際に採用する名前（衝突が無ければ base そのまま）
+ * @throws 999件試しても空きが無いとき（実運用では起こらない想定。決定性のため
+ *         `Date.now()` などのフォールバックは使わない——同じ入力なら常に同じ結果にする）
+ */
+export function nextFreeMaterialName(base: string, isTaken: (name: string) => boolean): string {
+  const LIMIT = 999
+  const { stem, ext } = splitExt(base)
+  for (let n = 1; n <= LIMIT; n++) {
+    const candidate = n === 1 ? base : `${stem}-${n}${ext}`
+    if (!isTaken(candidate)) return candidate
+  }
+  throw new Error(`「${base}」の空いている名前が見つかりませんでした（${LIMIT}件まで試しました）`)
+}

@@ -315,9 +315,19 @@ describe('sanitizeChatProjectName: 会話タイトル → プロジェクトフ�
     expect(sanitizeChatProjectName('...隠しっぽい名前')).toBe('隠しっぽい名前')
   })
 
-  it('30文字で切る', () => {
+  it('20文字で切る（2026-09-04 実機: 30文字では日本語が途中で終わる長い名前になった）', () => {
     const long = 'あ'.repeat(40)
-    expect(sanitizeChatProjectName(long)).toBe('あ'.repeat(30))
+    expect(sanitizeChatProjectName(long)).toBe('あ'.repeat(20))
+  })
+
+  it('★ 実機で出た長い依頼文が、読める長さのフォルダ名になる', () => {
+    const title = 'ハイブリッド思考モードの切り替えた場合と通常の場合とわかりやすく反応が違う文書を考えて下さい。'
+    expect(sanitizeChatProjectName(title)).toBe('ハイブリッド思考モードの切り替えた場合と')
+  })
+
+  it('切った位置が空白でも、末尾に空白の残るフォルダ名にしない', () => {
+    // 20文字目が空白になる文字列（'あ'×19 + ' ' + 続き）
+    expect(sanitizeChatProjectName('あ'.repeat(19) + ' つづき')).toBe('あ'.repeat(19))
   })
 
   it('全部除去して空になったら既定名「チャット」', () => {

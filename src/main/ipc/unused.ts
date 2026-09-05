@@ -8,7 +8,11 @@
 //     退避する（元＝内容退避・先＝まだ無かった印）。この2エントリで、その時点へ戻すと
 //     「先を消し元を戻す」動きになり、移動そのものを取り消せる
 //     （backup/plan.ts の畳み込みは追加の action 種別なしにこの構成へそのまま対応する）。
-//   ・**同名衝突が1件でもあれば全体を中止する**（中途半端に動かさない・migrate.ts と同じ方針）。
+//   ・移動先の同名衝突（素材置き場に既にある／同じ一括内で basename が重複）は、全体を
+//     中止せず shared/unusedFiles.ts の nextFreeMaterialName で**空いている名前を自動で採る**
+//     （2026-09-04 実機で判明: 以前移動した test002 が居るだけで新しい test002 を二度と
+//     移動できなかった。migrate.ts の「同名衝突は全体を中止する」とは事情が違うので
+//     ここだけ方針を変えた。実行段の途中失敗（レース等）は従来どおり中止＋ロールバック）。
 //   ・**書き込み経路には isProtectedWritePath を通す**（移動元・移動先の両方）。
 //
 // migrate.ts（既存プロジェクトを public/ の形へ移す）と実装の骨格は似ているが、独立に持つ
@@ -21,7 +25,7 @@ import * as path from 'path'
 import { resolvePublishRoot } from '../publishRootFs'
 import { projectFilesInfoFs, readFileInProjectFs } from './fs'
 import { detectRuntime } from '../../shared/runtimeDetect'
-import { findUnusedFiles } from '../../shared/unusedFiles'
+import { findUnusedFiles, nextFreeMaterialName } from '../../shared/unusedFiles'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
 import { backupRelPath } from '../../shared/publishRoot'
 import { isProtectedWritePath } from '../../shared/protectedPaths'
@@ -74,6 +78,8 @@ export type MoveToMaterialsResult = {
   moved: string[]
   /** 🕘 履歴に「移す直前」を残せたか（取れなくても移動そのものは続ける）。 */
   snapshotOk: boolean
+  /** 素材置き場で同名衝突があり、nextFreeMaterialName で改名して移動した分（無ければ空配列）。 */
+  renamed?: { from: string; to: string }[]
   message?: string
 }
 
@@ -106,8 +112,12 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
 
   const root = resolvePublishRoot(projectDir) || projectDir
 
-  // ① 検証（何も変えない）。1件でも弾ければ全体を中止する（中途半端に動かさない）。
+  // ① 検証（何も変えない）。保護パス等、名前を変えても解決しないものだけ弾く
+  // （1件でも弾ければ全体を中止する・中途半端に動かさない）。
+  // 移動先の同名衝突は弾かず、nextFreeMaterialName で空いている名前を自動で採る。
   const targets: MoveTarget[] = []
+  // base（元のファイル名）と実際に採った名前が違う分だけ記録する（衝突が無ければ空のまま）。
+  const renamed: { from: string; to: string }[] = []
   try {
     const usedDest = new Set<string>()
     for (const rel of list) {
@@ -117,12 +127,15 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
       if (isProtectedWritePath(projectRel)) throw new Error(`Koto が管理する領域は移動できません: ${projectRel}`)
 
       const base = path.basename(projectRel)
-      const destRel = `${MATERIALS_DIR}/${base}`
+      const name = nextFreeMaterialName(base, (candidate) => (
+        usedDest.has(`${MATERIALS_DIR}/${candidate}`) ||
+        fs.existsSync(confineToProject(projectDir, `${MATERIALS_DIR}/${candidate}`))
+      ))
+      const destRel = `${MATERIALS_DIR}/${name}`
       if (isProtectedWritePath(destRel)) throw new Error(`移動先が不正です: ${destRel}`)
-      if (usedDest.has(destRel)) throw new Error(`移動先の名前が重複します: ${base}`)
       usedDest.add(destRel)
       const toFull = confineToProject(projectDir, destRel)
-      if (fs.existsSync(toFull)) throw new Error(`「${MATERIALS_DIR}」に同じ名前が既にあります: ${base}`)
+      if (name !== base) renamed.push({ from: rel, to: name })
 
       targets.push({ rel, projectRel, destRel, fromFull, toFull })
     }
@@ -137,9 +150,9 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
     new Date().toISOString(),
     id => fs.existsSync(path.join(projectDir, BACKUP_DIRNAME, id)),
   )
+  const label = `未使用ファイルの整理（${MATERIALS_DIR}）`
   let snapshotOk = false
   for (const t of targets) {
-    const label = `未使用ファイルの整理（${MATERIALS_DIR}）`
     try {
       const r1 = snapshotBeforeChange(projectDir, snapshotId, t.projectRel, label)
       if (r1.ok) snapshotOk = true
@@ -154,7 +167,26 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
   try {
     fs.mkdirSync(path.join(projectDir, MATERIALS_DIR), { recursive: true })
     for (const t of targets) {
-      if (fs.existsSync(t.toFull)) throw new Error(`「${MATERIALS_DIR}」に同じ名前が既にあります: ${path.basename(t.projectRel)}`)
+      if (fs.existsSync(t.toFull)) {
+        // レース: ①の検証のあと・ここで実際に動かす直前に、誰かが同じ名前を作った
+        // （① の時点では空きだった）。ここでも拒否せず、その場でもう一度
+        // nextFreeMaterialName で採り直す（半端な状態を作らない）。
+        const base = path.basename(t.projectRel)
+        const reserved = new Set(targets.map(x => x.destRel))
+        const name = nextFreeMaterialName(base, (candidate) => (
+          reserved.has(`${MATERIALS_DIR}/${candidate}`) ||
+          fs.existsSync(confineToProject(projectDir, `${MATERIALS_DIR}/${candidate}`))
+        ))
+        t.destRel = `${MATERIALS_DIR}/${name}`
+        t.toFull = confineToProject(projectDir, t.destRel)
+        if (name !== base) {
+          const already = renamed.find(r => r.from === t.rel)
+          if (already) already.to = name
+          else renamed.push({ from: t.rel, to: name })
+        }
+        // 退避もその名前で行う（半端な状態を作らない）。取れなくても移動は続ける。
+        try { if (snapshotBeforeChange(projectDir, snapshotId, t.destRel, label).ok) snapshotOk = true } catch { /* 続ける */ }
+      }
       fs.renameSync(t.fromFull, t.toFull)
       moved.push(t.rel)
       touchedDirs.add(path.dirname(t.fromFull))
@@ -176,7 +208,7 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
     try { if (dir !== projectDir && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir) } catch { /* ignore */ }
   }
 
-  return { ok: true, moved, snapshotOk }
+  return { ok: true, moved, snapshotOk, renamed }
 }
 
 export function registerUnusedHandlers(): void {

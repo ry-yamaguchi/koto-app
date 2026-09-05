@@ -227,12 +227,16 @@ interface Window {
        */
       unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[] }>
       /**
-       * 未使用ファイルを「素材（公開しません）」へ移す。**同名衝突が1件でもあれば全体を中止する**
-       * （中途半端に動かさない）。移す前に 🕘 履歴へ退避するので、あとから元に戻せる。
-       * `snapshotOk` はその退避を残せたか。
+       * 未使用ファイルを「素材（公開しません）」へ移す。移動先の同名衝突（既に同名がある／
+       * 一括内で basename が重複）は全体を中止せず、shared/unusedFiles.ts の
+       * nextFreeMaterialName で空いている名前を自動で採る（2026-09-04 実機で判明した
+       * 不具合の修理: 以前移動した同名ファイルが居るだけで新しい同名ファイルを二度と
+       * 移動できなかった）。`renamed` は base と違う名前で移動した分。
+       * 移す前に 🕘 履歴へ退避するので、あとから元に戻せる。`snapshotOk` はその退避を残せたか。
        */
       moveToMaterials(projectDir: string, files: string[]): Promise<{
-        ok: boolean; moved: string[]; snapshotOk: boolean; message?: string
+        ok: boolean; moved: string[]; snapshotOk: boolean
+        renamed?: { from: string; to: string }[]; message?: string
       }>
       /** withPublishDir: 最初から public/ を掘るか（改善1・2026-08-29。NewProjectModal.tsx が判断する）。 */
       createProject(

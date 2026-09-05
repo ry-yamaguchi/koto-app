@@ -44,7 +44,7 @@ describe('3点セット: project:unusedCheck / project:moveToMaterials（main / 
 describe('未使用ファイルの判定は shared/unusedFiles.ts の一元定義を通す', () => {
   it('ipc/unused.ts が findUnusedFiles / ALWAYS_USED_RE の一元定義を import して使っている（手で並べ直さない）', () => {
     const src = stripped('src/main/ipc/unused.ts')
-    expect(src).toContain("import { findUnusedFiles } from '../../shared/unusedFiles'")
+    expect(src).toContain("import { findUnusedFiles, nextFreeMaterialName } from '../../shared/unusedFiles'")
     expect(src).toContain('const unused = findUnusedFiles(files,')
   })
 
@@ -77,10 +77,19 @@ describe('moveToMaterialsFs: 守りの配線（isProtectedWritePath を移動元
     expect(src).toContain('if (isProtectedWritePath(destRel))')
   })
 
-  it('同名衝突は existsSync で拒否する（検証段・実行段の両方）', () => {
+  it('同名衝突は全体を拒否せず、nextFreeMaterialName で空いている名前を自動で採る（検証段・実行段の両方）', () => {
     const src = stripped('src/main/ipc/unused.ts')
-    expect(src).toContain('if (fs.existsSync(toFull))') // 検証段（すべて動かす前に確かめる）
-    expect(src).toContain('if (fs.existsSync(t.toFull))') // 実行段（動かす直前にもう一度）
+    expect(src).toContain("import { findUnusedFiles, nextFreeMaterialName } from '../../shared/unusedFiles'")
+    // 呼び出しの形ごと見る（検証段・実行段の両方に同じ形で存在する＝2箇所）
+    const count = (needle: string) => src.split(needle).length - 1
+    expect(count('const name = nextFreeMaterialName(base, (candidate) => (')).toBe(2)
+    // isTaken は「同じ一括内での予約」と「実ディスク」の両方を見る（fs.existsSync を通す）
+    expect(count('fs.existsSync(confineToProject(projectDir, `${MATERIALS_DIR}/${candidate}`))')).toBe(2)
+    // 実行段: 直前の再確認（レース）で既に存在していたら、拒否せず採り直す
+    expect(src).toContain('if (fs.existsSync(t.toFull)) {')
+    // 旧形（1件でも衝突すれば全体を throw で拒否する）へ戻していない
+    expect(src).not.toContain('同じ名前が既にあります')
+    expect(src).not.toContain('移動先の名前が重複します')
   })
 
   it('🕘 履歴は移動元・移動先の両方を同じスナップショットIDで退避する', () => {

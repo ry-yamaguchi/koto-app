@@ -964,6 +964,51 @@ describe('runEngineTurn', () => {
     const warns = log.filter((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.toolNote && String(e.ev.msg.content).startsWith('⚠️'))
     expect(warns.length).toBe(1)
   })
+
+  // 26. ⏹ 停止のラッチ（v0.6.3 実機・2026-09-04）: 「⏹ が効かないことがある」不具合対策。
+  // main の chatTurn:abort は「いま流れているストリームの中断関数」を呼ぶだけなので、
+  // ツール実行中・ラウンドの合間に押すと中断対象が無く空振りし、ループはそれを知らないまま
+  // 次のラウンドへ進んでいた。ports.stopRequested（ラッチ）を各ラウンドの冒頭で見て止める。
+  it('⏹ 停止のラッチ: ツール実行後・次のラウンド前に停止要求 → （⏹ 停止しました）が出て以降の chatStream が呼ばれない', async () => {
+    const toolCalls = [{ id: 'c1', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }]
+    let stopFlag = false
+    const { ports, log } = makePorts({
+      stream: [
+        { content: '', toolCalls, usage: { prompt_tokens: 1, completion_tokens: 1 } }, // 1周目: ツール呼び出し
+        { content: '読みました', toolCalls: null }, // 2周目（呼ばれないはず）
+      ],
+      // ツール実行の中で ⏹ が押された状況を模す（実機はラウンドの合間に押される）
+      executeTool: () => { stopFlag = true; return 'ファイルの中身' },
+    })
+    ports.stopRequested = () => stopFlag
+    await runEngineTurn(makeSpec(), ports)
+
+    // chatStream は1回だけ（ツール実行後・2周目冒頭のラッチ確認で止まっている）
+    expect(log.filter((e) => e.tag === 'chatStream').length).toBe(1)
+    const stopMsg = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.content === '（⏹ 停止しました）')
+    expect(stopMsg).toBeTruthy()
+  })
+
+  // 26b. 対照実験: stopRequested が常に false（従来どおり ⏹ が押されていない）なら、
+  // ラッチの追加が普段の動作に影響しないこと（2周目まで進む）を確かめる。
+  it('⏹ 停止のラッチ（対照）: stopRequested が常に false なら従来どおり2回目まで進む', async () => {
+    const toolCalls = [{ id: 'c1', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }]
+    const { ports, log } = makePorts({
+      stream: [
+        { content: '', toolCalls, usage: { prompt_tokens: 1, completion_tokens: 1 } },
+        { content: '読みました', toolCalls: null },
+      ],
+      executeTool: () => 'ファイルの中身',
+    })
+    ports.stopRequested = () => false
+    await runEngineTurn(makeSpec(), ports)
+
+    expect(log.filter((e) => e.tag === 'chatStream').length).toBe(2)
+    const stopMsg = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.content === '（⏹ 停止しました）')
+    expect(stopMsg).toBeFalsy()
+    const last = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast')
+    expect(last.ev.msg.content).toBe('読みました')
+  })
 })
 
 // 配線: turnRunner.ts は electron（ipcMain）を import しているため node のテストから直接
@@ -976,6 +1021,21 @@ describe('配線: turnRunner.ts の chatOnce（🗂 まとめ作り中の ⏹ �
     expect(inCode).toContain('chatOnce: (req) => runSakuraChat(req, { onAbortReady: (abort) => { entry.abort = abort } }),')
     // 直す前の形（onAbortReady を渡さない）へ戻さない
     expect(src).not.toContain('chatOnce: (req) => runSakuraChat(req),')
+  })
+})
+
+// 配線: chatTurn:abort が ⏹ 停止のラッチ（stopRequested）を立てていること・ports へ渡している
+// ことを、ソースを読んで固定する（v0.6.3 実機不具合の修理・掟10: 直す前の形へ戻さない）。
+describe('配線: turnRunner.ts の chatTurn:abort（⏹ 停止のラッチ化・2026-09-04）', () => {
+  it('turns.get(turnId) のエントリへ stopRequested = true を立ててから abort を呼び、ports.stopRequested として渡している', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/chat/turnRunner.ts'), 'utf-8')
+    const inCode = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    // 新しい形: フラグを立ててから abort（併用）
+    expect(inCode).toContain('if (e) { e.stopRequested = true; e.abort?.() }')
+    // ports へ stopRequested を渡している（buildMainPorts の組み立て）
+    expect(inCode).toContain('stopRequested: () => entry.stopRequested,')
+    // 直す前の形（abort だけを呼ぶ単独の1行）に戻さない
+    expect(src).not.toContain('turns.get(turnId)?.abort?.()')
   })
 })
 

@@ -138,28 +138,51 @@ describe('moveToMaterialsFs: 実際に動かす', () => {
   })
 })
 
-describe('moveToMaterialsFs: 上書き拒否（同名衝突は全体を中止する）', () => {
-  it('移動先に同名が既にあれば、1件も動かさず ok:false', () => {
-    write('a.html', 'A')
-    write('b.html', 'B')
-    write(`${MATERIALS_DIR}/b.html`, '既にある')
-    const r = moveToMaterialsFs(dir, ['a.html', 'b.html'])
-    expect(r.ok).toBe(false)
-    expect(r.moved).toEqual([])
-    expect(r.message).toContain('b.html')
-    // a.html は動かない（1件でも弾ければ全体を中止する）
-    expect(exists('a.html')).toBe(true)
-    expect(exists(`${MATERIALS_DIR}/a.html`)).toBe(false)
+describe('moveToMaterialsFs: 同名衝突は拒否せず、空いている名前を自動で採る（2026-09-04 実機の修理）', () => {
+  // 以前は「素材置き場に既に同名がある」「一括内で basename が重複する」のどちらも
+  // throw で全体を拒否していた。実機では、以前 Koto で移動した test002 が素材置き場に
+  // 残っているというだけで、新しい test002 を二度と移動できなくなっていた。
+
+  it('①素材置き場に既に同名があれば、拒否せず改名して移動し renamed が返る', () => {
+    write('test002', '新しい方')
+    write(`${MATERIALS_DIR}/test002`, '前に移動した方')
+    const r = moveToMaterialsFs(dir, ['test002'])
+    expect(r.ok).toBe(true)
+    expect(r.moved).toEqual(['test002'])
+    expect(exists('test002')).toBe(false)
+    expect(exists(`${MATERIALS_DIR}/test002`)).toBe(true) // 前に移動した方はそのまま
+    expect(read(`${MATERIALS_DIR}/test002`)).toBe('前に移動した方')
+    expect(exists(`${MATERIALS_DIR}/test002-2`)).toBe(true) // 新しい方は改名して移動
+    expect(read(`${MATERIALS_DIR}/test002-2`)).toBe('新しい方')
+    expect(r.renamed).toEqual([{ from: 'test002', to: 'test002-2' }])
   })
 
-  it('複数の対象が同じ basename に集約される（別フォルダの同名ファイル）場合も中止する', () => {
-    write('a/logo.png', 'A')
-    write('b/logo.png', 'B')
-    const r = moveToMaterialsFs(dir, ['a/logo.png', 'b/logo.png'])
-    expect(r.ok).toBe(false)
-    expect(r.message).toContain('logo.png')
-    expect(exists('a/logo.png')).toBe(true)
-    expect(exists('b/logo.png')).toBe(true)
+  it('②一括内で basename が重複しても両方移動する（images/a.png と photos/a.png → a.png と a-2.png）', () => {
+    write('images/a.png', '画像側')
+    write('photos/a.png', '写真側')
+    const r = moveToMaterialsFs(dir, ['images/a.png', 'photos/a.png'])
+    expect(r.ok).toBe(true)
+    expect(r.moved.sort()).toEqual(['images/a.png', 'photos/a.png'])
+    expect(exists(`${MATERIALS_DIR}/a.png`)).toBe(true)
+    expect(exists(`${MATERIALS_DIR}/a-2.png`)).toBe(true)
+    expect(read(`${MATERIALS_DIR}/a.png`)).toBe('画像側') // 先に処理された方はそのままの名前
+    expect(read(`${MATERIALS_DIR}/a-2.png`)).toBe('写真側') // 後の方が改名される
+    expect(r.renamed).toEqual([{ from: 'photos/a.png', to: 'a-2.png' }])
+  })
+
+  it('③🕘 退避（スナップショット）の移動先側は、採った名前で残る', () => {
+    write('test002', '新しい方')
+    write(`${MATERIALS_DIR}/test002`, '前に移動した方')
+    const r = moveToMaterialsFs(dir, ['test002'])
+    expect(r.ok).toBe(true)
+    const { snapshots } = listSnapshotSummaries(dir)
+    expect(snapshots).toHaveLength(1)
+    const paths = snapshots[0].files.map(f => f.path).sort()
+    // 採った名前（test002-2）で残る。前に移動した方（素の test002）は触っていないので記録されない
+    expect(paths).toEqual(['test002', `${MATERIALS_DIR}/test002-2`].sort())
+    const byPath = Object.fromEntries(snapshots[0].files.map(f => [f.path, f.action]))
+    expect(byPath['test002']).toBe('overwrite') // 移動元は内容があった＝退避
+    expect(byPath[`${MATERIALS_DIR}/test002-2`]).toBe('create') // 移動先はまだ無かった
   })
 })
 

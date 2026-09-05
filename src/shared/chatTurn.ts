@@ -143,6 +143,9 @@ export type EngineTurnPorts = {
   autoSearchBlock(text: string, search: unknown | null): Promise<string>
   notifyActivity(): void
   setAbort(fn: (() => void) | null): void
+  /** ⏹ が押された事実を返す。ストリーム中断（setAbort 経由）はストリームの外では空振りするため、
+   *  ループが各ラウンド冒頭でこれを見る（2026-09-04 実機）。 */
+  stopRequested?: () => boolean
   usage: {
     check(): { allowed: boolean; message?: string } | Promise<{ allowed: boolean; message?: string }>
     record(model: string, promptTokens: number, completionTokens: number): void | Promise<void>
@@ -569,6 +572,15 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     let lastCallSig = ''
     let repeatCount = 0
     for (let round = 0; round <= maxRounds; round++) {
+      // ⏹ 停止のラッチ確認（各ラウンドの冒頭・2026-09-04 実機）───────────────
+      // main の chatTurn:abort は「いま流れているストリームの中断関数」を呼ぶだけなので、
+      // ツール実行中・ラウンドの合間に押すと中断対象が無く空振りする（ループはそれを知らない
+      // まま次のラウンドへ進んでしまい、最大 maxRounds 回のエージェント作業が止まらなかった）。
+      // ここでラッチ（stopRequested）を見て、各ラウンドの冒頭で確実に止める。
+      if (ports.stopRequested?.()) {
+        ports.emit({ kind: 'append', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
+        break
+      }
       let r
       try {
         r = await streamOnce(apiMessages)

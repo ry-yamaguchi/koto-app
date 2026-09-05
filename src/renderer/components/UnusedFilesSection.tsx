@@ -51,8 +51,14 @@ export default function UnusedFilesSection({ projectDir }: { projectDir: string 
     try {
       const r = await window.electronAPI.fs.moveToMaterials(projectDir, unused)
       if (r.ok) {
+        // 素材置き場に同名が既にあった等で改名した分は、利用者に何が起きたか伝える
+        // （2026-09-04 実機の修理: 黙って別名になると「移動したはずなのに見当たらない」になる）。
+        const renamed = r.renamed ?? []
+        const renamedLines = renamed.slice(0, 3).map(x => `\n（同じ名前があったため改名: ${x.from} → ${x.to}）`).join('')
+        const renamedMore = renamed.length > 3 ? `\n（ほか ${renamed.length - 3} 件を改名）` : ''
         setNote(
           `✅ ${r.moved.length}件を『${MATERIALS_DIR}』へ移動しました`
+          + renamedLines + renamedMore
           + (r.snapshotOk ? '' : '\n⚠️ 🕘 履歴への退避ができませんでした（移動そのものは完了しています）')
         )
         await check(projectDir) // 動かした結果をその場で見せる
