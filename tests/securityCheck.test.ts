@@ -363,10 +363,17 @@ describe('セキュリティチェックの配線', () => {
     expect(s).not.toContain('sakura.chat')
   })
 
+  // 2026-09-04 Ryosuke 指摘A: 公開画面は番号付きの手順で並んでいるのに、この節だけ
+  // 無番号で浮いて見える。番号体系を持つ3画面（AppRun・HANAMII・Vercel）は stepNo を
+  // 渡し、番号体系の無い PublishModal（公開先選択）は渡さない（現状維持）。
+  // 呼び出しの形ごと一意に指す（掟10: 「どこかにある」だけでは直し忘れを捕まえられない）。
   it('公開フローの4経路すべてに 🛡 節が居る（AppRun・Vercel・HANAMII・レンタル）', () => {
-    for (const f of ['AppRunPanel.tsx', 'VercelPanel.tsx', 'HanamiiPanel.tsx', 'PublishModal.tsx']) {
-      expect(read(`src/renderer/components/${f}`)).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />')
-    }
+    expect(read('src/renderer/components/AppRunPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="④" />')
+    expect(read('src/renderer/components/HanamiiPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="③" />')
+    expect(read('src/renderer/components/VercelPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="②" />')
+    // PublishModal は番号体系の無い画面のため stepNo を渡さない（現状維持）
+    expect(read('src/renderer/components/PublishModal.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />')
+    expect(read('src/renderer/components/PublishModal.tsx')).not.toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo=')
   })
 
   it('公開時に自動では走らせない（2026-08-21 Ryosuke 指定。入口は手動の 🛡 節だけ）', () => {

@@ -283,7 +283,7 @@ import { decideLogAction, parseProvisioningState, pickLogStorageId, hasAppLogRou
 import { permissionsToCleanUp } from '../../shared/storageKeys'
 import { summarizePreflight, sortChecks, type PreflightCheck } from '../../shared/preflight'
 import {
-  localRefs, checkRefs, backgroundImageIssues, sizedClassNames, sizedImageClassNames,
+  localRefs, checkRefs, resolveRef, backgroundImageIssues, sizedClassNames, sizedImageClassNames,
   localLinks, hasViewportMeta, imgWithoutSizing, unusedImages, heavyImages, humanBytes,
   siteIssueNote, siteCheckSummary, fixInstruction, type SiteIssue, type SiteIssueKind,
 } from '../../shared/siteCheck'
@@ -1765,8 +1765,9 @@ function findSiteIssues(root: string): SiteIssue[] {
   for (const f of [...pages, ...styles]) {
     const text = read(f)
     const refs = localRefs(text)
-    for (const r of refs) referenced.add(r)
-    const { missing, miscased } = checkRefs(refs, files)
+    // 生のままでなく resolveRef で解決した値を登録する（サブフォルダの画像を「未使用」と誤検知しないため）
+    for (const r of refs) referenced.add(resolveRef(f, r))
+    const { missing, miscased } = checkRefs(refs, files, f)
     for (const m of missing) push('missing', f, m)
     for (const m of miscased) { push('miscased', f, `${m.ref} → ${m.actual}`); referenced.add(m.actual) }
     for (const b of backgroundImageIssues(text, sizedBg)) push('background', f, b)
@@ -1774,7 +1775,7 @@ function findSiteIssues(root: string): SiteIssue[] {
   for (const f of pages) {
     const html = read(f)
     const links = localLinks(html)
-    for (const l of checkRefs(links, files).missing) push('link', f, l)
+    for (const l of checkRefs(links, files, f).missing) push('link', f, l)
     if (!hasViewportMeta(html)) push('viewport', f, '')
     for (const i of imgWithoutSizing(html, sizedImg)) push('imgSize', f, i)
   }

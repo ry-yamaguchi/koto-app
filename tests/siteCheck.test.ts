@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  localRefs, checkRefs, backgroundImageIssues, sizedClassNames, sizedImageClassNames,
+  localRefs, checkRefs, resolveRef, backgroundImageIssues, sizedClassNames, sizedImageClassNames,
   localLinks, hasViewportMeta, imgWithoutSizing, unusedImages, heavyImages, humanBytes,
   siteIssueNote, siteCheckSummary, fixInstruction, aiFixable, type SiteIssue,
 } from '../src/shared/siteCheck'
@@ -53,6 +53,76 @@ describe('参照が実在するか', () => {
     const r = checkRefs(['images/Hero.jpg'], actual)
     expect(r.missing).toEqual([])
     expect(r.miscased).toEqual([{ ref: 'images/Hero.jpg', actual: 'images/hero.jpg' }])
+  })
+
+  // 2026-09-04 実機: fromFile を渡さない既存呼び出しは、これまでどおり生の ref で照合する
+  // （後方互換。この形が崩れると、fromFile を足していない他の呼び出しが壊れる）
+  it('★★ fromFile を渡さなければ従来どおり（後方互換）', () => {
+    const r = checkRefs(['app.js'], ['public/app.js'])
+    expect(r.missing).toEqual(['app.js'])
+  })
+})
+
+describe('resolveRef: 生の参照をプロジェクト相対へ解決する', () => {
+  // ── なぜ要るか（2026-09-04 実機・Ryosuke 報告）────────────────────────
+  // <project>/public/index.html が src="app.js" のように**自分と同じフォルダ**を
+  // 指しているのに、ファイル一覧は 'public/app.js' のように公開ルートからの相対で
+  // 渡ってくる。生の参照のまま突き合わせると一致せず、サブフォルダの HTML/CSS の
+  // 参照が軒並み「見つかりません」と誤検知していた。
+
+  it('★★ 同じフォルダ（index.html が同じフォルダの app.js を指す）', () => {
+    expect(resolveRef('public/index.html', 'app.js')).toBe('public/app.js')
+  })
+
+  it('★ ルート直下（これまで偶然通っていた形）', () => {
+    expect(resolveRef('index.html', 'app.js')).toBe('app.js')
+  })
+
+  it('★★ 親フォルダへ（../ で1段上がる）', () => {
+    expect(resolveRef('public/sub/a.html', '../style.css')).toBe('public/style.css')
+  })
+
+  it('★★ ルート絶対（先頭の / はルートからの意味。除いた形を返す）', () => {
+    expect(resolveRef('public/index.html', '/logo.png')).toBe('logo.png')
+  })
+
+  it('★ ./ は無視する', () => {
+    expect(resolveRef('public/index.html', './app.js')).toBe('public/app.js')
+  })
+
+  it('★★ 上に抜けようとしてもルート止まり（安全側）', () => {
+    expect(resolveRef('a.html', '../../x')).toBe('x')
+  })
+
+  it('★ 深い階層でも、../ の数だけ正しく上がる', () => {
+    expect(resolveRef('a/b/c/d.html', '../../x.png')).toBe('a/x.png')
+  })
+})
+
+describe('checkRefs: fromFile を渡すとサブフォルダの参照も解決する', () => {
+  // 2026-09-04 実機の再現そのもの: <project>/public/server.js が
+  // express.static(__dirname+'/public') を配信し、public/public/{index.html,app.js,style.css}
+  // が実在。index.html は href="style.css" src="app.js" と**同じフォルダ**を指している。
+  it('★★ 実機の再現: fromFile を渡せば誤検知しない', () => {
+    const refs = ['app.js', 'style.css']
+    const actual = ['public/index.html', 'public/app.js', 'public/style.css']
+    const r = checkRefs(refs, actual, 'public/index.html')
+    expect(r.missing).toEqual([])
+  })
+
+  it('★★ fromFile を渡さないと、この再現では誤って「見つかりません」になる（修理前の症状）', () => {
+    const refs = ['app.js', 'style.css']
+    const actual = ['public/index.html', 'public/app.js', 'public/style.css']
+    const r = checkRefs(refs, actual)
+    expect(r.missing).toEqual(['app.js', 'style.css'])
+  })
+
+  it('★★ fromFile 付きでも、大文字小文字違いは miscased として拾える', () => {
+    const refs = ['App.js']
+    const actual = ['public/index.html', 'public/app.js']
+    const r = checkRefs(refs, actual, 'public/index.html')
+    expect(r.missing).toEqual([])
+    expect(r.miscased).toEqual([{ ref: 'App.js', actual: 'public/app.js' }])
   })
 })
 
@@ -468,5 +538,40 @@ describe('重い画像は使われているものだけ', () => {
 
   it('★★ 公開前チェックも、参照されている画像だけを見る', () => {
     expect(cloud).toContain('heavyImages(sizes, Array.from(referenced))')
+  })
+})
+
+// ── サブフォルダの参照が誤検知される（2026-09-04 実機・Ryosuke 報告）────────
+// files は公開ルートからの相対（'public/app.js'）だが、HTML/CSS から抜いた生の
+// 参照は 'app.js' のまま。checkRefs に fromFile を渡さずに突き合わせると、
+// ルート直下の HTML だけ偶然通り、サブフォルダの HTML/CSS の参照は軒並み
+// 「見つかりません」になる。この誤検知を見て「AIに修正させる」を押すと、
+// **正しいコードを AI が壊す**ため実害が大きい。cloud.ts の呼び出しの形そのものを固定する。
+describe('公開前チェックは fromFile を渡して参照を解決する（配線）', () => {
+  const raw = readFileSync(join(__dirname, '..', 'src/main/ipc/cloud.ts'), 'utf-8')
+  // コメントでの言及だけを拾って誤検知しないよう、コメント行を除く。
+  const cloud = raw.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n')
+
+  it('★★ ファイル参照（img/link要素・url()）の checkRefs は fromFile 付きで呼ぶ', () => {
+    expect(cloud).toContain('checkRefs(refs, files, f)')
+  })
+
+  it('★★ ページ内リンクの checkRefs も fromFile 付きで呼ぶ', () => {
+    expect(cloud).toContain('checkRefs(links, files, f).missing')
+  })
+
+  it('★★ 旧形（fromFile なし）の呼び出しは残っていない（実機の誤検知そのもの）', () => {
+    expect(cloud).not.toContain('checkRefs(refs, files)')
+    expect(cloud).not.toContain('checkRefs(links, files)')
+  })
+
+  it('★★ referenced への登録は、生の参照ではなく resolveRef で解決した値（サブフォルダの画像を「未使用」と誤検知しない）', () => {
+    expect(cloud).toContain('referenced.add(resolveRef(f, r))')
+    expect(cloud).not.toContain('for (const r of refs) referenced.add(r)')
+  })
+
+  it('★ resolveRef を shared/siteCheck から import している', () => {
+    expect(cloud).toContain("resolveRef")
+    expect(raw).toMatch(/import \{[^}]*resolveRef[^}]*\} from '\.\.\/\.\.\/shared\/siteCheck'/)
   })
 })

@@ -11,7 +11,9 @@ import { MATERIALS_DIR } from '../../shared/publishExclude'
 //
 // **移動するのは AI ではなく Koto の機能。** 利用者が一覧を確認して押すと、
 // 素材置き場（MATERIALS_DIR）へ移す。移す前に 🕘 履歴へ退避してから動かすので、押しても戻せる。
-export default function UnusedFilesSection({ projectDir }: { projectDir: string }) {
+// stepNo: 呼び出し元の画面の番号体系に乗せるための見出し番号（例 '⑤'）。
+// 渡されなければ従来どおり番号なし（PublishModal は番号体系を持たない画面のため未指定・2026-09-04 Ryosuke 指摘）。
+export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir: string; stepNo?: string }) {
   const [supported, setSupported] = useState(true)
   const [unused, setUnused] = useState<string[]>([])
   const [moving, setMoving] = useState(false)
@@ -34,10 +36,10 @@ export default function UnusedFilesSection({ projectDir }: { projectDir: string 
     if (projectDir) void check(projectDir)
   }, [projectDir, check])
 
-  // 対象外（静的サイト以外）のときだけ出さない（出しても行動できない箱になるため）。
-  // 0件でも節は**常時表示**する（2026-09-04 Ryosuke 要望）: 出ないと「確認した上で
-  // 問題なし」なのか「機能が働いていない」のか利用者に区別が付かない。
-  if (!supported) return null
+  // 2026-09-04 Ryosuke: 節ごと消すのは常時表示の趣旨に反する（出ない＝壊れている
+  // ように見える）。対象外なら**対象外だと書く**。
+  // 実機（Express アプリ）で「節が出ない＝壊れている？」と受け取られたため、
+  // supported が false でも節そのものは描画し、理由を出す（移動ボタンだけ出さない）。
 
   const move = async () => {
     const head = unused.slice(0, 8).map(f => `・${f}`).join('\n')
@@ -72,8 +74,13 @@ export default function UnusedFilesSection({ projectDir }: { projectDir: string 
 
   return (
     <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-      <p className="text-sm font-semibold text-ink">🧹 使われていないファイルの確認</p>
-      {unused.length === 0 ? (
+      <p className="text-sm font-semibold text-ink">{stepNo ? `${stepNo} ` : ''}🧹 使われていないファイルの確認</p>
+      {!supported ? (
+        // 対象外（静的サイト以外）。理由まで書く（何も出さないと「壊れている」と区別が付かない）。
+        <p className="text-xs text-ink-secondary leading-relaxed">
+          ⚠️ このプロジェクトは静的サイトではないため、まだ確認できません（いまは静的サイトのみ対応しています。Node や PHP はプログラムが実行時にファイル名を組み立てることがあり、誤って「使われていない」と言ってしまう恐れがあるためです）。
+        </p>
+      ) : unused.length === 0 ? (
         <p className="text-xs text-ink-secondary">✅ すべてのファイルが、どこかのページ・コードから使われています。</p>
       ) : (
         <>
@@ -87,7 +94,7 @@ export default function UnusedFilesSection({ projectDir }: { projectDir: string 
         </>
       )}
       {note && <p className="text-xs text-ink whitespace-pre-wrap select-text">{note}</p>}
-      {unused.length > 0 && (
+      {supported && unused.length > 0 && (
         <button
           onClick={() => { void move() }}
           disabled={moving}

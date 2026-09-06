@@ -244,13 +244,13 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
       {/* 🔰 初めて公開する方へ */}
       {token && <VercelFirstTimeGuide />}
 
-      {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
-      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
+      {/* ② セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="②" />
 
-      {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
-      <UnusedFilesSection projectDir={projectDir} />
+      {/* ③ 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
+      <UnusedFilesSection projectDir={projectDir} stepNo="③" />
 
-      {/* ② 公開 */}
+      {/* ④ 公開 */}
         {/* 公開できるかの確認。**駄目なものには「どうすればよいか」まで書く**
             （AppRun の cloud:preflight と同じ流儀・2026-08-15） */}
         {preflight && (
@@ -295,7 +295,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
 
       {token && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-          <p className="text-sm font-semibold text-ink">② 公開</p>
+          <p className="text-sm font-semibold text-ink">④ 公開</p>
           <div>
             <label className="text-[11px] font-medium text-ink-secondary">公開名（半角英数字とハイフン・任意）</label>
             <input

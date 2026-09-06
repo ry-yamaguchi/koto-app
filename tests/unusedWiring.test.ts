@@ -134,16 +134,67 @@ describe('UI: 4パネルへの埋め込み（SecurityCheckSection の隣・同�
     expect(raw(file)).toContain("import UnusedFilesSection from './UnusedFilesSection'")
   })
 
-  it.each(PANELS)('%s で <UnusedFilesSection projectDir={projectDir} /> を、SecurityCheckSection の直後に描画している', (file) => {
+  // 2026-09-04 Ryosuke 指摘A: 公開画面は番号付きの手順で並んでいるのに、この2節だけ
+  // 無番号で浮いて見える。番号体系を持つ3画面（AppRun・HANAMII・Vercel）は stepNo を
+  // 渡し、番号体系の無い PublishModal（公開先選択）は渡さない（現状維持）。
+  // 呼び出しの形ごと一意に指す（掟10: 「どこかにある」だけでは直し忘れを捕まえられない）。
+  const CALLS: Record<string, { sec: string; unused: string }> = {
+    'src/renderer/components/PublishModal.tsx': {
+      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />',
+      unused: '<UnusedFilesSection projectDir={projectDir} />',
+    },
+    'src/renderer/components/AppRunPanel.tsx': {
+      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="④" />',
+      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="⑤" />',
+    },
+    'src/renderer/components/HanamiiPanel.tsx': {
+      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="③" />',
+      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="④" />',
+    },
+    'src/renderer/components/VercelPanel.tsx': {
+      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="②" />',
+      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="③" />',
+    },
+  }
+
+  it.each(PANELS)('%s で UnusedFilesSection を、その画面の番号体系に合わせて SecurityCheckSection の直後に描画している', (file) => {
     const src = raw(file)
-    const secAt = src.indexOf('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />')
-    const unusedAt = src.indexOf('<UnusedFilesSection projectDir={projectDir} />')
+    const { sec, unused } = CALLS[file]
+    const secAt = src.indexOf(sec)
+    const unusedAt = src.indexOf(unused)
     expect(secAt).toBeGreaterThan(-1)
     expect(unusedAt).toBeGreaterThan(-1)
     // 間に別のセクションを挟んでいない（すぐ隣であること）。150文字あれば
     // コメント＋空行を挟んでも十分で、次のセクション本体までは届かない幅。
     expect(unusedAt - secAt).toBeLessThan(150)
     expect(unusedAt).toBeGreaterThan(secAt)
+  })
+
+  // PublishModal は番号体系の無い画面のため stepNo を渡さない（現状維持）。
+  it('PublishModal は SecurityCheckSection / UnusedFilesSection に stepNo を渡していない', () => {
+    const src = raw('src/renderer/components/PublishModal.tsx')
+    expect(src).not.toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo=')
+    expect(src).not.toContain('<UnusedFilesSection projectDir={projectDir} stepNo=')
+  })
+})
+
+describe('UI: 公開・破棄まわりの見出し番号（2026-09-04 付番。指摘Aで①②③に続きをずらした）', () => {
+  it('AppRunPanel: ⑥ 公開・破棄（旧「④ 公開・破棄」は残っていない）', () => {
+    const s = raw('src/renderer/components/AppRunPanel.tsx')
+    expect(s).toContain('⑥ 公開・破棄')
+    expect(s).not.toContain('④ 公開・破棄')
+  })
+
+  it('HanamiiPanel: ⑤ 公開（旧「③ 公開」は残っていない）', () => {
+    const s = raw('src/renderer/components/HanamiiPanel.tsx')
+    expect(s).toContain('⑤ 公開')
+    expect(s).not.toContain('③ 公開')
+  })
+
+  it('VercelPanel: ④ 公開（旧「② 公開」は残っていない）', () => {
+    const s = raw('src/renderer/components/VercelPanel.tsx')
+    expect(s).toContain('④ 公開')
+    expect(s).not.toContain('② 公開')
   })
 })
 
@@ -154,12 +205,25 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     expect(src()).toContain('className="rounded-xl border border-line bg-surface p-4 space-y-3"')
   })
 
-  it('非対応（静的サイト以外）のときだけ何も描画しない。0件でも節は常時表示する（2026-09-04 Ryosuke 要望）', () => {
-    expect(src()).toContain('if (!supported) return null')
-    // 0件で消える旧形へ戻さない（常時表示: 「確認した上で問題なし」が利用者に見えること）
-    expect(src()).not.toContain('if (!supported || unused.length === 0) return null')
-    expect(src()).toContain('✅ すべてのファイルが、どこかのページ・コードから使われています。')
-    expect(src()).toContain('🧹 使われていないファイルの確認')
+  // 2026-09-04 Ryosuke 指摘B: 非対応（静的サイト以外）のときに節ごと消えると、
+  // 「動いていないのか、検知できていないのか」利用者に区別が付かない（実機のExpress
+  // アプリで「節が出ない＝壊れている？」と受け取られた）。節は常に描画し、対象外なら
+  // 理由を書く（移動ボタンだけ出さない）。
+  it('非対応（静的サイト以外）でも節ごと消さず、理由を書いて表示する。0件でも常時表示（2026-09-04 Ryosuke 要望）', () => {
+    const s = src()
+    // 旧形（節ごと消す）へ戻さない
+    expect(s).not.toContain('if (!supported) return null')
+    expect(s).not.toContain('if (!supported || unused.length === 0) return null')
+    // 対象外のときの理由文
+    expect(s).toContain('静的サイトではないため')
+    expect(s).toContain('⚠️')
+    // 0件のときの表示は従来どおり
+    expect(s).toContain('✅ すべてのファイルが、どこかのページ・コードから使われています。')
+    expect(s).toContain('🧹 使われていないファイルの確認')
+    // 対象外のときは移動ボタンを出さない（対象が無いので押せる必要が無い）。
+    // ボタンの描画条件が supported を含むことで固定する（対象外では出ない）。
+    expect(s).toContain('素材置き場へ移動')
+    expect(s).toContain('{supported && unused.length > 0 && (')
   })
 
   it('ファイル名一覧は最初から表示する（隠さない・折りたたみが無い）', () => {

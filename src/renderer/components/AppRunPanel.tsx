@@ -1093,15 +1093,15 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         {plan && <PlanView plan={plan} />}
       </section>
 
-      {/* ③′ セキュリティチェック（事前チェックの次・2026-08-21 Ryosuke 指定） */}
-      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
+      {/* ④ セキュリティチェック（事前チェックの次・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="④" />
 
-      {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
-      <UnusedFilesSection projectDir={projectDir} />
+      {/* ⑤ 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
+      <UnusedFilesSection projectDir={projectDir} stepNo="⑤" />
 
-      {/* ④ 公開・破棄（apply / teardown） */}
+      {/* ⑥ 公開・破棄（apply / teardown） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-        <p className="text-sm font-semibold text-ink">④ 公開・破棄</p>
+        <p className="text-sm font-semibold text-ink">⑥ 公開・破棄</p>
 
         {/* ビルド方式の切替（プロジェクトからビルドするとき） */}
         {needsPrereqs && (
@@ -1356,11 +1356,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         )}
       </section>
 
-      {/* ⑤ 限定公開（アクセス制限／IP制限）- デプロイ済みのときだけ表示 */}
+      {/* ⑦ 限定公開（アクセス制限／IP制限）- デプロイ済みのときだけ表示（番号は2026-09-04 付番） */}
       {appUrl && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-ink">⑤ 限定公開（アクセス制限）</p>
+            <p className="text-sm font-semibold text-ink">⑦ 限定公開（アクセス制限）</p>
             <button
               onClick={refreshAccessLimit}
               disabled={limitLoading}

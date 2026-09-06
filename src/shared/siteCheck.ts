@@ -79,14 +79,48 @@ export function localRefs(text: string): string[] {
 }
 
 /**
+ * 生の参照（HTML/CSS に書かれたそのままの文字列）を、プロジェクト相対パスへ解決する（純関数）。
+ *
+ * ── なぜ要るか（2026-09-04 実機・Ryosuke 報告）────────────────────────
+ * `<project>/public/index.html` が `src="app.js"` のように**自分と同じフォルダ**
+ * を指しているのに、ファイル一覧は公開ルートからの相対（`public/app.js`）で
+ * 渡ってくる。生の参照 `app.js` をそのまま突き合わせると一致せず、
+ * **サブフォルダにある HTML/CSS の参照が軒並み「見つかりません」と誤検知**していた。
+ * ルート直下の HTML だけは `fromFile` のディレクトリが空になるため偶然一致し、
+ * 気づかれずに残っていた。
+ *
+ * @param fromFile 参照を書いていたファイルの、公開ルートからの相対パス（例 'public/index.html'）
+ * @param ref HTML/CSS から抜いた生の参照（例 'app.js'・'../style.css'・'/logo.png'）
+ * @returns スラッシュ区切りのプロジェクト相対パス。上に抜けようとしてもルート止まり（安全側）
+ */
+export function resolveRef(fromFile: string, ref: string): string {
+  const raw = String(ref ?? '')
+  const isAbsolute = raw.startsWith('/')
+  // ルート絶対なら基点は空（ルート）、そうでなければ fromFile のディレクトリが基点
+  const base = isAbsolute ? [] : String(fromFile ?? '').split('/').filter(Boolean).slice(0, -1)
+  const parts = (isAbsolute ? raw.slice(1) : raw).split('/')
+  const stack = [...base]
+  for (const seg of parts) {
+    if (seg === '' || seg === '.') continue // 空要素（連続スラッシュ）・'./' は無視
+    if (seg === '..') { if (stack.length > 0) stack.pop(); continue } // 上に抜けようとしてもルート止まり
+    stack.push(seg)
+  }
+  return stack.join('/')
+}
+
+/**
  * 参照が実在するか（純関数）。
  *
  * **大文字小文字まで見る。** macOS では通り、公開先（Linux）でだけ 404 になる
  * ため、手元では絶対に気づけない。
  *
  * @param actual プロジェクトにある全ファイル（プロジェクト相対パス）
+ * @param fromFile 参照を書いていたファイルの、公開ルートからの相対パス。渡すと `resolveRef`
+ *   で解決した形で照合する（2026-09-04 実機: サブフォルダの参照は生のままだと一致しない）。
+ *   **省略時は従来どおり**（生の ref をそのまま照合。既存呼び出しの互換のため）。
+ *   missing / miscased.ref には**元の生の参照**を入れる（利用者には書いたとおりに見せる）。
  */
-export function checkRefs(refs: readonly string[], actual: readonly string[]): {
+export function checkRefs(refs: readonly string[], actual: readonly string[], fromFile?: string): {
   missing: string[]
   miscased: Array<{ ref: string; actual: string }>
 } {
@@ -96,8 +130,9 @@ export function checkRefs(refs: readonly string[], actual: readonly string[]): {
   const missing: string[] = []
   const miscased: Array<{ ref: string; actual: string }> = []
   for (const ref of refs) {
-    if (exact.has(ref)) continue
-    const same = lower.get(ref.toLowerCase())
+    const key = fromFile ? resolveRef(fromFile, ref) : ref
+    if (exact.has(key)) continue
+    const same = lower.get(key.toLowerCase())
     if (same) miscased.push({ ref, actual: same })
     else missing.push(ref)
   }

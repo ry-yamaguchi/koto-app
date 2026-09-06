@@ -560,16 +560,16 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         </section>
       )}
 
-      {/* 🛡 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定） */}
-      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
+      {/* ③ セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="③" />
 
-      {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
-      <UnusedFilesSection projectDir={projectDir} />
+      {/* ④ 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
+      <UnusedFilesSection projectDir={projectDir} stepNo="④" />
 
-      {/* ③ 公開 */}
+      {/* ⑤ 公開 */}
       {token && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-          <p className="text-sm font-semibold text-ink">③ 公開</p>
+          <p className="text-sm font-semibold text-ink">⑤ 公開</p>
           <div>
             <label className="text-[11px] font-medium text-ink-secondary">公開名（半角英数字とハイフン・任意）</label>
             <input

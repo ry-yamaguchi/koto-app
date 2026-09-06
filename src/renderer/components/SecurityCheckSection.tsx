@@ -7,7 +7,9 @@ import CopyButton from './CopyButton'
 //
 // 実体は公開直前の自動チェックと同じ runSecurityCheck ただ1つ（掟10）。
 // どの公開先（AppRun / Vercel / HANAMII / レンタルサーバ）でも、この同じ部品を使う。
-export default function SecurityCheckSection({ projectDir, apiKey }: { projectDir: string; apiKey: string }) {
+// stepNo: 呼び出し元の画面の番号体系に乗せるための見出し番号（例 '④'）。
+// 渡されなければ従来どおり番号なし（PublishModal は番号体系を持たない画面のため未指定・2026-09-04 Ryosuke 指摘）。
+export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { projectDir: string; apiKey: string; stepNo?: string }) {
   const [checking, setChecking] = useState(false)
   // 実況: 何をしているか（時間がかかるので、無言で待たせない・2026-08-21 Ryosuke 指摘）
   const [progress, setProgress] = useState('')
@@ -45,7 +47,7 @@ export default function SecurityCheckSection({ projectDir, apiKey }: { projectDi
   return (
     <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-ink">🛡 簡易セキュリティチェック</p>
+        <p className="text-sm font-semibold text-ink">{stepNo ? `${stepNo} ` : ''}🛡 簡易セキュリティチェック</p>
         <button
           onClick={() => { void run() }}
           disabled={checking}
