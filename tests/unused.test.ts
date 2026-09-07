@@ -50,25 +50,31 @@ function write(rel: string, content = 'x'): void {
 const exists = (rel: string) => fs.existsSync(path.join(dir, rel))
 const read = (rel: string) => fs.readFileSync(path.join(dir, rel), 'utf-8')
 
-describe('checkUnusedFiles: 対応範囲（静的サイトのみ）', () => {
-  it('静的サイト（package.json 無し）は supported:true で未使用ファイルを返す', () => {
+describe('checkUnusedFiles: 対応範囲（roadmap #22・静的サイト／Node／PHP）', () => {
+  it('静的サイト（package.json 無し）は supported:true・runtime:static で未使用ファイルを返す', () => {
     write('index.html', '<a href="menu.html">メニュー</a>')
     write('menu.html', '<p>メニュー</p>')
     write('old.html', '<p>古い</p>') // どこからも参照されていない
     const r = checkUnusedFiles(dir)
     expect(r.supported).toBe(true)
+    expect(r.runtime).toBe('static')
     expect(r.unused).toContain('old.html')
     expect(r.unused).not.toContain('menu.html')
     expect(r.unused).not.toContain('index.html') // ALWAYS_USED
   })
 
-  it('Node アプリ（package.json + server.js）は supported:false（第一段は静的サイト限定）', () => {
+  it('Node アプリ（package.json + server.js）は supported:true・runtime:dynamic で検出する（roadmap #22で対象外を廃止）', () => {
     write('package.json', JSON.stringify({ scripts: { start: 'node server.js' } }))
     write('server.js', 'require("http").createServer().listen(3000)')
-    write('old.html', '<p>古い</p>')
+    write('old.html', '<p>古い</p>') // どこからも参照されていない
     const r = checkUnusedFiles(dir)
-    expect(r.supported).toBe(false)
-    expect(r.unused).toEqual([])
+    expect(r.supported).toBe(true)
+    expect(r.runtime).toBe('dynamic')
+    expect(r.unused).toContain('old.html')
+    // package.json は NODE_ALWAYS_USED_RE で守られ、未使用に出ない
+    expect(r.unused).not.toContain('package.json')
+    // server.js は package.json の scripts.start（文字列）から参照が見つかるため未使用に出ない
+    expect(r.unused).not.toContain('server.js')
   })
 
   it('public/ があれば、その中を根として見る（resolvePublishRoot と同じ判断）', () => {
@@ -78,18 +84,71 @@ describe('checkUnusedFiles: 対応範囲（静的サイトのみ）', () => {
     write('public/old.html', '<p>古い</p>')
     const r = checkUnusedFiles(dir)
     expect(r.supported).toBe(true)
+    expect(r.runtime).toBe('static')
     expect(r.unused).toEqual(['old.html']) // public/ からの相対パスで返る
   })
 
-  it('存在しないプロジェクトフォルダは supported:false（例外を投げない）', () => {
+  it('存在しないプロジェクトフォルダは supported:true（例外を投げない）', () => {
     const r = checkUnusedFiles(path.join(dir, 'no-such-dir'))
     expect(r.supported).toBe(true) // package.json が読めない＝静的として扱う
+    expect(r.runtime).toBe('static')
     expect(r.unused).toEqual([])
   })
 
   it('絶対パスでない projectDir は supported:false', () => {
     const r = checkUnusedFiles('not-absolute')
-    expect(r).toEqual({ supported: false, unused: [] })
+    expect(r).toEqual({ supported: false, unused: [], runtime: 'static' })
+  })
+})
+
+describe('checkUnusedFiles: 実機の再現（Express アプリ・roadmap #22・2026-09-06）', () => {
+  // 実機（/Users/r-yamaguchi/SAKURAIDE/ScheduleAPP）の構成をそのまま再現する:
+  //   Koto の公開の根（<project>/public/）の中に Express アプリ本体
+  //   （server.js・package.json・package-lock.json・README.md・Dockerfile）があり、
+  //   さらにその中に、そのアプリが express.static() で配信する静的フォルダ
+  //   （たまたま同じ名前の public/）があって、そこに test001・test002 が紛れ込んでいる。
+  // 「express.static() の配下を丸ごと使用中扱いにする」案は採らない（実測で否定済み。
+  // 静的配信ディレクトリの中こそ test001/test002 のような未参照ファイルが溜まる場所）。
+  function writeExpressApp() {
+    write('public/package.json', JSON.stringify({
+      name: 'scheduleapp',
+      main: 'server.js',
+      scripts: { start: 'node server.js' },
+      dependencies: { express: '^4.19.2' },
+    }))
+    write('public/package-lock.json', '{}')
+    write('public/README.md', '# アプリの説明')
+    write('public/Dockerfile', 'FROM node:20\nCOPY . .\nCMD ["node", "server.js"]')
+    write('public/server.js', "const express = require('express')\nexpress().listen(3000)")
+    write('public/public/index.html', '<link rel="stylesheet" href="style.css"><script src="app.js"></script>')
+    write('public/public/app.js', 'console.log("app")')
+    write('public/public/style.css', 'body { color: red; }')
+    write('public/public/test001', 'どこからも参照されていない')
+    write('public/public/test002', 'これも参照されていない')
+  }
+
+  it('test001・test002 だけが未使用として出て、package.json 等は出ない。runtime:dynamic', () => {
+    writeExpressApp()
+    const r = checkUnusedFiles(dir)
+    expect(r.supported).toBe(true)
+    expect(r.runtime).toBe('dynamic')
+    expect(r.unused.sort()).toEqual(['public/test001', 'public/test002'])
+  })
+})
+
+describe('checkUnusedFiles: PHP プロジェクト（roadmap #22）', () => {
+  it('.php は URLで直接叩かれうるため、参照が無くても未使用に出ない。composer.json も守られる', () => {
+    write('composer.json', JSON.stringify({ require: {} }))
+    write('index.php', '<?php echo "top"; ?>')
+    write('app/models/User.php', '<?php class User {} ?>') // どこからも require/include されない
+    write('images/unused.png', 'バイナリのふり') // 孤立ファイル（.php ではない）
+    const r = checkUnusedFiles(dir)
+    expect(r.supported).toBe(true)
+    expect(r.runtime).toBe('dynamic')
+    expect(r.unused).not.toContain('composer.json')
+    expect(r.unused).not.toContain('index.php')
+    expect(r.unused).not.toContain('app/models/User.php')
+    expect(r.unused).toContain('images/unused.png') // .php ではない孤立ファイルは従来どおり検出する
   })
 })
 

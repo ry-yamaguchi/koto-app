@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
+import type { UnusedRuntime } from '../../shared/unusedFiles'
 
 // 🧹 未使用ファイルの節（roadmap #18）。公開フローの4パネル（PublishModal / AppRunPanel /
 // HanamiiPanel / VercelPanel）に、SecurityCheckSection と同じ位置へ並べて埋め込む。
@@ -16,6 +17,7 @@ import { MATERIALS_DIR } from '../../shared/publishExclude'
 export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir: string; stepNo?: string }) {
   const [supported, setSupported] = useState(true)
   const [unused, setUnused] = useState<string[]>([])
+  const [runtime, setRuntime] = useState<UnusedRuntime>('static')
   const [moving, setMoving] = useState(false)
   const [note, setNote] = useState<string | null>(null)
 
@@ -24,6 +26,7 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
       const r = await window.electronAPI.fs.unusedCheck(dir)
       setSupported(r.supported)
       setUnused(r.unused)
+      setRuntime(r.runtime)
     } catch {
       setSupported(false)
       setUnused([])
@@ -37,9 +40,13 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
   }, [projectDir, check])
 
   // 2026-09-04 Ryosuke: 節ごと消すのは常時表示の趣旨に反する（出ない＝壊れている
-  // ように見える）。対象外なら**対象外だと書く**。
+  // ように見える）。
   // 実機（Express アプリ）で「節が出ない＝壊れている？」と受け取られたため、
   // supported が false でも節そのものは描画し、理由を出す（移動ボタンだけ出さない）。
+  // 2026-09-06（roadmap #22）: Node/PHP も検出できるようになったため、対象外の理由は
+  // 「projectDir が不正（プロジェクト未選択など）」だけになった。代わりに runtime が
+  // 'dynamic' のときは、動的な参照は文字列出現だけでは追い切れないという但し書きを
+  // 一覧の上に出す（0件のときは出す対象が無いので不要）。
 
   const move = async () => {
     const head = unused.slice(0, 8).map(f => `・${f}`).join('\n')
@@ -76,15 +83,22 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
     <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
       <p className="text-sm font-semibold text-ink">{stepNo ? `${stepNo} ` : ''}🧹 使われていないファイルの確認</p>
       {!supported ? (
-        // 対象外（静的サイト以外）。理由まで書く（何も出さないと「壊れている」と区別が付かない）。
+        // 対象外（projectDir が不正）。理由まで書く（何も出さないと「壊れている」と区別が付かない）。
         <p className="text-xs text-ink-secondary leading-relaxed">
-          ⚠️ このプロジェクトは静的サイトではないため、まだ確認できません（いまは静的サイトのみ対応しています。Node や PHP はプログラムが実行時にファイル名を組み立てることがあり、誤って「使われていない」と言ってしまう恐れがあるためです）。
+          ⚠️ いまは確認できません（プロジェクトが選ばれていない可能性があります）。
         </p>
       ) : unused.length === 0 ? (
         <p className="text-xs text-ink-secondary">✅ すべてのファイルが、どこかのページ・コードから使われています。</p>
       ) : (
         <>
           <p className="text-xs text-ink">使われていないかもしれないファイルが {unused.length} 件あります</p>
+          {runtime === 'dynamic' && (
+            // Node/PHP 等はプログラムが実行時にファイル名を組み立てることがあり、
+            // 文字列の出現だけでは追い切れない（roadmap #22・2026-09-06）。
+            <p className="text-[11px] text-ink-muted leading-relaxed">
+              ⚠️ このプロジェクトはプログラムが動くタイプです。実行時にファイル名を組み立てている場合、実際は使っているファイルが「使われていない」と出ることがあります。移動する前に一覧をご確認ください（🕘 元に戻すで戻せます）。
+            </p>
+          )}
           <p className="text-[11px] text-ink-muted leading-relaxed">
             どのページ・コードからも名前が参照されていないファイルです。素材置き場（公開されません）へ移動できます。🕘 元に戻すで戻せます
           </p>

@@ -32,8 +32,49 @@
 // 外部のクローラーが決まった名前で直接読みにくる」正当なファイル。こうした慣習ファイルは
 // 種類が有限なので、利用者に「外部利用マーク」のような新しい概念を課すのではなく、
 // この許可リストで吸収する（Ryosuke と合意）。
+//
+// 2026-09-06 追加（roadmap #22・Node/PHP への対応で判明）: README.md / LICENSE /
+// CHANGELOG.md。実機の Express アプリで未使用判定を実測したところ、これらも
+// 「参照が無い」という理由で未使用に出た。だがどの種類のプロジェクトでも
+// 「説明のために置く」慣習ファイルで、コードから参照されないのが普通なので、
+// ランタイム別の守り（NODE_ALWAYS_USED_RE 等）ではなく共通側で守る。
 export const ALWAYS_USED_RE =
-  /(^|\/)(index\.html|404\.html|favicon\.ico|robots\.txt|sitemap\.xml|manifest\.json|apple-touch-icon[^/]*|og[^/]*\.(?:png|jpe?g)|CNAME|\.htaccess|nginx\.conf|Dockerfile|\.dockerignore|ads\.txt|app-ads\.txt|google[0-9a-z]+\.html|BingSiteAuth\.xml)$|(^|\/)\.well-known\//i
+  /(^|\/)(index\.html|404\.html|favicon\.ico|robots\.txt|sitemap\.xml|manifest\.json|apple-touch-icon[^/]*|og[^/]*\.(?:png|jpe?g)|CNAME|\.htaccess|nginx\.conf|Dockerfile|\.dockerignore|ads\.txt|app-ads\.txt|google[0-9a-z]+\.html|BingSiteAuth\.xml|README\.md|LICENSE|CHANGELOG\.md)$|(^|\/)\.well-known\//i
+
+/** 実行環境の種類。'dynamic' はプログラムが動くもの（Node/PHP 等）。 */
+export type UnusedRuntime = 'static' | 'dynamic'
+
+/**
+ * Node アプリで、参照が無くても絶対に動かしてはいけないファイル。
+ *
+ * ── なぜ要るか（2026-09-06 実機で判明・roadmap #22） ──────────────────────
+ * 静的サイト限定の制限を外せるか確かめるため、実機の Express アプリ
+ * （server.js + package.json + package-lock.json + README.md + Dockerfile +
+ * public/{index.html,app.js,style.css,test001,test002}）で findUnusedFiles を
+ * そのまま流したところ、**package.json・package-lock.json まで「未使用」と判定した**
+ * （どちらもコードから文字列として参照されることが無いため）。この2つを素材置き場へ
+ * 移すと npm/node がそれを見つけられず**アプリが起動しなくなる**。
+ *
+ * なお「express.static() の引数の配下を丸ごと使用中扱いにする」案は採らない
+ * （roadmap にはそう書いてあったが実測で否定した）。静的配信ディレクトリの中こそ
+ * test001/test002 のような参照されないファイルが溜まる場所であり、丸ごと使用中に
+ * すると何も検出できなくなる。守るべきは**サーバー側の必須ファイル**であって、
+ * 配信ディレクトリの中身ではない。
+ */
+export const NODE_ALWAYS_USED_RE =
+  /(^|\/)(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|tsconfig[^/]*\.json|\.npmrc|\.nvmrc|Procfile)$|(^|\/)node_modules\//i
+
+/**
+ * PHP で同上。
+ *
+ * **.php はすべて守る。** PHP は Apache/Nginx が URL のパスをそのままファイルへ
+ * 対応させて直接実行するのが普通で、コードのどこからも「ファイル名として」参照
+ * されないページ（例: 誰かが直接 `/about.php` を開くだけ）が正当に存在する。
+ * 参照が無いことをもって未使用と言うと安全側に倒れないため、拡張子ごと除外する
+ * （＝安全側）。`.htaccess` は共通側（ALWAYS_USED_RE）に既にあるため重複させない。
+ */
+export const PHP_ALWAYS_USED_RE =
+  /(^|\/)(composer\.json|composer\.lock)$|\.php$/i
 
 /** 中身を「参照コーパス」に使うテキスト系の拡張子（バイナリは読まない）。 */
 const TEXT_EXTS = new Set([
@@ -78,11 +119,17 @@ function referenceForms(rel: string): string[] {
  * @param files    候補ファイル（プロジェクト相対パス。走査済みの一覧をそのまま渡す）
  * @param readText テキスト系ファイルの中身を返す（読めない・バイナリ等は null）。
  *                 呼び出し側（IO）が実際の読み込みを行う。
+ * @param opts.extraAlwaysUsed 呼び出し側が追加する「常に使用中」の正規表現
+ *   （roadmap #22・2026-09-06 追加）。ALWAYS_USED_RE と同じ扱いで、マッチしたファイルは
+ *   参照の有無を見ずにスキップする。Node/PHP など、実行環境ごとに守るべきファイルが
+ *   違う場合に呼び出し側（main/ipc/unused.ts）が NODE_ALWAYS_USED_RE 等を渡す。
+ *   **省略時は完全に従来どおり**（後方互換）。
  * @returns 未使用と判定したファイル（`files` の並び順を保つ）
  */
 export function findUnusedFiles(
   files: readonly string[],
   readText: (rel: string) => string | null,
+  opts?: { extraAlwaysUsed?: RegExp },
 ): string[] {
   // 参照コーパスはファイルごとに持つ（1本の文字列へ結合しない）。
   // **自分自身の中身は、自分の使用判定に使わない**（自分の名前を含むコメント等で
@@ -99,6 +146,7 @@ export function findUnusedFiles(
   const unused: string[] = []
   for (const rel of files) {
     if (ALWAYS_USED_RE.test(rel)) continue
+    if (opts?.extraAlwaysUsed?.test(rel)) continue
     const forms = referenceForms(rel)
     const used = texts.some(t => t.rel !== rel && forms.some(f => t.lower.includes(f)))
     if (!used) unused.push(rel)

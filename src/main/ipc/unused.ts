@@ -1,9 +1,17 @@
-// unused.ts — 未使用ファイルの検出＋素材置き場への移動（project:unusedCheck / project:moveToMaterials）。roadmap #18。
+// unused.ts — 未使用ファイルの検出＋素材置き場への移動（project:unusedCheck / project:moveToMaterials）。roadmap #18・#22。
 //
 // ── 決めごと（2026-09-03 Ryosuke と合意） ────────────────────────────────
 //   ・移動するのは AI ではなく Koto の機能。利用者が一覧を確認して押したときだけ動く。
-//   ・**第一段は静的サイト限定**（Node/PHP 等は動的参照で誤検知しやすい・runtimeDetect.ts）。
 //   ・判定（何が未使用か）は shared/unusedFiles.ts の純関数に任せる。ここは IO だけ。
+//
+// ── Node/PHP への対応（roadmap #22・2026-09-06 追記） ────────────────────
+//   ・当初は静的サイト限定だった（Node/PHP 等は動的参照で誤検知しやすい・runtimeDetect.ts）。
+//     実機の Express アプリで制限を外して実測したところ、package.json・package-lock.json
+//     まで「未使用」と誤判定した（shared/unusedFiles.ts の NODE_ALWAYS_USED_RE 冒頭コメント
+//     参照）。そこで**対象外そのものを無くし、代わりにランタイムごとの守り
+//     （extraAlwaysUsed）を追加で渡す**形にした。
+//   ・ランタイムは detectRuntime（Node 判定）と .php の有無（PHP 判定）の両方を見る。
+//     どちらにも当てはまれば両方の守りを合成する。
 //   ・移す前に 🕘 履歴へ「移す直前」を残す。**移動元・移動先の両方**を同じスナップショットIDで
 //     退避する（元＝内容退避・先＝まだ無かった印）。この2エントリで、その時点へ戻すと
 //     「先を消し元を戻す」動きになり、移動そのものを取り消せる
@@ -25,7 +33,8 @@ import * as path from 'path'
 import { resolvePublishRoot } from '../publishRootFs'
 import { projectFilesInfoFs, readFileInProjectFs } from './fs'
 import { detectRuntime } from '../../shared/runtimeDetect'
-import { findUnusedFiles, nextFreeMaterialName } from '../../shared/unusedFiles'
+import { findUnusedFiles, nextFreeMaterialName, NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE } from '../../shared/unusedFiles'
+import type { UnusedRuntime } from '../../shared/unusedFiles'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
 import { backupRelPath } from '../../shared/publishRoot'
 import { isProtectedWritePath } from '../../shared/protectedPaths'
@@ -50,14 +59,19 @@ function confineToProject(projectDir: string, rel: string): string {
  *
  * 見るのは**実際に公開されるもの**（`public/`。無ければプロジェクト直下）。
  * ここがずれると「チェックでは0件なのに、実際は使われていないファイルが残る」ことになる
- * （securityCheck.ts と同じ理由・掟10）。静的サイト以外（Node/PHP 等）は対象外
- * （`supported: false`）——動的な参照は文字列出現だけでは追い切れず、誤検知しやすい。
+ * （securityCheck.ts と同じ理由・掟10）。
+ *
+ * `supported: false` は projectDir が不正なときだけ（**ランタイムでは落とさない**・
+ * roadmap #22）。ランタイムは detectRuntime（Node 判定）と `.php` の有無（PHP 判定）の
+ * 両方を見て、Node/PHP のどちらか（両方のこともある）なら 'dynamic'。'dynamic' のときは
+ * shared/unusedFiles.ts の NODE_ALWAYS_USED_RE / PHP_ALWAYS_USED_RE を
+ * findUnusedFiles の extraAlwaysUsed として渡し、実行に要るファイルを未使用扱いしない。
  *
  * 返す `unused` はここで見た根（`public/` があればその中）からの相対パス。
  * project:moveToMaterials へそのまま渡せる。
  */
-export function checkUnusedFiles(projectDir: string): { supported: boolean; unused: string[] } {
-  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) return { supported: false, unused: [] }
+export function checkUnusedFiles(projectDir: string): { supported: boolean; unused: string[]; runtime: UnusedRuntime } {
+  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) return { supported: false, unused: [], runtime: 'static' }
   const root = resolvePublishRoot(projectDir) || projectDir
 
   let packageJson: unknown | null = null
@@ -65,12 +79,23 @@ export function checkUnusedFiles(projectDir: string): { supported: boolean; unus
 
   const { files } = projectFilesInfoFs(root, { maxFiles: UNUSED_CHECK_MAX_FILES, publishView: true })
   const choice = detectRuntime({ packageJson, fileNames: files.filter(f => !f.includes('/')) })
-  if (choice.kind !== 'static') return { supported: false, unused: [] }
+
+  // ランタイム判定: detectRuntime が static 以外なら Node、.php が1つでもあれば PHP。
+  // 両方に当てはまることもある（PHP プロジェクトに package.json だけ置いてある等）ため、
+  // その場合は両方の守りを合成して渡す。
+  const isNode = choice.kind !== 'static'
+  const isPhp = files.some(f => /\.php$/i.test(f))
+  const runtime: UnusedRuntime = (isNode || isPhp) ? 'dynamic' : 'static'
+  const extraAlwaysUsed = isNode && isPhp
+    ? new RegExp(NODE_ALWAYS_USED_RE.source + '|' + PHP_ALWAYS_USED_RE.source, 'i')
+    : isNode ? NODE_ALWAYS_USED_RE
+    : isPhp ? PHP_ALWAYS_USED_RE
+    : undefined
 
   const unused = findUnusedFiles(files, (rel) => {
     try { return readFileInProjectFs(root, rel) } catch { return null }
-  })
-  return { supported: true, unused }
+  }, extraAlwaysUsed ? { extraAlwaysUsed } : undefined)
+  return { supported: true, unused, runtime }
 }
 
 export type MoveToMaterialsResult = {

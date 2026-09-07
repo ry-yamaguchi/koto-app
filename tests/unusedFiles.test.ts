@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { ALWAYS_USED_RE, findUnusedFiles, nextFreeMaterialName } from '../src/shared/unusedFiles'
+import {
+  ALWAYS_USED_RE, findUnusedFiles, nextFreeMaterialName,
+  NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE,
+} from '../src/shared/unusedFiles'
 
 // findUnusedFiles（roadmap #18）の判定は「参照らしき文字列が出現するか」という
 // 控えめな判定（真の到達グラフではない）。誤る方向は「未使用と言いすぎない」側に
@@ -114,6 +117,8 @@ describe('findUnusedFiles: ALWAYS_USED_RE の慣習ファイルは参照が無�
     'sitemap.xml', 'manifest.json', 'apple-touch-icon-152x152.png', 'og-image.png',
     '.well-known/apple-app-site-association', 'CNAME', '.htaccess', 'nginx.conf',
     'Dockerfile', '.dockerignore',
+    // 2026-09-06 追加（roadmap #22）: どの種類のプロジェクトでも「説明のために置く」慣習ファイル。
+    'README.md', 'LICENSE', 'CHANGELOG.md',
   ]
 
   it.each(always)('★ %s は参照が無くても使用中扱い', (rel) => {
@@ -207,5 +212,58 @@ describe('nextFreeMaterialName: 素材置き場で使う、空いているファ
 
   it('999件試しても空きが無ければ throw する（Date.now 等の非決定的なフォールバックは使わない）', () => {
     expect(() => nextFreeMaterialName('a.png', () => true)).toThrow()
+  })
+})
+
+// roadmap #22（2026-09-06）: 未使用ファイルの検出を Node/PHP のプロジェクトにも広げる。
+// 実機の Express アプリで、制限を外しただけの現行ロジックを実測したところ、
+// package.json・package-lock.json まで「未使用」と誤判定した
+// （移すとアプリが起動しなくなる。NODE_ALWAYS_USED_RE 冒頭コメント参照）。
+// 「守るもの」「守らないもの」を対で固定する。
+describe('NODE_ALWAYS_USED_RE / PHP_ALWAYS_USED_RE: ランタイム別の守り', () => {
+  it.each([
+    'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+    'npm-shrinkwrap.json', 'tsconfig.json', '.npmrc', '.nvmrc', 'Procfile',
+    'node_modules/express/index.js',
+  ])('★ Node: %s は NODE_ALWAYS_USED_RE にマッチする（守る）', (rel) => {
+    expect(NODE_ALWAYS_USED_RE.test(rel)).toBe(true)
+  })
+
+  it.each(['test001', 'images/unused.png', 'notes.txt'])(
+    '（対） Node: %s は NODE_ALWAYS_USED_RE にマッチしない（守らない）',
+    (rel) => { expect(NODE_ALWAYS_USED_RE.test(rel)).toBe(false) },
+  )
+
+  it.each(['composer.json', 'composer.lock', 'app/models/User.php'])(
+    '★ PHP: %s は PHP_ALWAYS_USED_RE にマッチする（守る）',
+    (rel) => { expect(PHP_ALWAYS_USED_RE.test(rel)).toBe(true) },
+  )
+
+  it.each(['test001', 'images/unused.png', 'notes.txt'])(
+    '（対） PHP: %s は PHP_ALWAYS_USED_RE にマッチしない（守らない）',
+    (rel) => { expect(PHP_ALWAYS_USED_RE.test(rel)).toBe(false) },
+  )
+})
+
+describe('findUnusedFiles: 第3引数 opts.extraAlwaysUsed（roadmap #22）', () => {
+  it('★★ extraAlwaysUsed に渡した正規表現にマッチするファイルは、参照が無くても使用中扱い', () => {
+    const files = ['package.json', 'test001']
+    const unused = findUnusedFiles(files, readerOf({}), { extraAlwaysUsed: NODE_ALWAYS_USED_RE })
+    expect(unused).not.toContain('package.json')
+    expect(unused).toContain('test001')
+  })
+
+  it('（対・後方互換） extraAlwaysUsed を省略すると従来どおり: package.json も未使用扱いになる', () => {
+    const files = ['package.json', 'test001']
+    const unused = findUnusedFiles(files, readerOf({}))
+    expect(unused).toContain('package.json')
+    expect(unused).toContain('test001')
+  })
+
+  it('PHP_ALWAYS_USED_RE を extraAlwaysUsed に渡すと .php は未使用に出ない', () => {
+    const files = ['app/models/User.php', 'test001']
+    const unused = findUnusedFiles(files, readerOf({}), { extraAlwaysUsed: PHP_ALWAYS_USED_RE })
+    expect(unused).not.toContain('app/models/User.php')
+    expect(unused).toContain('test001')
   })
 })

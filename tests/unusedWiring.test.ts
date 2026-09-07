@@ -34,9 +34,9 @@ describe('3点セット: project:unusedCheck / project:moveToMaterials（main / 
     expect(src).toContain("moveToMaterials: (projectDir: string, files: string[]) => ipcRenderer.invoke('project:moveToMaterials', projectDir, files),")
   })
 
-  it('global.d.ts に unusedCheck / moveToMaterials の型がある', () => {
+  it('global.d.ts に unusedCheck / moveToMaterials の型がある（unusedCheck は runtime を含む・roadmap #22）', () => {
     const src = stripped('src/renderer/global.d.ts')
-    expect(src).toContain('unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[] }>')
+    expect(src).toContain("unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[]; runtime: 'static' | 'dynamic' }>")
     expect(src).toContain('moveToMaterials(projectDir: string, files: string[]): Promise<{')
   })
 })
@@ -44,8 +44,22 @@ describe('3点セット: project:unusedCheck / project:moveToMaterials（main / 
 describe('未使用ファイルの判定は shared/unusedFiles.ts の一元定義を通す', () => {
   it('ipc/unused.ts が findUnusedFiles / ALWAYS_USED_RE の一元定義を import して使っている（手で並べ直さない）', () => {
     const src = stripped('src/main/ipc/unused.ts')
-    expect(src).toContain("import { findUnusedFiles, nextFreeMaterialName } from '../../shared/unusedFiles'")
+    expect(src).toContain("import { findUnusedFiles, nextFreeMaterialName, NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE } from '../../shared/unusedFiles'")
     expect(src).toContain('const unused = findUnusedFiles(files,')
+  })
+
+  it('checkUnusedFiles は runtime に応じた extraAlwaysUsed を findUnusedFiles へ渡している（roadmap #22）', () => {
+    const src = stripped('src/main/ipc/unused.ts')
+    // ランタイム判定: detectRuntime（Node）と .php の有無（PHP）の両方を見る
+    expect(src).toContain("const isNode = choice.kind !== 'static'")
+    expect(src).toContain("const isPhp = files.some(f => /\\.php$/i.test(f))")
+    expect(src).toContain("const runtime: UnusedRuntime = (isNode || isPhp) ? 'dynamic' : 'static'")
+    // 両方に当てはまれば合成する
+    expect(src).toContain("new RegExp(NODE_ALWAYS_USED_RE.source + '|' + PHP_ALWAYS_USED_RE.source, 'i')")
+    // findUnusedFiles の呼び出しは3引数目に extraAlwaysUsed を渡す形（呼び出しの形ごと見る）
+    expect(src).toContain('}, extraAlwaysUsed ? { extraAlwaysUsed } : undefined)')
+    // 戻り値は runtime を含む
+    expect(src).toContain('return { supported: true, unused, runtime }')
   })
 
   it('公開の根（resolvePublishRoot）を通している。securityCheck.ts / migrate.ts と同じ窓口', () => {
@@ -60,10 +74,13 @@ describe('未使用ファイルの判定は shared/unusedFiles.ts の一元定�
     expect(src).toContain('const UNUSED_CHECK_MAX_FILES = 5000')
   })
 
-  it('静的サイト以外は detectRuntime の判定で対象外にする（第一段は静的サイト限定）', () => {
+  it('静的サイト以外を丸ごと対象外にする旧形は無い（roadmap #22 で Node/PHP へ対応を広げた）', () => {
     const src = stripped('src/main/ipc/unused.ts')
     expect(src).toContain("import { detectRuntime } from '../../shared/runtimeDetect'")
-    expect(src).toContain("if (choice.kind !== 'static') return { supported: false, unused: [] }")
+    // 旧形（ランタイムで丸ごと対象外にする）へ戻していない
+    expect(src).not.toContain("if (choice.kind !== 'static') return { supported: false, unused: [] }")
+    // supported は projectDir が不正なときだけ false（ランタイムでは落とさない）
+    expect(src).toContain("if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) return { supported: false, unused: [], runtime: 'static' }")
   })
 })
 
@@ -79,7 +96,7 @@ describe('moveToMaterialsFs: 守りの配線（isProtectedWritePath を移動元
 
   it('同名衝突は全体を拒否せず、nextFreeMaterialName で空いている名前を自動で採る（検証段・実行段の両方）', () => {
     const src = stripped('src/main/ipc/unused.ts')
-    expect(src).toContain("import { findUnusedFiles, nextFreeMaterialName } from '../../shared/unusedFiles'")
+    expect(src).toContain("import { findUnusedFiles, nextFreeMaterialName, NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE } from '../../shared/unusedFiles'")
     // 呼び出しの形ごと見る（検証段・実行段の両方に同じ形で存在する＝2箇所）
     const count = (needle: string) => src.split(needle).length - 1
     expect(count('const name = nextFreeMaterialName(base, (candidate) => (')).toBe(2)
@@ -205,17 +222,19 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     expect(src()).toContain('className="rounded-xl border border-line bg-surface p-4 space-y-3"')
   })
 
-  // 2026-09-04 Ryosuke 指摘B: 非対応（静的サイト以外）のときに節ごと消えると、
+  // 2026-09-04 Ryosuke 指摘B: 非対応のときに節ごと消えると、
   // 「動いていないのか、検知できていないのか」利用者に区別が付かない（実機のExpress
   // アプリで「節が出ない＝壊れている？」と受け取られた）。節は常に描画し、対象外なら
   // 理由を書く（移動ボタンだけ出さない）。
-  it('非対応（静的サイト以外）でも節ごと消さず、理由を書いて表示する。0件でも常時表示（2026-09-04 Ryosuke 要望）', () => {
+  it('非対応（projectDir が不正）でも節ごと消さず、理由を書いて表示する。0件でも常時表示（2026-09-04 Ryosuke 要望）', () => {
     const s = src()
     // 旧形（節ごと消す）へ戻さない
     expect(s).not.toContain('if (!supported) return null')
     expect(s).not.toContain('if (!supported || unused.length === 0) return null')
-    // 対象外のときの理由文
-    expect(s).toContain('静的サイトではないため')
+    // 対象外のときの理由文（旧: 「静的サイトではないため」は roadmap #22 で Node/PHP にも
+    // 対応したため無くなった。いまは projectDir が不正なときだけ）
+    expect(s).not.toContain('静的サイトではないため')
+    expect(s).toContain('いまは確認できません（プロジェクトが選ばれていない可能性があります）')
     expect(s).toContain('⚠️')
     // 0件のときの表示は従来どおり
     expect(s).toContain('✅ すべてのファイルが、どこかのページ・コードから使われています。')
@@ -224,6 +243,19 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     // ボタンの描画条件が supported を含むことで固定する（対象外では出ない）。
     expect(s).toContain('素材置き場へ移動')
     expect(s).toContain('{supported && unused.length > 0 && (')
+  })
+
+  // roadmap #22（2026-09-06）: Node/PHP は実行時にファイル名を組み立てることがあり、
+  // 文字列出現だけでは追い切れない。runtime:'dynamic' のときだけ但し書きを出す。
+  it('runtime:dynamic のときは一覧の上に但し書きを出す（0件のときは出さない）', () => {
+    const s = src()
+    expect(s).toContain("runtime === 'dynamic' && (")
+    expect(s).toContain('プログラムが動くタイプです')
+    // 0件（✅の節）の描画ブロックには但し書きの文言が無い
+    const okAt = s.indexOf('✅ すべてのファイルが、どこかのページ・コードから使われています。')
+    const dynamicAt = s.indexOf('プログラムが動くタイプです')
+    expect(okAt).toBeGreaterThan(-1)
+    expect(dynamicAt).toBeGreaterThan(okAt) // 但し書きは0件の分岐より後（unused.length>0の分岐）にある
   })
 
   it('ファイル名一覧は最初から表示する（隠さない・折りたたみが無い）', () => {

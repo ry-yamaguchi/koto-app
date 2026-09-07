@@ -220,12 +220,13 @@ interface Window {
         ok: boolean; moved: string[]; restored: boolean; snapshotOk?: boolean; message?: string
       }>
       /**
-       * 未使用ファイルの検出（roadmap #18・**静的サイトのみ対応**。何も変えない）。
+       * 未使用ファイルの検出（roadmap #18・#22 で Node/PHP にも対応。何も変えない）。
        * `unused` は projectFilesInfo(publishView:true) の一覧のうち、どこからも参照が
        * 見つからなかったもの（相対パスは公開の根＝resolvePublishRoot からの相対）。
-       * `supported: false` は静的サイト以外（Node/PHP 等・動的参照は誤検知しやすいため対象外）。
+       * `runtime` は 'static'（静的サイト）か 'dynamic'（Node/PHP 等・プログラムが動く）。
+       * `supported: false` は projectDir が不正なときだけ（ランタイムでは落とさない）。
        */
-      unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[] }>
+      unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[]; runtime: 'static' | 'dynamic' }>
       /**
        * 未使用ファイルを「素材（公開しません）」へ移す。移動先の同名衝突（既に同名がある／
        * 一括内で basename が重複）は全体を中止せず、shared/unusedFiles.ts の
