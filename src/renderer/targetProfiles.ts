@@ -73,7 +73,7 @@ export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
     id: 'sakura-apprun-dedicated',
     label: 'さくらのAppRun 専有型',
     summary:
-      '仮想サーバレベルで専有するAppRun。独自ドメイン・プライベートネットワーク接続・TCPなど共用型より自由度が高い一方、常時課金（最小構成でも月2万円超）でクラスタ／ASG／アプリ／バージョンの4階層を自分で構成する上級者向けサービス。IDEからの作成にはまだ対応していない（下調べ（制限・料金の確認、費用の同意）まで）。',
+      '仮想サーバレベルで専有するAppRun。独自ドメイン・プライベートネットワーク接続・TCPなど共用型より自由度が高い一方、常時課金（最小構成でも月2万円超）でクラスタ／ASG／アプリ／バージョンの4階層を自分で構成する上級者向けサービス。IDEからクラスタの作成・破棄はできるが、アプリケーションの公開（独自ドメインでの利用）にはまだ対応していない。',
     recommended: [
       '独自ドメインや高可用性が必要な中〜大規模なシステム向け',
       '常時課金（動いていなくても課金される）であることを理解したうえで選ぶ',
@@ -81,7 +81,7 @@ export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
     ],
     donts: [
       '共用型（さくらのAppRun）で足りる小規模用途には向かない（費用が桁違いに高い）',
-      'このバージョンのIDEからはクラスタ・アプリをまだ作成できない',
+      'このバージョンのIDEからはアプリケーションの公開（独自ドメイン）まではまだできない',
     ],
     autoPublish: false,
     serviceUrl: 'https://cloud.sakura.ad.jp/products/apprun-dedicated/index.html',
@@ -177,6 +177,11 @@ export function isAutoPublishTarget(target?: string): boolean {
 
 // 「準備中（今後のバージョンで対応予定）」のため、まだ公開先として選択させない target。
 // 対応機能（VPSアップロード／さくらのクラウド構成など）が実装できたら、この集合から外すと選択UIに再び現れる。
+//
+// sakura-apprun-dedicated は方針が違う: クラスタ・ASG・LBは Koto から作れる（実装済み）が、
+// アプリケーション/バージョンの作成（roadmap #23 の⑤独自ドメイン相当＝「公開」そのもの）が無いため、
+// **公開先の一覧には出さない**。到達できるのは「📦 さくらのAppRun」を選んだ後のタブからだけ
+// （PublishModal.tsx の共用型／専有型タブ）。⑤が実装できるまでこの集合から外さないこと。
 const COMING_SOON_TARGETS = new Set<TargetId>(['sakura-vps', 'sakura-cloud', 'sakura-apprun-dedicated'])
 /** その target を現時点で公開先として選択肢に出してよいか（準備中＝false で非表示にする）。 */
 export function isAvailableTarget(target?: string): boolean {
