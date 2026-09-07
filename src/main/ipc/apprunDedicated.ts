@@ -1,9 +1,11 @@
-// AppRun 専有型「下調べ画面」の IPC（apprunDedicated:*。roadmap #23 段階①）。
-// GET のみ（clusters/plans/limits）。クラスタもアプリも作らない。
+// AppRun 専有型の IPC（apprunDedicated:*）。
+// 段階①（下調べ画面。GET のみ）に加え、段階②「作る」＋④「破棄」を持つ。
 // 掟4（方式B）: 認証情報は renderer から引数で受け取るだけで、main には保存しない
 // （src/main/cloud/apprunDedicated.ts と同じ方針）。
 import { ipcMain } from 'electron'
 import { getLimits, getWorkerClasses, getLbClasses, listClusters, type ApprunDedicatedResult } from '../cloud/apprunDedicated'
+import { createClusterFlow, teardownFlow, type ApprunDedicatedClusterSpec } from '../cloud/apprunDedicatedApply'
+import { readApprunDedicatedFs } from '../publishMetaFs'
 import type { CloudCredentials } from '../cloud/auth'
 import type { IpcDeps } from './types'
 
@@ -14,6 +16,14 @@ function isCreds(v: unknown): v is CloudCredentials {
 }
 
 const NO_KEY: ApprunDedicatedResult = { ok: false, message: 'クラウドのAPIキーが未登録です' }
+
+/** renderer から渡された値が createClusterFlow に渡せる形か（最低限の型チェック）。 */
+function isClusterSpec(v: unknown): v is ApprunDedicatedClusterSpec {
+  const s = v as any
+  return !!s && typeof s.name === 'string' && Array.isArray(s.ports) && typeof s.servicePrincipalID === 'string'
+    && typeof s.zone === 'string' && typeof s.workerServiceClassPath === 'string' && typeof s.lbServiceClassPath === 'string'
+    && typeof s.minNodes === 'number' && typeof s.maxNodes === 'number'
+}
 
 export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
   // GET /limits（このプランの上限）
@@ -33,5 +43,27 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
   ipcMain.handle('apprunDedicated:clusters', async (_, auth: unknown) => {
     if (!isCreds(auth)) return NO_KEY
     return listClusters(auth)
+  })
+
+  // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
+  // 同意（consentedAt）が記録に無ければ createClusterFlow 自身が API を一度も呼ばずに中止する。
+  ipcMain.handle('apprunDedicated:create', async (_, projectDir: unknown, auth: unknown, spec: unknown) => {
+    if (typeof projectDir !== 'string' || !projectDir) return { ok: false, stage: 'consent', message: 'プロジェクトフォルダが不正です' }
+    if (!isCreds(auth)) return { ok: false, stage: 'consent', message: 'クラウドのAPIキーが未登録です' }
+    if (!isClusterSpec(spec)) return { ok: false, stage: 'consent', message: '入力が不正です' }
+    return createClusterFlow(auth, projectDir, spec)
+  })
+
+  // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
+  ipcMain.handle('apprunDedicated:teardown', async (_, projectDir: unknown, auth: unknown) => {
+    if (typeof projectDir !== 'string' || !projectDir) return { ok: false, executed: [], message: 'プロジェクトフォルダが不正です', remaining: {} }
+    if (!isCreds(auth)) return { ok: false, executed: [], message: 'クラウドのAPIキーが未登録です', remaining: {} }
+    return teardownFlow(auth, projectDir)
+  })
+
+  // 現在の記録（何が作られているか）を返す。API を呼ばない、ただのファイル読み取り。
+  ipcMain.handle('apprunDedicated:state', async (_, projectDir: unknown) => {
+    if (typeof projectDir !== 'string' || !projectDir) return {}
+    return readApprunDedicatedFs(projectDir)
   })
 }

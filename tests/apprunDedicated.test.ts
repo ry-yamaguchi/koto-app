@@ -1,17 +1,27 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import http from 'node:http'
 import type { Server } from 'node:http'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import {
   getLimits,
   getWorkerClasses,
   getLbClasses,
   listClusters,
+  createCluster,
+  getCluster,
+  deleteCluster,
+  createAsg,
+  getAsg,
+  deleteAsg,
+  createLoadBalancer,
+  deleteLoadBalancer,
+  listAsg,
+  listLoadBalancers,
   APPRUN_DEDICATED_API_BASE,
 } from '../src/main/cloud/apprunDedicated'
 
-// roadmap #23 段階①「下調べ画面」。この段階は GET のみで、クラスタもアプリも作らない。
+// roadmap #23。段階①「下調べ画面」は GET のみだったが、段階②「作る」でクラスタ・ASG・
+// ロードバランサの作成/削除メソッドを追加した（application/version は対象外・
+// src/main/cloud/apprunDedicated.ts の冒頭コメント参照）。
 // **実APIは叩かない。** tests/sakuraEngine.test.ts と同じく、ローカルに本物の http サーバを
 // 立てて実物のクライアントに対して確かめる（fetchをモックしない）。
 
@@ -105,14 +115,14 @@ describe('BasicAuth ヘッダ（token:secret を base64）', () => {
 })
 
 describe('成功時: 応答本文をJSONとして data に載せる', () => {
-  it('JSONをパースして返す', async () => {
+  it('JSONをパースして返す（getLimits の実物の形は入れ子 { limit: {...} }・5-8）', async () => {
     const baseUrl = await listen((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ clusterCount: 3, workerNodeCount: 14 }))
+      res.end(JSON.stringify({ limit: { clusterCount: 3, workerNodeCount: 14 } }))
     })
     const r = await getLimits(AUTH, baseUrl)
     expect(r.ok).toBe(true)
-    if (r.ok) expect(r.data).toEqual({ clusterCount: 3, workerNodeCount: 14 })
+    if (r.ok) expect(r.data).toEqual({ limit: { clusterCount: 3, workerNodeCount: 14 } })
   })
 })
 
@@ -169,13 +179,167 @@ describe('失敗時: 生の応答本文を message に載せる（要約しな�
       expect(r.detail).toBe(body)
     }
   })
+
+  it('失敗応答が5-8の形 { status, title } なら、title を message に添える（生の本文も残す）', async () => {
+    const body = '{"status":400,"title":"クラスタ名が不正です"}'
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(body)
+    })
+    const r = await getWorkerClasses(AUTH, baseUrl)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.message).toContain('クラスタ名が不正です') // title を要約せず添える
+      expect(r.message).toContain(body) // 生の本文もそのまま残す（掟10）
+    }
+  })
+
+  it('title が無い形（推測で埋めない）なら、従来どおり生の本文だけを載せる', async () => {
+    const body = '{"code":400}'
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(body)
+    })
+    const r = await getWorkerClasses(AUTH, baseUrl)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.message).toBe(body)
+  })
 })
 
-describe('破壊系メソッドが1つも無いこと（この段階ではクラスタもアプリも作らない）', () => {
-  const src = readFileSync(join(__dirname, '..', 'src/main/cloud/apprunDedicated.ts'), 'utf-8')
+describe('段階②で追加: クラスタの作成・実在確認・削除', () => {
+  it('createCluster: POST /clusters に本文をJSONで送る（成功応答は200・{cluster:{clusterID}}が5-8の実物の形）', async () => {
+    let seenMethod = ''; let seenUrl = ''; let seenBody = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      let raw = ''
+      req.on('data', c => { raw += c })
+      req.on('end', () => {
+        seenBody = raw
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ cluster: { clusterID: 'cluster-1' } }))
+      })
+    })
+    const body = { name: 'myapp', ports: [{ port: 80, protocol: 'http' }], servicePrincipalID: '113800956789' }
+    const r = await createCluster(AUTH, body, baseUrl)
+    expect(seenMethod).toBe('POST')
+    expect(seenUrl).toBe('/clusters')
+    expect(JSON.parse(seenBody)).toEqual(body)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.data).toEqual({ cluster: { clusterID: 'cluster-1' } })
+  })
 
-  it('POST を書いていない', () => { expect(src).not.toContain("method: 'POST'") })
-  it('PUT を書いていない', () => { expect(src).not.toContain("method: 'PUT'") })
-  it('PATCH を書いていない', () => { expect(src).not.toContain("method: 'PATCH'") })
-  it('DELETE を書いていない', () => { expect(src).not.toContain("method: 'DELETE'") })
+  it('getCluster: GET /clusters/{id}', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ cluster: { clusterID: 'cluster-1' } }))
+    })
+    await getCluster(AUTH, 'cluster-1', baseUrl)
+    expect(seenUrl).toBe('/clusters/cluster-1')
+  })
+
+  it('deleteCluster: DELETE /clusters/{id}（本文なし）', async () => {
+    let seenMethod = ''; let seenUrl = ''; let hadBody = false
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      req.on('data', () => { hadBody = true })
+      req.on('end', () => { res.writeHead(204); res.end() })
+    })
+    const r = await deleteCluster(AUTH, 'cluster-1', baseUrl)
+    expect(seenMethod).toBe('DELETE')
+    expect(seenUrl).toBe('/clusters/cluster-1')
+    expect(hadBody).toBe(false)
+    expect(r.ok).toBe(true)
+  })
+})
+
+describe('段階②で追加: ASG（オートスケーリンググループ）の作成・実在確認・削除・一覧', () => {
+  it('createAsg: POST /clusters/{id}/asg（成功応答は200・{autoScalingGroup:{autoScalingGroupID}}が実物の形）', async () => {
+    let seenMethod = ''; let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ autoScalingGroup: { autoScalingGroupID: 'asg-1' } }))
+    })
+    await createAsg(AUTH, 'cluster-1', { name: 'myapp' }, baseUrl)
+    expect(seenMethod).toBe('POST')
+    expect(seenUrl).toBe('/clusters/cluster-1/asg')
+  })
+
+  it('getAsg: GET /clusters/{id}/asg/{asgId}', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}')
+    })
+    await getAsg(AUTH, 'cluster-1', 'asg-1', baseUrl)
+    expect(seenUrl).toBe('/clusters/cluster-1/asg/asg-1')
+  })
+
+  it('deleteAsg: DELETE /clusters/{id}/asg/{asgId}', async () => {
+    let seenMethod = ''; let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      res.writeHead(204); res.end()
+    })
+    await deleteAsg(AUTH, 'cluster-1', 'asg-1', baseUrl)
+    expect(seenMethod).toBe('DELETE')
+    expect(seenUrl).toBe('/clusters/cluster-1/asg/asg-1')
+  })
+
+  it('listAsg: maxItems の既定値が付く（付け忘れると実APIで400になる実測が /clusters にある。ASGも同じ作法にする）', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"asgs":[]}')
+    })
+    await listAsg(AUTH, 'cluster-1', undefined, baseUrl)
+    expect(seenUrl).toBe('/clusters/cluster-1/asg?maxItems=20')
+  })
+})
+
+describe('段階②で追加: ロードバランサ（クラスタ/ASGとは別資源・5-6）の作成・削除・一覧', () => {
+  it('createLoadBalancer: POST /clusters/{id}/asg/{asgId}/load_balancers（成功応答は200・{loadBalancer:{loadBalancerID}}が実物の形）', async () => {
+    let seenMethod = ''; let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ loadBalancer: { loadBalancerID: 'lb-1' } }))
+    })
+    await createLoadBalancer(AUTH, 'cluster-1', 'asg-1', { name: 'myapp' }, baseUrl)
+    expect(seenMethod).toBe('POST')
+    expect(seenUrl).toBe('/clusters/cluster-1/asg/asg-1/load_balancers')
+  })
+
+  it('deleteLoadBalancer: DELETE /clusters/{id}/asg/{asgId}/load_balancers/{lbId}', async () => {
+    let seenMethod = ''; let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      res.writeHead(204); res.end()
+    })
+    await deleteLoadBalancer(AUTH, 'cluster-1', 'asg-1', 'lb-1', baseUrl)
+    expect(seenMethod).toBe('DELETE')
+    expect(seenUrl).toBe('/clusters/cluster-1/asg/asg-1/load_balancers/lb-1')
+  })
+
+  it('listLoadBalancers: maxItems の既定値が付く（min2だが20なら範囲内・5-1）', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"loadBalancers":[]}')
+    })
+    await listLoadBalancers(AUTH, 'cluster-1', 'asg-1', undefined, baseUrl)
+    expect(seenUrl).toBe('/clusters/cluster-1/asg/asg-1/load_balancers?maxItems=20')
+  })
+})
+
+describe('段階②で追加: 作成系も失敗時は生の応答本文を message に載せる（要約しない）', () => {
+  it('createCluster が 400 のとき、本文をそのまま message に載せる', async () => {
+    const body = '{"error":"invalid name"}'
+    const baseUrl = await listen((_req, res) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(body)
+    })
+    const r = await createCluster(AUTH, { name: '' }, baseUrl)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.message).toBe(body)
+  })
 })

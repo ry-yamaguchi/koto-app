@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import CopyButton from './CopyButton'
+import { withApprunDedicatedRecord } from '../../shared/publishMeta'
+import { readLimits, readWorkerClasses, readLbClasses, readClusters, type ApprunDedicatedPlanRow } from '../../shared/apprunDedicatedShapes'
 
 // さくらのAppRun 専有型「下調べ画面」（roadmap #23 段階①）。
 //
@@ -30,39 +32,14 @@ const LIMIT_FIELDS: { key: string; label: string }[] = [
 
 type Limits = Record<string, number | null>
 
-function extractLimits(data: unknown): Limits {
-  const d = (data ?? {}) as Record<string, unknown>
-  const out: Limits = {}
-  for (const f of LIMIT_FIELDS) {
-    const v = d[f.key]
-    out[f.key] = typeof v === 'number' ? v : null
-  }
-  return out
-}
+// path は ⑤ の作成本文（workerServiceClassPath / lbServiceClassPath）にそのまま使う値。
+// 名前だけでなくここも取得しておかないと、選んだプランをAPIへ渡せない（段階②で追加）。
+type PlanRow = ApprunDedicatedPlanRow
 
-interface PlanRow { name: string | null; nodeCount: number | null }
-
-// 応答のどこに配列が入っているかを決め打ちしない（scripts/probe-apprun-dedicated.mjs と
-// 同じ考え方）。よくある置き場所を順に見て、無ければ空配列を返す
-// （呼び出し側が「取得できませんでした」を出す）。
-function unwrapList(data: unknown): unknown[] {
-  if (Array.isArray(data)) return data
-  const d = data as any
-  for (const k of ['service_classes', 'clusters', 'data', 'items', 'plans', 'worker', 'lb']) {
-    if (d && Array.isArray(d[k])) return d[k]
-  }
-  return []
-}
-
-function extractPlanList(data: unknown): PlanRow[] {
-  return unwrapList(data).map((item: any) => ({
-    name: typeof item?.name === 'string' ? item.name : null,
-    nodeCount: typeof item?.nodeCount === 'number' ? item.nodeCount : null,
-  }))
-}
-
+// 応答の形は src/shared/apprunDedicatedShapes.ts に集約してある（掟10・5-8の事故を受けて）。
+// ここでは件数の把握（hasMore の判定）だけを行う。
 function extractClusterCount(data: unknown): { count: number; hasMore: boolean } {
-  const list = unwrapList(data)
+  const list = readClusters(data)
   const d = data as any
   const hasMore = !!(d?.nextCursor || d?.cursor || d?.next)
   return { count: list.length, hasMore }
@@ -81,12 +58,69 @@ const CONTROL_PANEL_URL = 'https://secure.sakura.ad.jp/cloud/'
 const OFFICIAL_PRICE_URL = 'https://cloud.sakura.ad.jp/products/apprun-dedicated/index.html'
 
 // docs/apprun-dedicated-plan.md 2.「料金（公式製品ページ・税込）」の値（2026-09時点）。
-const WORKER_PRICES: { plan: string; hourly: string; daily: string; monthly: string }[] = [
-  { plan: '1コア/2GB', hourly: '55円', daily: '550円', monthly: '11,000円' },
-  { plan: '2コア/2GB', hourly: '84円', daily: '847円', monthly: '16,940円' },
-  { plan: '4コア/4GB', hourly: '165円', daily: '1,650円', monthly: '33,000円' },
-  { plan: '8コア/8GB', hourly: '320円', daily: '3,201円', monthly: '64,020円' },
+// monthlyYen は⑤の見積り計算に使う数値版（表に無いプランは推測で埋めない＝下の関数群が担保する）。
+const WORKER_PRICES: { plan: string; hourly: string; daily: string; monthly: string; monthlyYen: number }[] = [
+  { plan: '1コア/2GB', hourly: '55円', daily: '550円', monthly: '11,000円', monthlyYen: 11000 },
+  { plan: '2コア/2GB', hourly: '84円', daily: '847円', monthly: '16,940円', monthlyYen: 16940 },
+  { plan: '4コア/4GB', hourly: '165円', daily: '1,650円', monthly: '33,000円', monthlyYen: 33000 },
+  { plan: '8コア/8GB', hourly: '320円', daily: '3,201円', monthly: '64,020円', monthlyYen: 64020 },
 ]
+
+// ── ⑤ クラスタ作成: 入力チェック・見積りの純関数（テスト対象） ─────────────────────
+
+// クラスタ・ASG・LB 名の形式（5-2/5-5/5-6: 1〜20文字・英数字と `_` `-`）。
+export function isValidResourceName(name: string): boolean {
+  return /^[A-Za-z0-9_-]{1,20}$/.test(name)
+}
+
+// 予約ポート（5-5）。main側 src/main/cloud/apprunDedicatedApply.ts の RESERVED_PORT_RANGE と
+// 同じ範囲（renderer からは main のモジュールを import できないため、この小さな範囲チェックだけ
+// 複製している。掟10が禁じる「同じ形のマージ処理の複製」ではなく、ドキュメント由来の定数）。
+export const RESERVED_PORT_RANGE: readonly [number, number] = [5950, 5959]
+export function isReservedPort(port: number): boolean {
+  return port >= RESERVED_PORT_RANGE[0] && port <= RESERVED_PORT_RANGE[1]
+}
+
+/**
+ * プランの `path`（例 `cloud/apprun/dedicated/worker/1vcpu_2gb` / `…/lb/1vcpu_2gb_1`）から
+ * 料金表のキー（例 `1コア/2GB`）を作る。形が合わなければ null（＝料金表と突き合わせられない）。
+ */
+export function planKeyFromPath(path: string | null | undefined): string | null {
+  if (!path) return null
+  const seg = path.split('/').pop() ?? ''
+  const m = seg.match(/^(\d+)vcpu_(\d+)gb(?:_\d+)?$/i)
+  return m ? `${m[1]}コア/${m[2]}GB` : null
+}
+
+/** プランの path から月額（円）を引く。表に無ければ null（**推測で埋めない**）。 */
+export function monthlyYenForPlanPath(path: string | null | undefined): number | null {
+  const key = planKeyFromPath(path)
+  if (!key) return null
+  return WORKER_PRICES.find(r => r.plan === key)?.monthlyYen ?? null
+}
+
+/**
+ * 押す前の確認ダイアログに出す見積り文を組み立てる（掟5: 破壊操作は確認ダイアログに額を出す）。
+ * **表に無いプランは「月額を出せません」と正直に出し、金額を推測して埋めない**
+ * （2026-08-14「既定値が、勝手に課金を生むことがある」と同じ理由——分からない額を0や代表値で
+ * 埋めると、静かに間違った金額を信じさせてしまう）。
+ */
+export function priceSummary(
+  workerPlan: { path: string | null } | null,
+  lbPlan: { path: string | null; nodeCount: number | null } | null,
+  minNodes: number,
+): { text: string; totalYen: number | null } {
+  const workerYen = workerPlan ? monthlyYenForPlanPath(workerPlan.path) : null
+  const lbYen = lbPlan ? monthlyYenForPlanPath(lbPlan.path) : null
+  const lbNodeCount = lbPlan?.nodeCount ?? 1
+  const workerPart = workerYen != null ? `ワーカ ${workerYen.toLocaleString('ja-JP')}円 × ${minNodes}台` : 'ワーカ（月額を出せません）'
+  const lbPart = lbYen != null ? `ロードバランサ ${lbYen.toLocaleString('ja-JP')}円 × ${lbNodeCount}台` : 'ロードバランサ（月額を出せません）'
+  if (workerYen == null || lbYen == null) {
+    return { text: `${workerPart} ＋ ${lbPart} ＝ 月額を出せません（料金表に無いプランが含まれています）`, totalYen: null }
+  }
+  const total = workerYen * minNodes + lbYen * lbNodeCount
+  return { text: `${workerPart} ＋ ${lbPart} ＝ 月額 ${total.toLocaleString('ja-JP')}円`, totalYen: total }
+}
 
 export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: Props) {
   const metaPath = `${projectDir}/.sakuraide.json`
@@ -96,18 +130,17 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   }, [metaPath])
 
   // このプロジェクトの公開先として記録する（VpsPanel と同じ作法）。
-  // ※ PublishTargetKind（公開記録の種別）には足さない——この段階では「公開」を行わないため
+  // ※ PublishTargetKind（公開記録の種別）には足さない——クラスタ・ASG・LBを作れるようになっても
+  //   「アプリを公開する」段（roadmap #23 の⑤独自ドメイン相当）はまだ無いため
   //   （sakura-vps が同じ扱い。PublishModal.tsx 参照）。
+  //
+  // publish.apprunDedicated へのマージ書き込みは shared/publishMeta.ts の
+  // withApprunDedicatedRecord に一元化してある（掟10・main側の apprunDedicatedApply.ts も
+  // 同じ関数を通す publishMetaFs.ts 経由で同じ場所へ書く。同じ形のマージを別々に書かない）。
   const saveMeta = useCallback(async (patch: Record<string, unknown>) => {
     const m = await readMeta()
-    const next = {
-      ...m,
-      target: 'sakura-apprun-dedicated',
-      publish: {
-        ...(m.publish ?? {}),
-        apprunDedicated: { ...(m.publish?.apprunDedicated ?? {}), ...patch },
-      },
-    }
+    const merged = withApprunDedicatedRecord(m, patch)
+    const next = { ...merged, target: 'sakura-apprun-dedicated' }
     await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(next, null, 2))
     window.dispatchEvent(new Event('sakura-meta-changed'))
     return next
@@ -168,13 +201,13 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         window.electronAPI.apprunDedicated.clusters(auth),
       ])
 
-      if (limitsRes.ok) setLimits(extractLimits(limitsRes.data))
+      if (limitsRes.ok) setLimits(readLimits(limitsRes.data))
       else setLimitsError(limitsRes.message)
 
-      if (plansRes.worker.ok) setWorkerPlans(extractPlanList(plansRes.worker.data))
+      if (plansRes.worker.ok) setWorkerPlans(readWorkerClasses(plansRes.worker.data))
       else setWorkerError(plansRes.worker.message)
 
-      if (plansRes.lb.ok) setLbPlans(extractPlanList(plansRes.lb.data))
+      if (plansRes.lb.ok) setLbPlans(readLbClasses(plansRes.lb.data))
       else setLbError(plansRes.lb.message)
 
       if (clustersRes.ok) setClusterInfo(extractClusterCount(clustersRes.data))
@@ -210,9 +243,135 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     } finally { setConsentBusy(false) }
   }
 
+  // ── 記録（何が実際に作られているか。main の .sakuraide.json 読み取り。APIは呼ばない） ──────
+  type ApprunDedicatedState = Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['state']>>
+  const [apprunState, setApprunState] = useState<ApprunDedicatedState | null>(null)
+  const refreshApprunState = useCallback(async () => {
+    try { setApprunState(await window.electronAPI.apprunDedicated.state(projectDir)) } catch { setApprunState(null) }
+  }, [projectDir])
+
+  // ── ⑤ クラスタを作る ────────────────────────────────────────
+  const [clusterName, setClusterName] = useState('')
+  const [ports, setPorts] = useState<{ port: number; protocol: 'http' | 'https' }[]>([
+    { port: 80, protocol: 'http' },
+    { port: 443, protocol: 'https' },
+  ])
+  const [zone, setZone] = useState('tk1b') // 原本に許容値の一覧が無いため、例の値を既定にした自由入力（5-5）
+  const [minNodes, setMinNodes] = useState(1)
+  const [maxNodes, setMaxNodes] = useState(1)
+  const [selectedWorkerPath, setSelectedWorkerPath] = useState<string | null>(null)
+  const [selectedLbPath, setSelectedLbPath] = useState<string | null>(null)
+  const [letsEncryptEmail, setLetsEncryptEmail] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [createResult, setCreateResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['create']>> | null>(null)
+
+  // プランが取得できたら（③の「調べる」の後）既定を選んでおく。一度選んだら上書きしない。
+  useEffect(() => {
+    if (selectedWorkerPath) return
+    const withPath = (workerPlans ?? []).find(p => p.path)
+    if (withPath) setSelectedWorkerPath(withPath.path)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workerPlans])
+  useEffect(() => {
+    if (selectedLbPath) return
+    // LBは nodeCount:1（非冗長）を既定にする（月額が安い方・docs 5-6）。
+    const preferred = (lbPlans ?? []).find(p => p.nodeCount === 1 && p.path) ?? (lbPlans ?? []).find(p => p.path)
+    if (preferred) setSelectedLbPath(preferred.path)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lbPlans])
+
+  const updatePort = (i: number, next: { port: number; protocol: 'http' | 'https' }) => {
+    setPorts(prev => prev.map((p, idx) => (idx === i ? next : p)))
+  }
+  const addPort = () => setPorts(prev => [...prev, { port: 0, protocol: 'http' as const }])
+  const removePort = (i: number) => setPorts(prev => prev.filter((_, idx) => idx !== i))
+
+  const selectedWorkerPlan = (workerPlans ?? []).find(p => p.path === selectedWorkerPath) ?? null
+  const selectedLbPlan = (lbPlans ?? []).find(p => p.path === selectedLbPath) ?? null
+  const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes)
+
+  // 押す前にまとめて確かめる（掟5: 破壊操作は確認ダイアログ。ここは「常時課金の開始」という
+  // 意味で同じ強さの確認を挟む）。入力が揃っていない間はボタンを押せない。
+  const formError: string | null = (() => {
+    const name = clusterName.trim()
+    if (!name) return 'クラスタ名を入力してください'
+    if (!isValidResourceName(name)) return 'クラスタ名は1〜20文字の英数字・_・- で入力してください'
+    if (!resourceId.trim()) return '②でサービスプリンシパルIDを入力してください'
+    if (ports.length === 0) return '公開ポートを1つ以上指定してください'
+    if (ports.some(p => !(p.port >= 1 && p.port <= 65535))) return 'ポート番号は1〜65535で指定してください'
+    if (ports.some(p => isReservedPort(p.port))) return `ポート ${RESERVED_PORT_RANGE[0]}-${RESERVED_PORT_RANGE[1]} は予約されており使えません`
+    if (!zone.trim()) return 'ゾーンを入力してください'
+    if (!selectedWorkerPath) return 'ワーカプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
+    if (!selectedLbPath) return 'ロードバランサプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
+    if (!(Number.isInteger(minNodes) && minNodes >= 1 && minNodes <= 10)) return 'ノード数（min）は1〜10で指定してください'
+    if (!(Number.isInteger(maxNodes) && maxNodes >= 1 && maxNodes <= 10)) return 'ノード数（max）は1〜10で指定してください'
+    if (minNodes > maxNodes) return 'ノード数は min ≦ max にしてください'
+    return null
+  })()
+
+  const doCreate = async () => {
+    if (formError || creating) return
+    if (!window.confirm(`${price.text}\n\nこの費用が毎月かかります。よろしいですか？`)) return
+    setCreating(true); setCreateResult(null)
+    try {
+      const auth = await window.electronAPI.cloud.loadKey()
+      if (!auth || !auth.token || !auth.secret) {
+        setCreateResult({ ok: false, stage: 'consent', message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。' })
+        return
+      }
+      const spec = {
+        name: clusterName.trim(),
+        ports,
+        servicePrincipalID: resourceId.trim(),
+        ...(letsEncryptEmail.trim() ? { letsEncryptEmail: letsEncryptEmail.trim() } : {}),
+        zone: zone.trim(),
+        workerServiceClassPath: selectedWorkerPath as string,
+        minNodes, maxNodes,
+        lbServiceClassPath: selectedLbPath as string,
+      }
+      const r = await window.electronAPI.apprunDedicated.create(projectDir, auth, spec)
+      setCreateResult(r)
+      await refreshApprunState()
+    } catch (e: any) {
+      setCreateResult({ ok: false, stage: 'consent', message: e?.message ?? String(e) } as any)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  // ── ⑥ 作ったものを壊す（破棄） ───────────────────────────────
+  const [tearingDown, setTearingDown] = useState(false)
+  const [teardownResult, setTeardownResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['teardown']>> | null>(null)
+  const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)
+
+  const doTeardown = async () => {
+    if (tearingDown) return
+    const targets = [
+      apprunState?.loadBalancerID ? `ロードバランサ『${apprunState.loadBalancerID}』` : null,
+      apprunState?.asgID ? `オートスケーリンググループ『${apprunState.asgID}』` : null,
+      apprunState?.clusterID ? `クラスタ『${apprunState.clusterID}』` : null,
+    ].filter(Boolean).join('・')
+    if (!window.confirm(`次を削除します: ${targets}\n\nこの操作は元に戻せません。消さない限り課金が続きます。よろしいですか？`)) return
+    setTearingDown(true); setTeardownResult(null)
+    try {
+      const auth = await window.electronAPI.cloud.loadKey()
+      if (!auth || !auth.token || !auth.secret) {
+        setTeardownResult({ ok: false, executed: [], message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。', remaining: {} })
+        return
+      }
+      const r = await window.electronAPI.apprunDedicated.teardown(projectDir, auth)
+      setTeardownResult(r)
+      await refreshApprunState()
+    } catch (e: any) {
+      setTeardownResult({ ok: false, executed: [], message: e?.message ?? String(e), remaining: {} })
+    } finally {
+      setTearingDown(false)
+    }
+  }
+
   // ── 初期化 ──────────────────────────────────────────────────
   useEffect(() => {
-    refreshKey(); refreshCloudKeys()
+    refreshKey(); refreshCloudKeys(); refreshApprunState()
     ;(async () => {
       const m = await readMeta()
       const v = m.publish?.apprunDedicated
@@ -462,13 +621,211 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         )}
       </section>
 
-      {/* ⑤ ここから先はまだ作れません */}
-      <section className="rounded-xl border border-line bg-surface p-4 space-y-1">
-        <p className="text-sm font-semibold text-ink">⑤ ここから先はまだ作れません</p>
-        <p className="text-xs text-ink-secondary leading-relaxed">
-          クラスタの作成・公開は次の版で対応します。このバージョンには作成ボタンはありません。
-        </p>
+      {/* ⑤ クラスタを作る */}
+      <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
+        <p className="text-sm font-semibold text-ink">⑤ クラスタを作る</p>
+
+        {!consentedAt ? (
+          <p className="text-xs text-ink-secondary leading-relaxed">
+            ④で費用に同意すると、ここから作成できるようになります。
+          </p>
+        ) : (
+          <>
+            <p className="text-[11px] text-ink-muted leading-relaxed rounded-lg border border-line bg-overlay px-3 py-2">
+              🔌 ネットワークは共有セグメントに繋ぎます（スイッチやIPプールの指定は要りません）。
+            </p>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-ink-secondary">クラスタ名（1〜20文字・英数字と _ -）</label>
+              <input
+                value={clusterName}
+                onChange={e => setClusterName(e.target.value)}
+                placeholder="例: myapp"
+                className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-ink-secondary">公開ポート</label>
+              <div className="space-y-1">
+                {ports.map((p, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={p.port}
+                      onChange={e => updatePort(i, { ...p, port: Number(e.target.value) })}
+                      className="w-24 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                    />
+                    <select
+                      value={p.protocol}
+                      onChange={e => updatePort(i, { ...p, protocol: e.target.value as 'http' | 'https' })}
+                      className="bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                    >
+                      <option value="http">http</option>
+                      <option value="https">https</option>
+                    </select>
+                    {isReservedPort(p.port) && (
+                      <span className="text-[11px] text-brand-red">⚠️ {RESERVED_PORT_RANGE[0]}-{RESERVED_PORT_RANGE[1]}は予約で使えません</span>
+                    )}
+                    <button onClick={() => removePort(i)} className="text-[11px] text-ink-muted hover:text-brand-red">削除</button>
+                  </div>
+                ))}
+              </div>
+              <button onClick={addPort} className="text-[11px] text-sakura hover:underline">+ ポートを追加</button>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-ink-secondary">サービスプリンシパルID</label>
+              <p className="text-xs text-ink font-mono select-text">{resourceId || '（②で入力してください）'}</p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-ink-secondary">ゾーン</label>
+              <input
+                value={zone}
+                onChange={e => setZone(e.target.value)}
+                className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
+              />
+              <p className="text-[11px] text-ink-muted leading-relaxed">
+                原本に許容値の一覧が無いため自由入力です。間違っていればAPIが400を返すので、そのまま表示します。
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-ink-secondary">ワーカプラン</label>
+              {workerPlans && workerPlans.some(p => p.path) ? (
+                <select
+                  value={selectedWorkerPath ?? ''}
+                  onChange={e => setSelectedWorkerPath(e.target.value)}
+                  className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                >
+                  {workerPlans.filter(p => p.path).map(p => (
+                    <option key={p.path as string} value={p.path as string}>{p.name ?? p.path}</option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-[11px] text-brand-yellow">③の「🔍 調べる」を押してプランを取得してください。</p>
+              )}
+              <div className="flex items-center gap-2 pt-1">
+                <label className="text-[11px] text-ink-secondary">ノード数 min</label>
+                <input
+                  type="number" min={1} max={10} value={minNodes}
+                  onChange={e => setMinNodes(Number(e.target.value))}
+                  className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                />
+                <label className="text-[11px] text-ink-secondary">max</label>
+                <input
+                  type="number" min={1} max={10} value={maxNodes}
+                  onChange={e => setMaxNodes(Number(e.target.value))}
+                  className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-ink-secondary">ロードバランサプラン</label>
+              {lbPlans && lbPlans.some(p => p.path) ? (
+                <select
+                  value={selectedLbPath ?? ''}
+                  onChange={e => setSelectedLbPath(e.target.value)}
+                  className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                >
+                  {lbPlans.filter(p => p.path).map(p => (
+                    <option key={p.path as string} value={p.path as string}>
+                      {(p.name ?? p.path)}{p.nodeCount === 1 ? '（非冗長）' : p.nodeCount === 2 ? '（冗長）' : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-[11px] text-brand-yellow">③の「🔍 調べる」を押してプランを取得してください。</p>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-ink-secondary">Let&apos;s Encrypt 用メール（独自ドメインを使うなら）</label>
+              <input
+                value={letsEncryptEmail}
+                onChange={e => setLetsEncryptEmail(e.target.value)}
+                placeholder="任意"
+                className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+              />
+            </div>
+
+            <div className="rounded-lg border border-line bg-overlay p-3">
+              <p className="text-xs text-ink select-text">{price.text}</p>
+            </div>
+
+            {formError && <p className="text-xs text-brand-yellow leading-relaxed">⚠️ {formError}</p>}
+
+            <button
+              onClick={doCreate}
+              disabled={!!formError || creating}
+              className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+            >{creating ? 'クラスタ→ASG→LB の順で作成しています…' : 'クラスタを作成する'}</button>
+
+            {createResult && (
+              <div className="space-y-1">
+                <p className={createResult.ok ? 'text-xs font-semibold text-brand-green' : 'text-xs font-semibold text-brand-red'}>
+                  {createResult.ok ? '✅ 作成できました' : `⚠️ 途中で止まりました（${createResult.stage}）`}
+                </p>
+                <ul className="text-xs text-ink-secondary space-y-0.5 pl-1">
+                  <li>{createResult.clusterID ? '✅' : '・'} クラスタ {createResult.clusterID ?? '（未作成）'}</li>
+                  <li>{createResult.asgID ? '✅' : '・'} オートスケーリンググループ {createResult.asgID ?? '（未作成）'}</li>
+                  <li>{createResult.loadBalancerID ? '✅' : '・'} ロードバランサ {createResult.loadBalancerID ?? '（未作成）'}</li>
+                </ul>
+                <ErrorBlock msg={createResult.message} />
+                {!createResult.ok && (createResult.clusterID || createResult.asgID || createResult.loadBalancerID) && (
+                  <p className="text-xs text-brand-red leading-relaxed">
+                    ここまで作られています。課金が続くので、⑥から破棄してください。
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </section>
+
+      {/* ⑥ 作ったものを壊す（破棄） */}
+      {hasAnyResource && (
+        <section className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-3">
+          <p className="text-sm font-semibold text-ink">⑥ 作ったものを壊す（破棄）</p>
+          <p className="text-xs font-semibold text-brand-red leading-relaxed">
+            ⚠️ 消さない限り課金が続きます。この操作は元に戻せません。
+          </p>
+          <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
+            {apprunState?.loadBalancerID && <li>ロードバランサ『{apprunState.loadBalancerID}』</li>}
+            {apprunState?.asgID && <li>オートスケーリンググループ『{apprunState.asgID}』</li>}
+            {apprunState?.clusterID && <li>クラスタ『{apprunState.clusterID}』</li>}
+          </ul>
+          <button
+            onClick={doTeardown}
+            disabled={tearingDown}
+            className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+          >{tearingDown ? '削除しています…' : 'すべて削除する'}</button>
+
+          {teardownResult && (
+            <div className="space-y-1">
+              {teardownResult.executed.map((e, i) => (
+                <p key={i} className="text-xs text-brand-green leading-relaxed">✅ {e}</p>
+              ))}
+              <ErrorBlock msg={teardownResult.message} />
+              {!teardownResult.ok && (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-brand-red leading-relaxed">
+                    残っています＝課金が続きます。コントロールパネルから直接削除することもできます。
+                  </p>
+                  <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
+                    {teardownResult.remaining.loadBalancerID && <li>ロードバランサ『{teardownResult.remaining.loadBalancerID}』</li>}
+                    {teardownResult.remaining.asgID && <li>オートスケーリンググループ『{teardownResult.remaining.asgID}』</li>}
+                    {teardownResult.remaining.clusterID && <li>クラスタ『{teardownResult.remaining.clusterID}』</li>}
+                  </ul>
+                  <a href={CONTROL_PANEL_URL} className="inline-block text-[11px] text-sakura hover:underline">🔧 コントロールパネルを開く</a>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   )
 }

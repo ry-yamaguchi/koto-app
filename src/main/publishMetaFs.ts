@@ -15,7 +15,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   withPendingPublish, withoutPendingPublish, withPublishRecord, withHanamiiProjectId,
-  type PublishTargetKind,
+  withApprunDedicatedRecord, type PublishTargetKind, type ApprunDedicatedRecord,
 } from '../shared/publishMeta'
 
 function metaFilePath(projectDir: string): string {
@@ -87,5 +87,32 @@ export function writeHanamiiProjectIdFs(projectDir: string, projectId: string | 
     writeMetaRaw(projectDir, next, 'HANAMII の projectId')
   } catch (e) {
     console.warn('[publishMetaFs] HANAMII の projectId の記録に失敗しました（公開処理そのものは続行）:', e)
+  }
+}
+
+/**
+ * さくらのAppRun 専有型（roadmap #23）: `publish.apprunDedicated` を読む。
+ * 無い/壊れている場合は空オブジェクト（＝何も作られていない・同意していない扱い）。
+ */
+export function readApprunDedicatedFs(projectDir: string): ApprunDedicatedRecord {
+  const m = readMetaRaw(projectDir) as any
+  const rec = m?.publish?.apprunDedicated
+  return rec && typeof rec === 'object' && !Array.isArray(rec) ? rec : {}
+}
+
+/**
+ * さくらのAppRun 専有型（roadmap #23・段階②）: `publish.apprunDedicated` へパッチを書く。
+ *
+ * **ここが「実際に何が作られたか」の唯一の記録先。** apprunDedicatedApply.ts の
+ * createClusterFlow/teardownFlow は、各段が成功した直後（＝クラウド側に資源ができた/消えた
+ * 直後）に必ずここを呼ぶ。呼ばないと、途中で落ちたときに「作れたのに記録が無い」状態になり、
+ * Koto から二度と消せないまま課金だけが残る（2026-08-14 の教訓と同じ形）。
+ */
+export function writeApprunDedicatedRecordFs(projectDir: string, patch: Partial<ApprunDedicatedRecord>): void {
+  try {
+    const next = withApprunDedicatedRecord(readMetaRaw(projectDir), patch)
+    writeMetaRaw(projectDir, next, 'AppRun専有型の記録')
+  } catch (e) {
+    console.warn('[publishMetaFs] AppRun専有型の記録の書き込みに失敗しました（処理そのものは続行）:', e)
   }
 }

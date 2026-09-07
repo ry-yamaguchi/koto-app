@@ -78,6 +78,61 @@ export function withoutPendingPublish(meta: unknown): Record<string, unknown> {
 }
 
 /**
+ * さくらのAppRun 専有型（roadmap #23）: `publish.apprunDedicated` に記録する内容。
+ *
+ * ── なぜここに置くか（段階②・掟10の一元化）───────────────────────────────
+ * 段階①は `consentedAt`／`servicePrincipalId` だけを持っていたが、段階②で
+ * クラスタ・ASG・ロードバランサの ID を追加で記録するようになった。
+ * 「実際に作られたものを記録する」書き込みは main（apprunDedicatedApply.ts）と
+ * renderer（AppRunDedicatedPanel.tsx の同意・リソースID保存）の両方から起きるため、
+ * `withPublishRecord` 等と同じ形で1箇所にまとめる。
+ *
+ * 各 ID は「実際に作られたか」を表す。**成功した段だけ値を持つ**——途中で失敗しても、
+ * 作れたところまでの ID は残す（2026-08-14「失敗しても、途中まで起きたことは記録する」）。
+ * 破棄で消せたものは `null` に戻す（消せなかったものは値を残し、「残っている」と示せるようにする）。
+ */
+export type ApprunDedicatedRecord = {
+  /** ②で案内している、手作業で用意したサービスプリンシパルのID。 */
+  servicePrincipalId?: string | null
+  /** 費用に同意した日時（ISO文字列）。無ければ「同意していない」。 */
+  consentedAt?: string | null
+  /** 作られたクラスタのID。 */
+  clusterID?: string | null
+  /** 作られたオートスケーリンググループのID（クラスタの下）。 */
+  asgID?: string | null
+  /** 作られたロードバランサのID（ASGの下。クラスタとは別の資源＝5-6）。 */
+  loadBalancerID?: string | null
+  /** クラスタ・ASG・LBに共通で使った名前（作成時の入力）。 */
+  name?: string | null
+  /** ASG作成に使ったゾーン。 */
+  zone?: string | null
+  /** 選んだワーカプランの path（`/service_classes/worker` の値）。 */
+  workerServiceClassPath?: string | null
+  /** 選んだロードバランサプランの path（`/service_classes/lb` の値）。 */
+  lbServiceClassPath?: string | null
+  /** クラスタを作成した時刻（ISO文字列）。 */
+  createdAt?: string | null
+}
+
+/**
+ * `publish.apprunDedicated` へパッチをマージ書き込みする（他のキー・他の publish.* は保つ）。
+ * 段階①からある `consentedAt`／`servicePrincipalId` の書き込みも、段階②のID記録も、
+ * 必ずこの1箇所を通す（同じ形のマージを別々に書かない・掟10）。
+ */
+export function withApprunDedicatedRecord(meta: unknown, patch: Partial<ApprunDedicatedRecord>): Record<string, unknown> {
+  const m = asRecord(meta)
+  const publish = asRecord(m.publish)
+  const existing = asRecord(publish.apprunDedicated)
+  return {
+    ...m,
+    publish: {
+      ...publish,
+      apprunDedicated: { ...existing, ...patch },
+    },
+  }
+}
+
+/**
  * HANAMII 固有: `publish.hanamii.projectId` を保つ/更新する。
  * HANAMII は初回公開で projectId が発行され、これを保存しないまま次回公開すると
  * 新規プロジェクトとして二重作成されうる。`publish.hanamii` の他のキー
