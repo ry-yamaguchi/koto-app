@@ -4,12 +4,13 @@ import CopyButton from './CopyButton'
 import { withApprunDedicatedRecord } from '../../shared/publishMeta'
 import { readLimits, readWorkerClasses, readLbClasses, readClusters, type ApprunDedicatedPlanRow } from '../../shared/apprunDedicatedShapes'
 
-// さくらのAppRun 専有型「下調べ画面」（roadmap #23 段階①）。
+// さくらのAppRun 専有型パネル（roadmap #23）。
 //
-// **この段階ではクラスタもアプリも作らない。** POST/PUT/PATCH/DELETE は main 側
-// （src/main/cloud/apprunDedicated.ts）に1つも無い（tests/apprunDedicated.test.ts が固定）。
-// この画面がやるのは: ①制限・プラン・費用をAPIから引いて見せる ②費用の同意を取る
-// ③サービスプリンシパルの用意（手作業）を案内する ④疎通の確認、の4つだけ。
+// **クラスタの作成（⑤）・破棄（⑥）は行える**（段階②④・v0.6.9 で実装済み）。
+// まだ無いのは「アプリケーション/バージョン」（roadmap #23 の⑤独自ドメイン相当）の作成——
+// つまり Koto からアプリを独自ドメインで公開するところまでは実装していない。
+// この画面がやるのは: ①認証情報の確認（疎通結果も表示） ②サービスプリンシパルの用意（手作業）の案内
+// ③制限・プラン・費用をAPIから引いて見せる ④費用の同意を取る ⑤クラスタを作る ⑥作ったものを壊す、の6つ。
 //
 // docs/apprun-dedicated-plan.md（調査結果と実装設計の集約）を前提にしている。数値・料金は
 // そこが正。API仕様が変われば同ファイルを読み直すこと（掟1）。
@@ -100,6 +101,51 @@ export function monthlyYenForPlanPath(path: string | null | undefined): number |
 }
 
 /**
+ * 既定で選ぶワーカプランを決める（roadmap #26）。
+ *
+ * **料金表で額を引けるものの中で最安**を返す。実 API は高い順（8vCPU/8GB → 1vCPU/2GB）で
+ * 返すため、「一覧の先頭」を既定にすると最も高いプランを選んでしまう（2026-09-07 実機で発覚）。
+ * 額を引けないプラン（料金表に無い path）は候補にしない——分からない額を既定にしない。
+ * 1つも額を引けなければ **null**（＝既定を選ばない。呼び出し側は「プランを選んでください」を出す）。
+ * 並び順には依存しない（`reduce` で全件を比較する）。
+ */
+export function pickCheapestWorkerPlan(plans: readonly PlanRow[] | null | undefined): PlanRow | null {
+  const priced = (plans ?? []).filter(p => monthlyYenForPlanPath(p.path) != null)
+  if (priced.length === 0) return null
+  return priced.reduce((cheapest, p) =>
+    monthlyYenForPlanPath(p.path)! < monthlyYenForPlanPath(cheapest.path)! ? p : cheapest
+  )
+}
+
+/** プランの実際の月額（総額）。単価 ×（ノード数。不明なら1台と仮定）。表に無ければ null。 */
+function totalMonthlyYenForPlan(p: PlanRow): number | null {
+  const unit = monthlyYenForPlanPath(p.path)
+  if (unit == null) return null
+  return unit * (p.nodeCount ?? 1)
+}
+
+/**
+ * 既定で選ぶロードバランサプランを決める（roadmap #26）。
+ *
+ * `nodeCount === 1`（非冗長）を優先し、その中で**総額（単価 × (nodeCount ?? 1)）が最安**のものを返す。
+ * `monthlyYenForPlanPath` は path 末尾の `_1`/`_2`（ノード数の違い）を無視して**1ノードあたりの単価**を
+ * 返すため、単価だけで比べると「実際に払う額」を比較したことにならない
+ * （非冗長=1台なら単価=総額で一致するが、フォールバックで冗長プラン同士を比べるときにズレる）。
+ * 非冗長で額を引けるプランが1つも無ければ、額を引けるプラン全体からの**総額**最安にフォールバックする。
+ * ワーカ側と同じく、額を引けないプランは候補にせず、1つも引けなければ null。
+ * 並び順には依存しない（`reduce` で全件を比較する）。
+ */
+export function pickCheapestLbPlan(plans: readonly PlanRow[] | null | undefined): PlanRow | null {
+  const priced = (plans ?? []).filter(p => monthlyYenForPlanPath(p.path) != null)
+  if (priced.length === 0) return null
+  const nonRedundant = priced.filter(p => p.nodeCount === 1)
+  const pool = nonRedundant.length > 0 ? nonRedundant : priced
+  return pool.reduce((cheapest, p) =>
+    totalMonthlyYenForPlan(p)! < totalMonthlyYenForPlan(cheapest)! ? p : cheapest
+  )
+}
+
+/**
  * 押す前の確認ダイアログに出す見積り文を組み立てる（掟5: 破壊操作は確認ダイアログに額を出す）。
  * **表に無いプランは「月額を出せません」と正直に出し、金額を推測して埋めない**
  * （2026-08-14「既定値が、勝手に課金を生むことがある」と同じ理由——分からない額を0や代表値で
@@ -162,6 +208,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     const r = await activateCloudKey(id)
     if (!r.ok) return
     await refreshKey(); await refreshCloudKeys()
+    // 使うキーを切り替えたら、前のキーで確かめた疎通結果は無効。再度③で確かめてもらう。
+    setApiReachable(null)
   }
 
   // ── ② サービスプリンシパル（リソースID・手作業） ──────────────────
@@ -172,6 +220,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // ── ③ プラン・制限（API取得） ─────────────────────────────────
   const [checking, setChecking] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
+  // ①で疎通の結果を出すための状態（roadmap #25）。null＝まだ③「調べる」を押していない。
+  // ③のどれか1つでも成功すれば「このキーで通じた」とみなす（1つも通らなければ失敗）。
+  const [apiReachable, setApiReachable] = useState<boolean | null>(null)
   const [limits, setLimits] = useState<Limits | null>(null)
   const [limitsError, setLimitsError] = useState<string | null>(null)
   const [workerPlans, setWorkerPlans] = useState<PlanRow[] | null>(null)
@@ -188,6 +239,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       const auth = await window.electronAPI.cloud.loadKey()
       if (!auth || !auth.token || !auth.secret) {
         setCheckError('さくらのクラウドAPIキーが未登録です。①で登録してください。')
+        // ここでは何も試していない（＝キーが「悪い」わけではない）ので apiReachable は null のまま。
+        // false にすると「このキーでは通じませんでした」と出て、①の「⚠️ APIキーが未登録です」と
+        // 合わせて「キーが無い」のか「キーが悪い」のか分からなくなる。
         return
       }
       setLimits(null); setLimitsError(null)
@@ -212,8 +266,12 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
       if (clustersRes.ok) setClusterInfo(extractClusterCount(clustersRes.data))
       else setClusterError(clustersRes.message)
+
+      // ①へ出す疎通結果（roadmap #25）: 4件のうちどれか1つでも成功すれば「通じた」。
+      setApiReachable(limitsRes.ok || plansRes.worker.ok || plansRes.lb.ok || clustersRes.ok)
     } catch (e: any) {
       setCheckError(e?.message ?? String(e))
+      setApiReachable(false)
     } finally {
       setChecking(false)
     }
@@ -266,17 +324,18 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const [createResult, setCreateResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['create']>> | null>(null)
 
   // プランが取得できたら（③の「調べる」の後）既定を選んでおく。一度選んだら上書きしない。
+  // **既定は「料金表で引ける中の最安」**（roadmap #26）。額を引けないプランは既定にしない
+  // （選べなければ null のままにし、⑤に「プランを選んでください」を出す＝黙って高いものを選ばない）。
   useEffect(() => {
     if (selectedWorkerPath) return
-    const withPath = (workerPlans ?? []).find(p => p.path)
-    if (withPath) setSelectedWorkerPath(withPath.path)
+    const cheapest = pickCheapestWorkerPlan(workerPlans)
+    if (cheapest) setSelectedWorkerPath(cheapest.path)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workerPlans])
   useEffect(() => {
     if (selectedLbPath) return
-    // LBは nodeCount:1（非冗長）を既定にする（月額が安い方・docs 5-6）。
-    const preferred = (lbPlans ?? []).find(p => p.nodeCount === 1 && p.path) ?? (lbPlans ?? []).find(p => p.path)
-    if (preferred) setSelectedLbPath(preferred.path)
+    const cheapest = pickCheapestLbPlan(lbPlans)
+    if (cheapest) setSelectedLbPath(cheapest.path)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lbPlans])
 
@@ -382,7 +441,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   }, [projectDir])
 
   useEffect(() => {
-    const h = () => { refreshKey(); refreshCloudKeys() }
+    // キーが（他画面の「認証情報」経由で）切り替わったら、前のキーで確かめた疎通結果を無効にする。
+    // ここで setApiReachable(null) しないと、①の表示は「使用中のキー」だけ新しくなり、
+    // その真下に前のキーで得た「✅ 通じました」が残ったままになる（常時課金サービスへの嘘の緑チェック）。
+    const h = () => { refreshKey(); refreshCloudKeys(); setApiReachable(null) }
     window.addEventListener('sakura:credentials-changed', h)
     return () => window.removeEventListener('sakura:credentials-changed', h)
   }, [refreshKey, refreshCloudKeys])
@@ -394,10 +456,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
-        <p className="text-sm font-semibold text-ink">📦 さくらのAppRun 専有型（下調べ）</p>
+        <p className="text-sm font-semibold text-ink">📦 さくらのAppRun 専有型</p>
         <p className="text-xs text-ink-muted leading-relaxed">
           仮想サーバレベルで専有するAppRun。独自ドメインが使えますが、常時課金・4階層の構成が必要な上級者向けサービスです。
-          このバージョンでは<b className="text-ink">作成は行わず</b>、制限・プラン・費用の確認と同意までです。
+          <b className="text-ink">クラスタの作成・破棄までは行えます。</b>アプリケーションの公開（独自ドメインでの利用）はこのバージョンではまだできません。
         </p>
         <p className="text-[11px] text-ink-muted">
           <a href={OFFICIAL_PRICE_URL} className="hover:underline">🌐 公式サイトを見る ↗</a>
@@ -438,7 +500,18 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           onClick={onOpenCredentials}
           className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
         >🔑 認証情報で登録・切替</button>
-        <p className="text-[11px] text-ink-muted leading-relaxed">疎通の確認は、下の「③ 調べる」で行います。</p>
+        {/* 疎通の結果（roadmap #25）: ③「🔍 調べる」を押すまでは現状の案内文のまま。
+            押した後は、その結果（通じた／通じなかった）をここにも出す
+            （①だけ見て「確認できない＝未実装」に見えるのを防ぐ）。 */}
+        {apiReachable === null ? (
+          <p className="text-[11px] text-ink-muted leading-relaxed">疎通の確認は、下の「③ 調べる」で行います。</p>
+        ) : apiReachable ? (
+          <p className="text-[11px] text-brand-green font-semibold leading-relaxed">✅ このキーで専有型APIに通じました</p>
+        ) : (
+          <p className="text-[11px] text-brand-yellow font-semibold leading-relaxed">
+            ⚠️ このキーでは通じませんでした。下の「③ 調べる」の結果をご確認ください。
+          </p>
+        )}
       </section>
 
       {/* ② サービスプリンシパルの用意（手作業が必要） */}
@@ -536,12 +609,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             {lbError ? <ErrorBlock msg={`取得できませんでした: ${lbError}`} /> : (
               <ul className="text-xs text-ink-secondary space-y-0.5 pl-1">
                 {(lbPlans ?? []).length === 0 && <li>（プランがありませんでした）</li>}
+                {/* APIの name をそのまま出す。nodeCount 由来の「（冗長）」等は付け足さない（roadmap #27） */}
                 {(lbPlans ?? []).map((p, i) => (
-                  <li key={i}>
-                    ・{p.name ?? '（名前を取得できませんでした）'}
-                    {p.nodeCount === 1 && <span className="text-ink-muted">（非冗長）</span>}
-                    {p.nodeCount === 2 && <span className="text-ink-muted">（冗長）</span>}
-                  </li>
+                  <li key={i}>・{p.name ?? '（名前を取得できませんでした）'}</li>
                 ))}
               </ul>
             )}
@@ -694,15 +764,23 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-ink-secondary">ワーカプラン</label>
               {workerPlans && workerPlans.some(p => p.path) ? (
-                <select
-                  value={selectedWorkerPath ?? ''}
-                  onChange={e => setSelectedWorkerPath(e.target.value)}
-                  className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
-                >
-                  {workerPlans.filter(p => p.path).map(p => (
-                    <option key={p.path as string} value={p.path as string}>{p.name ?? p.path}</option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    value={selectedWorkerPath ?? ''}
+                    onChange={e => setSelectedWorkerPath(e.target.value)}
+                    className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                  >
+                    {!selectedWorkerPath && <option value="">（選んでください）</option>}
+                    {workerPlans.filter(p => p.path).map(p => (
+                      <option key={p.path as string} value={p.path as string}>{p.name ?? p.path}</option>
+                    ))}
+                  </select>
+                  {!selectedWorkerPath && (
+                    <p className="text-[11px] text-brand-yellow leading-relaxed">
+                      ⚠️ プランを選んでください（既定は選んでいません。料金表に無いプランのため自動では選べませんでした）
+                    </p>
+                  )}
+                </>
               ) : (
                 <p className="text-[11px] text-brand-yellow">③の「🔍 調べる」を押してプランを取得してください。</p>
               )}
@@ -725,17 +803,24 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-ink-secondary">ロードバランサプラン</label>
               {lbPlans && lbPlans.some(p => p.path) ? (
-                <select
-                  value={selectedLbPath ?? ''}
-                  onChange={e => setSelectedLbPath(e.target.value)}
-                  className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
-                >
-                  {lbPlans.filter(p => p.path).map(p => (
-                    <option key={p.path as string} value={p.path as string}>
-                      {(p.name ?? p.path)}{p.nodeCount === 1 ? '（非冗長）' : p.nodeCount === 2 ? '（冗長）' : ''}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    value={selectedLbPath ?? ''}
+                    onChange={e => setSelectedLbPath(e.target.value)}
+                    className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                  >
+                    {!selectedLbPath && <option value="">（選んでください）</option>}
+                    {/* APIの name をそのまま出す。nodeCount 由来の「（冗長）」等は付け足さない（roadmap #27・API側が既に含む） */}
+                    {lbPlans.filter(p => p.path).map(p => (
+                      <option key={p.path as string} value={p.path as string}>{p.name ?? p.path}</option>
+                    ))}
+                  </select>
+                  {!selectedLbPath && (
+                    <p className="text-[11px] text-brand-yellow leading-relaxed">
+                      ⚠️ プランを選んでください（既定は選んでいません。料金表に無いプランのため自動では選べませんでした）
+                    </p>
+                  )}
+                </>
               ) : (
                 <p className="text-[11px] text-brand-yellow">③の「🔍 調べる」を押してプランを取得してください。</p>
               )}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort } from '../src/renderer/components/AppRunDedicatedPanel'
+import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan } from '../src/renderer/components/AppRunDedicatedPanel'
 
 // roadmap #23。段階①「下調べ画面」の配線に加え、段階②「作る」＋④「破棄」の配線を固定する
 // （掟6: IPC 3点セット・掟10: 一元化した守りはテストで固定する）。実装をわざと壊すと落ちることを
@@ -82,27 +82,79 @@ describe('段階②で追加した破壊系メソッドは apprunDedicated.ts �
   })
 })
 
-describe('PublishModal: 公開先の選択肢に「さくらのAppRun 専有型」がある', () => {
-  it("Target 型に 'sakura-apprun-dedicated' がある", () => {
+describe('PublishModal: AppRun は一覧で1行にまとめ、タブで共用型／専有型を切り替える（roadmap #24）', () => {
+  it("Target 型の値は変わっていない（'sakura-apprun' / 'sakura-apprun-dedicated' とも既存のまま。互換性のため）", () => {
     expect(publishModal).toContain("type Target = 'sakura-rental' | 'sakura-apprun' | 'hanamii' | 'vercel' | 'sakura-vps' | 'sakura-apprun-dedicated'")
   })
 
-  it('選択ボタンがある（ラベルと「上級者向け・準備中」の注記）', () => {
-    expect(publishModal).toContain("onClick={() => setTarget('sakura-apprun-dedicated')}")
-    expect(publishModal).toContain('📦 さくらのAppRun 専有型')
-    expect(publishModal).toContain('上級者向け・準備中')
+  it('選択画面（公開先を選ぶ一覧）に「📦 さくらのAppRun」の行は1つだけ。専有型への別行・別ボタンは無い', () => {
+    const start = publishModal.indexOf('// ── 公開先の選択（ローカルのみ／未設定のプロジェクト） ──')
+    const end = publishModal.indexOf("target === 'sakura-rental' ? (")
+    expect(start).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(start)
+    const block = publishModal.slice(start, end)
+    const appRunButtons = [...block.matchAll(/onClick=\{\(\) => setTarget\('sakura-apprun(-dedicated)?'\)\}/g)]
+    expect(appRunButtons.length).toBe(1)
+    expect(appRunButtons[0][1]).toBeUndefined() // 'sakura-apprun-dedicated' への直行ボタンは無い（'sakura-apprun' のみ）
+    expect(block).not.toContain('📦 さくらのAppRun 専有型')
+    expect(block).toContain('📦 さくらのAppRun')
   })
 
-  it('選ぶと AppRunDedicatedPanel を表示する', () => {
+  it('選んだ後、パネルの上にタブ「共用型」「専有型（上級者向け）」を出して切り替える', () => {
+    const at = publishModal.indexOf("(target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') ? (")
+    expect(at).toBeGreaterThan(0)
+    const block = publishModal.slice(at, at + 2300)
+    expect(block).toContain('role="tablist"')
+    expect(block).toContain('>共用型</button>')
+    expect(block).toContain('>専有型（上級者向け）</button>')
+    expect(block).toContain("onClick={() => setTarget('sakura-apprun')}")
+    expect(block).toContain("onClick={() => setTarget('sakura-apprun-dedicated')}")
+  })
+
+  it('専有型タブには常時課金であることを出す', () => {
+    const at = publishModal.indexOf("(target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') ? (")
+    const block = publishModal.slice(at, at + 2300)
+    expect(block).toContain('月2万円〜の常時課金')
+  })
+
+  it('レビュー指摘5の直し: 専有型タブには「アプリの公開（独自ドメイン）はまだできません」も出す（旧UIのボタン名にあった「準備中」注記が、タブになって消えていたため）。金額の警告はそのまま残す', () => {
+    const at = publishModal.indexOf("(target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') ? (")
+    const block = publishModal.slice(at, at + 2300)
+    expect(block).toContain('月2万円〜の常時課金') // 金額の警告は変えていない
+    expect(block).toContain('アプリの公開（独自ドメイン）はまだできません')
+  })
+
+  it('タブに応じて AppRunPanel / AppRunDedicatedPanel を切り替えて表示する', () => {
     expect(publishModal).toContain("import AppRunDedicatedPanel from './AppRunDedicatedPanel'")
-    expect(publishModal).toContain("target === 'sakura-apprun-dedicated' ? (")
-    const at = publishModal.indexOf("target === 'sakura-apprun-dedicated' ? (")
-    expect(publishModal.slice(at, at + 500)).toContain('<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />')
+    const at = publishModal.indexOf("(target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') ? (")
+    const block = publishModal.slice(at, at + 2300)
+    expect(block).toContain("target === 'sakura-apprun' ? (")
+    expect(block).toContain('<AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />')
+    expect(block).toContain('<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />')
+  })
+
+  it('保存された meta.target が sakura-apprun-dedicated なら、専有型タブが開いた状態になる（初期化ロジックが target を直接使う）', () => {
+    // 公開実績が無ければ、読み込んだ meta.target をそのまま target state に使う（既存ロジック・変更なし）。
+    expect(publishModal).toContain("else if (m.target === 'sakura-rental' || m.target === 'sakura-apprun' || m.target === 'hanamii' || m.target === 'vercel' || m.target === 'sakura-vps' || m.target === 'sakura-apprun-dedicated') setTarget(m.target)")
+    // タブの選択状態は target の値そのもので判定しており、別の状態変数を持たない
+    // （＝ target が 'sakura-apprun-dedicated' になった時点で専有型タブが必ず選択状態になる）。
+    expect(publishModal).toContain("aria-selected={target === 'sakura-apprun-dedicated'}")
   })
 
   it('PublishTargetKind（公開記録の種別）には足していない（クラスタは作れても「公開」はまだ無いため。sakura-vps と同じ扱い）', () => {
     expect(publishModal).toContain("type PublishTargetKind = 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 'vercel'")
     expect(publishModal).not.toMatch(/type PublishTargetKind[^\n]*sakura-apprun-dedicated/)
+  })
+
+  it('レビュー指摘6の直し: 「さくら以外の公開先」の見出しの下に🖥さくらのVPS（さくら自身のサービス）が残っていた不整合を直す。見出しを中身に合わせ、VPSを「さくら以外」と呼ばない', () => {
+    expect(publishModal).not.toContain('さくら以外の公開先')
+    expect(publishModal).toContain('その他の公開先')
+    // 見出しのすぐ後に HANAMII・Vercel・VPS の3つが続くこと（中身は変えていない）。
+    const at = publishModal.indexOf('その他の公開先')
+    const block = publishModal.slice(at, at + 1300)
+    expect(block).toContain('🌸 HANAMII')
+    expect(block).toContain('▲ Vercel')
+    expect(block).toContain('🖥 さくらのVPS')
   })
 })
 
@@ -114,6 +166,19 @@ describe('targetProfiles.ts: sakura-apprun-dedicated の定義', () => {
     const block = targetProfiles.slice(at, at + 900)
     expect(block).toContain('autoPublish: false')
     expect(block).toContain('serviceUrl:')
+  })
+})
+
+describe('レビュー指摘8: COMING_SOON_TARGETS に sakura-apprun-dedicated を残す意図がコメントで明示されている', () => {
+  it('「クラスタは作れるが公開まではできないので隠す」「公開先の一覧には出さずAppRunのタブからだけ到達する」ことがコメントに書いてある。方針（残す）自体は変えていない', () => {
+    expect(targetProfiles).toContain("const COMING_SOON_TARGETS = new Set<TargetId>(['sakura-vps', 'sakura-cloud', 'sakura-apprun-dedicated'])")
+    const at = targetProfiles.indexOf('sakura-apprun-dedicated は方針が違う')
+    expect(at).toBeGreaterThan(0)
+    const setAt = targetProfiles.indexOf("const COMING_SOON_TARGETS = new Set<TargetId>", at)
+    expect(setAt).toBeGreaterThan(at)
+    const block = targetProfiles.slice(at, setAt)
+    expect(block).toContain('公開先の一覧には出さない')
+    expect(block).toContain('タブからだけ')
   })
 })
 
@@ -223,6 +288,273 @@ describe('⑤: 単価表に無いプランのときは金額を捏造しない�
     expect(monthlyYenForPlanPath('cloud/apprun/dedicated/worker/4vcpu_4gb')).toBe(33000)
     expect(monthlyYenForPlanPath('cloud/apprun/dedicated/worker/8vcpu_8gb')).toBe(64020)
     expect(monthlyYenForPlanPath('cloud/apprun/dedicated/worker/16vcpu_64gb')).toBeNull()
+  })
+})
+
+// 実物の値（roadmap #26・2026-09-07 実機確認。GET /service_classes/worker・/lb は高い順で返る）。
+// テストの偽データは実物の値をそのまま使う（2026-09-07 の事故: 偽サーバが実物と違う形を
+// 返していたためテストが素通りした。docs/apprun-dedicated-plan.md 5-8）。
+const REAL_WORKER_PLANS_HIGH_TO_LOW = [
+  { name: 'AppRun専有型 ワーカ 8vCPU / 8GBメモリ', nodeCount: null, path: 'cloud/apprun/dedicated/worker/8vcpu_8gb' },
+  { name: 'AppRun専有型 ワーカ 4vCPU / 4GBメモリ', nodeCount: null, path: 'cloud/apprun/dedicated/worker/4vcpu_4gb' },
+  { name: 'AppRun専有型 ワーカ 2vCPU / 2GBメモリ', nodeCount: null, path: 'cloud/apprun/dedicated/worker/2vcpu_2gb' },
+  { name: 'AppRun専有型 ワーカ 1vCPU / 2GBメモリ', nodeCount: null, path: 'cloud/apprun/dedicated/worker/1vcpu_2gb' },
+]
+const REAL_LB_PLANS_HIGH_TO_LOW = [
+  { name: 'AppRun専有型 ロードバランサ 2vCPU / 2GBメモリ（冗長構成）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/2vcpu_2gb_2' },
+  { name: 'AppRun専有型 ロードバランサ 2vCPU / 2GBメモリ（非冗長構成）', nodeCount: 1, path: 'cloud/apprun/dedicated/lb/2vcpu_2gb_1' },
+  { name: 'AppRun専有型 ロードバランサ 1vCPU / 2GBメモリ（冗長構成）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_2' },
+  { name: 'AppRun専有型 ロードバランサ 1vCPU / 2GBメモリ（非冗長構成）', nodeCount: 1, path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_1' },
+]
+
+// 配列の全順列を返す（n要素なら n! 通り。4要素なら24通り）。
+// レビュー指摘2の直し: 以前ここにあった `shuffled()`（j = (i*2654435761) % (i+1) による
+// 疑似シャッフル）は、4要素では常に j===i（自己交換のみ）になり、**何も並べ替えていなかった**
+// （2026-09-07 実際に動かして確認: i=3→j=3, i=2→j=2, i=1→j=1）。同じ並びを5回試すだけの空の
+// テストになっていた。#26 の事故の本質は「一覧の順序に依存した実装」であり、その再発を止める
+// 唯一のテストが機能していなかった。Math.random() も使わない（再現性のため）——
+// 4要素の**全24通り**を漏れなく総当たりする。
+function permutations<T>(arr: readonly T[]): T[][] {
+  if (arr.length <= 1) return [[...arr]]
+  const result: T[][] = []
+  for (let i = 0; i < arr.length; i++) {
+    const rest = [...arr.slice(0, i), ...arr.slice(i + 1)]
+    for (const perm of permutations(rest)) result.push([arr[i], ...perm])
+  }
+  return result
+}
+
+describe('⑤: 既定で選ぶプランは「料金表で引ける中の最安」（roadmap #26・2026-09-07 実機で発覚した既定=最高額プランのバグの修理）', () => {
+  it('pickCheapestWorkerPlan: 実物の4プラン（高い順そのまま）を渡すと、最安の 1vcpu_2gb が選ばれる（月11,000円。先頭＝8vcpu_8gb＝月64,020円を選ばない）', () => {
+    const picked = pickCheapestWorkerPlan(REAL_WORKER_PLANS_HIGH_TO_LOW)
+    expect(picked?.path).toBe('cloud/apprun/dedicated/worker/1vcpu_2gb')
+    expect(monthlyYenForPlanPath(picked?.path)).toBe(11000)
+  })
+
+  it('pickCheapestLbPlan: 実物の4プランを渡すと、非冗長かつ最安の 1vcpu_2gb_1 が選ばれる（月11,000円）', () => {
+    const picked = pickCheapestLbPlan(REAL_LB_PLANS_HIGH_TO_LOW)
+    expect(picked?.path).toBe('cloud/apprun/dedicated/lb/1vcpu_2gb_1')
+    expect(picked?.nodeCount).toBe(1)
+    expect(monthlyYenForPlanPath(picked?.path)).toBe(11000)
+  })
+
+  it('並び順を変えても結果は同じ（4要素・全24通りの順列すべてで固定する。#26は「一覧の順序に依存した実装」が事故の本質だったため、抜け漏れのない総当たりにする）', () => {
+    const workerPerms = permutations(REAL_WORKER_PLANS_HIGH_TO_LOW)
+    expect(workerPerms.length).toBe(24)
+    for (const perm of workerPerms) {
+      expect(pickCheapestWorkerPlan(perm)?.path).toBe('cloud/apprun/dedicated/worker/1vcpu_2gb')
+    }
+
+    const lbPerms = permutations(REAL_LB_PLANS_HIGH_TO_LOW)
+    expect(lbPerms.length).toBe(24)
+    for (const perm of lbPerms) {
+      expect(pickCheapestLbPlan(perm)?.path).toBe('cloud/apprun/dedicated/lb/1vcpu_2gb_1')
+    }
+  })
+
+  // 親（Opus）の変異試験で見つかった穴（2026-09-07）: `pickCheapestLbPlan` から
+  // 「非冗長（nodeCount===1）を優先する」を外しても、**どのテストも落ちなかった**。
+  // 実物の8プランでは、総額で比べれば非冗長のほうが必ず安くなるため、優先の有無で答えが変わらない。
+  // つまり「まず非冗長を勧める」という**方針そのものが試験されていなかった**（黙って消えうる）。
+  //
+  // ⚠️ このとき、**その入力で差が出るのか**を先に確かめること（playbook: ミューテーションで
+  // 落ちなかったら、テストの書き方より先に「その入力で差が出るのか」を疑う）。
+  // 総額では冗長のほうが安く、かつ非冗長も存在する入力でなければ、方針は試験できない。
+  it('pickCheapestLbPlan: 総額では冗長のほうが安くても、非冗長を優先する（方針を固定する）', () => {
+    const plans = [
+      // 冗長: 1コア/2GB（11,000円）× 2ノード = 総額 22,000円 ← 総額ではこちらが安い
+      { name: 'LB 1vCPU/2GB（冗長構成）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_2' },
+      // 非冗長: 4コア/4GB（33,000円）× 1ノード = 総額 33,000円
+      { name: 'LB 4vCPU/4GB（非冗長構成）', nodeCount: 1, path: 'cloud/apprun/dedicated/lb/4vcpu_4gb_1' },
+    ]
+    // 総額だけで選ぶと冗長（22,000円）が勝つ。**それでも非冗長を選ぶ**のが方針。
+    expect(pickCheapestLbPlan(plans)?.path).toBe('cloud/apprun/dedicated/lb/4vcpu_4gb_1')
+    expect(pickCheapestLbPlan(plans)?.nodeCount).toBe(1)
+  })
+
+  it('pickCheapestLbPlan: 非冗長が1つも無ければ、冗長からの最安（総額）にフォールバックする', () => {
+    const onlyRedundant = [
+      { name: 'LB 2vCPU/2GB（冗長構成）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/2vcpu_2gb_2' },
+      { name: 'LB 1vCPU/2GB（冗長構成）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_2' },
+    ]
+    expect(pickCheapestLbPlan(onlyRedundant)?.path).toBe('cloud/apprun/dedicated/lb/1vcpu_2gb_2')
+  })
+
+  it('料金表に無い path しか無ければ null（既定を選ばない。分からない額を既定にしない）', () => {
+    const unknown = [{ name: '謎の巨大プラン', nodeCount: null, path: 'cloud/apprun/dedicated/worker/16vcpu_64gb' }]
+    expect(pickCheapestWorkerPlan(unknown)).toBeNull()
+    const unknownLb = [{ name: '謎のLB', nodeCount: 1, path: 'cloud/apprun/dedicated/lb/16vcpu_64gb_1' }]
+    expect(pickCheapestLbPlan(unknownLb)).toBeNull()
+  })
+
+  it('プランが1つも無い（空配列・null・undefined）なら null', () => {
+    expect(pickCheapestWorkerPlan([])).toBeNull()
+    expect(pickCheapestWorkerPlan(null)).toBeNull()
+    expect(pickCheapestWorkerPlan(undefined)).toBeNull()
+    expect(pickCheapestLbPlan([])).toBeNull()
+  })
+
+  it('LB: 非冗長（nodeCount===1）が1つも無ければ、全体（冗長を含む）からの最安にフォールバックする', () => {
+    const onlyRedundant = [
+      { name: '2コア（冗長）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/2vcpu_2gb_2' },
+      { name: '1コア（冗長）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_2' },
+    ]
+    const picked = pickCheapestLbPlan(onlyRedundant)
+    expect(picked?.path).toBe('cloud/apprun/dedicated/lb/1vcpu_2gb_2') // 冗長の中でも最安（1コア/2GB=11,000円 < 2コア/2GB=16,940円）
+  })
+
+  it('LB: 額を引けない非冗長プランより、額を引ける冗長プランを優先する（額を引けないものは非冗長でも候補にしない）', () => {
+    const mixed = [
+      { name: '謎の非冗長', nodeCount: 1, path: 'cloud/apprun/dedicated/lb/16vcpu_64gb_1' }, // 料金表に無い
+      { name: '1コア（冗長）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_2' }, // 料金表にある
+    ]
+    const picked = pickCheapestLbPlan(mixed)
+    expect(picked?.path).toBe('cloud/apprun/dedicated/lb/1vcpu_2gb_2')
+  })
+
+  it('LB: 非冗長が料金表に無いフォールバックでは、単価ではなく総額（単価×nodeCount）で最安を選ぶ（レビュー指摘3の直し）', () => {
+    // monthlyYenForPlanPath は path 末尾の _1/_2（ノード数）を無視して1ノードあたりの単価を返すため、
+    // 単価だけで比べると「実際に払う額」の比較にならない。nodeCount が違うプラン同士が混ざる
+    // フォールバックで、単価が安い方≠総額が安い方、となるケースを作って固定する。
+    const pool = [
+      // 2コア/2GB・2ノード: 単価16,940円 × 2ノード = 総額33,880円
+      { name: '2コア/2GB（2ノード）', nodeCount: 2, path: 'cloud/apprun/dedicated/lb/2vcpu_2gb_2' },
+      // 1コア/2GB・4ノード（テスト用の合成データ。実物のLBにこの構成は無い）:
+      // 単価11,000円 × 4ノード = 総額44,000円。単価だけ見ると最安に見えるが、総額は上より高い。
+      { name: '1コア/2GB（4ノード・テスト用）', nodeCount: 4, path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_2' },
+    ]
+    const picked = pickCheapestLbPlan(pool)
+    // 単価比較（旧実装）なら「1コア/2GB（4ノード）」（11,000 < 16,940）が選ばれてしまうが、
+    // 総額比較（直した実装）では「2コア/2GB（2ノード）」の方が安い（33,880円 < 44,000円）。
+    expect(picked?.path).toBe('cloud/apprun/dedicated/lb/2vcpu_2gb_2')
+    expect(picked?.nodeCount).toBe(2)
+  })
+
+  it('ワーカ側の useEffect は pickCheapestWorkerPlan を呼ぶだけ（一度選んだら上書きしないガードは維持）', () => {
+    const at = panel.indexOf('useEffect(() => {\n    if (selectedWorkerPath) return')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 300)
+    expect(block).toContain('const cheapest = pickCheapestWorkerPlan(workerPlans)')
+    expect(block).toContain('if (cheapest) setSelectedWorkerPath(cheapest.path)')
+    // 「一覧の先頭」を既定にする旧実装（#26のバグそのもの）が残っていないこと。
+    expect(panel).not.toContain('(workerPlans ?? []).find(p => p.path)')
+  })
+
+  it('LB側の useEffect も pickCheapestLbPlan を呼ぶだけ', () => {
+    const at = panel.indexOf('useEffect(() => {\n    if (selectedLbPath) return')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 300)
+    expect(block).toContain('const cheapest = pickCheapestLbPlan(lbPlans)')
+    expect(block).toContain('if (cheapest) setSelectedLbPath(cheapest.path)')
+  })
+
+  it('⑤: 既定が選べなかったとき（プラン取得済みだが selectedWorkerPath/selectedLbPath が null）は、選ばせる注記を出す', () => {
+    expect(panel).toContain('⚠️ プランを選んでください（既定は選んでいません')
+  })
+})
+
+describe('#27: ロードバランサのプラン名に「（冗長構成）（冗長）」のような二重の注記を付けない', () => {
+  it('③の一覧では API の name をそのまま出し、nodeCount 由来の（冗長）（非冗長）を付け足さない', () => {
+    const at = panel.indexOf('<p className="text-[11px] font-semibold text-ink-secondary">ロードバランサプラン</p>')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 500)
+    // 表示行そのもの（<li>）が name だけで終わっており、nodeCount 由来の付け足しが無いこと。
+    // （このセクションの説明コメント自体に「（冗長）」という語が出るため、コメントは対象から除く）
+    const liLine = block.split('\n').find(l => l.includes('<li key={i}>・{p.name'))
+    expect(liLine).toBe("                  <li key={i}>・{p.name ?? '（名前を取得できませんでした）'}</li>")
+    expect(block).not.toContain('p.nodeCount === 1 &&')
+    expect(block).not.toContain('p.nodeCount === 2 &&')
+  })
+
+  it('⑤のプラン選択（select）でも同様に name をそのまま出す', () => {
+    const at = panel.indexOf('<label className="text-[11px] font-medium text-ink-secondary">ロードバランサプラン</label>')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 900)
+    expect(block).not.toContain("nodeCount === 1 ? '（非冗長）'")
+    expect(block).not.toContain("nodeCount === 2 ? '（冗長）'")
+    expect(block).toContain('<option key={p.path as string} value={p.path as string}>{p.name ?? p.path}</option>')
+  })
+})
+
+describe('#25: ①認証情報に、③「調べる」の疎通結果を出す', () => {
+  it('③を押していない間（apiReachable===null）は現状の文言のまま', () => {
+    expect(panel).toContain('疎通の確認は、下の「③ 調べる」で行います。')
+    const at = panel.indexOf('apiReachable === null ? (')
+    expect(at).toBeGreaterThan(0)
+  })
+
+  it('investigate() は limits/worker/lb/clusters のいずれか1つでも成功すれば apiReachable を true にする', () => {
+    const at = panel.indexOf('const investigate = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
+    expect(block).toContain('setApiReachable(limitsRes.ok || plansRes.worker.ok || plansRes.lb.ok || clustersRes.ok)')
+    // 想定外の例外（catchブロック）では false にする（成功の余韻を残さない）。
+    expect(block).toContain('setApiReachable(false)')
+  })
+
+  it('レビュー指摘4の直し: 未登録（authが無い）の早期returnでは apiReachable を触らない（null のまま）。何も試していないので「通じなかった」と偽らない（①の「⚠️ APIキーが未登録です」と役割が重複・混同しないように）', () => {
+    const at = panel.indexOf('const investigate = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const guardAt = panel.indexOf('if (!auth || !auth.token || !auth.secret) {', at)
+    const afterGuard = panel.indexOf('setLimits(null); setLimitsError(null)', guardAt)
+    expect(guardAt).toBeGreaterThan(at)
+    expect(afterGuard).toBeGreaterThan(guardAt)
+    const block = panel.slice(guardAt, afterGuard)
+    expect(block).toContain("setCheckError('さくらのクラウドAPIキーが未登録です。①で登録してください。')")
+    // 直す前は setApiReachable(false) がここにあった。この早期return分岐からは消えていること。
+    expect(block).not.toContain('setApiReachable')
+  })
+
+  it('①に成功時「✅ このキーで専有型APIに通じました」、失敗時「⚠️ このキーでは通じませんでした」を出す', () => {
+    const at = panel.indexOf('{/* ① 認証情報 */}')
+    const end = panel.indexOf('{/* ② サービスプリンシパル', at)
+    expect(at).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('✅ このキーで専有型APIに通じました')
+    expect(block).toContain('⚠️ このキーでは通じませんでした')
+    expect(block).toContain('下の「③ 調べる」の結果をご確認ください')
+  })
+})
+
+describe('#1/#7: キーを切り替えたら、古い疎通結果（apiReachable）を残さない', () => {
+  // レビュー指摘7で認めた限界: ここは「ソースの文字列を grep する」形のテストであり、
+  // 1のような穴（listenerが状態の一部だけ更新して、別の状態を更新し忘れる）を
+  // 構造的に防げるわけではない——同じ形の直し忘れを別の箇所でまたやれば、この2本は素通りする。
+  // せめて「1の再発（この2箇所からの setApiReachable(null) の消失）」だけは検知できるようにする。
+  it("①のセレクトで別のキーを選んだとき（selectKey）、setApiReachable(null) する", () => {
+    const at = panel.indexOf('const selectKey = async (id: string) => {')
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('// ── ② サービスプリンシパル', at)
+    expect(end).toBeGreaterThan(at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('setApiReachable(null)')
+  })
+
+  it("'sakura:credentials-changed'（①「🔑 認証情報で登録・切替」からの切替）の listener が setApiReachable(null) する。これが無いと、切り替え後も直前のキーで得た「✅ 通じました」が真下に残る", () => {
+    const at = panel.indexOf("window.addEventListener('sakura:credentials-changed', h)")
+    expect(at).toBeGreaterThan(0)
+    const hAt = panel.lastIndexOf('const h = () => {', at)
+    expect(hAt).toBeGreaterThan(0)
+    const hEnd = panel.indexOf('}', hAt)
+    expect(hEnd).toBeGreaterThan(hAt)
+    const block = panel.slice(hAt, hEnd + 1)
+    expect(block).toContain('refreshKey()')
+    expect(block).toContain('refreshCloudKeys()')
+    expect(block).toContain('setApiReachable(null)')
+  })
+})
+
+describe('#28: 説明文が現状（クラスタの作成・破棄はできる。公開＝独自ドメインはまだ）に合っている', () => {
+  it('AppRunDedicatedPanel: 「作成は行わず」のような、作成できないと読める文言が残っていない', () => {
+    expect(panel).not.toContain('作成は行わず')
+    expect(panel).not.toContain('作成はまだできません')
+    expect(panel).toContain('クラスタの作成・破棄までは行えます')
+  })
+
+  it('PublishModal: 専有型の説明に「作成はまだできません」が残っていない', () => {
+    expect(publishModal).not.toContain('作成はまだできません')
+    expect(publishModal).not.toContain('下調べのみ')
   })
 })
 

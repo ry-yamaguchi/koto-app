@@ -27,10 +27,11 @@ const PENDING_TARGET_LABELS: Record<PendingPublish['target'], string> = {
 // - 前提チェック（rsync / docker）を行い、足りなければ日本語で案内
 // - 公開コマンドをIDE内ターミナルへ流して実行（進行が見える・パスワードも入力できる）
 
-// sakura-vps / sakura-apprun-dedicated は targetProfiles.COMING_SOON_TARGETS に残したまま
-// （公開・作成ができるようになるまで、通常の公開先一覧には出さない）。ただし①接続（VpsPanel）・
-// 下調べ（AppRunDedicatedPanel）は開発中の動作確認のため、この画面からだけ「準備中」表示で
-// 到達できるようにする（下の target 選択画面を参照）。
+// sakura-vps は targetProfiles.COMING_SOON_TARGETS に残したまま（新規プロジェクトの公開先
+// 選択やワークフローバーの切替では出さない。①接続（VpsPanel）まではこの画面から到達できる）。
+// sakura-apprun-dedicated も COMING_SOON_TARGETS に残したまま（同上）だが、この画面では
+// 「📦 さくらのAppRun」の1行から選んだ後、共用型/専有型のタブで切り替えて到達する（roadmap #24）。
+// クラスタの作成・破棄はできるが、アプリケーションの公開（独自ドメイン）はまだ実装していない。
 type Target = 'sakura-rental' | 'sakura-apprun' | 'hanamii' | 'vercel' | 'sakura-vps' | 'sakura-apprun-dedicated'
 
 // 統一公開記録（publish.targets）: 複数の公開先へ公開した履歴を一元管理する。
@@ -245,8 +246,8 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
         {/* 公開先を選んだら「データの保存」について知らせる（2026-08-13）。
             **公開先ごとに答えが変わる**ので、ここに置く。レンタルサーバならファイルが
             残るので費用は要らない。コンテナ系では消えるので保存場所が要る。
-            sakura-vps は①接続のみ、sakura-apprun-dedicated は下調べのみで、
-            どちらも公開の実装が無いため対象外。 */}
+            sakura-vps は①接続のみ、sakura-apprun-dedicated はクラスタの作成・破棄までで、
+            どちらもアプリケーションの公開（データを伴う公開）の実装が無いため対象外。 */}
         {loaded && target && target !== 'sakura-vps' && target !== 'sakura-apprun-dedicated' && (
           <div className="mb-3">
             <StorageNotice projectDir={projectDir} target={target as 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 'vercel'} onAskAi={onClose} />
@@ -342,11 +343,16 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
             >
               <p className="text-sm font-semibold text-ink">📦 さくらのAppRun</p>
-              <p className="text-xs text-ink-muted mt-0.5">アプリをコンテナで公開。Docker不要・IDEが自動でビルド／レジストリ作成／公開URL発行まで行います。</p>
+              <p className="text-xs text-ink-muted mt-0.5">
+                アプリをコンテナで公開。Docker不要・IDEが自動でビルド／レジストリ作成／公開URL発行まで行う「共用型」と、
+                独自ドメインが使える「専有型（上級者向け・常時課金）」を、選んだ後にタブで切り替えられます。
+              </p>
             </button>
 
             <div className="pt-2 mt-1 border-t border-line-soft space-y-3">
-              <p className="text-[11px] font-semibold text-ink-muted pt-1">さくら以外の公開先</p>
+              {/* この見出しの下は「さくら以外」ではない（🖥 さくらのVPS はさくら自身のサービス）。
+                  中身（HANAMII・Vercel・VPS）に合う中立な見出しにする（roadmap #26 レビュー6）。 */}
+              <p className="text-[11px] font-semibold text-ink-muted pt-1">その他の公開先</p>
               <button
                 onClick={() => setTarget('hanamii')}
                 className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
@@ -367,13 +373,6 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               >
                 <p className="text-sm font-semibold text-ink">🖥 さくらのVPS <span className="text-[11px] font-normal text-brand-yellow">（開発中・現在は接続確認のみ）</span></p>
                 <p className="text-xs text-ink-muted mt-0.5">自由度の高い仮想サーバ。②初期セットアップ・③公開はまだ実装中で、このバージョンでは①接続（鍵認証で安全に繋がる）までです。</p>
-              </button>
-              <button
-                onClick={() => setTarget('sakura-apprun-dedicated')}
-                className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
-              >
-                <p className="text-sm font-semibold text-ink">📦 さくらのAppRun 専有型 <span className="text-[11px] font-normal text-brand-yellow">（上級者向け・準備中）</span></p>
-                <p className="text-xs text-ink-muted mt-0.5">仮想サーバレベルで専有するAppRun。独自ドメインが使えますが、月2万円〜の常時課金です。このバージョンでは制限・料金の確認と同意まで（作成はまだできません）。</p>
               </button>
             </div>
           </div>
@@ -454,19 +453,43 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
             <VpsPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
           </div>
-        ) : target === 'sakura-apprun-dedicated' ? (
-          // ── さくらのAppRun 専有型（roadmap #23 段階①・下調べのみ。自己完結フロー） ──
+        ) : (target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') ? (
+          // ── さくらのAppRun（roadmap #24: 共用型／専有型をタブで切り替え） ──
+          // 一覧では1行にまとめ、選んだ後にここでタブ切替する。内部の識別子（Target・meta.target の
+          // 'sakura-apprun' / 'sakura-apprun-dedicated'）は変えていない（保存済みの記録が読めなくなるため）。
           <div className="space-y-3">
             <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
-            <AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+            <div className="flex items-center gap-1 border-b border-line-soft" role="tablist" aria-label="AppRunの形態">
+              <button
+                role="tab"
+                aria-selected={target === 'sakura-apprun'}
+                onClick={() => setTarget('sakura-apprun')}
+                className={`px-3 py-2 -mb-px text-sm font-semibold border-b-2 transition-colors ${target === 'sakura-apprun' ? 'border-sakura text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
+              >共用型</button>
+              <button
+                role="tab"
+                aria-selected={target === 'sakura-apprun-dedicated'}
+                onClick={() => setTarget('sakura-apprun-dedicated')}
+                className={`px-3 py-2 -mb-px text-sm font-semibold border-b-2 transition-colors ${target === 'sakura-apprun-dedicated' ? 'border-sakura text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
+              >専有型（上級者向け）</button>
+            </div>
+            {target === 'sakura-apprun-dedicated' && (
+              <>
+                <p className="text-xs font-semibold text-brand-yellow leading-relaxed">
+                  ⚠️ 専有型は月2万円〜の常時課金です（動いていなくても請求されます）。共用型は使った分だけの従量課金です。
+                </p>
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  ℹ️ クラスタの作成・破棄まではできますが、アプリの公開（独自ドメイン）はまだできません。
+                </p>
+              </>
+            )}
+            {target === 'sakura-apprun' ? (
+              <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
+            ) : (
+              <AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+            )}
           </div>
-        ) : (
-          // ── さくらのAppRun（自己完結フロー） ──
-          <div className="space-y-3">
-            <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
-            <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
-          </div>
-        )}
+        ) : null}
       </div>
     </div>
   )
