@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { TurnStartPayload, TurnAsk, TurnEvent, TurnAnswer } from '../shared/chatTurnRpc'
+import type { ApprunDedicatedClusterSpec } from './cloud/apprunDedicatedApply'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   fs: {
@@ -366,12 +367,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('vps:hardenSshd', host, port, user, privateKey, fingerprint),
   },
   apprunDedicated: {
-    // さくらのAppRun 専有型「下調べ画面」（roadmap #23 段階①）。GET のみ・クラスタもアプリも作らない。
+    // さくらのAppRun 専有型（roadmap #23）。段階①（下調べ・GETのみ）に加え、
+    // 段階②「作る」＋④「破棄」を持つ。
     // 方式B: auth は cloud.loadKey() 等で renderer が読んだ token/secret をそのまま渡す（main には保存しない）。
     limits: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:limits', auth),
     // ワーカとロードバランサのプランをまとめて返す。
     plans: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:plans', auth),
     clusters: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:clusters', auth),
+    // 段階②: クラスタ→ASG→LB の順で作る。同意（consentedAt）が記録に無ければ main 側が
+    // API を一度も呼ばずに中止する。押す前の確認ダイアログは呼び出し側（画面）の責務。
+    create: (projectDir: string, auth: { token: string; secret: string }, spec: ApprunDedicatedClusterSpec) =>
+      ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec),
+    // 段階④: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
+    teardown: (projectDir: string, auth: { token: string; secret: string }) =>
+      ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth),
+    // いま何が作られているか（.sakuraide.json の記録）を返す。API は呼ばない。
+    state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir),
   },
   registry: {
     // コンテナレジストリ認証情報（レジストリ名・ユーザー名・パスワード）の保存・状態・読戻し・削除。

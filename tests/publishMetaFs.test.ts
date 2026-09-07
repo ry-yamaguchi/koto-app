@@ -4,6 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import {
   markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs,
+  readApprunDedicatedFs, writeApprunDedicatedRecordFs,
 } from '../src/main/publishMetaFs'
 
 // roadmap #20: src/main/publishMetaFs.ts（publishMeta.ts の純関数を使って
@@ -91,6 +92,10 @@ describe('壊れている/読めない .sakuraide.json でも例外を投げな�
     fs.writeFileSync(metaPath(), '[]')
     expect(() => writeHanamiiProjectIdFs(projectDir, 'proj-x')).not.toThrow()
     expect(readMeta().publish.hanamii.projectId).toBe('proj-x')
+
+    fs.writeFileSync(metaPath(), '{ broken again')
+    expect(() => writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })).not.toThrow()
+    expect(readMeta().publish.apprunDedicated.clusterID).toBe('c1')
   })
 
   it('projectDir 自体が存在しない（読み込み時に ENOENT のディレクトリ）でも例外を投げない', () => {
@@ -99,7 +104,42 @@ describe('壊れている/読めない .sakuraide.json でも例外を投げな�
     expect(() => clearPendingFs(missing)).not.toThrow()
     expect(() => writePublishRecordFs(missing, 'vercel', { publishedAt: 't', url: null })).not.toThrow()
     expect(() => writeHanamiiProjectIdFs(missing, 'proj-x')).not.toThrow()
+    expect(() => writeApprunDedicatedRecordFs(missing, { clusterID: 'c1' })).not.toThrow()
+    expect(() => readApprunDedicatedFs(missing)).not.toThrow()
     // 書き込み自体も失敗する（親フォルダが無い）ため、ファイルは作られない。
     // ここで確かめたいのは「例外で公開処理そのものが落ちないこと」であり、書けたかどうかではない。
+  })
+})
+
+describe('readApprunDedicatedFs / writeApprunDedicatedRecordFs: AppRun専有型の記録の読み書き往復（roadmap #23 段階②）', () => {
+  it('記録が無ければ空オブジェクトを返す（未同意・未作成として扱われる）', () => {
+    expect(readApprunDedicatedFs(projectDir)).toEqual({})
+  })
+
+  it('書いたものが読み戻る。他の publish.* キーは保つ', () => {
+    fs.writeFileSync(metaPath(), JSON.stringify({ publish: { targets: { vercel: { publishedAt: 't', url: 'u' } } } }, null, 2))
+    writeApprunDedicatedRecordFs(projectDir, { consentedAt: '2026-09-01T00:00:00.000Z' })
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', name: 'myapp' })
+    writeApprunDedicatedRecordFs(projectDir, { asgID: 'a1' })
+    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: 'l1' })
+
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec).toEqual({
+      consentedAt: '2026-09-01T00:00:00.000Z',
+      clusterID: 'c1',
+      name: 'myapp',
+      asgID: 'a1',
+      loadBalancerID: 'l1',
+    })
+    expect(readMeta().publish.targets.vercel).toEqual({ publishedAt: 't', url: 'u' })
+  })
+
+  it('null で個別のIDを消せる（破棄で消せたIDをクリアする使い方）', () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBeNull()
+    expect(rec.asgID).toBe('a1')
+    expect(rec.clusterID).toBe('c1')
   })
 })

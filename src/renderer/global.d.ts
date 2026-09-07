@@ -591,7 +591,8 @@ interface Window {
       // 鍵認証の疎通確認（testConnection）が取れた後にだけ呼ぶこと（締め出し防止・順序保証）。
       hardenSshd(host: string, port: number, user: string, privateKey: string, fingerprint: string): Promise<{ ok: boolean; message?: string }>
     }
-    // さくらのAppRun 専有型「下調べ画面」（roadmap #23 段階①）。GET のみ・クラスタもアプリも作らない。
+    // さくらのAppRun 専有型（roadmap #23）。段階①（下調べ・GETのみ）に加え、
+    // 段階②「作る」＋④「破棄」を持つ。
     // auth は cloud.loadKey() 等で読んだ token/secret をそのまま渡す（方式B・main には保存しない）。
     apprunDedicated: {
       limits(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
@@ -601,6 +602,46 @@ interface Window {
         lb: { ok: true; data: unknown } | { ok: false; message: string; detail?: string }
       }>
       clusters(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
+      // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
+      // 同意（consentedAt）が記録に無ければ main 側が API を一度も呼ばずに中止する。
+      create(projectDir: string, auth: { token: string; secret: string }, spec: {
+        name: string
+        ports: { port: number; protocol: 'http' | 'https' }[]
+        servicePrincipalID: string
+        letsEncryptEmail?: string
+        zone: string
+        workerServiceClassPath: string
+        minNodes: number
+        maxNodes: number
+        lbServiceClassPath: string
+      }): Promise<{
+        ok: boolean
+        stage: 'consent' | 'limits' | 'cluster-create' | 'cluster-verify' | 'asg-create' | 'asg-verify' | 'lb-create' | 'done'
+        message: string
+        clusterID?: string | null
+        asgID?: string | null
+        loadBalancerID?: string | null
+      }>
+      // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
+      teardown(projectDir: string, auth: { token: string; secret: string }): Promise<{
+        ok: boolean
+        executed: string[]
+        message: string
+        remaining: { loadBalancerID?: string; asgID?: string; clusterID?: string }
+      }>
+      // いま何が作られているか（.sakuraide.json の publish.apprunDedicated）を返す。API は呼ばない。
+      state(projectDir: string): Promise<{
+        servicePrincipalId?: string | null
+        consentedAt?: string | null
+        clusterID?: string | null
+        asgID?: string | null
+        loadBalancerID?: string | null
+        name?: string | null
+        zone?: string | null
+        workerServiceClassPath?: string | null
+        lbServiceClassPath?: string | null
+        createdAt?: string | null
+      }>
     }
     // 📚 資料（さくらのAI Engine RAG API）。apiKey は認証情報の中央ストアから renderer が渡す（方式B）。
     rag: {

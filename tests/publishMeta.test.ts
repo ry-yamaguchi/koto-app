@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   withPublishRecord, withPendingPublish, withoutPendingPublish, withHanamiiProjectId,
+  withApprunDedicatedRecord,
 } from '../src/shared/publishMeta'
 
 // roadmap #20: `.sakuraide.json` の publish 部分をマージ書き込みする純関数の対テスト（掟10）。
@@ -108,6 +109,47 @@ describe('withHanamiiProjectId: HANAMII の projectId を保つ/更新する', (
   })
 })
 
+describe('withApprunDedicatedRecord: publish.apprunDedicated にだけ差し込み、他は保つ（roadmap #23 段階②）', () => {
+  it('★★ 既存の servicePrincipalId・consentedAt・他の publish.* キーを消さない', () => {
+    const meta = {
+      target: 'sakura-apprun-dedicated',
+      publish: {
+        targets: { vercel: { publishedAt: '2026-01-01T00:00:00.000Z', url: 'https://v.example.com' } },
+        apprunDedicated: { servicePrincipalId: '113800956789', consentedAt: '2026-08-01T00:00:00.000Z' },
+      },
+    }
+    const next = withApprunDedicatedRecord(meta, { clusterID: 'cluster-x' })
+    const rec = (next.publish as any).apprunDedicated
+    expect(rec.clusterID).toBe('cluster-x')
+    expect(rec.servicePrincipalId).toBe('113800956789')
+    expect(rec.consentedAt).toBe('2026-08-01T00:00:00.000Z')
+    expect((next.publish as any).targets.vercel).toEqual({ publishedAt: '2026-01-01T00:00:00.000Z', url: 'https://v.example.com' })
+  })
+
+  it('既存の apprunDedicated が無い（新規プロジェクト）meta でも記録できる', () => {
+    const next = withApprunDedicatedRecord({}, { consentedAt: '2026-09-01T00:00:00.000Z' })
+    expect((next.publish as any).apprunDedicated).toEqual({ consentedAt: '2026-09-01T00:00:00.000Z' })
+  })
+
+  it('段階的に呼ぶと積み上がる（クラスタ→ASG→LBの順に記録する使い方）', () => {
+    let meta: unknown = withApprunDedicatedRecord({}, { consentedAt: '2026-09-01T00:00:00.000Z' })
+    meta = withApprunDedicatedRecord(meta, { clusterID: 'c1', name: 'myapp' })
+    meta = withApprunDedicatedRecord(meta, { asgID: 'a1' })
+    meta = withApprunDedicatedRecord(meta, { loadBalancerID: 'l1' })
+    const rec = (meta as any).publish.apprunDedicated
+    expect(rec).toEqual({ consentedAt: '2026-09-01T00:00:00.000Z', clusterID: 'c1', name: 'myapp', asgID: 'a1', loadBalancerID: 'l1' })
+  })
+
+  it('null を渡すと該当フィールドを消せる（破棄で消せたIDをクリアする使い方）', () => {
+    const meta = { publish: { apprunDedicated: { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' } } }
+    const next = withApprunDedicatedRecord(meta, { loadBalancerID: null })
+    const rec = (next.publish as any).apprunDedicated
+    expect(rec.loadBalancerID).toBeNull()
+    expect(rec.asgID).toBe('a1')
+    expect(rec.clusterID).toBe('c1')
+  })
+})
+
 describe('壊れた/nullな入力でも落ちない（空オブジェクト扱い）', () => {
   const target = 'hanamii' as const
   const rec = { publishedAt: '2026-01-01T00:00:00.000Z', url: null }
@@ -122,11 +164,13 @@ describe('壊れた/nullな入力でも落ちない（空オブジェクト扱�
     ['publish が文字列', { publish: 'oops' }],
     ['publish.targets が壊れている', { publish: { targets: 'oops' } }],
     ['publish.hanamii が壊れている', { publish: { hanamii: 'oops' } }],
+    ['publish.apprunDedicated が壊れている', { publish: { apprunDedicated: 'oops' } }],
   ])('meta = %s でも例外を投げない', (_label, meta) => {
     expect(() => withPublishRecord(meta, target, rec)).not.toThrow()
     expect(() => withPendingPublish(meta, target, '2026-01-01T00:00:00.000Z')).not.toThrow()
     expect(() => withoutPendingPublish(meta)).not.toThrow()
     expect(() => withHanamiiProjectId(meta, 'proj-1')).not.toThrow()
+    expect(() => withApprunDedicatedRecord(meta, { clusterID: 'c1' })).not.toThrow()
   })
 
   it('null を渡すと、空オブジェクトから組み立てた結果が返る', () => {
