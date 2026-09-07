@@ -591,6 +591,17 @@ interface Window {
       // 鍵認証の疎通確認（testConnection）が取れた後にだけ呼ぶこと（締め出し防止・順序保証）。
       hardenSshd(host: string, port: number, user: string, privateKey: string, fingerprint: string): Promise<{ ok: boolean; message?: string }>
     }
+    // さくらのAppRun 専有型「下調べ画面」（roadmap #23 段階①）。GET のみ・クラスタもアプリも作らない。
+    // auth は cloud.loadKey() 等で読んだ token/secret をそのまま渡す（方式B・main には保存しない）。
+    apprunDedicated: {
+      limits(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
+      // ワーカとロードバランサのプランをまとめて返す（それぞれ独立に成否を持つ）。
+      plans(auth: { token: string; secret: string }): Promise<{
+        worker: { ok: true; data: unknown } | { ok: false; message: string; detail?: string }
+        lb: { ok: true; data: unknown } | { ok: false; message: string; detail?: string }
+      }>
+      clusters(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
+    }
     // 📚 資料（さくらのAI Engine RAG API）。apiKey は認証情報の中央ストアから renderer が渡す（方式B）。
     rag: {
       list(apiKey: string, opts?: { page?: number; pageSize?: number; name?: string; tag?: string }): Promise<{ ok: boolean; meta?: RagPageMeta; documents?: RagDocument[]; error?: string }>

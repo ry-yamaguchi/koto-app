@@ -3,7 +3,7 @@
 // 公開先に合わない作りを避けるよう促す。
 // ※ .sakuraide.json のスキーマは変更しない。既存の `target` フィールドを読むだけ。
 
-export type TargetId = 'local' | 'sakura-rental' | 'sakura-apprun' | 'sakura-vps' | 'sakura-cloud' | 'hanamii' | 'vercel' | 'other'
+export type TargetId = 'local' | 'sakura-rental' | 'sakura-apprun' | 'sakura-apprun-dedicated' | 'sakura-vps' | 'sakura-cloud' | 'hanamii' | 'vercel' | 'other'
 
 export interface TargetProfile {
   id: TargetId
@@ -68,6 +68,23 @@ export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
     ],
     autoPublish: true,
     serviceUrl: 'https://cloud.sakura.ad.jp/products/apprun-shared/',
+  },
+  'sakura-apprun-dedicated': {
+    id: 'sakura-apprun-dedicated',
+    label: 'さくらのAppRun 専有型',
+    summary:
+      '仮想サーバレベルで専有するAppRun。独自ドメイン・プライベートネットワーク接続・TCPなど共用型より自由度が高い一方、常時課金（最小構成でも月2万円超）でクラスタ／ASG／アプリ／バージョンの4階層を自分で構成する上級者向けサービス。IDEからの作成にはまだ対応していない（下調べ（制限・料金の確認、費用の同意）まで）。',
+    recommended: [
+      '独自ドメインや高可用性が必要な中〜大規模なシステム向け',
+      '常時課金（動いていなくても課金される）であることを理解したうえで選ぶ',
+      'サービスプリンシパルの用意はコントロールパネルでの手作業が必要',
+    ],
+    donts: [
+      '共用型（さくらのAppRun）で足りる小規模用途には向かない（費用が桁違いに高い）',
+      'このバージョンのIDEからはクラスタ・アプリをまだ作成できない',
+    ],
+    autoPublish: false,
+    serviceUrl: 'https://cloud.sakura.ad.jp/products/apprun-dedicated/index.html',
   },
   'sakura-vps': {
     id: 'sakura-vps',
@@ -160,7 +177,7 @@ export function isAutoPublishTarget(target?: string): boolean {
 
 // 「準備中（今後のバージョンで対応予定）」のため、まだ公開先として選択させない target。
 // 対応機能（VPSアップロード／さくらのクラウド構成など）が実装できたら、この集合から外すと選択UIに再び現れる。
-const COMING_SOON_TARGETS = new Set<TargetId>(['sakura-vps', 'sakura-cloud'])
+const COMING_SOON_TARGETS = new Set<TargetId>(['sakura-vps', 'sakura-cloud', 'sakura-apprun-dedicated'])
 /** その target を現時点で公開先として選択肢に出してよいか（準備中＝false で非表示にする）。 */
 export function isAvailableTarget(target?: string): boolean {
   return !COMING_SOON_TARGETS.has(target as TargetId)

@@ -16,6 +16,7 @@ import { scanDataUsage } from '../dataLayer'
 import { judgeVercelFit } from '../../shared/vercelFit'
 import { summarizePreflight, sortChecks } from '../../shared/preflight'
 import { resolvePublishRoot } from '../publishRootFs'
+import { markPendingFs, clearPendingFs, writePublishRecordFs } from '../publishMetaFs'
 
 // デプロイ状態のポーリング設定。数秒間隔でREADY/ERRORまで待つ（タイムアウトあり）。
 const POLL_INTERVAL_MS = 3000
@@ -88,6 +89,10 @@ export function registerVercelHandlers(_deps: IpcDeps) {
     // 進捗を renderer へ通知（cloud:apply-progress と同じ流儀）。アップロード〜ビルドは
     // 数十秒〜数分かかるため、無反応に見えないよう各段階を送る。
     const progress = (m: string) => { try { event.sender.send('vercel:progress', m) } catch { /* ウィンドウ破棄時は無視 */ } }
+    // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。main の1 invoke は
+    // 完走するが、記録（下の成功時の書き込み）が起きるのは最後なので、開始時点でも分かるように
+    // 残す。API呼び出しが成功/失敗いずれで終わっても、最下部の finally で必ず消す（roadmap #20）。
+    markPendingFs(projectDir, 'vercel')
     try {
       const token = opts?.token
       if (!token) return { ok: false, message: 'Vercel のトークンが未登録です' }
@@ -183,9 +188,13 @@ export function registerVercelHandlers(_deps: IpcDeps) {
         }
       }
       // extractDeployment が既に https:// を付与済みなので、そのまま使う（二重付与しない）。
+      // 公開記録を main 側で残す（renderer が閉じても失われない・roadmap #20）。
+      writePublishRecordFs(projectDir, 'vercel', { publishedAt: new Date().toISOString(), url: info.url ?? null })
       return { ok: true, deploymentId: info.id, url: info.url, readyState: info.readyState }
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
+    } finally {
+      clearPendingFs(projectDir)
     }
   })
 }

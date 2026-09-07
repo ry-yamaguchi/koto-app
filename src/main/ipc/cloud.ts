@@ -23,6 +23,7 @@ import { builderAvailable, buildAndPush } from '../cloud/imageBuild'
 import { detectRuntime, type RuntimeChoice } from '../../shared/runtimeDetect'
 import { parseLocalRecords, buildInventory, sumMonthly, totalNotice, type ActualResource } from '../../shared/inventory'
 import { planDependencies, installTimeNote } from '../../shared/deps'
+import { markPendingFs, clearPendingFs, writePublishRecordFs } from '../publishMetaFs'
 import type { IpcDeps } from './types'
 
 // ── さくらのクラウド連携（段階1＝基盤）。cloud: 名前空間 ──
@@ -765,6 +766,10 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     const progress = (msg: string) => {
       try { event.sender.send('cloud:apply-progress', msg) } catch { /* ウィンドウ破棄時は無視 */ }
     }
+    // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。main の1 invoke は
+    // 完走するが、記録（下の成功時の書き込み）が起きるのは最後なので、開始時点でも分かるように
+    // 残す。API呼び出しが成功/失敗いずれで終わっても、最下部の finally で必ず消す（roadmap #20）。
+    markPendingFs(projectDir, 'sakura-apprun')
     try {
       const creds = loadCredentials()
       if (!creds) return { ok: false, message: 'APIキー未登録（先にアクセストークン/シークレットを登録してください）' }
@@ -1029,6 +1034,11 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       // 利用者は公開URLを開いて初めて気づき、原因はコンパネのログにしか無い。
       let health: AppHealth | undefined
       let appId: string | undefined
+      // 公開記録（publish.targets）に載せる URL。取れなければ null のまま（新しい API 呼び出しは
+      // 増やさない・下の「中身が新しくなったかを確かめる」で既に呼んでいる client.getApp を再利用）。
+      // publishVerify.test.ts が canVerify(runtimeKind, publicUrl) の呼び出し形を固定しているため、
+      // 変数名は publicUrl のまま外側（関数スコープ）へ引き上げる。
+      let publicUrl: string | null = null
       if (result.ok) {
         appId = result.state.resources.find(r => r.kind === 'apprun-app')?.id
         if (appId) {
@@ -1056,7 +1066,6 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           // 配られていたのは**画像を入れる前の古いページ**だった。
           // 起動を確認しただけでは、これは分からない。
           if (health.ok && publishedTag) {
-            let publicUrl: string | null = null
             try {
               const info = await client.getApp(appId)
               if (info.dryRun === false && info.ok) publicUrl = extractAppUrl(info.data)
@@ -1095,6 +1104,12 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
 
       const finallyOk = result.ok && (health ? health.ok : true)
+      // 公開記録を main 側で残す（renderer が閉じても失われない・roadmap #20）。
+      // URL はこのハンドラ内で既に取れていれば入れる（上の「中身が新しくなったかを確かめる」の
+      // client.getApp を再利用。取れていなければ null）。
+      if (finallyOk) {
+        writePublishRecordFs(projectDir, 'sakura-apprun', { publishedAt: new Date().toISOString(), url: publicUrl })
+      }
       progress(finallyOk ? '✅ 完了' : health?.pending ? '⏳ 起動を確認できていません' : '⚠️ 失敗しました')
       // 確認できたときだけ一言添える（確認できない公開もあるので、無言を失敗と混ぜない）
       const verifyNote = verified ? verifyMessage(verified) : ''
@@ -1115,6 +1130,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     } catch (e: any) {
       progress('⚠️ 失敗しました')
       return { ok: false, message: e?.message ?? String(e) }
+    } finally {
+      clearPendingFs(projectDir)
     }
   })
 

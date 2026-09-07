@@ -365,6 +365,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     hardenSshd: (host: string, port: number, user: string, privateKey: string, fingerprint: string) =>
       ipcRenderer.invoke('vps:hardenSshd', host, port, user, privateKey, fingerprint),
   },
+  apprunDedicated: {
+    // さくらのAppRun 専有型「下調べ画面」（roadmap #23 段階①）。GET のみ・クラスタもアプリも作らない。
+    // 方式B: auth は cloud.loadKey() 等で renderer が読んだ token/secret をそのまま渡す（main には保存しない）。
+    limits: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:limits', auth),
+    // ワーカとロードバランサのプランをまとめて返す。
+    plans: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:plans', auth),
+    clusters: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:clusters', auth),
+  },
   registry: {
     // コンテナレジストリ認証情報（レジストリ名・ユーザー名・パスワード）の保存・状態・読戻し・削除。
     // cloud:* と同じ方式。レジストリサーバは `${name}.sakuracr.jp`。

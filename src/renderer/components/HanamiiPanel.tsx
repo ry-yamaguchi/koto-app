@@ -5,7 +5,6 @@ import { getHanamiiToken, getHanamiiTokenById, listHanamiiTokenEntries } from '.
 import { getTargetProfile } from '../targetProfiles'
 import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
-import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import { clearPublishRecord } from '../publishRecord'
 
@@ -300,30 +299,24 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
       // 公開名: 入力があればそれを、無ければフォルダ名を使う（いずれも safeName で正規化）
       const name = safeName((nameOverride ?? publishName).trim() || projName)
       setLastAttemptedName(name)
-      // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。
-      // API呼び出しが成功/失敗いずれで終わっても finally で必ず消す。
-      await markPublishPending(projectDir, 'hanamii')
-      try {
-        const r = await window.electronAPI.hanamii.publish(projectDir, { token, workspaceId, projectId: projectId ?? undefined, name, envs: sendEnvs, healthCheck, withStorage: withStorage && !!placement })
-        setPublishing(false)
-        if (!r.ok) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? ''); setStatus(null); return }
-        // 片づけは動作確認のあと（ここではまだ消さない）
-        if (r.storagePermissionId && r.storageProjectName) {
-          setPendingKeyCleanup({ projectName: r.storageProjectName, keepId: r.storagePermissionId })
-        }
-        const pid = r.projectId ?? projectId
-        if (pid) {
-          setProjectId(pid)
-          // 統一公開記録（publish.targets）: 公開成功時に記録。URLは判明していれば入れ、未判明ならnull
-          // （ポーリングでREADYになりURLが判明した時に startPolling 側で更新する）。
-          await saveHanamiiMeta(
-            { projectId: pid, workspaceId, envs: persistEnvs, tokenId, healthCheck: { enabled: healthCheck.enabled, path: healthCheck.path }, name },
-            { publishedAt: new Date().toISOString(), url: null },
-          )
-          startPolling(pid, token)
-        }
-      } finally {
-        await clearPublishPending(projectDir)
+      const r = await window.electronAPI.hanamii.publish(projectDir, { token, workspaceId, projectId: projectId ?? undefined, name, envs: sendEnvs, healthCheck, withStorage: withStorage && !!placement })
+      setPublishing(false)
+      if (!r.ok) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? ''); setStatus(null); return }
+      // 片づけは動作確認のあと（ここではまだ消さない）
+      if (r.storagePermissionId && r.storageProjectName) {
+        setPendingKeyCleanup({ projectName: r.storageProjectName, keepId: r.storagePermissionId })
+      }
+      const pid = r.projectId ?? projectId
+      if (pid) {
+        setProjectId(pid)
+        // 統一公開記録（publish.targets）と公開開始マーカーの後片づけは main 側（hanamii:publish）が
+        // 済ませている（roadmap #20・main は1 invoke で完走するため、窓を閉じても記録が残る）。
+        // ここでは設定値（projectId 等）だけを保存する。saveHanamiiMeta の readMeta→write が
+        // main の書いた記録を読み直して保持し、sakura-meta-changed で画面へ反映する。
+        await saveHanamiiMeta(
+          { projectId: pid, workspaceId, envs: persistEnvs, tokenId, healthCheck: { enabled: healthCheck.enabled, path: healthCheck.path }, name },
+        )
+        startPolling(pid, token)
       }
     } finally {
       setPublishing(false)

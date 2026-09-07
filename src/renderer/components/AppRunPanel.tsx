@@ -5,7 +5,6 @@ import { foldRecheck } from '../../shared/appHealth'
 import { clearPublishRecord } from '../publishRecord'
 import { isNameConflictError, isCreationLimitError, suggestAlternativeName } from '../nameConflict'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
-import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import SecurityCheckSection from './SecurityCheckSection'
 import UnusedFilesSection from './UnusedFilesSection'
@@ -74,27 +73,6 @@ type Confirm =
   // main から返ってきた計画をそのまま持たせる。
   | { kind: 'cleanupImages'; plan: { remove: string[]; keep: string[]; untouched: string[] }; keep: number; currentTag: string | null }
   | null
-
-// 統一公開記録（publish.targets）を .sakuraide.json にマージ書き込みする（既存キーは残す）。
-// HanamiiPanel の saveHanamiiMeta と同じ流儀（このパネル専用の小関数として持つ）。
-async function saveAppRunPublishRecord(projectDir: string, rec: { publishedAt: string; url: string | null }) {
-  const metaPath = `${projectDir}/.sakuraide.json`
-  let m: any = {}
-  try { m = JSON.parse(await window.electronAPI.fs.readFile(metaPath)) } catch { /* メタ無し（既存フォルダ等） */ }
-  const next = {
-    ...m,
-    // 公開に成功したらプロジェクトの公開先も AppRun にする（HanamiiPanel / VercelPanel /
-    // PublishModal のレンタルサーバ公開と同じ流儀。**ここだけ更新しておらず**、AppRunで公開しても
-    // 次回の③公開が元の公開先の画面で開いていた・2026-07-31 ユーザー報告）。
-    target: 'sakura-apprun',
-    publish: {
-      ...(m.publish ?? {}),
-      targets: { ...(m.publish?.targets ?? {}), 'sakura-apprun': rec },
-    },
-  }
-  await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(next, null, 2))
-  window.dispatchEvent(new Event('sakura-meta-changed'))
-}
 
 /** 破棄に成功したら公開記録からも取り除く（「📡 公開したもの一覧」に幽霊を残さない・2026-08-06）。 */
 // 記録の掃除は publishRecord.ts に一本化した（2026-08-09）。破棄の導線が
@@ -563,32 +541,23 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     // 実行中フラグ（終了確認ダイアログ用）。中断・失敗でも必ず解除されるよう最外の finally で呼ぶ。
     const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
-      // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。
-      // API呼び出しが成功/失敗いずれで終わっても finally で必ず消す。
-      await markPublishPending(projectDir, 'sakura-apprun')
-      try {
-        const r = await window.electronAPI.cloud.apply(projectDir, { confirmed: true })
-        setOpResult(r)
-        setConfirm(null)
-        // 適用後はプラン・期限・前提・公開URL・公開済みフラグを取り直す
-        await refreshExpiry()
-        await refreshPrereqs()
-        await runPlan()
-        await refreshUrl()
-        await refreshPublished()
-        // 統一公開記録（publish.targets）: 構築成功時に記録。公開URLがあれば url に（無ければ null で記録）。
-        if (r.ok) {
-          try {
-            const u = await window.electronAPI.cloud.appUrl(projectDir)
-            await saveAppRunPublishRecord(projectDir, { publishedAt: new Date().toISOString(), url: (u.ok ? u.url : null) ?? null })
-          } catch { /* 記録の失敗は公開の成否に影響させない */ }
-        }
-      } catch (e: any) {
-        setOpResult({ ok: false, message: e?.message ?? String(e) })
-        setConfirm(null)
-      } finally {
-        await clearPublishPending(projectDir)
-      }
+      const r = await window.electronAPI.cloud.apply(projectDir, { confirmed: true })
+      setOpResult(r)
+      setConfirm(null)
+      // 適用後はプラン・期限・前提・公開URL・公開済みフラグを取り直す
+      await refreshExpiry()
+      await refreshPrereqs()
+      await runPlan()
+      await refreshUrl()
+      await refreshPublished()
+      // 統一公開記録（publish.targets）と公開開始マーカーの後片づけは main 側（cloud:apply）が
+      // 済ませている（roadmap #20・main は1 invoke で完走するため、窓を閉じても記録が残る）。
+      // ここでは main が書いた記録を画面へ反映するため、メタ変更を通知するだけでよい
+      // （App.tsx の reloadMeta が sakura-meta-changed を拾って読み直す）。
+      if (r.ok) window.dispatchEvent(new Event('sakura-meta-changed'))
+    } catch (e: any) {
+      setOpResult({ ok: false, message: e?.message ?? String(e) })
+      setConfirm(null)
     } finally {
       unsubscribe()
       setProgress(null)

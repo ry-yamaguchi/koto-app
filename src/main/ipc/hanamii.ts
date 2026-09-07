@@ -10,6 +10,7 @@ import { issueStorageEnvFor, cleanUpOldKeysFor } from '../cloud/storageForTarget
 import type { IpcDeps } from './types'
 import { zipExcludePatterns, BUILD_CONFIG_FILES } from '../../shared/publishExclude'
 import { resolvePublishRoot } from '../publishRootFs'
+import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs } from '../publishMetaFs'
 
 // ── HANAMII（国産PaaS）連携 ──────────────────────────────────────────
 // HANAMII は言語マニフェスト(package.json 等)が無いと「対応言語を検出できない」と拒否する。
@@ -134,6 +135,10 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       const m = hanamiiErrorMessage(data)
       return m && !/^[[{]/.test(m) ? `: ${m}` : ''
     }
+    // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。main の1 invoke は
+    // 完走するが、記録（下の成功時の書き込み）が起きるのは最後なので、開始時点でも分かるように
+    // 残す。API呼び出しが成功/失敗いずれで終わっても、最下部の finally で必ず消す（roadmap #20）。
+    markPendingFs(projectDir, 'hanamii')
     try {
       const token = opts?.token
       if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
@@ -230,14 +235,21 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       }
       if (!dep.ok) return { ok: false, message: `公開に失敗しました（HTTP ${dep.status}）${reason(dep.data)}`, detail: dbg(dep.data) }
       const ids = extractProjectIds(dep.data)
+      const projectId = opts.projectId ?? ids.projectId
+      // 公開記録を main 側で残す（renderer が閉じても失われない・roadmap #20）。
+      // projectId を保存しないと、次回公開が新規プロジェクトとして二重作成されうる。
+      // URL は READY まで分からないため null（renderer のポーリングが後から更新する・従来どおり）。
+      writeHanamiiProjectIdFs(projectDir, projectId ?? null)
+      writePublishRecordFs(projectDir, 'hanamii', { publishedAt: new Date().toISOString(), url: null })
       return {
         ok: true,
-        projectId: opts.projectId ?? ids.projectId,
+        projectId,
         deploymentId: ids.deploymentId,
         // 片づけは**動いたと確かめてから**なので、ここではまだ消さない（下の hanamii:cleanUpKeys）
         ...(storagePermissionId ? { storagePermissionId, storageProjectName } : {}),
       }
     } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    finally { clearPendingFs(projectDir) }
   })
   ipcMain.handle('hanamii:status', async (_, projectId: string, token: string) => {
     if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }

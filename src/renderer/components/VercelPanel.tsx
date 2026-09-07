@@ -4,7 +4,6 @@ import UnusedFilesSection from './UnusedFilesSection'
 import { getVercelToken, getVercelTokenById, getVercelTeamId, getVercelTeamIdById, listVercelTokenEntries } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
-import { markPublishPending, clearPublishPending } from '../publishPending'
 import CopyButton from './CopyButton'
 import { askAiAboutCheck } from '../../shared/preflight'
 
@@ -163,20 +162,14 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
     // 実行中フラグ（終了確認ダイアログ用）。中断・失敗でも必ず解除されるよう最外の finally で呼ぶ。
     const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
-      // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。
-      // API呼び出しが成功/失敗いずれで終わっても finally で必ず消す。
-      await markPublishPending(projectDir, 'vercel')
-      try {
-        const r = await window.electronAPI.vercel.publish(projectDir, { token, teamId: teamId ?? undefined, name })
-        if (!r.ok) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? ''); return }
-        setResult({ url: r.url ?? null, readyState: r.readyState ?? null })
-        await saveVercelMeta(
-          { tokenId, name },
-          { publishedAt: new Date().toISOString(), url: r.url ?? null },
-        )
-      } finally {
-        await clearPublishPending(projectDir)
-      }
+      const r = await window.electronAPI.vercel.publish(projectDir, { token, teamId: teamId ?? undefined, name })
+      if (!r.ok) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? ''); return }
+      setResult({ url: r.url ?? null, readyState: r.readyState ?? null })
+      // 統一公開記録（publish.targets）と公開開始マーカーの後片づけは main 側（vercel:publish）が
+      // 済ませている（roadmap #20・main は1 invoke で完走するため、窓を閉じても記録が残る）。
+      // ここでは設定値（tokenId/name）だけを保存する。saveVercelMeta の readMeta→write が
+      // main の書いた記録を読み直して保持し、sakura-meta-changed で画面へ反映する。
+      await saveVercelMeta({ tokenId, name })
     } catch (e: any) {
       setMsg(`公開処理でエラーが発生しました: ${e?.message ?? String(e)}`)
     } finally {

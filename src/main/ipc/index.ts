@@ -10,6 +10,7 @@ import { registerSakuraHandlers } from './sakura'
 import { registerSecureHandlers } from './secure'
 import { registerCloudKeysHandlers } from './cloudKeys'
 import { registerCloudHandlers } from './cloud'
+import { registerApprunDedicatedHandlers } from './apprunDedicated'
 import { registerHanamiiHandlers } from './hanamii'
 import { registerVercelHandlers } from './vercel'
 import { registerPublishImportHandlers } from './publishImport'
@@ -43,6 +44,7 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerSecureHandlers(deps)
   registerCloudKeysHandlers(deps)
   registerCloudHandlers(deps)
+  registerApprunDedicatedHandlers(deps)
   registerHanamiiHandlers(deps)
   registerVercelHandlers(deps)
   registerPublishImportHandlers(deps)
