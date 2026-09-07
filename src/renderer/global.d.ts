@@ -602,6 +602,8 @@ interface Window {
         lb: { ok: true; data: unknown } | { ok: false; message: string; detail?: string }
       }>
       clusters(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
+      // GET /zone（さくらのクラウドのゾーン一覧。roadmap #28）。⑤のゾーン選択式化に使う。GETのみ。
+      zones(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
       // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
       // 同意（consentedAt）が記録に無ければ main 側が API を一度も呼ばずに中止する。
       create(projectDir: string, auth: { token: string; secret: string }, spec: {

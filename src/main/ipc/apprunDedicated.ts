@@ -4,6 +4,7 @@
 // （src/main/cloud/apprunDedicated.ts と同じ方針）。
 import { ipcMain } from 'electron'
 import { getLimits, getWorkerClasses, getLbClasses, listClusters, type ApprunDedicatedResult } from '../cloud/apprunDedicated'
+import { getZones } from '../cloud/zones'
 import { createClusterFlow, teardownFlow, type ApprunDedicatedClusterSpec } from '../cloud/apprunDedicatedApply'
 import { readApprunDedicatedFs } from '../publishMetaFs'
 import type { CloudCredentials } from '../cloud/auth'
@@ -43,6 +44,13 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
   ipcMain.handle('apprunDedicated:clusters', async (_, auth: unknown) => {
     if (!isCreds(auth)) return NO_KEY
     return listClusters(auth)
+  })
+
+  // GET /zone（さくらのクラウド API v1.1 設備関連API・roadmap #28）。⑤のゾーン選択式化に使う。
+  // GETのみ・src/main/cloud/zones.ts に一元化（ここではキー確認と委譲だけ）。
+  ipcMain.handle('apprunDedicated:zones', async (_, auth: unknown) => {
+    if (!isCreds(auth)) return NO_KEY
+    return getZones(auth)
   })
 
   // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。

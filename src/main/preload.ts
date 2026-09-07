@@ -374,6 +374,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // ワーカとロードバランサのプランをまとめて返す。
     plans: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:plans', auth),
     clusters: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:clusters', auth),
+    // GET /zone（さくらのクラウドのゾーン一覧。roadmap #28）。⑤のゾーン選択式化に使う。GETのみ。
+    zones: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:zones', auth),
     // 段階②: クラスタ→ASG→LB の順で作る。同意（consentedAt）が記録に無ければ main 側が
     // API を一度も呼ばずに中止する。押す前の確認ダイアログは呼び出し側（画面）の責務。
     create: (projectDir: string, auth: { token: string; secret: string }, spec: ApprunDedicatedClusterSpec) =>

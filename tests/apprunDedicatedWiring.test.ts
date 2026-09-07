@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan } from '../src/renderer/components/AppRunDedicatedPanel'
+import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan, selectableZones, defaultZone } from '../src/renderer/components/AppRunDedicatedPanel'
+import { readZones } from '../src/shared/apprunDedicatedShapes'
 
 // roadmap #23。段階①「下調べ画面」の配線に加え、段階②「作る」＋④「破棄」の配線を固定する
 // （掟6: IPC 3点セット・掟10: 一元化した守りはテストで固定する）。実装をわざと壊すと落ちることを
@@ -30,6 +31,12 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(ipc).toContain("ipcMain.handle('apprunDedicated:state'")
   })
 
+  it('main: apprunDedicated:zones を登録し、GETのみの getZones（src/main/cloud/zones.ts）を呼ぶ（roadmap #28）', () => {
+    expect(ipc).toContain("ipcMain.handle('apprunDedicated:zones'")
+    expect(ipc).toContain("import { getZones } from '../cloud/zones'")
+    expect(ipc).toContain('getZones(auth)')
+  })
+
   it('main: create/teardown ハンドラは apprunDedicatedApply.ts の createClusterFlow/teardownFlow を呼ぶ', () => {
     expect(ipc).toContain("import { createClusterFlow, teardownFlow")
     expect(ipc).toContain('from \'../cloud/apprunDedicatedApply\'')
@@ -42,20 +49,22 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(index).toContain('registerApprunDedicatedHandlers(deps)')
   })
 
-  it('preload: electronAPI.apprunDedicated.{limits,plans,clusters,create,teardown,state} を公開している', () => {
+  it('preload: electronAPI.apprunDedicated.{limits,plans,clusters,zones,create,teardown,state} を公開している', () => {
     expect(preload).toContain("limits: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:limits', auth)")
     expect(preload).toContain("plans: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:plans', auth)")
     expect(preload).toContain("clusters: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:clusters', auth)")
+    expect(preload).toContain("zones: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:zones', auth)")
     expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec)")
     expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth)")
     expect(preload).toContain("state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir)")
   })
 
-  it('global.d.ts: Window.electronAPI.apprunDedicated の型に create/teardown/state がある', () => {
+  it('global.d.ts: Window.electronAPI.apprunDedicated の型に zones/create/teardown/state がある', () => {
     expect(globalDts).toContain('apprunDedicated: {')
     expect(globalDts).toContain('limits(auth: { token: string; secret: string })')
     expect(globalDts).toContain('plans(auth: { token: string; secret: string })')
     expect(globalDts).toContain('clusters(auth: { token: string; secret: string })')
+    expect(globalDts).toContain('zones(auth: { token: string; secret: string })')
     expect(globalDts).toContain('create(projectDir: string, auth: { token: string; secret: string }, spec:')
     expect(globalDts).toContain('teardown(projectDir: string, auth: { token: string; secret: string })')
     expect(globalDts).toContain('state(projectDir: string)')
@@ -216,10 +225,10 @@ describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
     expect(panel).toContain('2万円を超えます')
   })
 
-  it('apprunDedicated への呼び出しは limits/plans/clusters/create/teardown/state の6つ', () => {
+  it('apprunDedicated への呼び出しは limits/plans/clusters/zones/create/teardown/state の7つ（roadmap #28でzonesを追加）', () => {
     const calls = [...panel.matchAll(/electronAPI\.apprunDedicated\.(\w+)/g)].map(m => m[1])
     expect(calls.length).toBeGreaterThan(0)
-    expect(new Set(calls)).toEqual(new Set(['limits', 'plans', 'clusters', 'create', 'teardown', 'state']))
+    expect(new Set(calls)).toEqual(new Set(['limits', 'plans', 'clusters', 'zones', 'create', 'teardown', 'state']))
   })
 
   it('⑤: ネットワークは共有セグメント固定と明示し、スイッチ/IPプールの入力欄を出さない', () => {
@@ -453,6 +462,193 @@ describe('⑤: 既定で選ぶプランは「料金表で引ける中の最安�
   })
 })
 
+// roadmap #28。実測（docs/apprun-dedicated-plan.md 5-9）どおりの3ゾーン
+// （tk1a=20021001, tk1b=20021002, is1a=20031001。ただしこの3件も「Total=6件中、先頭3件」
+// までしか実測できていない――probe-zones.mjs の初版が生JSONを4000字で切っていたため。5-9参照）
+// に、**作り物**のダミー1件（tk1v=Sandbox）を足して4件でテストする。
+// ⚠️ tk1v の行（isDummy:true・displayOrder:20021006）は実測ではない。実際の tk1v の
+// IsDummy/DisplayOrder は未実測（IaaS APIドキュメントにゾーン名として載っているだけ）。
+// ここでは「isDummy:true（≠false）を除く」動作を確かめるための値として使っている
+// （2026-09-08 検分・事故の直し6: 「実測」表記を正直にする）。
+// 並び順に依存しないことを固定するため、4要素の全24通りを総当たりする
+// （#26 で使っている permutations をそのまま使う。CLAUDE.md の指示どおり）。
+const REAL_ZONES_PLUS_DUMMY: { name: string; description: string | null; isDummy: boolean; displayOrder: number | null }[] = [
+  { name: 'tk1a', description: '東京第1ゾーン', isDummy: false, displayOrder: 20021001 },
+  { name: 'tk1b', description: '東京第2ゾーン', isDummy: false, displayOrder: 20021002 },
+  { name: 'is1a', description: '石狩第1ゾーン', isDummy: false, displayOrder: 20031001 },
+  { name: 'tk1v', description: 'Sandbox', isDummy: true, displayOrder: 20021006 },
+]
+
+describe('#28: selectableZones / defaultZone（GET /zone の一覧からゾーンを選ぶ）', () => {
+  it('selectableZones: isDummy:true（tk1v/Sandbox）を除き、displayOrder昇順（tk1a→tk1b→is1a）に並べる', () => {
+    const rows = selectableZones(REAL_ZONES_PLUS_DUMMY)
+    expect(rows.map(r => r.name)).toEqual(['tk1a', 'tk1b', 'is1a'])
+  })
+
+  it('defaultZone: 実測の並びでは tk1a になる（displayOrderが最小）', () => {
+    expect(defaultZone(REAL_ZONES_PLUS_DUMMY)).toBe('tk1a')
+  })
+
+  it('defaultZone: 選べるゾーンが無ければ null（isDummyのみ・空配列とも）', () => {
+    expect(defaultZone([{ name: 'tk1v', description: 'Sandbox', isDummy: true, displayOrder: 1 }])).toBeNull()
+    expect(defaultZone([])).toBeNull()
+  })
+
+  it('selectableZones/defaultZone とも、並び順を変えても結果は同じ（4要素・全24通りの順列で固定する）', () => {
+    const perms = permutations(REAL_ZONES_PLUS_DUMMY)
+    expect(perms.length).toBe(24)
+    for (const perm of perms) {
+      expect(selectableZones(perm).map(r => r.name)).toEqual(['tk1a', 'tk1b', 'is1a'])
+      expect(defaultZone(perm)).toBe('tk1a')
+    }
+  })
+
+  it('displayOrder が同値・両方nullなら name の辞書順で安定させる', () => {
+    const tie = [
+      { name: 'zeta', description: null, isDummy: false, displayOrder: null },
+      { name: 'alpha', description: null, isDummy: false, displayOrder: null },
+      { name: 'mid', description: null, isDummy: false, displayOrder: 5 },
+    ]
+    // displayOrder が数値のものが先、null は最後。null同士は name 昇順。
+    expect(selectableZones(tie).map(r => r.name)).toEqual(['mid', 'alpha', 'zeta'])
+  })
+
+  it('ソースに tk1a / tk1b が既定として焼き込まれていない（一覧から決める。CLAUDE.md #28 の指示）', () => {
+    const at = panel.indexOf('export function selectableZones')
+    expect(at).toBeGreaterThan(0)
+    const defEnd = panel.indexOf('\n}', panel.indexOf('export function defaultZone', at))
+    expect(defEnd).toBeGreaterThan(at)
+    const block = panel.slice(at, defEnd + 2)
+    expect(block).not.toContain('tk1a')
+    expect(block).not.toContain('tk1b')
+  })
+
+  it('⑤: 一覧が取れているあいだは <select>、取れない（zoneSelectable===false）ときは自由入力の <input> に戻る', () => {
+    const at = panel.indexOf('{zoneSelectable ? (')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 1400)
+    expect(block).toContain('<select')
+    expect(block).toContain('<input')
+    expect(block).toContain('value={zone}')
+    expect(block).toContain('onChange={e => setZone(e.target.value)}')
+  })
+
+  it('⑤: 一覧が取得できなかったとき、正直なメッセージ「ゾーン一覧を取得できませんでした。手で入力してください。」を出す', () => {
+    expect(panel).toContain('ゾーン一覧を取得できませんでした。手で入力してください。')
+  })
+
+  it('⑤: 選べるときの注記が、新しい文言（未確認・失敗しても何も作られない）に差し替わっている', () => {
+    expect(panel).toContain('専有型がすべてのゾーンに対応しているかは未確認')
+    expect(panel).toContain('失敗しても、その時点では何も作られません')
+    // 旧文言（原本に許容値の一覧が無いため自由入力です）はもう無い。
+    expect(panel).not.toContain('原本に許容値の一覧が無いため自由入力です')
+  })
+
+  it('③「調べる」は apprunDedicated.zones も並列で呼び、readZones で読んだ結果を zones/zonesError に反映する', () => {
+    const at = panel.indexOf('const investigate = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
+    expect(block).toContain('window.electronAPI.apprunDedicated.zones(auth)')
+    expect(block).toContain('setZones(readZones(zonesRes.data))')
+    expect(block).toContain('setZonesError(zonesRes.message)')
+  })
+
+  it('⑤: 表示は「name — description」の形（例: tk1b — 東京第2ゾーン）', () => {
+    const at = panel.indexOf('{zoneRows.map(z => (')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 200)
+    expect(block).toContain('{z.name}{z.description ? ` — ${z.description}` : \'\'}')
+  })
+
+  // 事故の直し4（2026-09-08 検分で発見）: 直す前は「一度選んだら上書きしない」ガードが
+  // selectedZoneName の有無だけを見ており、③を押し直して一覧が変わっても選択中の名前が
+  // 残っていた。option に無いので <select> は空欄に見えるのに送信値（selectedZoneName）は
+  // 古い名前のまま――というずれが起きる。いまは「選択中の名前が新しい一覧に無ければ
+  // defaultZone() に戻す」形にしてある。
+  it('既定は defaultZone() から作り、選択中の名前が新しい一覧に「まだあれば」上書きしない（無くなれば戻す）', () => {
+    const at = panel.indexOf('useEffect(() => {\n    const rows = selectableZones(zones ?? [])')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 400)
+    expect(block).toContain('if (selectedZoneName && rows.some(r => r.name === selectedZoneName)) return')
+    expect(block).toContain('setSelectedZoneName(defaultZone(zones ?? []))')
+  })
+})
+
+// 事故の直し1（2026-09-08 検分で発見）の再現テスト。CLAUDE.md 依頼文に載っている、
+// 親が実際に呼んで確認したケースそのもの:
+//   readZones({Zones:[{Name:'tk1a',IsDummy:false,DisplayOrder:20021001},
+//                     {Name:'sandbox',IsDummy:'true',DisplayOrder:1}]})
+//     → 直す前: selectable=['sandbox','tk1a'] / default='sandbox'
+//     → 直した後: selectable=['tk1a'] / default='tk1a'
+// （sandbox の IsDummy が文字列 'true' で返ってきた場合。boolean ではないので readZones は
+// isDummy:null にし、selectableZones は isDummy===false だけを残すので sandbox は入らない）。
+describe('事故の直し1: IsDummy が boolean でない行は「本物」に倒さず、selectableZones から除く', () => {
+  it("readZones→selectableZones→defaultZone を通しで: IsDummy:'true' の sandbox は isDummy:null になり除かれる。['tk1a'] / 'tk1a'", () => {
+    const rows = readZones({
+      Zones: [
+        { Name: 'tk1a', IsDummy: false, DisplayOrder: 20021001 },
+        { Name: 'sandbox', IsDummy: 'true', DisplayOrder: 1 },
+      ],
+    })
+    expect(rows.map(r => ({ name: r.name, isDummy: r.isDummy }))).toEqual([
+      { name: 'tk1a', isDummy: false },
+      { name: 'sandbox', isDummy: null },
+    ])
+    expect(selectableZones(rows).map(r => r.name)).toEqual(['tk1a'])
+    expect(defaultZone(rows)).toBe('tk1a')
+  })
+
+  it('selectableZones: isDummy===null（分からない）も true と同じく除く。false だけが残る', () => {
+    const rows = [
+      { name: 'a', description: null, isDummy: false, displayOrder: 1 },
+      { name: 'b', description: null, isDummy: true, displayOrder: 2 },
+      { name: 'c', description: null, isDummy: null, displayOrder: 3 },
+    ]
+    expect(selectableZones(rows).map(r => r.name)).toEqual(['a'])
+    expect(defaultZone(rows)).toBe('a')
+  })
+})
+
+// 事故の直し2（2026-09-08 検分で発見）。zones===null（未実施）／取得失敗／取得できたが0件、
+// の3つを画面文言で区別する。直す前は zonesError の有無しか見ておらず、③を押した後でも
+// 「押すと選べます」という嘘の文言が出ていた。
+describe('事故の直し2: ゾーン欄の3分岐（未実施／取得失敗／取得できたが0件）', () => {
+  it('3つの文言がすべてソースにある', () => {
+    expect(panel).toContain('自由入力です。③の「🔍 調べる」を押すと一覧から選べるようになります。')
+    expect(panel).toContain('ゾーン一覧を取得できませんでした。手で入力してください。')
+    expect(panel).toContain('一覧は取得できましたが、選べるゾーンがありませんでした。手で入力してください。')
+  })
+
+  it('分岐の条件が zones===null（未実施）→ zonesError（失敗）→ zoneSelectable（選べる）→ それ以外（0件）の順になっている', () => {
+    const at = panel.indexOf('{zones === null && !zonesError ? (')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, panel.indexOf('</div>', at))
+    // 出現順が「未実施」→「失敗」→「選べる」→「0件」になっていること（三項演算子の分岐順）。
+    const iNone = block.indexOf('自由入力です。③の「🔍 調べる」')
+    const iErr = block.indexOf('ゾーン一覧を取得できませんでした')
+    const iOk = block.indexOf('さくらのクラウドのゾーン一覧から選びます')
+    const iEmpty = block.indexOf('選べるゾーンがありませんでした')
+    expect(iNone).toBeGreaterThan(-1)
+    expect(iErr).toBeGreaterThan(iNone)
+    expect(iOk).toBeGreaterThan(iErr)
+    expect(iEmpty).toBeGreaterThan(iOk)
+  })
+})
+
+// 事故の直し3（2026-09-08 検分で発見）。zones の IPC が reject すると、コードのコメントは
+// 「⑤は自由入力に戻るだけ」と言っているのに、実装は Promise.all の巻き添えで limits/plans/
+// clusters まで落ち、①が「通じませんでした」になっていた。zones だけ .catch() で包む。
+describe('事故の直し3: zones の失敗が limits/plans/clusters を巻き添えにしない', () => {
+  it('investigate の中で apprunDedicated.zones(auth) の呼び出しに .catch(...) が付いている', () => {
+    const at = panel.indexOf('const investigate = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
+    expect(block).toContain('window.electronAPI.apprunDedicated.zones(auth).catch(')
+    // catch の中身は zonesRes.ok / zonesRes.message として読める {ok:false, message} の形。
+    expect(block).toContain('ok: false')
+  })
+})
+
 describe('#27: ロードバランサのプラン名に「（冗長構成）（冗長）」のような二重の注記を付けない', () => {
   it('③の一覧では API の name をそのまま出し、nodeCount 由来の（冗長）（非冗長）を付け足さない', () => {
     const at = panel.indexOf('<p className="text-[11px] font-semibold text-ink-secondary">ロードバランサプラン</p>')
@@ -616,16 +812,29 @@ describe('②: 手順A/Bの2段階（公式マニュアルどおり）と、プ�
     expect(block).toContain('「ロール」欄で「{ROLE_TEXT}」を選ぶ')
   })
 
-  it('事故の直し3: 実画面の4欄（リソース階層名／リソース階層タイプ／プリンシパル／ロール）すべてを名指ししている（前2欄が「対象のプロジェクトを選ぶ」だけになっていた取り違えの穴を塞ぐ）', () => {
+  // 2026-09-07 Ryosuke さん指摘。以前ここは「実画面の4欄すべてを名指しする」ことを固定していたが、
+  // **「リソース階層名」「リソース階層タイプ」は入力欄ではなく、選んだプロジェクトが表示されるだけの
+  // 読み取り専用**だった。操作できないものを"確かめる"手順に立てるのは水増しでしかない。
+  // 検分の「4欄を名指ししていない」という指摘を、**その欄が操作できるものかを確かめずに**
+  // 受け入れたのが原因。手順は「利用者が実際に入力・選択するもの」だけにする。
+  it('手順Bは、利用者が実際に操作するものだけを並べる（読み取り専用の欄を"確かめる"手順にしない）', () => {
     const at = panel.indexOf('手順B: そのサービスプリンシパルにロールを付ける')
     expect(at).toBeGreaterThan(0)
-    const block = panel.slice(at, at + 700)
-    expect(block).toContain('「リソース階層名」に、対象のプロジェクトが入っていることを確かめる')
-    expect(block).toContain('「リソース階層タイプ」が「プロジェクト」になっていることを確かめる')
+    const block = panel.slice(at, at + 900)
+    // 操作するもの: プロジェクトの選択 → アクセス権の付与 → プリンシパル → ロール → 作成
+    expect(block).toContain('画面右上で対象のプロジェクトを選ぶ')
+    expect(block).toContain('「アクセス権の付与」を押す')
     expect(block).toContain('「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ')
     expect(block).toContain('「ロール」欄で「{ROLE_TEXT}」を選ぶ')
-    // 旧文言「対象のプロジェクトを選ぶ」だけで済ませていた形（前2欄が名指しされていない）はもう無い。
-    expect(panel).not.toContain('→ 対象のプロジェクトを選ぶ')
+    expect(block).toContain('「作成」を押す')
+    // 読み取り専用の欄を"確かめる"手順は、もう無い（水増しの再発防止）。
+    expect(panel).not.toContain('「リソース階層名」に、対象のプロジェクトが入っていることを確かめる')
+    expect(panel).not.toContain('「リソース階層タイプ」が「プロジェクト」になっていることを確かめる')
+  })
+
+  it('読み取り専用の欄については、手順ではなく注記で説明する（プロジェクト単位で付けるのが確実、も添える）', () => {
+    expect(panel).toContain('選んだプロジェクトが表示されるだけの欄です')
+    expect(panel).toContain('サービスプリンシパルにはプロジェクト単位で付けるのが確実')
   })
 
   it('プリンシパル欄にロール名を入れないでください、という注意書きがある', () => {
