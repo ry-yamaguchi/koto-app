@@ -183,8 +183,8 @@ describe('レビュー指摘8: COMING_SOON_TARGETS に sakura-apprun-dedicated �
 })
 
 describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
-  it('① 認証情報', () => { expect(panel).toContain('① 認証情報') })
-  it('② サービスプリンシパルの用意（手作業が必要）', () => { expect(panel).toContain('② サービスプリンシパルの用意（手作業が必要）') })
+  it('① APIキー', () => { expect(panel).toContain('① APIキー') })
+  it('② サービスプリンシパルの用意（最初の一度だけ手作業）', () => { expect(panel).toContain('② サービスプリンシパルの用意（最初の一度だけ手作業）') })
   it('③ 使えるプランと制限', () => { expect(panel).toContain('③ 使えるプランと制限') })
   it('④ 費用の確認と同意', () => { expect(panel).toContain('④ 費用の確認と同意') })
   it('⑤ クラスタを作る', () => { expect(panel).toContain('⑤ クラスタを作る') })
@@ -476,23 +476,203 @@ describe('#27: ロードバランサのプラン名に「（冗長構成）（�
   })
 })
 
-describe('#25: ①認証情報に、③「調べる」の疎通結果を出す', () => {
-  it('③を押していない間（apiReachable===null）は現状の文言のまま', () => {
-    expect(panel).toContain('疎通の確認は、下の「③ 調べる」で行います。')
-    const at = panel.indexOf('apiReachable === null ? (')
-    expect(at).toBeGreaterThan(0)
+describe('事故の直し1: ①APIキーの見出し・説明文・接続テスト（共用型 AppRunPanel と同じ形に揃える）', () => {
+  it('見出しが「① APIキー」（旧「① 認証情報」ではない）', () => {
+    expect(panel).toContain('① APIキー')
+    expect(panel).not.toContain('① 認証情報')
   })
 
-  it('investigate() は limits/worker/lb/clusters のいずれか1つでも成功すれば apiReachable を true にする', () => {
+  it('説明文が共用型と同じ趣旨（「認証情報」で登録・切替／専有型に専用のAPIキーはない）', () => {
+    expect(panel).toContain('さくらのクラウドのAPIキー（アクセストークン／トークンシークレット）は「認証情報」で登録・切替します。')
+    expect(panel).toContain('AppRun 専有型に専用のAPIキーはなく、このキーで操作します。')
+  })
+
+  it('この操作に使うキー（旧「この確認に使うキー」ではない）', () => {
+    expect(panel).toContain('この操作に使うキー')
+    expect(panel).not.toContain('この確認に使うキー')
+  })
+
+  it('🔌 接続テストのボタンがあり、apprunDedicated.limits を呼ぶ（GETのみ・何も作らない）', () => {
+    const at = panel.indexOf('const testConnection = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('\n  }', at)
+    expect(end).toBeGreaterThan(at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('window.electronAPI.apprunDedicated.limits(auth)')
+    expect(panel).toContain('>🔌 接続テスト</button>')
+    // ボタンは「🔑 認証情報で登録・切替」の隣（同じ行の flex コンテナ内）にある。
+    const rowAt = panel.indexOf('>🔑 認証情報で登録・切替</button>')
+    const rowEnd = panel.indexOf('</div>', rowAt)
+    expect(rowAt).toBeGreaterThan(0)
+    const row = panel.slice(rowAt, rowEnd)
+    expect(row).toContain('onClick={testConnection}')
+  })
+
+  it('接続テストの状態は未実施(idle) / 確認中(testing) / OK(ok) / NG(ng) の4つ（共用型 AppRunPanel の conn/connMsg と同じ作法）', () => {
+    expect(panel).toContain("useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')")
+  })
+
+  it('OK なら「✅ このキーで専有型APIに通じました」、NG なら生の応答（connMsg）を ErrorBlock でそのまま出す（掟10: select-text＋コピー）', () => {
+    const at = panel.indexOf('const testConnection = async () => {')
+    const end = panel.indexOf('\n  }', at)
+    const block = panel.slice(at, end)
+    expect(block).toContain("setConn('ok')")
+    expect(block).toContain("setConn('ng'); setConnMsg(r.message)")
+  })
+
+  it('旧文言「疎通の確認は、下の「③ 調べる」で行います。」はもう無い（①で確かめられるようになったため）', () => {
+    expect(panel).not.toContain('疎通の確認は、下の「③ 調べる」で行います。')
+  })
+
+  it('キーを切り替えたら結果を消す: selectKey / sakura:credentials-changed の両方で conn・connMsg をリセットする', () => {
+    const selAt = panel.indexOf('const selectKey = async (id: string) => {')
+    const selEnd = panel.indexOf('// 🔌 接続テスト', selAt)
+    expect(selAt).toBeGreaterThan(0)
+    expect(selEnd).toBeGreaterThan(selAt)
+    const selBlock = panel.slice(selAt, selEnd)
+    expect(selBlock).toContain("setConn('idle'); setConnMsg('')")
+
+    const hAt = panel.indexOf("const h = () => { refreshKey(); refreshCloudKeys(); setConn('idle')")
+    expect(hAt).toBeGreaterThan(0)
+    expect(panel.slice(hAt, hAt + 200)).toContain("setConn('idle'); setConnMsg('')")
+  })
+})
+
+describe('事故の直し1: apiReachable を廃止し、conn/connMsg の1組に統一している（同じ意味の状態を2つ持たない）', () => {
+  it('apiReachable という状態はもう存在しない', () => {
+    expect(panel).not.toContain('apiReachable')
+    expect(panel).not.toContain('setApiReachable')
+  })
+
+  it('①の疎通表示は conn だけを見る。conn===idle のときに apiReachable へフォールバックする分岐はもう無い', () => {
+    expect(panel).not.toContain("conn === 'idle' && apiReachable")
+  })
+
+  it('NGのとき、平易な判定文（⚠️ このキーでは専有型APIに通じませんでした）と ErrorBlock の両方を出す（三項ではない）', () => {
+    const at = panel.indexOf("{/* ① APIキー")
+    const end = panel.indexOf("{/* ② サービスプリンシパル", at)
+    expect(at).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(at)
+    const block = panel.slice(at, end)
+    // 三項（connMsg ? ErrorBlock : 平易な文）ではなく、conn === 'ng' のとき両方を描く形になっていること。
+    expect(block).not.toMatch(/connMsg\s*\?\s*<ErrorBlock/)
+    const ngAt = block.indexOf("conn === 'ng' && (")
+    expect(ngAt).toBeGreaterThan(0)
+    const ngBlock = block.slice(ngAt, ngAt + 400)
+    expect(ngBlock).toContain('⚠️ このキーでは専有型APIに通じませんでした。')
+    expect(ngBlock).toContain('<ErrorBlock msg={connMsg} />')
+  })
+
+  it('ボタン横の span に、conn===ok で「✅ 通じました」、conn===ng で「⚠️ 通じませんでした」を出す（共用型 AppRunPanel と同じ作法）', () => {
+    const rowAt = panel.indexOf('>🔌 接続テスト</button>')
+    expect(rowAt).toBeGreaterThan(0)
+    const spanEnd = panel.indexOf('</span>\n        </div>', rowAt)
+    expect(spanEnd).toBeGreaterThan(rowAt)
+    const block = panel.slice(rowAt, spanEnd)
+    expect(block).toContain("conn === 'ok' && <span className=\"text-brand-green font-semibold\">✅ 通じました</span>")
+    expect(block).toContain("conn === 'ng' && <span className=\"text-brand-yellow font-semibold\">⚠️ 通じませんでした</span>")
+  })
+
+  it('未登録（!keyReady）のときの案内文がある（共用型 AppRunPanel 849-853 行あたりと同じ）', () => {
+    const rowAt = panel.indexOf('>🔌 接続テスト</button>')
+    expect(rowAt).toBeGreaterThan(0)
+    const block = panel.slice(rowAt, rowAt + 700)
+    expect(block).toContain('{!keyReady && (')
+    expect(block).toContain('先に認証情報でAPIキーを登録してください。')
+  })
+})
+
+describe('②: 手順A/Bの2段階（公式マニュアルどおり）と、プリンシパル欄の取り違え防止', () => {
+  it('見出しが「② サービスプリンシパルの用意（最初の一度だけ手作業）」', () => {
+    expect(panel).toContain('② サービスプリンシパルの用意（最初の一度だけ手作業）')
+  })
+
+  it('Koto からは作れない理由（IAM APIは通常のAPIキーでは使えない設計）を書いている', () => {
+    expect(panel).toContain('これは Koto からは作れません')
+    expect(panel).toContain('作成に使う IAM API は、通常のAPIキーでは使えない設計のためです（実測で権限エラー）。')
+  })
+
+  it('手順A（サービスプリンシパルを作る）・手順B（ロールを付ける）の見出しがある', () => {
+    expect(panel).toContain('手順A: サービスプリンシパルを作る')
+    expect(panel).toContain('手順B: そのサービスプリンシパルにロールを付ける')
+  })
+
+  it('手順Aは「サービスプリンシパル」メニューを開き、リソースIDを控える手順', () => {
+    const at = panel.indexOf('手順A: サービスプリンシパルを作る')
+    const end = panel.indexOf('手順B: そのサービスプリンシパルにロールを付ける', at)
+    expect(at).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('左メニュー「サービスプリンシパル」を開く')
+    expect(block).toContain('リソースID')
+  })
+
+  it('手順Bは「IAMポリシー」で、プリンシパル欄にサービスプリンシパルを・ロール欄にロールを選ぶ手順', () => {
+    const at = panel.indexOf('手順B: そのサービスプリンシパルにロールを付ける')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 700)
+    expect(block).toContain('IAMポリシー')
+    expect(block).toContain('「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ')
+    expect(block).toContain('「ロール」欄で「{ROLE_TEXT}」を選ぶ')
+  })
+
+  it('事故の直し3: 実画面の4欄（リソース階層名／リソース階層タイプ／プリンシパル／ロール）すべてを名指ししている（前2欄が「対象のプロジェクトを選ぶ」だけになっていた取り違えの穴を塞ぐ）', () => {
+    const at = panel.indexOf('手順B: そのサービスプリンシパルにロールを付ける')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 700)
+    expect(block).toContain('「リソース階層名」に、対象のプロジェクトが入っていることを確かめる')
+    expect(block).toContain('「リソース階層タイプ」が「プロジェクト」になっていることを確かめる')
+    expect(block).toContain('「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ')
+    expect(block).toContain('「ロール」欄で「{ROLE_TEXT}」を選ぶ')
+    // 旧文言「対象のプロジェクトを選ぶ」だけで済ませていた形（前2欄が名指しされていない）はもう無い。
+    expect(panel).not.toContain('→ 対象のプロジェクトを選ぶ')
+  })
+
+  it('プリンシパル欄にロール名を入れないでください、という注意書きがある', () => {
+    expect(panel).toContain('プリンシパル欄に「ロール名」を入れないでください。')
+    expect(panel).toContain('プリンシパル欄で選ぶのは、手順Aで作った')
+    expect(panel).toContain('サービスプリンシパル')
+    expect(panel).toContain('ロールの名前')
+    expect(panel).toContain('ロール欄</b>で選びます。')
+  })
+
+  it('コピーボタンのラベルは「ロール欄で選ぶもの」（旧「付与するロール」ではない）', () => {
+    expect(panel).toContain('ロール欄で選ぶもの')
+    expect(panel).not.toContain('付与するロール')
+  })
+
+  it('コピーボタンの title は、プリンシパル欄ではなくロール欄で使う旨を明示している', () => {
+    expect(panel).toContain('title="ロール名をコピー（プリンシパル欄ではなくロール欄で使います）"')
+  })
+
+  it('ROLE_TEXT の定義は1箇所のまま（複製していない）', () => {
+    const defs = [...panel.matchAll(/const ROLE_TEXT = /g)]
+    expect(defs.length).toBe(1)
+  })
+})
+
+describe('#25/事故の直し1: ①APIキーに、③「調べる」の疎通結果を出す（conn/connMsg に一本化）', () => {
+  it('investigate() は limits/worker/lb/clusters のいずれか1つでも成功すれば setConn(\'ok\') する', () => {
     const at = panel.indexOf('const investigate = async () => {')
     expect(at).toBeGreaterThan(0)
     const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
-    expect(block).toContain('setApiReachable(limitsRes.ok || plansRes.worker.ok || plansRes.lb.ok || clustersRes.ok)')
-    // 想定外の例外（catchブロック）では false にする（成功の余韻を残さない）。
-    expect(block).toContain('setApiReachable(false)')
+    expect(block).toContain("if (limitsRes.ok || plansRes.worker.ok || plansRes.lb.ok || clustersRes.ok) {")
+    expect(block).toContain("setConn('ok'); setConnMsg('')")
   })
 
-  it('レビュー指摘4の直し: 未登録（authが無い）の早期returnでは apiReachable を触らない（null のまま）。何も試していないので「通じなかった」と偽らない（①の「⚠️ APIキーが未登録です」と役割が重複・混同しないように）', () => {
+  it('investigate() は setConn を呼ぶ（③の結果が①に反映される）。全滅なら setConn(\'ng\') とし、代表的な失敗の生の応答を connMsg に入れる', () => {
+    const at = panel.indexOf('const investigate = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
+    expect(block).toContain("setConn('ng'); setConnMsg(rep)")
+    // 想定外の例外（catchブロック）でも setConn を呼ぶ（成功の余韻を残さない）。
+    const catchAt = block.indexOf('} catch (e: any) {')
+    expect(catchAt).toBeGreaterThan(0)
+    const catchBlock = block.slice(catchAt, block.indexOf('} finally {', catchAt))
+    expect(catchBlock).toContain("setConn('ng')")
+  })
+
+  it('レビュー指摘4の直し: 未登録（authが無い）の早期returnでは setConn を呼ばない（conn は idle のまま）。何も試していないので「通じなかった」と偽らない（①の「⚠️ APIキーが未登録です」と役割が重複・混同しないように）', () => {
     const at = panel.indexOf('const investigate = async () => {')
     expect(at).toBeGreaterThan(0)
     const guardAt = panel.indexOf('if (!auth || !auth.token || !auth.secret) {', at)
@@ -501,37 +681,37 @@ describe('#25: ①認証情報に、③「調べる」の疎通結果を出す',
     expect(afterGuard).toBeGreaterThan(guardAt)
     const block = panel.slice(guardAt, afterGuard)
     expect(block).toContain("setCheckError('さくらのクラウドAPIキーが未登録です。①で登録してください。')")
-    // 直す前は setApiReachable(false) がここにあった。この早期return分岐からは消えていること。
-    expect(block).not.toContain('setApiReachable')
+    // 直す前は setApiReachable(false) がここにあった。この早期return分岐からは setConn 呼び出しも
+    // 消えていること（'ng' はもちろん、いかなる setConn(...) も呼ばない）。
+    expect(block).not.toContain('setConn(')
   })
 
-  it('①に成功時「✅ このキーで専有型APIに通じました」、失敗時「⚠️ このキーでは通じませんでした」を出す', () => {
-    const at = panel.indexOf('{/* ① 認証情報 */}')
+  it('①に成功時「✅ このキーで専有型APIに通じました」、失敗時「⚠️ このキーでは専有型APIに通じませんでした」を出す', () => {
+    const at = panel.indexOf('{/* ① APIキー')
     const end = panel.indexOf('{/* ② サービスプリンシパル', at)
     expect(at).toBeGreaterThan(0)
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
     expect(block).toContain('✅ このキーで専有型APIに通じました')
-    expect(block).toContain('⚠️ このキーでは通じませんでした')
-    expect(block).toContain('下の「③ 調べる」の結果をご確認ください')
+    expect(block).toContain('⚠️ このキーでは専有型APIに通じませんでした。')
   })
 })
 
-describe('#1/#7: キーを切り替えたら、古い疎通結果（apiReachable）を残さない', () => {
+describe('#1/#7: キーを切り替えたら、古い疎通結果（conn/connMsg）を残さない', () => {
   // レビュー指摘7で認めた限界: ここは「ソースの文字列を grep する」形のテストであり、
   // 1のような穴（listenerが状態の一部だけ更新して、別の状態を更新し忘れる）を
   // 構造的に防げるわけではない——同じ形の直し忘れを別の箇所でまたやれば、この2本は素通りする。
-  // せめて「1の再発（この2箇所からの setApiReachable(null) の消失）」だけは検知できるようにする。
-  it("①のセレクトで別のキーを選んだとき（selectKey）、setApiReachable(null) する", () => {
+  // せめて「1の再発（この2箇所からの conn/connMsg リセットの消失）」だけは検知できるようにする。
+  it("①のセレクトで別のキーを選んだとき（selectKey）、setConn('idle'); setConnMsg('') する", () => {
     const at = panel.indexOf('const selectKey = async (id: string) => {')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('// ── ② サービスプリンシパル', at)
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
-    expect(block).toContain('setApiReachable(null)')
+    expect(block).toContain("setConn('idle'); setConnMsg('')")
   })
 
-  it("'sakura:credentials-changed'（①「🔑 認証情報で登録・切替」からの切替）の listener が setApiReachable(null) する。これが無いと、切り替え後も直前のキーで得た「✅ 通じました」が真下に残る", () => {
+  it("'sakura:credentials-changed'（①「🔑 認証情報で登録・切替」からの切替）の listener が conn/connMsg をリセットする。これが無いと、切り替え後も直前のキーで得た「✅ 通じました」が真下に残る", () => {
     const at = panel.indexOf("window.addEventListener('sakura:credentials-changed', h)")
     expect(at).toBeGreaterThan(0)
     const hAt = panel.lastIndexOf('const h = () => {', at)
@@ -541,7 +721,7 @@ describe('#1/#7: キーを切り替えたら、古い疎通結果（apiReachable
     const block = panel.slice(hAt, hEnd + 1)
     expect(block).toContain('refreshKey()')
     expect(block).toContain('refreshCloudKeys()')
-    expect(block).toContain('setApiReachable(null)')
+    expect(block).toContain("setConn('idle'); setConnMsg('')")
   })
 })
 

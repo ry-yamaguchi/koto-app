@@ -192,10 +192,14 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     return next
   }, [metaPath, readMeta])
 
-  // ── ① 認証情報 ──────────────────────────────────────────────
+  // ── ① APIキー ──────────────────────────────────────────────
   const [hasKey, setHasKey] = useState<boolean | null>(null)
   const [cloudKeys, setCloudKeys] = useState<CloudKeyInfo[]>([])
   const [activeKeyId, setActiveKeyId] = useState<string | null>(null)
+  // 接続テスト（事故の直し1）: 未実施 / 確認中 / OK / NG の4つ。共用型 AppRunPanel の
+  // conn / connMsg と同じ作法。専有型API（apprunDedicated.limits・GETのみ）へ実際に疎通する。
+  const [conn, setConn] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
+  const [connMsg, setConnMsg] = useState('')
 
   const refreshKey = useCallback(async () => {
     try { setHasKey(await window.electronAPI.cloud.hasKey()) } catch { setHasKey(false) }
@@ -208,8 +212,28 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     const r = await activateCloudKey(id)
     if (!r.ok) return
     await refreshKey(); await refreshCloudKeys()
-    // 使うキーを切り替えたら、前のキーで確かめた疎通結果は無効。再度③で確かめてもらう。
-    setApiReachable(null)
+    // 使うキーを切り替えたら、前のキーで確かめた疎通結果は無効。再度確かめてもらう。
+    setConn('idle'); setConnMsg('')
+  }
+
+  // 🔌 接続テスト: このキーで専有型APIへ実際に疎通する（GETのみ・何も作らない・掟4の方式Bを踏襲）。
+  const testConnection = async () => {
+    setConn('testing'); setConnMsg('')
+    try {
+      const auth = await window.electronAPI.cloud.loadKey()
+      if (!auth || !auth.token || !auth.secret) {
+        setConn('ng'); setConnMsg('さくらのクラウドAPIキーが未登録です。①で登録してください。')
+        return
+      }
+      const r = await window.electronAPI.apprunDedicated.limits(auth)
+      if (r.ok) {
+        setConn('ok'); setConnMsg('')
+      } else {
+        setConn('ng'); setConnMsg(r.message)
+      }
+    } catch (e: any) {
+      setConn('ng'); setConnMsg(e?.message ?? String(e))
+    }
   }
 
   // ── ② サービスプリンシパル（リソースID・手作業） ──────────────────
@@ -220,9 +244,6 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // ── ③ プラン・制限（API取得） ─────────────────────────────────
   const [checking, setChecking] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
-  // ①で疎通の結果を出すための状態（roadmap #25）。null＝まだ③「調べる」を押していない。
-  // ③のどれか1つでも成功すれば「このキーで通じた」とみなす（1つも通らなければ失敗）。
-  const [apiReachable, setApiReachable] = useState<boolean | null>(null)
   const [limits, setLimits] = useState<Limits | null>(null)
   const [limitsError, setLimitsError] = useState<string | null>(null)
   const [workerPlans, setWorkerPlans] = useState<PlanRow[] | null>(null)
@@ -239,8 +260,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       const auth = await window.electronAPI.cloud.loadKey()
       if (!auth || !auth.token || !auth.secret) {
         setCheckError('さくらのクラウドAPIキーが未登録です。①で登録してください。')
-        // ここでは何も試していない（＝キーが「悪い」わけではない）ので apiReachable は null のまま。
-        // false にすると「このキーでは通じませんでした」と出て、①の「⚠️ APIキーが未登録です」と
+        // ここでは何も試していない（＝キーが「悪い」わけではない）ので conn は 'idle' のまま。
+        // 'ng' にすると「このキーでは通じませんでした」と出て、①の「⚠️ APIキーが未登録です」と
         // 合わせて「キーが無い」のか「キーが悪い」のか分からなくなる。
         return
       }
@@ -267,11 +288,21 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       if (clustersRes.ok) setClusterInfo(extractClusterCount(clustersRes.data))
       else setClusterError(clustersRes.message)
 
-      // ①へ出す疎通結果（roadmap #25）: 4件のうちどれか1つでも成功すれば「通じた」。
-      setApiReachable(limitsRes.ok || plansRes.worker.ok || plansRes.lb.ok || clustersRes.ok)
+      // ①へ出す疎通結果（事故の直し1）: conn/connMsg に一本化。4本のうちどれか1つでも
+      // 成功すれば「通じた」。全滅なら、代表的な失敗（limits→worker→lb→clusters の順で
+      // 最初に見つかった1件）の生の応答を connMsg に入れる（推測で作らない）。
+      if (limitsRes.ok || plansRes.worker.ok || plansRes.lb.ok || clustersRes.ok) {
+        setConn('ok'); setConnMsg('')
+      } else {
+        const rep = !limitsRes.ok ? limitsRes.message
+          : !plansRes.worker.ok ? plansRes.worker.message
+          : !plansRes.lb.ok ? plansRes.lb.message
+          : clustersRes.message
+        setConn('ng'); setConnMsg(rep)
+      }
     } catch (e: any) {
       setCheckError(e?.message ?? String(e))
-      setApiReachable(false)
+      setConn('ng'); setConnMsg(e?.message ?? String(e))
     } finally {
       setChecking(false)
     }
@@ -442,9 +473,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
   useEffect(() => {
     // キーが（他画面の「認証情報」経由で）切り替わったら、前のキーで確かめた疎通結果を無効にする。
-    // ここで setApiReachable(null) しないと、①の表示は「使用中のキー」だけ新しくなり、
+    // ここで conn/connMsg をリセットしないと、①の表示は「使用中のキー」だけ新しくなり、
     // その真下に前のキーで得た「✅ 通じました」が残ったままになる（常時課金サービスへの嘘の緑チェック）。
-    const h = () => { refreshKey(); refreshCloudKeys(); setApiReachable(null) }
+    const h = () => { refreshKey(); refreshCloudKeys(); setConn('idle'); setConnMsg('') }
     window.addEventListener('sakura:credentials-changed', h)
     return () => window.removeEventListener('sakura:credentials-changed', h)
   }, [refreshKey, refreshCloudKeys])
@@ -466,10 +497,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         </p>
       </div>
 
-      {/* ① 認証情報 */}
+      {/* ① APIキー（入力は「認証情報」に一本化。ここは状態表示と接続テストのみ。共用型 AppRunPanel と同じ形） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">① 認証情報</p>
+          <p className="text-sm font-semibold text-ink">① APIキー</p>
           {hasKey === null
             ? <span className="text-xs text-ink-muted">確認中…</span>
             : keyReady
@@ -477,11 +508,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               : <span className="text-xs text-brand-yellow font-semibold">⚠️ APIキーが未登録です</span>}
         </div>
         <p className="text-[11px] text-ink-muted leading-relaxed">
-          専有型に専用のAPIキーはなく、既存の さくらのクラウドAPIキー（アクセストークン／トークンシークレット）をそのまま使います。「認証情報」で登録・切替します。
+          さくらのクラウドのAPIキー（アクセストークン／トークンシークレット）は「認証情報」で登録・切替します。AppRun 専有型に専用のAPIキーはなく、このキーで操作します。
         </p>
         {cloudKeys.length > 0 ? (
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-ink-secondary">この確認に使うキー</label>
+            <label className="text-[11px] font-medium text-ink-secondary">この操作に使うキー</label>
             <select
               value={selectedKeyId ?? ''}
               onChange={e => selectKey(e.target.value)}
@@ -496,48 +527,95 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             まだクラウドのキーが登録されていません。「認証情報」でアクセストークン／シークレットを登録してください。
           </p>
         )}
-        <button
-          onClick={onOpenCredentials}
-          className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
-        >🔑 認証情報で登録・切替</button>
-        {/* 疎通の結果（roadmap #25）: ③「🔍 調べる」を押すまでは現状の案内文のまま。
-            押した後は、その結果（通じた／通じなかった）をここにも出す
-            （①だけ見て「確認できない＝未実装」に見えるのを防ぐ）。 */}
-        {apiReachable === null ? (
-          <p className="text-[11px] text-ink-muted leading-relaxed">疎通の確認は、下の「③ 調べる」で行います。</p>
-        ) : apiReachable ? (
-          <p className="text-[11px] text-brand-green font-semibold leading-relaxed">✅ このキーで専有型APIに通じました</p>
-        ) : (
-          <p className="text-[11px] text-brand-yellow font-semibold leading-relaxed">
-            ⚠️ このキーでは通じませんでした。下の「③ 調べる」の結果をご確認ください。
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onOpenCredentials}
+            className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
+          >🔑 認証情報で登録・切替</button>
+          <button
+            onClick={testConnection}
+            disabled={conn === 'testing' || !keyReady}
+            title={keyReady ? '' : '先に認証情報でAPIキーを登録してください'}
+            className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
+          >🔌 接続テスト</button>
+          <span className="flex-1 text-xs text-right">
+            {conn === 'ok' && <span className="text-brand-green font-semibold">✅ 通じました</span>}
+            {conn === 'ng' && <span className="text-brand-yellow font-semibold">⚠️ 通じませんでした</span>}
+            {conn === 'testing' && <span className="text-ink-secondary">確認中…</span>}
+          </span>
+        </div>
+        {!keyReady && (
+          <p className="text-[11px] text-ink-muted leading-relaxed">
+            先に認証情報でAPIキーを登録してください。
           </p>
+        )}
+        {/* 疎通の結果: 🔌 接続テスト（このセクション）または③「🔍 調べる」のどちらの結果でも、
+            この1つの conn/connMsg に反映される（事故の直し1: 同じ意味の状態を2つ持たない）。 */}
+        {conn === 'ok' && (
+          <p className="text-[11px] text-brand-green font-semibold leading-relaxed">✅ このキーで専有型APIに通じました</p>
+        )}
+        {conn === 'ng' && (
+          <>
+            <p className="text-[11px] text-brand-yellow font-semibold leading-relaxed">
+              ⚠️ このキーでは専有型APIに通じませんでした。
+            </p>
+            <ErrorBlock msg={connMsg} />
+          </>
         )}
       </section>
 
-      {/* ② サービスプリンシパルの用意（手作業が必要） */}
+      {/* ② サービスプリンシパルの用意（最初の一度だけ・手作業） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-        <p className="text-sm font-semibold text-ink">② サービスプリンシパルの用意（手作業が必要）</p>
+        <p className="text-sm font-semibold text-ink">② サービスプリンシパルの用意（最初の一度だけ手作業）</p>
         <p className="text-xs text-ink-secondary leading-relaxed">
           専有型のクラスタを作るには「サービスプリンシパル」が要りますが、<b className="text-ink">これは Koto からは作れません</b>。
-          作成に使うIAM APIは通常のAPIキーでは使えないため（実測で権限エラー）、コントロールパネルでの手作業になります。
+          作成に使う IAM API は、通常のAPIキーでは使えない設計のためです（実測で権限エラー）。
+          サービスプリンシパルはプロジェクトの資源として使い回せるので、この手作業は最初の一度だけで済みます。
         </p>
         <a
           href={CONTROL_PANEL_URL}
           className="inline-block bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
         >🔧 コントロールパネルを開く</a>
+
         <div className="space-y-1">
-          <p className="text-[11px] font-medium text-ink-secondary">付与するロール</p>
+          <p className="text-[11px] font-semibold text-ink-secondary">手順A: サービスプリンシパルを作る</p>
+          <ol className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
+            <li>コントロールパネルの左メニュー「サービスプリンシパル」を開く</li>
+            <li>「サービスプリンシパルの作成」→ 名前と説明を入れて作成</li>
+            <li>作成後に表示される「リソースID」を控える（これを下に貼る）</li>
+          </ol>
+        </div>
+
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold text-ink-secondary">手順B: そのサービスプリンシパルにロールを付ける</p>
+          <ol start={4} className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
+            <li>左メニュー「IAMポリシー」→「アクセス権の付与」を開く</li>
+            <li>「リソース階層名」に、対象のプロジェクトが入っていることを確かめる</li>
+            <li>「リソース階層タイプ」が「プロジェクト」になっていることを確かめる</li>
+            <li>「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ</li>
+            <li>「ロール」欄で「{ROLE_TEXT}」を選ぶ</li>
+            <li>「作成」を押す（反映まで最大3分）</li>
+          </ol>
+        </div>
+
+        <div className="rounded-lg border border-brand-yellow/70 bg-overlay p-3 space-y-1">
+          <p className="text-[11px] font-semibold text-brand-yellow leading-relaxed">
+            ⚠️ プリンシパル欄に「ロール名」を入れないでください。
+          </p>
+          <p className="text-[11px] text-ink-secondary leading-relaxed">
+            プリンシパル欄で選ぶのは、手順Aで作った<b className="text-ink">サービスプリンシパル</b>です。
+            「{ROLE_TEXT}」は<b className="text-ink">ロールの名前</b>で、<b className="text-ink">ロール欄</b>で選びます。
+          </p>
+        </div>
+
+        <div className="space-y-1">
+          <p className="text-[11px] font-medium text-ink-secondary">ロール欄で選ぶもの</p>
           <div className="flex items-center gap-2 rounded-lg border border-line bg-overlay px-3 py-2">
             <code className="flex-1 text-xs text-ink font-mono select-text">{ROLE_TEXT}</code>
-            <CopyButton text={ROLE_TEXT} title="ロール名をコピー" />
+            <CopyButton text={ROLE_TEXT} title="ロール名をコピー（プリンシパル欄ではなくロール欄で使います）" />
           </div>
         </div>
-        <ol className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
-          <li>上のボタンでコントロールパネルを開く</li>
-          <li>IAM（アクセス管理）でサービスプリンシパルを作成する</li>
-          <li>ロール「{ROLE_TEXT}」を付与する</li>
-          <li>発行されたリソースID（12文字）を下に貼り付ける</li>
-        </ol>
+
         <div className="space-y-1">
           <label className="text-[11px] font-medium text-ink-secondary">リソースID</label>
           <input
