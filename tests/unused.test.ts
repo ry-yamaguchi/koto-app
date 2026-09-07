@@ -102,7 +102,7 @@ describe('checkUnusedFiles: 対応範囲（roadmap #22・静的サイト／Node�
 })
 
 describe('checkUnusedFiles: 実機の再現（Express アプリ・roadmap #22・2026-09-06）', () => {
-  // 実機（/Users/r-yamaguchi/SAKURAIDE/ScheduleAPP）の構成をそのまま再現する:
+  // 実機で見つかった Express アプリの構成をそのまま再現する:
   //   Koto の公開の根（<project>/public/）の中に Express アプリ本体
   //   （server.js・package.json・package-lock.json・README.md・Dockerfile）があり、
   //   さらにその中に、そのアプリが express.static() で配信する静的フォルダ
