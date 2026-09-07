@@ -26,6 +26,13 @@
  *
  *   ネットワークを使わず、組み立てる URL だけ確認する（キー不要）:
  *     node scripts/probe-zones.mjs --dry-run
+ *
+ * ── 道具自身の失敗（2026-09-07）と、その直し ─────────────────────────────
+ * このスクリプトの初版は、生の応答を **4000字で切って**表示していた。実際のゾーン一覧は
+ * 6件あったが、4000字では先頭3件までしか映らず、実測の記録に3件しか残らなかった
+ * （docs/apprun-dedicated-plan.md 5-9・#28 依頼文）。CLAUDE.md「道具が失敗の中身を隠していた」
+ * （8.の教訓）と同じ形。→ 生JSONを出す前に**全件のコンパクトな表**（Name/Description/
+ * IsDummy/DisplayOrder）を必ず出すようにし、生JSONの上限も 4000 → 20000 に上げた。
  */
 
 // 公式ドキュメントの curl サンプルと同じ形。URL 自体にゾーンを含むが、
@@ -82,10 +89,29 @@ if (r.error) {
   line('  ⚠️ JSON として解釈できませんでした。生の応答:')
   line(`  ${r.text.slice(0, 800)}`)
 } else {
+  // まず全件のコンパクトな表を出す（生JSONを切る上限より前に、全件を必ず見えるようにする。
+  // 2026-09-07 の事故: 生JSONだけを4000字で切って出していたため、6件中3件しか見えなかった）。
+  const zones = Array.isArray(r.body?.Zones) ? r.body.Zones : null
+  if (zones) {
+    line()
+    line(`Zones: ${zones.length}件（Total=${r.body?.Total ?? '?'}）`)
+    line('Name'.padEnd(8) + 'IsDummy'.padEnd(9) + 'DisplayOrder'.padEnd(14) + 'Description')
+    for (const z of zones) {
+      const name = String(z?.Name ?? '?').padEnd(8)
+      const dummy = String(z?.IsDummy ?? '?').padEnd(9)
+      const order = String(z?.DisplayOrder ?? '?').padEnd(14)
+      const desc = String(z?.Description ?? '?')
+      line(`${name}${dummy}${order}${desc}`)
+    }
+  } else {
+    line()
+    line('  ⚠️ Zones が配列ではありません（想定していた形と違います）。下の生の応答で確認してください。')
+  }
+
   // **形を決め打ちしない。** 応答をそのまま出し、これを見てから実装する。
   line()
   line('生の応答（そのまま。これを見て読み取り方を決めます）:')
-  line(JSON.stringify(r.body, null, 2).slice(0, 4000))
+  line(JSON.stringify(r.body, null, 2).slice(0, 20000))
 }
 
 head('まとめ')

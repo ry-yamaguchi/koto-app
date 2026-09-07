@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import CopyButton from './CopyButton'
 import { withApprunDedicatedRecord } from '../../shared/publishMeta'
-import { readLimits, readWorkerClasses, readLbClasses, readClusters, type ApprunDedicatedPlanRow } from '../../shared/apprunDedicatedShapes'
+import { readLimits, readWorkerClasses, readLbClasses, readClusters, readZones, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
 
 // さくらのAppRun 専有型パネル（roadmap #23）。
 //
@@ -80,6 +80,40 @@ export function isValidResourceName(name: string): boolean {
 export const RESERVED_PORT_RANGE: readonly [number, number] = [5950, 5959]
 export function isReservedPort(port: number): boolean {
   return port >= RESERVED_PORT_RANGE[0] && port <= RESERVED_PORT_RANGE[1]
+}
+
+// ── ⑤ ゾーン選択（roadmap #28: GET /zone の一覧から選ぶ。5-9） ─────────────────────
+
+/**
+ * ⑤で選ばせるゾーンの一覧を作る（GET /zone の応答から readZones で読んだ行を渡す）。
+ * **`isDummy === false`（＝本物だと分かっているもの）だけを残す。** `true`（Sandbox 等の
+ * 見せかけのゾーン）はもちろん、**`null`（IsDummy が boolean でなかった＝分からない）も除く**
+ * （事故の直し1・2026-09-08 検分で発見）。分からないものを選べる一覧に混ぜない――安全側に倒す。
+ * `displayOrder` の昇順に並べる（null は最後）。同値・両方 null なら `name` の辞書順で安定させる
+ * （並び順には依存しない――実測の並びが変わっても結果が変わらないことをテストで固定してある）。
+ */
+export function selectableZones(rows: readonly ZoneRow[]): ZoneRow[] {
+  return rows
+    .filter(r => r.isDummy === false)
+    .slice()
+    .sort((a, b) => {
+      const ao = a.displayOrder
+      const bo = b.displayOrder
+      if (ao == null && bo == null) return a.name.localeCompare(b.name)
+      if (ao == null) return 1
+      if (bo == null) return -1
+      if (ao !== bo) return ao - bo
+      return a.name.localeCompare(b.name)
+    })
+}
+
+/**
+ * ⑤で既定に選ぶゾーン名。`selectableZones` の並べ替え後の先頭。**1つも選べなければ null**
+ * （＝既定を選ばない。呼び出し側が自由入力に戻る・分からない値を焼き込まない）。
+ * 特定のゾーン名を決め打ちで返さない――**一覧から決める**。
+ */
+export function defaultZone(rows: readonly ZoneRow[]): string | null {
+  return selectableZones(rows)[0]?.name ?? null
 }
 
 /**
@@ -252,6 +286,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const [lbError, setLbError] = useState<string | null>(null)
   const [clusterInfo, setClusterInfo] = useState<{ count: number; hasMore: boolean } | null>(null)
   const [clusterError, setClusterError] = useState<string | null>(null)
+  // ゾーン一覧（roadmap #28・GET /zone。⑤の選択式化に使う。他の3つと同時に並列で取る）。
+  const [zones, setZones] = useState<ZoneRow[] | null>(null)
+  const [zonesError, setZonesError] = useState<string | null>(null)
 
   const investigate = async () => {
     setChecking(true); setCheckError(null)
@@ -269,11 +306,18 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       setWorkerPlans(null); setWorkerError(null)
       setLbPlans(null); setLbError(null)
       setClusterInfo(null); setClusterError(null)
+      setZones(null); setZonesError(null)
 
-      const [limitsRes, plansRes, clustersRes] = await Promise.all([
+      // zones だけ .catch() で包む（事故の直し3）: ゾーン一覧は補助情報であり、失敗しても
+      // ⑤は自由入力に戻るだけ（利用者を止めない）。だが Promise.all にそのまま4本目として
+      // 混ぜると、zones の IPC が reject したときに limits/plans/clusters まで巻き添えで
+      // 落ち、①が「通じませんでした」になってしまう（コード中のコメントと実装が食い違って
+      // いた・2026-09-08 検分で発見）。catch で必ず {ok:false,...} に落として reject させない。
+      const [limitsRes, plansRes, clustersRes, zonesRes] = await Promise.all([
         window.electronAPI.apprunDedicated.limits(auth),
         window.electronAPI.apprunDedicated.plans(auth),
         window.electronAPI.apprunDedicated.clusters(auth),
+        window.electronAPI.apprunDedicated.zones(auth).catch((e: any) => ({ ok: false as const, message: e?.message ?? String(e) })),
       ])
 
       if (limitsRes.ok) setLimits(readLimits(limitsRes.data))
@@ -287,6 +331,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
       if (clustersRes.ok) setClusterInfo(extractClusterCount(clustersRes.data))
       else setClusterError(clustersRes.message)
+
+      // ゾーン一覧が取れなくても⑤は自由入力に戻るだけ（利用者を止めない）。①の疎通判定
+      // （下）には含めない――ゾーンは補助情報で、専有型APIそのものの疎通とは別に扱う。
+      if (zonesRes.ok) setZones(readZones(zonesRes.data))
+      else setZonesError(zonesRes.message)
 
       // ①へ出す疎通結果（事故の直し1）: conn/connMsg に一本化。4本のうちどれか1つでも
       // 成功すれば「通じた」。全滅なら、代表的な失敗（limits→worker→lb→clusters の順で
@@ -345,7 +394,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     { port: 80, protocol: 'http' },
     { port: 443, protocol: 'https' },
   ])
-  const [zone, setZone] = useState('tk1b') // 原本に許容値の一覧が無いため、例の値を既定にした自由入力（5-5）
+  // ゾーン: 一覧が取れているあいだは <select>（selectedZoneName）、取れなければ従来どおりの
+  // 自由入力（zone）に戻る（roadmap #28）。既定値を決め打ちしない――'tk1b' 等はどこにも書かない。
+  const [zone, setZone] = useState('') // 自由入力（一覧が取れないときのフォールバック。5-5）
+  const [selectedZoneName, setSelectedZoneName] = useState<string | null>(null)
   const [minNodes, setMinNodes] = useState(1)
   const [maxNodes, setMaxNodes] = useState(1)
   const [selectedWorkerPath, setSelectedWorkerPath] = useState<string | null>(null)
@@ -369,6 +421,20 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     if (cheapest) setSelectedLbPath(cheapest.path)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lbPlans])
+  // ゾーンも同じ作法: 一覧が取れたら defaultZone() を既定にする。一度選んだら上書きしないが、
+  // ③を押し直して一覧が変わり、選択中の名前が新しい一覧に無くなったら defaultZone() に戻す
+  // （事故の直し4: 画面の <select> は空欄に見えるのに送信値だけ古い名前のまま、というずれを防ぐ）。
+  useEffect(() => {
+    const rows = selectableZones(zones ?? [])
+    if (selectedZoneName && rows.some(r => r.name === selectedZoneName)) return
+    setSelectedZoneName(defaultZone(zones ?? []))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zones])
+
+  const zoneRows = selectableZones(zones ?? [])
+  const zoneSelectable = zoneRows.length > 0
+  // 一覧が取れて選べるあいだは select の値、そうでなければ自由入力の値（いまの入力に戻す）。
+  const effectiveZone = zoneSelectable ? (selectedZoneName ?? '') : zone
 
   const updatePort = (i: number, next: { port: number; protocol: 'http' | 'https' }) => {
     setPorts(prev => prev.map((p, idx) => (idx === i ? next : p)))
@@ -390,7 +456,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     if (ports.length === 0) return '公開ポートを1つ以上指定してください'
     if (ports.some(p => !(p.port >= 1 && p.port <= 65535))) return 'ポート番号は1〜65535で指定してください'
     if (ports.some(p => isReservedPort(p.port))) return `ポート ${RESERVED_PORT_RANGE[0]}-${RESERVED_PORT_RANGE[1]} は予約されており使えません`
-    if (!zone.trim()) return 'ゾーンを入力してください'
+    if (!effectiveZone.trim()) return 'ゾーンを入力してください'
     if (!selectedWorkerPath) return 'ワーカプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
     if (!selectedLbPath) return 'ロードバランサプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
     if (!(Number.isInteger(minNodes) && minNodes >= 1 && minNodes <= 10)) return 'ノード数（min）は1〜10で指定してください'
@@ -414,7 +480,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         ports,
         servicePrincipalID: resourceId.trim(),
         ...(letsEncryptEmail.trim() ? { letsEncryptEmail: letsEncryptEmail.trim() } : {}),
-        zone: zone.trim(),
+        zone: effectiveZone.trim(),
         workerServiceClassPath: selectedWorkerPath as string,
         minNodes, maxNodes,
         lbServiceClassPath: selectedLbPath as string,
@@ -588,14 +654,25 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
         <div className="space-y-1">
           <p className="text-[11px] font-semibold text-ink-secondary">手順B: そのサービスプリンシパルにロールを付ける</p>
+          {/* 2026-09-07 Ryosuke さん指摘で削った2行:
+              「リソース階層名」「リソース階層タイプ」を"確かめる"手順を入れていたが、
+              この2つは**入力欄ではなく、選んだプロジェクトが表示されるだけの読み取り専用**。
+              操作できないものを手順に立てるのは、ただの水増しだった。
+              検分が「4欄すべてを名指ししていない」と指摘したのを、
+              **その欄が操作できるものかを確かめずに**受け入れたのが原因。
+              入力するのは「プリンシパル」と「ロール」の2つだけ。 */}
           <ol start={4} className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
-            <li>左メニュー「IAMポリシー」→「アクセス権の付与」を開く</li>
-            <li>「リソース階層名」に、対象のプロジェクトが入っていることを確かめる</li>
-            <li>「リソース階層タイプ」が「プロジェクト」になっていることを確かめる</li>
+            <li>左メニュー「IAMポリシー」を開き、画面右上で対象のプロジェクトを選ぶ</li>
+            <li>右上の「アクセス権の付与」を押す</li>
             <li>「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ</li>
             <li>「ロール」欄で「{ROLE_TEXT}」を選ぶ</li>
             <li>「作成」を押す（反映まで最大3分）</li>
           </ol>
+          <p className="text-[11px] text-ink-muted leading-relaxed">
+            ※「リソース階層名」「リソース階層タイプ」は、選んだプロジェクトが表示されるだけの欄です（ここでは変更しません）。
+            組織やフォルダ単位でも付けられますが、<b className="text-ink-secondary">サービスプリンシパルにはプロジェクト単位で付けるのが確実</b>です
+            （上位で付けた権限は、サービスプリンシパルの制約で効かないことがあると公式に明記されています）。
+          </p>
         </div>
 
         <div className="rounded-lg border border-brand-yellow/70 bg-overlay p-3 space-y-1">
@@ -829,14 +906,45 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-ink-secondary">ゾーン</label>
-              <input
-                value={zone}
-                onChange={e => setZone(e.target.value)}
-                className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
-              />
-              <p className="text-[11px] text-ink-muted leading-relaxed">
-                原本に許容値の一覧が無いため自由入力です。間違っていればAPIが400を返すので、そのまま表示します。
-              </p>
+              {zoneSelectable ? (
+                <select
+                  value={selectedZoneName ?? ''}
+                  onChange={e => setSelectedZoneName(e.target.value)}
+                  className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                >
+                  {!selectedZoneName && <option value="">（選んでください）</option>}
+                  {zoneRows.map(z => (
+                    <option key={z.name} value={z.name}>{z.name}{z.description ? ` — ${z.description}` : ''}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={zone}
+                  onChange={e => setZone(e.target.value)}
+                  placeholder="例: tk1b"
+                  className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
+                />
+              )}
+              {/* 事故の直し2: zones===null（未実施）／取得失敗／取得できたが0件、の3つを
+                  はっきり区別する。③を押した後なのに「押すと選べます」という嘘を出さない。 */}
+              {zones === null && !zonesError ? (
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  自由入力です。③の「🔍 調べる」を押すと一覧から選べるようになります。
+                </p>
+              ) : zonesError ? (
+                <p className="text-[11px] text-brand-yellow leading-relaxed">
+                  ゾーン一覧を取得できませんでした。手で入力してください。
+                </p>
+              ) : zoneSelectable ? (
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  さくらのクラウドのゾーン一覧から選びます。専有型がすべてのゾーンに対応しているかは未確認なので、
+                  作成に失敗したら別のゾーンをお試しください（失敗しても、その時点では何も作られません）。
+                </p>
+              ) : (
+                <p className="text-[11px] text-brand-yellow leading-relaxed">
+                  一覧は取得できましたが、選べるゾーンがありませんでした。手で入力してください。
+                </p>
+              )}
             </div>
 
             <div className="space-y-1">

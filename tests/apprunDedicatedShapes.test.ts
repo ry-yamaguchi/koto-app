@@ -8,6 +8,7 @@ import {
   readAsgId,
   readLoadBalancerId,
   readApiErrorTitle,
+  readZones,
 } from '../src/shared/apprunDedicatedShapes'
 
 // roadmap #23。docs/apprun-dedicated-plan.md 5-8 の表（OpenAPI原本 v1.4.0 と2026-09-07の実測の
@@ -154,6 +155,80 @@ describe('readClusterId / readAsgId / readLoadBalancerId: 作成応答からのI
     expect(readClusterId({})).toBeNull()
     expect(readClusterId(null)).toBeNull()
     expect(readAsgId(undefined)).toBeNull()
+  })
+})
+
+describe('readZones: GET /zone は { Zones: [...] }（roadmap #28・2026-09-07 実測）', () => {
+  // 実測の生応答そのもの（CLAUDE.md #28 依頼文に載っている実測記録。Total/Countは6だが、
+  // Zones配列に残っているのは先頭3件のみ＝tk1a/tk1b/is1a）。Region の中身は readZones が
+  // 使わないため、実物と同じ構造だけ再現する。
+  const REAL_ZONES_RESPONSE = {
+    From: 0,
+    Count: 6,
+    Total: 6,
+    Zones: [
+      {
+        Index: 0, ID: 21001, DisplayOrder: 20021001, Name: 'tk1a',
+        Description: '東京第1ゾーン', IsDummy: false,
+        Region: { ID: 210, Name: '東京', Description: '東京' },
+      },
+      {
+        Index: 1, ID: 21002, DisplayOrder: 20021002, Name: 'tk1b',
+        Description: '東京第2ゾーン', IsDummy: false,
+        Region: { ID: 210, Name: '東京', Description: '東京' },
+      },
+      {
+        Index: 2, ID: 31001, DisplayOrder: 20031001, Name: 'is1a',
+        Description: '石狩第1ゾーン', IsDummy: false,
+        Region: { ID: 310, Name: '石狩', Description: '石狩' },
+      },
+    ],
+  }
+
+  it('実測どおりの応答から3件読める（name/description/isDummy/displayOrder）', () => {
+    expect(readZones(REAL_ZONES_RESPONSE)).toEqual([
+      { name: 'tk1a', description: '東京第1ゾーン', isDummy: false, displayOrder: 20021001 },
+      { name: 'tk1b', description: '東京第2ゾーン', isDummy: false, displayOrder: 20021002 },
+      { name: 'is1a', description: '石狩第1ゾーン', isDummy: false, displayOrder: 20031001 },
+    ])
+  })
+
+  it('★推測で拾わない: Zones が無い・配列でない・違う形（小文字の zones 等）なら空配列', () => {
+    expect(readZones({})).toEqual([])
+    expect(readZones({ Zones: 'not-an-array' })).toEqual([])
+    expect(readZones({ Zones: { 0: { Name: 'tk1a' } } })).toEqual([]) // オブジェクトは配列ではない
+    expect(readZones({ zones: REAL_ZONES_RESPONSE.Zones })).toEqual([]) // 小文字キーは拾わない
+    expect(readZones(null)).toEqual([])
+    expect(readZones(undefined)).toEqual([])
+  })
+
+  it('Name が無い行は捨てる', () => {
+    // ⚠️ tk1v（Sandbox）の IsDummy:true / DisplayOrder:20021006 は**作り物**。実測ではない
+    // （probe-zones.mjs の初版が4000字で切っていたため、実測できたのは先頭3件=tk1a/tk1b/is1a
+    // だけ。5-9 参照）。ここでは「Name が無い行は捨てる」動作だけを確かめるための値。
+    const data = {
+      Zones: [
+        { Description: '名前なし', IsDummy: false },
+        { Name: 'tk1v', Description: 'Sandbox', IsDummy: true, DisplayOrder: 20021006 },
+      ],
+    }
+    expect(readZones(data)).toEqual([
+      { name: 'tk1v', description: 'Sandbox', isDummy: true, displayOrder: 20021006 },
+    ])
+  })
+
+  it('Description/DisplayOrder は型が違えば null にする（推測で埋めない）', () => {
+    const data = { Zones: [{ Name: 'tk1c', Description: 123, IsDummy: 'yes', DisplayOrder: '20021003' }] }
+    expect(readZones(data)).toEqual([{ name: 'tk1c', description: null, isDummy: null, displayOrder: null }])
+  })
+
+  // 事故の直し1（2026-09-08 検分で発見）: 直す前は「IsDummy が boolean でなければ false」に
+  // 倒していた。応答の形が変わったとき、それを黙って「本物のゾーン」として選ばせてしまう。
+  // 「分からないものは null」にし、選ばせるかどうかは selectableZones 側の判断に委ねる。
+  it('IsDummy が boolean でなければ isDummy: null にする（文字列 / 数値 / 欠落 の3通り）', () => {
+    expect(readZones({ Zones: [{ Name: 'z1', IsDummy: 'true' } ] })[0].isDummy).toBeNull()
+    expect(readZones({ Zones: [{ Name: 'z2', IsDummy: 1 }] })[0].isDummy).toBeNull()
+    expect(readZones({ Zones: [{ Name: 'z3' }] })[0].isDummy).toBeNull()
   })
 })
 

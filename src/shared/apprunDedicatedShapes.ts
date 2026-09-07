@@ -84,6 +84,43 @@ export function readLoadBalancerId(data: unknown): string | null {
   return typeof v === 'string' ? v : null
 }
 
+// ── GET /zone（さくらのクラウド API v1.1「設備関連API」・roadmap #28） ──────────────
+// 成功時の実物の形（2026-09-07 実測。src/main/cloud/zones.ts が呼ぶ）:
+//   { "From":0, "Count":6, "Total":6,
+//     "Zones": [ { "Index":0, "ID":21001, "DisplayOrder":20021001, "Name":"tk1a",
+//       "Description":"東京第1ゾーン", "IsDummy":false, "Region": {...} }, … ] }
+// VNCProxy / FTPServer / Settings / CreatedAt 等、表に無い他のキーは使わない（5-8 と同じ方針）。
+// ただし **実測できたのは Total=6 件中、先頭3件（tk1a/tk1b/is1a）だけ**（旧 probe-zones.mjs が
+// 生JSONを4000字で切っていたため。docs/apprun-dedicated-plan.md 5-9）。残り3件の IsDummy が
+// 実際どんな形で返るかは**未実測**。だからこそ「boolean でなければ分からない」という
+// 下の読み方が要る（2026-09-08 検分で発見・修理。それまでは boolean でなければ false＝本物に
+// 倒しており、応答の形が変われば Sandbox 等の見せかけのゾーンが選択式の既定になり得た）。
+export type ZoneRow = { name: string; description: string | null; isDummy: boolean | null; displayOrder: number | null }
+
+/**
+ * data.Zones から読む。**配列でなければ空配列**（推測で他のキー（小文字の zones 等）を探さない）。
+ * 各行は Name（string）が無ければ捨てる。Description/DisplayOrder は型が違えば null にする。
+ * **IsDummy は boolean のときだけその値。それ以外（欠落・文字列・数値など）は `null`＝分からない**
+ * にする（「分からないものを本物（false）に倒さない」。並べ替え・フィルタはしない。
+ * 「本物だと分かっているものだけ選ばせる」判断は使う側＝selectableZones が行う）。
+ */
+export function readZones(data: unknown): ZoneRow[] {
+  const list = (data as any)?.Zones
+  if (!Array.isArray(list)) return []
+  const out: ZoneRow[] = []
+  for (const item of list) {
+    const d = item as any
+    if (typeof d?.Name !== 'string') continue
+    out.push({
+      name: d.Name,
+      description: typeof d?.Description === 'string' ? d.Description : null,
+      isDummy: typeof d?.IsDummy === 'boolean' ? d.IsDummy : null,
+      displayOrder: typeof d?.DisplayOrder === 'number' ? d.DisplayOrder : null,
+    })
+  }
+  return out
+}
+
 // ── 失敗時の応答: { "status": …, "title": … } ─────────────────────────
 // title があれば返す（呼び出し側がエラーメッセージに添える）。無ければ null。
 // **生の応答本文の表示はそのまま残す**（掟10「確かめられないときは生の応答を載せる」）。
