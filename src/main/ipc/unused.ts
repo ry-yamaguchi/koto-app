@@ -1,4 +1,22 @@
-// unused.ts — 未使用ファイルの検出＋素材置き場への移動（project:unusedCheck / project:moveToMaterials）。roadmap #18・#22。
+// unused.ts — 未使用ファイルの検出＋素材置き場への移動（project:unusedCheck / project:moveToMaterials）。
+// あわせて roadmap #9②「ファイルの移動手段が無い」で、任意のファイルを手で移す project:moveFiles
+// もここに置く（同じ「安全に移す」土台を共有するため）。
+//
+// ── 任意のファイルの移動（roadmap #9②・2026-09-07 追記） ──────────────────
+//   ・実機で AI が「public/ の外へ移して」に応えられず、できないことをハルシネーションで
+//     約束する事故があった（#9①でAI側の嘘は止めた・v0.6.3）。本命は**利用者が手で移せること**。
+//   ・検証・退避・実行・ロールバック・空フォルダの片づけは、素材置き場への移動（#18・#22）と
+//     まったく同じ形で成立する。**移動先が違うだけ**なので、`moveToMaterialsFs` を
+//     `moveFilesToFs(projectDir, files, dest)` へ一般化し、`dest` で `MATERIALS_DIR` /
+//     `PUBLISH_DIR`（shared/publishRoot.ts の一元定義）を切り替える。既存の守り
+//     （confineToProject・isProtectedWritePath・nextFreeMaterialName・同一スナップショットID
+//     での退避・実行段の存在チェック＋逆順ロールバック）は dest によらず共通のまま一切弱めない。
+//   ・`moveFilesToFs` の `files` は**プロジェクト直下からの相対パス**で統一する（Sidebar は
+//     公開の根の外側のファイルも渡すため、「根」の概念を持ち込まない）。一方
+//     `moveToMaterialsFs`（＝`project:moveToMaterials`）は checkUnusedFiles が返す
+//     「公開の根（resolvePublishRoot）からの相対パス」を渡す**従来の約束を変えない**
+//     （呼び出し側＝UnusedFilesSection を壊さないため）。そこで薄い皮の側で
+//     根→プロジェクト直下の読み替え（backupRelPath）を行ってから一般化した関数へ渡す。
 //
 // ── 決めごと（2026-09-03 Ryosuke と合意） ────────────────────────────────
 //   ・移動するのは AI ではなく Koto の機能。利用者が一覧を確認して押したときだけ動く。
@@ -36,7 +54,7 @@ import { detectRuntime } from '../../shared/runtimeDetect'
 import { findUnusedFiles, nextFreeMaterialName, NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE } from '../../shared/unusedFiles'
 import type { UnusedRuntime } from '../../shared/unusedFiles'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
-import { backupRelPath } from '../../shared/publishRoot'
+import { PUBLISH_DIR, backupRelPath } from '../../shared/publishRoot'
 import { isProtectedWritePath } from '../../shared/protectedPaths'
 import { snapshotBeforeChange } from '../backup/store'
 import { BACKUP_DIRNAME, nextFreeSnapshotId } from '../backup/plan'
@@ -103,39 +121,49 @@ export type MoveToMaterialsResult = {
   moved: string[]
   /** 🕘 履歴に「移す直前」を残せたか（取れなくても移動そのものは続ける）。 */
   snapshotOk: boolean
-  /** 素材置き場で同名衝突があり、nextFreeMaterialName で改名して移動した分（無ければ空配列）。 */
+  /** 移動先で同名衝突があり、nextFreeMaterialName で改名して移動した分（無ければ空配列）。 */
   renamed?: { from: string; to: string }[]
   message?: string
 }
 
+/** 移動先の種類。'materials' は素材置き場（MATERIALS_DIR）、'publish' は公開されるもの（PUBLISH_DIR）。 */
+export type MoveDestKind = 'materials' | 'publish'
+
 /** 1件の移動対象（検証済みの実パスまで解決したもの）。 */
 type MoveTarget = {
-  /** checkUnusedFiles が返した、公開の根からの相対パス（呼び出し側から渡される）。 */
+  /** 呼び出し側から渡された、プロジェクト直下からの相対パスそのもの。moved・renamed.from に使う。 */
   rel: string
-  /** 🕘 履歴・実ファイル操作の基準＝プロジェクト直下からの相対パス。 */
-  projectRel: string
-  /** 移動先（プロジェクト直下からの相対パス。`MATERIALS_DIR/<basename>`）。 */
+  /** 移動先（プロジェクト直下からの相対パス。`<destDirName>/<basename>`）。 */
   destRel: string
   fromFull: string
   toFull: string
 }
 
 /**
- * 未使用ファイルを「素材（公開しません）」へ移す。project:moveToMaterials の実体。
+ * ファイルを Koto 内の別の置き場（素材置き場／公開されるもの）へ移す唯一の実体。
+ * project:moveToMaterials（roadmap #18・#22）と project:moveFiles（roadmap #9②・
+ * 任意のファイルを手で移す）の両方がここを通る。
  *
- * `files` は checkUnusedFiles が返した相対パス（公開の根からの相対）をそのまま渡す想定。
- * サブフォルダの中にあるファイルも、移動先では basename で `MATERIALS_DIR` の直下に置く。
+ * `files` は**プロジェクト直下からの相対パス**として扱う（呼び出し側の責務。
+ * ズレると移動が別の場所を指すため、上のコメントで基準を明示している）。
+ * サブフォルダの中にあるファイルも、移動先では basename で `dest` の直下に平置きする。
+ *
+ * 検証（confineToProject・isProtectedWritePath を移動元・移動先の両方に）・
+ * 同名衝突の自動改名（nextFreeMaterialName）・🕘 履歴への退避（移動元・移動先を同じ
+ * スナップショットIDで）・実行段の存在チェックと失敗時の逆順ロールバック・
+ * 移動元の親フォルダの片づけは、すべて dest によらず共通（既存の守りを一切弱めない）。
  *
  * スナップショットIDはここで発行する（呼び出し側に生成させない＝渡し忘れの余地を無くす）。
  */
-export function moveToMaterialsFs(projectDir: string, files: readonly string[]): MoveToMaterialsResult {
+export function moveFilesToFs(projectDir: string, files: readonly string[], dest: MoveDestKind): MoveToMaterialsResult {
   if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
     return { ok: false, moved: [], snapshotOk: false, message: 'プロジェクトフォルダのパスが不正です' }
   }
   const list = Array.from(new Set((files ?? []).filter((f): f is string => typeof f === 'string' && !!f)))
   if (!list.length) return { ok: true, moved: [], snapshotOk: true }
 
-  const root = resolvePublishRoot(projectDir) || projectDir
+  const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
+  const label = dest === 'publish' ? `ファイルの移動（${PUBLISH_DIR}）` : `未使用ファイルの整理（${MATERIALS_DIR}）`
 
   // ① 検証（何も変えない）。保護パス等、名前を変えても解決しないものだけ弾く
   // （1件でも弾ければ全体を中止する・中途半端に動かさない）。
@@ -146,23 +174,21 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
   try {
     const usedDest = new Set<string>()
     for (const rel of list) {
-      // 退避・実操作の基準はプロジェクト直下からの相対（`public/` があれば足し戻す）。
-      const projectRel = backupRelPath(projectDir, root, rel)
-      const fromFull = confineToProject(projectDir, projectRel) // .. ・絶対パスの脱出を拒否
-      if (isProtectedWritePath(projectRel)) throw new Error(`Koto が管理する領域は移動できません: ${projectRel}`)
+      const fromFull = confineToProject(projectDir, rel) // .. ・絶対パスの脱出を拒否
+      if (isProtectedWritePath(rel)) throw new Error(`Koto が管理する領域は移動できません: ${rel}`)
 
-      const base = path.basename(projectRel)
+      const base = path.basename(rel)
       const name = nextFreeMaterialName(base, (candidate) => (
-        usedDest.has(`${MATERIALS_DIR}/${candidate}`) ||
-        fs.existsSync(confineToProject(projectDir, `${MATERIALS_DIR}/${candidate}`))
+        usedDest.has(`${destDirName}/${candidate}`) ||
+        fs.existsSync(confineToProject(projectDir, `${destDirName}/${candidate}`))
       ))
-      const destRel = `${MATERIALS_DIR}/${name}`
+      const destRel = `${destDirName}/${name}`
       if (isProtectedWritePath(destRel)) throw new Error(`移動先が不正です: ${destRel}`)
       usedDest.add(destRel)
       const toFull = confineToProject(projectDir, destRel)
       if (name !== base) renamed.push({ from: rel, to: name })
 
-      targets.push({ rel, projectRel, destRel, fromFull, toFull })
+      targets.push({ rel, destRel, fromFull, toFull })
     }
   } catch (e: any) {
     return { ok: false, moved: [], snapshotOk: false, message: e?.message ?? String(e) }
@@ -175,11 +201,10 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
     new Date().toISOString(),
     id => fs.existsSync(path.join(projectDir, BACKUP_DIRNAME, id)),
   )
-  const label = `未使用ファイルの整理（${MATERIALS_DIR}）`
   let snapshotOk = false
   for (const t of targets) {
     try {
-      const r1 = snapshotBeforeChange(projectDir, snapshotId, t.projectRel, label)
+      const r1 = snapshotBeforeChange(projectDir, snapshotId, t.rel, label)
       if (r1.ok) snapshotOk = true
       const r2 = snapshotBeforeChange(projectDir, snapshotId, t.destRel, label)
       if (r2.ok) snapshotOk = true
@@ -190,19 +215,19 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
   const moved: string[] = []
   const touchedDirs = new Set<string>()
   try {
-    fs.mkdirSync(path.join(projectDir, MATERIALS_DIR), { recursive: true })
+    fs.mkdirSync(path.join(projectDir, destDirName), { recursive: true })
     for (const t of targets) {
       if (fs.existsSync(t.toFull)) {
         // レース: ①の検証のあと・ここで実際に動かす直前に、誰かが同じ名前を作った
         // （① の時点では空きだった）。ここでも拒否せず、その場でもう一度
         // nextFreeMaterialName で採り直す（半端な状態を作らない）。
-        const base = path.basename(t.projectRel)
+        const base = path.basename(t.rel)
         const reserved = new Set(targets.map(x => x.destRel))
         const name = nextFreeMaterialName(base, (candidate) => (
-          reserved.has(`${MATERIALS_DIR}/${candidate}`) ||
-          fs.existsSync(confineToProject(projectDir, `${MATERIALS_DIR}/${candidate}`))
+          reserved.has(`${destDirName}/${candidate}`) ||
+          fs.existsSync(confineToProject(projectDir, `${destDirName}/${candidate}`))
         ))
-        t.destRel = `${MATERIALS_DIR}/${name}`
+        t.destRel = `${destDirName}/${name}`
         t.toFull = confineToProject(projectDir, t.destRel)
         if (name !== base) {
           const already = renamed.find(r => r.from === t.rel)
@@ -236,7 +261,27 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
   return { ok: true, moved, snapshotOk, renamed }
 }
 
+/**
+ * 未使用ファイルを「素材（公開しません）」へ移す。project:moveToMaterials の実体。
+ * 一般化した moveFilesToFs（dest='materials' 固定）の薄い皮。
+ *
+ * `files` は checkUnusedFiles が返した相対パス（**公開の根からの相対**）をそのまま渡す
+ * 想定——ここだけは従来の約束を変えない（呼び出し側＝UnusedFilesSection を壊さないため）。
+ * moveFilesToFs は files を「プロジェクト直下からの相対パス」として扱うため、渡す前に
+ * ここで根→プロジェクト直下の読み替え（backupRelPath）を行う。
+ */
+export function moveToMaterialsFs(projectDir: string, files: readonly string[]): MoveToMaterialsResult {
+  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
+    return { ok: false, moved: [], snapshotOk: false, message: 'プロジェクトフォルダのパスが不正です' }
+  }
+  const root = resolvePublishRoot(projectDir) || projectDir
+  const list = Array.from(new Set((files ?? []).filter((f): f is string => typeof f === 'string' && !!f)))
+  const projectRelFiles = list.map(rel => backupRelPath(projectDir, root, rel))
+  return moveFilesToFs(projectDir, projectRelFiles, 'materials')
+}
+
 export function registerUnusedHandlers(): void {
   ipcMain.handle('project:unusedCheck', (_, projectDir: string) => checkUnusedFiles(projectDir))
   ipcMain.handle('project:moveToMaterials', (_, projectDir: string, files: string[]) => moveToMaterialsFs(projectDir, files))
+  ipcMain.handle('project:moveFiles', (_, projectDir: string, files: string[], dest: MoveDestKind) => moveFilesToFs(projectDir, files, dest))
 }

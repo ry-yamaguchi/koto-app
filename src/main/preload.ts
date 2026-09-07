@@ -69,6 +69,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     unusedCheck: (projectDir: string) => ipcRenderer.invoke('project:unusedCheck', projectDir),
     /** 調べた未使用ファイルを「素材（公開しません）」へ移す。🕘 履歴から戻せる。 */
     moveToMaterials: (projectDir: string, files: string[]) => ipcRenderer.invoke('project:moveToMaterials', projectDir, files),
+    /**
+     * 任意のファイルを Koto 内の別の置き場へ手で移す（roadmap #9②）。files は
+     * プロジェクト直下からの相対パス。dest='materials' は素材置き場、'publish' は公開されるもの。
+     */
+    moveFiles: (projectDir: string, files: string[], dest: 'materials' | 'publish') =>
+      ipcRenderer.invoke('project:moveFiles', projectDir, files, dest),
   },
   term: {
     create: (cwd?: string) => ipcRenderer.invoke('term:create', cwd),

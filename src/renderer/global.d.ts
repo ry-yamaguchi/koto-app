@@ -239,6 +239,18 @@ interface Window {
         ok: boolean; moved: string[]; snapshotOk: boolean
         renamed?: { from: string; to: string }[]; message?: string
       }>
+      /**
+       * 任意のファイルを手で移す（roadmap #9②「ファイルの移動手段が無い」）。Sidebar.tsx の
+       * 右クリックメニューから呼ぶ。`files` は**プロジェクト直下からの相対パス**（moveToMaterials
+       * とは基準が違うので注意——公開の根の外側のファイルも指せるよう、根の概念を持ち込まない）。
+       * `dest`: 'materials' は素材置き場（公開されないもの）へ、'publish' は公開されるもの
+       * （PUBLISH_DIR）へ。戻り型・守り（保護パス拒否・同名衝突の自動改名・🕘 履歴退避・
+       * 失敗時ロールバック）は moveToMaterials と共通（main/ipc/unused.ts の moveFilesToFs）。
+       */
+      moveFiles(projectDir: string, files: string[], dest: 'materials' | 'publish'): Promise<{
+        ok: boolean; moved: string[]; snapshotOk: boolean
+        renamed?: { from: string; to: string }[]; message?: string
+      }>
       /** withPublishDir: 最初から public/ を掘るか（改善1・2026-08-29。NewProjectModal.tsx が判断する）。 */
       createProject(
         parentDir: string,

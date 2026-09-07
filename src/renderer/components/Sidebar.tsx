@@ -6,8 +6,8 @@ import { teardownSupport, manualTeardownGuide } from '../../shared/teardownSuppo
 import { REGISTRY_MONTHLY_YEN, registryDeleteDefault, projectDeleteRegistryNote } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 import { useFileDrag } from '../hooks/useFileDrag'
-import { isPublished, isPublishedTop } from '../../shared/publishExclude'
-import { PUBLISH_DIR } from '../../shared/publishRoot'
+import { isPublished, isPublishedTop, MATERIALS_DIR } from '../../shared/publishExclude'
+import { PUBLISH_DIR, PUBLISH_DIR_LABEL } from '../../shared/publishRoot'
 import { isSubmitEnter } from '../keyInput'
 import { subscribe, getSnapshot, loadingKeys, getTurn } from '../chatTurnRegistry'
 import { getWorkspaceDir } from '../workspace'
@@ -62,12 +62,29 @@ function iconFor(name: string, isDir: boolean): string {
 
 interface MenuState { x: number; y: number; entry: FileEntry }
 
-function ContextMenu({ menu, onClose, onRename, onDelete, onNewFile }: {
+/**
+ * そのエントリが「公開されるもの（`<PUBLISH_DIR>/` の中）」に居るか。
+ *
+ * roadmap #9②: 右クリックメニューの移動項目を、いま居る側で出し分けるための判定。
+ * `entry.path` はプロジェクト直下からの絶対パスなので、`currentDir` を引いた先頭の段が
+ * `PUBLISH_DIR` かどうかで見る（isPublishedTop と同じ「いちばん上の階層だけ見る」考え方）。
+ */
+function isInPublishDir(currentDir: string | null, entryPath: string): boolean {
+  if (!currentDir) return false
+  const prefix = currentDir.endsWith('/') ? currentDir : `${currentDir}/`
+  if (!entryPath.startsWith(prefix)) return false
+  const rel = entryPath.slice(prefix.length)
+  return rel === PUBLISH_DIR || rel.startsWith(`${PUBLISH_DIR}/`)
+}
+
+function ContextMenu({ menu, currentDir, onClose, onRename, onDelete, onNewFile, onMove }: {
   menu: MenuState
+  currentDir: string | null
   onClose: () => void
   onRename: (entry: FileEntry) => void
   onDelete: (entry: FileEntry) => void
   onNewFile: (entry: FileEntry) => void
+  onMove: (entry: FileEntry) => void
 }) {
   const { entry } = menu
   const isHtml = /\.html?$/i.test(entry.name)
@@ -78,12 +95,25 @@ function ContextMenu({ menu, onClose, onRename, onDelete, onNewFile }: {
     return () => { window.removeEventListener('click', close); window.removeEventListener('contextmenu', close) }
   }, [onClose])
 
+  // roadmap #9②「ファイルの移動手段が無い」: 公開する／しないを手で切り替える項目。
+  // **ディレクトリは対象外。** 中身ごとの移動は「フォルダ内の全ファイルに検証・退避・
+  // 同名衝突の解決を通す」ことになり、守りの検証が一気に複雑になる（1件ずつなら
+  // isProtectedWritePath・nextFreeMaterialName の単純な適用で済むが、フォルダを渡すと
+  // 「配下に保護パスが混じっていたら？」「配下だけで名前が衝突したら？」まで考える必要が
+  // 出る）。今回は「任意の“ファイル”を移す」までを対象にし、フォルダ移動は見送る。
+  const isPublishedSide = isInPublishDir(currentDir, entry.path)
+
   const items: { label: string; onClick: () => void; show?: boolean }[] = [
     { label: '🌐 ブラウザで開く', show: isHtml && !entry.isDir, onClick: () => window.electronAPI.shell.openPath(entry.path) },
     { label: '📁 Finder で表示', onClick: () => window.electronAPI.shell.showInFolder(entry.path) },
     { label: '📋 パスをコピー', onClick: () => navigator.clipboard.writeText(entry.path) },
     { label: '📋 名前をコピー', onClick: () => navigator.clipboard.writeText(entry.name) },
     { label: '✏️ 名前の変更', onClick: () => onRename(entry) },
+    {
+      label: isPublishedSide ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',
+      show: !entry.isDir,
+      onClick: () => onMove(entry),
+    },
     { label: '🗑 削除（ゴミ箱へ）', onClick: () => onDelete(entry) },
     { label: '＋ 新規ファイル', show: entry.isDir, onClick: () => onNewFile(entry) },
   ].filter(i => i.show !== false)
@@ -366,6 +396,39 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       await window.electronAPI.fs.trash(entry.path)
       window.dispatchEvent(new CustomEvent('sakura:file-deleted', { detail: entry.path }))
     } catch (e: any) { window.alert(`削除できませんでした: ${e?.message ?? e}`) }
+  }
+
+  /**
+   * roadmap #9②「ファイルの移動手段が無い」: 手で公開する／しない側を切り替える。
+   * いま居る側で移動先を決める（公開される側にいれば素材置き場へ、それ以外は公開されるものへ）。
+   * ディレクトリは ContextMenu 側で項目自体を出していないが、ここでも防御的に弾く（多層防御）。
+   */
+  const moveEntry = async (entry: FileEntry) => {
+    if (!currentDir || entry.isDir) return
+    const prefix = currentDir.endsWith('/') ? currentDir : `${currentDir}/`
+    if (!entry.path.startsWith(prefix)) return // 想定外（プロジェクト外のパス）は何もしない
+    const rel = entry.path.slice(prefix.length)
+    const dest: 'materials' | 'publish' = isInPublishDir(currentDir, entry.path) ? 'materials' : 'publish'
+    const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
+    const destLabel = dest === 'publish' ? PUBLISH_DIR_LABEL : MATERIALS_DIR
+    if (!window.confirm(`「${entry.name}」を「${destLabel}」へ移動します。よろしいですか？\n\n🕘 元に戻すで戻せます。`)) return
+    try {
+      const r = await window.electronAPI.fs.moveFiles(currentDir, [rel], dest)
+      if (r.ok) {
+        setAutoRefresh(n => n + 1) // ファイルツリーを更新（fs.watchDir の自動反映を待たず、その場で反映する）
+        const renamedTo = r.renamed?.find(x => x.from === rel)?.to
+        // 開いているタブが古いパスを指したままだと、次のオートセーブで消したはずのファイルを
+        // 復活させてしまう（削除・名前変更と同じ理由でここも通知する）。
+        window.dispatchEvent(new CustomEvent('sakura:file-renamed', {
+          detail: { from: entry.path, to: `${currentDir}/${destDirName}/${renamedTo ?? entry.name}` },
+        }))
+        if (renamedTo) window.alert(`「${entry.name}」と同じ名前が移動先にあったため、「${renamedTo}」にしました。`)
+      } else {
+        window.alert(`移動できませんでした: ${r.message ?? '原因不明'}`)
+      }
+    } catch (e: any) {
+      window.alert(`移動できませんでした: ${e?.message ?? e}`)
+    }
   }
 
   // 削除の確認ダイアログを開くたびに、そのプロジェクトの公開記録を読む。
@@ -745,10 +808,12 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       {menu && (
         <ContextMenu
           menu={menu}
+          currentDir={currentDir}
           onClose={() => setMenu(null)}
           onRename={entry => openNameDialog('rename', entry)}
           onDelete={entry => deleteEntry(entry)}
           onNewFile={entry => openNameDialog('new', entry)}
+          onMove={entry => { void moveEntry(entry) }}
         />
       )}
 

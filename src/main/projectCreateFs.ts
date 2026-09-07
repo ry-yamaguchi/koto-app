@@ -51,14 +51,41 @@ export function createProjectOnDisk(
   if (withPublishDir) {
     fs.mkdirSync(path.join(root, PUBLISH_DIR), { recursive: true })
   }
+
+  // 雛形が自分で public/ を明示しているなら、その構造をそのまま使う（移行の判断を通さない）。
+  //
+  // ── なぜ要るか（roadmap #6・2026-09-07 実測で再現）─────────────────────
+  // さくらのレンタルサーバ雛形（rentalServerFiles・NewProjectModal.tsx）は
+  // `public/index.php` `app/db.php` `deploy.sh` のように、**雛形自身が**公開先（public/）と
+  // 非公開（app/ 直下・deploy.sh）を書き分けている。ところが従来はここで全ファイルを
+  // 無条件に placeInProject（＝既存プロジェクトを public/ 構成へ「移行」するときの判断）へ
+  // 通していた。placeInProject は isPublished（除外リストに載っていないか）しか見ないため
+  // `app` も `deploy.sh` も「公開扱い」と判定され、実測では次のように壊れていた:
+  //   app/db.php              → public/app/db.php        （DB接続情報が公開領域へ）
+  //   app/config.sample.php   → public/app/config.sample.php
+  //   deploy.sh                → public/deploy.sh          （サーバー名・パス等が丸ごとHTTPで読める）
+  //   .gitignore / README.md   → public/ の中
+  // レンタルサーバの公開は public/ の中身をそのまま ~/www/ へ送るため、上のいずれも
+  // 2026-08-05 の `.sakuraide` 流出・08-09 の `.env` 流出と同じ「公開領域への混入」になる。
+  //
+  // 実測で確認したのは「public/ を明示しているのはレンタルサーバ雛形だけ」ということ
+  // （AppRun・React・Node・Python・静的サイト等の他の雛形は public/ という語を使わない）。
+  // だからこの分岐は他の雛形の挙動を一切変えない。
+  const templateDeclaresPublishDir = (files ?? []).some(
+    f => String(f?.path ?? '').replace(/^\.?\//, '').startsWith(PUBLISH_DIR + '/'),
+  )
+
   const skipped: string[] = []
   for (const f of files ?? []) {
-    // 渡されたテンプレートファイルの置き場も、移行（migratePlan.ts）とまったく同じ判断
+    // 雛形が public/ を自分で明示しているときは、その相対パスをそのまま使う
+    // （placeInProject を通さない＝移行の判断に巻き込まない）。
+    // そうでないときは従来どおり、移行（migratePlan.ts）とまったく同じ判断
     // （placeInProject）に通す。この判断は「public/ が実在するか」を見ないので、
     // 上の withPublishDir の有無に引きずられない（無くても、公開されるものは
     // このループが書く瞬間に public/ を自動で掘る＝2026-08-20 からの既存の挙動）。
-    const top = topSegment(f.path)
-    const rel = placeInProject(f.path, isPublished(top, String(f.path).includes('/')))
+    const rel = templateDeclaresPublishDir
+      ? String(f.path ?? '').replace(/^\.?\//, '').replace(/\\/g, '/')
+      : placeInProject(f.path, isPublished(topSegment(f.path), String(f.path).includes('/')))
     // prevent path traversal outside root
     const full = path.normalize(path.join(root, rel))
     if (!full.startsWith(root + path.sep) && full !== root) continue

@@ -41,6 +41,88 @@ describe('3点セット: project:unusedCheck / project:moveToMaterials（main / 
   })
 })
 
+describe('3点セット: project:moveFiles（roadmap #9②「ファイルの移動手段が無い」・main / preload / global.d.ts）', () => {
+  it('main（ipc/unused.ts）が project:moveFiles ハンドラを moveFilesToFs に配線している', () => {
+    const src = stripped('src/main/ipc/unused.ts')
+    expect(src).toContain("ipcMain.handle('project:moveFiles', (_, projectDir: string, files: string[], dest: MoveDestKind) => moveFilesToFs(projectDir, files, dest))")
+  })
+
+  it('preload.ts が fs.moveFiles を project:moveFiles の channel 名で公開している', () => {
+    const src = stripped('src/main/preload.ts')
+    expect(src).toContain("moveFiles: (projectDir: string, files: string[], dest: 'materials' | 'publish') =>")
+    expect(src).toContain("ipcRenderer.invoke('project:moveFiles', projectDir, files, dest)")
+  })
+
+  it('global.d.ts に moveFiles の型がある（dest は materials/publish の2択）', () => {
+    const src = stripped('src/renderer/global.d.ts')
+    expect(src).toContain("moveFiles(projectDir: string, files: string[], dest: 'materials' | 'publish'): Promise<{")
+  })
+
+  // 旧形（moveToMaterials しか無い状態）へ戻していないこと。project:moveFiles を足したことで
+  // project:moveToMaterials 側の3点セットが失われていないかも合わせて確かめる
+  // （どちらも呼び出し側＝UnusedFilesSection と Sidebar.tsx の両方が生きている前提のため）。
+  it('project:moveToMaterials の3点セットが引き続き揃っている（moveFiles を足しても後退していない）', () => {
+    const mainSrc = stripped('src/main/ipc/unused.ts')
+    const preloadSrc = stripped('src/main/preload.ts')
+    const dtsSrc = stripped('src/renderer/global.d.ts')
+    expect(mainSrc).toContain("ipcMain.handle('project:moveToMaterials', (_, projectDir: string, files: string[]) => moveToMaterialsFs(projectDir, files))")
+    expect(preloadSrc).toContain("moveToMaterials: (projectDir: string, files: string[]) => ipcRenderer.invoke('project:moveToMaterials', projectDir, files),")
+    expect(dtsSrc).toContain('moveToMaterials(projectDir: string, files: string[]): Promise<{')
+  })
+})
+
+describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリックメニュー', () => {
+  const sidebarSrc = () => stripped('src/renderer/components/Sidebar.tsx')
+
+  it('PUBLISH_DIR を含むかどうかで、いま居る側を判定している（手で並べ直さず一元定義を使う）', () => {
+    const s = sidebarSrc()
+    expect(s).toContain("import { PUBLISH_DIR, PUBLISH_DIR_LABEL } from '../../shared/publishRoot'")
+    expect(s).toContain('function isInPublishDir(')
+    expect(s).toContain('return rel === PUBLISH_DIR || rel.startsWith(`${PUBLISH_DIR}/`)')
+  })
+
+  it('居る側で出す項目を出し分けている（公開される側→📦、それ以外→🌐）', () => {
+    const s = sidebarSrc()
+    expect(s).toContain("label: isPublishedSide ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',")
+  })
+
+  it('moveEntry の dest はいま居る側（isInPublishDir）から決まる（固定値にしていない）', () => {
+    const s = sidebarSrc()
+    expect(s).toContain("const dest: 'materials' | 'publish' = isInPublishDir(currentDir, entry.path) ? 'materials' : 'publish'")
+  })
+
+  it('ディレクトリには移動項目を出さない（show: !entry.isDir）', () => {
+    const s = sidebarSrc()
+    const at = s.indexOf("label: isPublishedSide ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',")
+    expect(at).toBeGreaterThan(-1)
+    expect(s.slice(at, at + 120)).toContain('show: !entry.isDir,')
+  })
+
+  it('moveEntry は window.confirm で確認してから electronAPI.fs.moveFiles を呼ぶ', () => {
+    const s = sidebarSrc()
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    expect(at).toBeGreaterThan(-1)
+    const body = s.slice(at, at + 1200)
+    expect(body).toContain('window.confirm(')
+    expect(body).toContain('window.electronAPI.fs.moveFiles(currentDir, [rel], dest)')
+    // confirm より後で実行している（確認を素通りしていない）
+    expect(body.indexOf('window.confirm(')).toBeLessThan(body.indexOf('window.electronAPI.fs.moveFiles('))
+  })
+
+  it('moveEntry はディレクトリを弾く（多層防御。ContextMenu 側のフィルタだけに頼らない）', () => {
+    const s = sidebarSrc()
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    expect(s.slice(at, at + 200)).toContain('if (!currentDir || entry.isDir) return')
+  })
+
+  it('成功後にファイルツリーを更新している（既存の autoRefresh の仕組みを使う）', () => {
+    const s = sidebarSrc()
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    const body = s.slice(at, at + 1500)
+    expect(body).toContain('setAutoRefresh(n => n + 1)')
+  })
+})
+
 describe('未使用ファイルの判定は shared/unusedFiles.ts の一元定義を通す', () => {
   it('ipc/unused.ts が findUnusedFiles / ALWAYS_USED_RE の一元定義を import して使っている（手で並べ直さない）', () => {
     const src = stripped('src/main/ipc/unused.ts')
@@ -84,13 +166,13 @@ describe('未使用ファイルの判定は shared/unusedFiles.ts の一元定�
   })
 })
 
-describe('moveToMaterialsFs: 守りの配線（isProtectedWritePath を移動元・移動先の両方に通す）', () => {
+describe('moveFilesToFs: 守りの配線（isProtectedWritePath を移動元・移動先の両方に通す。roadmap #9②で一般化）', () => {
   it('isProtectedWritePath を import し、移動元・移動先の**両方**に適用している（口ごと見る）', () => {
     const src = stripped('src/main/ipc/unused.ts')
     expect(src).toContain("import { isProtectedWritePath } from '../../shared/protectedPaths'")
     const count = (needle: string) => src.split(needle).length - 1
     expect(count('isProtectedWritePath(')).toBe(2)
-    expect(src).toContain('if (isProtectedWritePath(projectRel))')
+    expect(src).toContain('if (isProtectedWritePath(rel))')
     expect(src).toContain('if (isProtectedWritePath(destRel))')
   })
 
@@ -100,8 +182,9 @@ describe('moveToMaterialsFs: 守りの配線（isProtectedWritePath を移動元
     // 呼び出しの形ごと見る（検証段・実行段の両方に同じ形で存在する＝2箇所）
     const count = (needle: string) => src.split(needle).length - 1
     expect(count('const name = nextFreeMaterialName(base, (candidate) => (')).toBe(2)
-    // isTaken は「同じ一括内での予約」と「実ディスク」の両方を見る（fs.existsSync を通す）
-    expect(count('fs.existsSync(confineToProject(projectDir, `${MATERIALS_DIR}/${candidate}`))')).toBe(2)
+    // isTaken は「同じ一括内での予約」と「実ディスク」の両方を見る（fs.existsSync を通す）。
+    // 移動先は dest（'materials'|'publish'）で切り替わる destDirName（roadmap #9②で一般化）。
+    expect(count('fs.existsSync(confineToProject(projectDir, `${destDirName}/${candidate}`))')).toBe(2)
     // 実行段: 直前の再確認（レース）で既に存在していたら、拒否せず採り直す
     expect(src).toContain('if (fs.existsSync(t.toFull)) {')
     // 旧形（1件でも衝突すれば全体を throw で拒否する）へ戻していない
@@ -111,8 +194,14 @@ describe('moveToMaterialsFs: 守りの配線（isProtectedWritePath を移動元
 
   it('🕘 履歴は移動元・移動先の両方を同じスナップショットIDで退避する', () => {
     const src = stripped('src/main/ipc/unused.ts')
-    expect(src).toContain('snapshotBeforeChange(projectDir, snapshotId, t.projectRel, label)')
+    expect(src).toContain('snapshotBeforeChange(projectDir, snapshotId, t.rel, label)')
     expect(src).toContain('snapshotBeforeChange(projectDir, snapshotId, t.destRel, label)')
+  })
+
+  it('dest で移動先の置き場（MATERIALS_DIR / PUBLISH_DIR）を切り替えている（手で並べ直していない）', () => {
+    const src = stripped('src/main/ipc/unused.ts')
+    expect(src).toContain("import { PUBLISH_DIR, backupRelPath } from '../../shared/publishRoot'")
+    expect(src).toContain("const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR")
   })
 
   it('スナップショットIDはここで発行する（呼び出し側に渡させない）', () => {
