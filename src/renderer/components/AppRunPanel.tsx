@@ -8,8 +8,11 @@ import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import CopyButton from './CopyButton'
 import SecurityCheckSection from './SecurityCheckSection'
 import UnusedFilesSection from './UnusedFilesSection'
+import TelemetryNotice from './TelemetryNotice'
+import RollbackSection from './RollbackSection'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
+import { pinnedAfterApplyNotice } from '../../shared/apprunTraffic'
 import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryDeleteDefault, adoptedRegistryNote, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
 import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
 import { isSubmitEnter } from '../keyInput'
@@ -218,6 +221,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
   // 公開URL（デプロイ済みのとき）
   const [appUrl, setAppUrl] = useState<string | null>(null)
   const [urlLoading, setUrlLoading] = useState(false)
+  // ⑨ ロールバック節（RollbackSection）を、公開が成功するたびに取り直させる印（roadmap #32）。
+  const [trafficRefreshSignal, setTrafficRefreshSignal] = useState(0)
   // コスト実額
   const [cost, setCost] = useState<{ amountYen?: number; asOf?: string; message?: string } | null>(null)
   const [costLoading, setCostLoading] = useState(false)
@@ -554,7 +559,29 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
       // 済ませている（roadmap #20・main は1 invoke で完走するため、窓を閉じても記録が残る）。
       // ここでは main が書いた記録を画面へ反映するため、メタ変更を通知するだけでよい
       // （App.tsx の reloadMeta が sakura-meta-changed を拾って読み直す）。
-      if (r.ok) window.dispatchEvent(new Event('sakura-meta-changed'))
+      if (r.ok) {
+        // 公開が成功すると main が state.meta.registryName を書く（state.ts / cloud.ts）。
+        // ここで取り直さないと、画面の registryName がいつまでも古いまま
+        // （破棄の確認画面・費用案内が誤った名前を出し続ける。2026-09-08 検分で指摘）。
+        refreshRegistryName()
+        window.dispatchEvent(new Event('sakura-meta-changed'))
+        // ⑨ ロールバック節も取り直す（固定・解除の直後の見え方を反映するため）。
+        setTrafficRefreshSignal(n => n + 1)
+        // ── 公開直後、実際に配分を読み直して確かめる（roadmap #32）──────────────
+        // 公開し直せば固定は解除されるはず（buildPatchBody が常に
+        // all_traffic_available:true を送るため。shared/apprunTraffic.ts 冒頭参照）。
+        // **断定せず、実際に読み直して確かめる。** 想定どおり最新追従に戻っていれば
+        // 何も出さない。読み直してもまだ固定されたままなら、それは想定と違う状態
+        // なので、その事実をそのまま出す（2026-09-08 検分で、この読み直し自体は
+        // 正しい設計だったが、以前の文言が誤った前提を語っていたため訂正した）。
+        try {
+          const t = await window.electronAPI.cloud.getTraffics(projectDir)
+          if (t.ok && t.state?.kind === 'pinned') {
+            const note = pinnedAfterApplyNotice(t.state.versionName)
+            setOpResult(prev => (prev ? { ...prev, message: [prev.message, note].filter(Boolean).join('\n') } : prev))
+          }
+        } catch { /* 確認できなくても公開の成否は変えない */ }
+      }
     } catch (e: any) {
       setOpResult({ ok: false, message: e?.message ?? String(e) })
       setConfirm(null)
@@ -746,6 +773,14 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
       />
     )
   }
+
+  // region（ゾーン）は表示専用（roadmap #34・2026-09-08 実測で決着）。
+  //
+  // コンテナレジストリは全ゾーン共通（グローバル資源）——is1a/tk1a/tk1b/is1b の4ゾーンで
+  // `GET /commonserviceitem` を引き、どのゾーン経由でも同じ一覧が返ることを実測した
+  // （`scripts/probe-registry-zone.mjs`）。region を選ばせても結果は変わらないため、
+  // 共用型（このパネル）の region 選択式は**恒久的に出さない**——未実装ではなく、
+  // 選ぶ意味が無いという結論。専有型（AppRunDedicatedPanel.tsx）の ASG 作成先ゾーンは無関係。
 
   return (
     <div className="space-y-4">
@@ -1441,6 +1476,27 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         </section>
       )}
 
+      {/* ⑧ ログ・メトリクス（roadmap #30・さくらの開発者の助言「ログとメトリクスは有効にしてて
+          欲しい」）- デプロイ済みのときだけ表示。判断・部品はログ・メトリクスで共通
+          （TelemetryNotice・掟10）、隣に並べて出す。 */}
+      {appUrl && (
+        <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
+          <p className="text-sm font-semibold text-ink">⑧ ログ・メトリクス</p>
+          <p className="text-[11px] text-ink-muted leading-relaxed">
+            動かなかったときの原因調査（ログ）や、負荷状況の確認（メトリクス）に使えます。
+            さくらのモニタリングスイートに保存されます。
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <TelemetryNotice projectDir={projectDir} kind="logs" />
+            <TelemetryNotice projectDir={projectDir} kind="metrics" />
+          </div>
+        </section>
+      )}
+
+      {/* ⑨ 公開したものを前のバージョンに戻す（roadmap #32・ロールバック）- 公開済みのときだけ表示。
+          プロジェクト側の「🕘 履歴（前の状態に戻す）」（ファイルのスナップショット）とは別物。 */}
+      {appUrl && <RollbackSection projectDir={projectDir} refreshSignal={trafficRefreshSignal} stepNo="⑨" />}
+
       {/* コスト（直近の確定請求額をベストエフォートで取得・表示のみ） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
         <div className="flex items-center justify-between">
@@ -1553,7 +1609,13 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onRename, renaming, pu
           )}
         </dd>
         <dt className="text-ink-muted">backend</dt><dd className="text-ink">{spec.backend}</dd>
-        <dt className="text-ink-muted">region</dt><dd className="text-ink">{spec.region}</dd>
+        <dt className="text-ink-muted">region</dt>
+        <dd className="text-ink">
+          {spec.region}
+          <span className="block text-[11px] text-ink-muted mt-1 leading-relaxed">
+            ※ どのゾーン経由でも同じ結果になります（コンテナレジストリは全ゾーン共通のため。2026-09-08 に4ゾーンで実測）。ここで選ぶ必要はありません。
+          </span>
+        </dd>
         <dt className="text-ink-muted">service</dt>
         <dd className="text-ink break-all">
           port {spec.service.port} ／ <span className="font-mono">{sourceText}</span>

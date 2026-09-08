@@ -250,6 +250,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // デプロイ済み AppRun アプリの公開URLを取得する。
     appUrl: (projectDir: string) => ipcRenderer.invoke('cloud:appUrl', projectDir),
     appHealth: (projectDir: string) => ipcRenderer.invoke('cloud:appHealth', projectDir),
+    // バージョン一覧・トラフィック配分・ロールバック（roadmap #32。何も作らず、何も変えない読み取りは listVersions/getTraffics のみ）。
+    listVersions: (projectDir: string) => ipcRenderer.invoke('cloud:listVersions', projectDir),
+    getTraffics: (projectDir: string) => ipcRenderer.invoke('cloud:getTraffics', projectDir),
+    // versionName が null なら「最新に追従」へ戻す。
+    // opts.confirmed は画面の window.confirm を通ったときだけ true で渡すこと（main 側も要求する。掟5）。
+    rollback: (projectDir: string, versionName: string | null, opts?: { confirmed?: boolean }) =>
+      ipcRenderer.invoke('cloud:rollback', projectDir, versionName, opts),
+    // ログ／メトリクスが残るようになっているか（#30。何も作らず、何も変えない）。
+    telemetryStatus: (projectDir: string, kind: 'logs' | 'metrics') => ipcRenderer.invoke('cloud:telemetryStatus', projectDir, kind),
+    // ログ／メトリクスを有効にする（#30。領域が無ければ新しく作る＝課金の始まり）。
+    // **`consented: true` は「費用に同意する」ボタンを押したときだけ渡す**（#30 検分の直し・2026-09-08）。
+    // 渡さなければ、置き場が無いときは初期化されず `needsConsent: true` が返る。
+    enableTelemetry: (projectDir: string, kind: 'logs' | 'metrics', opts?: { consented?: boolean }) =>
+      ipcRenderer.invoke('cloud:enableTelemetry', projectDir, kind, opts),
     // さくら側にあるものの棚卸し（**何も作らず、何も消さない**）。
     inventory: (projects: unknown) => ipcRenderer.invoke('cloud:inventory', projects),
     // 限定公開（アクセス制限＝パケットフィルタ）。デプロイ済みアプリの許可IPを読み書きする。

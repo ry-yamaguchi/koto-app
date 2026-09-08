@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoCheckTarget, type ShouldAutoCheckTargetArgs } from '../src/renderer/targetProfiles'
+import { shouldAutoCheckTarget, TARGET_PROFILES, type ShouldAutoCheckTargetArgs } from '../src/renderer/targetProfiles'
 
 function makeArgs(overrides: Partial<ShouldAutoCheckTargetArgs> = {}): ShouldAutoCheckTargetArgs {
   return {
@@ -57,5 +57,23 @@ describe('shouldAutoCheckTarget', () => {
     for (const target of ['sakura-rental', 'sakura-vps', 'sakura-cloud', 'hanamii', 'vercel']) {
       expect(shouldAutoCheckTarget(makeArgs({ target }))).toBe(true)
     }
+  })
+})
+
+// 2026-09-08 さくらの開発者からの助言（roadmap #33）。
+// 「閉域網のDBアプライアンスにはアプリケーションから接続できないので、
+//  現状だとさくらのクラウドではオンデマンドDBを使うのが有力です」
+// これを知らないと、AI は繋がらない構成を提案し、公開してから分かる。
+// **プロファイルは AI の文脈に注入されるので、ここに書くだけで提案が変わる。**
+describe('DBの選び方（AppRun）— 閉域網は届かない・オンデマンドDBが有力', () => {
+  it('共用型: オンデマンドDBを勧め、閉域網のDBアプライアンスを禁じている', () => {
+    const p = TARGET_PROFILES['sakura-apprun']
+    expect(p.recommended.some(x => x.includes('オンデマンドDB'))).toBe(true)
+    expect(p.donts.some(x => x.includes('閉域網') && x.includes('接続できません'))).toBe(true)
+  })
+
+  it('専有型: Koto の構成（共有セグメント固定）では閉域網に届かないと明記している', () => {
+    const p = TARGET_PROFILES['sakura-apprun-dedicated']
+    expect(p.donts.some(x => x.includes('共有セグメント') && x.includes('閉域網'))).toBe(true)
   })
 })

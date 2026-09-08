@@ -113,6 +113,18 @@ describe('消しすぎの検出: 公開成功後、main の書いた記録を画
 
   it('AppRunPanel: 適用成功時に sakura-meta-changed を通知している（App.tsx の reloadMeta が拾う）', () => {
     const s = read('src/renderer/components/AppRunPanel.tsx')
-    expect(s).toContain("if (r.ok) window.dispatchEvent(new Event('sakura-meta-changed'))")
+    // 2026-09-08 検分で、この分岐に refreshRegistryName()（錠前の直し2）が足された。
+    // 呼び出しの形ごと見る（掟10）: if (r.ok) の中に両方入っていること。
+    const at = s.indexOf('const doApply = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const end = s.indexOf('\n  const doTeardown = async () => {', at)
+    expect(end).toBeGreaterThan(at)
+    const block = s.slice(at, end)
+    const okAt = block.indexOf('if (r.ok) {')
+    expect(okAt).toBeGreaterThan(0)
+    const okEnd = block.indexOf('\n      }', okAt)
+    const okBlock = block.slice(okAt, okEnd)
+    expect(okBlock).toContain('refreshRegistryName()')
+    expect(okBlock).toContain("window.dispatchEvent(new Event('sakura-meta-changed'))")
   })
 })

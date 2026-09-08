@@ -116,6 +116,24 @@ interface CloudPlan {
   hasStatefulDelete: boolean
 }
 
+// ── バージョン一覧・トラフィック配分（roadmap #32・ロールバック）。
+//    型は src/shared/apprunTraffic.ts の TrafficRow/TrafficState/VersionRow と一致させること ──
+interface CloudTrafficRow {
+  versionName: string | null
+  percent: number
+  isLatest: boolean
+}
+type CloudTrafficState =
+  | { kind: 'latest' }
+  | { kind: 'pinned'; versionName: string }
+  | { kind: 'split' }
+interface CloudVersionRow {
+  id: string | null
+  name: string | null
+  status: string | null
+  createdAt: string | null
+}
+
 // ── Claude頭脳モード（C2a/C2b）のストリームイベント型。main側 claude/events.ts の UiEvent と一致させること ──
 type ClaudeUiEvent =
   | { kind: 'session'; sessionId: string }
@@ -429,6 +447,41 @@ interface Window {
         askAi?: string
         message?: string
       }>
+      /** バージョン一覧を取得する（roadmap #32。**何も作らず、何も変えない**）。 */
+      listVersions(projectDir: string): Promise<{ ok: boolean; versions?: CloudVersionRow[]; message?: string }>
+      /** いまのトラフィック配分と、その分類（最新追従／固定／分散）を取得する（**何も変えない**）。 */
+      getTraffics(projectDir: string): Promise<{ ok: boolean; rows?: CloudTrafficRow[]; state?: CloudTrafficState; message?: string }>
+      /**
+       * 指定したバージョンへ切り替える（100%固定）。`versionName` が `null` なら
+       * 「最新に追従」する状態へ戻す。確認ダイアログは呼び出し側（画面）で行うこと（掟5）。
+       * **`opts.confirmed` は window.confirm を通ったときだけ true を渡す**——main 側でも
+       * `confirmed === true` を要求しており、渡さない（または false）と何も実行しない
+       * （2026-09-08 検分で main 側の歯止めを追加）。
+       */
+      rollback(projectDir: string, versionName: string | null, opts?: { confirmed?: boolean }): Promise<{ ok: boolean; message?: string }>
+      /**
+       * ログ／メトリクスが残るようになっているかを聞く（#30。**何も作らず、何も変えない**）。
+       * `action.kind`: 'none'＝すでに繋がっている／'route'＝繋ぐだけでよい（費用は増えない）／
+       * 'ask'＝領域が無いので、費用の同意を得てから `enableTelemetry` を呼ぶ。
+       */
+      telemetryStatus(projectDir: string, kind: 'logs' | 'metrics'): Promise<{
+        ok: boolean
+        action?:
+          | { kind: 'none'; note?: string }
+          | { kind: 'route'; storageId: string }
+          | { kind: 'ask'; note: string }
+        message?: string
+      }>
+      /**
+       * ログ／メトリクスを有効にする（#30）。
+       * **領域が無ければ新しく作る＝月額課金の始まり。**
+       * `opts.consented` は「費用に同意する」ボタンを押したときだけ `true` を渡す
+       * （#30 検分の直し・2026-09-08）。渡さない・false のときは、置き場が無ければ
+       * 初期化を呼ばずに `needsConsent: true` を返す（判断は `decideEnableTelemetry` に一元化）。
+       */
+      enableTelemetry(projectDir: string, kind: 'logs' | 'metrics', opts?: { consented?: boolean }): Promise<
+        { ok: true } | { ok: false; needsConsent?: boolean; message?: string; detail?: string }
+      >
       /**
        * さくら側にあるものの棚卸し（**何も作らず、何も消さない**）。
        * `project` が null の行は「このパソコンの Koto に心当たりがない」もの。

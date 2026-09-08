@@ -17,6 +17,7 @@ import {
 } from '../cloud/registry-auth'
 import { SakuraCloudClient, pickContainerRegistries, extractRegistryId, extractAppUrl, extractLatestBill, extractAccountId, apiErrorMessage } from '../cloud/client'
 import { applyPlan } from '../cloud/apply'
+import { performRollback } from '../cloud/rollback'
 import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapter'
 import { buildRef, dockerAvailable, buildImage, loginRegistry, pushImage } from '../cloud/docker'
 import { builderAvailable, buildAndPush } from '../cloud/imageBuild'
@@ -200,45 +201,56 @@ async function waitForHealthy(
 }
 
 /**
- * このアプリのログが残るようにする（IO はここ。判断は shared/appLog.ts）。
- *
- * **ここで失敗しても公開は失敗にしない。** ログは「動かなかったときに助かるもの」
- * であって、公開そのものの成否とは別。止めると、本題（アプリを公開する）が
- * 巻き添えになる。
- *
- * 費用の発生する操作（ログ領域の作成）はここでは行わない。**同意が要る**ので、
- * それは別の導線（設定または案内）に回し、ここは「既にあるなら繋ぐ」だけにする。
+ * このアプリの `resource_id`（`GET /applications/{id}` の値）を取る。
+ * ログ・メトリクスどちらの配線でも同じものを使うので、ここでまとめて引く（掟10）。
  */
-async function ensureAppLogRouting(
-  creds: CloudCredentials,
-  appId: string,
-  progress: (m: string) => void,
-): Promise<void> {
+async function resolveAppResourceId(creds: CloudCredentials, appId: string): Promise<string | null> {
   const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
   const app = await client.getApp(appId)
-  if (app.dryRun !== false || !app.ok) return
+  if (app.dryRun !== false || !app.ok) return null
   const resourceId = String((app.data as any)?.resource_id ?? '')
-  if (!resourceId) return
+  return resourceId || null
+}
 
+/**
+ * このアプリのログ／メトリクスが残るようにする（IO はここ。判断は shared/appLog.ts）。
+ *
+ * **ここで失敗しても公開は失敗にしない。** ログ・メトリクスは「動かなかったとき・
+ * 負荷を調べたいときに助かるもの」であって、公開そのものの成否とは別。止めると、
+ * 本題（アプリを公開する）が巻き添えになる。
+ *
+ * 費用の発生する操作（領域の作成）はここでは行わない。**同意が要る**ので、
+ * それは別の導線（`cloud:enableTelemetry`。画面の案内）に回し、
+ * ここは「既にあるなら繋ぐ」だけにする。
+ *
+ * ログとメトリクスは判断もAPIの形も対称（実測・#30）なので、種類で分岐する
+ * 1本の実装にまとめる（掟10）。
+ */
+async function ensureTelemetryRouting(
+  kind: TelemetryKind,
+  creds: CloudCredentials,
+  resourceId: string,
+  progress: (m: string) => void,
+): Promise<void> {
   const mon = new MonitoringClient({ credentials: creds, dryRun: false })
   const [state, storages, routings] = await Promise.all([
-    mon.provisioningState(), mon.listStorages(), mon.listRoutings(),
+    mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
   ])
   if (!state.ok || !storages.ok || !routings.ok) return
 
-  const action = decideLogAction({
-    storageReady: parseProvisioningState(state.data),
-    storageId: pickLogStorageId(storages.data),
-    alreadyRouted: hasAppLogRouting(routings.data, resourceId),
-  })
+  const action = decideTelemetryAction({
+    storageReady: parseProvisioningState(state.data, kind),
+    storageId: pickStorageId(storages.data),
+    alreadyRouted: hasAppRouting(routings.data, resourceId, kind),
+  }, kind)
   if (action.kind !== 'route') return // 'ask'（費用が要る）はここでは行わない
 
-  progress('📋 ログを残す設定をしています…')
-  await mon.createRouting({
+  progress(kind === 'logs' ? '📋 ログを残す設定をしています…' : '📈 メトリクスを残す設定をしています…')
+  await mon.createTelemetryRouting(kind, {
     resourceId,
-    publisherCode: APPRUN_LOG_PUBLISHER,
-    variant: APPRUN_LOG_VARIANT,
-    logStorageId: action.storageId,
+    publisherCode: APPRUN_PUBLISHER,
+    variant: APPRUN_VARIANT[kind],
+    storageId: action.storageId,
   })
 }
 
@@ -279,8 +291,8 @@ import { ObjectStorageClient } from '../cloud/objectStorage'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
 import { looksLikeRegistryProblem } from '../../shared/registryTrouble'
 import { parseAppStatus, judgeAppHealth, judgeRecheck, appLogUrl, askAiAboutFailure, type AppHealth } from '../../shared/appHealth'
-import { MonitoringClient } from '../cloud/monitoring'
-import { decideLogAction, parseProvisioningState, pickLogStorageId, hasAppLogRouting, APPRUN_LOG_PUBLISHER, APPRUN_LOG_VARIANT } from '../../shared/appLog'
+import { MonitoringClient, fetchTelemetryStatus, enableTelemetry } from '../cloud/monitoring'
+import { decideTelemetryAction, parseProvisioningState, pickStorageId, hasAppRouting, APPRUN_PUBLISHER, APPRUN_VARIANT, type TelemetryKind } from '../../shared/appLog'
 import { permissionsToCleanUp } from '../../shared/storageKeys'
 import { summarizePreflight, sortChecks, type PreflightCheck } from '../../shared/preflight'
 import {
@@ -295,6 +307,7 @@ import { planTagCleanup, digestsToDelete, normalizeKeep, DEFAULT_KEEP } from '..
 import { listTags, resolveDigests, deleteDigests } from '../cloud/imageCleanup'
 import { markerUrl, matchesMarker, verifyDelaysMs, verifyMessage, canVerify, type VerifyOutcome } from '../../shared/publishVerify'
 import { resolvePublishRoot } from '../publishRootFs'
+import { readTraffics, readVersions, trafficState } from '../../shared/apprunTraffic'
 
 export function registerCloudHandlers(_deps: IpcDeps) {
   // 接続テスト＝APIキーの権限を 3 点で非破壊チェックする。
@@ -671,6 +684,151 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     }
   })
 
+  // ── バージョン一覧・トラフィック配分・ロールバック（roadmap #32）──────────────
+  // さくらの開発者から「トラフィックの割り当てを変えることでロールバックができる」と
+  // 助言があった。**A/Bテストは対象外。ロールバックだけ**を入れる。
+  // 応答の読み取り・状態の分類・PUT本文の組み立ては shared/apprunTraffic.ts に一元化
+  // （掟10）。ここは IO（アプリIDの解決・API呼び出し）だけ行う。
+
+  /** バージョン一覧を取得する（GET。**何も作らず、何も変えない**）。 */
+  ipcMain.handle('cloud:listVersions', async (_, projectDir: string) => {
+    try {
+      const creds = loadCredentials()
+      if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+      const spec = loadCloudSpec(projectDir)
+      if (!spec) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const state = loadCloudState(projectDir, spec)
+      const app = state.resources.find(r => r.kind === 'apprun-app')
+      if (!app) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+      const r = await client.listVersions(app.id)
+      if (r.dryRun === false && r.ok) return { ok: true, versions: readVersions(r.data) }
+      if (r.dryRun === false && (r.status === 401 || r.status === 403)) {
+        return { ok: false, message: '認証に失敗しました（クラウドのAPIキーを確認してください）' }
+      }
+      return { ok: false, message: r.dryRun === false ? `バージョン一覧の取得に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  /** いまのトラフィック配分と、その分類（最新追従／固定／分散）を取得する（GET。**何も変えない**）。 */
+  ipcMain.handle('cloud:getTraffics', async (_, projectDir: string) => {
+    try {
+      const creds = loadCredentials()
+      if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+      const spec = loadCloudSpec(projectDir)
+      if (!spec) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const state = loadCloudState(projectDir, spec)
+      const app = state.resources.find(r => r.kind === 'apprun-app')
+      if (!app) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+      const r = await client.getTraffics(app.id)
+      if (r.dryRun === false && r.ok) {
+        const rows = readTraffics(r.data)
+        return { ok: true, rows, state: trafficState(rows) }
+      }
+      if (r.dryRun === false && (r.status === 401 || r.status === 403)) {
+        return { ok: false, message: '認証に失敗しました（クラウドのAPIキーを確認してください）' }
+      }
+      return { ok: false, message: r.dryRun === false ? `配分の取得に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  /**
+   * 指定したバージョンへ切り替える（PUT。100%固定）。
+   * `versionName` が `null` のときは「最新に追従」へ戻す（buildRollbackBody(null)）。
+   *
+   * **確認ダイアログは画面側（RollbackSection.tsx の window.confirm）。だが main 側にも
+   * 同じ歯止めを置く（掟5・cloud:apply / cloud:teardown と同じ書き方）。** 実行そのものは
+   * `cloud/rollback.ts` の `performRollback` に一元化してあり、`opts.confirmed === true`
+   * でなければ putTraffics を一切呼ばない（2026-09-08 検分で指摘。文字列一致だけでは
+   * 確認ダイアログを外す変異を検知できなかった）。
+   */
+  ipcMain.handle('cloud:rollback', async (_, projectDir: string, versionName: string | null, opts?: { confirmed?: boolean }) => {
+    try {
+      if (versionName !== null && typeof versionName !== 'string') {
+        return { ok: false, message: '不正なバージョン名です' }
+      }
+      const creds = loadCredentials()
+      if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+      const spec = loadCloudSpec(projectDir)
+      if (!spec) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const state = loadCloudState(projectDir, spec)
+      const app = state.resources.find(r => r.kind === 'apprun-app')
+      if (!app) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
+      return await performRollback({ appId: app.id, versionName, confirmed: opts?.confirmed === true, client })
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  /**
+   * このアプリのログ／メトリクスが、いま何をすれば残るようになるかを聞く（#30）。
+   *
+   * **何も作らず、何も変えない。** 判断そのものは `src/main/cloud/monitoring.ts` の
+   * `fetchTelemetryStatus`（GET だけ）に一元化してあり、ここは呼ぶだけ。
+   * 画面（AppRunPanel）はこれを見て「✅ 残るようになっています」「繋ぐ」ボタン
+   * 「（領域が無いので）費用の同意」のどれを出すかを決める。
+   */
+  ipcMain.handle('cloud:telemetryStatus', async (_, projectDir: string, kind: TelemetryKind) => {
+    try {
+      const creds = loadCredentials()
+      if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+      const spec = loadCloudSpec(projectDir)
+      if (!spec) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const state = loadCloudState(projectDir, spec)
+      const app = state.resources.find(r => r.kind === 'apprun-app')
+      if (!app) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+
+      const resourceId = await resolveAppResourceId(creds, app.id)
+      if (!resourceId) return { ok: false, message: 'アプリの情報を取得できませんでした' }
+
+      const mon = new MonitoringClient({ credentials: creds, dryRun: false })
+      return await fetchTelemetryStatus(mon, kind, resourceId)
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
+  /**
+   * ログ／メトリクスを有効にする（#30・検分で見つかった穴の直し・2026-09-08）。
+   *
+   * **判断は一切ここに書かない。** 以前はここで無条件に `mon.initializeProvisioning(kind)`
+   * から始めており、`decideTelemetryAction` を一度も参照していなかった（＝置き場の有無や
+   * 同意の有無に関わらず、同じ課金の始まる呼び出しが走る穴になっていた）。
+   *
+   * 直したいまは、状態を読んで判断する手順を丸ごと
+   * `src/main/cloud/monitoring.ts` の `enableTelemetry`（`decideEnableTelemetry` を使う）
+   * に切り出し、**ここはその結果をそのまま返すだけ**にした。
+   * `opts.consented === true` を渡さない限り、課金の始まる初期化は呼ばれない
+   * （呼ばれないことを tests/monitoring.test.ts が偽サーバで実際に確かめている）。
+   * `consented` は**画面が「費用に同意する」ボタンを押したときだけ** `true` を渡す
+   * （`TelemetryNotice.tsx`）。
+   */
+  ipcMain.handle('cloud:enableTelemetry', async (_, projectDir: string, kind: TelemetryKind, opts?: { consented?: boolean }) => {
+    try {
+      const creds = loadCredentials()
+      if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+      const spec = loadCloudSpec(projectDir)
+      if (!spec) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+      const state = loadCloudState(projectDir, spec)
+      const app = state.resources.find(r => r.kind === 'apprun-app')
+      if (!app) return { ok: false, message: 'このプロジェクトはまだ公開されていません' }
+
+      const resourceId = await resolveAppResourceId(creds, app.id)
+      if (!resourceId) return { ok: false, message: 'アプリの情報を取得できませんでした' }
+
+      const mon = new MonitoringClient({ credentials: creds, dryRun: false })
+      return await enableTelemetry(mon, kind, resourceId, { consented: opts?.consented === true })
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? String(e) }
+    }
+  })
+
   // 限定公開（アクセス制限＝パケットフィルタ）。デプロイ済みアプリの許可IPを読み書きする。
   ipcMain.handle('cloud:getAccessLimit', async (_, projectDir: string) => {
     try {
@@ -1042,12 +1200,21 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (result.ok) {
         appId = result.state.resources.find(r => r.kind === 'apprun-app')?.id
         if (appId) {
-          // ── ログを残せるようにする（2026-08-14 Ryosuke 提案）────────────
-          // AppRun のログは**既定では残らない**。動かなかったときに原因を
+          // ── ログ・メトリクスを残せるようにする（2026-08-14 Ryosuke 提案・#30で拡張）──
+          // AppRun のログ・メトリクスは**既定では残らない**。動かなかったときに原因を
           // 調べられるよう、公開のついでに繋いでおく。
-          // **費用が増えるのはログ領域を作るときだけ**なので、既にあるときは
+          // **費用が増えるのは領域を作るときだけ**なので、既にあるときは
           // 黙って繋ぐ（意味の分からない同意を増やさない）。判断は shared に集約。
-          try { await ensureAppLogRouting(creds, appId, progress) } catch { /* ログが無くても公開は成立する */ }
+          // **resource_id はログ・メトリクスで同じものを使うので、ここで1回だけ引く**
+          // （#30 検分の指摘6。以前は ensureAppLogRouting/ensureAppMetricsRouting が
+          // それぞれ resolveAppResourceId を呼び、公開のたびに同じ GET を2回引いていた）。
+          try {
+            const resourceId = await resolveAppResourceId(creds, appId)
+            if (resourceId) {
+              try { await ensureTelemetryRouting('logs', creds, resourceId, progress) } catch { /* ログが無くても公開は成立する */ }
+              try { await ensureTelemetryRouting('metrics', creds, resourceId, progress) } catch { /* メトリクスが無くても公開は成立する */ }
+            }
+          } catch { /* resource_id が引けなくても公開は成立する（ログ・メトリクスは付かないだけ） */ }
 
           progress('🩺 アプリが動いているか確かめています…')
           health = await waitForHealthy(client, appId, progress)
@@ -1665,6 +1832,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     // ② イメージの置き場（コンテナレジストリ）
     try {
       // レジストリは全ゾーン共通（グローバル資源）。既定のゾーンで引く
+      // 2026-09-08 実測で裏づけ済み: is1a/tk1a/tk1b/is1b の4ゾーンで GET /commonserviceitem を
+      // 引いたところ、どのゾーンでも同一の一覧（レジストリ2件）が返った（roadmap #34）。
       const r = await client.listContainerRegistries('is1a')
       if (r.dryRun === false && r.ok) {
         for (const g of pickContainerRegistries(r.data)) {

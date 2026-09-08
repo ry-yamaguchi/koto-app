@@ -23,6 +23,7 @@ import { resolvePublishRoot } from './publishRootRenderer'
 import { cleanAiRelPath } from '../shared/publishRoot'
 import { primeLearningMirror } from './learningMirror'
 import { primeUsageMirror } from './usageMirror'
+import { primeZonesCache } from './zonesCache'
 
 const EditorPanel = lazy(() => import('./components/EditorPanel'))
 
@@ -193,7 +194,10 @@ export default function App() {
   // 読みが要るのは送信時・モデル選択時・ChatPanel の表示ヒントだけで、初回描画の同期読みには
   // 使われないため、非同期プライムで足りる（learningMirror.ts のコメント参照）。
   // 予算設定・利用実績の写し（B'-3d-1b）も同じ理由で並べて作る（usageMirror.ts のコメント参照）。
-  useEffect(() => { primeLearningMirror(); primeUsageMirror() }, [])
+  // ゾーン一覧（roadmap #28）も同様に起動時へ寄せる: 専有型・共用型どちらの画面でも
+  // ③を押さずに（＝起動直後から）選べるようにするため。失敗しても起動は止めない
+  // （zonesCache.ts の primeZonesCache のコメント参照）。
+  useEffect(() => { primeLearningMirror(); primeUsageMirror(); primeZonesCache() }, [])
 
   // メニューバー「認証情報（APIキー）…」から開く
   useEffect(() => {
