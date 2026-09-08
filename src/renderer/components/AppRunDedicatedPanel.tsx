@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import CopyButton from './CopyButton'
 import { withApprunDedicatedRecord } from '../../shared/publishMeta'
-import { readLimits, readWorkerClasses, readLbClasses, readClusters, readZones, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
+import { readLimits, readWorkerClasses, readLbClasses, readClusters, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
+import { loadZones } from '../zonesCache'
 
 // さくらのAppRun 専有型パネル（roadmap #23）。
 //
@@ -290,6 +291,18 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const [zones, setZones] = useState<ZoneRow[] | null>(null)
   const [zonesError, setZonesError] = useState<string | null>(null)
 
+  // 起動時のキャッシュを使い、③「🔍 調べる」を押さなくても選べるようにする（2026-09-08
+  // Ryosuke さん依頼）。App.tsx の primeZonesCache() がアプリ起動時に一度取得済み（か、
+  // 取得中）のはずなので、ここでは force しない＝そのキャッシュ／進行中の Promise を使う。
+  // 失敗（キー未登録・取得エラーいずれも）はここでは何もしない――「未実施」の表示のまま
+  // 静かに留め、実際に失敗を伝えるのは③を押した investigate() の役目にする（キーをまだ
+  // 登録していないだけの利用者に、開いた瞬間「取得できませんでした」を見せないため）。
+  useEffect(() => {
+    let alive = true
+    loadZones().then(r => { if (alive && r.ok) setZones(r.rows) })
+    return () => { alive = false }
+  }, [])
+
   const investigate = async () => {
     setChecking(true); setCheckError(null)
     try {
@@ -308,16 +321,15 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       setClusterInfo(null); setClusterError(null)
       setZones(null); setZonesError(null)
 
-      // zones だけ .catch() で包む（事故の直し3）: ゾーン一覧は補助情報であり、失敗しても
-      // ⑤は自由入力に戻るだけ（利用者を止めない）。だが Promise.all にそのまま4本目として
-      // 混ぜると、zones の IPC が reject したときに limits/plans/clusters まで巻き添えで
-      // 落ち、①が「通じませんでした」になってしまう（コード中のコメントと実装が食い違って
-      // いた・2026-09-08 検分で発見）。catch で必ず {ok:false,...} に落として reject させない。
+      // ゾーン一覧は zonesCache.ts 経由（roadmap #28: 起動時キャッシュの使い回し）。
+      // force=true で取り直す（③「🔍 調べる」＝最新に更新）。loadZones は失敗しても reject
+      // しない設計（事故の直し3はここで担保。tests/zonesCache.test.ts で固定）なので、
+      // Promise.all の他3本（limits/plans/clusters）を巻き添えにする心配は無い。
       const [limitsRes, plansRes, clustersRes, zonesRes] = await Promise.all([
         window.electronAPI.apprunDedicated.limits(auth),
         window.electronAPI.apprunDedicated.plans(auth),
         window.electronAPI.apprunDedicated.clusters(auth),
-        window.electronAPI.apprunDedicated.zones(auth).catch((e: any) => ({ ok: false as const, message: e?.message ?? String(e) })),
+        loadZones(true),
       ])
 
       if (limitsRes.ok) setLimits(readLimits(limitsRes.data))
@@ -334,8 +346,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
       // ゾーン一覧が取れなくても⑤は自由入力に戻るだけ（利用者を止めない）。①の疎通判定
       // （下）には含めない――ゾーンは補助情報で、専有型APIそのものの疎通とは別に扱う。
-      if (zonesRes.ok) setZones(readZones(zonesRes.data))
-      else setZonesError(zonesRes.message)
+      if (zonesRes.ok) setZones(zonesRes.rows)
+      else setZonesError(zonesRes.message ?? '')
 
       // ①へ出す疎通結果（事故の直し1）: conn/connMsg に一本化。4本のうちどれか1つでも
       // 成功すれば「通じた」。全滅なら、代表的な失敗（limits→worker→lb→clusters の順で
@@ -541,7 +553,16 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     // キーが（他画面の「認証情報」経由で）切り替わったら、前のキーで確かめた疎通結果を無効にする。
     // ここで conn/connMsg をリセットしないと、①の表示は「使用中のキー」だけ新しくなり、
     // その真下に前のキーで得た「✅ 通じました」が残ったままになる（常時課金サービスへの嘘の緑チェック）。
-    const h = () => { refreshKey(); refreshCloudKeys(); setConn('idle'); setConnMsg('') }
+    const h = () => {
+      refreshKey(); refreshCloudKeys(); setConn('idle'); setConnMsg('')
+      // ゾーン一覧（GET /zone）もキーに紐づく。zonesCache.ts 自身のキャッシュは
+      // primeZonesCache() の購読が同じイベントで捨てるが、**この画面が持っている
+      // zones state は別物**で、キーを切り替えても残ったままになる（2026-09-08 検分で
+      // 指摘）。`GET /zone` の内容がキーで変わるかは確かめていないため、**捨てる側に
+      // 倒す**（CLAUDE.md 掟10: 分からないものは安全側に倒す）。
+      setZones(null); setZonesError(null)
+      loadZones().then(r => { if (r.ok) setZones(r.rows) })
+    }
     window.addEventListener('sakura:credentials-changed', h)
     return () => window.removeEventListener('sakura:credentials-changed', h)
   }, [refreshKey, refreshCloudKeys])

@@ -97,9 +97,31 @@ async function main() {
   routings.ok ? ok('取得できました') : ng(`取得できません（HTTP ${routings.status}）`)
   dump('logs/routings', routings)
 
+  // ── ここから 2026-09-08 追加（roadmap #30・メトリクスを有効にできるか）──────────
+  // さくらの開発者から「ログとメトリクスは有効にしてて欲しい」と助言があった。
+  // 原本（monitoring-suite-api.json v1.3.0）を見ると、メトリクスはログと**まったく同じ形**:
+  //   GET/POST /metrics/storages/  … 置き場
+  //   GET/POST /metrics/routings/  … { metrics_storage_id, publisher_code, variant, resource_id }
+  // ログ側は variant='applicationlog' と分かっているが、**メトリクスの variant 名は未知**。
+  // 推測せず、`GET /publishers/{code}/` が返す variants から実測する（掟1）。
+  console.log('\n④ パブリッシャ apprun が持つ variant（★メトリクスの variant 名を推測せず知るため）')
+  const pub = await get('publishers/apprun/')
+  pub.ok ? ok('取得できました') : ng(`取得できません（HTTP ${pub.status}）`)
+  dump('publishers/apprun', pub)
+
+  console.log('\n⑤ メトリクスの置き場とルーティング（★作らない。あるかどうかを見るだけ）')
+  const mStorages = await get('metrics/storages/')
+  mStorages.ok ? ok('置き場の一覧を取得できました') : ng(`取得できません（HTTP ${mStorages.status}）`)
+  dump('metrics/storages', mStorages)
+  const mRoutings = await get('metrics/routings/')
+  mRoutings.ok ? ok('ルーティングの一覧を取得できました') : ng(`取得できません（HTTP ${mRoutings.status}）`)
+  dump('metrics/routings', mRoutings)
+
   console.log('\n────────────────────────────────')
-  console.log('この結果を共有してください。③に AppRun のルーティングが出ていれば、')
-  console.log('Koto から同じものを作れます（publisher_code と variant の実値が分かるため）。')
+  console.log('この結果を共有してください。')
+  console.log(' ・③に AppRun のルーティングが出ていれば、ログは Koto から同じものを作れます')
+  console.log(' ・④の variants に metrics 用の名前が出ていれば、メトリクスも同じ形で作れます')
+  console.log(' ・①の provisioning/state には logs と metrics の両方が入っています（初期化の要否）')
 }
 
 if (process.argv[1] && process.argv[1].endsWith('probe-monitoring-suite.mjs')) {

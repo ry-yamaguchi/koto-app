@@ -172,7 +172,12 @@ describe('targetProfiles.ts: sakura-apprun-dedicated の定義', () => {
     expect(targetProfiles).toContain("'sakura-apprun-dedicated'")
     const at = targetProfiles.indexOf("'sakura-apprun-dedicated': {")
     expect(at).toBeGreaterThan(0)
-    const block = targetProfiles.slice(at, at + 900)
+    // 終端は固定の文字数ではなく次のキー（'sakura-vps'）までにする（2026-09-08、無関係の
+    // 追記（roadmap #33・donts の追加）で固定900文字を超え、この既存テストが落ちた実例に
+    // 遭遇したための修理。donts/recommended が増減しても崩れない境界にする）。
+    const end = targetProfiles.indexOf("'sakura-vps': {", at)
+    expect(end).toBeGreaterThan(at)
+    const block = targetProfiles.slice(at, end)
     expect(block).toContain('autoPublish: false')
     expect(block).toContain('serviceUrl:')
   })
@@ -225,10 +230,18 @@ describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
     expect(panel).toContain('2万円を超えます')
   })
 
-  it('apprunDedicated への呼び出しは limits/plans/clusters/zones/create/teardown/state の7つ（roadmap #28でzonesを追加）', () => {
+  // 2026-09-08: zones はこのパネルから直接呼ばず、zonesCache.ts の loadZones() 経由に
+  // 一元化した（起動時キャッシュの使い回し）。パネルからの直接呼び出しは6つに減り、
+  // zones の実際の呼び出しは zonesCache.ts 側にあることを別途確かめる。
+  it('apprunDedicated への直接呼び出しは limits/plans/clusters/create/teardown/state の6つ（zonesはzonesCache.ts経由）', () => {
     const calls = [...panel.matchAll(/electronAPI\.apprunDedicated\.(\w+)/g)].map(m => m[1])
     expect(calls.length).toBeGreaterThan(0)
-    expect(new Set(calls)).toEqual(new Set(['limits', 'plans', 'clusters', 'zones', 'create', 'teardown', 'state']))
+    expect(new Set(calls)).toEqual(new Set(['limits', 'plans', 'clusters', 'create', 'teardown', 'state']))
+  })
+
+  it('zones の実際の呼び出しは zonesCache.ts にある（roadmap #28）', () => {
+    const cache = readFileSync(join(__dirname, '..', 'src/renderer/zonesCache.ts'), 'utf-8')
+    expect(cache).toContain('window.electronAPI.apprunDedicated.zones(auth)')
   })
 
   it('⑤: ネットワークは共有セグメント固定と明示し、スイッチ/IPプールの入力欄を出さない', () => {
@@ -544,13 +557,31 @@ describe('#28: selectableZones / defaultZone（GET /zone の一覧からゾー�
     expect(panel).not.toContain('原本に許容値の一覧が無いため自由入力です')
   })
 
-  it('③「調べる」は apprunDedicated.zones も並列で呼び、readZones で読んだ結果を zones/zonesError に反映する', () => {
+  // 2026-09-08 Ryosuke さん依頼（起動時キャッシュの使い回し）で、investigate() は生の IPC を
+  // 直接叩くのをやめ、zonesCache.ts の loadZones(true) 経由に変わった（tests/zonesCache.test.ts
+  // が loadZones 自体の振る舞いを固定する）。
+  it('③「調べる」は loadZones(true) を並列で呼び直し、結果を zones/zonesError に反映する', () => {
     const at = panel.indexOf('const investigate = async () => {')
     expect(at).toBeGreaterThan(0)
     const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
-    expect(block).toContain('window.electronAPI.apprunDedicated.zones(auth)')
-    expect(block).toContain('setZones(readZones(zonesRes.data))')
-    expect(block).toContain('setZonesError(zonesRes.message)')
+    expect(block).toContain('loadZones(true)')
+    expect(block).toContain('setZones(zonesRes.rows)')
+    expect(block).toContain('setZonesError(zonesRes.message ?? \'\')')
+    // 生の IPC を直接叩く旧実装はもう無い（zonesCache.ts に一元化）。
+    expect(block).not.toContain('window.electronAPI.apprunDedicated.zones(auth)')
+  })
+
+  it('起動時のキャッシュを使い、③を押さなくても選べる（mount 時に loadZones() を呼ぶ）', () => {
+    const at = panel.indexOf('useEffect(() => {\n    let alive = true\n    loadZones().then(r => { if (alive && r.ok) setZones(r.rows) })')
+    expect(at).toBeGreaterThan(0)
+    // investigate() の定義より前（＝mount 時の別 effect）にあること。
+    const investigateAt = panel.indexOf('const investigate = async () => {')
+    expect(investigateAt).toBeGreaterThan(at)
+  })
+
+  it("import: loadZones を zonesCache.ts から取り込んでいる（readZones の直接呼び出しは無い）", () => {
+    expect(panel).toContain("import { loadZones } from '../zonesCache'")
+    expect(panel).not.toContain('readZones(')
   })
 
   it('⑤: 表示は「name — description」の形（例: tk1b — 東京第2ゾーン）', () => {
@@ -637,15 +668,32 @@ describe('事故の直し2: ゾーン欄の3分岐（未実施／取得失敗／
 
 // 事故の直し3（2026-09-08 検分で発見）。zones の IPC が reject すると、コードのコメントは
 // 「⑤は自由入力に戻るだけ」と言っているのに、実装は Promise.all の巻き添えで limits/plans/
-// clusters まで落ち、①が「通じませんでした」になっていた。zones だけ .catch() で包む。
+// clusters まで落ち、①が「通じませんでした」になっていた。
+//
+// 2026-09-08（同日）: 起動時キャッシュの導入で、zones の取得は zonesCache.ts の loadZones() に
+// 一元化された。loadZones は内部で reject しない設計（tests/zonesCache.test.ts が固定）なので、
+// investigate() 側に .catch() を書く必要が無くなった――**設計そのもので巻き添えを防ぐ**形に
+// 変わったため、ここでは「loadZones の失敗が他の3本を落とさない」ことそのものを確かめる
+// （.catch() という書き方の有無ではなく、実際に reject しないことを検証する）。
 describe('事故の直し3: zones の失敗が limits/plans/clusters を巻き添えにしない', () => {
-  it('investigate の中で apprunDedicated.zones(auth) の呼び出しに .catch(...) が付いている', () => {
+  it('investigate は loadZones(true) を Promise.all の中でそのまま await する（.catch は不要）', () => {
     const at = panel.indexOf('const investigate = async () => {')
     expect(at).toBeGreaterThan(0)
     const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
-    expect(block).toContain('window.electronAPI.apprunDedicated.zones(auth).catch(')
-    // catch の中身は zonesRes.ok / zonesRes.message として読める {ok:false, message} の形。
-    expect(block).toContain('ok: false')
+    expect(block).toContain('loadZones(true)')
+  })
+
+  it('loadZones は失敗しても reject しない（Promise.all の巻き添えにならないことの実体）', async () => {
+    const { loadZones, resetZonesCacheForTest } = await import('../src/renderer/zonesCache')
+    resetZonesCacheForTest()
+    ;(globalThis as any).window = {
+      electronAPI: {
+        cloud: { loadKey: async () => { throw new Error('boom') } },
+        apprunDedicated: { zones: async () => ({ ok: false, message: 'boom' }) },
+      },
+    }
+    await expect(Promise.all([Promise.resolve({ ok: true }), loadZones(true)])).resolves.toBeDefined()
+    delete (globalThis as any).window
   })
 })
 
@@ -728,9 +776,15 @@ describe('事故の直し1: ①APIキーの見出し・説明文・接続テス�
     const selBlock = panel.slice(selAt, selEnd)
     expect(selBlock).toContain("setConn('idle'); setConnMsg('')")
 
-    const hAt = panel.indexOf("const h = () => { refreshKey(); refreshCloudKeys(); setConn('idle')")
+    // 2026-09-08 検分でこのハンドラにゾーン一覧の取り直し（事故の直し6）が足された。
+    // 呼び出しの形ごと見る（掟10）: h 本体の中に conn/connMsg のリセットが入っていること。
+    const hAt = panel.indexOf('const h = () => {')
     expect(hAt).toBeGreaterThan(0)
-    expect(panel.slice(hAt, hAt + 200)).toContain("setConn('idle'); setConnMsg('')")
+    const hEnd = panel.indexOf('\n    }', hAt)
+    expect(hEnd).toBeGreaterThan(hAt)
+    const hBlock = panel.slice(hAt, hEnd)
+    expect(hBlock).toContain('refreshKey(); refreshCloudKeys()')
+    expect(hBlock).toContain("setConn('idle'); setConnMsg('')")
   })
 })
 
