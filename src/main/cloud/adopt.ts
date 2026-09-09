@@ -102,7 +102,9 @@ export function adoptedSpec(input: AdoptInput): EnvSpec {
   const name = normalizeSpecName(input.appName)
   const port = typeof s.port === 'number' && s.port > 0 ? s.port : 8080
   // 規模は API が返さないことがある。**そのときだけ**既定（0〜1）に倒す。
-  // 再デプロイ（PATCH）はこれを送らないので、動いているアプリの規模は変わらない。
+  // 再デプロイ（PATCH）は min_scale を送る（client.ts の buildPatchBody・roadmap #31）ので、
+  // ここで書き写した min はそのまま次の公開で実物に反映される。max_scale は送らない
+  // （選ばせているのは min だけで、範囲までは Koto が決めない方針のため）。
   const min = typeof s.minScale === 'number' && s.minScale >= 0 ? s.minScale : 0
   const maxRaw = typeof s.maxScale === 'number' && s.maxScale >= 1 ? s.maxScale : 1
   const max = maxRaw < min ? min : maxRaw

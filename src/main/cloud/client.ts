@@ -246,6 +246,7 @@ export function buildCreateBody(spec: EnvSpec, registryAuth?: RegistryAuth, runt
 
 /** AppRunアプリ部分更新（再デプロイ）リクエストボディの型。 */
 export type PatchAppBody = {
+  min_scale: number
   components: CreateAppBody['components']
   all_traffic_available: boolean
 }
@@ -254,9 +255,25 @@ export type PatchAppBody = {
  * buildPatchBody — 既存アプリへ新しいイメージを再デプロイ（PATCH）するためのボディ。
  * components を差し替え、all_traffic_available:true で新バージョンへ全トラフィックを向ける。
  * URLは固定のまま新バージョンが作られる（作り直さない）。
+ *
+ * ── min_scale は送る。max_scale は送らない（roadmap #31・2026-09-09 検分で修理） ──
+ * 原本 `PATCH /applications/{id}` は min_scale・max_scale ともに**任意**（apprun-shared.json
+ * v1.5.0 で確認済み）。roadmap #31（最小スケールの選択）は
+ * `service.scale.min` を spec.ts へ保存するところまでは実装したが、**このボディが
+ * min_scale を送っていなかった**ため、③公開で「常時動かす」を選んで再デプロイしても
+ * 実物のアプリは変わらないまま「課金されません」と画面が言い切る事故になっていた。
+ * ここで min_scale を足し、選択が実物に届くようにする。
+ *
+ * **max_scale は意図的に送らない。** roadmap #31 が選ばせているのは min だけで、
+ * 範囲（max）まで Koto が決めてよい機能ではない。max_scale を送ると、利用者が
+ * さくらのコントロールパネルで広げた上限を、Koto の再デプロイが黙って元へ戻してしまう。
  */
 export function buildPatchBody(spec: EnvSpec, registryAuth?: RegistryAuth, runtimeEnv: Array<{ key: string; value: string }> = []): PatchAppBody {
-  return { components: buildComponents(spec, registryAuth, runtimeEnv), all_traffic_available: true }
+  return {
+    min_scale: spec.service.scale.min,
+    components: buildComponents(spec, registryAuth, runtimeEnv),
+    all_traffic_available: true,
+  }
 }
 
 /** さくらのクラウド/AppRun API クライアント。 */

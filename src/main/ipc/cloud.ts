@@ -1809,7 +1809,9 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (r.dryRun === false && r.ok) {
         for (const a of ((r.data as any)?.data ?? []) as any[]) {
           const id = String(a?.id ?? '')
-          if (id) actual.push({ kind: 'apprun-app', id, name: String(a?.name ?? id) })
+          // min_scale が数で返ってこないときは null（0 と決めつけない・roadmap #31 検分で修理）。
+          const scaleMin = typeof a?.min_scale === 'number' ? a.min_scale : null
+          if (id) actual.push({ kind: 'apprun-app', id, name: String(a?.name ?? id), scaleMin })
         }
       } else failed.push('公開したアプリ')
     } catch { failed.push('公開したアプリ') }

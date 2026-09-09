@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import CopyButton from './CopyButton'
 import { getWorkspaceDir } from '../workspace'
 import { formatPublishedAt } from '../publishStatus'
-import { kindLabel } from '../../shared/inventory'
+import { kindLabel, costNote } from '../../shared/inventory'
 import { listCloudKeys, getActiveCloudKeyId } from './CredentialsModal'
 import { clearPublishRecord } from '../publishRecord'
 import { buildPublishedIndex, groupPublishedByTarget, type PublishedEntry, type PublishedGroup } from '../publishedIndex'
@@ -245,9 +245,9 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                           {' '}<span className="font-mono break-all">{r.name}</span>
                           <br />
                           {r.project
-                            ? <>プロジェクト『{r.project}』／{r.monthlyYen > 0 ? `月額${r.monthlyYen}円` : '従量（待機中はほぼゼロ）'}</>
+                            ? <>プロジェクト『{r.project}』／{costNote(r)}</>
                             : <span className="text-brand-yellow">
-                                このパソコンの Koto には心当たりがありません（{r.monthlyYen > 0 ? `月額${r.monthlyYen}円` : '従量'}）。
+                                このパソコンの Koto には心当たりがありません（{costNote(r)}）。
                                 心当たりが無ければ、コントロールパネルで削除できます
                               </span>}
                         </span>

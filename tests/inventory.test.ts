@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  parseLocalRecords, buildInventory, sumMonthly, unknownCount, totalNotice, monthlyYenFor, kindLabel,
+  parseLocalRecords, buildInventory, sumMonthly, unknownCount, totalNotice, monthlyYenFor, kindLabel, costNote,
 } from '../src/shared/inventory'
 
 // ── 改善案 1-3 / 1-4（2026-08-18）────────────────────────────────────
@@ -112,6 +112,90 @@ describe('費用', () => {
   })
 })
 
+// ── #31 の検分（2026-09-09）で見つかった【高】────────────────────────────
+// 常時起動（min_scale≥1）を選んだアプリでも、この棚卸しは min_scale を一切見ておらず、
+// 「かかり続けるものは見つかりませんでした」と断言していた。AppRun は従量課金なので
+// monthlyYen=0 になること自体は正しいが、「待機中はほぼゼロ」という注記は min_scale=0
+// のときしか当たらない。min_scale が読み取れないときも 0 に倒さない（今日の教訓）。
+describe('costNote: apprun-app は金額を書かず、min_scale から状態だけを伝える', () => {
+  it('min=0 → 従量（待機中はほぼゼロ）', () => {
+    expect(costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: 0 })).toBe('従量（待機中はほぼゼロ）')
+  })
+
+  it('★ min≥1 → 常時動く設定（料金がかかり続けます）。金額は書かない', () => {
+    const note = costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: 1 })
+    expect(note).toBe('常時動く設定（料金がかかり続けます）')
+    expect(note).not.toMatch(/[\d,]+\s*円/)
+  })
+
+  it('min=5 でも同じ扱い（1以上はすべて「常時動く」）', () => {
+    expect(costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: 5 })).toBe('常時動く設定（料金がかかり続けます）')
+  })
+
+  it('★ min が読み取れない（null）ときは「不明」。0 に倒さない', () => {
+    const note = costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: null })
+    expect(note).toContain('不明')
+    expect(note).not.toBe('従量（待機中はほぼゼロ）')
+  })
+
+  it('scaleMin を渡さない（undefined）ときも「不明」扱い（0と決めつけない）', () => {
+    expect(costNote({ kind: 'apprun-app', monthlyYen: 0 })).toContain('不明')
+  })
+
+  it('registry/bucket は従来どおり金額ベース（apprun-app 専用の分岐に入らない）', () => {
+    expect(costNote({ kind: 'registry', monthlyYen: 220, scaleMin: null })).toBe('月額220円')
+    expect(costNote({ kind: 'bucket', monthlyYen: 0, scaleMin: null })).toBe('従量')
+  })
+})
+
+describe('buildInventory: apprun-app の行に scaleMin が乗る', () => {
+  const actualWarm = [{ kind: 'apprun-app' as const, id: 'app-1111-aaaa', name: 'data-test', scaleMin: 1 }]
+  const actualUnknown = [{ kind: 'apprun-app' as const, id: 'app-1111-aaaa', name: 'data-test', scaleMin: null }]
+  const records = parseLocalRecords(projects)
+
+  it('★ min≥1 のアプリの note は「常時動く設定」になる（記録があるプロジェクトでも）', () => {
+    const rows = buildInventory({ actual: actualWarm, records })
+    const row = rows.find(r => r.id === 'app-1111-aaaa')!
+    expect(row.scaleMin).toBe(1)
+    expect(row.note).toContain('常時動く設定')
+    expect(row.note).toContain('料金がかかり続けます')
+    expect(row.note).not.toMatch(/[\d,]+\s*円/)
+  })
+
+  it('★ min が不明のアプリは note が「不明」になる。0 に倒さない', () => {
+    const rows = buildInventory({ actual: actualUnknown, records })
+    const row = rows.find(r => r.id === 'app-1111-aaaa')!
+    expect(row.scaleMin).toBeNull()
+    expect(row.note).toContain('不明')
+    expect(row.note).not.toContain('待機中はほぼゼロ')
+  })
+
+  it('registry/bucket の行は scaleMin が null のまま（apprun-app 専用の項目のため）', () => {
+    const rows = buildInventory({ actual, records })
+    for (const r of rows.filter(r => r.kind !== 'apprun-app')) expect(r.scaleMin).toBeNull()
+  })
+
+  // ★ 実際に呼ぶ（IPCモックではなく buildInventory を直接呼び、totalNotice も直接呼ぶ）。
+  it('★★ min≥1 のアプリしか無いとき、totalNotice は「かかり続けるものは見つかりませんでした」と言わない', () => {
+    const rows = buildInventory({ actual: actualWarm, records: [] })
+    expect(sumMonthly(rows)).toBe(0) // 従量なので固定額の合計は0のまま（正しい）
+    const notice = totalNotice(rows)
+    expect(notice).not.toContain('月額でかかり続けるものは見つかりませんでした')
+    expect(notice).toContain('可能性があります')
+  })
+
+  it('★ min が不明のアプリしか無いときも、totalNotice は「見つかりませんでした」と言わない', () => {
+    const rows = buildInventory({ actual: actualUnknown, records: [] })
+    const notice = totalNotice(rows)
+    expect(notice).not.toContain('月額でかかり続けるものは見つかりませんでした')
+  })
+
+  it('min=0（従来どおりの意味での従量）しか無ければ、これまでどおり「見つかりませんでした」', () => {
+    const rows = buildInventory({ actual: [{ kind: 'apprun-app' as const, id: 'a', name: 'a', scaleMin: 0 }], records: [] })
+    expect(totalNotice(rows)).toContain('月額でかかり続けるものは見つかりませんでした')
+  })
+})
+
 // ── 配線（判断だけ正しくても、画面に出なければ意味がない・掟10）──────────
 describe('棚卸しが画面まで届いている', () => {
   const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf-8')
@@ -160,5 +244,27 @@ describe('棚卸しが画面まで届いている', () => {
     const modal = read('src/renderer/components/PublishedListModal.tsx')
     expect(modal).toContain('心当たりがありません')
     expect(modal).toContain('コントロールパネル')
+  })
+
+  // ── #31 の検分（2026-09-09）: min_scale が画面まで届いているか ──────────────
+  it('★ ①公開したアプリの取得で min_scale を読み、scaleMin として積む（0と決めつけない）', () => {
+    const src = read('src/main/ipc/cloud.ts')
+    const i = src.indexOf("ipcMain.handle('cloud:inventory'")
+    const seg = src.slice(i, i + 3000)
+    expect(seg).toContain('a?.min_scale')
+    expect(seg).toContain('scaleMin')
+    // 0 に倒していないこと（存在しないときは null）
+    expect(seg).toMatch(/scaleMin\s*=\s*typeof a\?\.min_scale === 'number' \? a\.min_scale : null/)
+  })
+
+  // ⚠️ 画面（PublishedListModal.tsx）が r.note / costNote(r) を使わず、r.monthlyYen だけを
+  // 見て自前で文言を組み立てていると、inventory.ts 側をいくら直しても画面には届かない
+  // （2026-09-09 検分時点の実際の形がこれだった）。**呼び出し側**を固定する。
+  it('★ 一覧の費用表示は costNote(r) を使う（r.monthlyYen 直読みの複製をしていない）', () => {
+    const modal = read('src/renderer/components/PublishedListModal.tsx')
+    expect(modal).toContain("import { kindLabel, costNote } from '../../shared/inventory'")
+    expect(modal).toContain('{costNote(r)}')
+    // 直す前の形（金額の有無だけで「従量（待機中はほぼゼロ）」を出す複製）が残っていないこと
+    expect(modal).not.toMatch(/r\.monthlyYen > 0 \? `月額\$\{r\.monthlyYen\}円` : '従量/)
   })
 })

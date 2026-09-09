@@ -26,6 +26,20 @@ export type ActualResource = {
   id: string
   /** 画面に出す名前。 */
   name: string
+  /**
+   * `apprun-app` のみ意味を持つ、実物の最小スケール（`min_scale`）。
+   *
+   * ── なぜ持たせたか（roadmap #31・2026-09-09 検分で修理）──────────────
+   * 「最初のアクセスが遅くてもよい」以外（＝常時起動）を選べるようになったのに、
+   * この棚卸しは**それを知らないまま** `monthlyYenFor('apprun-app')` の 0 だけを見て
+   * 「かかり続けるものは無い」と言い切っていた。常時起動を選んだアプリでも
+   * `monthlyYen=0` になるのは AppRun が従量課金だからで**正しい**が、
+   * 待機中もほぼゼロという注記は min_scale=0 のときしか当たらない。
+   *
+   * 読み取れない（API から min_scale が返らない）ときは **null**。
+   * **0 だと決めつけない**（0 に倒すと「常時課金」を「課金なし」に見せてしまう）。
+   */
+  scaleMin?: number | null
 }
 
 /** Koto がこのパソコンに持っている記録（1プロジェクト分）。 */
@@ -47,6 +61,8 @@ export type InventoryRow = {
   dir: string | null
   /** 月額（円・税込）。従量のものは 0 とし、note で説明する。 */
   monthlyYen: number
+  /** `apprun-app` のみ意味を持つ最小スケール。読み取れなければ null（0と決めつけない）。 */
+  scaleMin: number | null
   note: string
 }
 
@@ -54,7 +70,26 @@ export type InventoryRow = {
 export function monthlyYenFor(kind: ResourceKind): number {
   if (kind === 'registry') return REGISTRY_MONTHLY_YEN
   if (kind === 'bucket') return BUCKET_MONTHLY_YEN
-  return 0 // AppRun は従量（最小スケール0なら待機中はほぼゼロ）
+  return 0 // AppRun は従量課金（固定の月額は無い。常時起動かどうかは costNote が scaleMin から判断する）
+}
+
+/**
+ * 費用の状態を1行で表す（純関数）。**唯一の定義**（画面側で同じ判定を複製しない・掟10）。
+ *
+ * `apprun-app` は従量課金なので、いくら分かっても金額は書かない
+ * （使い方によって変わる。確かめていない数字を書かない・掟1）。
+ * その代わり、min_scale から「止まる／常時動く／分からない」だけを伝える。
+ * **min_scale が読み取れないときは「不明」とし、0 に倒さない**
+ * （倒すと、常時課金しているアプリを「課金なし」に見せてしまう。2026-09-09 検分で発見）。
+ */
+export function costNote(row: { kind: ResourceKind; monthlyYen: number; scaleMin?: number | null }): string {
+  if (row.kind === 'apprun-app') {
+    const min = row.scaleMin ?? null
+    if (min === null) return '不明（常時動く設定かどうか判断できません）'
+    if (min >= 1) return '常時動く設定（料金がかかり続けます）'
+    return '従量（待機中はほぼゼロ）'
+  }
+  return row.monthlyYen > 0 ? `月額${row.monthlyYen}円` : '従量'
 }
 
 const KIND_LABEL: Record<ResourceKind, string> = {
@@ -117,6 +152,9 @@ export function buildInventory(opts: {
     .map(res => {
       const owner = ownerOf(res, opts.records ?? [])
       const monthlyYen = monthlyYenFor(res.kind)
+      // apprun-app 以外は scaleMin に意味が無い（渡ってきても無視する）。
+      const scaleMin = res.kind === 'apprun-app' ? (res.scaleMin ?? null) : null
+      const status = costNote({ kind: res.kind, monthlyYen, scaleMin })
       return {
         kind: res.kind,
         id: res.id,
@@ -124,13 +162,22 @@ export function buildInventory(opts: {
         project: owner ? owner.projectName : null,
         dir: owner ? owner.dir : null,
         monthlyYen,
-        note: owner
-          ? (monthlyYen > 0 ? `月額${monthlyYen}円` : '従量（待機中はほぼゼロ）')
-          : (monthlyYen > 0
-              ? `月額${monthlyYen}円。**このパソコンの Koto には心当たりがありません**`
-              : '従量。**このパソコンの Koto には心当たりがありません**'),
+        scaleMin,
+        note: owner ? status : `${status}。**このパソコンの Koto には心当たりがありません**`,
       }
     })
+}
+
+/**
+ * `apprun-app` のうち、**費用がかかり続けている／かかり続けていないと言い切れない**もの
+ * があるか（純関数）。
+ *
+ * 常時起動（min≥1）は従量課金でも確実に費用が発生し続ける。min が不明のときも、
+ * 「無い」とは言い切れない（0 と決めつけない・掟1）。totalNotice が
+ * 「かかり続けるものは見つかりませんでした」と誤って言い切らないための判定。
+ */
+function hasOngoingOrUnknownAppRunCost(rows: readonly InventoryRow[]): boolean {
+  return (rows ?? []).some(r => r.kind === 'apprun-app' && (r.scaleMin === null || (r.scaleMin ?? 0) >= 1))
 }
 
 /** 月額の合計（純関数）。従量のものは含まれない。 */
@@ -152,9 +199,16 @@ export function unknownCount(rows: readonly InventoryRow[]): number {
 export function totalNotice(rows: readonly InventoryRow[]): string {
   const total = sumMonthly(rows)
   const unknown = unknownCount(rows)
+  // ⚠️ AppRun は従量課金なので sumMonthly には乗らない（monthlyYenFor が常に0を返す）。
+  // だが常時起動（min≥1）や min不明のアプリは、金額こそ分からなくても「かかり続けるものは
+  // 無い」とは言い切れない（2026-09-09 検分で発見: 常時起動を選んでもここが「見つかりません
+  // でした」と断言していた）。total=0 でもこれが true なら、無いと言い切らない文にする。
+  const ongoingUnknown = hasOngoingOrUnknownAppRunCost(rows)
   const head = total > 0
     ? `いま分かっているだけで、月額 ${total.toLocaleString()}円（税込）がかかり続けます。`
-    : '月額でかかり続けるものは見つかりませんでした。'
+    : ongoingUnknown
+      ? '月額として金額が分かるものはありませんが、常時動く設定のアプリなどがあり、費用がかかり続けている可能性があります。'
+      : '月額でかかり続けるものは見つかりませんでした。'
   const tail = unknown > 0
     ? `${head}うち ${unknown}件は、このパソコンの Koto に心当たりがありません（別のパソコンで作ったか、手で作ったものかもしれません）。`
     : head

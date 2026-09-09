@@ -32,6 +32,55 @@ function normalizeApprunName(raw: string): string {
   return s
 }
 
+// ── 最小スケール（コールドスタート vs 常時起動）の選択（roadmap #31） ──────────────────
+//
+// さくらの開発者からの助言「コールドスタートが許容できなければ最小スケールを1以上に」を
+// 受けた機能。原本 apprun-shared.json v1.5.0 の POST /applications で確認済み:
+//   min_scale: integer / minimum 0 / maximum 10 / 既定 0
+//   max_scale: integer / minimum 1 / maximum 10 / 既定 10（この機能では触らない）
+//
+// **既定は 0（cold）のまま。勝手に課金を始めない。** defaultSpec（main/cloud/spec.ts）の
+// 雛形がすぐ隣に書いている「新しいプロジェクトを作ったら課金が始まることがあってはならない」
+// という Koto の方針を優先する——助言は「コールドスタートが許容できなければ」という
+// 条件つきであって、既定でそうしろ、ではない。
+//
+// 選択肢は2つだけ（0 と 1）。非エンジニア向けの画面に、意味の分からない数値入力は置かない。
+export type ScaleChoice = 'cold' | 'warm'
+
+/**
+ * いまの min（service.scale.min）から選択状態を判定する。0 は cold、1以上は warm。
+ * **原本の範囲（0〜10）から外れる値は安全側（cold）に倒す**——非整数・負・11以上・NaN等、
+ * 分からない／おかしい値を「常時課金」側へは倒さない（掟10と同じ「迷ったら安全側」）。
+ */
+export function scaleChoice(min: number): ScaleChoice {
+  if (!Number.isInteger(min) || min < 0 || min > 10) return 'cold'
+  return min === 0 ? 'cold' : 'warm'
+}
+
+/** 選択状態から保存する min を決める。cold→0、warm→1（原本の範囲・既定と整合）。 */
+export function scaleMinFor(choice: ScaleChoice): number {
+  return choice === 'warm' ? 1 : 0
+}
+
+/**
+ * 画面に**出す**ときの3値（2026-09-09 検分で追加）。
+ *
+ * `scaleChoice` は**保存する値を決めるため**に、範囲外を安全側（cold=0）へ倒す
+ * ——手で編集した env.json 等で `min=11` のような値になっても、Koto が
+ * 書き戻すのは 0 でよい、という判断（保存用としては正しい）。
+ *
+ * だが**画面の文言まで cold にすると**「アクセスが無い間は止まり、課金されません」と
+ * 言い切ってしまう。`min=11` は実際には**常時11インスタンス**動いており、これは嘘になる。
+ * 表示は範囲外を **unknown** にし、断定しない（`scaleMinFor` は今のままでよい——
+ * 保存する値としては cold へ倒すのが安全側で正しいため）。
+ */
+export type ScaleDisplay = ScaleChoice | 'unknown'
+
+export function scaleDisplay(min: number): ScaleDisplay {
+  if (!Number.isInteger(min) || min < 0 || min > 10) return 'unknown'
+  return min === 0 ? 'cold' : 'warm'
+}
+
 // 「さくらのAppRun」公開パネル（段階2b＝操作UI）。
 // さくらのAppRun 向けの「使い捨てテスト環境」を、APIキー登録〜プラン確認〜構築/破棄まで一画面で操作する。
 // バックエンド（段階1/2a）は完成済み。ここは window.electronAPI.cloud.* を呼んで結果を日本語で見せるだけ。
@@ -229,6 +278,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
   const [costLoading, setCostLoading] = useState(false)
   // TTL（期限）の保存中フラグ
   const [savingTtl, setSavingTtl] = useState(false)
+  // 最小スケール（cold/warm）の保存中フラグ（roadmap #31）
+  const [savingScale, setSavingScale] = useState(false)
 
   // ── TTL / 期限 ──
   const [expiry, setExpiry] = useState<{ expired: boolean; createdAt: string | null; ttlHours: number | null } | null>(null)
@@ -496,6 +547,22 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     } catch (e: any) {
       setEnvError(e?.message ?? String(e))
     } finally { setSavingTtl(false) }
+  }
+
+  // 最小スケール（cold/warm）を変更して env.json に保存する（roadmap #31）。
+  // max はここでは触らない——選択肢は min の2値だけ。TTL と同じ「丸ごと書き戻す」経路
+  // （saveEnv）を使い、保存経路を新設しない。
+  const setScale = async (choice: ScaleChoice) => {
+    if (!spec || savingScale) return
+    setSavingScale(true)
+    try {
+      const next = { ...spec, service: { ...spec.service, scale: { ...spec.service.scale, min: scaleMinFor(choice) } } }
+      const r = await window.electronAPI.cloud.saveEnv(projectDir, next)
+      if (r.ok) setSpec(r.spec)
+      else setEnvError(r.errors.join(' / '))
+    } catch (e: any) {
+      setEnvError(e?.message ?? String(e))
+    } finally { setSavingScale(false) }
   }
 
   // ── プランを確認（ドライラン） ──
@@ -943,6 +1010,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
             onEdit={openEnvFile}
             onSetTtl={setTtl}
             savingTtl={savingTtl}
+            onSetScale={setScale}
+            savingScale={savingScale}
             onRename={next => requestRename(next, false)}
             renaming={renaming}
             published={published}
@@ -1529,11 +1598,13 @@ const TTL_PRESETS: { hours: number; label: string }[] = [
 ]
 
 // ── 環境スペックの要約表示 ──
-function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onRename, renaming, published }: {
+function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScale, onRename, renaming, published }: {
   spec: CloudEnvSpec
   onEdit: () => void
   onSetTtl: (hours: number) => void
   savingTtl: boolean
+  onSetScale: (choice: ScaleChoice) => void
+  savingScale: boolean
   onRename: (nextName: string) => void
   renaming: boolean
   published: boolean
@@ -1607,8 +1678,43 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onRename, renaming, pu
         <dd className="text-ink break-all">
           port {spec.service.port} ／ <span className="font-mono">{sourceText}</span>
         </dd>
-        <dt className="text-ink-muted">scale</dt>
-        <dd className="text-ink">{spec.service.scale.min} – {spec.service.scale.max}</dd>
+        <dt className="text-ink-muted">起動</dt>
+        <dd className="text-ink">
+          {(() => {
+            // 表示は3値（cold/warm/unknown）。scaleChoice の cold への安全側フォールバックを
+            // そのまま文言に使わない——手編集等で範囲外（例: min=11）になったとき、
+            // 「課金されません」と言い切ると実物（常時11インスタンス）と食い違う嘘になる
+            // （2026-09-09 検分で発見）。保存する値（onSetScale の呼び分け）は今までどおり
+            // cold/warm の2値（scaleMinFor）。表示だけを別に判定する。
+            const display = scaleDisplay(spec.service.scale.min)
+            return (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex gap-2 text-xs">
+                  <button
+                    onClick={() => onSetScale('cold')}
+                    disabled={savingScale}
+                    className={`px-2.5 py-1 rounded border ${display === 'cold' ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}
+                  >最初のアクセスが遅くてもよい（既定・安い）</button>
+                  <button
+                    onClick={() => onSetScale('warm')}
+                    disabled={savingScale}
+                    className={`px-2.5 py-1 rounded border ${display === 'warm' ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}
+                  >すぐ返す（常時動かす）</button>
+                  {savingScale && <span className="text-ink-muted self-center">保存中…</span>}
+                </div>
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  {display === 'warm'
+                    ? <>アクセスが無い間もインスタンスが動き続けるため、<b className="text-ink">その分の料金がかかります</b>。{getTargetProfile('sakura-apprun').serviceUrl && (
+                        <> <a href={getTargetProfile('sakura-apprun').serviceUrl} className="text-sakura hover:underline">公式サイトを見る ↗</a></>
+                      )}</>
+                    : display === 'cold'
+                      ? 'アクセスが無い間は止まり、課金されません（最初のアクセスだけ起動を待ちます）。'
+                      : 'いまの設定を判断できません（env.json を確認してください）。'}
+                </p>
+              </div>
+            )
+          })()}
+        </dd>
         <dt className="text-ink-muted">バケット</dt>
         <dd className="text-ink break-all">
           {spec.persistence.objectStorage.length === 0
