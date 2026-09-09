@@ -112,6 +112,14 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
         </button>
       </div>
 
+      {/* roadmap #37: 「ロールバックと🕘履歴はどう棲み分けるのか」という質問が実際に出た
+          （同じところで他の人も迷う）。ここでしか戻らないもの・戻らないものを短く書く。 */}
+      <p className="text-[11px] text-ink-muted leading-relaxed">
+        ※ ここは<b className="text-ink">公開したもの</b>（訪問者に見えているもの）を戻します。
+        手元のファイルは変わりません（手元を戻すのは「🕘 履歴（前の状態に戻す）」です）。
+        壊れたときは、まずここで戻して被害を止めてから、直して公開し直すと安全です。
+      </p>
+
       {/* 固定されている間は、常に警告を出し続ける（訪問者には固定した版が見えていることを伝える）。 */}
       {state?.kind === 'pinned' && (
         <div className="rounded-lg border border-brand-yellow/70 bg-overlay p-3 space-y-2">

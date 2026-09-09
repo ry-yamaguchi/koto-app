@@ -60,11 +60,23 @@ async function listRegistries(zone) {
     if (!res.ok) return { zone, url, status: res.status, ok: false, raw: text.slice(0, 400) }
     const items = Array.isArray(body?.CommonServiceItems) ? body.CommonServiceItems : []
     // レジストリだけに絞る。名前は出さない（IDの下4桁だけ）。
-    const regs = items
-      .filter(i => String(i?.Provider?.Class ?? '') === 'containerregistry')
-      .map(i => String(i?.ID ?? '').slice(-4))
-      .sort()
-    return { zone, url, status: res.status, ok: true, total: items.length, registries: regs }
+    const found = items.filter(i => String(i?.Provider?.Class ?? '') === 'containerregistry')
+    const regs = found.map(i => String(i?.ID ?? '').slice(-4)).sort()
+    // 2026-09-09 追加（roadmap #36）: 「さくら側で分類できるようにする」ために、
+    // レジストリが Tags / Description / Icon を持てるのかを確かめたい。
+    // **値は出さない**（名前や説明が他人の目に触れうるため）。**キーの有無と型だけ**を出す。
+    const shape = found.length === 0 ? null : (() => {
+      const i = found[0]
+      const k = (name) => {
+        if (!(name in i)) return 'キーなし'
+        const v = i[name]
+        if (v === null) return 'null'
+        if (Array.isArray(v)) return `配列(${v.length}件)`
+        return typeof v
+      }
+      return { Name: k('Name'), Description: k('Description'), Tags: k('Tags'), Icon: k('Icon') }
+    })()
+    return { zone, url, status: res.status, ok: true, total: items.length, registries: regs, shape }
   } catch (e) {
     return { zone, url, error: e?.message ?? String(e) }
   }
@@ -85,6 +97,7 @@ for (const z of ZONES) {
   if (r.error) { line(`  ${z}: ❌ ${r.error}`); continue }
   if (!r.ok) { line(`  ${z}: ⚠️ HTTP ${r.status} / 生の応答: ${r.raw}`); continue }
   line(`  ${z}: HTTP ${r.status} / 全アイテム ${r.total}件 / レジストリ ${r.registries.length}件 [${r.registries.join(', ')}]`)
+  if (r.shape) line(`      分類に使える項目（値は出しません）: ${JSON.stringify(r.shape)}`)
 }
 if (DRY) process.exit(0)
 

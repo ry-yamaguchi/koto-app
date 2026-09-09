@@ -10,6 +10,7 @@ import SecurityCheckSection from './SecurityCheckSection'
 import UnusedFilesSection from './UnusedFilesSection'
 import TelemetryNotice from './TelemetryNotice'
 import RollbackSection from './RollbackSection'
+import ConnectionChecklist from './ConnectionChecklist'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { pinnedAfterApplyNotice } from '../../shared/apprunTraffic'
@@ -886,31 +887,17 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
             先に認証情報でAPIキーを登録してください。
           </p>
         )}
-        {/* 3 点チェック結果（GET のみの非破壊プローブ）。各行に ✓/✗ と領域名・失敗理由を表示。 */}
+        {/* 3 点チェック結果（GET のみの非破壊プローブ）。専有型 AppRunDedicatedPanel と
+            同じ ConnectionChecklist を使う（同じ形に揃える・roadmap #35・掟10）。 */}
         {connChecks && (
-          <div className="rounded-lg border border-line bg-overlay px-3 py-2 space-y-1.5">
-            {([
-              ['apprun', 'AppRun 参照'],
-              ['registry', 'コンテナレジストリ 一覧'],
-              ['billing', '請求（コスト）参照'],
-            ] as const).map(([key, label]) => {
-              const c = connChecks[key]
-              return (
-                <div key={key} className="text-xs leading-relaxed">
-                  <span className={c.ok ? 'text-brand-green font-semibold' : 'text-brand-red font-semibold'}>
-                    {c.ok ? '✓' : '✗'}
-                  </span>
-                  <span className="ml-1.5 text-ink">{label}</span>
-                  {!c.ok && c.message && (
-                    <span className="ml-2 text-[11px] text-ink-muted">{c.message}</span>
-                  )}
-                </div>
-              )
-            })}
-            <p className="text-[11px] text-ink-muted leading-relaxed pt-1">
-              ※「作成」権限は実際に作成するまで確認できません（ここでは参照の可否のみ確認）。
-            </p>
-          </div>
+          <ConnectionChecklist
+            items={[
+              { key: 'apprun', label: 'AppRun 参照', ok: connChecks.apprun.ok, message: connChecks.apprun.message },
+              { key: 'registry', label: 'コンテナレジストリ 一覧', ok: connChecks.registry.ok, message: connChecks.registry.message },
+              { key: 'billing', label: '請求（コスト）参照', ok: connChecks.billing.ok, message: connChecks.billing.message },
+            ]}
+            note="※「作成」権限は実際に作成するまで確認できません（ここでは参照の可否のみ確認）。"
+          />
         )}
         {/* 認証情報未保存など、項目別に出せない全体エラーのみ表示。 */}
         {conn === 'ng' && connMsg && (

@@ -384,6 +384,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // さくらのAppRun 専有型（roadmap #23）。段階①（下調べ・GETのみ）に加え、
     // 段階②「作る」＋④「破棄」を持つ。
     // 方式B: auth は cloud.loadKey() 等で renderer が読んだ token/secret をそのまま渡す（main には保存しない）。
+    // 接続テスト（roadmap #35）: 共用型 cloud.testConnection と同じ「チェックリスト」の形で返す。
+    testConnection: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:testConnection', auth),
     limits: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:limits', auth),
     // ワーカとロードバランサのプランをまとめて返す。
     plans: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:plans', auth),

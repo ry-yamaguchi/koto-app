@@ -8,7 +8,12 @@ import { getZones } from '../cloud/zones'
 import { createClusterFlow, teardownFlow, type ApprunDedicatedClusterSpec } from '../cloud/apprunDedicatedApply'
 import { readApprunDedicatedFs } from '../publishMetaFs'
 import type { CloudCredentials } from '../cloud/auth'
+import { SakuraCloudClient } from '../cloud/client'
+import { checkBilling, type ConnCheck } from '../cloud/connectionCheck'
 import type { IpcDeps } from './types'
+
+// 請求（コスト）参照はアカウント単位（どのゾーン経由でも可）。共用型 cloud:testConnection と同じゾーン。
+const BILLING_ZONE = 'is1a'
 
 /** renderer から渡された値が使える認証情報の形か（token/secretが非空の文字列か）。 */
 function isCreds(v: unknown): v is CloudCredentials {
@@ -27,6 +32,25 @@ function isClusterSpec(v: unknown): v is ApprunDedicatedClusterSpec {
 }
 
 export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
+  // 接続テスト（roadmap #35）＝共用型 cloud:testConnection と同じ「チェックリスト」の形に揃える。
+  // (1) 専有型API 参照（制限・プラン。GET /limits） (2) 請求（コスト）参照。
+  // どちらも GET のみ（読み取り専用・何も作らない）。
+  // レジストリはまだ専有型からのアプリ公開に対応していないため、今日の時点では確認しない
+  // （画面側の注記で案内する）。請求チェックは共用型と同じ関数を呼ぶ（判断・表示を複製しない・掟10）。
+  ipcMain.handle('apprunDedicated:testConnection', async (_, auth: unknown) => {
+    if (!isCreds(auth)) {
+      const ng: ConnCheck = { ok: false, message: 'クラウドのAPIキーが未登録です' }
+      return { ok: false, checks: { api: ng, billing: ng } }
+    }
+    const limits = await getLimits(auth)
+    const api: ConnCheck = limits.ok ? { ok: true } : { ok: false, message: limits.message }
+
+    const client = new SakuraCloudClient({ credentials: auth, dryRun: true })
+    const billing = await checkBilling(client, BILLING_ZONE)
+
+    return { ok: api.ok && billing.ok, checks: { api, billing } }
+  })
+
   // GET /limits（このプランの上限）
   ipcMain.handle('apprunDedicated:limits', async (_, auth: unknown) => {
     if (!isCreds(auth)) return NO_KEY

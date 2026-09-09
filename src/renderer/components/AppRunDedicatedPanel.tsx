@@ -4,6 +4,7 @@ import CopyButton from './CopyButton'
 import { withApprunDedicatedRecord } from '../../shared/publishMeta'
 import { readLimits, readWorkerClasses, readLbClasses, readClusters, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
 import { loadZones } from '../zonesCache'
+import ConnectionChecklist from './ConnectionChecklist'
 
 // さくらのAppRun 専有型パネル（roadmap #23）。
 //
@@ -235,6 +236,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // conn / connMsg と同じ作法。専有型API（apprunDedicated.limits・GETのみ）へ実際に疎通する。
   const [conn, setConn] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
   const [connMsg, setConnMsg] = useState('')
+  // 🔌 接続テストの内訳（roadmap #35）。共用型 AppRunPanel の connChecks と同じ形に揃える。
+  // ③「🔍 調べる」はこれとは別の4本（limits/worker/lb/clusters）を叩くので、ここは触らず
+  // null のまま——投げっぱなしの古い内訳を出し続けないよう、投げ直すたびに一旦クリアする。
+  type ConnCheck = { ok: boolean; status?: number; message?: string }
+  const [connChecks, setConnChecks] = useState<{ api: ConnCheck; billing: ConnCheck } | null>(null)
 
   const refreshKey = useCallback(async () => {
     try { setHasKey(await window.electronAPI.cloud.hasKey()) } catch { setHasKey(false) }
@@ -248,26 +254,28 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     if (!r.ok) return
     await refreshKey(); await refreshCloudKeys()
     // 使うキーを切り替えたら、前のキーで確かめた疎通結果は無効。再度確かめてもらう。
-    setConn('idle'); setConnMsg('')
+    setConn('idle'); setConnMsg(''); setConnChecks(null)
   }
 
   // 🔌 接続テスト: このキーで専有型APIへ実際に疎通する（GETのみ・何も作らない・掟4の方式Bを踏襲）。
+  // 共用型 AppRunPanel の testConnection と同じ「チェックリスト」の形に揃える（roadmap #35）:
+  // (1) 専有型API 参照（制限・プラン） (2) 請求（コスト）参照。レジストリはまだ確認しない
+  // （専有型からのアプリ公開に未対応のため。注記で案内する）。
   const testConnection = async () => {
-    setConn('testing'); setConnMsg('')
+    setConn('testing'); setConnMsg(''); setConnChecks(null)
     try {
       const auth = await window.electronAPI.cloud.loadKey()
       if (!auth || !auth.token || !auth.secret) {
         setConn('ng'); setConnMsg('さくらのクラウドAPIキーが未登録です。①で登録してください。')
         return
       }
-      const r = await window.electronAPI.apprunDedicated.limits(auth)
-      if (r.ok) {
-        setConn('ok'); setConnMsg('')
-      } else {
-        setConn('ng'); setConnMsg(r.message)
-      }
+      const r = await window.electronAPI.apprunDedicated.testConnection(auth)
+      setConnChecks(r.checks)
+      setConn(r.ok ? 'ok' : 'ng')
+      setConnMsg('')
     } catch (e: any) {
-      setConn('ng'); setConnMsg(e?.message ?? String(e))
+      setConn('ng'); setConnChecks(null)
+      setConnMsg(e?.message ?? String(e))
     }
   }
 
@@ -305,6 +313,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
   const investigate = async () => {
     setChecking(true); setCheckError(null)
+    // ③はここでの conn/connMsg 判定に使う4本（limits/worker/lb/clusters）が①の請求チェックとは
+    // 別物なので、①「🔌 接続テスト」の内訳（connChecks）は一旦クリアする（古い内訳を出し続けない）。
+    setConnChecks(null)
     try {
       // 方式B（掟4）: main には保存しない。使う瞬間に「使用中」のクラウドキーを読み、引数で渡す。
       const auth = await window.electronAPI.cloud.loadKey()
@@ -554,7 +565,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     // ここで conn/connMsg をリセットしないと、①の表示は「使用中のキー」だけ新しくなり、
     // その真下に前のキーで得た「✅ 通じました」が残ったままになる（常時課金サービスへの嘘の緑チェック）。
     const h = () => {
-      refreshKey(); refreshCloudKeys(); setConn('idle'); setConnMsg('')
+      refreshKey(); refreshCloudKeys(); setConn('idle'); setConnMsg(''); setConnChecks(null)
       // ゾーン一覧（GET /zone）もキーに紐づく。zonesCache.ts 自身のキャッシュは
       // primeZonesCache() の購読が同じイベントで捨てるが、**この画面が持っている
       // zones state は別物**で、キーを切り替えても残ったままになる（2026-09-08 検分で
@@ -625,9 +636,17 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             title={keyReady ? '' : '先に認証情報でAPIキーを登録してください'}
             className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
           >🔌 接続テスト</button>
+          {/* 事故の直し（2026-09-09検分・指摘2）: 「通じた」と「すべて確認できた」は別の事実。
+              ③「🔍 調べる」は conn だけを書き、checks（チェックリストの内訳）は null に戻す
+              （投げ直すたびに一旦クリアする、上の investigate() 参照）。ここは conn 単体ではなく
+              connChecks の有無も見て文言を変える——確認していないことを「確認できた」と言わない。 */}
           <span className="flex-1 text-xs text-right">
-            {conn === 'ok' && <span className="text-brand-green font-semibold">✅ 通じました</span>}
-            {conn === 'ng' && <span className="text-brand-yellow font-semibold">⚠️ 通じませんでした</span>}
+            {conn === 'ok' && (connChecks
+              ? <span className="text-brand-green font-semibold">✅ すべて確認できました</span>
+              : <span className="text-brand-green font-semibold">✅ 通じました</span>)}
+            {conn === 'ng' && (connChecks
+              ? <span className="text-brand-yellow font-semibold">⚠️ 一部の権限が確認できませんでした</span>
+              : <span className="text-brand-yellow font-semibold">⚠️ 通じませんでした</span>)}
             {conn === 'testing' && <span className="text-ink-secondary">確認中…</span>}
           </span>
         </div>
@@ -636,12 +655,25 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             先に認証情報でAPIキーを登録してください。
           </p>
         )}
+        {/* 🔌 接続テストの内訳。共用型 AppRunPanel と同じ ConnectionChecklist を使う
+            （同じ形に揃える・roadmap #35・掟10）。レジストリはまだ専有型からのアプリ公開に
+            対応していないため、今日の時点では確認しない（注記で案内する）。 */}
+        {connChecks && (
+          <ConnectionChecklist
+            items={[
+              { key: 'api', label: '専有型API 参照（制限・プラン）', ok: connChecks.api.ok, message: connChecks.api.message },
+              { key: 'billing', label: '請求（コスト）参照', ok: connChecks.billing.ok, message: connChecks.billing.message },
+            ]}
+            note="※ レジストリの権限は、アプリの公開に対応したときに確認します。"
+          />
+        )}
         {/* 疎通の結果: 🔌 接続テスト（このセクション）または③「🔍 調べる」のどちらの結果でも、
-            この1つの conn/connMsg に反映される（事故の直し1: 同じ意味の状態を2つ持たない）。 */}
-        {conn === 'ok' && (
+            この1つの conn/connMsg に反映される（事故の直し1: 同じ意味の状態を2つ持たない）。
+            ③の4本は内訳（connChecks）を持たないので、その場合はここで簡潔に伝える。 */}
+        {!connChecks && conn === 'ok' && (
           <p className="text-[11px] text-brand-green font-semibold leading-relaxed">✅ このキーで専有型APIに通じました</p>
         )}
-        {conn === 'ng' && (
+        {!connChecks && conn === 'ng' && (
           <>
             <p className="text-[11px] text-brand-yellow font-semibold leading-relaxed">
               ⚠️ このキーでは専有型APIに通じませんでした。
