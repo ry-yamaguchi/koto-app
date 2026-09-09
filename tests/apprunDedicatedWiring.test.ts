@@ -233,10 +233,12 @@ describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
   // 2026-09-08: zones はこのパネルから直接呼ばず、zonesCache.ts の loadZones() 経由に
   // 一元化した（起動時キャッシュの使い回し）。パネルからの直接呼び出しは6つに減り、
   // zones の実際の呼び出しは zonesCache.ts 側にあることを別途確かめる。
-  it('apprunDedicated への直接呼び出しは limits/plans/clusters/create/teardown/state の6つ（zonesはzonesCache.ts経由）', () => {
+  // 2026-09-09（roadmap #35）: ①「🔌 接続テスト」が testConnection（チェックリストの形）を
+  // 呼ぶようになり、7つに増えた。
+  it('apprunDedicated への直接呼び出しは limits/plans/clusters/create/teardown/state/testConnection の7つ（zonesはzonesCache.ts経由）', () => {
     const calls = [...panel.matchAll(/electronAPI\.apprunDedicated\.(\w+)/g)].map(m => m[1])
     expect(calls.length).toBeGreaterThan(0)
-    expect(new Set(calls)).toEqual(new Set(['limits', 'plans', 'clusters', 'create', 'teardown', 'state']))
+    expect(new Set(calls)).toEqual(new Set(['limits', 'plans', 'clusters', 'create', 'teardown', 'state', 'testConnection']))
   })
 
   it('zones の実際の呼び出しは zonesCache.ts にある（roadmap #28）', () => {
@@ -736,13 +738,15 @@ describe('事故の直し1: ①APIキーの見出し・説明文・接続テス�
     expect(panel).not.toContain('この確認に使うキー')
   })
 
-  it('🔌 接続テストのボタンがあり、apprunDedicated.limits を呼ぶ（GETのみ・何も作らない）', () => {
+  // roadmap #35: ①「🔌 接続テスト」は共用型 cloud.testConnection と同じ「チェックリスト」の形
+  // （apprunDedicated.testConnection）を呼ぶ。内訳（専有型API参照・請求参照）は main 側で組む。
+  it('🔌 接続テストのボタンがあり、apprunDedicated.testConnection を呼ぶ（GETのみ・何も作らない）', () => {
     const at = panel.indexOf('const testConnection = async () => {')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('\n  }', at)
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
-    expect(block).toContain('window.electronAPI.apprunDedicated.limits(auth)')
+    expect(block).toContain('window.electronAPI.apprunDedicated.testConnection(auth)')
     expect(panel).toContain('>🔌 接続テスト</button>')
     // ボタンは「🔑 認証情報で登録・切替」の隣（同じ行の flex コンテナ内）にある。
     const rowAt = panel.indexOf('>🔑 認証情報で登録・切替</button>')
@@ -756,12 +760,12 @@ describe('事故の直し1: ①APIキーの見出し・説明文・接続テス�
     expect(panel).toContain("useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')")
   })
 
-  it('OK なら「✅ このキーで専有型APIに通じました」、NG なら生の応答（connMsg）を ErrorBlock でそのまま出す（掟10: select-text＋コピー）', () => {
+  it('チェックリスト（connChecks）を受け取り、ok/ngをその通りに conn へ反映する（roadmap #35）', () => {
     const at = panel.indexOf('const testConnection = async () => {')
     const end = panel.indexOf('\n  }', at)
     const block = panel.slice(at, end)
-    expect(block).toContain("setConn('ok')")
-    expect(block).toContain("setConn('ng'); setConnMsg(r.message)")
+    expect(block).toContain('setConnChecks(r.checks)')
+    expect(block).toContain("setConn(r.ok ? 'ok' : 'ng')")
   })
 
   it('旧文言「疎通の確認は、下の「③ 調べる」で行います。」はもう無い（①で確かめられるようになったため）', () => {
@@ -806,27 +810,61 @@ describe('事故の直し1: apiReachable を廃止し、conn/connMsg の1組に�
     const block = panel.slice(at, end)
     // 三項（connMsg ? ErrorBlock : 平易な文）ではなく、conn === 'ng' のとき両方を描く形になっていること。
     expect(block).not.toMatch(/connMsg\s*\?\s*<ErrorBlock/)
-    const ngAt = block.indexOf("conn === 'ng' && (")
+    // "conn === 'ng' && (" だけだと、ボタン横の要約 span（{conn === 'ng' && (connChecks ? … : …)}）
+    // にも同じ部分文字列が現れ、そちらを先に拾ってしまう（掟10: 当て先が他の行にも出ないか確認する）。
+    // ここで探したいのは「!connChecks && conn === 'ng' && (」で始まる、下の説明段落。
+    const ngAt = block.indexOf("!connChecks && conn === 'ng' && (")
     expect(ngAt).toBeGreaterThan(0)
     const ngBlock = block.slice(ngAt, ngAt + 400)
     expect(ngBlock).toContain('⚠️ このキーでは専有型APIに通じませんでした。')
     expect(ngBlock).toContain('<ErrorBlock msg={connMsg} />')
   })
 
-  it('ボタン横の span に、conn===ok で「✅ 通じました」、conn===ng で「⚠️ 通じませんでした」を出す（共用型 AppRunPanel と同じ作法）', () => {
+  // roadmap #35: 共用型 AppRunPanel と全く同じ文言に揃えた（旧: 専有型だけ「✅ 通じました」の
+  // 1本だった。「なぜ少ないのか」が分からないという指摘を受け、内訳（チェックリスト）を出すのに
+  // 合わせて要約の文言も揃える）。
+  //
+  // 2026-09-09 検分・指摘2で直した点: ③「🔍 調べる」も conn を書くため、この要約が
+  // conn だけを見ていると「請求（コスト）参照を一度も確認していないのに『✅ すべて
+  // 確認できました』と表示される」という嘘が生まれる。「通じた」（conn）と「すべて
+  // 確認できた」（checks＝connChecks）は別の事実なので、要約は connChecks の有無でも
+  // 文言を変える: checks があれば（🔌 接続テスト経由）従来どおりの文言、無ければ
+  // （③ 調べる経由）「確認できた」と言わない簡潔な文言にする。
+  it('ボタン横の span は、connChecks の有無で文言を変える（checksあり:「すべて確認できました」／checksなし:「通じました」。確認していないことを確認できたと言わない）', () => {
     const rowAt = panel.indexOf('>🔌 接続テスト</button>')
     expect(rowAt).toBeGreaterThan(0)
     const spanEnd = panel.indexOf('</span>\n        </div>', rowAt)
     expect(spanEnd).toBeGreaterThan(rowAt)
     const block = panel.slice(rowAt, spanEnd)
-    expect(block).toContain("conn === 'ok' && <span className=\"text-brand-green font-semibold\">✅ 通じました</span>")
-    expect(block).toContain("conn === 'ng' && <span className=\"text-brand-yellow font-semibold\">⚠️ 通じませんでした</span>")
+    // conn==='ok' の分岐は connChecks の三項になっている（checksが無ければ「確認できた」と言わない）。
+    const okAt = block.indexOf("conn === 'ok' && (connChecks")
+    expect(okAt).toBeGreaterThan(0)
+    const okBlock = block.slice(okAt, block.indexOf(')}', okAt))
+    expect(okBlock).toContain('✅ すべて確認できました')
+    expect(okBlock).toContain('✅ 通じました')
+    const ngAt = block.indexOf("conn === 'ng' && (connChecks")
+    expect(ngAt).toBeGreaterThan(0)
+    const ngBlock = block.slice(ngAt, block.indexOf(')}', ngAt))
+    expect(ngBlock).toContain('⚠️ 一部の権限が確認できませんでした')
+    expect(ngBlock).toContain('⚠️ 通じませんでした')
+  })
+
+  it('③「🔍 調べる」（investigate）は、connChecks を null に戻すだけで、書き込みはしない（確認していないので）', () => {
+    const at = panel.indexOf('const investigate = async () => {')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, panel.indexOf('const doCreate = async', at))
+    // investigate() の中で connChecks への書き込みは setConnChecks(null) の1回だけ
+    // （途中でチェックリストを作って書き込む処理を足していないこと）。
+    const writes = [...block.matchAll(/setConnChecks\(([^)]*)\)/g)].map(m => m[1])
+    expect(writes).toEqual(['null'])
   })
 
   it('未登録（!keyReady）のときの案内文がある（共用型 AppRunPanel 849-853 行あたりと同じ）', () => {
     const rowAt = panel.indexOf('>🔌 接続テスト</button>')
     expect(rowAt).toBeGreaterThan(0)
-    const block = panel.slice(rowAt, rowAt + 700)
+    // 2026-09-09 検分・指摘2の直しで、ボタン直後に要約 span の説明コメントが増えた分、
+    // {!keyReady && ( までの距離が伸びている。窓を広げる。
+    const block = panel.slice(rowAt, rowAt + 1100)
     expect(block).toContain('{!keyReady && (')
     expect(block).toContain('先に認証情報でAPIキーを登録してください。')
   })

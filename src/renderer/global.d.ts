@@ -648,6 +648,16 @@ interface Window {
     // 段階②「作る」＋④「破棄」を持つ。
     // auth は cloud.loadKey() 等で読んだ token/secret をそのまま渡す（方式B・main には保存しない）。
     apprunDedicated: {
+      // 接続テスト（roadmap #35）＝共用型 cloud.testConnection と同じ「チェックリスト」の形。
+      // (1) 専有型API 参照（制限・プラン） (2) 請求（コスト）参照。レジストリはまだ確認しない
+      // （専有型からのアプリ公開に未対応のため。画面側の注記で案内する）。
+      testConnection(auth: { token: string; secret: string }): Promise<{
+        ok: boolean
+        checks: {
+          api: { ok: boolean; status?: number; message?: string }
+          billing: { ok: boolean; status?: number; message?: string }
+        }
+      }>
       limits(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
       // ワーカとロードバランサのプランをまとめて返す（それぞれ独立に成否を持つ）。
       plans(auth: { token: string; secret: string }): Promise<{

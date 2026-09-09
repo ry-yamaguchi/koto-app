@@ -15,7 +15,9 @@ import {
   clearRegistryCredentials,
   registryServer,
 } from '../cloud/registry-auth'
-import { SakuraCloudClient, pickContainerRegistries, extractRegistryId, extractAppUrl, extractLatestBill, extractAccountId, apiErrorMessage } from '../cloud/client'
+import { SakuraCloudClient, pickContainerRegistries, extractAppUrl, extractLatestBill, extractAccountId, apiErrorMessage } from '../cloud/client'
+import { provisionRegistryWithMeta } from '../cloud/registryProvision'
+import { checkBilling } from '../cloud/connectionCheck'
 import { applyPlan } from '../cloud/apply'
 import { performRollback } from '../cloud/rollback'
 import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapter'
@@ -352,31 +354,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     }
 
     // (3) 請求（コスト）参照。auth-status → accountId → bill の順に GET。
-    let billing: Check
-    try {
-      const st = await client.getAuthStatus(zone)
-      if (st.dryRun === false && !st.ok) {
-        billing = { ok: false, status: st.status, message: `アカウント情報の取得に失敗（HTTP ${st.status}）` }
-      } else {
-        const accountId = st.dryRun === false ? extractAccountId(st.data) : null
-        if (!accountId) {
-          billing = { ok: false, message: 'アカウントIDを取得できませんでした' }
-        } else {
-          const b = await client.getBillByContract(zone, accountId)
-          if (b.dryRun === false && b.ok) {
-            billing = { ok: true, status: b.status }
-          } else {
-            billing = {
-              ok: false,
-              status: b.dryRun === false ? b.status : undefined,
-              message: `請求の取得に失敗 HTTP ${b.dryRun === false ? b.status : '?'}`,
-            }
-          }
-        }
-      }
-    } catch (e: any) {
-      billing = { ok: false, message: e?.message ?? String(e) }
-    }
+    // 専有型（apprunDedicated:testConnection）と判断・表示を複製しない（掟10・roadmap #35）。
+    const billing: Check = await checkBilling(client, zone)
 
     return { ok: apprun.ok && registry.ok && billing.ok, checks: { apprun, registry, billing } }
   })
@@ -493,24 +472,21 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         return { ok: false, message: '認証に失敗しました（クラウドのアクセストークン/シークレットを確認してください）' }
       }
 
+      // 分類（Description/Tags）が実際に反映されたか（roadmap #36）。作成しなかった
+      // （既存レジストリを再利用した）ときは null のまま＝記録を上書きしない。
+      let registryMetaOutcome: boolean | null = null
       if (!registryId) {
-        // 無ければ作成。サブドメイン名が予約済み（直前に削除した等）の場合はサフィックスを付けて再試行する。
-        let r = await client.createContainerRegistry(region, { name: label, subdomainLabel: label })
-        if (r.dryRun === false && !r.ok && /利用されて|exist|重複|conflict/i.test(apiErrorMessage(r.data))) {
-          // 例: flatearth が予約中 → flatearth-a1b2 で作り直す（削除後の名前再利用クールダウン回避）。
-          label = (label.slice(0, 22).replace(/-+$/, '')) + '-' + randomBytes(2).toString('hex')
-          r = await client.createContainerRegistry(region, { name: label, subdomainLabel: label })
-        }
-        if (r.dryRun === false && r.ok) {
-          registryId = extractRegistryId(r.data)
-          created = true
-        } else {
-          const detail = r.dryRun === false ? apiErrorMessage(r.data) : ''
-          const msg = r.dryRun === false
-            ? `レジストリ作成に失敗しました（HTTP ${r.status}）${detail ? ' — ' + detail : ''}`
-            : '予期しないドライラン応答'
-          return { ok: false, message: msg }
-        }
+        // 無ければ作成。サブドメイン名が予約済み（直前に削除した等）の場合はサフィックスを付けて
+        // 作り直す・分類つき作成の失敗時は分類を外して1回だけ再試行する・成功しても読み直して
+        // 分類が実際に反映されたかを確かめる——これらは registryProvision.ts に一元化してある
+        // （掟10。「次回以降は分かっている前提で振る舞う」の判断は既存の記録を見て決める）。
+        const metaKnownUnsupported = recordedState?.meta?.registryMetaSupported === false
+        const res = await provisionRegistryWithMeta(client, region, label, baseName, metaKnownUnsupported)
+        if (!res.ok) return { ok: false, message: res.message }
+        registryId = res.id
+        label = res.label
+        created = true
+        registryMetaOutcome = res.metaSupported
       }
       if (!registryId) return { ok: false, message: 'レジストリのIDを取得できませんでした（レスポンス形を要確認）' }
 
@@ -544,7 +520,16 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           // **新しく作ったなら、借り物の印は落とす**（2026-08-25）。
           // 引き継ぎで付けた印を残したままにすると、Koto が作った置き場なのに
           // 破棄のチェックが既定オフになり、月220円が止まらない。
-          const meta = { ...st.meta, registryName: label, ...(created ? { registryAdopted: false } : {}) }
+          // registryMetaOutcome が null（既存レジストリを再利用・分かっていない）のときは
+          // 記録に触れない——分かっていないことを false と書いてしまうと、次回から
+          // 分類を試さなくなる（roadmap #36「反映されていなければ、その事実を記録する」の裏返し
+          // として、分かっていないことも黙って false 扱いにしない）。
+          const meta = {
+            ...st.meta,
+            registryName: label,
+            ...(created ? { registryAdopted: false } : {}),
+            ...(registryMetaOutcome !== null ? { registryMetaSupported: registryMetaOutcome } : {}),
+          }
           saveCloudState(projectDir, { ...st, meta })
         }
       } catch { /* 記録できなくても公開は続行（破棄時に「対象不明」として安全側に倒れる） */ }

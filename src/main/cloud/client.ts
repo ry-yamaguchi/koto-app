@@ -9,6 +9,7 @@
 //   正確なURLは実APIキーでの疎通時に確定する前提。下記の定数を1箇所にまとめ、
 //   「※実APIキーでの疎通時に要確認」とコメントしてある。
 
+import { createHash } from 'crypto'
 import type { CloudCredentials } from './auth'
 import type { EnvSpec } from './spec'
 
@@ -429,14 +430,23 @@ export class SakuraCloudClient {
     return this._send('GET', this.iaasUrl(zone, COMMONSERVICEITEM_PATH))
   }
 
-  /** コンテナレジストリを作成。POST。dryRun時は実行せず要求を返す。push用ユーザーは別途 addRegistryUser で追加。 */
-  async createContainerRegistry(zone: string, opts: { name: string; subdomainLabel: string }): Promise<RequestResult> {
+  /** コンテナレジストリを作成。POST。dryRun時は実行せず要求を返す。push用ユーザーは別途 addRegistryUser で追加。
+   *  meta（Description/Tags）は任意（roadmap #36）。 */
+  async createContainerRegistry(zone: string, opts: { name: string; subdomainLabel: string; meta?: RegistryMeta }): Promise<RequestResult> {
     return this._send('POST', this.iaasUrl(zone, COMMONSERVICEITEM_PATH), buildCreateRegistryBody(opts))
   }
 
   /** コンテナレジストリを削除（DELETE /commonserviceitem/{id}）。レジストリ・ユーザー・イメージごと消える。 */
   async deleteContainerRegistry(zone: string, id: string): Promise<RequestResult> {
     return this._send('DELETE', this.iaasUrl(zone, `${COMMONSERVICEITEM_PATH}/${encodeURIComponent(id)}`))
+  }
+
+  /** 単一のコンテナレジストリ（CommonServiceItem）を取得。GET /commonserviceitem/{id}。
+   *  作成時に添えた Description/Tags が実際に反映されたかを、作成後に読み直して確かめるために使う
+   *  （roadmap #36。「成功」と読んだ応答は結果を確かめるまで成功ではない・掟10）。
+   *  ※実APIキーでの疎通時に要確認（一覧・削除と同じパス構成からの類推）。 */
+  async getContainerRegistry(zone: string, id: string): Promise<RequestResult> {
+    return this._send('GET', this.iaasUrl(zone, `${COMMONSERVICEITEM_PATH}/${encodeURIComponent(id)}`))
   }
 
   /** 認証状態（アカウント情報）を取得。billing の accountID を得るために使う。GET。
@@ -468,10 +478,63 @@ export class SakuraCloudClient {
   }
 }
 
+/** レジストリ作成時に添える「分類」（説明・タグ）。roadmap #36。 */
+export type RegistryMeta = { description: string; tags: string[] }
+
+/**
+ * プロジェクト名から、レジストリのタグに使える安全な文字列を作る（純関数）。
+ *
+ * Tags に許される文字種は未確認（掟1）。素性の分からない文字（記号・空白・非ASCII）を
+ * ハイフンへ落とし、連続ハイフンをまとめ、前後のハイフンを削り、長さを詰める。
+ *
+ * ⚠️ 結果が空になった場合（日本語・絵文字だけの名前など）は、単に 'project' へ潰さない
+ * （2026-09-09 検分・指摘4）。**日本語名の複数プロジェクトが全部同じタグになり、分類に
+ * ならなくなる**ため、名前から決まる短い識別子を足す。**同じ名前なら常に同じ結果**
+ * （決定的）にする——Math.random() や Date.now() は使わない（呼ぶたびに違う値になり、
+ * 同じプロジェクトの再作成でタグが変わってしまう）。
+ */
+function safeRegistryTag(name: string): string {
+  const collapsed = (name ?? '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+  if (collapsed) return collapsed.slice(0, 32)
+  const hash = createHash('sha1').update(name ?? '', 'utf-8').digest('hex').slice(0, 8)
+  return `project-${hash}`
+}
+
+/**
+ * レジストリ作成時に添える説明とタグを組み立てる（純関数・テスト対象。roadmap #36）。
+ *
+ * ── なぜ切り出したか ──────────────────────────────────────────────────
+ * 「作るときに Description/Tags を設定できるか」は未確認（掟1）。中身の組み立てだけを
+ * 純関数として切り出し、実際に反映されるかどうかの確認（registryProvision.ts）とは
+ * 独立にテストできる形にする。**作成日は入れない**（Date.now 相当を本文に混ぜると
+ * テストが不安定になる。必要なら呼び出し側で別途扱う）。
+ */
+/**
+ * 文字列を「文字（Unicodeコードポイント）単位」で先頭 n 個に切り詰める。
+ *
+ * ⚠️ `.slice(0, n)` は UTF-16 コード単位で切るため、絵文字等のサロゲートペアの
+ * 真ん中で切れることがある（2026-09-09 検分・指摘5。199文字級＋絵文字の名前で実際に
+ * 孤立サロゲートで終わる説明文が作られた）。`Array.from` はサロゲートペアを1文字として
+ * 数えるため、要素単位で切れば必ずペアの外側で切れる。
+ */
+function takeChars(s: string, n: number): string {
+  return Array.from(s).slice(0, n).join('')
+}
+
+export function buildRegistryMeta(projectName: string): RegistryMeta {
+  const name = (projectName ?? '').trim() || '(無題)'
+  return {
+    description: takeChars(`Koto が作成 / プロジェクト: ${name}`, 200),
+    tags: ['koto', safeRegistryTag(name)],
+  }
+}
+
 /** コンテナレジストリ作成リクエストボディ（※実APIキーでの疎通時に要確認）。
  *  さくらのクラウド API（CommonServiceItem）の形に合わせる。AccessLevel は
- *  'readwrite'|'readonly'|'none'（匿名アクセスの既定。push は別途ユーザー権限で行う）。 */
-export function buildCreateRegistryBody(opts: { name: string; subdomainLabel: string }): unknown {
+ *  'readwrite'|'readonly'|'none'（匿名アクセスの既定。push は別途ユーザー権限で行う）。
+ *  meta（Description/Tags）は任意。渡されなければ従来どおり Name のみのボディになる
+ *  （roadmap #36: 反映されるかは未確認のため、失敗時に外して再試行できるよう任意にしてある）。 */
+export function buildCreateRegistryBody(opts: { name: string; subdomainLabel: string; meta?: RegistryMeta }): unknown {
   // 実APIの検証より判明:
   //  - registry_name（サブドメインラベル）は Status.registry_name（小文字キー）。
   //  - public（公開範囲: none/readonly）は Settings.ContainerRegistry.public。
@@ -481,6 +544,7 @@ export function buildCreateRegistryBody(opts: { name: string; subdomainLabel: st
   return {
     CommonServiceItem: {
       Name: opts.name,
+      ...(opts.meta ? { Description: opts.meta.description, Tags: opts.meta.tags } : {}),
       Status: { registry_name: opts.subdomainLabel },
       Provider: { Class: CONTAINER_REGISTRY_CLASS },
       Settings: { container_registry: cr, ContainerRegistry: cr },
@@ -554,4 +618,21 @@ export function extractRegistryId(data: unknown): string | null {
   const d = data as any
   const id = d?.CommonServiceItem?.ID ?? d?.CommonServiceItem?.id ?? d?.ID ?? d?.id
   return id != null ? String(id) : null
+}
+
+/**
+ * 単一のコンテナレジストリ取得レスポンス（getContainerRegistry）から、
+ * 作成時に送った Description/Tags が実際に反映されているかを判定する（純関数・roadmap #36）。
+ *
+ * 「作成が成功しても、それだけで『付いた』と思わない」（掟10）ための読み直し判定。
+ * Description は完全一致、Tags は期待したタグがすべて含まれているか（順序・件数は問わない）で見る。
+ */
+export function extractRegistryMetaApplied(data: unknown, expected: RegistryMeta): boolean {
+  const d = data as any
+  const item = d?.CommonServiceItem ?? d?.commonserviceitem ?? d
+  const desc = item?.Description ?? item?.description
+  const tags = item?.Tags ?? item?.tags
+  const descOk = typeof desc === 'string' && desc === expected.description
+  const tagsOk = Array.isArray(tags) && expected.tags.every(t => tags.includes(t))
+  return descOk && tagsOk
 }
