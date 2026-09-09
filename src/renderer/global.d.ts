@@ -496,6 +496,8 @@ interface Window {
           project: string | null
           dir: string | null
           monthlyYen: number
+          /** `apprun-app` のみ意味を持つ最小スケール。読み取れなければ null（0と決めつけない）。 */
+          scaleMin: number | null
           note: string
         }>
         totalYen?: number

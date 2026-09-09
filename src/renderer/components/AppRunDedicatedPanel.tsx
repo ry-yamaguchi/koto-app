@@ -204,6 +204,55 @@ export function priceSummary(
   return { text: `${workerPart} ＋ ${lbPart} ＝ 月額 ${total.toLocaleString('ja-JP')}円`, totalYen: total }
 }
 
+// ── ⑤ 直前の簡易構成図（Ryosuke さん要望「クラスタを作成するボタンの上に、簡易的な構成を
+// 示せないか」）。**自前の図形（箱と文字）で描く**——さくらの公式アイコンは、ガイドラインが
+// 「アイコンそのものの再配布」を禁じており、非公式ツールが画面に埋め込むと公認と誤解させうる
+// ため使わない（承認済みの方針）。SVGや画像は使わない・CSSの枠と文字だけで組む。
+export type ClusterDiagramInput = {
+  clusterName: string
+  zone: string
+  ports: { port: number; protocol: 'http' | 'https' }[]
+  /** 選択中のワーカプランの表示名（未選択・未確定なら null）。 */
+  workerPlanName: string | null
+  minNodes: number
+  /** 選択中のロードバランサプランの表示名（未選択・未確定なら null）。 */
+  lbPlanName: string | null
+  /** priceSummary(...).text をそのまま渡す（**計算を複製しない**・掟10）。
+   *  料金表に無いプランのときは、この中の「月額を出せません」がそのまま出る。 */
+  priceText: string
+}
+
+const DIAGRAM_UNSET = '（未入力）'
+
+/**
+ * ⑤「クラスタを作成する」ボタンのすぐ上に出す構成図の行を組み立てる（テスト対象の純関数）。
+ * **入力が未確定のところは「（未入力）」と出す**（推測で埋めない・掟1）。
+ * 月額は自分で計算しない——呼び出し側が渡す priceSummary の text をそのまま使う。
+ */
+export function buildClusterDiagram(input: ClusterDiagramInput): { lines: string[]; total: string } {
+  const name = input.clusterName.trim() || DIAGRAM_UNSET
+  // ⚠️ 空文字は「（未入力）」に倒す（2026-09-09 検分で発見）。`?? DIAGRAM_UNSET` は
+  // null/undefined しか拾わないため、プラン名が '' のときは〈〉と出てしまっていた。
+  const worker = input.workerPlanName?.trim() || DIAGRAM_UNSET
+  const lb = input.lbPlanName?.trim() || DIAGRAM_UNSET
+  const zone = input.zone.trim() || DIAGRAM_UNSET
+  const nodes = Number.isInteger(input.minNodes) && input.minNodes >= 1 ? `${input.minNodes}台` : DIAGRAM_UNSET
+  // ⚠️ 「+ ポートを追加」直後は {port:0} が積まれる（未入力の意味）。押した直後の図に
+  // 「0/http」という、利用者が入れていない値を設定値として見せない（2026-09-09 検分で発見）。
+  const ports = input.ports.length > 0
+    ? input.ports.map(p => p.port > 0 ? `${p.port}/${p.protocol}` : DIAGRAM_UNSET).join(', ')
+    : DIAGRAM_UNSET
+  return {
+    lines: [
+      `クラスタ〈${name}〉`,
+      `└ オートスケーリンググループ　ワーカ〈${worker}〉× ${nodes}`,
+      `└ ロードバランサ　　　　　　　〈${lb}〉`,
+      `ゾーン〈${zone}〉／ 共有セグメント ／ 公開ポート〈${ports}〉`,
+    ],
+    total: `合計 ${input.priceText}`,
+  }
+}
+
 export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: Props) {
   const metaPath = `${projectDir}/.sakuraide.json`
 
@@ -468,6 +517,17 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const selectedWorkerPlan = (workerPlans ?? []).find(p => p.path === selectedWorkerPath) ?? null
   const selectedLbPlan = (lbPlans ?? []).find(p => p.path === selectedLbPath) ?? null
   const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes)
+  // ⑤ボタンのすぐ上に出す簡易構成図（いま選んでいる内容がそのまま反映される）。
+  // 表示名は他の一覧（ワーカ/LBプランの <select>）と同じフォールバック（name ?? path）に揃える。
+  const diagram = buildClusterDiagram({
+    clusterName,
+    zone: effectiveZone,
+    ports,
+    workerPlanName: selectedWorkerPlan ? (selectedWorkerPlan.name ?? selectedWorkerPlan.path) : null,
+    minNodes,
+    lbPlanName: selectedLbPlan ? (selectedLbPlan.name ?? selectedLbPlan.path) : null,
+    priceText: price.text,
+  })
 
   // 押す前にまとめて確かめる（掟5: 破壊操作は確認ダイアログ。ここは「常時課金の開始」という
   // 意味で同じ強さの確認を挟む）。入力が揃っていない間はボタンを押せない。
@@ -1075,8 +1135,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               />
             </div>
 
-            <div className="rounded-lg border border-line bg-overlay p-3">
-              <p className="text-xs text-ink select-text">{price.text}</p>
+            {/* 簡易構成図（いま選んでいる内容がそのまま反映される・自前の枠と文字のみ）。
+                月額はここで計算し直さない——priceSummary の text をそのまま使う（掟10）。 */}
+            <div className="rounded-lg border border-line bg-overlay p-3 space-y-0.5">
+              <p className="font-mono text-[11px] leading-relaxed text-ink select-text whitespace-pre-wrap">{diagram.lines.join('\n')}</p>
+              <p className="text-xs font-semibold text-ink select-text pt-1.5 mt-1 border-t border-line-soft">{diagram.total}</p>
             </div>
 
             {formError && <p className="text-xs text-brand-yellow leading-relaxed">⚠️ {formError}</p>}
