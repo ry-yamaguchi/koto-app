@@ -60,10 +60,71 @@ export function readLbClasses(data: unknown): ApprunDedicatedPlanRow[] {
 }
 
 // ── GET /clusters ────────────────────────────────────────────────────
-// 成功時: { "clusters": [ … ] }
+// 成功時: { "clusters": [ { "clusterID": string, "created": integer, "name": string } ], "nextCursor": … }
 export function readClusters(data: unknown): unknown[] {
   const list = (data as any)?.clusters
   return Array.isArray(list) ? list : []
+}
+
+/**
+ * GET /clusters の行を { clusterID, name } に絞って読む（バッチ1・D: 作成応答が取れなかったとき
+ * 名前で探すのに使う）。**readClusters と同じ配列（data.clusters）を見る**——別のキーを当てない。
+ * clusterID/name のどちらかが無い行は捨てる（形が違えば黙って拾わない）。
+ */
+export function readClusterRows(data: unknown): { clusterID: string; name: string }[] {
+  const out: { clusterID: string; name: string }[] = []
+  for (const item of readClusters(data)) {
+    const d = item as any
+    if (typeof d?.clusterID === 'string' && typeof d?.name === 'string') {
+      out.push({ clusterID: d.clusterID, name: d.name })
+    }
+  }
+  return out
+}
+
+// ── GET /clusters/{id}/asg ───────────────────────────────────────────
+// 成功時: { "autoScalingGroups": [ { "autoScalingGroupID", "name", "deleting", "minNodes",
+//   "maxNodes", "workerServiceClassPath", "zone", … } ], "nextCursor": … }
+/**
+ * asgID/name のどちらかが無い行は捨てる。**deleting は boolean のときだけその値、それ以外は
+ * null（分からない）**——readZones の IsDummy と同じ方針（分からないものを本物/削除済みに倒さない）。
+ */
+export function readAsgRows(data: unknown): { asgID: string; name: string; deleting: boolean | null }[] {
+  const list = (data as any)?.autoScalingGroups
+  if (!Array.isArray(list)) return []
+  const out: { asgID: string; name: string; deleting: boolean | null }[] = []
+  for (const item of list) {
+    const d = item as any
+    if (typeof d?.autoScalingGroupID === 'string' && typeof d?.name === 'string') {
+      out.push({
+        asgID: d.autoScalingGroupID,
+        name: d.name,
+        deleting: typeof d?.deleting === 'boolean' ? d.deleting : null,
+      })
+    }
+  }
+  return out
+}
+
+// ── GET /clusters/{id}/asg/{asgId}/load_balancers ───────────────────
+// 成功時: { "loadBalancers": [ { "loadBalancerID", "name", "deleting", "created",
+//   "serviceClassPath" } ], "nextCursor": … }
+/** loadBalancerID/name のどちらかが無い行は捨てる。deleting は boolean のときだけその値、それ以外は null。 */
+export function readLoadBalancerRows(data: unknown): { loadBalancerID: string; name: string; deleting: boolean | null }[] {
+  const list = (data as any)?.loadBalancers
+  if (!Array.isArray(list)) return []
+  const out: { loadBalancerID: string; name: string; deleting: boolean | null }[] = []
+  for (const item of list) {
+    const d = item as any
+    if (typeof d?.loadBalancerID === 'string' && typeof d?.name === 'string') {
+      out.push({
+        loadBalancerID: d.loadBalancerID,
+        name: d.name,
+        deleting: typeof d?.deleting === 'boolean' ? d.deleting : null,
+      })
+    }
+  }
+  return out
 }
 
 // ── 作成応答からのID取り出し ──────────────────────────────────────────
@@ -90,11 +151,10 @@ export function readLoadBalancerId(data: unknown): string | null {
 //     "Zones": [ { "Index":0, "ID":21001, "DisplayOrder":20021001, "Name":"tk1a",
 //       "Description":"東京第1ゾーン", "IsDummy":false, "Region": {...} }, … ] }
 // VNCProxy / FTPServer / Settings / CreatedAt 等、表に無い他のキーは使わない（5-8 と同じ方針）。
-// ただし **実測できたのは Total=6 件中、先頭3件（tk1a/tk1b/is1a）だけ**（旧 probe-zones.mjs が
-// 生JSONを4000字で切っていたため。docs/apprun-dedicated-plan.md 5-9）。残り3件の IsDummy が
-// 実際どんな形で返るかは**未実測**。だからこそ「boolean でなければ分からない」という
-// 下の読み方が要る（2026-09-08 検分で発見・修理。それまでは boolean でなければ false＝本物に
-// 倒しており、応答の形が変われば Sandbox 等の見せかけのゾーンが選択式の既定になり得た）。
+// 2026-09-08 に6件すべて実測（docs/apprun-dedicated-plan.md 5-9）。tk1v（Sandbox）のみ
+// IsDummy:true。boolean 以外を null にするのは将来形が変わったときの安全側
+// （2026-09-08 検分で発見・修理。それまでは boolean でなければ false＝本物に倒しており、
+// 応答の形が変われば Sandbox 等の見せかけのゾーンが選択式の既定になり得た）。
 export type ZoneRow = { name: string; description: string | null; isDummy: boolean | null; displayOrder: number | null }
 
 /**
@@ -104,6 +164,22 @@ export type ZoneRow = { name: string; description: string | null; isDummy: boole
  * にする（「分からないものを本物（false）に倒さない」。並べ替え・フィルタはしない。
  * 「本物だと分かっているものだけ選ばせる」判断は使う側＝selectableZones が行う）。
  */
+/**
+ * data が「GET /zone の成功応答の形」かどうか（O・2026-09-10 レビューの修理・バッチ3）。
+ * `Zones` が配列で、かつ `Count`/`Total`（どちらか一方でよい）が数値であることを見る。
+ * **200 が返っても、この形でなければ readZones は空配列を返すだけ**——呼び出し側
+ * （zonesCache.ts）はそれを「取得できたが0件」と区別できず、無言で自由入力に戻っていた。
+ * ここで形そのものを判定できるようにし、呼び出し側が「取得失敗（形が想定と違う）」を
+ * 正直に出せるようにする（推測で0件に倒さない・掟1と同じ方針）。
+ */
+export function isZonesShape(data: unknown): boolean {
+  const d = data as any
+  if (!d || typeof d !== 'object') return false
+  if (!Array.isArray(d.Zones)) return false
+  if (typeof d.Count !== 'number' && typeof d.Total !== 'number') return false
+  return true
+}
+
 export function readZones(data: unknown): ZoneRow[] {
   const list = (data as any)?.Zones
   if (!Array.isArray(list)) return []
@@ -119,6 +195,17 @@ export function readZones(data: unknown): ZoneRow[] {
     })
   }
   return out
+}
+
+// ── 一覧応答の続きキー（N・2026-09-10 レビューの修理・バッチ3） ─────────────────────
+// 原本（OpenAPI v1.4.0）の一覧応答（GET /clusters・…/asg・…/load_balancers）の続きキーは
+// **`nextCursor` だけ**。呼び出し側（AppRunDedicatedPanel.tsx）が `nextCursor ?? cursor ?? next`
+// と複数のキーを順に試していた——これは 5-8 の事故（推測キーで応答を読む）とまったく同じ形の
+// 危うさなので、他の一元化した読み手と同じくここへ集約する。**`nextCursor` 以外は一切見ない。**
+/** data.nextCursor が非空の文字列のときだけそれを返す。それ以外（欠落・空文字・別の型）は null（続きなし扱い）。 */
+export function readNextCursor(data: unknown): string | null {
+  const v = (data as any)?.nextCursor
+  return typeof v === 'string' && v.length > 0 ? v : null
 }
 
 // ── 失敗時の応答: { "status": …, "title": … } ─────────────────────────

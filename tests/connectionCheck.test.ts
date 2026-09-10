@@ -59,6 +59,29 @@ describe('checkBilling（純ロジック・偽クライアント）', () => {
     expect(r.status).toBe(500)
   })
 
+  // P（2026-09-10 レビューの修理・バッチ3）: 失敗時の応答本文（apiErrorMessage）を message に
+  // 添える。直す前は HTTPステータスだけで、応答本文を捨てていた（共用型のレジストリ項目と
+  // 扱いが揃っていなかった）。
+  it('auth-status の失敗時、応答本文（apiErrorMessage）を message に添える', async () => {
+    const client: BillingClient = {
+      getAuthStatus: async () => fail(401, { error_msg: '認証エラーです' }),
+      getBillByContract: async () => ok({}),
+    }
+    const r = await checkBilling(client, 'is1a')
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('認証エラーです')
+  })
+
+  it('bill の失敗時、応答本文（apiErrorMessage）を message に添える', async () => {
+    const client: BillingClient = {
+      getAuthStatus: async () => ok({ Account: { ID: 'acc-1' } }),
+      getBillByContract: async () => fail(500, { error_msg: '請求情報を取得できません' }),
+    }
+    const r = await checkBilling(client, 'is1a')
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('請求情報を取得できません')
+  })
+
   it('例外が飛んでも ok:false で返す（呼び出し元を巻き込まない）', async () => {
     const client: BillingClient = {
       getAuthStatus: async () => { throw new Error('network down') },

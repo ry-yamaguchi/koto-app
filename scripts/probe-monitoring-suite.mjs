@@ -26,6 +26,10 @@
 //   SAKURA_TOKEN='...' SAKURA_SECRET='...' node scripts/probe-monitoring-suite.mjs
 //
 // ⚠️ **このスクリプトは GET しか行わない。** 何も作らず、何も変えず、課金も発生しない。
+//
+// ⚠️ 資格情報は画面に出さない。**出力**を貼るのは安全。
+// ⚠️ ただし**実行したコマンドそのものを貼らないこと**（環境変数に実物が入る）。
+//    貼るのは区切り線から下の出力だけでよい。
 
 const ZONE = process.env.SAKURA_ZONE || 'is1a'
 const API = `https://secure.sakura.ad.jp/cloud/zone/${ZONE}/api/monitoring/1.0`
@@ -52,9 +56,31 @@ async function get(path) {
   return { ok: res.ok, status: res.status, data, text }
 }
 
+// T（2026-09-10 レビューの修理・バッチ3）: このスクリプトは生の応答を丸ごと出す（③④⑤が核心の
+// 検証のため、形を削ると意味が無い）。ただし account_id / resource_id / id は他人に見せる可能性
+// のある出力に実アカウントの値のまま載ってしまうため、**値だけ**を下4桁以外 `*` に伏せる
+// （キー・件数・配列の長さなど「形」は一切削らない。probe-registry-zone.mjs の
+// 「件数とIDの下4桁だけを出す」と同じ考え方）。
+function maskTail(s) {
+  return s.length <= 4 ? '*'.repeat(s.length) : '*'.repeat(s.length - 4) + s.slice(-4)
+}
+const ID_KEY_RE = /^(account_id|resource_id|id)$/i
+function redactIds(value) {
+  if (Array.isArray(value)) return value.map(redactIds)
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = ID_KEY_RE.test(k) && (typeof v === 'string' || typeof v === 'number') ? maskTail(String(v)) : redactIds(v)
+    }
+    return out
+  }
+  return value
+}
+
 function dump(label, r) {
   console.log(`  ${c.d(label)} → HTTP ${r.status}`)
-  const body = typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2)
+  const redacted = typeof r.data === 'string' ? r.data : redactIds(r.data)
+  const body = typeof redacted === 'string' ? redacted : JSON.stringify(redacted, null, 2)
   console.log((body ?? '').split('\n').map(l => '    ' + l).join('\n').slice(0, 3000))
 }
 

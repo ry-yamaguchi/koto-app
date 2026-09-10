@@ -39,12 +39,15 @@ describe('手元の記録を読む', () => {
     expect(r[0]).toEqual({
       dir: '/w/data-test', projectName: 'data-test',
       appIds: ['app-1111-aaaa'], bucketNames: ['koto-data-sample'], registryNames: ['sample-registry-65f6'],
+      // 専有型クラスタのIDは fs（.sakuraide.json）を読む必要があるため、ここ（純関数）では
+      // 埋められない。既定は空配列（main/ipc/cloud.ts が readApprunDedicatedFs で読んで足す）。
+      clusterIds: [],
     })
   })
 
   it('壊れた記録が混ざっても落ちない', () => {
     expect(parseLocalRecords([{ dir: 1, name: null, apprunState: 'こわれている' } as any])[0])
-      .toEqual({ dir: '', projectName: '', appIds: [], bucketNames: [], registryNames: [] })
+      .toEqual({ dir: '', projectName: '', appIds: [], bucketNames: [], registryNames: [], clusterIds: [] })
     expect(parseLocalRecords([])).toEqual([])
   })
 })
@@ -200,25 +203,45 @@ describe('buildInventory: apprun-app の行に scaleMin が乗る', () => {
 describe('棚卸しが画面まで届いている', () => {
   const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf-8')
 
+  // ハンドラ本体だけを切り出す（掟10: 固定の文字数窓は、ハンドラが伸びると当て先が
+  // 途中で切れて偽陰性になる／次のハンドラへ食い込んで偽陽性になる。実際の閉じ `  })`
+  // まで＝呼び出し側の実態に合わせて境界を取る。tests/appLog.test.ts の handlerBody と同じ作法）。
+  function inventoryHandlerBody(): string {
+    const src = read('src/main/ipc/cloud.ts')
+    const at = src.indexOf("ipcMain.handle('cloud:inventory'")
+    expect(at).toBeGreaterThan(-1)
+    const closeAt = src.indexOf('\n  })', at)
+    expect(closeAt).toBeGreaterThan(at)
+    return src.slice(at, closeAt)
+  }
+
   it('main / preload / 型 の3点が揃っている（掟6）', () => {
     expect(read('src/main/ipc/cloud.ts')).toContain("ipcMain.handle('cloud:inventory'")
     expect(read('src/main/preload.ts')).toContain("ipcRenderer.invoke('cloud:inventory'")
     expect(read('src/renderer/global.d.ts')).toContain('inventory(projects: unknown)')
   })
 
-  it('★ 3種類すべてを引く（1つ漏らすと、その分が見えないまま課金される）', () => {
-    const src = read('src/main/ipc/cloud.ts')
-    const i = src.indexOf("ipcMain.handle('cloud:inventory'")
-    const seg = src.slice(i, i + 3000)
-    expect(seg).toContain('listApps')
-    expect(seg).toContain('listContainerRegistries')
-    expect(seg).toContain('listBuckets')
+  it('★ 4種類すべてを引く（1つ漏らすと、その分が見えないまま課金される）', () => {
+    const body = inventoryHandlerBody()
+    // ①公開したアプリ・④専有型のクラスタは electron 非依存の純関数へ切り出してある
+    // （偽 client／偽 listClusters での振る舞いは tests/inventoryCollect.test.ts で固定）。
+    // ここでは「呼んでいるか」の配線だけを見る。
+    expect(body).toContain('collectAppRunApps(client)')
+    expect(body).toContain('collectDedicatedClusters(')
+    expect(body).toContain('listClusters(creds)')
+    expect(body).toContain('listContainerRegistries')
+    expect(body).toContain('listBuckets')
   })
 
   it('★ 引けなかったものを、黙って0件にしない', () => {
-    const src = read('src/main/ipc/cloud.ts')
-    const i = src.indexOf("ipcMain.handle('cloud:inventory'")
-    expect(src.slice(i, i + 3000)).toContain('partial')
+    const body = inventoryHandlerBody()
+    expect(body).toContain('partial')
+    // 4種類（アプリ・イメージの置き場・データの保存場所・専有型のクラスタ）それぞれの
+    // 失敗が、それぞれ名指しで failed に積まれること（1つに丸めない）。
+    expect(body).toContain("failed.push('公開したアプリ')")
+    expect(body).toContain("failed.push('イメージの置き場')")
+    expect(body).toContain("failed.push('データの保存場所')")
+    expect(body).toContain("failed.push('専有型のクラスタ')")
     expect(read('src/renderer/components/PublishedListModal.tsx')).toContain('この一覧に出ていない')
   })
 
@@ -246,15 +269,21 @@ describe('棚卸しが画面まで届いている', () => {
     expect(modal).toContain('コントロールパネル')
   })
 
-  // ── #31 の検分（2026-09-09）: min_scale が画面まで届いているか ──────────────
-  it('★ ①公開したアプリの取得で min_scale を読み、scaleMin として積む（0と決めつけない）', () => {
-    const src = read('src/main/ipc/cloud.ts')
-    const i = src.indexOf("ipcMain.handle('cloud:inventory'")
-    const seg = src.slice(i, i + 3000)
-    expect(seg).toContain('a?.min_scale')
-    expect(seg).toContain('scaleMin')
-    // 0 に倒していないこと（存在しないときは null）
-    expect(seg).toMatch(/scaleMin\s*=\s*typeof a\?\.min_scale === 'number' \? a\.min_scale : null/)
+  // ── #31 検分の直し（2026-09-10）: 一覧の a?.min_scale は原本に無いキーで常に null に
+  // なっていた。min_scale は詳細（GET /applications/{id}）にしか無いため、収集そのものを
+  // electron 非依存の純関数（collectAppRunApps）へ切り出し、偽 client で振る舞いを固定した
+  // （tests/inventoryCollect.test.ts）。ここでは呼び出しの配線だけを確かめる。
+  it('★ 一覧の a?.min_scale を直読みする形に戻っていない（原本に無いキー）', () => {
+    const body = inventoryHandlerBody()
+    expect(body).not.toContain('a?.min_scale')
+    expect(body).not.toContain('a.min_scale')
+  })
+
+  // ── 専有型のクラスタの突き合わせ（手元の .sakuraide.json の clusterID）─────────
+  it('専有型のクラスタは readApprunDedicatedFs で読んだ clusterID を使って突き合わせる', () => {
+    const body = inventoryHandlerBody()
+    expect(body).toContain('readApprunDedicatedFs(')
+    expect(body).toContain('clusterIds')
   })
 
   // ⚠️ 画面（PublishedListModal.tsx）が r.note / costNote(r) を使わず、r.monthlyYen だけを
@@ -266,5 +295,77 @@ describe('棚卸しが画面まで届いている', () => {
     expect(modal).toContain('{costNote(r)}')
     // 直す前の形（金額の有無だけで「従量（待機中はほぼゼロ）」を出す複製）が残っていないこと
     expect(modal).not.toMatch(/r\.monthlyYen > 0 \? `月額\$\{r\.monthlyYen\}円` : '従量/)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// 専有型のクラスタ（roadmap 検分で発見。常時課金＝月2万円超なのに棚卸しに一切出ない穴）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('専有型のクラスタ（dedicated-cluster）が棚卸しに出る', () => {
+  it('画面に出す名前がある', () => {
+    expect(kindLabel('dedicated-cluster')).toBe('専有型のクラスタ')
+  })
+
+  it('費用は「常時課金」と伝える。0円と決めつけない', () => {
+    const note = costNote({ kind: 'dedicated-cluster', monthlyYen: 0, scaleMin: null })
+    expect(note).toContain('常時課金')
+    expect(note).not.toMatch(/^0円$|^従量$/)
+  })
+
+  it('★ kind:\'dedicated-cluster\' の行が rows に出る', () => {
+    const rows = buildInventory({
+      actual: [{ kind: 'dedicated-cluster', id: 'cluster-aaa', name: 'my-cluster' }],
+      records: [],
+    })
+    expect(rows.length).toBe(1)
+    expect(rows[0].kind).toBe('dedicated-cluster')
+    expect(rows[0].note).toContain('常時課金')
+  })
+
+  // ★ 実害の再現: 専有型のクラスタしか棚卸しに無いとき、totalYen（固定額の合計）は
+  //   0 のままでも（実際そのとおり。金額不明のため）、費用の文が「見つかりませんでした」
+  //   と言い切ってはいけない（月2万円超が「見つかりませんでした」になっていた穴）。
+  it('★★ 専有型のクラスタしか無いとき、totalNotice は「見つかりませんでした」と言わない', () => {
+    const rows = buildInventory({ actual: [{ kind: 'dedicated-cluster', id: 'c1', name: 'c1' }], records: [] })
+    expect(sumMonthly(rows)).toBe(0) // 金額は不明のまま（0円と決めつけているわけではない）
+    const notice = totalNotice(rows)
+    expect(notice).not.toContain('月額でかかり続けるものは見つかりませんでした')
+  })
+
+  it('手元の記録（clusterIds）と一致すれば、そのプロジェクトのものと分かる', () => {
+    const records = [
+      { dir: '/w/my-app', projectName: 'my-app', appIds: [], bucketNames: [], registryNames: [], clusterIds: ['cluster-aaa'] },
+    ]
+    const rows = buildInventory({
+      actual: [{ kind: 'dedicated-cluster', id: 'cluster-aaa', name: 'my-cluster' }],
+      records,
+    })
+    expect(rows[0].project).toBe('my-app')
+    expect(rows[0].dir).toBe('/w/my-app')
+  })
+
+  it('★ 名前が似ているだけ・clusterID が違えば引き取らない（利用者のものを乗っ取らない）', () => {
+    const records = [
+      { dir: '/w/my-app', projectName: 'my-app', appIds: [], bucketNames: [], registryNames: [], clusterIds: ['cluster-other'] },
+    ]
+    const rows = buildInventory({
+      actual: [{ kind: 'dedicated-cluster', id: 'cluster-aaa', name: 'my-cluster' }],
+      records,
+    })
+    expect(rows[0].project).toBeNull()
+    expect(rows[0].note).toContain('心当たりがありません')
+  })
+
+  it('種類の並びに dedicated-cluster が入っている（apprun-app → registry → bucket → dedicated-cluster）', () => {
+    const rows = buildInventory({
+      actual: [
+        { kind: 'dedicated-cluster', id: 'c1', name: 'c1' },
+        { kind: 'bucket', id: 'b1', name: 'b1' },
+        { kind: 'apprun-app', id: 'a1', name: 'a1' },
+        { kind: 'registry', id: 'r1', name: 'r1' },
+      ],
+      records: [],
+    })
+    expect(rows.map(r => r.kind)).toEqual(['apprun-app', 'registry', 'bucket', 'dedicated-cluster'])
   })
 })

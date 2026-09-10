@@ -47,6 +47,26 @@ describe('buildClusterDiagram: 「実物の既定」（ワーカ1vCPU/2GB×1台�
   })
 })
 
+describe('buildClusterDiagram: maxNodes > minNodes のとき、最大構成の額も合計に出る（2026-09-10 レビューの修理・G）', () => {
+  it('priceSummary(..., minNodes, maxNodes) の text をそのまま total に使う（自前計算していない）', () => {
+    const price = priceSummary(
+      { path: 'cloud/apprun/dedicated/worker/1vcpu_2gb' },
+      { path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_1', nodeCount: 1 },
+      1, 3,
+    )
+    const result = buildClusterDiagram({
+      clusterName: 'myapp', zone: 'tk1a',
+      ports: [{ port: 80, protocol: 'http' }, { port: 443, protocol: 'https' }],
+      workerPlanName: '1vCPU/2GB', minNodes: 1, lbPlanName: '1vCPU/2GB非冗長',
+      priceText: price.text,
+    })
+    expect(result.total).toContain('月額 22,000円')
+    expect(result.total).toContain('最小構成')
+    expect(result.total).toContain('最大 3台')
+    expect(result.total).toContain('月額 44,000円')
+  })
+})
+
 describe('buildClusterDiagram: 未入力のときは「（未入力）」と出す（推測で埋めない）', () => {
   const result = buildClusterDiagram({
     clusterName: '',

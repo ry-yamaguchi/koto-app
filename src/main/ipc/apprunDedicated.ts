@@ -31,6 +31,14 @@ function isClusterSpec(v: unknown): v is ApprunDedicatedClusterSpec {
     && typeof s.minNodes === 'number' && typeof s.maxNodes === 'number'
 }
 
+/**
+ * `opts.confirmed === true` のときだけ true（2026-09-10 レビューの修理・A・掟10の3点セット）。
+ * renderer から渡された値の形は信用しない（不正な形なら false＝未確認扱いの安全側）。
+ */
+function isConfirmed(opts: unknown): boolean {
+  return !!opts && typeof opts === 'object' && (opts as any).confirmed === true
+}
+
 export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
   // 接続テスト（roadmap #35）＝共用型 cloud:testConnection と同じ「チェックリスト」の形に揃える。
   // (1) 専有型API 参照（制限・プラン。GET /limits） (2) 請求（コスト）参照。
@@ -79,18 +87,20 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
 
   // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
   // 同意（consentedAt）が記録に無ければ createClusterFlow 自身が API を一度も呼ばずに中止する。
-  ipcMain.handle('apprunDedicated:create', async (_, projectDir: unknown, auth: unknown, spec: unknown) => {
+  // opts.confirmed（第4引数）は今回の確認ダイアログを通ったかの印（2026-09-10 レビューの修理・A）。
+  ipcMain.handle('apprunDedicated:create', async (_, projectDir: unknown, auth: unknown, spec: unknown, opts: unknown) => {
     if (typeof projectDir !== 'string' || !projectDir) return { ok: false, stage: 'consent', message: 'プロジェクトフォルダが不正です' }
     if (!isCreds(auth)) return { ok: false, stage: 'consent', message: 'クラウドのAPIキーが未登録です' }
     if (!isClusterSpec(spec)) return { ok: false, stage: 'consent', message: '入力が不正です' }
-    return createClusterFlow(auth, projectDir, spec)
+    return createClusterFlow(auth, projectDir, spec, { confirmed: isConfirmed(opts) })
   })
 
   // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
-  ipcMain.handle('apprunDedicated:teardown', async (_, projectDir: unknown, auth: unknown) => {
+  // opts.confirmed（第3引数）は今回の確認ダイアログを通ったかの印（2026-09-10 レビューの修理・A）。
+  ipcMain.handle('apprunDedicated:teardown', async (_, projectDir: unknown, auth: unknown, opts: unknown) => {
     if (typeof projectDir !== 'string' || !projectDir) return { ok: false, executed: [], message: 'プロジェクトフォルダが不正です', remaining: {} }
     if (!isCreds(auth)) return { ok: false, executed: [], message: 'クラウドのAPIキーが未登録です', remaining: {} }
-    return teardownFlow(auth, projectDir)
+    return teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts) })
   })
 
   // 現在の記録（何が作られているか）を返す。API を呼ばない、ただのファイル読み取り。

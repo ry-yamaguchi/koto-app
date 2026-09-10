@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import http from 'node:http'
 import type { Server } from 'node:http'
-import { MonitoringClient, monitoringBase, fetchTelemetryStatus, enableTelemetry } from '../src/main/cloud/monitoring'
+import { MonitoringClient, monitoringBase, fetchTelemetryStatus, enableTelemetry, ensureTelemetryRouting } from '../src/main/cloud/monitoring'
 
 // #30: さくらの開発者の助言「ログとメトリクスは有効にしてて欲しい」でメトリクスへ拡張。
 // **実APIは叩かない**（掟4）。tests/apprunDedicated.test.ts と同じく、ローカルに本物の
@@ -39,16 +39,19 @@ function client(baseUrl: string, dryRun = false) {
   return new MonitoringClient({ credentials: CREDS, dryRun, baseUrl })
 }
 
-// 実測（docs/roadmap.md #30・2026-09-08）の値。'm-1'・'r-1' のような手作りの値は使わない（掟1・
-// #30 検分の指摘4: フィクスチャが実測値だと主張しながら類推の値だった問題の直し）。
-//   GET /metrics/storages/ → id "113802075468"
-//   GET /metrics/routings/ → resource_id "113802075566"
+// 形（桁数・型）は実測（docs/roadmap.md #30・2026-09-08）どおり。'm-1'・'r-1' のような
+// **形まで違う**手作りの値は使わない（掟1・#30 検分の指摘4: フィクスチャが実測値だと
+// 主張しながら類推の値だった問題の直し）。
+// ── 2026-09-10 検分の直し: 値（ID）は架空（実アカウントのIDは書かない。このテストは
+//    公開リポジトリへそのまま同期される）。appLog.test.ts と同じ架空値に揃えてある ──
+//   GET /metrics/storages/ → id "100000000002"（実際の桁数・型どおり。値は架空）
+//   GET /metrics/routings/ → resource_id "100000000005"（同上）
 const REAL = {
-  metricsStorageId: '113802075468',
-  resourceIdMetrics: '113802075566',
-  // ログ側は appLog.test.ts の LOG_STORAGES/LOG_ROUTINGS と同じ実測値（2026-08-14）を使う
-  logStorageId: '113801792528',
-  resourceIdLogs: '113801820576',
+  metricsStorageId: '100000000002',
+  resourceIdMetrics: '100000000005',
+  // ログ側は appLog.test.ts の LOG_STORAGES/LOG_ROUTINGS と同じ値（形は実測・値は架空）を使う
+  logStorageId: '100000000001',
+  resourceIdLogs: '100000000003',
 }
 
 type Recorded = { method: string; path: string }
@@ -269,18 +272,34 @@ describe('dryRun（既定 true）は mutating を実行しない', () => {
 // 実際に飛ぶリクエストの本数と種類が変われば必ず落ちる。
 // ══════════════════════════════════════════════════════════════════════════
 
-/** provisioningState・storages・routings を、望む状態に合わせて返す偽サーバの応答を作る。 */
+/**
+ * provisioningState・storages・routings を、望む状態に合わせて返す偽サーバの応答を作る。
+ *
+ * ── 2026-09-10 検分の直し: 状態を持たせる ─────────────────────────────────
+ * 直す前は状態を持たず、`hasStorage:true` なら **initialize の前から**ストレージを
+ * 返していた。だが実物のAPIでは、ストレージは領域が用意されて（`user_exist:true`）
+ * 初めて存在する。この不整合のせいで、「置き場なし×同意あり」のテストが
+ * `enableTelemetry` の初回の並列フェッチだけでストレージを見つけてしまい、
+ * **initialize を呼んだ後に本当にストレージを読み直しているか**を一度も試していなかった。
+ * ここでは `initialized`（= 最初から `userExist:true`、または initialize の POST を
+ * 受け取った後）を状態として持ち、それより前は `hasStorage` に関わらず空を返す。
+ */
 function statusResponder(opts: { userExist: boolean; hasStorage: boolean; alreadyRouted: boolean }) {
-  return (path: string): { status: number; body: unknown } => {
+  let initialized = opts.userExist
+  return (path: string, method: string): { status: number; body: unknown } => {
     if (path.startsWith('/management/provisioning/state/')) {
-      return { status: 200, body: { metrics: { system_exist: false, user_exist: opts.userExist } } }
+      return { status: 200, body: { metrics: { system_exist: false, user_exist: initialized } } }
+    }
+    if (path.startsWith('/management/provisioning/initialize/') && method === 'POST') {
+      initialized = true
+      return { status: 200, body: { ok: true } }
     }
     if (path.startsWith('/metrics/storages/')) {
       return {
         status: 200,
-        body: opts.hasStorage
-          ? { count: 1, results: [{ id: REAL.metricsStorageId, name: 'デフォルト', is_system: false }] }
-          : { count: 0, results: [] },
+        body: (initialized && opts.hasStorage)
+          ? { count: 1, total: 1, is_ok: true, results: [{ id: REAL.metricsStorageId, name: 'デフォルト', is_system: false }] }
+          : { count: 0, total: 0, is_ok: true, results: [] },
       }
     }
     if (path.startsWith('/metrics/routings/')) {
@@ -290,9 +309,6 @@ function statusResponder(opts: { userExist: boolean; hasStorage: boolean; alread
           ? { count: 1, results: [{ id: 720190, resource_id: REAL.resourceIdMetrics, publisher: { code: 'apprun' }, variant: 'applicationmetrics' }] }
           : { count: 0, results: [] },
       }
-    }
-    if (path.startsWith('/management/provisioning/initialize/')) {
-      return { status: 200, body: { ok: true } }
     }
     return { status: 404, body: {} }
   }
@@ -365,6 +381,14 @@ describe('enableTelemetry は decideEnableTelemetry の判断だけに従う（#
     expect(r.ok).toBe(true)
     expect(requests.some(x => x.method === 'POST' && x.path.startsWith('/management/provisioning/initialize/'))).toBe(true)
     expect(requests.some(x => x.method === 'POST' && x.path.startsWith('/metrics/routings/'))).toBe(true)
+    // ★ 2026-09-10 検分の直し（statusResponder が状態を持つようになったので、これで初めて
+    //   本当に確かめられる）: initialize の POST の**後**に GET storages が飛んでいること。
+    //   （先に読んだ storages はまだ「置き場なし」を反映しており、初期化の後で読み直さないと
+    //   新しく作った領域のIDを取り損ねる）
+    const initIdx = requests.findIndex(x => x.method === 'POST' && x.path.startsWith('/management/provisioning/initialize/'))
+    const storagesAfterInitIdx = requests.findIndex((x, i) => i > initIdx && x.method === 'GET' && x.path.startsWith('/metrics/storages/'))
+    expect(initIdx).toBeGreaterThan(-1)
+    expect(storagesAfterInitIdx).toBeGreaterThan(initIdx)
   })
 
   it('すでに繋がっている → 何も作らず、飛ぶのは GET だけ', async () => {
@@ -374,5 +398,114 @@ describe('enableTelemetry は decideEnableTelemetry の判断だけに従う（#
     const r = await enableTelemetry(client(baseUrl), 'metrics', REAL.resourceIdMetrics, { consented: true })
     expect(r.ok).toBe(true)
     expect(requests.every(x => x.method === 'GET')).toBe(true)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// ensureTelemetryRouting（2026-09-10: main/ipc/cloud.ts から、ここ monitoring.ts へ
+// 「そのまま」移した。enableTelemetry と並べる・掟10）。
+//
+// これは**公開の流れ（apply）**から呼ばれる薄い経路で、`cloud:enableTelemetry`
+// （画面の「費用に同意する」導線）とは別物。**費用の発生する初期化は絶対に呼ばない**
+// （置き場が無ければ何もしない）。
+//
+// 移す前は tests/appLog.test.ts が「ソースの2000文字窓に `action.kind !== 'route'` と
+// 書いてあるか」という文字列一致でしか守っておらず、早期 return を外す変異
+// （完了条件の変異試験(a)）が素通りしていた。ここでは偽サーバへ実際に飛んだリクエストの
+// 本数・種類で固定する（掟10「お金・破壊の歯止めは、振る舞いで固定する」）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('ensureTelemetryRouting: 公開の流れでは費用を発生させない（振る舞いで固定）', () => {
+  it('(a) 置き場なし → POSTがゼロ本（initialize も routings も飛ばない）', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      statusResponder({ userExist: false, hasStorage: false, alreadyRouted: false }),
+    )
+    await ensureTelemetryRouting('metrics', CREDS, REAL.resourceIdMetrics, () => {}, baseUrl)
+    expect(requests.some(x => x.method === 'POST')).toBe(false)
+  })
+
+  it('(b) 置き場あり・未接続 → POST …/routings/ が1本だけ（initializeは飛ばない）', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      statusResponder({ userExist: true, hasStorage: true, alreadyRouted: false }),
+    )
+    await ensureTelemetryRouting('metrics', CREDS, REAL.resourceIdMetrics, () => {}, baseUrl)
+    const posts = requests.filter(x => x.method === 'POST')
+    expect(posts.length).toBe(1)
+    expect(posts[0].path).toBe('/metrics/routings/')
+  })
+
+  it('(c) 接続済み → POSTゼロ本（すでに流れているので何もしない）', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      statusResponder({ userExist: true, hasStorage: true, alreadyRouted: true }),
+    )
+    await ensureTelemetryRouting('metrics', CREDS, REAL.resourceIdMetrics, () => {}, baseUrl)
+    expect(requests.some(x => x.method === 'POST')).toBe(false)
+  })
+
+  it('状態の読み取り（GET）が1本でも失敗したら、何もしない（推測で進めない）', async () => {
+    const { baseUrl, requests } = await listenRecording((path) => {
+      if (path.startsWith('/management/provisioning/state/')) return { status: 500, body: {} }
+      return { status: 200, body: { count: 0, results: [] } }
+    })
+    await ensureTelemetryRouting('metrics', CREDS, REAL.resourceIdMetrics, () => {}, baseUrl)
+    expect(requests.some(x => x.method === 'POST')).toBe(false)
+  })
+
+  it('progress は route（実際に繋ぐ）ときだけ呼ぶ', async () => {
+    const messages: string[] = []
+    const { baseUrl: routeUrl } = await listenRecording(
+      statusResponder({ userExist: true, hasStorage: true, alreadyRouted: false }),
+    )
+    await ensureTelemetryRouting('metrics', CREDS, REAL.resourceIdMetrics, (m) => messages.push(m), routeUrl)
+    expect(messages.length).toBe(1)
+
+    messages.length = 0
+    const { baseUrl: askUrl } = await listenRecording(
+      statusResponder({ userExist: false, hasStorage: false, alreadyRouted: false }),
+    )
+    await ensureTelemetryRouting('metrics', CREDS, REAL.resourceIdMetrics, (m) => messages.push(m), askUrl)
+    expect(messages.length).toBe(0)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// 失敗時に「どの呼び出しが・なぜ」失敗したかを伝える（2026-09-10 検分の直し）。
+// 直す前は prov/storages/routings のどれかが !ok のとき固定文言だけを返しており、
+// status も応答本文も分からなかった（道具が事実を隠す・掟10）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('状態の取得に失敗したとき、status と応答本文を message/detail に含める', () => {
+  it('fetchTelemetryStatus: provisioning/state が403 → message に 403、detail に本文が含まれる', async () => {
+    const baseUrl = await listen((req, res) => {
+      if ((req.url ?? '').startsWith('/management/provisioning/state/')) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: { message: 'Forbidden: invalid API key' } }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ count: 0, results: [] }))
+    })
+    const r = await fetchTelemetryStatus(client(baseUrl), 'metrics', REAL.resourceIdMetrics)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.message).toContain('403')
+      expect(r.detail ?? '').toContain('Forbidden: invalid API key')
+    }
+  })
+
+  it('enableTelemetry でも同じ（storages の取得が500）', async () => {
+    const baseUrl = await listen((req, res) => {
+      if ((req.url ?? '').startsWith('/metrics/storages/')) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: { message: 'internal error, contact support' } }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ count: 0, results: [] }))
+    })
+    const r = await enableTelemetry(client(baseUrl), 'metrics', REAL.resourceIdMetrics, { consented: false })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.message).toContain('500')
+      expect((r as any).detail ?? '').toContain('internal error, contact support')
+    }
   })
 })

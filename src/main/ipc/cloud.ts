@@ -25,8 +25,10 @@ import { buildRef, dockerAvailable, buildImage, loginRegistry, pushImage } from 
 import { builderAvailable, buildAndPush } from '../cloud/imageBuild'
 import { detectRuntime, type RuntimeChoice } from '../../shared/runtimeDetect'
 import { parseLocalRecords, buildInventory, sumMonthly, totalNotice, type ActualResource } from '../../shared/inventory'
+import { collectAppRunApps, collectDedicatedClusters } from '../cloud/inventoryCollect'
+import { listClusters } from '../cloud/apprunDedicated'
 import { planDependencies, installTimeNote } from '../../shared/deps'
-import { markPendingFs, clearPendingFs, writePublishRecordFs } from '../publishMetaFs'
+import { markPendingFs, clearPendingFs, writePublishRecordFs, readApprunDedicatedFs } from '../publishMetaFs'
 import type { IpcDeps } from './types'
 
 // ── さくらのクラウド連携（段階1＝基盤）。cloud: 名前空間 ──
@@ -214,47 +216,9 @@ async function resolveAppResourceId(creds: CloudCredentials, appId: string): Pro
   return resourceId || null
 }
 
-/**
- * このアプリのログ／メトリクスが残るようにする（IO はここ。判断は shared/appLog.ts）。
- *
- * **ここで失敗しても公開は失敗にしない。** ログ・メトリクスは「動かなかったとき・
- * 負荷を調べたいときに助かるもの」であって、公開そのものの成否とは別。止めると、
- * 本題（アプリを公開する）が巻き添えになる。
- *
- * 費用の発生する操作（領域の作成）はここでは行わない。**同意が要る**ので、
- * それは別の導線（`cloud:enableTelemetry`。画面の案内）に回し、
- * ここは「既にあるなら繋ぐ」だけにする。
- *
- * ログとメトリクスは判断もAPIの形も対称（実測・#30）なので、種類で分岐する
- * 1本の実装にまとめる（掟10）。
- */
-async function ensureTelemetryRouting(
-  kind: TelemetryKind,
-  creds: CloudCredentials,
-  resourceId: string,
-  progress: (m: string) => void,
-): Promise<void> {
-  const mon = new MonitoringClient({ credentials: creds, dryRun: false })
-  const [state, storages, routings] = await Promise.all([
-    mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
-  ])
-  if (!state.ok || !storages.ok || !routings.ok) return
-
-  const action = decideTelemetryAction({
-    storageReady: parseProvisioningState(state.data, kind),
-    storageId: pickStorageId(storages.data),
-    alreadyRouted: hasAppRouting(routings.data, resourceId, kind),
-  }, kind)
-  if (action.kind !== 'route') return // 'ask'（費用が要る）はここでは行わない
-
-  progress(kind === 'logs' ? '📋 ログを残す設定をしています…' : '📈 メトリクスを残す設定をしています…')
-  await mon.createTelemetryRouting(kind, {
-    resourceId,
-    publisherCode: APPRUN_PUBLISHER,
-    variant: APPRUN_VARIANT[kind],
-    storageId: action.storageId,
-  })
-}
+// このアプリのログ／メトリクスが残るようにする処理（ensureTelemetryRouting）は
+// 2026-09-10、src/main/cloud/monitoring.ts へ移した（enableTelemetry と並べる・掟10）。
+// ここは import して呼ぶだけ（呼び出し2箇所・try/catch は下の公開処理側に残る）。
 
 /**
  * このプロジェクトの古い鍵を片づける（IO はここ。判断は shared/storageKeys.ts）。
@@ -293,8 +257,8 @@ import { ObjectStorageClient } from '../cloud/objectStorage'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
 import { looksLikeRegistryProblem } from '../../shared/registryTrouble'
 import { parseAppStatus, judgeAppHealth, judgeRecheck, appLogUrl, askAiAboutFailure, type AppHealth } from '../../shared/appHealth'
-import { MonitoringClient, fetchTelemetryStatus, enableTelemetry } from '../cloud/monitoring'
-import { decideTelemetryAction, parseProvisioningState, pickStorageId, hasAppRouting, APPRUN_PUBLISHER, APPRUN_VARIANT, type TelemetryKind } from '../../shared/appLog'
+import { MonitoringClient, fetchTelemetryStatus, enableTelemetry, ensureTelemetryRouting } from '../cloud/monitoring'
+import { isTelemetryKind, type TelemetryKind } from '../../shared/appLog'
 import { permissionsToCleanUp } from '../../shared/storageKeys'
 import { summarizePreflight, sortChecks, type PreflightCheck } from '../../shared/preflight'
 import {
@@ -760,6 +724,9 @@ export function registerCloudHandlers(_deps: IpcDeps) {
    * 「（領域が無いので）費用の同意」のどれを出すかを決める。
    */
   ipcMain.handle('cloud:telemetryStatus', async (_, projectDir: string, kind: TelemetryKind) => {
+    // R（2026-09-10 レビューの修理・バッチ3）: renderer から渡された kind を「最後の砦」として
+    // 検証する。不正な値（'logs'|'metrics' 以外）なら fetch を一切呼ばない。
+    if (!isTelemetryKind(kind)) return { ok: false, message: '種類が不正です' }
     try {
       const creds = loadCredentials()
       if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
@@ -795,6 +762,10 @@ export function registerCloudHandlers(_deps: IpcDeps) {
    * （`TelemetryNotice.tsx`）。
    */
   ipcMain.handle('cloud:enableTelemetry', async (_, projectDir: string, kind: TelemetryKind, opts?: { consented?: boolean }) => {
+    // R（2026-09-10 レビューの修理・バッチ3）: renderer から渡された kind を「最後の砦」として
+    // 検証する。不正な値（'logs'|'metrics' 以外）なら fetch を一切呼ばない（課金の始まる
+    // 初期化を、検証されていない値で走らせない）。
+    if (!isTelemetryKind(kind)) return { ok: false, message: '種類が不正です' }
     try {
       const creds = loadCredentials()
       if (!creds) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
@@ -1803,17 +1774,13 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     const failed: string[] = []
     const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
 
-    // ① 公開したアプリ
+    // ① 公開したアプリ（詳細（getApp）まで引いて min_scale を読む・roadmap #31 検分で修理。
+    //    原本 apprun-shared-api.json v1.5.0: 一覧に min_scale は無く、詳細にしか無い）。
+    //    集める処理そのものは electron 非依存の純関数（collectAppRunApps）に切り出してある。
     try {
-      const r = await client.listApps()
-      if (r.dryRun === false && r.ok) {
-        for (const a of ((r.data as any)?.data ?? []) as any[]) {
-          const id = String(a?.id ?? '')
-          // min_scale が数で返ってこないときは null（0 と決めつけない・roadmap #31 検分で修理）。
-          const scaleMin = typeof a?.min_scale === 'number' ? a.min_scale : null
-          if (id) actual.push({ kind: 'apprun-app', id, name: String(a?.name ?? id), scaleMin })
-        }
-      } else failed.push('公開したアプリ')
+      const { actual: apps, failed: appsFailed } = await collectAppRunApps(client)
+      actual.push(...apps)
+      if (appsFailed) failed.push('公開したアプリ')
     } catch { failed.push('公開したアプリ') }
 
     // ② イメージの置き場（コンテナレジストリ）
@@ -1840,7 +1807,31 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
     } catch { failed.push('データの保存場所') }
 
-    const records = parseLocalRecords(Array.isArray(projects) ? projects as any[] : [])
+    // ④ 専有型のクラスタ（常時課金）。listApps／listContainerRegistries／listBuckets の
+    //    3種しか引いていなかったため、専有型（常時課金・月2万円超）が棚卸しに一切出ない
+    //    穴があった。listClusters（apprunDedicated.ts）は読むだけで使う（他エージェントの
+    //    持ち場のため変更しない）。金額は不明のまま返す（0円と決めつけない）。
+    try {
+      const { actual: clusters, failed: clustersFailed } = await collectDedicatedClusters(() => listClusters(creds))
+      actual.push(...clusters)
+      if (clustersFailed) failed.push('専有型のクラスタ')
+    } catch { failed.push('専有型のクラスタ') }
+
+    // 手元の記録との突き合わせ。専有型クラスタは通常の apprunState（アプリ/バケット）とは
+    // 別の置き場（`.sakuraide.json` の `publish.apprunDedicated.clusterID`）に記録されるため、
+    // ここだけ readApprunDedicatedFs（publishMetaFs.ts・読むだけで使う）で fs から読み足す
+    // （既存の突き合わせ関数＝ownerOf の流儀＝完全一致のみに合わせる）。
+    const baseRecords = parseLocalRecords(Array.isArray(projects) ? projects as any[] : [])
+    const records = baseRecords.map(r => {
+      if (!r.dir) return r
+      try {
+        const rec = readApprunDedicatedFs(r.dir)
+        const clusterID = typeof rec?.clusterID === 'string' && rec.clusterID ? rec.clusterID : null
+        return clusterID ? { ...r, clusterIds: [clusterID] } : r
+      } catch {
+        return r // 読めなくても棚卸しそのものは止めない（心当たりなし扱いになるだけ）
+      }
+    })
     const rows = buildInventory({ actual, records })
     return {
       ok: true,

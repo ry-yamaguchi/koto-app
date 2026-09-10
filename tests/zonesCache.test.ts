@@ -24,7 +24,7 @@ function fakeWindow(overrides: { loadKey: any; zones: any }) {
   }
 }
 
-const OK_DATA = { Zones: [{ Name: 'tk1a', Description: '東京第1ゾーン', IsDummy: false, DisplayOrder: 20021001 }] }
+const OK_DATA = { Count: 1, Total: 1, Zones: [{ Name: 'tk1a', Description: '東京第1ゾーン', IsDummy: false, DisplayOrder: 20021001 }] }
 
 beforeEach(() => {
   resetZonesCacheForTest()
@@ -99,6 +99,44 @@ describe('loadZones: 成功したら結果を保持し、以後は即返す', ()
   })
 })
 
+describe('loadZones: O（2026-09-10 レビューの修理・バッチ3）: 200でも形が想定と違えば「成功・0件」にしない', () => {
+  it('200 だが { foo: 1 }（Zones が無い）→ 失敗扱い・キャッシュされない', async () => {
+    const loadKey = vi.fn().mockResolvedValue({ token: 't', secret: 's' })
+    const zones = vi.fn().mockResolvedValue({ ok: true, data: { foo: 1 } })
+    ;(globalThis as any).window = fakeWindow({ loadKey, zones })
+
+    const r1 = await loadZones()
+    expect(r1.ok).toBe(false)
+    expect(r1.rows).toEqual([])
+    expect(typeof r1.message).toBe('string')
+
+    // 失敗はキャッシュされない: 次の呼び出しが取り直す（force無しでも）。
+    const r2 = await loadZones()
+    expect(zones).toHaveBeenCalledTimes(2)
+    expect(r2.ok).toBe(false)
+  })
+
+  it('200 だが Zones が配列でない → 失敗扱い', async () => {
+    const loadKey = vi.fn().mockResolvedValue({ token: 't', secret: 's' })
+    const zones = vi.fn().mockResolvedValue({ ok: true, data: { Count: 1, Total: 1, Zones: 'not-an-array' } })
+    ;(globalThis as any).window = fakeWindow({ loadKey, zones })
+
+    const r1 = await loadZones()
+    expect(r1.ok).toBe(false)
+    expect(r1.rows).toEqual([])
+  })
+
+  it('200 だが Count も Total も無い → 失敗扱い', async () => {
+    const loadKey = vi.fn().mockResolvedValue({ token: 't', secret: 's' })
+    const zones = vi.fn().mockResolvedValue({ ok: true, data: { Zones: [] } })
+    ;(globalThis as any).window = fakeWindow({ loadKey, zones })
+
+    const r1 = await loadZones()
+    expect(r1.ok).toBe(false)
+    expect(r1.rows).toEqual([])
+  })
+})
+
 describe('loadZones: 同時に呼んでも1回しか叩かない（取得中の Promise を共有する）', () => {
   it('2つの呼び出しが同じ Promise を共有し、apprunDedicated.zones は1回だけ呼ばれる', async () => {
     const loadKey = vi.fn().mockResolvedValue({ token: 't', secret: 's' })
@@ -158,7 +196,7 @@ describe("primeZonesCache: 'sakura:credentials-changed' でキャッシュを捨
     expect(zones).toHaveBeenCalledTimes(2)
 
     // 1回目（古い鍵）が遅れて成功しても、キャッシュ（新しい鍵の結果）を上書きしない。
-    resolveFirst({ ok: true, data: { Zones: [{ Name: 'tk1v', Description: 'Sandbox', IsDummy: true, DisplayOrder: 1 }] } })
+    resolveFirst({ ok: true, data: { Count: 1, Total: 1, Zones: [{ Name: 'tk1v', Description: 'Sandbox', IsDummy: true, DisplayOrder: 1 }] } })
     await new Promise(r => setImmediate(r))
     const r3 = await loadZones() // まだ叩き直さず、r2 と同じキャッシュを返すはず
     expect(r3.rows.map(z => z.name)).toEqual(['tk1a'])

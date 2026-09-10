@@ -394,11 +394,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     zones: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:zones', auth),
     // 段階②: クラスタ→ASG→LB の順で作る。同意（consentedAt）が記録に無ければ main 側が
     // API を一度も呼ばずに中止する。押す前の確認ダイアログは呼び出し側（画面）の責務。
-    create: (projectDir: string, auth: { token: string; secret: string }, spec: ApprunDedicatedClusterSpec) =>
-      ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec),
-    // 段階④: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
-    teardown: (projectDir: string, auth: { token: string; secret: string }) =>
-      ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth),
+    // opts.confirmed は「確認ダイアログを通ったか」の印（2026-09-10 レビューの修理・A）。
+    create: (projectDir: string, auth: { token: string; secret: string }, spec: ApprunDedicatedClusterSpec, opts?: { confirmed?: boolean }) =>
+      ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec, opts),
+    // 段階④: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
+    teardown: (projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }) =>
+      ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts),
     // いま何が作られているか（.sakuraide.json の記録）を返す。API は呼ばない。
     state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir),
   },

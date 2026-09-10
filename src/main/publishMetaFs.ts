@@ -31,12 +31,19 @@ function readMetaRaw(projectDir: string): unknown {
   }
 }
 
-/** マージ済みの次の状態を書き込む。失敗しても投げず、console.warn にだけ残す（利用者には出さない）。 */
-function writeMetaRaw(projectDir: string, next: Record<string, unknown>, what: string): void {
+/**
+ * マージ済みの次の状態を書き込む。失敗しても投げず、console.warn にだけ残す（利用者には出さない）。
+ * **成功したら true・例外は false を返す**（2026-09-10 レビューの修理・C: 呼び出し元のうち
+ * `writeApprunDedicatedRecordFs` だけが戻り値を見て「記録できなければ止まる」判断に使う。
+ * 他の呼び出し元は従来どおり戻り値を無視してよい＝振る舞い不変）。
+ */
+function writeMetaRaw(projectDir: string, next: Record<string, unknown>, what: string): boolean {
   try {
     fs.writeFileSync(metaFilePath(projectDir), JSON.stringify(next, null, 2))
+    return true
   } catch (e) {
     console.warn(`[publishMetaFs] ${what}の書き込みに失敗しました（公開処理そのものは続行）:`, e)
+    return false
   }
 }
 
@@ -107,12 +114,18 @@ export function readApprunDedicatedFs(projectDir: string): ApprunDedicatedRecord
  * createClusterFlow/teardownFlow は、各段が成功した直後（＝クラウド側に資源ができた/消えた
  * 直後）に必ずここを呼ぶ。呼ばないと、途中で落ちたときに「作れたのに記録が無い」状態になり、
  * Koto から二度と消せないまま課金だけが残る（2026-08-14 の教訓と同じ形）。
+ *
+ * **成功したら true・書き込めなければ false を返す**（2026-09-10 レビューの修理・C）。
+ * `createClusterFlow` は戻り値が false のとき、その場で処理を止める（記録なしで課金資源を
+ * 増やさない）。他の呼び出し元（renderer の saveMeta 等はこの関数を直接は呼ばない）は
+ * 戻り値を無視してもよい。
  */
-export function writeApprunDedicatedRecordFs(projectDir: string, patch: Partial<ApprunDedicatedRecord>): void {
+export function writeApprunDedicatedRecordFs(projectDir: string, patch: Partial<ApprunDedicatedRecord>): boolean {
   try {
     const next = withApprunDedicatedRecord(readMetaRaw(projectDir), patch)
-    writeMetaRaw(projectDir, next, 'AppRun専有型の記録')
+    return writeMetaRaw(projectDir, next, 'AppRun専有型の記録')
   } catch (e) {
     console.warn('[publishMetaFs] AppRun専有型の記録の書き込みに失敗しました（処理そのものは続行）:', e)
+    return false
   }
 }
