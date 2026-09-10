@@ -39,6 +39,16 @@
 /** モニタリングスイートで扱う2つの種類。 */
 export type TelemetryKind = 'logs' | 'metrics'
 
+/**
+ * kind が 'logs' | 'metrics' のどちらかであることを検証する（R・2026-09-10 レビューの修理・
+ * バッチ3）。main の IPC ハンドラ（cloud:telemetryStatus / cloud:enableTelemetry）は renderer
+ * から渡された kind を検証せずそのまま URL とPOST本文へ入れていた——ここが「最後の砦」として、
+ * 不正な値なら fetch を一切呼ばせない（掟10と同じ形。TS の型注釈は実行時には効かない）。
+ */
+export function isTelemetryKind(v: unknown): v is TelemetryKind {
+  return v === 'logs' || v === 'metrics'
+}
+
 /** AppRun 用の publisher（実測で確定・ログ／メトリクス共通）。 */
 export const APPRUN_PUBLISHER = 'apprun'
 

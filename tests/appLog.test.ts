@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   decideTelemetryAction, decideEnableTelemetry, parseProvisioningState, pickStorageId, hasAppRouting,
-  APPRUN_PUBLISHER, APPRUN_VARIANT,
+  APPRUN_PUBLISHER, APPRUN_VARIANT, isTelemetryKind,
   // 後方互換の薄い皮（kind: 'logs' 固定）も、生きたまま同じ判断を返すことを確かめる
   decideLogAction, pickLogStorageId, hasAppLogRouting, APPRUN_LOG_PUBLISHER, APPRUN_LOG_VARIANT,
   type TelemetryKind,
@@ -12,7 +12,11 @@ import {
 // 2026-08-14 Ryosuke 指摘:「ログが既定では ON になっていない。作った時に ON にできないか」
 // 2026-09-08 #30: さくらの開発者の助言「ログとメトリクスは有効にしてて欲しい」でメトリクスへ拡張。
 //
-// 値はすべて**実アカウントで実測**した（掟1・推測しない）。以下は実際の応答の形。
+// 形（応答の構造・桁数・型）はすべて**実アカウントで実測**した（掟1・推測しない）。
+// ── 2026-09-10 検分の直し ───────────────────────────────────────────
+// **値（ID）は架空**（実アカウントのIDは書かない。このテストは公開リポジトリへ
+// そのまま同期されるため）。形は docs/roadmap.md #30・#31 の実測どおりのまま、
+// 同じ値は同じ架空値に一貫して置換した（100000000001〜100000000005）。
 
 // `management/provisioning/state/` は logs と metrics を同じ形で並べて返す（実測）
 const STATE = { logs: { system_exist: false, user_exist: true }, metrics: { system_exist: false, user_exist: false } }
@@ -20,17 +24,18 @@ const STATE = { logs: { system_exist: false, user_exist: true }, metrics: { syst
 const LOG_STORAGES = {
   count: 1,
   results: [{
-    id: '113801792528', name: 'デフォルト', description: 'ユーザーログ領域',
+    id: '100000000001', name: 'デフォルト', description: 'ユーザーログ領域',
     expire_day: 40, is_system: false, classification: 'shared',
   }],
 }
-// 実測: 2026-09-08 GET /metrics/storages/（Ryosuke さんの実アカウント。docs/roadmap.md #30 に
-// 生の応答を記録済み。'm-1'・'999000111' のような手作りの値は使わない・掟1）
+// 形は実測どおり: 2026-09-08 GET /metrics/storages/（docs/roadmap.md #30 に生の応答を記録済み。
+// 値は架空——実アカウントのIDは書かない。'm-1'・'999000111' のような**形まで違う**手作りの
+// 値は使わない・掟1）
 const METRICS_STORAGES = {
   count: 1, from: 0, total: 1, is_ok: true,
   results: [{
-    id: '113802075468', name: 'デフォルト', description: 'ユーザーメトリクス領域',
-    is_system: false, resource_id: '113802075468',
+    id: '100000000002', name: 'デフォルト', description: 'ユーザーメトリクス領域',
+    is_system: false, resource_id: '100000000002',
     usage: { metrics_routings: 1, alert_rules: 0, log_measure_rules: 0 },
   }],
 }
@@ -38,15 +43,15 @@ const METRICS_STORAGES = {
 const LOG_ROUTINGS = {
   count: 2,
   results: [
-    { id: 870240, resource_id: '113801820576', publisher: { code: 'apprun' }, variant: 'applicationlog' },
-    { id: 780252, resource_id: '113801792527', publisher: { code: 'apprun' }, variant: 'applicationlog' },
+    { id: 870240, resource_id: '100000000003', publisher: { code: 'apprun' }, variant: 'applicationlog' },
+    { id: 780252, resource_id: '100000000004', publisher: { code: 'apprun' }, variant: 'applicationlog' },
   ],
 }
 // 実測: 2026-09-08 GET /metrics/routings/（docs/roadmap.md #30）
 const METRICS_ROUTINGS = {
   count: 1, total: 1, is_ok: true,
   results: [
-    { id: 720190, resource_id: '113802075566', publisher: { code: 'apprun' }, variant: 'applicationmetrics' },
+    { id: 720190, resource_id: '100000000005', publisher: { code: 'apprun' }, variant: 'applicationmetrics' },
   ],
 }
 
@@ -66,6 +71,26 @@ describe('固定値は実測どおり', () => {
   })
 })
 
+// R（2026-09-10 レビューの修理・バッチ3）: main の IPC ハンドラ（cloud:telemetryStatus /
+// cloud:enableTelemetry）は renderer から渡された kind を検証せず URL・POST本文に使っていた。
+// isTelemetryKind は「最後の砦」——'logs'/'metrics' 以外を弾く純関数。
+describe('isTelemetryKind: logs/metrics だけを true にする（最後の砦）', () => {
+  it("'logs' / 'metrics' は true", () => {
+    expect(isTelemetryKind('logs')).toBe(true)
+    expect(isTelemetryKind('metrics')).toBe(true)
+  })
+
+  it('それ以外（別の文字列・null・undefined・オブジェクト・数値）は false', () => {
+    expect(isTelemetryKind('Logs')).toBe(false) // 大文字小文字も別物として弾く
+    expect(isTelemetryKind('log')).toBe(false)
+    expect(isTelemetryKind('')).toBe(false)
+    expect(isTelemetryKind(null)).toBe(false)
+    expect(isTelemetryKind(undefined)).toBe(false)
+    expect(isTelemetryKind({})).toBe(false)
+    expect(isTelemetryKind(123)).toBe(false)
+  })
+})
+
 describe('実測した応答を読める（generalize: kind で分岐）', () => {
   it('provisioning/state から、指定した種類のユーザー領域があるかを読む', () => {
     expect(parseProvisioningState(STATE, 'logs')).toBe(true)
@@ -76,11 +101,11 @@ describe('実測した応答を読める（generalize: kind で分岐）', () =>
   })
 
   it('使うストレージを選ぶ（ログ・メトリクス共通の形）', () => {
-    expect(pickStorageId(LOG_STORAGES)).toBe('113801792528')
-    expect(pickStorageId(METRICS_STORAGES)).toBe('113802075468')
+    expect(pickStorageId(LOG_STORAGES)).toBe('100000000001')
+    expect(pickStorageId(METRICS_STORAGES)).toBe('100000000002')
     expect(pickStorageId({ results: [] })).toBe(null)
     expect(pickStorageId(null)).toBe(null)
-    expect(pickLogStorageId(LOG_STORAGES)).toBe('113801792528') // 後方互換の薄い皮
+    expect(pickLogStorageId(LOG_STORAGES)).toBe('100000000001') // 後方互換の薄い皮
   })
 
   // システム領域は利用者のものではない
@@ -90,11 +115,11 @@ describe('実測した応答を読める（generalize: kind で分岐）', () =>
   })
 
   it('このアプリのルーティングが既にあるかを、種類ごとに正しく判定する', () => {
-    expect(hasAppRouting(LOG_ROUTINGS, '113801820576', 'logs')).toBe(true)
+    expect(hasAppRouting(LOG_ROUTINGS, '100000000003', 'logs')).toBe(true)
     expect(hasAppRouting(LOG_ROUTINGS, '999', 'logs')).toBe(false)
-    expect(hasAppRouting(METRICS_ROUTINGS, '113802075566', 'metrics')).toBe(true)
-    expect(hasAppRouting(METRICS_ROUTINGS, '113802075566', 'logs')).toBe(false) // ログ扱いにしない
-    expect(hasAppLogRouting(LOG_ROUTINGS, '113801820576')).toBe(true) // 後方互換の薄い皮
+    expect(hasAppRouting(METRICS_ROUTINGS, '100000000005', 'metrics')).toBe(true)
+    expect(hasAppRouting(METRICS_ROUTINGS, '100000000005', 'logs')).toBe(false) // ログ扱いにしない
+    expect(hasAppLogRouting(LOG_ROUTINGS, '100000000003')).toBe(true) // 後方互換の薄い皮
   })
 
   // 別のアプリ・別の種類のルーティングを「自分のもの」と誤認しない
@@ -115,10 +140,10 @@ describe.each<TelemetryKind>(['logs', 'metrics'])('公開のときに何をす�
   // ★ 課金は**ストレージ単位**。ルーティングを足すだけなら費用は増えない。
   //    ここで確認を出すと、意味の分からない同意を1つ増やすだけになる
   it('領域があれば、確認せずに繋ぐ（追加費用が無いため）', () => {
-    const a = decideTelemetryAction({ storageReady: true, storageId: '113801792528', alreadyRouted: false }, kind)
+    const a = decideTelemetryAction({ storageReady: true, storageId: '100000000001', alreadyRouted: false }, kind)
     expect(a.kind).toBe('route')
     if (a.kind !== 'route') throw new Error('unreachable')
-    expect(a.storageId).toBe('113801792528')
+    expect(a.storageId).toBe('100000000001')
   })
 
   // ★ 領域が無い＝作ると月額が発生する。**勝手に作らない**
@@ -146,10 +171,10 @@ describe.each<TelemetryKind>(['logs', 'metrics'])('公開のときに何をす�
 // ここでは**実際にこの関数を呼んで**4状態を確かめる（文字列一致ではなく振る舞いで守る）。
 describe('decideEnableTelemetry: cloud:enableTelemetry が実際に何をすべきか（#30 検分の直し）', () => {
   it('置き場あり × 同意なし → route（追加費用が無いので同意は要らない）', () => {
-    const d = decideEnableTelemetry({ storageReady: true, storageId: '113801792528', alreadyRouted: false }, { consented: false })
+    const d = decideEnableTelemetry({ storageReady: true, storageId: '100000000001', alreadyRouted: false }, { consented: false })
     expect(d.do).toBe('route')
     if (d.do !== 'route') throw new Error('unreachable')
-    expect(d.storageId).toBe('113801792528')
+    expect(d.storageId).toBe('100000000001')
   })
 
   it('置き場なし × 同意なし → need-consent（初期化を呼ばせない）', () => {
@@ -202,11 +227,19 @@ describe('公開の経路が、ログ・メトリクスの設定を通ってい�
 
   it('公開のあとにログの設定を確かめている', () => {
     expect(src).toContain("await ensureTelemetryRouting('logs', creds, resourceId, progress)")
-    expect(src).toContain('async function ensureTelemetryRouting')
   })
 
   it('公開のあとにメトリクスの設定も確かめている（ログだけに留まらない）', () => {
     expect(src).toContain("await ensureTelemetryRouting('metrics', creds, resourceId, progress)")
+  })
+
+  // 2026-09-10: ensureTelemetryRouting 本体は main/cloud/monitoring.ts へ移した
+  // （enableTelemetry と並べる・掟10）。ここ（cloud.ts）は import して呼ぶだけ。
+  it('ensureTelemetryRouting は main/cloud/monitoring.ts から import している（実装を複製していない）', () => {
+    expect(src).toContain(
+      "import { MonitoringClient, fetchTelemetryStatus, enableTelemetry, ensureTelemetryRouting } from '../cloud/monitoring'",
+    )
+    expect(src).not.toContain('async function ensureTelemetryRouting')
   })
 
   // ★ #30 検分の指摘6: resource_id はログ・メトリクスで同じものを使うので、公開のたびに
@@ -217,20 +250,25 @@ describe('公開の経路が、ログ・メトリクスの設定を通ってい�
     expect(matches.length).toBe(1)
   })
 
-  it('固定値を手で書かず、一元定義を使っている', () => {
-    expect(src).toContain('APPRUN_PUBLISHER')
-    expect(src).toContain('APPRUN_VARIANT')
+  // 固定値（APPRUN_PUBLISHER・APPRUN_VARIANT）を手で書かず一元定義を使っているかは、
+  // 実装（ensureTelemetryRouting）が実際にある main/cloud/monitoring.ts 側で確かめる
+  // （2026-09-10: cloud.ts からロジックを移したので、確認する場所も移す）。
+  it('固定値（moved先）: monitoring.ts が一元定義を使っている（cloud.ts に複製していない）', () => {
+    const mon = readFileSync(join(__dirname, '..', 'src', 'main', 'cloud', 'monitoring.ts'), 'utf-8')
+    expect(mon).toContain('APPRUN_PUBLISHER')
+    expect(mon).toContain('APPRUN_VARIANT')
     expect(src).not.toMatch(/publisherCode: 'apprun'/)
     expect(src).not.toMatch(/variant: 'applicationlog'/)
     expect(src).not.toMatch(/variant: 'applicationmetrics'/)
   })
 
-  // ★ 費用の発生する操作（領域の作成）を、公開のついでにやってはいけない
-  it('公開の流れでは、費用の発生する初期化を呼ばない', () => {
-    const at = src.indexOf('async function ensureTelemetryRouting')
-    const body = src.slice(at, at + 2000)
-    expect(body).not.toContain('initializeProvisioning')
-    expect(body).toContain("action.kind !== 'route'")
+  // ★ 費用の発生する操作（領域の作成）を、公開のついでにやってはいけない。
+  // 直す前はここでソースの2000文字窓を grep していたが、「文字列がそう書いてあるか」
+  // しか見ておらず、`action.kind !== 'route'` の早期 return を外す変異が素通りしていた
+  // （2026-09-10 検分）。**実際に偽サーバへ何本リクエストが飛ぶか**で固定し直す
+  // （tests/monitoring.test.ts の「ensureTelemetryRouting は公開の流れで費用を発生させない」）。
+  it('公開の流れでは、費用の発生する初期化を呼ばない（振る舞いは tests/monitoring.test.ts で固定）', () => {
+    expect(src).toContain("await ensureTelemetryRouting('logs', creds, resourceId, progress)")
   })
 
   // ★ ログの設定に失敗しても、公開そのものは失敗にしない（メトリクスも同様）
@@ -258,7 +296,9 @@ describe('公開の経路が、ログ・メトリクスの設定を通ってい�
   }
 
   it('cloud:enableTelemetry は判断ロジックを持たず、main/cloud/monitoring.ts の enableTelemetry を呼ぶだけ', () => {
-    expect(src).toContain("import { MonitoringClient, fetchTelemetryStatus, enableTelemetry } from '../cloud/monitoring'")
+    expect(src).toContain(
+      "import { MonitoringClient, fetchTelemetryStatus, enableTelemetry, ensureTelemetryRouting } from '../cloud/monitoring'",
+    )
     const body = handlerBody("ipcMain.handle('cloud:enableTelemetry'")
     // ハンドラ自身は initializeProvisioning を直接呼ばない（呼ぶのは monitoring.ts 側だけ）
     expect(body).not.toContain('initializeProvisioning')
@@ -272,6 +312,22 @@ describe('公開の経路が、ログ・メトリクスの設定を通ってい�
     const body = handlerBody("ipcMain.handle('cloud:telemetryStatus'")
     expect(body).not.toContain('initializeProvisioning')
     expect(body).toContain('return await fetchTelemetryStatus(mon, kind, resourceId)')
+  })
+
+  // R（2026-09-10 レビューの修理・バッチ3）: renderer から渡された kind を main 側が検証せず、
+  // URL とPOST本文にそのまま入れていた。isTelemetryKind（src/shared/appLog.ts）による検証が
+  // **ハンドラの先頭**（try より前・fetch より前）にあることを、呼び出しの形ごと一意に固定する。
+  it('cloud:enableTelemetry / cloud:telemetryStatus は、isTelemetryKind の検証を先頭で行い、不正なら fetch しない', () => {
+    expect(src).toContain("import { isTelemetryKind, type TelemetryKind } from '../../shared/appLog'")
+
+    const enableBody = handlerBody("ipcMain.handle('cloud:enableTelemetry'")
+    expect(enableBody).toContain("if (!isTelemetryKind(kind)) return { ok: false, message: '種類が不正です' }")
+    // try（＝loadCredentials・fetch を含む本体）より前にあること。
+    expect(enableBody.indexOf('isTelemetryKind(kind)')).toBeLessThan(enableBody.indexOf('try {'))
+
+    const statusBody = handlerBody("ipcMain.handle('cloud:telemetryStatus'")
+    expect(statusBody).toContain("if (!isTelemetryKind(kind)) return { ok: false, message: '種類が不正です' }")
+    expect(statusBody.indexOf('isTelemetryKind(kind)')).toBeLessThan(statusBody.indexOf('try {'))
   })
 })
 

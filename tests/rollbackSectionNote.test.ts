@@ -38,3 +38,28 @@ describe('RollbackSection: 「手元のファイルは変わりません」相�
     expect(before).toContain('公開したもの')
   })
 })
+
+// S（2026-09-10 レビューの修理・バッチ3）: 切替の実行中（busy）は、すべての「このバージョンに
+// 戻す」ボタンと「最新に戻す」ボタンを disabled にする。直す前は「押した本人のボタン」だけが
+// disabled になり、切替の最中に別のバージョンへの切替を押せてしまっていた。
+describe('RollbackSection: 切替の実行中は、すべての切替ボタンを disabled にする', () => {
+  it('anySwitching（switchingLatest || switching !== null）を定義している', () => {
+    expect(section).toContain('const anySwitching = switchingLatest || switching !== null')
+  })
+
+  it('「↺ 最新に戻す」ボタンの disabled は anySwitching（自分の busy フラグだけではない）', () => {
+    const at = section.indexOf("onClick={() => void doSwitch(null, '最新のバージョン')}")
+    expect(at).toBeGreaterThan(0)
+    const block = section.slice(at, section.indexOf('</button>', at))
+    expect(block).toContain('disabled={anySwitching}')
+    expect(block).not.toContain('disabled={switchingLatest}')
+  })
+
+  it('「このバージョンに戻す」ボタンの disabled も anySwitching を含む（alreadyPinnedHere とは独立に効く）', () => {
+    const at = section.indexOf('onClick={() => v.name && void doSwitch(v.name, v.name)}')
+    expect(at).toBeGreaterThan(0)
+    const block = section.slice(at, section.indexOf('</button>', at))
+    expect(block).toContain('disabled={!v.name || anySwitching || alreadyPinnedHere}')
+    expect(block).not.toContain('disabled={!v.name || busy || alreadyPinnedHere}')
+  })
+})

@@ -18,10 +18,14 @@ import type { CloudCredentials } from './auth'
 import {
   getLimits, listClusters, createCluster, getCluster, deleteCluster,
   createAsg, getAsg, deleteAsg, createLoadBalancer, deleteLoadBalancer,
+  listAsg, listLoadBalancers,
 } from './apprunDedicated'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import type { ApprunDedicatedRecord } from '../../shared/publishMeta'
-import { readLimits, readClusters, readClusterId, readAsgId, readLoadBalancerId } from '../../shared/apprunDedicatedShapes'
+import {
+  readLimits, readClusters, readClusterId, readAsgId, readLoadBalancerId,
+  readClusterRows, readAsgRows, readLoadBalancerRows,
+} from '../../shared/apprunDedicatedShapes'
 
 // ── 入力の形 ──────────────────────────────────────────────────────────
 
@@ -47,6 +51,54 @@ export type ApprunDedicatedClusterSpec = {
 export const RESERVED_PORT_RANGE: readonly [number, number] = [5950, 5959]
 export function isReservedPort(port: number): boolean {
   return port >= RESERVED_PORT_RANGE[0] && port <= RESERVED_PORT_RANGE[1]
+}
+
+// ── L（2026-09-10 レビューの修理・バッチ3）: 入力検証を「最後の砦」として本当に働かせる ─────
+// `isReservedPort` は「最後の砦」と書かれていたのに createClusterFlow から呼ばれていなかった。
+// main の IPC ハンドラ（apprunDedicated.ts の isClusterSpec）も ports の中身や minNodes/maxNodes
+// の範囲を見ていない——つまり画面の入力チェックを迂回して IPC を直接叩けば、不正な値のまま
+// fetch まで届いていた。ここに純関数として検証をまとめ、createClusterFlow の入口
+// （confirmed・consentedAt の判定の後、fetch の前）で呼ぶ。違反があれば fetch を一切呼ばない。
+const CLUSTER_NAME_RE = /^[A-Za-z0-9_-]{1,20}$/
+const SERVICE_PRINCIPAL_ID_RE = /^\d{12}$/
+
+export type ClusterSpecValidation = { ok: true } | { ok: false; message: string }
+
+/** createClusterFlow への入力を検証する（画面側の入力チェックと同じ基準・5-2/5-5/5-6）。 */
+export function validateClusterSpec(spec: ApprunDedicatedClusterSpec): ClusterSpecValidation {
+  if (typeof spec.name !== 'string' || !CLUSTER_NAME_RE.test(spec.name)) {
+    return { ok: false, message: `クラスタ名は1〜20文字の英数字・_・- で指定してください（受け取った値: ${JSON.stringify(spec.name)}）` }
+  }
+  if (!Array.isArray(spec.ports) || spec.ports.length === 0) {
+    return { ok: false, message: '公開ポートを1つ以上指定してください' }
+  }
+  for (const p of spec.ports) {
+    if (!p || !Number.isInteger(p.port) || p.port < 1 || p.port > 65535) {
+      return { ok: false, message: `ポート番号は1〜65535の整数で指定してください（受け取った値: ${JSON.stringify(p?.port)}）` }
+    }
+    if (p.protocol !== 'http' && p.protocol !== 'https') {
+      return { ok: false, message: `protocol は 'http' か 'https' のみです（受け取った値: ${JSON.stringify(p.protocol)}）` }
+    }
+    if (isReservedPort(p.port)) {
+      return { ok: false, message: `ポート ${RESERVED_PORT_RANGE[0]}-${RESERVED_PORT_RANGE[1]} は予約されており使えません（指定値: ${p.port}）` }
+    }
+  }
+  if (!Number.isInteger(spec.minNodes) || spec.minNodes < 1 || spec.minNodes > 10) {
+    return { ok: false, message: `ノード数（min）は1〜10の整数で指定してください（受け取った値: ${JSON.stringify(spec.minNodes)}）` }
+  }
+  if (!Number.isInteger(spec.maxNodes) || spec.maxNodes < 1 || spec.maxNodes > 10) {
+    return { ok: false, message: `ノード数（max）は1〜10の整数で指定してください（受け取った値: ${JSON.stringify(spec.maxNodes)}）` }
+  }
+  if (spec.minNodes > spec.maxNodes) {
+    return { ok: false, message: `ノード数は min ≦ max にしてください（min:${spec.minNodes} > max:${spec.maxNodes}）` }
+  }
+  if (typeof spec.servicePrincipalID !== 'string' || !SERVICE_PRINCIPAL_ID_RE.test(spec.servicePrincipalID)) {
+    return { ok: false, message: 'servicePrincipalID は12桁の数字で指定してください' }
+  }
+  if (typeof spec.zone !== 'string' || !spec.zone.trim()) {
+    return { ok: false, message: 'ゾーンを指定してください' }
+  }
+  return { ok: true }
 }
 
 // ── リクエスト本文の組み立て（純関数。テスト対象） ──────────────────────────────
@@ -110,7 +162,8 @@ export function countClusters(data: unknown): number {
 // ── createClusterFlow ────────────────────────────────────────────────
 
 export type CreateClusterFlowStage =
-  | 'consent' | 'limits' | 'cluster-create' | 'cluster-verify' | 'asg-create' | 'asg-verify' | 'lb-create' | 'done'
+  | 'consent' | 'invalid' | 'existing' | 'record' | 'limits'
+  | 'cluster-create' | 'cluster-verify' | 'asg-create' | 'asg-verify' | 'lb-create' | 'lb-verify' | 'done'
 
 export type CreateClusterFlowResult = {
   ok: boolean
@@ -123,26 +176,99 @@ export type CreateClusterFlowResult = {
 }
 
 /**
+ * 記録への書き込みを試み、失敗したら「作られたのに記録できなかった」失敗結果を作る
+ * （2026-09-10 レビューの修理・C: 記録の書き込み失敗で止まる。記録なしで課金資源を増やさない）。
+ * 成功すれば null（呼び出し側はそのまま続けてよい）。
+ */
+function recordOrStop(
+  projectDir: string,
+  patch: Partial<ApprunDedicatedRecord>,
+  label: string,
+  id: string,
+  ids: { clusterID?: string | null; asgID?: string | null; loadBalancerID?: string | null },
+): CreateClusterFlowResult | null {
+  const wrote = writeApprunDedicatedRecordFs(projectDir, patch)
+  if (wrote) return null
+  return {
+    ok: false, stage: 'record',
+    message: `${label}は作成されました（ID『${id}』）が、記録に書き込めませんでした。このIDを控えて、コントロールパネルで確認してください。`,
+    ...ids,
+  }
+}
+
+/**
  * クラスタ→ASG→LB の順で作り、各段が成功した直後に `.sakuraide.json` へ記録する。
  *
  * 安全規約:
+ *  0. **`opts.confirmed !== true` なら、API を一切呼ばずに中止する**（2026-09-10 レビューの修理・A・
+ *     掟10「お金・破壊の歯止めは振る舞いで固定する」の3点セット。confirmed＝「今回の操作の確認
+ *     ダイアログを通ったか」。consentedAt（下の1.）＝「費用に同意したか」とは意味が違うので、
+ *     両方のゲートを独立に持つ）。
  *  1. **同意（consentedAt）が記録に無ければ、API を一度も呼ばずに中止する。**
+ *  1.2 **入力を `validateClusterSpec` で検証する**（2026-09-10 レビューの修理・L。画面の入力
+ *      チェックを迂回して IPC を直接叩かれても、ここが「最後の砦」として fetch を止める）。
+ *  1.5 **記録に既に何か（clusterID/asgID/loadBalancerID のいずれか）があれば、新規作成させない**
+ *      （2026-09-10 レビューの修理・B。先に作ったクラスタが記録から上書きされて消える事故を防ぐ）。
+ *  1.8 **`.sakuraide.json` へ書き込めるかを、最初のPOSTより前に確かめる**（2026-09-10 レビューの
+ *      修理・C。ここまでは fetch を一切呼んでいない）。
  *  2. `GET /limits` と現在のクラスタ数を突き合わせ、上限に達していれば作る前に止める。
+ *     **`clusterCount` が数値で読めなければ、上限チェックを飛ばさず止める**（2026-09-10 レビューの
+ *     修理・F。「分からない」を「大丈夫」に倒さない）。
  *  3. クラスタ作成 → `getCluster` で実在確認 → ASG作成 → `getAsg` で実在確認 → LB作成、の順。
  *     POST が成功してIDを取れた時点で**確認を待たずに記録する**——`getCluster`/`getAsg` は
  *     「次の段へ進んでよいか」のゲートであって、「記録してよいか」のゲートではない。POSTが
  *     成功した以上、実際には資源ができている可能性があるため、確認が取れなくても記録は残す
  *     （2026-08-14「成功と読んだ応答は結果を確かめるまで成功ではない」の逆側——**確認できない
  *     ことは「作られていない」の証明にもならない**。記録しない方が課金を見失う危険が大きい）。
+ *     **記録の書き込みそのものが失敗したら、その場で止める**（recordOrStop・C）。
+ *  3.5 **作成POSTの応答が取れなかったときは、一覧を名前で探す**（2026-09-10 レビューの修理・D）。
+ *      見つかればそのIDを記録して失敗を返す（「分からない」を「未作成」に倒さない）。見つからない・
+ *      一覧も失敗なら、断定しない文言（「確認できませんでした」）で失敗を返す。
+ *  3.8 **LB作成後も、クラスタ・ASGと同じく実在確認する**（2026-09-10 レビューの修理・M）。
+ *      LBには `getLoadBalancer` 相当の単体取得APIが無いため、`listLoadBalancers` を引いて
+ *      そのIDが一覧にあるかで確かめる。無ければ `stage:'lb-verify'` で「確認できませんでした」
+ *      （記録は残したまま。クラスタ・ASGの verify と同じ方針）。
  *  4. 途中で失敗しても**自動では巻き戻さない**（呼び出し側＝画面が、記録された分の破棄を促す）。
  */
 export async function createClusterFlow(
-  auth: CloudCredentials, projectDir: string, spec: ApprunDedicatedClusterSpec, baseUrl?: string,
+  auth: CloudCredentials, projectDir: string, spec: ApprunDedicatedClusterSpec,
+  opts: { confirmed: boolean }, baseUrl?: string,
 ): Promise<CreateClusterFlowResult> {
-  // 1. 同意の確認。**ここより先で fetch を一切呼ばない。**
+  // 0. 確認ダイアログを通ったか。**ここより先で fetch を一切呼ばない。**
+  if (opts.confirmed !== true) {
+    return { ok: false, stage: 'consent', message: '確認ダイアログを通っていません' }
+  }
+
+  // 1. 同意の確認（費用への同意＝consentedAt。confirmedとは別の意味）。
   const record = readApprunDedicatedFs(projectDir)
   if (!record.consentedAt) {
     return { ok: false, stage: 'consent', message: '費用の同意が記録されていません。④で同意してから作成してください。' }
+  }
+
+  // 1.2. 入力検証（L・2026-09-10 レビューの修理・バッチ3）。画面側でも同じ基準で検証しているが、
+  // ここは「最後の砦」——IPCを直接叩かれても、ここを通らなければ fetch は一切呼ばれない。
+  const validation = validateClusterSpec(spec)
+  if (!validation.ok) {
+    return { ok: false, stage: 'invalid', message: validation.message }
+  }
+
+  // 1.5. 既に記録があれば新規作成させない。
+  if (record.clusterID || record.asgID || record.loadBalancerID) {
+    return {
+      ok: false, stage: 'existing',
+      message: `このプロジェクトには作られたものの記録があります（クラスタID『${record.clusterID ?? '(記録なし)'}』）。⑥で破棄してから作成してください。`,
+      clusterID: record.clusterID ?? null,
+      asgID: record.asgID ?? null,
+      loadBalancerID: record.loadBalancerID ?? null,
+    }
+  }
+
+  // 1.8. 記録ファイルへ書き込めるかを、最初のPOSTより前に確かめる（fetchはまだ一切呼んでいない）。
+  if (!writeApprunDedicatedRecordFs(projectDir, {})) {
+    return {
+      ok: false, stage: 'record',
+      message: '記録ファイル（.sakuraide.json）に書き込めないため作成を始めません。フォルダの権限を確認してください。',
+    }
   }
 
   // 2. 上限の確認。
@@ -151,24 +277,47 @@ export async function createClusterFlow(
     return { ok: false, stage: 'limits', message: `上限を確認できませんでした: ${limitsRes.message}` }
   }
   const clusterLimit = readLimits(limitsRes.data).clusterCount
-  if (typeof clusterLimit === 'number') {
-    const listRes = await listClusters(auth, baseUrl)
-    if (!listRes.ok) {
-      return { ok: false, stage: 'limits', message: `既存クラスタ数を確認できませんでした: ${listRes.message}` }
+  if (typeof clusterLimit !== 'number') {
+    return {
+      ok: false, stage: 'limits',
+      message: `上限（clusterCount）を応答から読み取れませんでした（応答の形が想定と違います）。生の応答: ${JSON.stringify(limitsRes.data)}`,
     }
-    const current = countClusters(listRes.data)
-    if (current >= clusterLimit) {
-      return {
-        ok: false, stage: 'limits',
-        message: `クラスタは最大${clusterLimit}個です。いま${current}個あります。`,
-      }
+  }
+  const listRes = await listClusters(auth, baseUrl)
+  if (!listRes.ok) {
+    return { ok: false, stage: 'limits', message: `既存クラスタ数を確認できませんでした: ${listRes.message}` }
+  }
+  const current = countClusters(listRes.data)
+  if (current >= clusterLimit) {
+    return {
+      ok: false, stage: 'limits',
+      message: `クラスタは最大${clusterLimit}個です。いま${current}個あります。`,
     }
   }
 
   // 3-a. クラスタ作成。
   const clusterRes = await createCluster(auth, buildClusterCreateBody(spec), baseUrl)
   if (!clusterRes.ok) {
-    return { ok: false, stage: 'cluster-create', message: `クラスタの作成に失敗しました: ${clusterRes.message}` }
+    // 応答が取れなかった。一覧を名前で探し、見つかれば記録する（D）。
+    const foundListRes = await listClusters(auth, baseUrl)
+    const found = foundListRes.ok ? readClusterRows(foundListRes.data).find(r => r.name === spec.name) : null
+    if (found) {
+      const stop = recordOrStop(projectDir, {
+        clusterID: found.clusterID, name: spec.name, zone: spec.zone,
+        workerServiceClassPath: spec.workerServiceClassPath, lbServiceClassPath: spec.lbServiceClassPath,
+        createdAt: new Date().toISOString(),
+      }, 'クラスタ', found.clusterID, { clusterID: found.clusterID })
+      if (stop) return stop
+      return {
+        ok: false, stage: 'cluster-create',
+        message: `クラスタ作成の応答を受け取れませんでしたが、同じ名前のクラスタが見つかったので記録しました（ID『${found.clusterID}』）。元のエラー: ${clusterRes.message}`,
+        clusterID: found.clusterID,
+      }
+    }
+    return {
+      ok: false, stage: 'cluster-create',
+      message: `クラスタの作成に失敗しました: ${clusterRes.message}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`,
+    }
   }
   const clusterID = readClusterId(clusterRes.data)
   if (!clusterID) {
@@ -176,14 +325,15 @@ export async function createClusterFlow(
   }
   // POSTが成功しIDが取れた時点で記録する（getClusterの結果を待たない。上のコメント参照）。
   const nowIso = new Date().toISOString()
-  writeApprunDedicatedRecordFs(projectDir, {
+  const clusterWriteStop = recordOrStop(projectDir, {
     clusterID,
     name: spec.name,
     zone: spec.zone,
     workerServiceClassPath: spec.workerServiceClassPath,
     lbServiceClassPath: spec.lbServiceClassPath,
     createdAt: nowIso,
-  })
+  }, 'クラスタ', clusterID, { clusterID })
+  if (clusterWriteStop) return clusterWriteStop
 
   // 3-b. 実在確認。確認できるまで「次の段（ASG作成）」へは進まない。
   const verifyClusterRes = await getCluster(auth, clusterID, baseUrl)
@@ -198,9 +348,20 @@ export async function createClusterFlow(
   // 3-c. ASG作成。
   const asgRes = await createAsg(auth, clusterID, buildAsgCreateBody(spec), baseUrl)
   if (!asgRes.ok) {
+    const foundListRes = await listAsg(auth, clusterID, undefined, baseUrl)
+    const found = foundListRes.ok ? readAsgRows(foundListRes.data).find(r => r.name === spec.name) : null
+    if (found) {
+      const stop = recordOrStop(projectDir, { asgID: found.asgID }, 'オートスケーリンググループ', found.asgID, { clusterID, asgID: found.asgID })
+      if (stop) return stop
+      return {
+        ok: false, stage: 'asg-create',
+        message: `オートスケーリンググループ作成の応答を受け取れませんでしたが、同じ名前のASGが見つかったので記録しました（ID『${found.asgID}』）。元のエラー: ${asgRes.message}`,
+        clusterID, asgID: found.asgID,
+      }
+    }
     return {
       ok: false, stage: 'asg-create',
-      message: `オートスケーリンググループの作成に失敗しました: ${asgRes.message}`,
+      message: `オートスケーリンググループの作成に失敗しました: ${asgRes.message}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`,
       clusterID,
     }
   }
@@ -212,7 +373,8 @@ export async function createClusterFlow(
       clusterID,
     }
   }
-  writeApprunDedicatedRecordFs(projectDir, { asgID })
+  const asgWriteStop = recordOrStop(projectDir, { asgID }, 'オートスケーリンググループ', asgID, { clusterID, asgID })
+  if (asgWriteStop) return asgWriteStop
 
   // 3-d. 実在確認。
   const verifyAsgRes = await getAsg(auth, clusterID, asgID, baseUrl)
@@ -227,9 +389,23 @@ export async function createClusterFlow(
   // 3-e. LB作成。**クラスタとは別資源（5-6）。ここまで来ないと存在しない。**
   const lbRes = await createLoadBalancer(auth, clusterID, asgID, buildLbCreateBody(spec), baseUrl)
   if (!lbRes.ok) {
+    const foundListRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
+    const found = foundListRes.ok ? readLoadBalancerRows(foundListRes.data).find(r => r.name === spec.name) : null
+    if (found) {
+      const stop = recordOrStop(
+        projectDir, { loadBalancerID: found.loadBalancerID }, 'ロードバランサ', found.loadBalancerID,
+        { clusterID, asgID, loadBalancerID: found.loadBalancerID },
+      )
+      if (stop) return stop
+      return {
+        ok: false, stage: 'lb-create',
+        message: `ロードバランサ作成の応答を受け取れませんでしたが、同じ名前のロードバランサが見つかったので記録しました（ID『${found.loadBalancerID}』）。元のエラー: ${lbRes.message}`,
+        clusterID, asgID, loadBalancerID: found.loadBalancerID,
+      }
+    }
     return {
       ok: false, stage: 'lb-create',
-      message: `ロードバランサの作成に失敗しました: ${lbRes.message}`,
+      message: `ロードバランサの作成に失敗しました: ${lbRes.message}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`,
       clusterID, asgID,
     }
   }
@@ -241,7 +417,20 @@ export async function createClusterFlow(
       clusterID, asgID,
     }
   }
-  writeApprunDedicatedRecordFs(projectDir, { loadBalancerID })
+  const lbWriteStop = recordOrStop(projectDir, { loadBalancerID }, 'ロードバランサ', loadBalancerID, { clusterID, asgID, loadBalancerID })
+  if (lbWriteStop) return lbWriteStop
+
+  // 3-f. 実在確認（M）。LBには単体取得APIが無いため、一覧にIDがあるかで確かめる
+  // （クラスタ・ASGの verify と同じ扱いに揃える。記録は残したまま——POSTは成功しているため）。
+  const verifyLbListRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
+  const lbFound = verifyLbListRes.ok && readLoadBalancerRows(verifyLbListRes.data).some(r => r.loadBalancerID === loadBalancerID)
+  if (!lbFound) {
+    return {
+      ok: false, stage: 'lb-verify',
+      message: `ロードバランサの作成を確認できませんでした（作成のAPI応答は成功でした。ID『${loadBalancerID}』は記録済みです）${verifyLbListRes.ok ? '' : `: ${verifyLbListRes.message}`}`,
+      clusterID, asgID, loadBalancerID,
+    }
+  }
 
   return { ok: true, stage: 'done', message: '作成できました。', clusterID, asgID, loadBalancerID }
 }
@@ -263,9 +452,21 @@ export type TeardownFlowResult = {
  * 記録に無い資源は触らない。ある段が失敗したら、そこで止める（それより下＝クラスタ側は
  * 触らない——LBが残ったままASGを消せる保証がAPI仕様上どこにも無いため、5-7の順序を厳密に守る）。
  * 各段の成否を即座に記録へ反映する（消せたものは記録から外す＝nullに戻す。消せなかったものは残す）。
+ *
+ * **`opts.confirmed !== true` なら、API を一切呼ばずに中止する**（2026-09-10 レビューの修理・A・
+ * 掟10の3点セット）。
+ *
+ * **「既に無い（404）」を、一覧で確かめてから完了扱いにする**（2026-09-10 レビューの修理・E）。
+ * DELETE が404を返しただけでは「もう存在しない」の証拠にならない（別の原因の404もありうる）ので、
+ * 一覧を引いてIDが本当に無いことを確かめてから、初めて記録を外す。IDがまだ一覧にあれば従来どおり
+ * 「残っています」で止め、一覧そのものが失敗したときも「確かめられない」として止める。
+ * また、DELETE が204（受理）でも、その直後に同じ一覧を引き、**IDがまだあって `deleting !== true`**
+ * なら「本当に消えた」と言い切らず記録を残して止める（掟10 2026-08-14「成功と読んだ応答は
+ * 結果を確かめるまで成功ではない」と同じ形）。無い／`deleting:true`／一覧そのものが失敗したときは
+ * 記録を null に戻して先へ進む（**一覧の失敗では止めない**——DELETE自体は204だったため）。
  */
 export async function teardownFlow(
-  auth: CloudCredentials, projectDir: string, baseUrl?: string,
+  auth: CloudCredentials, projectDir: string, opts: { confirmed: boolean }, baseUrl?: string,
 ): Promise<TeardownFlowResult> {
   const record = readApprunDedicatedFs(projectDir)
   const executed: string[] = []
@@ -273,6 +474,18 @@ export async function teardownFlow(
   const hasCluster = !!record.clusterID
   const hasAsg = !!record.asgID
   const hasLb = !!record.loadBalancerID
+
+  // 確認ダイアログを通ったか。**ここより先で fetch を一切呼ばない。**
+  if (opts.confirmed !== true) {
+    return {
+      ok: false, executed: [], message: '確認ダイアログを通っていません',
+      remaining: {
+        loadBalancerID: record.loadBalancerID ?? undefined,
+        asgID: record.asgID ?? undefined,
+        clusterID: record.clusterID ?? undefined,
+      },
+    }
+  }
 
   if (!hasCluster && !hasAsg && !hasLb) {
     return { ok: true, executed, message: '記録がありません（このプロジェクトでは何も作られていません）。', remaining: {} }
@@ -288,16 +501,50 @@ export async function teardownFlow(
         remaining: { loadBalancerID: record.loadBalancerID as string, asgID: record.asgID ?? undefined, clusterID: record.clusterID ?? undefined },
       }
     }
-    const res = await deleteLoadBalancer(auth, record.clusterID as string, record.asgID as string, record.loadBalancerID as string, baseUrl)
+    const clusterID = record.clusterID as string
+    const asgID = record.asgID as string
+    const loadBalancerID = record.loadBalancerID as string
+    const res = await deleteLoadBalancer(auth, clusterID, asgID, loadBalancerID, baseUrl)
     if (!res.ok) {
-      return {
-        ok: false, executed,
-        message: `ロードバランサの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-        remaining: { loadBalancerID: record.loadBalancerID as string, asgID: record.asgID as string, clusterID: record.clusterID as string },
+      if (res.status === 404) {
+        const listRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
+        if (!listRes.ok) {
+          return {
+            ok: false, executed,
+            message: `ロードバランサの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
+            remaining: { loadBalancerID, asgID, clusterID },
+          }
+        }
+        const present = readLoadBalancerRows(listRes.data).some(r => r.loadBalancerID === loadBalancerID)
+        if (present) {
+          return {
+            ok: false, executed,
+            message: `ロードバランサの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+            remaining: { loadBalancerID, asgID, clusterID },
+          }
+        }
+        writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+        executed.push(`ロードバランサ『${loadBalancerID}』は既に存在しませんでした（記録から外しました）`)
+      } else {
+        return {
+          ok: false, executed,
+          message: `ロードバランサの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+          remaining: { loadBalancerID, asgID, clusterID },
+        }
       }
+    } else {
+      const listRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
+      const stillThere = listRes.ok ? readLoadBalancerRows(listRes.data).find(r => r.loadBalancerID === loadBalancerID) : undefined
+      if (stillThere && stillThere.deleting !== true) {
+        return {
+          ok: false, executed,
+          message: '削除は受け付けられましたが、まだ残っています。しばらくして⑥をもう一度押してください',
+          remaining: { loadBalancerID, asgID, clusterID },
+        }
+      }
+      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+      executed.push(`ロードバランサ『${loadBalancerID}』を削除しました`)
     }
-    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
-    executed.push(`ロードバランサ『${record.loadBalancerID}』を削除しました`)
   }
 
   // ── ASG ──
@@ -309,33 +556,103 @@ export async function teardownFlow(
         remaining: { asgID: record.asgID as string, clusterID: record.clusterID ?? undefined },
       }
     }
-    const res = await deleteAsg(auth, record.clusterID as string, record.asgID as string, baseUrl)
+    const clusterID = record.clusterID as string
+    const asgID = record.asgID as string
+    const res = await deleteAsg(auth, clusterID, asgID, baseUrl)
     if (!res.ok) {
-      return {
-        ok: false, executed,
-        message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-        remaining: { asgID: record.asgID as string, clusterID: record.clusterID as string },
+      if (res.status === 404) {
+        const listRes = await listAsg(auth, clusterID, undefined, baseUrl)
+        if (!listRes.ok) {
+          return {
+            ok: false, executed,
+            message: `オートスケーリンググループの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
+            remaining: { asgID, clusterID },
+          }
+        }
+        const present = readAsgRows(listRes.data).some(r => r.asgID === asgID)
+        if (present) {
+          return {
+            ok: false, executed,
+            message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+            remaining: { asgID, clusterID },
+          }
+        }
+        writeApprunDedicatedRecordFs(projectDir, { asgID: null })
+        executed.push(`オートスケーリンググループ『${asgID}』は既に存在しませんでした（記録から外しました）`)
+      } else {
+        return {
+          ok: false, executed,
+          message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+          remaining: { asgID, clusterID },
+        }
       }
+    } else {
+      const listRes = await listAsg(auth, clusterID, undefined, baseUrl)
+      const stillThere = listRes.ok ? readAsgRows(listRes.data).find(r => r.asgID === asgID) : undefined
+      if (stillThere && stillThere.deleting !== true) {
+        return {
+          ok: false, executed,
+          message: '削除は受け付けられましたが、まだ残っています。しばらくして⑥をもう一度押してください',
+          remaining: { asgID, clusterID },
+        }
+      }
+      writeApprunDedicatedRecordFs(projectDir, { asgID: null })
+      executed.push(`オートスケーリンググループ『${asgID}』を削除しました`)
     }
-    writeApprunDedicatedRecordFs(projectDir, { asgID: null })
-    executed.push(`オートスケーリンググループ『${record.asgID}』を削除しました`)
   }
 
   // ── クラスタ ──
   if (hasCluster) {
-    const res = await deleteCluster(auth, record.clusterID as string, baseUrl)
+    const clusterID = record.clusterID as string
+    const res = await deleteCluster(auth, clusterID, baseUrl)
     if (!res.ok) {
-      return {
-        ok: false, executed,
-        message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-        remaining: { clusterID: record.clusterID as string },
+      if (res.status === 404) {
+        const listRes = await listClusters(auth, baseUrl)
+        if (!listRes.ok) {
+          return {
+            ok: false, executed,
+            message: `クラスタの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
+            remaining: { clusterID },
+          }
+        }
+        const present = readClusterRows(listRes.data).some(r => r.clusterID === clusterID)
+        if (present) {
+          return {
+            ok: false, executed,
+            message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+            remaining: { clusterID },
+          }
+        }
+        writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
+        executed.push(`クラスタ『${clusterID}』は既に存在しませんでした（記録から外しました）`)
+      } else {
+        return {
+          ok: false, executed,
+          message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+          remaining: { clusterID },
+        }
       }
+    } else {
+      const listRes = await listClusters(auth, baseUrl)
+      // クラスタ一覧には deleting が無い（原本の形。5-8）。存在すれば「まだ残っている」とみなす。
+      const stillThere = listRes.ok && readClusterRows(listRes.data).some(r => r.clusterID === clusterID)
+      if (stillThere) {
+        return {
+          ok: false, executed,
+          message: '削除は受け付けられましたが、まだ残っています。しばらくして⑥をもう一度押してください',
+          remaining: { clusterID },
+        }
+      }
+      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
+      executed.push(`クラスタ『${clusterID}』を削除しました`)
     }
-    writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
-    executed.push(`クラスタ『${record.clusterID}』を削除しました`)
   }
 
-  return { ok: true, executed, message: 'すべて削除できました。課金は止まっています。', remaining: {} }
+  return {
+    ok: true, executed,
+    message: '削除の要求はすべて受け付けられ、一覧から消えた（または削除中になった）ことを確認しました。コントロールパネルでもご確認ください。',
+    remaining: {},
+  }
 }
 
 export type { ApprunDedicatedRecord }

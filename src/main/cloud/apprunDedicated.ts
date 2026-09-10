@@ -40,10 +40,14 @@ export const APPRUN_DEDICATED_API_BASE = 'https://secure.sakura.ad.jp/cloud/api/
  */
 const CLUSTERS_MAX_ITEMS = 20
 
-/** 成功時はレスポンスのJSON（型は呼び出し側で解釈する）、失敗時は生の応答本文を message に載せる。 */
+/**
+ * 成功時はレスポンスのJSON（型は呼び出し側で解釈する）、失敗時は生の応答本文を message に載せる。
+ * **status はHTTPステータス（バッチ1・E: 404かどうかの判定に使う）。** ネットワーク例外（fetch自体が
+ * 失敗した場合）は応答が無いので status を持たない（undefined＝「HTTPの応答すら受け取れなかった」）。
+ */
 export type ApprunDedicatedResult<T = unknown> =
   | { ok: true; data: T }
-  | { ok: false; message: string; detail?: string }
+  | { ok: false; message: string; detail?: string; status?: number }
 
 /** BasicAuth ヘッダを組み立てる（token:secret を base64）。client.ts の basicAuthHeader と同じ作り。 */
 function basicAuthHeader(auth: CloudCredentials): string {
@@ -108,7 +112,7 @@ async function requestJson<T>(
     return { ok: false, message: e?.message ?? String(e) }
   }
   if (!res.ok) {
-    return { ok: false, message: formatError(res.status, text), detail: text.slice(0, 2000) }
+    return { ok: false, message: formatError(res.status, text), detail: text.slice(0, 2000), status: res.status }
   }
   let data: unknown = null
   try { data = text ? JSON.parse(text) : null } catch { data = text }

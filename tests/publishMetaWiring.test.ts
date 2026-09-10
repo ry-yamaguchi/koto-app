@@ -39,7 +39,10 @@ describe('main の3経路: markPendingFs / clearPendingFs / writePublishRecordFs
     {
       name: 'さくらのAppRun（cloud:apply）',
       file: 'src/main/ipc/cloud.ts',
-      imports: "import { markPendingFs, clearPendingFs, writePublishRecordFs } from '../publishMetaFs'",
+      // 2026-09-10: 棚卸し（cloud:inventory）が専有型クラスタとの突き合わせのため
+      // readApprunDedicatedFs も同じ import 文で読むようになった（読むだけで使う。
+      // src/main/publishMetaFs.ts は他エージェントの持ち場のため変更していない）。
+      imports: "import { markPendingFs, clearPendingFs, writePublishRecordFs, readApprunDedicatedFs } from '../publishMetaFs'",
       mark: "markPendingFs(projectDir, 'sakura-apprun')",
       clear: 'clearPendingFs(projectDir)',
       record: "writePublishRecordFs(projectDir, 'sakura-apprun', { publishedAt: new Date().toISOString(), url: publicUrl })",

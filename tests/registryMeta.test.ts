@@ -97,27 +97,45 @@ describe('buildCreateRegistryBody: meta は任意（渡さなければ従来ど�
   })
 })
 
+// 2026-09-10 検分の直し: 「形が違う」（読めない）ときと「読めて一致しない」ときを区別する。
+// 前者は null（分からない。次回また試してよい）、後者は false（未対応と確定）。
 describe('extractRegistryMetaApplied: 読み直した応答から、実際に反映されたかを判定する', () => {
   const expected: RegistryMeta = { description: 'Koto が作成 / プロジェクト: x', tags: ['koto', 'x'] }
 
-  it('Description が完全一致・Tags が期待値をすべて含んでいれば true', () => {
+  it('★ 一致 → true（Description が完全一致・Tags が期待値をすべて含んでいれば true）', () => {
     const data = { CommonServiceItem: { Description: expected.description, Tags: ['koto', 'x', '追加のタグ'] } }
     expect(extractRegistryMetaApplied(data, expected)).toBe(true)
   })
 
-  it('Description が違えば false（部分一致では成功扱いにしない）', () => {
+  it('★ 不一致 → false（Description が違う。部分一致では成功扱いにしない）', () => {
     const data = { CommonServiceItem: { Description: '別の説明', Tags: expected.tags } }
     expect(extractRegistryMetaApplied(data, expected)).toBe(false)
   })
 
-  it('期待したタグの一部が欠けていれば false', () => {
+  it('★ 不一致 → false（期待したタグの一部が欠けている）', () => {
     const data = { CommonServiceItem: { Description: expected.description, Tags: ['koto'] } }
     expect(extractRegistryMetaApplied(data, expected)).toBe(false)
   })
 
-  it('APIが Description/Tags を丸ごと無視していた（キー自体が無い）場合も false', () => {
+  // ── ここから「形が違う」→ null（false ではない）の対 ─────────────────────
+  it('★ CommonServiceItem に Description/Tags 自体が無い → null（false と決めつけない）', () => {
     const data = { CommonServiceItem: { Name: 'x' } }
-    expect(extractRegistryMetaApplied(data, expected)).toBe(false)
+    expect(extractRegistryMetaApplied(data, expected)).toBeNull()
+  })
+
+  it('★ CommonServiceItem 自体が無い → null（一覧と同じ形とは仮定しない）', () => {
+    expect(extractRegistryMetaApplied({}, expected)).toBeNull()
+    expect(extractRegistryMetaApplied(null, expected)).toBeNull()
+  })
+
+  it('★ 小文字キー（commonserviceitem/description/tags）は「別の形」として null（false にしない）', () => {
+    const data = { commonserviceitem: { description: expected.description, tags: expected.tags } }
+    expect(extractRegistryMetaApplied(data, expected)).toBeNull()
+  })
+
+  it('Description が string でない、Tags が配列でないときも null', () => {
+    expect(extractRegistryMetaApplied({ CommonServiceItem: { Description: 123, Tags: expected.tags } }, expected)).toBeNull()
+    expect(extractRegistryMetaApplied({ CommonServiceItem: { Description: expected.description, Tags: 'x' } }, expected)).toBeNull()
   })
 })
 

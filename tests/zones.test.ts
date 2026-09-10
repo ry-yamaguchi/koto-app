@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import http from 'node:http'
 import type { Server } from 'node:http'
 import { getZones } from '../src/main/cloud/zones'
@@ -30,7 +30,7 @@ function listen(handler: http.RequestListener): Promise<string> {
 
 const AUTH = { token: 'my-token', secret: 'my-secret' }
 
-// 実測どおりの応答（先頭3件。docs/apprun-dedicated-plan.md #28 依頼文と同じ）。
+// 実測どおりの応答（6件すべて。docs/apprun-dedicated-plan.md 5-9・2026-09-08 Ryosuke さん実行）。
 const REAL_ZONES_RESPONSE = {
   From: 0,
   Count: 6,
@@ -39,6 +39,9 @@ const REAL_ZONES_RESPONSE = {
     { Index: 0, ID: 21001, DisplayOrder: 20021001, Name: 'tk1a', Description: '東京第1ゾーン', IsDummy: false, Region: { ID: 210, Name: '東京', Description: '東京' } },
     { Index: 1, ID: 21002, DisplayOrder: 20021002, Name: 'tk1b', Description: '東京第2ゾーン', IsDummy: false, Region: { ID: 210, Name: '東京', Description: '東京' } },
     { Index: 2, ID: 31001, DisplayOrder: 20031001, Name: 'is1a', Description: '石狩第1ゾーン', IsDummy: false, Region: { ID: 310, Name: '石狩', Description: '石狩' } },
+    { Index: 3, ID: 31002, DisplayOrder: 20031002, Name: 'is1b', Description: '石狩第2ゾーン', IsDummy: false, Region: { ID: 310, Name: '石狩', Description: '石狩' } },
+    { Index: 4, ID: 31003, DisplayOrder: 20031003, Name: 'is1c', Description: '石狩第3ゾーン', IsDummy: false, Region: { ID: 310, Name: '石狩', Description: '石狩' } },
+    { Index: 5, ID: 29001, DisplayOrder: 80029001, Name: 'tk1v', Description: 'Sandbox', IsDummy: true, Region: { ID: 290, Name: 'Sandbox', Description: 'Sandbox' } },
   ],
 }
 
@@ -55,11 +58,29 @@ describe('getZones: URLの組み立て', () => {
     expect(seenUrl).toBe('/zone')
   })
 
-  it('baseUrl 省略時は iaasZoneBase(\'is1a\') + zone（公式サンプルと同じ is1a・5-9）', () => {
-    // getZones が既定で組み立てる絶対URLを、iaasZoneBase を使って再構築し突き合わせる
-    // （URL組み立ての定数を複製せず、client.ts の唯一の定義を経由して検証する）。
-    const expected = iaasZoneBase('is1a').replace(/\/$/, '') + '/zone'
-    expect(expected).toBe('https://secure.sakura.ad.jp/cloud/zone/is1a/api/cloud/1.1/zone')
+  // U（2026-09-10 レビューの修理・バッチ3）: 直す前はこのテストが getZones を一度も呼んでおらず、
+  // 「getZones の既定URL」と称して iaasZoneBase() の文字列組み立てだけを検証していた（空のテスト
+  // ——getZones 側の `base ?? iaasZoneBase(PROBE_ZONE)` が壊れても検知できない）。
+  // 既定URLは実物の secure.sakura.ad.jp を指しており、ネットワークへ出さずに確かめる唯一の方法は
+  // fetch そのものを差し替えること（掟「ネットワークへ出ない」。ローカル http サーバでは baseUrl を
+  // 渡す経路しか試せない）。fetch を偽サーバ役として差し替え、**実際に getZones(AUTH) を呼んで**
+  // 叩かれたURLを確かめる。
+  it('baseUrl 省略時は iaasZoneBase(\'is1a\') + zone を実際に叩く（公式サンプルと同じ is1a・5-9）', async () => {
+    const originalFetch = globalThis.fetch
+    let seenUrl = ''
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      seenUrl = String(url)
+      return new Response(JSON.stringify(REAL_ZONES_RESPONSE), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    try {
+      const r = await getZones(AUTH)
+      expect(r.ok).toBe(true)
+      expect(seenUrl).toBe('https://secure.sakura.ad.jp/cloud/zone/is1a/api/cloud/1.1/zone')
+      // client.ts の iaasZoneBase を複製せず経由していることも、同じ値であわせて確かめる。
+      expect(seenUrl).toBe(iaasZoneBase('is1a').replace(/\/$/, '') + '/zone')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 
@@ -78,7 +99,7 @@ describe('getZones: BasicAuth ヘッダ（token:secret を base64。apprunDedica
 })
 
 describe('getZones: 成功時は応答本文をJSONとして data に載せる', () => {
-  it('実測どおりの応答をそのまま返す（6件中の3件・5-8）', async () => {
+  it('実測どおりの応答をそのまま返す（6件すべて・5-8）', async () => {
     const baseUrl = await listen((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(REAL_ZONES_RESPONSE))

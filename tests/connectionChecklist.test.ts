@@ -16,6 +16,13 @@ describe('ConnectionChecklist.tsx: ✓/✗ と項目名・失敗理由・注記�
     expect(checklist).toContain("c.ok ? '✓' : '✗'")
     expect(checklist).toContain('{note &&')
   })
+
+  // P（2026-09-10 レビューの修理・バッチ3・掟5: エラーメッセージは選択・コピー可能に）。
+  // 失敗理由の行（c.message を出す span）そのものに select-text が付いていることを、
+  // その行の className ごと見る（別の行の select-text に当たらないよう一意に指す）。
+  it('失敗理由（c.message）の行に select-text が付いている', () => {
+    expect(checklist).toContain('<span className="ml-2 text-[11px] text-ink-muted select-text">{c.message}</span>')
+  })
 })
 
 describe('AppRunPanel（共用型）は ConnectionChecklist を使う', () => {

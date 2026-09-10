@@ -671,6 +671,8 @@ interface Window {
       zones(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
       // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
       // 同意（consentedAt）が記録に無ければ main 側が API を一度も呼ばずに中止する。
+      // opts.confirmed は「確認ダイアログを通ったか」の印（2026-09-10 レビューの修理・A）。
+      // confirmed !== true なら main 側は API を一切呼ばず stage:'consent' で中止する。
       create(projectDir: string, auth: { token: string; secret: string }, spec: {
         name: string
         ports: { port: number; protocol: 'http' | 'https' }[]
@@ -681,16 +683,16 @@ interface Window {
         minNodes: number
         maxNodes: number
         lbServiceClassPath: string
-      }): Promise<{
+      }, opts?: { confirmed?: boolean }): Promise<{
         ok: boolean
-        stage: 'consent' | 'limits' | 'cluster-create' | 'cluster-verify' | 'asg-create' | 'asg-verify' | 'lb-create' | 'done'
+        stage: 'consent' | 'invalid' | 'existing' | 'record' | 'limits' | 'cluster-create' | 'cluster-verify' | 'asg-create' | 'asg-verify' | 'lb-create' | 'lb-verify' | 'done'
         message: string
         clusterID?: string | null
         asgID?: string | null
         loadBalancerID?: string | null
       }>
-      // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
-      teardown(projectDir: string, auth: { token: string; secret: string }): Promise<{
+      // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
+      teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }): Promise<{
         ok: boolean
         executed: string[]
         message: string

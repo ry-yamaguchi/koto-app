@@ -17,6 +17,35 @@ import type { TelemetryKind, TelemetryAction } from '../../shared/appLog'
 const KIND_LABEL: Record<TelemetryKind, string> = { logs: 'ログ', metrics: 'メトリクス' }
 const KIND_ICON: Record<TelemetryKind, string> = { logs: '📋', metrics: '📈' }
 
+/**
+ * enable() が needsConsent（保存場所が消えていた等）を受け取ったときの回復
+ * （2026-09-10 検分の直し）。
+ *
+ * ── なぜ要るか ──────────────────────────────────────────────────────
+ * 直す前は `needsConsent` のとき `setConfirming(true)` するだけだった。だが
+ * `action.kind === 'route'`（置き場があるつもりの表示）の分岐は `confirming` を
+ * 見ないため、**画面には何も起きない**（同意カードが出ない）。正しい直し方は、
+ * 状態を取り直して（'ask' になるはず）`setAction` してから `setConfirming(true)`
+ * すること。取り直し自体が失敗（例外／`ok:false`）したら、呼び出し側でエラーを
+ * 出せるよう `{ ok:false }` を返す。
+ *
+ * DOM を実際にクリックして確かめるテスト基盤（jsdom 等）がこのプロジェクトには
+ * 無いため、この判断だけを純関数として切り出し、偽の `telemetryStatus` を渡して
+ * **振る舞いで**固定する（掟10: 文字列一致のテストは変異を素通りする）。
+ */
+export async function refetchStatusForConsent(
+  telemetryStatus: (projectDir: string, kind: TelemetryKind) => Promise<{ ok: boolean; action?: TelemetryAction | null }>,
+  projectDir: string,
+  kind: TelemetryKind,
+): Promise<{ ok: true; action: TelemetryAction | null } | { ok: false }> {
+  try {
+    const s = await telemetryStatus(projectDir, kind)
+    return s.ok ? { ok: true, action: s.action ?? null } : { ok: false }
+  } catch {
+    return { ok: false }
+  }
+}
+
 export default function TelemetryNotice({ projectDir, kind }: { projectDir: string; kind: TelemetryKind }) {
   const [action, setAction] = useState<TelemetryAction | null>(null)
   const [loading, setLoading] = useState(true)
@@ -54,7 +83,19 @@ export default function TelemetryNotice({ projectDir, kind }: { projectDir: stri
       const r = await window.electronAPI.cloud.enableTelemetry(projectDir, kind, { consented })
       if (!r.ok) {
         // 同意が要ると main 側に判断された（通常はここに来ない。来たら同意カードへ戻す）
-        if ('needsConsent' in r && r.needsConsent) { setConfirming(true); return }
+        if ('needsConsent' in r && r.needsConsent) {
+          // ⚠️ ここで setConfirming(true) するだけでは、action.kind がまだ 'route'
+          // （置き場があるつもりの表示）のままだと同意カードが描画されない
+          // （route 分岐は confirming を見ない）。状態を取り直してから同意カードへ。
+          const refetched = await refetchStatusForConsent(window.electronAPI.cloud.telemetryStatus, projectDir, kind)
+          if (refetched.ok) {
+            setAction(refetched.action)
+            setConfirming(true)
+          } else {
+            setError('保存場所の状態を確認できませんでした。もう一度お試しください')
+          }
+          return
+        }
         setError(r.message ? `${r.message}${r.detail ? `（${r.detail}）` : ''}` : '設定できませんでした')
         return
       }

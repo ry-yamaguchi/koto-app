@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan, selectableZones, defaultZone } from '../src/renderer/components/AppRunDedicatedPanel'
+import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan, selectableZones, defaultZone, STAGE_LABEL, resourceIdLabel, type CreateClusterFlowStage } from '../src/renderer/components/AppRunDedicatedPanel'
 import { readZones } from '../src/shared/apprunDedicatedShapes'
 
 // roadmap #23。段階①「下調べ画面」の配線に加え、段階②「作る」＋④「破棄」の配線を固定する
@@ -37,11 +37,11 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(ipc).toContain('getZones(auth)')
   })
 
-  it('main: create/teardown ハンドラは apprunDedicatedApply.ts の createClusterFlow/teardownFlow を呼ぶ', () => {
+  it('main: create/teardown ハンドラは apprunDedicatedApply.ts の createClusterFlow/teardownFlow を呼ぶ（opts.confirmed 付き・2026-09-10 レビューの修理A）', () => {
     expect(ipc).toContain("import { createClusterFlow, teardownFlow")
     expect(ipc).toContain('from \'../cloud/apprunDedicatedApply\'')
-    expect(ipc).toContain('createClusterFlow(auth, projectDir, spec)')
-    expect(ipc).toContain('teardownFlow(auth, projectDir)')
+    expect(ipc).toContain('createClusterFlow(auth, projectDir, spec, { confirmed: isConfirmed(opts) })')
+    expect(ipc).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts) })')
   })
 
   it('main: registerApprunDedicatedHandlers が index.ts から呼ばれている', () => {
@@ -49,24 +49,24 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(index).toContain('registerApprunDedicatedHandlers(deps)')
   })
 
-  it('preload: electronAPI.apprunDedicated.{limits,plans,clusters,zones,create,teardown,state} を公開している', () => {
+  it('preload: electronAPI.apprunDedicated.{limits,plans,clusters,zones,create,teardown,state} を公開している（create/teardownはopts付き・2026-09-10 レビューの修理A）', () => {
     expect(preload).toContain("limits: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:limits', auth)")
     expect(preload).toContain("plans: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:plans', auth)")
     expect(preload).toContain("clusters: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:clusters', auth)")
     expect(preload).toContain("zones: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:zones', auth)")
-    expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec)")
-    expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth)")
+    expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec, opts)")
+    expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts)")
     expect(preload).toContain("state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir)")
   })
 
-  it('global.d.ts: Window.electronAPI.apprunDedicated の型に zones/create/teardown/state がある', () => {
+  it('global.d.ts: Window.electronAPI.apprunDedicated の型に zones/create/teardown/state がある（create/teardownはopts.confirmed付き）', () => {
     expect(globalDts).toContain('apprunDedicated: {')
     expect(globalDts).toContain('limits(auth: { token: string; secret: string })')
     expect(globalDts).toContain('plans(auth: { token: string; secret: string })')
     expect(globalDts).toContain('clusters(auth: { token: string; secret: string })')
     expect(globalDts).toContain('zones(auth: { token: string; secret: string })')
     expect(globalDts).toContain('create(projectDir: string, auth: { token: string; secret: string }, spec:')
-    expect(globalDts).toContain('teardown(projectDir: string, auth: { token: string; secret: string })')
+    expect(globalDts).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean })')
     expect(globalDts).toContain('state(projectDir: string)')
   })
 })
@@ -266,17 +266,47 @@ describe('⑤: 同意（consentedAt）が無ければ作成ボタンを出さな
   })
 })
 
+describe('⑤: 記録があるとき（hasAnyResource）は入力欄・作成ボタンを出さない（2026-09-10 レビューの修理・B）', () => {
+  it('consentedAt ありでも hasAnyResource なら、作成フォームではなく「作られたものの記録があります」の案内を出す', () => {
+    const at = panel.indexOf("{/* ⑤ クラスタを作る */}")
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('{/* ⑥ 作ったものを壊す（破棄） */}')
+    const block = panel.slice(at, end)
+    expect(block).toContain('hasAnyResource ? (')
+    expect(block).toContain('作られたものの記録があります。作り直すには、まず⑥で破棄してください。')
+  })
+
+  it('hasAnyResource の定義は⑤の描画より前にある（2箇所に複製していない）', () => {
+    const defAt = panel.indexOf('const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)')
+    const sectionAt = panel.indexOf("{/* ⑤ クラスタを作る */}")
+    expect(defAt).toBeGreaterThan(0)
+    expect(sectionAt).toBeGreaterThan(defAt)
+    // 複製していないこと（同じ定義文がもう1箇所には無い）。
+    expect(panel.indexOf('const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)', defAt + 1)).toBe(-1)
+  })
+})
+
 describe('⑤: 押す前の確認ダイアログに月額（見積り）を出す（掟5）', () => {
-  it('doCreate は window.confirm に price.text（見積り文）を渡してから作成する', () => {
+  it('doCreate は runCreate（apprunDedicatedActions.ts）へ price.text を含む確認文言を渡し、confirm には window.confirm を注入する（2026-09-10 レビューの修理・J）', () => {
     const at = panel.indexOf('const doCreate = async () => {')
     expect(at).toBeGreaterThan(0)
-    const block = panel.slice(at, at + 400)
-    expect(block).toContain('window.confirm(`${price.text}')
+    const end = panel.indexOf('const doTeardown = async () => {')
+    const block = panel.slice(at, end)
+    expect(block).toContain('runCreate(')
+    expect(block).toContain('confirmMessage: `${price.text}')
     expect(block).toContain('この費用が毎月かかります')
+    expect(block).toContain('confirm: (m) => window.confirm(m)')
+    // create実行そのもの（IPC呼び出し）は runCreate の deps.create の中——doCreate 自身は
+    // 「確認が通ったら呼ばれる関数」を渡すだけで、呼ぶかどうかの判断は持たない。
+    expect(block).toContain('window.electronAPI.apprunDedicated.create(projectDir, auth, s, opts)')
+  })
+
+  it('runCreate/runTeardown は apprunDedicatedActions.ts から import している（振る舞いの固定はそちら・tests/apprunDedicatedActions.test.ts）', () => {
+    expect(panel).toContain("import { runCreate, runTeardown } from '../apprunDedicatedActions'")
   })
 
   it('price は priceSummary（表に無いプランは月額を出せません、と正直に返す関数）から作る', () => {
-    expect(panel).toContain('const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes)')
+    expect(panel).toContain('const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes, maxNodes)')
   })
 })
 
@@ -312,6 +342,39 @@ describe('⑤: 単価表に無いプランのときは金額を捏造しない�
     expect(monthlyYenForPlanPath('cloud/apprun/dedicated/worker/4vcpu_4gb')).toBe(33000)
     expect(monthlyYenForPlanPath('cloud/apprun/dedicated/worker/8vcpu_8gb')).toBe(64020)
     expect(monthlyYenForPlanPath('cloud/apprun/dedicated/worker/16vcpu_64gb')).toBeNull()
+  })
+})
+
+describe('⑤: priceSummary の第4引数 maxNodes（2026-09-10 レビューの修理・G）', () => {
+  const worker = { path: 'cloud/apprun/dedicated/worker/1vcpu_2gb' } // 月11,000円
+  const lb = { path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_1', nodeCount: 1 } // 月11,000円
+
+  it('maxNodes > minNodes なら、最小構成の額に加えて最大構成の額も出す', () => {
+    const r = priceSummary(worker, lb, 1, 3)
+    expect(r.text).toContain('月額 22,000円')
+    expect(r.text).toContain('最小構成')
+    expect(r.text).toContain('最大 3台')
+    expect(r.text).toContain('月額 44,000円')
+    // totalYen は最小構成の額のまま（既定の見積り・掟10: 計算を複製しない呼び出し側の前提と一致させる）。
+    expect(r.totalYen).toBe(22000)
+  })
+
+  it('maxNodes === minNodes なら、従来どおり最小構成の額だけを出す（最大構成の文言は出さない）', () => {
+    const r = priceSummary(worker, lb, 2, 2)
+    expect(r.text).not.toContain('最小構成')
+    expect(r.text).not.toContain('最大')
+  })
+
+  it('maxNodes を省略（3引数呼び出し）した既存の呼び出し元は、従来どおりの挙動のまま（後方互換）', () => {
+    const r = priceSummary(worker, lb, 1)
+    expect(r.text).not.toContain('最大')
+    expect(r.totalYen).toBe(11000 + 11000)
+  })
+
+  it('料金表に無いプランを含むときは、maxNodes があっても「月額を出せません」のまま（推測で埋めない）', () => {
+    const r = priceSummary({ path: 'cloud/apprun/dedicated/worker/16vcpu_64gb' }, lb, 1, 5)
+    expect(r.text).toContain('月額を出せません')
+    expect(r.totalYen).toBeNull()
   })
 })
 
@@ -847,6 +910,12 @@ describe('事故の直し1: apiReachable を廃止し、conn/connMsg の1組に�
     const ngBlock = block.slice(ngAt, block.indexOf(')}', ngAt))
     expect(ngBlock).toContain('⚠️ 一部の権限が確認できませんでした')
     expect(ngBlock).toContain('⚠️ 通じませんでした')
+    // Q（2026-09-10 レビューの修理・バッチ3）: 全項目（api・billing）が失敗していれば
+    // 「一部の…」ではなく「すべての項目で…」と正しく言う。その判定式がこの ng 分岐の中にあることを
+    // 一意に確かめる（api・billing 片方だけの判定に弱めていないか）。
+    expect(ngBlock).toContain('{!connChecks.api.ok && !connChecks.billing.ok')
+    expect(ngBlock).toContain("? '⚠️ すべての項目で確認できませんでした'")
+    expect(ngBlock).toContain(": '⚠️ 一部の権限が確認できませんでした'")
   })
 
   it('③「🔍 調べる」（investigate）は、connChecks を null に戻すだけで、書き込みはしない（確認していないので）', () => {
@@ -862,9 +931,13 @@ describe('事故の直し1: apiReachable を廃止し、conn/connMsg の1組に�
   it('未登録（!keyReady）のときの案内文がある（共用型 AppRunPanel 849-853 行あたりと同じ）', () => {
     const rowAt = panel.indexOf('>🔌 接続テスト</button>')
     expect(rowAt).toBeGreaterThan(0)
-    // 2026-09-09 検分・指摘2の直しで、ボタン直後に要約 span の説明コメントが増えた分、
-    // {!keyReady && ( までの距離が伸びている。窓を広げる。
-    const block = panel.slice(rowAt, rowAt + 1100)
+    // 固定長の窓（旧 rowAt + 1100）は、ボタンと {!keyReady && ( の間にコメントが増えるたびに
+    // 切れてしまっていた（2026-09-09 検分・指摘2／2026-09-10 レビューの修理・Q でも再発）。
+    // 次の一意な目印（ConnectionChecklist の描画開始）までを窓にする——コメントが増えても
+    // 崩れない（掟10「当て先が他の行にも出ないか」）。
+    const nextAt = panel.indexOf('<ConnectionChecklist', rowAt)
+    expect(nextAt).toBeGreaterThan(rowAt)
+    const block = panel.slice(rowAt, nextAt)
     expect(block).toContain('{!keyReady && (')
     expect(block).toContain('先に認証情報でAPIキーを登録してください。')
   })
@@ -1026,6 +1099,102 @@ describe('#1/#7: キーを切り替えたら、古い疎通結果（conn/connMsg
   })
 })
 
+describe('⑤: STAGE_LABEL / resourceIdLabel（2026-09-10 レビューの修理・D。英語のステージ名を画面に出さない・「未作成」と「作られたか未確認」を使い分ける）', () => {
+  it('STAGE_LABEL は全ステージを日本語にする（英語のキー名そのものを画面に出さない）', () => {
+    const expected: Record<CreateClusterFlowStage, string> = {
+      consent: '確認',
+      invalid: '入力の検証',
+      existing: '既存の記録',
+      record: '記録',
+      limits: '上限の確認',
+      'cluster-create': 'クラスタの作成',
+      'cluster-verify': 'クラスタの実在確認',
+      'asg-create': 'ASGの作成',
+      'asg-verify': 'ASGの実在確認',
+      'lb-create': 'ロードバランサの作成',
+      'lb-verify': 'ロードバランサの実在確認',
+      done: '完了',
+    }
+    expect(STAGE_LABEL).toEqual(expected)
+  })
+
+  it('resourceIdLabel: IDがあれば常にそのIDを返す', () => {
+    expect(resourceIdLabel('cluster-x', 'clusterID', 'done')).toBe('cluster-x')
+    expect(resourceIdLabel('cluster-x', 'clusterID', 'consent')).toBe('cluster-x')
+  })
+
+  it('resourceIdLabel: IDが無く、まだその資源の作成を試みていない段（stageがその資源の作成段より前）なら「（未作成）」', () => {
+    expect(resourceIdLabel(null, 'clusterID', 'consent')).toBe('（未作成）')
+    expect(resourceIdLabel(null, 'clusterID', 'existing')).toBe('（未作成）')
+    expect(resourceIdLabel(null, 'clusterID', 'record')).toBe('（未作成）')
+    expect(resourceIdLabel(null, 'clusterID', 'limits')).toBe('（未作成）')
+    // ASG/LBは、まだクラスタ作成段にも達していなければ当然「（未作成）」。
+    expect(resourceIdLabel(null, 'asgID', 'cluster-create')).toBe('（未作成）')
+    expect(resourceIdLabel(null, 'loadBalancerID', 'asg-create')).toBe('（未作成）')
+  })
+
+  it('resourceIdLabel: IDが無く、その資源の作成を試みた段以降なら「（作られたか未確認）」（分からないものを「無い」と言い切らない）', () => {
+    // POSTの応答が取れず、名前探しでも見つからなかった場合がこれに当たる（apprunDedicatedApply.ts D）。
+    expect(resourceIdLabel(undefined, 'clusterID', 'cluster-create')).toBe('（作られたか未確認）')
+    expect(resourceIdLabel(null, 'asgID', 'asg-create')).toBe('（作られたか未確認）')
+    expect(resourceIdLabel(null, 'loadBalancerID', 'lb-create')).toBe('（作られたか未確認）')
+    // M（2026-09-10 レビューの修理・バッチ3）: lb-verify は lb-create より後の段なので同様に扱う。
+    expect(resourceIdLabel(null, 'loadBalancerID', 'lb-verify')).toBe('（作られたか未確認）')
+  })
+
+  it('画面の結果表示は STAGE_LABEL と resourceIdLabel を使い、英語ステージ名や旧来の`?? \'（未作成）\'`を直書きしていない', () => {
+    const at = panel.indexOf('{createResult && (')
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('{teardownResult && (')
+    const block = panel.slice(at, end)
+    expect(block).toContain('STAGE_LABEL[createResult.stage as CreateClusterFlowStage] ?? createResult.stage')
+    expect(block).toContain("resourceIdLabel(createResult.clusterID, 'clusterID', createResult.stage as CreateClusterFlowStage)")
+    expect(block).toContain("resourceIdLabel(createResult.asgID, 'asgID', createResult.stage as CreateClusterFlowStage)")
+    expect(block).toContain("resourceIdLabel(createResult.loadBalancerID, 'loadBalancerID', createResult.stage as CreateClusterFlowStage)")
+    // 直す前の形（未確認の可能性を無視して「未作成」と言い切る）が残っていないこと。
+    expect(block).not.toContain('createResult.clusterID ?? ')
+    expect(block).not.toContain('createResult.asgID ?? ')
+    expect(block).not.toContain('createResult.loadBalancerID ?? ')
+  })
+})
+
+describe('①③: testConnection/investigate の世代カウンタ（2026-09-10 レビューの修理・I。キー切替後に古い応答が戻る競合）', () => {
+  it('genRef（useRef）を宣言し、selectKey と credentials-changed の両方で世代を進める', () => {
+    expect(panel).toContain("import { useState, useEffect, useCallback, useRef } from 'react'")
+    expect(panel).toContain('const genRef = useRef(0)')
+    const selectKeyAt = panel.indexOf('const selectKey = async (id: string) => {')
+    const selectKeyEnd = panel.indexOf('// ── ② サービスプリンシパル', selectKeyAt)
+    expect(panel.slice(selectKeyAt, selectKeyEnd)).toContain('genRef.current++')
+
+    const hAt = panel.lastIndexOf("const h = () => {", panel.indexOf("window.addEventListener('sakura:credentials-changed', h)"))
+    const hEnd = panel.indexOf('}', hAt)
+    expect(panel.slice(hAt, hEnd + 1)).toContain('genRef.current++')
+  })
+
+  it('testConnection: myGen を捕まえ、各awaitのあとで世代が進んでいたら抜ける（setConn等をしない）', () => {
+    const at = panel.indexOf('const testConnection = async () => {')
+    const end = panel.indexOf('const idFormat = resourceIdFormatOk')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, end)
+    expect(block).toContain('const myGen = genRef.current')
+    // loadKey の直後・testConnection API 呼び出しの直後・catch のそれぞれで世代を確認している。
+    expect((block.match(/if \(genRef\.current !== myGen\) return/g) ?? []).length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('investigate: myGen を捕まえ、Promise.all の応答が返った直後に世代を確認してから setLimits 等へ反映する', () => {
+    const at = panel.indexOf('const investigate = async () => {')
+    const end = panel.indexOf('// ── ④ 費用の同意')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, end)
+    expect(block).toContain('const myGen = genRef.current')
+    const promiseAllEnd = block.indexOf('])', block.indexOf('await Promise.all(['))
+    const guardAt = block.indexOf('if (genRef.current !== myGen) return', promiseAllEnd)
+    const setLimitsAt = block.indexOf('if (limitsRes.ok) setLimits(')
+    expect(guardAt).toBeGreaterThan(promiseAllEnd)
+    expect(setLimitsAt).toBeGreaterThan(guardAt)
+  })
+})
+
 describe('#28: 説明文が現状（クラスタの作成・破棄はできる。公開＝独自ドメインはまだ）に合っている', () => {
   it('AppRunDedicatedPanel: 「作成は行わず」のような、作成できないと読める文言が残っていない', () => {
     expect(panel).not.toContain('作成は行わず')
@@ -1063,14 +1232,14 @@ describe('⑥: 記録があるときだけ表示し、破棄は確認ダイア�
     expect(panel).toContain('const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)')
   })
 
-  it('doTeardown は window.confirm を通ってから apprunDedicated.teardown を呼ぶ', () => {
+  it('doTeardown は runTeardown（apprunDedicatedActions.ts）へ確認文言を渡し、confirm には window.confirm を注入する（2026-09-10 レビューの修理・J）', () => {
     const at = panel.indexOf('const doTeardown = async () => {')
     expect(at).toBeGreaterThan(0)
-    const block = panel.slice(at, at + 1000)
-    const confirmAt = block.indexOf('window.confirm(')
-    const callAt = block.indexOf('window.electronAPI.apprunDedicated.teardown(')
-    expect(confirmAt).toBeGreaterThan(0)
-    expect(callAt).toBeGreaterThan(confirmAt)
+    const block = panel.slice(at, at + 1200)
+    expect(block).toContain('runTeardown(')
+    expect(block).toContain('confirm: (m) => window.confirm(m)')
+    // teardown実行そのもの（IPC呼び出し）は runTeardown の deps.teardown の中。
+    expect(block).toContain('window.electronAPI.apprunDedicated.teardown(projectDir, auth, opts)')
     expect(block).toContain('消さない限り課金が続きます')
   })
 

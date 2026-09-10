@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import CopyButton from './CopyButton'
 import { withApprunDedicatedRecord } from '../../shared/publishMeta'
-import { readLimits, readWorkerClasses, readLbClasses, readClusters, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
+import { readLimits, readWorkerClasses, readLbClasses, readClusters, readNextCursor, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
 import { loadZones } from '../zonesCache'
+import { runCreate, runTeardown } from '../apprunDedicatedActions'
+import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import ConnectionChecklist from './ConnectionChecklist'
 
 // さくらのAppRun 専有型パネル（roadmap #23）。
@@ -40,11 +42,11 @@ type Limits = Record<string, number | null>
 type PlanRow = ApprunDedicatedPlanRow
 
 // 応答の形は src/shared/apprunDedicatedShapes.ts に集約してある（掟10・5-8の事故を受けて）。
-// ここでは件数の把握（hasMore の判定）だけを行う。
+// ここでは件数の把握（hasMore の判定）だけを行う。続きキーは readNextCursor（`nextCursor` だけを
+// 見る。原本 v1.4.0 に無い `cursor`/`next` を推測で試さない・N・2026-09-10 レビューの修理・バッチ3）。
 function extractClusterCount(data: unknown): { count: number; hasMore: boolean } {
   const list = readClusters(data)
-  const d = data as any
-  const hasMore = !!(d?.nextCursor || d?.cursor || d?.next)
+  const hasMore = readNextCursor(data) !== null
   return { count: list.length, hasMore }
 }
 
@@ -186,11 +188,18 @@ export function pickCheapestLbPlan(plans: readonly PlanRow[] | null | undefined)
  * **表に無いプランは「月額を出せません」と正直に出し、金額を推測して埋めない**
  * （2026-08-14「既定値が、勝手に課金を生むことがある」と同じ理由——分からない額を0や代表値で
  * 埋めると、静かに間違った金額を信じさせてしまう）。
+ *
+ * **`maxNodes`（2026-09-10 レビューの修理・G）**: オートスケーリングで実際に払う額は
+ * `minNodes` の最小構成だけではない。`maxNodes > minNodes` のときは、最小構成の額に加えて
+ * 「負荷で最大N台まで増えると月額いくらになるか」も出す——最小構成の額だけを見せて、
+ * 負荷時に増える分を隠さない。`maxNodes` 未指定（省略）時は `minNodes` と同じ扱いにし、
+ * 既存の呼び出し元（3引数）の挙動は変えない。
  */
 export function priceSummary(
   workerPlan: { path: string | null } | null,
   lbPlan: { path: string | null; nodeCount: number | null } | null,
   minNodes: number,
+  maxNodes: number = minNodes,
 ): { text: string; totalYen: number | null } {
   const workerYen = workerPlan ? monthlyYenForPlanPath(workerPlan.path) : null
   const lbYen = lbPlan ? monthlyYenForPlanPath(lbPlan.path) : null
@@ -201,7 +210,70 @@ export function priceSummary(
     return { text: `${workerPart} ＋ ${lbPart} ＝ 月額を出せません（料金表に無いプランが含まれています）`, totalYen: null }
   }
   const total = workerYen * minNodes + lbYen * lbNodeCount
-  return { text: `${workerPart} ＋ ${lbPart} ＝ 月額 ${total.toLocaleString('ja-JP')}円`, totalYen: total }
+  const base = `${workerPart} ＋ ${lbPart} ＝ 月額 ${total.toLocaleString('ja-JP')}円`
+  if (maxNodes > minNodes) {
+    const maxTotal = workerYen * maxNodes + lbYen * lbNodeCount
+    return {
+      text: `${base}（最小構成。負荷で最大 ${maxNodes}台まで増えると 月額 ${maxTotal.toLocaleString('ja-JP')}円）`,
+      totalYen: total,
+    }
+  }
+  return { text: base, totalYen: total }
+}
+
+// ── ⑤ 結果表示（createResult）: ステージの日本語化・「未作成」と「作られたか未確認」の
+// 使い分け（2026-09-10 レビューの修理・D） ──────────────────────────────────────
+// main側 apprunDedicatedApply.ts の CreateClusterFlowStage と同じ値（renderer からは main の
+// モジュールを import できないため、文字列リテラル union だけを複製する。RESERVED_PORT_RANGE
+// と同じ理由・掟10が禁じる「同じ形のマージ処理の複製」ではない）。
+export type CreateClusterFlowStage =
+  | 'consent' | 'invalid' | 'existing' | 'record' | 'limits'
+  | 'cluster-create' | 'cluster-verify' | 'asg-create' | 'asg-verify' | 'lb-create' | 'lb-verify' | 'done'
+
+/** ステージの英語名（cluster-verify 等）を画面に出さないための日本語対訳。 */
+export const STAGE_LABEL: Record<CreateClusterFlowStage, string> = {
+  consent: '確認',
+  invalid: '入力の検証',
+  existing: '既存の記録',
+  record: '記録',
+  limits: '上限の確認',
+  'cluster-create': 'クラスタの作成',
+  'cluster-verify': 'クラスタの実在確認',
+  'asg-create': 'ASGの作成',
+  'asg-verify': 'ASGの実在確認',
+  'lb-create': 'ロードバランサの作成',
+  'lb-verify': 'ロードバランサの実在確認',
+  done: '完了',
+}
+
+// 各資源の作成を main 側が実際に試みる段（＝これ以降の stage で ID が無ければ「本当に無い」と
+// 言い切れない。POST の応答が取れず、名前探しでも見つからなかった場合がこれに当たる）。
+const STAGE_ORDER: CreateClusterFlowStage[] = [
+  'consent', 'invalid', 'existing', 'record', 'limits',
+  'cluster-create', 'cluster-verify', 'asg-create', 'asg-verify', 'lb-create', 'lb-verify', 'done',
+]
+const ATTEMPT_STAGE = {
+  clusterID: 'cluster-create' as CreateClusterFlowStage,
+  asgID: 'asg-create' as CreateClusterFlowStage,
+  loadBalancerID: 'lb-create' as CreateClusterFlowStage,
+}
+
+/**
+ * ⑤の結果一覧に出す1行の表示値。IDがあればそのIDを返す。
+ * IDが無いとき: まだその資源の作成を一度も試みていない段（stage がその資源の作成段より前）
+ * なら「（未作成）」と言い切ってよいが、試みたあと（POSTしたが応答が取れず、名前探しでも
+ * 見つからなかった場合）は「本当に作られていないか」を確認できていないので、
+ * 「（作られたか未確認）」と正直に言う（掟1: 分からないものを「大丈夫」側に倒さない）。
+ */
+export function resourceIdLabel(
+  id: string | null | undefined,
+  resource: keyof typeof ATTEMPT_STAGE,
+  currentStage: CreateClusterFlowStage,
+): string {
+  if (id) return id
+  const attemptedIndex = STAGE_ORDER.indexOf(ATTEMPT_STAGE[resource])
+  const currentIndex = STAGE_ORDER.indexOf(currentStage)
+  return currentIndex >= attemptedIndex ? '（作られたか未確認）' : '（未作成）'
 }
 
 // ── ⑤ 直前の簡易構成図（Ryosuke さん要望「クラスタを作成するボタンの上に、簡易的な構成を
@@ -291,6 +363,14 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   type ConnCheck = { ok: boolean; status?: number; message?: string }
   const [connChecks, setConnChecks] = useState<{ api: ConnCheck; billing: ConnCheck } | null>(null)
 
+  // 世代カウンタ（2026-09-10 レビューの修理・I・zonesCache.ts と同じ方式）。キーを切り替えた
+  // あとに、切り替え前に投げていた testConnection/investigate の応答が遅れて戻ってきても、
+  // その結果で画面を上書きしない（「キー切替後に古い応答が戻る競合」）。selectKey とキー切替の
+  // 通知（'sakura:credentials-changed'）の両方で進める——selectKey は activateCloudKey 経由で
+  // 結局この通知も発火させるが、他画面（認証情報）からの切替はこの通知だけを経由するため、
+  // どちらか片方だけに置くと取りこぼす。
+  const genRef = useRef(0)
+
   const refreshKey = useCallback(async () => {
     try { setHasKey(await window.electronAPI.cloud.hasKey()) } catch { setHasKey(false) }
   }, [])
@@ -299,6 +379,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     try { setActiveKeyId(await getActiveCloudKeyId()) } catch { setActiveKeyId(null) }
   }, [])
   const selectKey = async (id: string) => {
+    genRef.current++
     const r = await activateCloudKey(id)
     if (!r.ok) return
     await refreshKey(); await refreshCloudKeys()
@@ -311,18 +392,22 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // (1) 専有型API 参照（制限・プラン） (2) 請求（コスト）参照。レジストリはまだ確認しない
   // （専有型からのアプリ公開に未対応のため。注記で案内する）。
   const testConnection = async () => {
+    const myGen = genRef.current
     setConn('testing'); setConnMsg(''); setConnChecks(null)
     try {
       const auth = await window.electronAPI.cloud.loadKey()
+      if (genRef.current !== myGen) return // 世代が進んでいた（キーが切り替わった）→ この応答は使わない
       if (!auth || !auth.token || !auth.secret) {
         setConn('ng'); setConnMsg('さくらのクラウドAPIキーが未登録です。①で登録してください。')
         return
       }
       const r = await window.electronAPI.apprunDedicated.testConnection(auth)
+      if (genRef.current !== myGen) return // 世代が進んでいた → setConn 等をしない
       setConnChecks(r.checks)
       setConn(r.ok ? 'ok' : 'ng')
       setConnMsg('')
     } catch (e: any) {
+      if (genRef.current !== myGen) return
       setConn('ng'); setConnChecks(null)
       setConnMsg(e?.message ?? String(e))
     }
@@ -361,6 +446,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   }, [])
 
   const investigate = async () => {
+    const myGen = genRef.current
     setChecking(true); setCheckError(null)
     // ③はここでの conn/connMsg 判定に使う4本（limits/worker/lb/clusters）が①の請求チェックとは
     // 別物なので、①「🔌 接続テスト」の内訳（connChecks）は一旦クリアする（古い内訳を出し続けない）。
@@ -368,6 +454,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     try {
       // 方式B（掟4）: main には保存しない。使う瞬間に「使用中」のクラウドキーを読み、引数で渡す。
       const auth = await window.electronAPI.cloud.loadKey()
+      if (genRef.current !== myGen) return // 世代が進んでいた（キーが切り替わった）→ この応答は使わない
       if (!auth || !auth.token || !auth.secret) {
         setCheckError('さくらのクラウドAPIキーが未登録です。①で登録してください。')
         // ここでは何も試していない（＝キーが「悪い」わけではない）ので conn は 'idle' のまま。
@@ -391,6 +478,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         window.electronAPI.apprunDedicated.clusters(auth),
         loadZones(true),
       ])
+      if (genRef.current !== myGen) return // 世代が進んでいた → setLimits 等の反映をしない
 
       if (limitsRes.ok) setLimits(readLimits(limitsRes.data))
       else setLimitsError(limitsRes.message)
@@ -422,9 +510,12 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         setConn('ng'); setConnMsg(rep)
       }
     } catch (e: any) {
+      if (genRef.current !== myGen) return
       setCheckError(e?.message ?? String(e))
       setConn('ng'); setConnMsg(e?.message ?? String(e))
     } finally {
+      // 世代が進んでいても、このスピナー（checking）を止めるのは自分の役目のまま
+      // （guard しないと、切替後に "調べています…" のまま固まる）。
       setChecking(false)
     }
   }
@@ -459,6 +550,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const refreshApprunState = useCallback(async () => {
     try { setApprunState(await window.electronAPI.apprunDedicated.state(projectDir)) } catch { setApprunState(null) }
   }, [projectDir])
+  // 記録に何か1つでもあるか（clusterID/asgID/loadBalancerIDのいずれか）。⑤・⑥の両方が使うため、
+  // 両方より前（このあたり）で定義する（2026-09-10 レビューの修理・B: 定義位置が⑤の描画より
+  // 後ろだと、⑤側で「記録があれば新規作成させない」判定に使えない）。
+  const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)
 
   // ── ⑤ クラスタを作る ────────────────────────────────────────
   const [clusterName, setClusterName] = useState('')
@@ -516,7 +611,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
   const selectedWorkerPlan = (workerPlans ?? []).find(p => p.path === selectedWorkerPath) ?? null
   const selectedLbPlan = (lbPlans ?? []).find(p => p.path === selectedLbPath) ?? null
-  const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes)
+  const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes, maxNodes)
   // ⑤ボタンのすぐ上に出す簡易構成図（いま選んでいる内容がそのまま反映される）。
   // 表示名は他の一覧（ワーカ/LBプランの <select>）と同じフォールバック（name ?? path）に揃える。
   const diagram = buildClusterDiagram({
@@ -548,28 +643,44 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     return null
   })()
 
+  // ⑤⑥の「確認→IPC」本体は apprunDedicatedActions.ts の純関数（runCreate/runTeardown）に
+  // 切り出してある（2026-09-10 レビューの修理・J・rollbackSwitch.ts と同型）。ここ（doCreate/
+  // doTeardown）はそれを呼ぶ薄い皮——confirm に window.confirm を、activity に
+  // beginActivity（src/renderer/activity.ts）を注入するだけで、「確認が false なら
+  // create/teardown を一度も呼ばない」「実行中は必ず活動レジストリへ計上する」歯止め自体は
+  // ここには無い（tests/apprunDedicatedActions.test.ts が偽 confirm/create/teardown/activity で
+  // 固定する。K・2026-09-10 レビューの修理・バッチ3——共用型の公開処理と同じく、作成・破棄の
+  // 実行中は main の isBusy を立て、自動更新の「いますぐ再起動」が作業中を拒否できるようにする）。
   const doCreate = async () => {
     if (formError || creating) return
-    if (!window.confirm(`${price.text}\n\nこの費用が毎月かかります。よろしいですか？`)) return
-    setCreating(true); setCreateResult(null)
+    const spec = {
+      name: clusterName.trim(),
+      ports,
+      servicePrincipalID: resourceId.trim(),
+      ...(letsEncryptEmail.trim() ? { letsEncryptEmail: letsEncryptEmail.trim() } : {}),
+      zone: effectiveZone.trim(),
+      workerServiceClassPath: selectedWorkerPath as string,
+      minNodes, maxNodes,
+      lbServiceClassPath: selectedLbPath as string,
+    }
     try {
-      const auth = await window.electronAPI.cloud.loadKey()
-      if (!auth || !auth.token || !auth.secret) {
-        setCreateResult({ ok: false, stage: 'consent', message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。' })
-        return
-      }
-      const spec = {
-        name: clusterName.trim(),
-        ports,
-        servicePrincipalID: resourceId.trim(),
-        ...(letsEncryptEmail.trim() ? { letsEncryptEmail: letsEncryptEmail.trim() } : {}),
-        zone: effectiveZone.trim(),
-        workerServiceClassPath: selectedWorkerPath as string,
-        minNodes, maxNodes,
-        lbServiceClassPath: selectedLbPath as string,
-      }
-      const r = await window.electronAPI.apprunDedicated.create(projectDir, auth, spec)
-      setCreateResult(r)
+      const outcome = await runCreate(
+        { confirmMessage: `${price.text}\n\nこの費用が毎月かかります。よろしいですか？`, spec },
+        {
+          confirm: (m) => window.confirm(m),
+          activity: { begin: () => beginActivity('専有型クラスタの作成', { closeWarning: PUBLISH_CLOSE_WARNING }) },
+          create: async (s, opts) => {
+            setCreating(true); setCreateResult(null)
+            const auth = await window.electronAPI.cloud.loadKey()
+            if (!auth || !auth.token || !auth.secret) {
+              return { ok: false, stage: 'consent', message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。' } as any
+            }
+            return window.electronAPI.apprunDedicated.create(projectDir, auth, s, opts)
+          },
+        },
+      )
+      if (outcome.cancelled) return
+      setCreateResult(outcome.result)
       await refreshApprunState()
     } catch (e: any) {
       setCreateResult({ ok: false, stage: 'consent', message: e?.message ?? String(e) } as any)
@@ -581,7 +692,6 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // ── ⑥ 作ったものを壊す（破棄） ───────────────────────────────
   const [tearingDown, setTearingDown] = useState(false)
   const [teardownResult, setTeardownResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['teardown']>> | null>(null)
-  const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)
 
   const doTeardown = async () => {
     if (tearingDown) return
@@ -590,16 +700,24 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       apprunState?.asgID ? `オートスケーリンググループ『${apprunState.asgID}』` : null,
       apprunState?.clusterID ? `クラスタ『${apprunState.clusterID}』` : null,
     ].filter(Boolean).join('・')
-    if (!window.confirm(`次を削除します: ${targets}\n\nこの操作は元に戻せません。消さない限り課金が続きます。よろしいですか？`)) return
-    setTearingDown(true); setTeardownResult(null)
     try {
-      const auth = await window.electronAPI.cloud.loadKey()
-      if (!auth || !auth.token || !auth.secret) {
-        setTeardownResult({ ok: false, executed: [], message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。', remaining: {} })
-        return
-      }
-      const r = await window.electronAPI.apprunDedicated.teardown(projectDir, auth)
-      setTeardownResult(r)
+      const outcome = await runTeardown(
+        { confirmMessage: `次を削除します: ${targets}\n\nこの操作は元に戻せません。消さない限り課金が続きます。よろしいですか？` },
+        {
+          confirm: (m) => window.confirm(m),
+          activity: { begin: () => beginActivity('専有型クラスタの破棄', { closeWarning: PUBLISH_CLOSE_WARNING }) },
+          teardown: async (opts) => {
+            setTearingDown(true); setTeardownResult(null)
+            const auth = await window.electronAPI.cloud.loadKey()
+            if (!auth || !auth.token || !auth.secret) {
+              return { ok: false, executed: [], message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。', remaining: {} }
+            }
+            return window.electronAPI.apprunDedicated.teardown(projectDir, auth, opts)
+          },
+        },
+      )
+      if (outcome.cancelled) return
+      setTeardownResult(outcome.result)
       await refreshApprunState()
     } catch (e: any) {
       setTeardownResult({ ok: false, executed: [], message: e?.message ?? String(e), remaining: {} })
@@ -625,6 +743,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     // ここで conn/connMsg をリセットしないと、①の表示は「使用中のキー」だけ新しくなり、
     // その真下に前のキーで得た「✅ 通じました」が残ったままになる（常時課金サービスへの嘘の緑チェック）。
     const h = () => {
+      // 2026-09-10 レビューの修理・I: この通知はキーが切り替わった合図そのもの（selectKey が
+      // activateCloudKey 経由で発火させる分も、他画面「認証情報」からの分もここを通る）。
+      // 世代を進め、切替前に投げていた testConnection/investigate の応答が遅れて戻っても
+      // 上書きさせない。
+      genRef.current++
       refreshKey(); refreshCloudKeys(); setConn('idle'); setConnMsg(''); setConnChecks(null)
       // ゾーン一覧（GET /zone）もキーに紐づく。zonesCache.ts 自身のキャッシュは
       // primeZonesCache() の購読が同じイベントで捨てるが、**この画面が持っている
@@ -704,8 +827,14 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             {conn === 'ok' && (connChecks
               ? <span className="text-brand-green font-semibold">✅ すべて確認できました</span>
               : <span className="text-brand-green font-semibold">✅ 通じました</span>)}
+            {/* Q（2026-09-10 レビューの修理・バッチ3）: 全項目が失敗しているのに「一部の…」は
+                言い過ぎ。api/billing の両方が失敗していれば「すべての項目で」と正しく言う。 */}
             {conn === 'ng' && (connChecks
-              ? <span className="text-brand-yellow font-semibold">⚠️ 一部の権限が確認できませんでした</span>
+              ? <span className="text-brand-yellow font-semibold">
+                  {!connChecks.api.ok && !connChecks.billing.ok
+                    ? '⚠️ すべての項目で確認できませんでした'
+                    : '⚠️ 一部の権限が確認できませんでした'}
+                </span>
               : <span className="text-brand-yellow font-semibold">⚠️ 通じませんでした</span>)}
             {conn === 'testing' && <span className="text-ink-secondary">確認中…</span>}
           </span>
@@ -967,6 +1096,13 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           <p className="text-xs text-ink-secondary leading-relaxed">
             ④で費用に同意すると、ここから作成できるようになります。
           </p>
+        ) : hasAnyResource ? (
+          // 2026-09-10 レビューの修理・B: 記録に既に何かある状態で⑤から新規作成させない
+          // （先に作ったクラスタが記録から上書きされて消える事故を防ぐ。main側 createClusterFlow
+          // の stage:'existing' と対になる画面側の入口）。
+          <p className="text-xs text-ink-secondary leading-relaxed">
+            作られたものの記録があります。作り直すには、まず⑥で破棄してください。
+          </p>
         ) : (
           <>
             <p className="text-[11px] text-ink-muted leading-relaxed rounded-lg border border-line bg-overlay px-3 py-2">
@@ -1153,12 +1289,12 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             {createResult && (
               <div className="space-y-1">
                 <p className={createResult.ok ? 'text-xs font-semibold text-brand-green' : 'text-xs font-semibold text-brand-red'}>
-                  {createResult.ok ? '✅ 作成できました' : `⚠️ 途中で止まりました（${createResult.stage}）`}
+                  {createResult.ok ? '✅ 作成できました' : `⚠️ 途中で止まりました（${STAGE_LABEL[createResult.stage as CreateClusterFlowStage] ?? createResult.stage}）`}
                 </p>
                 <ul className="text-xs text-ink-secondary space-y-0.5 pl-1">
-                  <li>{createResult.clusterID ? '✅' : '・'} クラスタ {createResult.clusterID ?? '（未作成）'}</li>
-                  <li>{createResult.asgID ? '✅' : '・'} オートスケーリンググループ {createResult.asgID ?? '（未作成）'}</li>
-                  <li>{createResult.loadBalancerID ? '✅' : '・'} ロードバランサ {createResult.loadBalancerID ?? '（未作成）'}</li>
+                  <li>{createResult.clusterID ? '✅' : '・'} クラスタ {resourceIdLabel(createResult.clusterID, 'clusterID', createResult.stage as CreateClusterFlowStage)}</li>
+                  <li>{createResult.asgID ? '✅' : '・'} オートスケーリンググループ {resourceIdLabel(createResult.asgID, 'asgID', createResult.stage as CreateClusterFlowStage)}</li>
+                  <li>{createResult.loadBalancerID ? '✅' : '・'} ロードバランサ {resourceIdLabel(createResult.loadBalancerID, 'loadBalancerID', createResult.stage as CreateClusterFlowStage)}</li>
                 </ul>
                 <ErrorBlock msg={createResult.message} />
                 {!createResult.ok && (createResult.clusterID || createResult.asgID || createResult.loadBalancerID) && (

@@ -179,7 +179,33 @@ export class MonitoringClient {
 
 export type TelemetryStatusResult =
   | { ok: true; action: TelemetryAction }
-  | { ok: false; message: string }
+  | { ok: false; message: string; detail?: string }
+
+/**
+ * 状態を読む3つの GET（provisioning/state・storages・routings）のうち、
+ * 最初に失敗したものを返す（無ければ null）。
+ *
+ * ── 道具が事実を隠さない（2026-09-10 検分の直し）──────────────────────────
+ * 直す前は、どれか1つでも失敗すると固定文言（「さくら側の応答を取得できません」）
+ * だけを返しており、**どの呼び出しが・なぜ**（HTTPステータス・本文）失敗したかが
+ * 分からなかった。ここで label・status・本文（先頭500文字）を message/detail に含める
+ * （main/cloud/monitoring.ts の他の失敗（`init.text` 等）と同じ作り）。
+ */
+function firstStateFailure(
+  prov: ApiResult, storages: ApiResult, routings: ApiResult,
+): { message: string; detail: string } | null {
+  const entries: Array<{ label: string; r: ApiResult }> = [
+    { label: '状態の取得（provisioning/state）', r: prov },
+    { label: '保存場所の一覧取得（storages）', r: storages },
+    { label: 'ルーティングの一覧取得（routings）', r: routings },
+  ]
+  const fail = entries.find(e => !e.r.ok)
+  if (!fail) return null
+  return {
+    message: `状態を確認できませんでした（${fail.label}: HTTP ${fail.r.status}）`,
+    detail: fail.r.text.slice(0, 500),
+  }
+}
 
 /**
  * ログ／メトリクスが、いま何をすれば残るようになるかを聞く。
@@ -194,9 +220,8 @@ export async function fetchTelemetryStatus(
   const [prov, storages, routings] = await Promise.all([
     mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
   ])
-  if (!prov.ok || !storages.ok || !routings.ok) {
-    return { ok: false, message: '状態を確認できませんでした（さくら側の応答を取得できません）' }
-  }
+  const fail = firstStateFailure(prov, storages, routings)
+  if (fail) return { ok: false, ...fail }
   const action = decideTelemetryAction({
     storageReady: parseProvisioningState(prov.data, kind),
     storageId: pickStorageId(storages.data),
@@ -227,9 +252,8 @@ export async function enableTelemetry(
   const [prov, storages0, routings] = await Promise.all([
     mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
   ])
-  if (!prov.ok || !storages0.ok || !routings.ok) {
-    return { ok: false, message: '状態を確認できませんでした（さくら側の応答を取得できません）' }
-  }
+  const stateFail = firstStateFailure(prov, storages0, routings)
+  if (stateFail) return { ok: false, ...stateFail }
 
   const decision = decideEnableTelemetry({
     storageReady: parseProvisioningState(prov.data, kind),
@@ -260,4 +284,49 @@ export async function enableTelemetry(
   })
   if (!routed.ok) return { ok: false, message: `接続に失敗しました（HTTP ${routed.status}）`, detail: routed.text }
   return { ok: true }
+}
+
+/**
+ * このアプリのログ／メトリクスが残るようにする（IO はここ。判断は shared/appLog.ts）。
+ *
+ * ── 2026-09-10: main/ipc/cloud.ts から移した（掟10・一元化。振る舞いは一切変えない）───
+ * ここは公開の流れ（apply）から呼ばれる薄い経路で、`cloud:enableTelemetry`（画面の同意
+ * 導線）とは別物。**ここで失敗しても公開は失敗にしない。** ログ・メトリクスは
+ * 「動かなかったとき・負荷を調べたいときに助かるもの」であって、公開そのものの成否とは別。
+ *
+ * 費用の発生する操作（領域の作成）はここでは行わない。**同意が要る**ので、それは
+ * 別の導線（`cloud:enableTelemetry`。画面の案内）に回し、ここは「既にあるなら繋ぐ」だけ。
+ * ログとメトリクスは判断もAPIの形も対称（実測・#30）なので、種類で分岐する
+ * 1本の実装にまとめる（掟10）。
+ *
+ * `baseUrl` はテストのため（偽サーバへ向ける）。省略時は実際のさくらのAPI
+ * （`MonitoringClient` の既定と同じ約束）。
+ */
+export async function ensureTelemetryRouting(
+  kind: TelemetryKind,
+  creds: CloudCredentials,
+  resourceId: string,
+  progress: (m: string) => void,
+  baseUrl?: string,
+): Promise<void> {
+  const mon = new MonitoringClient({ credentials: creds, dryRun: false, baseUrl })
+  const [state, storages, routings] = await Promise.all([
+    mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
+  ])
+  if (!state.ok || !storages.ok || !routings.ok) return
+
+  const action = decideTelemetryAction({
+    storageReady: parseProvisioningState(state.data, kind),
+    storageId: pickStorageId(storages.data),
+    alreadyRouted: hasAppRouting(routings.data, resourceId, kind),
+  }, kind)
+  if (action.kind !== 'route') return // 'ask'（費用が要る）はここでは行わない
+
+  progress(kind === 'logs' ? '📋 ログを残す設定をしています…' : '📈 メトリクスを残す設定をしています…')
+  await mon.createTelemetryRouting(kind, {
+    resourceId,
+    publisherCode: APPRUN_PUBLISHER,
+    variant: APPRUN_VARIANT[kind],
+    storageId: action.storageId,
+  })
 }

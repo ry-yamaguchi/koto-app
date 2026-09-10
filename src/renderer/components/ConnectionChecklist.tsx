@@ -21,7 +21,7 @@ export default function ConnectionChecklist({ items, note }: { items: Connection
           </span>
           <span className="ml-1.5 text-ink">{c.label}</span>
           {!c.ok && c.message && (
-            <span className="ml-2 text-[11px] text-ink-muted">{c.message}</span>
+            <span className="ml-2 text-[11px] text-ink-muted select-text">{c.message}</span>
           )}
         </div>
       ))}

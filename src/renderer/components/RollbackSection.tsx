@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { pinnedNotice, servingVersionNames } from '../../shared/apprunTraffic'
 import { runSwitch } from '../rollbackSwitch'
+import type { SwitchDeps } from '../rollbackSwitch'
 
 // RollbackSection — 公開したものを前のバージョンに戻す（roadmap #32）。stepNo は
 // 呼び出し元の番号体系に乗せるための見出し番号（AppRunPanel.tsx から "⑨" を渡す。
@@ -30,6 +31,31 @@ function formatDate(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return iso
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/**
+ * runSwitch へ渡す deps（confirm・rollback）の組み立て（2026-09-10 検分の直し）。
+ *
+ * ── なぜ切り出したか ──────────────────────────────────────────────────
+ * 以前は tests/apprunTraffic.test.ts の `toContain('confirm: (msg) => window.confirm(msg)')`
+ * という**文字列一致**でしか、「本物の window.confirm・window.electronAPI.cloud.rollback を
+ * 注入しているか」を守れていなかった。DOM を実際にクリックして確かめるテスト基盤
+ * （jsdom 等）がこのプロジェクトには無いため、ここを独立した小関数として切り出し、
+ * 偽の confirm/rollback を渡して**振る舞いで**（confirm が false を返したら rollback は
+ * 一度も呼ばれない、を実際に呼んで）固定する（tests/rollbackSectionDeps.test.ts）。
+ *
+ * `onRollbackStart` は「本当に rollback を呼ぶ直前」（＝確認ダイアログを通った後）だけに
+ * 呼ばれる。busy 表示（switching/switchingLatest）を、確認をキャンセルしたときに誤って
+ * 立てない（元の doSwitch の振る舞いをそのまま保つ）ための注入。
+ */
+export function makeSwitchDeps(projectDir: string, onRollbackStart: (versionName: string | null) => void): SwitchDeps {
+  return {
+    confirm: (msg) => window.confirm(msg),
+    rollback: (v, opts) => {
+      onRollbackStart(v)
+      return window.electronAPI.cloud.rollback(projectDir, v, opts)
+    },
+  }
 }
 
 export default function RollbackSection({ projectDir, refreshSignal, stepNo }: { projectDir: string; refreshSignal?: number; stepNo?: string }) {
@@ -74,13 +100,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
       // （ここが「確認していないのに実行される」を防ぐ唯一の場所。main 側にも同じガードがある）。
       const outcome = await runSwitch(
         { versionName, label, isSplit: state?.kind === 'split' },
-        {
-          confirm: (msg) => window.confirm(msg),
-          rollback: (v, opts) => {
-            if (v === null) setSwitchingLatest(true); else setSwitching(v)
-            return window.electronAPI.cloud.rollback(projectDir, v, opts)
-          },
-        },
+        makeSwitchDeps(projectDir, (v) => { if (v === null) setSwitchingLatest(true); else setSwitching(v) }),
       )
       if (!outcome.proceeded) return
       const { result } = outcome
@@ -92,6 +112,12 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
       setSwitchingLatest(false); setSwitching(null)
     }
   }
+
+  // S（2026-09-10 レビューの修理・バッチ3）: 切替の実行中は、他のボタンを押させない。
+  // 直す前は「押した本人のボタン」だけが disabled になり、切替が進んでいる間に
+  // 別のバージョンの「このバージョンに戻す」や「最新に戻す」を押せてしまっていた
+  // （二重の切替要求＝意図と違う配分に上書きされる事故のもと）。
+  const anySwitching = switchingLatest || switching !== null
 
   const serving = servingVersionNames(rows)
 
@@ -126,7 +152,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
           <p className="text-xs font-semibold text-brand-red leading-relaxed select-text">{pinnedNotice(state.versionName)}</p>
           <button
             onClick={() => void doSwitch(null, '最新のバージョン')}
-            disabled={switchingLatest}
+            disabled={anySwitching}
             className="border border-line rounded-lg px-3 py-1.5 text-xs font-semibold text-ink hover:border-sakura disabled:opacity-40"
           >{switchingLatest ? '切り替えています…' : '↺ 最新に戻す（公開したものを反映させる）'}</button>
         </div>
@@ -159,7 +185,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
                     </div>
                     <button
                       onClick={() => v.name && void doSwitch(v.name, v.name)}
-                      disabled={!v.name || busy || alreadyPinnedHere}
+                      disabled={!v.name || anySwitching || alreadyPinnedHere}
                       className="flex-none text-xs border border-line rounded-lg px-3 py-1.5 text-ink hover:border-sakura disabled:opacity-40"
                     >{busy ? '切り替えています…' : alreadyPinnedHere ? '固定中' : 'このバージョンに戻す'}</button>
                   </li>

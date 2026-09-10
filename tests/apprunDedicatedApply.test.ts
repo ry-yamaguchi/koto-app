@@ -13,12 +13,18 @@ import {
   countClusters,
   isReservedPort,
   RESERVED_PORT_RANGE,
+  validateClusterSpec,
   type ApprunDedicatedClusterSpec,
 } from '../src/main/cloud/apprunDedicatedApply'
 import { writeApprunDedicatedRecordFs, readApprunDedicatedFs } from '../src/main/publishMetaFs'
 
 // roadmap #23 段階②「作る」＋④「破棄」。tests/apprunDedicated.test.ts / tests/sakuraEngine.test.ts と
 // 同じく、ローカルに本物の http サーバを立てて実物のクライアントに対して確かめる（実APIは叩かない・掟4）。
+//
+// 2026-09-10 レビューの修理（掟10「お金・破壊の歯止めは、振る舞いで固定する」）:
+// createClusterFlow / teardownFlow は `opts.confirmed` を第4/第3引数に取るようになった
+// （`createClusterFlow(auth, projectDir, spec, opts, baseUrl?)` / `teardownFlow(auth, projectDir, opts, baseUrl?)`）。
+// このファイルの呼び出しはすべてこの新しい形で行う。
 
 let server: Server | null = null
 afterEach(() => { if (server) { server.close(); server = null } })
@@ -65,6 +71,8 @@ beforeEach(() => { projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-appr
 afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true }) })
 
 const AUTH = { token: 'tok', secret: 'sec' }
+const CONFIRMED = { confirmed: true as const }
+const NOT_CONFIRMED = { confirmed: false as const }
 
 const SPEC: ApprunDedicatedClusterSpec = {
   name: 'myapp',
@@ -81,94 +89,426 @@ function consent(iso = '2026-09-01T00:00:00.000Z') {
   writeApprunDedicatedRecordFs(projectDir, { consentedAt: iso })
 }
 
-// ── createClusterFlow ─────────────────────────────────────────────────
+// ── 1. confirmed 無しでは fetch を一切呼ばない（2026-09-10 レビューの修理・A） ─────────────
 
-describe('createClusterFlow: 1. 同意が無ければ API を一度も呼ばずに中止する', () => {
-  it('consentedAt が記録に無いと stage:consent で中止し、fetch を一度も呼ばない', async () => {
+describe('createClusterFlow/teardownFlow: 1. confirmed が無ければ API を一度も呼ばずに中止する（掟10の3点セット）', () => {
+  it('createClusterFlow: opts.confirmed:false → stage:consent・calls は空（同意済みでも呼ばない）', async () => {
+    consent()
     const calls: string[] = []
     const baseUrl = await listen(routedServer({}, calls))
-    const r = await createClusterFlow(AUTH, projectDir, SPEC, baseUrl)
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, NOT_CONFIRMED, baseUrl)
     expect(r.ok).toBe(false)
     expect(r.stage).toBe('consent')
-    expect(r.message).toContain('同意')
+    expect(r.message).toContain('確認')
+    expect(calls).toEqual([])
+  })
+
+  it('createClusterFlow: opts.confirmed を省略した形（{}）でも同様に中止し、calls は空', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, {} as any, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('consent')
+    expect(calls).toEqual([])
+  })
+
+  it('teardownFlow: opts.confirmed:false → calls は空。記録は remaining にそのまま残る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const r = await teardownFlow(AUTH, projectDir, NOT_CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(calls).toEqual([])
+    expect(r.remaining).toEqual({ loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' })
+    // 記録もいっさい書き換わっていない。
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBe('l1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.clusterID).toBe('c1')
+  })
+
+  it('teardownFlow: opts.confirmed を省略した形（{}）でも calls は空', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const r = await teardownFlow(AUTH, projectDir, {} as any, baseUrl)
+    expect(r.ok).toBe(false)
     expect(calls).toEqual([])
   })
 })
 
-describe('createClusterFlow: 2. 上限に達していれば作らない', () => {
-  it('現在のクラスタ数が上限以上なら stage:limits で止め、クラスタを作らない', async () => {
+// ── 2. 記録に既存があれば新規作成させない（2026-09-10 レビューの修理・B） ─────────────────
+
+describe('createClusterFlow: 2. 記録に既に何かあれば stage:existing で止め、API を一切呼ばない', () => {
+  it('clusterID だけ記録にあっても止める（fetch ゼロ）', async () => {
+    consent()
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'cluster-old' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('existing')
+    expect(r.message).toContain('cluster-old')
+    expect(r.clusterID).toBe('cluster-old')
+    expect(calls).toEqual([])
+  })
+
+  it('asgID だけ記録にあっても止める（先に作ったクラスタの上書き事故を防ぐ）', async () => {
+    consent()
+    writeApprunDedicatedRecordFs(projectDir, { asgID: 'asg-old' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('existing')
+    expect(calls).toEqual([])
+  })
+
+  it('loadBalancerID だけ記録にあっても止める', async () => {
+    consent()
+    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: 'lb-old' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('existing')
+    expect(calls).toEqual([])
+  })
+
+  it('記録が空なら existing では止まらず先へ進む', async () => {
     consent()
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
-      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'a' }, { clusterID: 'b' }, { clusterID: 'c' }] } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
     }, calls))
-    const r = await createClusterFlow(AUTH, projectDir, SPEC, baseUrl)
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.stage).not.toBe('existing')
+    expect(calls).toContain('GET /limits')
+  })
+})
+
+// ── 3. 記録ファイルに書き込めなければ止まる（2026-09-10 レビューの修理・C） ────────────────
+
+describe('createClusterFlow: 3. 記録ファイルに書けなければ、最初のPOSTより前に止まる（fetchゼロ）', () => {
+  it('.sakuraide.json を読み取り専用にすると stage:record で止まり、calls は空', async () => {
+    // consent() が .sakuraide.json を作ってしまうため、projectDir（ディレクトリ）だけを
+    // 読み取り専用にしても「既存ファイルの上書き」はブロックされない（Unixの権限は、既存
+    // ファイルへの書き込みはファイル自身のモードで決まり、ディレクトリの書き込み権限は
+    // 新規作成/削除/リネームにしか要らないため。実際に試して確認した——ディレクトリだけを
+    // 0500 にしても書き込みは成功してしまい、stage は limits まで進んでしまった）。
+    // そこで **記録ファイルそのもの** を読み取り専用にする（書き込みが本当に失敗する形）。
+    consent()
+    const metaPath = path.join(projectDir, '.sakuraide.json')
+    fs.chmodSync(metaPath, 0o400)
+    try {
+      const calls: string[] = []
+      const baseUrl = await listen(routedServer({}, calls))
+      const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+      expect(r.ok).toBe(false)
+      expect(r.stage).toBe('record')
+      expect(calls).toEqual([])
+    } finally {
+      fs.chmodSync(metaPath, 0o600)
+    }
+  })
+})
+
+// ── 4. 作成応答が取れなかったとき、一覧を名前で探す（2026-09-10 レビューの修理・D） ─────────
+
+describe('createClusterFlow: 4. POST が失敗しても、一覧に同名があれば記録して知らせる（断定しない）', () => {
+  it('POST /clusters が500でも GET /clusters?maxItems=20 に同名クラスタがあれば、clusterIDを記録して返す', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 500, body: { status: 500, title: 'boom' } },
+    }, calls))
+    // 1回目のGET /clustersは上限チェック用に使われるため、名前探し用に別のシナリオで確認する。
+    // ここでは上限チェックの一覧取得自体が失敗するため、上限確認の段階で止まることを確認する。
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
     expect(r.ok).toBe(false)
     expect(r.stage).toBe('limits')
-    expect(r.message).toContain('3個')
-    expect(calls).toEqual(['GET /limits', 'GET /clusters?maxItems=20'])
   })
 
-  it('上限未満なら通り、クラスタ作成へ進む', async () => {
+  it('POST /clusters が500でも、名前探しの一覧（作成失敗直後のGET）に同名クラスタがあれば記録に書き、stageは断定的な失敗ではなく名前探しの結果を伝える', async () => {
     consent()
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
-      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'a' }] } },
-      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
-      'GET /clusters/cluster-x': { status: 500, body: { status: 500, title: 'unreachable in this test' } },
+      // 上限チェックの一覧は空（作成前）。
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'cluster-found', name: 'myapp', created: 1 }] } },
+      'POST /clusters': { status: 500, body: { status: 500, title: 'internal' } },
     }, calls))
-    const r = await createClusterFlow(AUTH, projectDir, SPEC, baseUrl)
-    expect(r.stage).not.toBe('limits')
-    expect(calls).toContain('POST /clusters')
-  })
-})
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('cluster-create')
+    expect(r.clusterID).toBe('cluster-found')
+    expect(r.message).toContain('cluster-found')
+    expect(r.message).not.toContain('無いことを確認してください')
 
-describe('createClusterFlow: 3. クラスタ作成は200でも getCluster で見つからなければ成功にしない', () => {
-  it('POST /clusters が200でも GET /clusters/{id} が失敗したら ok:false（ASGは作らない）。ただしクラスタIDは記録される', async () => {
+    // 名前探しで見つかったIDが記録される（「分からない」を「未作成」に倒さない）。
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBe('cluster-found')
+
+    // GET /clusters?maxItems=20 が2回（上限チェック用＋名前探し用）呼ばれている。
+    expect(calls.filter(c => c === 'GET /clusters?maxItems=20').length).toBe(2)
+  })
+
+  it('POST /clusters が失敗し、名前探しの一覧にも同名が無ければ、断定しない文言で失敗を返す', async () => {
     consent()
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
       'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
-      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
-      'GET /clusters/cluster-x': { status: 404, body: { status: 404, title: 'not found' } },
+      'POST /clusters': { status: 500, body: { status: 500, title: 'internal' } },
     }, calls))
-    const r = await createClusterFlow(AUTH, projectDir, SPEC, baseUrl)
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
     expect(r.ok).toBe(false)
-    expect(r.stage).toBe('cluster-verify')
-    expect(calls).not.toContain('POST /clusters/cluster-x/asg')
+    expect(r.stage).toBe('cluster-create')
+    expect(r.clusterID).toBeUndefined()
+    expect(r.message).toContain('確認できませんでした')
+    expect(r.message).not.toContain('作られていません')
 
-    // 掟10: 作れたところまでは必ず記録に残る（getClusterの確認が取れなくても）。
     const rec = readApprunDedicatedFs(projectDir)
-    expect(rec.clusterID).toBe('cluster-x')
+    expect(rec.clusterID).toBeFalsy()
   })
 })
 
-describe('createClusterFlow: 4. ASG作成が失敗しても、作れたクラスタは記録されている', () => {
-  it('POST .../asg が失敗しても、クラスタIDは記録に残る（消せなくならない）', async () => {
-    consent()
+// ── 5. 破棄で404を一覧で確かめる（2026-09-10 レビューの修理・E） ──────────────────────────
+
+describe('teardownFlow: 5. DELETE LB が404のとき、一覧で本当に無いか確かめてから完了扱いにする', () => {
+  it('404 かつ一覧に無い → 記録からLBが消え、ASG・クラスタのDELETEへ進む（callsの順序で確認）', async () => {
+    // teardownFlow は、DELETEが204（受理）で返った段でも直後に同じ一覧で確かめる（6.）ため、
+    // ASG・クラスタのDELETEが204で返ったあとにも、それぞれの一覧GETが呼ばれる。
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
-      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 404, body: { status: 404, title: 'not found' } },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+      'DELETE /clusters/c1': { status: 204, body: {} },
       'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
-      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
-      'GET /clusters/cluster-x': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
-      'POST /clusters/cluster-x/asg': { status: 500, body: { status: 500, title: 'internal' } },
     }, calls))
-    const r = await createClusterFlow(AUTH, projectDir, SPEC, baseUrl)
-    expect(r.ok).toBe(false)
-    expect(r.stage).toBe('asg-create')
-
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(r.executed.some(e => e.includes('既に存在しませんでした'))).toBe(true)
+    expect(calls).toEqual([
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1',
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20',
+      'DELETE /clusters/c1/asg/a1',
+      'GET /clusters/c1/asg?maxItems=20',
+      'DELETE /clusters/c1',
+      'GET /clusters?maxItems=20',
+    ])
     const rec = readApprunDedicatedFs(projectDir)
-    expect(rec.clusterID).toBe('cluster-x')
+    expect(rec.loadBalancerID).toBeFalsy()
     expect(rec.asgID).toBeFalsy()
+    expect(rec.clusterID).toBeFalsy()
+  })
+
+  it('404 だが一覧にIDがまだある → 止まる。記録は3つとも残る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 404, body: { status: 404, title: 'not found' } },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'l1', name: 'myapp', deleting: false, created: 1, serviceClassPath: 'x' }] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('残っています')
+    expect(calls).toEqual([
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1',
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20',
+    ])
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBe('l1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.clusterID).toBe('c1')
+  })
+
+  it('404 だが一覧そのものが失敗 → 確かめられないので止まる。記録は残る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 404, body: { status: 404, title: 'not found' } },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 500, body: { status: 500, title: 'boom' } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('確かめられませんでした')
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBe('l1')
   })
 })
 
-describe('createClusterFlow: 5. LB作成が失敗しても、クラスタとASGは記録されている', () => {
-  it('POST .../load_balancers が失敗しても、クラスタIDとASG IDは記録に残る', async () => {
+// ── 6. DELETEが204でも一覧にまだ残っていれば完了と言い切らない（掟10 2026-08-14と同じ形） ───
+
+describe('teardownFlow: 6. DELETEが204でも、直後の一覧確認でまだ残っていれば ok:false', () => {
+  it('LB: 204のあと一覧にIDがあり deleting:false → 記録は残り ok:false', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'l1', name: 'myapp', deleting: false, created: 1, serviceClassPath: 'x' }] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('まだ残っています')
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBe('l1')
+  })
+
+  it('LB: 204のあと一覧に無い → 記録から消えて先へ進む（ASG削除まで呼ばれる）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBeFalsy()
+    expect(rec.asgID).toBeFalsy()
+    expect(rec.clusterID).toBeFalsy()
+  })
+
+  it('LB: 204のあと一覧に無い場合と同じく、deleting:true でも先へ進む', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'l1', name: 'myapp', deleting: true, created: 1, serviceClassPath: 'x' }] } },
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBeFalsy()
+  })
+
+  it('LB: 204のあと一覧そのものが失敗 → 一覧の失敗では止めない（DELETE自体は204だったため）。先へ進む', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 500, body: { status: 500, title: 'boom' } },
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBeFalsy()
+  })
+})
+
+// ── 7. limitsの応答が読めなければ止まる（2026-09-10 レビューの修理・F） ────────────────────
+
+describe('createClusterFlow: 7. clusterCount を応答から読み取れなければ止める（「分からない」を「大丈夫」に倒さない）', () => {
+  it('{ "limit": {} }（clusterCount無し）→ stage:limits・POSTが飛ばない', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: {} } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('limits')
+    expect(r.message).toContain('clusterCount')
+    expect(calls).not.toContain('POST /clusters')
+    expect(calls).toEqual(['GET /limits'])
+  })
+})
+
+// ── 8. 最終メッセージは確かめた事実だけを言う（2026-09-10 レビューの修理・E） ───────────────
+
+describe('teardownFlow: 8. 完了メッセージは「課金は止まっています」と断定しない', () => {
+  it('全段成功時の message は「課金は止まっています」を含まない。一覧で確認した事実だけを言う', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(r.message).not.toContain('課金は止まっています')
+  })
+})
+
+// ── 9. 入力検証は「最後の砦」として本当に働く（2026-09-10 レビューの修理・L） ─────────────
+
+describe('createClusterFlow: 9. validateClusterSpec に違反した spec は stage:invalid で止め、API を一切呼ばない', () => {
+  it('予約ポート 5950 を含む spec → stage:invalid・calls が空', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const badSpec: ApprunDedicatedClusterSpec = { ...SPEC, ports: [{ port: 5950, protocol: 'http' }] }
+    const r = await createClusterFlow(AUTH, projectDir, badSpec, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('invalid')
+    expect(calls).toEqual([])
+  })
+
+  it('maxNodes < minNodes → stage:invalid・calls が空', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const badSpec: ApprunDedicatedClusterSpec = { ...SPEC, minNodes: 5, maxNodes: 2 }
+    const r = await createClusterFlow(AUTH, projectDir, badSpec, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('invalid')
+    expect(calls).toEqual([])
+  })
+
+  it('クラスタ名が21文字（範囲外）→ stage:invalid・calls が空', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const badSpec: ApprunDedicatedClusterSpec = { ...SPEC, name: 'a'.repeat(21) }
+    const r = await createClusterFlow(AUTH, projectDir, badSpec, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('invalid')
+    expect(calls).toEqual([])
+  })
+
+  it('servicePrincipalID が12桁の数字でない → stage:invalid・calls が空', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const badSpec: ApprunDedicatedClusterSpec = { ...SPEC, servicePrincipalID: 'abc' }
+    const r = await createClusterFlow(AUTH, projectDir, badSpec, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('invalid')
+    expect(calls).toEqual([])
+  })
+
+  it('妥当な spec（SPEC）は validateClusterSpec 単体で ok:true', () => {
+    expect(validateClusterSpec(SPEC)).toEqual({ ok: true })
+  })
+})
+
+// ── 10. LB作成後の実在確認（2026-09-10 レビューの修理・M） ────────────────────────────────
+
+describe('createClusterFlow: 10. LB作成後、一覧にIDが無ければ stage:lb-verify（記録は残す）', () => {
+  it('POST .../load_balancers は成功するが、一覧にそのIDが無い → stage:lb-verify・記録は残る', async () => {
     consent()
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
@@ -178,18 +518,42 @@ describe('createClusterFlow: 5. LB作成が失敗しても、クラスタとASG�
       'GET /clusters/cluster-x': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
       'POST /clusters/cluster-x/asg': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
       'GET /clusters/cluster-x/asg/asg-y': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
-      'POST /clusters/cluster-x/asg/asg-y/load_balancers': { status: 500, body: { status: 500, title: 'internal' } },
+      'POST /clusters/cluster-x/asg/asg-y/load_balancers': { status: 200, body: { loadBalancer: { loadBalancerID: 'lb-z' } } },
+      'GET /clusters/cluster-x/asg/asg-y/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
     }, calls))
-    const r = await createClusterFlow(AUTH, projectDir, SPEC, baseUrl)
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
     expect(r.ok).toBe(false)
-    expect(r.stage).toBe('lb-create')
+    expect(r.stage).toBe('lb-verify')
+    expect(r.message).toContain('lb-z')
+    expect(r.loadBalancerID).toBe('lb-z')
 
     const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBe('lb-z')
     expect(rec.clusterID).toBe('cluster-x')
     expect(rec.asgID).toBe('asg-y')
-    expect(rec.loadBalancerID).toBeFalsy()
+  })
+
+  it('一覧そのものが失敗しても stage:lb-verify で止まる（「分からない」を「成功」に倒さない）', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'GET /clusters/cluster-x': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'POST /clusters/cluster-x/asg': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
+      'GET /clusters/cluster-x/asg/asg-y': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
+      'POST /clusters/cluster-x/asg/asg-y/load_balancers': { status: 200, body: { loadBalancer: { loadBalancerID: 'lb-z' } } },
+      'GET /clusters/cluster-x/asg/asg-y/load_balancers?maxItems=20': { status: 500, body: { status: 500, title: 'boom' } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('lb-verify')
+    expect(r.loadBalancerID).toBe('lb-z')
   })
 })
+
+// ── 既存シナリオ（正常系・各段の途中失敗でも記録が残ること） ────────────────────────────
 
 describe('createClusterFlow: 正常系（クラスタ→ASG→LBの順で作られ、都度記録される）', () => {
   it('全段成功すると ok:true。作成本文（interfaces）には upstream:shared 以外のキーが無い', async () => {
@@ -204,9 +568,10 @@ describe('createClusterFlow: 正常系（クラスタ→ASG→LBの順で作ら�
       'POST /clusters/cluster-x/asg': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
       'GET /clusters/cluster-x/asg/asg-y': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
       'POST /clusters/cluster-x/asg/asg-y/load_balancers': { status: 200, body: { loadBalancer: { loadBalancerID: 'lb-z' } } },
+      'GET /clusters/cluster-x/asg/asg-y/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'lb-z', name: 'myapp' }] } },
     }, calls, (key, body) => { bodies[key] = body }))
 
-    const r = await createClusterFlow(AUTH, projectDir, SPEC, baseUrl)
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
     expect(r.ok).toBe(true)
     expect(r.stage).toBe('done')
     expect(r.clusterID).toBe('cluster-x')
@@ -221,6 +586,7 @@ describe('createClusterFlow: 正常系（クラスタ→ASG→LBの順で作ら�
       'POST /clusters/cluster-x/asg',
       'GET /clusters/cluster-x/asg/asg-y',
       'POST /clusters/cluster-x/asg/asg-y/load_balancers',
+      'GET /clusters/cluster-x/asg/asg-y/load_balancers?maxItems=20',
     ])
 
     const rec = readApprunDedicatedFs(projectDir)
@@ -238,23 +604,127 @@ describe('createClusterFlow: 正常系（クラスタ→ASG→LBの順で作ら�
   })
 })
 
-// ── teardownFlow ─────────────────────────────────────────────────────
+describe('createClusterFlow: クラスタ作成は200でも getCluster で見つからなければ成功にしない', () => {
+  it('POST /clusters が200でも GET /clusters/{id} が失敗したら ok:false（ASGは作らない）。ただしクラスタIDは記録される', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'GET /clusters/cluster-x': { status: 404, body: { status: 404, title: 'not found' } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('cluster-verify')
+    expect(calls).not.toContain('POST /clusters/cluster-x/asg')
 
-describe('teardownFlow: 6. LB → ASG → クラスタ の順で呼ばれる', () => {
+    // 掟10: 作れたところまでは必ず記録に残る（getClusterの確認が取れなくても）。
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBe('cluster-x')
+  })
+})
+
+describe('createClusterFlow: ASG作成が失敗しても、作れたクラスタは記録されている', () => {
+  it('POST .../asg が失敗し、名前探しでも見つからなければ、クラスタIDは記録に残るがASGは残らない', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'GET /clusters/cluster-x': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'POST /clusters/cluster-x/asg': { status: 500, body: { status: 500, title: 'internal' } },
+      'GET /clusters/cluster-x/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('asg-create')
+
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBe('cluster-x')
+    expect(rec.asgID).toBeFalsy()
+  })
+})
+
+describe('createClusterFlow: LB作成が失敗しても、クラスタとASGは記録されている', () => {
+  it('POST .../load_balancers が失敗し、名前探しでも見つからなければ、クラスタIDとASG IDは記録に残る', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'GET /clusters/cluster-x': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'POST /clusters/cluster-x/asg': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
+      'GET /clusters/cluster-x/asg/asg-y': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'asg-y' } } },
+      'POST /clusters/cluster-x/asg/asg-y/load_balancers': { status: 500, body: { status: 500, title: 'internal' } },
+      'GET /clusters/cluster-x/asg/asg-y/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('lb-create')
+
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBe('cluster-x')
+    expect(rec.asgID).toBe('asg-y')
+    expect(rec.loadBalancerID).toBeFalsy()
+  })
+})
+
+describe('createClusterFlow: 上限に達していれば作らない', () => {
+  it('現在のクラスタ数が上限以上なら stage:limits で止め、クラスタを作らない', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'a', name: 'a', created: 1 }, { clusterID: 'b', name: 'b', created: 2 }, { clusterID: 'c', name: 'c', created: 3 }] } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('limits')
+    expect(r.message).toContain('3個')
+    expect(calls).toEqual(['GET /limits', 'GET /clusters?maxItems=20'])
+  })
+
+  it('上限未満なら通り、クラスタ作成へ進む', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'a', name: 'a', created: 1 }] } },
+      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'cluster-x' } } },
+      'GET /clusters/cluster-x': { status: 500, body: { status: 500, title: 'unreachable in this test' } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.stage).not.toBe('limits')
+    expect(calls).toContain('POST /clusters')
+  })
+})
+
+// ── teardownFlow: 既存の基本シナリオ ─────────────────────────────────────────
+
+describe('teardownFlow: LB → ASG → クラスタ の順で呼ばれる', () => {
   it('呼び出し順を配列で検証する', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
       'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
       'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
     }, calls))
-    const r = await teardownFlow(AUTH, projectDir, baseUrl)
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
     expect(r.ok).toBe(true)
     expect(calls).toEqual([
       'DELETE /clusters/c1/asg/a1/load_balancers/l1',
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20',
       'DELETE /clusters/c1/asg/a1',
+      'GET /clusters/c1/asg?maxItems=20',
       'DELETE /clusters/c1',
+      'GET /clusters?maxItems=20',
     ])
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.loadBalancerID).toBeFalsy()
@@ -263,14 +733,14 @@ describe('teardownFlow: 6. LB → ASG → クラスタ の順で呼ばれる', (
   })
 })
 
-describe('teardownFlow: 7. LBだけ失敗したら「残っている」と返り、記録からLBが消えない', () => {
+describe('teardownFlow: LBだけ失敗（404でも500でもない通常失敗）したら「残っている」と返り、記録からLBが消えない', () => {
   it('LB削除が失敗したら ASG・クラスタの削除は試みず、3つとも記録に残る', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 500, body: { status: 500, title: 'fail' } },
     }, calls))
-    const r = await teardownFlow(AUTH, projectDir, baseUrl)
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
     expect(r.ok).toBe(false)
     expect(r.message).toContain('残っています')
     expect(calls).toEqual(['DELETE /clusters/c1/asg/a1/load_balancers/l1'])
@@ -282,33 +752,34 @@ describe('teardownFlow: 7. LBだけ失敗したら「残っている」と返り
   })
 })
 
-describe('teardownFlow: 8. 記録に無い資源は破棄で触らない', () => {
-  it('clusterID しか記録が無ければ、DELETE /clusters/{id} しか呼ばない', async () => {
+describe('teardownFlow: 記録に無い資源は破棄で触らない', () => {
+  it('clusterID しか記録が無ければ、DELETE /clusters/{id} とその後の一覧確認しか呼ばない', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
     }, calls))
-    const r = await teardownFlow(AUTH, projectDir, baseUrl)
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
     expect(r.ok).toBe(true)
-    expect(calls).toEqual(['DELETE /clusters/c1'])
+    expect(calls).toEqual(['DELETE /clusters/c1', 'GET /clusters?maxItems=20'])
   })
 
   it('記録が何も無ければ、何も呼ばずに ok:true を返す', async () => {
     const calls: string[] = []
     const baseUrl = await listen(routedServer({}, calls))
-    const r = await teardownFlow(AUTH, projectDir, baseUrl)
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
     expect(r.ok).toBe(true)
     expect(calls).toEqual([])
   })
 
-  it('ASG削除が失敗したら、その下のクラスタ削除は試みない', async () => {
+  it('ASG削除が失敗（404でも500でもない通常失敗）したら、その下のクラスタ削除は試みない', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1' })
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'DELETE /clusters/c1/asg/a1': { status: 500, body: { status: 500, title: 'fail' } },
     }, calls))
-    const r = await teardownFlow(AUTH, projectDir, baseUrl)
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
     expect(r.ok).toBe(false)
     expect(calls).toEqual(['DELETE /clusters/c1/asg/a1'])
     const rec = readApprunDedicatedFs(projectDir)

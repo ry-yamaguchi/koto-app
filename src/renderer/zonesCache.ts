@@ -21,11 +21,14 @@
 // credentials-changed は世代を1つ進めるので、「古い鍵で取得中だった結果」が、鍵が
 // 変わった後に紛れ込んでキャッシュを上書きすることはない。
 
-import { readZones, type ZoneRow } from '../shared/apprunDedicatedShapes'
+import { readZones, isZonesShape, type ZoneRow } from '../shared/apprunDedicatedShapes'
 
 export type LoadZonesResult = { ok: boolean; rows: ZoneRow[]; message?: string }
 
 const NO_KEY_MESSAGE = 'さくらのクラウドAPIキーが未登録です。'
+// O（2026-09-10 レビューの修理・バッチ3）: 200でも形が想定と違えば「成功・0件」にしない。
+// 直す前は readZones が空配列を返すだけで、キャッシュされたうえ画面は無言で自由入力に戻っていた。
+const SHAPE_MISMATCH_MESSAGE = 'ゾーン一覧の形が想定と違ったため取得できませんでした（手入力できます）'
 
 let cached: LoadZonesResult | null = null
 let inflight: Promise<LoadZonesResult> | null = null
@@ -46,7 +49,10 @@ async function fetchZones(): Promise<LoadZonesResult> {
   }
   try {
     const r = await window.electronAPI.apprunDedicated.zones(auth)
-    if (r.ok) return { ok: true, rows: readZones(r.data) }
+    if (r.ok) {
+      if (!isZonesShape(r.data)) return { ok: false, rows: [], message: SHAPE_MISMATCH_MESSAGE }
+      return { ok: true, rows: readZones(r.data) }
+    }
     return { ok: false, rows: [], message: r.message }
   } catch (e: any) {
     return { ok: false, rows: [], message: e?.message ?? String(e) }

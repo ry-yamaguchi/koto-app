@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { refetchStatusForConsent } from '../src/renderer/components/TelemetryNotice'
 
 // #30: 画面（AppRunPanel + TelemetryNotice）の配線を固定する。
 // 「何をすべきか」の判断そのものは appLog.test.ts（decideTelemetryAction・decideEnableTelemetry）
@@ -107,5 +108,87 @@ describe('TelemetryNotice は同意なしに費用の発生する初期化を呼
     const calls = notice.match(/electronAPI\.cloud\.enableTelemetry\([^)]*\)/g) ?? []
     expect(calls.length).toBeGreaterThan(0)
     for (const call of calls) expect(call).toMatch(/consented/)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// 2026-09-10 検分の直し: enable() が needsConsent を受けたとき、setConfirming(true)
+// だけでは何も起きない（action.kind === 'route' の分岐は confirming を描画しない）。
+// jsdom 等の DOM テスト基盤がこのプロジェクトには無く、実際にクリックして確かめる
+// テストは書けない。**可能な範囲で**、直した判断（refetchStatusForConsent）を
+// 純関数として呼び出し、偽の telemetryStatus を渡して振る舞いで固定する
+// （文字列一致は「そう書いてあるか」しか見ない・掟10）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('refetchStatusForConsent: needsConsent を受けたときの状態の取り直し', () => {
+  it('取り直しに成功 → ok:true と、取り直した action をそのまま返す（呼び出し側が setAction に使う）', async () => {
+    const askAction = { kind: 'ask' as const, note: 'メトリクスの保存場所を新しく用意します。' }
+    const r = await refetchStatusForConsent(async () => ({ ok: true, action: askAction }), '/proj', 'metrics')
+    expect(r).toEqual({ ok: true, action: askAction })
+  })
+
+  it('action が無い応答（ok:true だが action 未定義）は null を返す（存在しないものを作らない）', async () => {
+    const r = await refetchStatusForConsent(async () => ({ ok: true }), '/proj', 'metrics')
+    expect(r).toEqual({ ok: true, action: null })
+  })
+
+  it('★ 取り直しが ok:false → ok:false（呼び出し側はエラーを出す。同意カードへは進めない）', async () => {
+    const r = await refetchStatusForConsent(async () => ({ ok: false }), '/proj', 'metrics')
+    expect(r).toEqual({ ok: false })
+  })
+
+  it('★ 取り直しが例外を投げても落ちない（ok:false として扱う）', async () => {
+    const r = await refetchStatusForConsent(async () => { throw new Error('network error') }, '/proj', 'metrics')
+    expect(r).toEqual({ ok: false })
+  })
+
+  it('projectDir・kind をそのまま渡す（別プロジェクト・別種類の状態を読まない）', async () => {
+    let seen: [string, string] | null = null
+    await refetchStatusForConsent(async (dir, kind) => { seen = [dir, kind]; return { ok: true, action: null } }, '/proj-x', 'logs')
+    expect(seen).toEqual(['/proj-x', 'logs'])
+  })
+})
+
+describe('TelemetryNotice: enable() の needsConsent 分岐は refetchStatusForConsent を経由してから同意カードへ進む', () => {
+  // enable 関数だけを切り出す（掟10: 当て先が他の行に出ないか確認する。次の関数の
+  // 直前のコメントで止め、render 側の JSX に迷い込まない一意な境界にする）。
+  const enableAt = notice.indexOf('const enable = async (consented: boolean) => {')
+  const enableEnd = notice.indexOf('// 確認できない間（読み込み中・未公開・API失敗）は黙る', enableAt)
+  expect(enableAt).toBeGreaterThan(-1)
+  expect(enableEnd).toBeGreaterThan(enableAt)
+  const enableBody = notice.slice(enableAt, enableEnd)
+
+  // 実装の説明コメント（例: 「⚠️ ここで setConfirming(true) するだけでは…」）にも
+  // 同じ文字列が登場する（掟10: 当て先が他の行にも出ないか必ず確認する）。
+  // 行コメントを除いてから探すことで、実際の呼び出しだけを見る。
+  const stripLineComments = (s: string) => s.replace(/\/\/[^\n]*/g, '')
+
+  it('needsConsent の分岐は refetchStatusForConsent を呼んでいる（setConfirming(true) だけで済ませない）', () => {
+    const needsConsentAt = enableBody.indexOf('r.needsConsent')
+    expect(needsConsentAt).toBeGreaterThan(-1)
+    const branch = enableBody.slice(needsConsentAt)
+    expect(branch).toContain('refetchStatusForConsent(')
+  })
+
+  // ★ 直す前の穴（setConfirming(true) を呼ぶだけ）に戻っていないことを、呼び出しの
+  //   順序で固定する。refetchStatusForConsent の**後**に setConfirming(true) が来ること。
+  //   コメント中の言及を拾わないよう、行コメントを除いた本文（コード）だけで比べる。
+  it('★ setConfirming(true) は refetchStatusForConsent の呼び出しより後（取り直す前に同意カードを開かない）', () => {
+    const needsConsentAt = enableBody.indexOf('r.needsConsent')
+    const branch = stripLineComments(enableBody.slice(needsConsentAt))
+    const refetchAt = branch.indexOf('refetchStatusForConsent(')
+    const setConfirmingAt = branch.indexOf('setConfirming(true)')
+    expect(refetchAt).toBeGreaterThan(-1)
+    expect(setConfirmingAt).toBeGreaterThan(-1)
+    expect(setConfirmingAt).toBeGreaterThan(refetchAt)
+  })
+
+  it('取り直した action を setAction している（route のまま固まらない）', () => {
+    const needsConsentAt = enableBody.indexOf('r.needsConsent')
+    const branch = enableBody.slice(needsConsentAt)
+    expect(branch).toContain('setAction(refetched.action)')
+  })
+
+  it('取り直しに失敗したときのエラー文言を出す', () => {
+    expect(enableBody).toContain('保存場所の状態を確認できませんでした。もう一度お試しください')
   })
 })

@@ -9,6 +9,8 @@ import {
   readLoadBalancerId,
   readApiErrorTitle,
   readZones,
+  isZonesShape,
+  readNextCursor,
 } from '../src/shared/apprunDedicatedShapes'
 
 // roadmap #23。docs/apprun-dedicated-plan.md 5-8 の表（OpenAPI原本 v1.4.0 と2026-09-07の実測の
@@ -158,10 +160,9 @@ describe('readClusterId / readAsgId / readLoadBalancerId: 作成応答からのI
   })
 })
 
-describe('readZones: GET /zone は { Zones: [...] }（roadmap #28・2026-09-07 実測）', () => {
-  // 実測の生応答そのもの（CLAUDE.md #28 依頼文に載っている実測記録。Total/Countは6だが、
-  // Zones配列に残っているのは先頭3件のみ＝tk1a/tk1b/is1a）。Region の中身は readZones が
-  // 使わないため、実物と同じ構造だけ再現する。
+describe('readZones: GET /zone は { Zones: [...] }（roadmap #28・2026-09-08 実測完了）', () => {
+  // 実測の生応答そのもの（docs/apprun-dedicated-plan.md 5-9・2026-09-08 Ryosuke さん実行・6件
+  // すべて）。Region の中身は readZones が使わないため、実物と同じ構造だけ再現する。
   const REAL_ZONES_RESPONSE = {
     From: 0,
     Count: 6,
@@ -182,14 +183,33 @@ describe('readZones: GET /zone は { Zones: [...] }（roadmap #28・2026-09-07 �
         Description: '石狩第1ゾーン', IsDummy: false,
         Region: { ID: 310, Name: '石狩', Description: '石狩' },
       },
+      {
+        Index: 3, ID: 31002, DisplayOrder: 20031002, Name: 'is1b',
+        Description: '石狩第2ゾーン', IsDummy: false,
+        Region: { ID: 310, Name: '石狩', Description: '石狩' },
+      },
+      {
+        Index: 4, ID: 31003, DisplayOrder: 20031003, Name: 'is1c',
+        Description: '石狩第3ゾーン', IsDummy: false,
+        Region: { ID: 310, Name: '石狩', Description: '石狩' },
+      },
+      {
+        // tk1v（Sandbox）だけ IsDummy:true。DisplayOrder は実測の 80029001（5-9）。
+        Index: 5, ID: 29001, DisplayOrder: 80029001, Name: 'tk1v',
+        Description: 'Sandbox', IsDummy: true,
+        Region: { ID: 290, Name: 'Sandbox', Description: 'Sandbox' },
+      },
     ],
   }
 
-  it('実測どおりの応答から3件読める（name/description/isDummy/displayOrder）', () => {
+  it('実測どおりの応答から6件すべて読める（name/description/isDummy/displayOrder）', () => {
     expect(readZones(REAL_ZONES_RESPONSE)).toEqual([
       { name: 'tk1a', description: '東京第1ゾーン', isDummy: false, displayOrder: 20021001 },
       { name: 'tk1b', description: '東京第2ゾーン', isDummy: false, displayOrder: 20021002 },
       { name: 'is1a', description: '石狩第1ゾーン', isDummy: false, displayOrder: 20031001 },
+      { name: 'is1b', description: '石狩第2ゾーン', isDummy: false, displayOrder: 20031002 },
+      { name: 'is1c', description: '石狩第3ゾーン', isDummy: false, displayOrder: 20031003 },
+      { name: 'tk1v', description: 'Sandbox', isDummy: true, displayOrder: 80029001 },
     ])
   })
 
@@ -229,6 +249,48 @@ describe('readZones: GET /zone は { Zones: [...] }（roadmap #28・2026-09-07 �
     expect(readZones({ Zones: [{ Name: 'z1', IsDummy: 'true' } ] })[0].isDummy).toBeNull()
     expect(readZones({ Zones: [{ Name: 'z2', IsDummy: 1 }] })[0].isDummy).toBeNull()
     expect(readZones({ Zones: [{ Name: 'z3' }] })[0].isDummy).toBeNull()
+  })
+})
+
+// O（2026-09-10 レビューの修理・バッチ3）: 200でも形が想定と違えば「成功・0件」にしない。
+// zonesCache.ts の readZones 呼び出しの直前でこれを見る。
+describe('isZonesShape: Zones が配列で、かつ Count/Total のどちらかが数値であること', () => {
+  it('実測どおりの応答（Count/Total あり・Zonesは配列）は true', () => {
+    expect(isZonesShape({ From: 0, Count: 6, Total: 6, Zones: [] })).toBe(true)
+  })
+
+  it('Count だけ、Total だけでも true（どちらか一方でよい）', () => {
+    expect(isZonesShape({ Count: 1, Zones: [] })).toBe(true)
+    expect(isZonesShape({ Total: 1, Zones: [] })).toBe(true)
+  })
+
+  it('Zones が無い・配列でない・Count/Total がどちらも無ければ false', () => {
+    expect(isZonesShape({ foo: 1 })).toBe(false)
+    expect(isZonesShape({ Count: 6, Total: 6, Zones: 'not-an-array' })).toBe(false)
+    expect(isZonesShape({ Zones: [] })).toBe(false) // Count/Total どちらも無い
+    expect(isZonesShape(null)).toBe(false)
+    expect(isZonesShape(undefined)).toBe(false)
+    expect(isZonesShape('plain text')).toBe(false)
+  })
+})
+
+// N（2026-09-10 レビューの修理・バッチ3）: 一覧の続きは `nextCursor` だけを見る
+// （原本 v1.4.0。`cursor`/`next` を推測で試さない）。
+describe('readNextCursor: nextCursor が非空の string のときだけそれを返す', () => {
+  it('nextCursor があれば返す', () => {
+    expect(readNextCursor({ clusters: [], nextCursor: 'abc123' })).toBe('abc123')
+  })
+
+  it('nextCursor が無い・空文字・文字列でなければ null（続きなし扱い）', () => {
+    expect(readNextCursor({ clusters: [] })).toBeNull()
+    expect(readNextCursor({ nextCursor: '' })).toBeNull()
+    expect(readNextCursor({ nextCursor: 123 })).toBeNull()
+    expect(readNextCursor(null)).toBeNull()
+  })
+
+  it('★推測で拾わない: cursor/next という別のキー名では拾わない（5-8と同じ事故の形）', () => {
+    expect(readNextCursor({ cursor: 'abc123' })).toBeNull()
+    expect(readNextCursor({ next: 'abc123' })).toBeNull()
   })
 })
 

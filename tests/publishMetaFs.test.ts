@@ -143,3 +143,20 @@ describe('readApprunDedicatedFs / writeApprunDedicatedRecordFs: AppRun専有型�
     expect(rec.clusterID).toBe('c1')
   })
 })
+
+describe('writeApprunDedicatedRecordFs: 戻り値は書き込めたかどうかを表す（2026-09-10 レビューの修理・C）', () => {
+  it('書き込みに成功すれば true を返す', () => {
+    expect(writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).clusterID).toBe('c1')
+  })
+
+  it('書き込めない（読み取り専用フォルダ）ときは例外を投げず false を返す。createClusterFlow はこれを見て止まる', () => {
+    fs.chmodSync(projectDir, 0o500)
+    try {
+      expect(() => writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })).not.toThrow()
+      expect(writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })).toBe(false)
+    } finally {
+      fs.chmodSync(projectDir, 0o700)
+    }
+  })
+})

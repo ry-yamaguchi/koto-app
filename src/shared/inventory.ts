@@ -17,7 +17,7 @@
 
 import { REGISTRY_MONTHLY_YEN, BUCKET_MONTHLY_YEN } from './cloudCost'
 
-export type ResourceKind = 'apprun-app' | 'registry' | 'bucket'
+export type ResourceKind = 'apprun-app' | 'registry' | 'bucket' | 'dedicated-cluster'
 
 /** さくら側に実在するもの（main が API から集める）。 */
 export type ActualResource = {
@@ -49,6 +49,13 @@ export type LocalRecord = {
   appIds: string[]
   registryNames: string[]
   bucketNames: string[]
+  /**
+   * 専有型のクラスタID（`.sakuraide.json` の `publish.apprunDedicated.clusterID`）。
+   * fs を読む必要があるため、ここ（純関数の parseLocalRecords）では埋められない。
+   * 呼び出し側（main/ipc/cloud.ts）が `readApprunDedicatedFs` で読んでから足す
+   * （既定は空配列＝突き合わせなし）。
+   */
+  clusterIds: string[]
 }
 
 export type InventoryRow = {
@@ -89,6 +96,9 @@ export function costNote(row: { kind: ResourceKind; monthlyYen: number; scaleMin
     if (min >= 1) return '常時動く設定（料金がかかり続けます）'
     return '従量（待機中はほぼゼロ）'
   }
+  // 専有型のクラスタは常時課金（プラン契約）だが、金額はプラン次第で分からない。
+  // 0円と決めつけない（棚卸しから外れていた穴の直し）。
+  if (row.kind === 'dedicated-cluster') return '常時課金（金額はプラン次第・コントロールパネルで確認）'
   return row.monthlyYen > 0 ? `月額${row.monthlyYen}円` : '従量'
 }
 
@@ -96,6 +106,7 @@ const KIND_LABEL: Record<ResourceKind, string> = {
   'apprun-app': '公開したアプリ',
   registry: 'イメージの置き場',
   bucket: 'データの保存場所',
+  'dedicated-cluster': '専有型のクラスタ',
 }
 
 export function kindLabel(kind: ResourceKind): string {
@@ -124,6 +135,9 @@ export function parseLocalRecords(
       appIds: idsOf('apprun-app'),
       bucketNames: idsOf('bucket'),
       registryNames: typeof meta.registryName === 'string' && meta.registryName ? [meta.registryName] : [],
+      // fs（.sakuraide.json）を読む必要があるため、ここでは埋められない（既定は空配列）。
+      // main/ipc/cloud.ts が readApprunDedicatedFs で読んでから足す。
+      clusterIds: [],
     }
   })
 }
@@ -131,7 +145,11 @@ export function parseLocalRecords(
 /** その資源を記録しているプロジェクトを探す（**完全一致のみ**・純関数）。 */
 function ownerOf(res: ActualResource, records: readonly LocalRecord[]): LocalRecord | null {
   for (const r of records) {
-    const list = res.kind === 'apprun-app' ? r.appIds : res.kind === 'registry' ? r.registryNames : r.bucketNames
+    const list =
+      res.kind === 'apprun-app' ? r.appIds
+      : res.kind === 'registry' ? r.registryNames
+      : res.kind === 'dedicated-cluster' ? r.clusterIds
+      : r.bucketNames
     if (list.some(v => v === res.id || v === res.name)) return r
   }
   return null
@@ -146,7 +164,7 @@ export function buildInventory(opts: {
   actual: readonly ActualResource[]
   records: readonly LocalRecord[]
 }): InventoryRow[] {
-  const order: ResourceKind[] = ['apprun-app', 'registry', 'bucket']
+  const order: ResourceKind[] = ['apprun-app', 'registry', 'bucket', 'dedicated-cluster']
   return [...(opts.actual ?? [])]
     .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.name.localeCompare(b.name))
     .map(res => {
@@ -170,14 +188,18 @@ export function buildInventory(opts: {
 
 /**
  * `apprun-app` のうち、**費用がかかり続けている／かかり続けていないと言い切れない**もの
- * があるか（純関数）。
+ * があるか（純関数）。`dedicated-cluster`（専有型のクラスタ）は常時課金なので、
+ * 1件でもあれば常に true（金額が分からなくても「無い」とは言い切れない）。
  *
  * 常時起動（min≥1）は従量課金でも確実に費用が発生し続ける。min が不明のときも、
  * 「無い」とは言い切れない（0 と決めつけない・掟1）。totalNotice が
  * 「かかり続けるものは見つかりませんでした」と誤って言い切らないための判定。
  */
 function hasOngoingOrUnknownAppRunCost(rows: readonly InventoryRow[]): boolean {
-  return (rows ?? []).some(r => r.kind === 'apprun-app' && (r.scaleMin === null || (r.scaleMin ?? 0) >= 1))
+  return (rows ?? []).some(r =>
+    (r.kind === 'apprun-app' && (r.scaleMin === null || (r.scaleMin ?? 0) >= 1))
+    || r.kind === 'dedicated-cluster',
+  )
 }
 
 /** 月額の合計（純関数）。従量のものは含まれない。 */

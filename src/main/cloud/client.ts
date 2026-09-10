@@ -643,13 +643,24 @@ export function extractRegistryId(data: unknown): string | null {
  *
  * 「作成が成功しても、それだけで『付いた』と思わない」（掟10）ための読み直し判定。
  * Description は完全一致、Tags は期待したタグがすべて含まれているか（順序・件数は問わない）で見る。
+ *
+ * ── 2026-09-10 検分の直し: 「形が違う」を「未対応（false）」にしない ──────────
+ * 以前は `CommonServiceItem ?? commonserviceitem ?? d` / `Description ?? description` /
+ * `Tags ?? tags` とキーを順に試し、外れると false（＝未対応と確定）を返していた。
+ * だが単体取得 `GET /commonserviceitem/{id}` が一覧と同じ形とは**仮定できない**（掟1）。
+ * 読む形は**1つ**に決める: `data.CommonServiceItem.Description`（string）・
+ * `data.CommonServiceItem.Tags`（配列）。この形で読めない（`CommonServiceItem` が無い／
+ * `Description` が string でない／`Tags` が配列でない）ときは **null（分からない）**を返す。
+ * 呼び出し側（registryProvision.ts）は null を false と区別し、記録を上書きしない。
+ * 両方読めて期待と一致すれば true、読めて一致しなければ false。
  */
-export function extractRegistryMetaApplied(data: unknown, expected: RegistryMeta): boolean {
-  const d = data as any
-  const item = d?.CommonServiceItem ?? d?.commonserviceitem ?? d
-  const desc = item?.Description ?? item?.description
-  const tags = item?.Tags ?? item?.tags
-  const descOk = typeof desc === 'string' && desc === expected.description
-  const tagsOk = Array.isArray(tags) && expected.tags.every(t => tags.includes(t))
+export function extractRegistryMetaApplied(data: unknown, expected: RegistryMeta): boolean | null {
+  const item = (data as any)?.CommonServiceItem
+  if (item == null || typeof item !== 'object') return null
+  const desc = item.Description
+  const tags = item.Tags
+  if (typeof desc !== 'string' || !Array.isArray(tags)) return null
+  const descOk = desc === expected.description
+  const tagsOk = expected.tags.every(t => tags.includes(t))
   return descOk && tagsOk
 }
