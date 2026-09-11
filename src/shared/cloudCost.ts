@@ -229,5 +229,7 @@ export function remainingCostWarning(opts: {
     parts.push(`データの保存場所『${opts.keptBucketName}』`)
   }
   if (parts.length === 0) return null
-  return `⚠️ ${parts.join('と')}は残るため、月額${total}円（税込）の課金は続きます。`
+  // 「どこで消せるか」を必ず添える（2026-09-11 利用者目線レビュー）。📡 公開したもの一覧では
+  // 破棄で記録の行が消えるため、この一文が片づけ先を知る唯一の手がかりになる。
+  return `⚠️ ${parts.join('と')}は残るため、月額${total}円（税込）の課金は続きます。後で消す場合は、さくらのクラウドのコントロールパネルから削除してください。`
 }

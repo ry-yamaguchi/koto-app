@@ -6,10 +6,12 @@ import { ipcMain } from 'electron'
 import { getLimits, getWorkerClasses, getLbClasses, listClusters, type ApprunDedicatedResult } from '../cloud/apprunDedicated'
 import { getZones } from '../cloud/zones'
 import { createClusterFlow, teardownFlow, type ApprunDedicatedClusterSpec } from '../cloud/apprunDedicatedApply'
+import { fetchDedicatedTelemetryStatus, enableDedicatedTelemetry } from '../cloud/monitoring'
 import { readApprunDedicatedFs } from '../publishMetaFs'
 import type { CloudCredentials } from '../cloud/auth'
 import { SakuraCloudClient } from '../cloud/client'
 import { checkBilling, type ConnCheck } from '../cloud/connectionCheck'
+import { isTelemetryKind, DEDICATED_VARIANTS } from '../../shared/appLog'
 import type { IpcDeps } from './types'
 
 // 請求（コスト）参照はアカウント単位（どのゾーン経由でも可）。共用型 cloud:testConnection と同じゾーン。
@@ -37,6 +39,14 @@ function isClusterSpec(v: unknown): v is ApprunDedicatedClusterSpec {
  */
 function isConfirmed(opts: unknown): boolean {
   return !!opts && typeof opts === 'object' && (opts as any).confirmed === true
+}
+
+/**
+ * `opts.consented === true` のときだけ true（#38。共用型 cloud:enableTelemetry と同じ最後の砦）。
+ * renderer から渡された値の形は信用しない（不正な形なら false＝同意なし扱いの安全側）。
+ */
+function isTelemetryConsented(opts: unknown): boolean {
+  return !!opts && typeof opts === 'object' && (opts as any).consented === true
 }
 
 export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
@@ -97,15 +107,40 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
 
   // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
   // opts.confirmed（第3引数）は今回の確認ダイアログを通ったかの印（2026-09-10 レビューの修理・A）。
-  ipcMain.handle('apprunDedicated:teardown', async (_, projectDir: unknown, auth: unknown, opts: unknown) => {
+  // #39: 各段は一覧から消えるまで待つため、進捗を 'apprunDedicated:teardown-progress' で
+  // 逐次通知する（cloud:apply-progress と同じ形。event.sender.send）。
+  ipcMain.handle('apprunDedicated:teardown', async (event, projectDir: unknown, auth: unknown, opts: unknown) => {
     if (typeof projectDir !== 'string' || !projectDir) return { ok: false, executed: [], message: 'プロジェクトフォルダが不正です', remaining: {} }
     if (!isCreds(auth)) return { ok: false, executed: [], message: 'クラウドのAPIキーが未登録です', remaining: {} }
-    return teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts) })
+    const progress = (msg: string) => {
+      try { event.sender.send('apprunDedicated:teardown-progress', msg) } catch { /* ウィンドウ破棄時は無視 */ }
+    }
+    return teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress })
   })
 
   // 現在の記録（何が作られているか）を返す。API を呼ばない、ただのファイル読み取り。
   ipcMain.handle('apprunDedicated:state', async (_, projectDir: unknown) => {
     if (typeof projectDir !== 'string' || !projectDir) return {}
     return readApprunDedicatedFs(projectDir)
+  })
+
+  // #38「⑦ ログ・メトリクス」: 専有型はクラスタ単位ではなくプロジェクト単位（resource_id
+  // を送らない・5-12実測）。判断・GET/POSTの実装は共用型と共通の
+  // src/main/cloud/monitoring.ts（fetchDedicatedTelemetryStatus/enableDedicatedTelemetry）に
+  // 一元化してあり、ここは「呼ぶだけ」（掟10）。**何も作らない**（GETのみ）。
+  ipcMain.handle('apprunDedicated:telemetryStatus', async (_, auth: unknown) => {
+    if (!isCreds(auth)) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+    return fetchDedicatedTelemetryStatus(auth)
+  })
+
+  // opts.consented（第3引数）は「費用に同意する」ボタンを押したときだけ true
+  // （TelemetryNotice.tsx と同じ約束）。置き場が無ければ、同意が無い限り
+  // 課金の始まる初期化は一度も呼ばれない（decideEnableTelemetry・enableDedicatedTelemetry）。
+  // renderer は kind だけを渡す（どの variant が未接続かは main 側が一覧から判断する）。
+  ipcMain.handle('apprunDedicated:enableTelemetry', async (_, auth: unknown, kind: unknown, opts: unknown) => {
+    if (!isCreds(auth)) return { ok: false, message: 'クラウドのAPIキーが未登録です' }
+    if (!isTelemetryKind(kind)) return { ok: false, message: '種類が不正です' }
+    const variants = DEDICATED_VARIANTS.filter(v => v.kind === kind).map(v => v.name)
+    return enableDedicatedTelemetry(auth, kind, variants, { consented: isTelemetryConsented(opts) })
   })
 }

@@ -14,6 +14,8 @@ import ConnectionChecklist from './ConnectionChecklist'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { pinnedAfterApplyNotice } from '../../shared/apprunTraffic'
+import { scaleLabel, type ScaleDecision } from '../../shared/scaleDecision'
+import { nextApplyOpts } from '../scaleDecisionFlow'
 import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryDeleteDefault, adoptedRegistryNote, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
 import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
 import { isSubmitEnter } from '../keyInput'
@@ -109,7 +111,7 @@ function kindLabel(kind: CloudResourceKind): string {
     case 'registry': return 'レジストリ'
     case 'image': return 'イメージ'
     case 'apprun-app': return 'アプリ（AppRun）'
-    case 'bucket': return 'バケット（オブジェクトストレージ）'
+    case 'bucket': return '保存場所（データ）'
     default: return kind
   }
 }
@@ -161,6 +163,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
   // ── 操作（apply / teardown） ──
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [busy, setBusy] = useState(false) // apply/teardown 実行中
+  /**
+   * 「起動のしかた」がさくら側と食い違い、公開を止めて聞いているとき（2026-09-10・案②）。
+   * **失敗ではない**ので opResult（⚠️の失敗表示）には載せず、選択カードを別に出す。
+   */
+  const [scaleAsk, setScaleAsk] = useState<{ recorded: number; actual: number; confirmed: boolean } | null>(null)
   // 破棄時にコンテナレジストリも消すか。既定 true（残すと月額課金が続くため）。
   const [deleteRegistry, setDeleteRegistry] = useState(true)
 
@@ -602,7 +609,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     } finally { setPlanning(false) }
   }
 
-  const doApply = async () => {
+  const doApply = async (applyOpts: { confirmed: boolean; scaleDecision?: ScaleDecision } = { confirmed: true }) => {
     setBusy(true)
     // **新しい公開のたびに、回復ボタンの状態を戻す。** 前回整えた印を残したままだと、
     // 今回また同じ失敗をしたときにボタンが出ず、直せなくなる（2026-08-14）
@@ -614,9 +621,21 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     // 実行中フラグ（終了確認ダイアログ用）。中断・失敗でも必ず解除されるよう最外の finally で呼ぶ。
     const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
-      const r = await window.electronAPI.cloud.apply(projectDir, { confirmed: true })
+      const r = await window.electronAPI.cloud.apply(projectDir, applyOpts)
+      // ── 起動のしかたが食い違い、止めて聞いているとき（2026-09-10・案②）────────
+      // **失敗としてではなく選択カードを出す**（掟5）。PATCH はまだ呼ばれていない
+      // ので、opResult（⚠️失敗の表示）には載せず、プランの取り直し等もしない。
+      if (r.needsScaleDecision) {
+        setScaleAsk({ ...r.needsScaleDecision, confirmed: applyOpts.confirmed })
+        setConfirm(null)
+        return
+      }
+      setScaleAsk(null)
       setOpResult(r)
       setConfirm(null)
+      // さくら側の実物を Koto の設定へ取り込んだとき（scaleDecision:'sakura'）は、
+      // 書き戻された env.json を読み直して「起動のしかた」の表示を実物へ合わせる。
+      if (r.adoptedScaleMin !== undefined) await loadEnv()
       // 適用後はプラン・期限・前提・公開URL・公開済みフラグを取り直す
       await refreshExpiry()
       await refreshPrereqs()
@@ -686,6 +705,20 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
       setOpResult({ ok: false, message: e?.message ?? String(e) })
       setConfirm(null)
     } finally { setBusy(false) }
+  }
+
+  // 「🗑 破棄する」を押したとき：消すものが本当にあるかをまず見る（2026-09-11 利用者目線レビュー）。
+  // **ボタン自体は disabled にしない**（公開が途中で失敗してレジストリだけ残ったときの
+  // 片づけ経路を塞がないため）。かわりに、AppRunアプリ・保存場所・レジストリのどれも
+  // 記録に無いときだけ、赤い確認画面を出さずに opResult 相当の枠で終える
+  // （askCleanupImages が「消える古いイメージが無ければ確認を出さない」のと同じ作り）。
+  const askTeardown = () => {
+    setOpResult(null)
+    if (!published && !placement && !registryName) {
+      setOpResult({ ok: true, message: '公開されていないため、破棄するものはありません。' })
+      return
+    }
+    setConfirm({ kind: 'teardown' })
   }
 
   // ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）─────────────────────────
@@ -828,7 +861,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         confirm={confirm}
         busy={busy || renaming}
         onCancel={() => setConfirm(null)}
-        onApply={doApply}
+        onApply={() => doApply()}
         onTeardown={doTeardown}
         registryName={registryName}
         registryAdopted={registryAdopted}
@@ -839,6 +872,46 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         placement={placement}
         progress={progress}
       />
+    )
+  }
+
+  // ── 起動のしかたが、さくら側と Koto の設定で食い違ったとき（2026-09-10・案②） ──
+  // **失敗ではなく選択カード**（掟5: 番号付きの選択肢・確認）。PATCH はまだ呼ばれていない。
+  if (scaleAsk) {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-2">
+          <p className="text-sm font-semibold text-ink">
+            起動のしかたが違います。さくら側:『{scaleLabel(scaleAsk.actual)}』／Koto の設定:『{scaleLabel(scaleAsk.recorded)}』
+          </p>
+          <p className="text-xs text-ink-muted leading-relaxed">
+            さくらのコントロールパネルで直接変更したか、以前の公開が反映されていない可能性があります。どちらの設定で公開するか選んでください。
+          </p>
+        </div>
+        {busy && progress && (
+          <div className="rounded-lg border border-line bg-overlay px-3 py-2 flex items-center gap-2">
+            <span className="inline-block w-3.5 h-3.5 border-2 border-sakura border-t-transparent rounded-full animate-spin flex-none" />
+            <span className="text-xs text-ink-secondary leading-relaxed break-all">{progress}</span>
+          </div>
+        )}
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={() => doApply(nextApplyOpts({ confirmed: scaleAsk.confirmed }, 'koto'))}
+            disabled={busy}
+            className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+          >① Koto の設定で公開する</button>
+          <button
+            onClick={() => doApply(nextApplyOpts({ confirmed: scaleAsk.confirmed }, 'sakura'))}
+            disabled={busy}
+            className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-semibold hover:border-sakura disabled:opacity-40"
+          >② さくら側の設定を Koto に取り込んで公開する</button>
+          <button
+            onClick={() => setScaleAsk(null)}
+            disabled={busy}
+            className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
+          >やめる</button>
+        </div>
+      </div>
     )
   }
 
@@ -872,7 +945,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
             ⏰ この環境は予定時間（TTL）を過ぎています。使わない場合は破棄してください。
           </p>
           <button
-            onClick={() => { setOpResult(null); setConfirm({ kind: 'teardown' }) }}
+            onClick={askTeardown}
             disabled={busy}
             className="flex-none bg-brand-red-fill text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
           >🗑 破棄する</button>
@@ -1202,14 +1275,14 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
             className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
           >🚀 公開する（作成・更新）</button>
           <button
-            onClick={() => { setOpResult(null); setConfirm({ kind: 'teardown' }) }}
+            onClick={askTeardown}
             disabled={busy || !keyReady}
             title={!keyReady ? '先にAPIキーを登録してください' : ''}
             className="bg-overlay text-brand-red border border-brand-red/50 rounded-lg px-4 py-2 text-sm font-semibold hover:bg-brand-red/10 disabled:opacity-40"
           >🗑 破棄する（削除）</button>
         </div>
         <p className="text-[11px] text-ink-muted leading-relaxed">
-          「公開する」は事前チェックを表示して確認してから実行します。「破棄する」はデータ（バケット）も含めて削除する場合があります。
+          「公開する」は事前チェックを表示して確認してから実行します。「破棄する」はデータの保存場所も含めて削除する場合があります。
         </p>
         {/* ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）──────────────────
             公開のたびに新しいタグを打つので、レジストリに過去のイメージが残る。
@@ -1632,7 +1705,7 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
   return (
     <div className="space-y-2">
       <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1.5 text-xs">
-        <dt className="text-ink-muted">name</dt>
+        <dt className="text-ink-muted">公開名</dt>
         <dd className="text-ink font-medium break-all">
           {editingName ? (
             <div className="flex items-center gap-1.5">
@@ -1666,15 +1739,15 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
             </span>
           )}
         </dd>
-        <dt className="text-ink-muted">backend</dt><dd className="text-ink">{spec.backend}</dd>
-        <dt className="text-ink-muted">region</dt>
+        <dt className="text-ink-muted">実行環境</dt><dd className="text-ink">{spec.backend}</dd>
+        <dt className="text-ink-muted">地域</dt>
         <dd className="text-ink">
           {spec.region}
           <span className="block text-[11px] text-ink-muted mt-1 leading-relaxed">
             ※ どのゾーン経由でも同じ結果になります（コンテナレジストリは全ゾーン共通のため。2026-09-08 に4ゾーンで実測）。ここで選ぶ必要はありません。
           </span>
         </dd>
-        <dt className="text-ink-muted">service</dt>
+        <dt className="text-ink-muted">サービス設定</dt>
         <dd className="text-ink break-all">
           port {spec.service.port} ／ <span className="font-mono">{sourceText}</span>
         </dd>
@@ -1715,7 +1788,7 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
             )
           })()}
         </dd>
-        <dt className="text-ink-muted">バケット</dt>
+        <dt className="text-ink-muted">保存場所</dt>
         <dd className="text-ink break-all">
           {spec.persistence.objectStorage.length === 0
             ? <span className="text-ink-muted">なし</span>
@@ -1758,7 +1831,7 @@ function PlanView({ plan }: { plan: CloudPlan }) {
     <div className="space-y-2">
       {plan.hasStatefulDelete && (
         <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed font-semibold">
-          ⚠️ データが消える削除を含みます（バケットの削除）。
+          ⚠️ データが消える削除を含みます（保存場所の削除）。
         </p>
       )}
       <ul className="divide-y divide-line">

@@ -21,9 +21,11 @@ interface KeyRow { label: string; apiKey: string }
 interface Props {
   apiKey: string
   onClose: () => void
+  /** 「認証情報を開く」ボタン用（未登録時の導線・2026-09-11 利用者目線レビュー）。 */
+  onOpenCredentials?: () => void
 }
 
-export default function SettingsModal({ apiKey, onClose }: Props) {
+export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Props) {
   const models = useModels(apiKey)
   const [settings, setLocal] = useState<BudgetSettings>(getSettings())
   const [usage, setUsage] = useState<MonthUsage>(getUsage())
@@ -134,7 +136,7 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
           <SakuraLogo size={24} />
           <div>
             <h2 className="text-lg font-bold text-ink">設定</h2>
-            <p className="text-xs text-ink-secondary">AI利用額の上限</p>
+            <p className="text-xs text-ink-secondary">AIの利用状況・費用の上限・アプリの設定</p>
           </div>
           <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
@@ -347,14 +349,22 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
               ) : hasClaudeKey ? (
                 <p className="text-sm text-ink">Claudeで動作しています。</p>
               ) : (
-                <p className="text-sm text-ink">さくらのAI Engineで動作しています（Claudeのキーを登録すると切り替えられます）。</p>
+                <p className="text-sm text-ink">
+                  さくらのAI Engineで動作しています（Claudeのキーを登録すると切り替えられます）。
+                  {onOpenCredentials && (
+                    <button
+                      onClick={onOpenCredentials}
+                      className="ml-1.5 text-[11px] text-sakura hover:underline"
+                    >認証情報を開く</button>
+                  )}
+                </p>
               )}
             </div>
           )}
 
           {/* Default model (IDE) */}
           <div>
-            <label className="text-xs font-semibold text-ink-secondary">IDEで使うモデル（コード・公開向け）</label>
+            <label className="text-xs font-semibold text-ink-secondary">IDEで使うモデル（さくらのAI Engine・コード・公開向け）</label>
             <select
               value={ideModel}
               onChange={e => { setDefaultModel(e.target.value, 'ide'); setIdeModel(e.target.value) }}
@@ -371,12 +381,13 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
             </select>
             <p className="mt-1 text-[11px] text-ink-muted">
               コード作成・プロジェクト生成・公開前チェックで使います。
+              Claude で動かしているときは、チャット画面右上のモデル選択で選びます。
             </p>
           </div>
 
           {/* Default model (Chat) */}
           <div>
-            <label className="text-xs font-semibold text-ink-secondary">チャットで使うモデル（相談・調査向け）</label>
+            <label className="text-xs font-semibold text-ink-secondary">チャットで使うモデル（さくらのAI Engine・相談・調査向け）</label>
             <select
               value={chatModel}
               onChange={e => { setDefaultModel(e.target.value, 'chat'); setChatModel(e.target.value) }}
@@ -393,6 +404,7 @@ export default function SettingsModal({ apiKey, onClose }: Props) {
             </select>
             <p className="mt-1 text-[11px] text-ink-muted">
               チャットモードの会話で使います。会話ごとに個別変更もできます。
+              Claude で動かしているときは、チャット画面右上のモデル選択で選びます。
             </p>
           </div>
 

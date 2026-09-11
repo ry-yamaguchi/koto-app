@@ -236,7 +236,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 差分プラン算出（ドライラン・API呼び出し無し）
     plan: (projectDir: string) => ipcRenderer.invoke('cloud:plan', projectDir),
     // 段階2a: 構築/破棄の実行（破壊操作は confirmed:true の明示確認が必須）
-    apply: (projectDir: string, opts?: { confirmed?: boolean }) => ipcRenderer.invoke('cloud:apply', projectDir, opts),
+    apply: (projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }) => ipcRenderer.invoke('cloud:apply', projectDir, opts),
     teardown: (projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }) => ipcRenderer.invoke('cloud:teardown', projectDir, opts),
     // 破棄画面に出すレジストリ名（パスワードは返らない）
     registryName: (projectDir: string) => ipcRenderer.invoke('cloud:registryName', projectDir),
@@ -400,8 +400,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 段階④: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
     teardown: (projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }) =>
       ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts),
+    // #39: 破棄の進捗メッセージ購読（各段が一覧から消えるまで待つ間、30秒ごとに1行）。
+    // cloud.onApplyProgress と同じ形。戻り値の関数を呼ぶと購読解除。
+    onTeardownProgress: (cb: (msg: string) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, msg: string) => cb(msg)
+      ipcRenderer.on('apprunDedicated:teardown-progress', handler)
+      return () => ipcRenderer.removeListener('apprunDedicated:teardown-progress', handler)
+    },
     // いま何が作られているか（.sakuraide.json の記録）を返す。API は呼ばない。
     state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir),
+    // #38「⑦ ログ・メトリクス」: プロジェクト単位（クラスタ単位ではない・5-12実測）。
+    // 共用型 cloud.telemetryStatus/enableTelemetry と同じ約束（opts.consented は
+    // 「費用に同意する」ボタンを押したときだけ true を渡す）。
+    telemetryStatus: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:telemetryStatus', auth),
+    enableTelemetry: (auth: { token: string; secret: string }, kind: 'logs' | 'metrics', opts?: { consented?: boolean }) =>
+      ipcRenderer.invoke('apprunDedicated:enableTelemetry', auth, kind, opts),
   },
   registry: {
     // コンテナレジストリ認証情報（レジストリ名・ユーザー名・パスワード）の保存・状態・読戻し・削除。

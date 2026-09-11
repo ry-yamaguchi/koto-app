@@ -1055,13 +1055,13 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
               <p className="mt-1.5 text-[11px] text-sakura leading-relaxed">
                 {kind === 'site'
                   ? <>静的サイトを public/ 構成で生成し、<b>deploy.sh</b> で簡単に公開できます。</>
-                  : <>PHP + MySQL 構成で生成し、<b>deploy.sh</b> で簡単に公開できます（ベース指定は無視されます）。</>}
+                  : <>PHP とデータベース（MySQL）の構成で生成し、<b>deploy.sh</b> で簡単に公開できます（ベース指定は無視されます）。</>}
               </p>
             )}
             {target === 'sakura-apprun' && (
               <p className="mt-1.5 text-[11px] text-sakura leading-relaxed">
                 {kind === 'site'
-                  ? <>静的サイトを nginx コンテナ構成で生成し、<b>③公開→さくらのAppRun</b> から Docker不要でそのまま公開できます。</>
+                  ? <>静的サイトとして生成し、<b>③公開→さくらのAppRun</b> から Docker不要でそのまま公開できます。</>
                   : <>Docker コンテナ構成（Node.js + Dockerfile）で生成し、<b>③公開→さくらのAppRun</b> から Docker不要でそのまま公開できます（ベース指定は無視されます）。</>}
               </p>
             )}

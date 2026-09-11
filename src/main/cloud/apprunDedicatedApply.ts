@@ -18,13 +18,13 @@ import type { CloudCredentials } from './auth'
 import {
   getLimits, listClusters, createCluster, getCluster, deleteCluster,
   createAsg, getAsg, deleteAsg, createLoadBalancer, deleteLoadBalancer,
-  listAsg, listLoadBalancers,
+  listAsg, listLoadBalancers, type ApprunDedicatedResult,
 } from './apprunDedicated'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import type { ApprunDedicatedRecord } from '../../shared/publishMeta'
 import {
   readLimits, readClusters, readClusterId, readAsgId, readLoadBalancerId,
-  readClusterRows, readAsgRows, readLoadBalancerRows,
+  readClusterRows, readAsgRows, readLoadBalancerRows, readApiErrorTitle,
 } from '../../shared/apprunDedicatedShapes'
 
 // ── 入力の形 ──────────────────────────────────────────────────────────
@@ -436,37 +436,430 @@ export async function createClusterFlow(
 }
 
 // ── teardownFlow ─────────────────────────────────────────────────────
+//
+// #39（2026-09-10 実測・5-11）: 専有型の DELETE は 204/404 いずれでも**削除は非同期**。
+// 資源は一覧に `deleting:true` のまま数分〜十数分残り続け、その間 ①削除中のIDへ再度
+// DELETE すると 404 ②まだ残っている下位資源（LB）を抱えたまま上位（ASG）を消そうとすると
+// 409（title に `Cannot delete Auto Scaling Group because it has associated Load Balancers: <id>`）
+// が返る。v0.6.16 の旧実装は 204/404 の直後に一覧を1回だけ見て「deleting:true なら消えた扱い」
+// にしていたため、(1) ASG が 409 で止まり (2) LB の ID が記録から外れて Koto から押し直せない、
+// が同時に起きた（CLAUDE.md 掟10「削除の 204 は『消えた』ではない」）。
+// → 各段は **一覧から ID が完全に消えるまで待ってから** 次の段へ進む（waitUntilGone）。
 
 export type TeardownFlowResult = {
   /** 記録にあったものが全部消せたか。1つでも残れば false。 */
   ok: boolean
-  /** 消せたものの説明（画面向け）。 */
+  /** 起きたことの説明（画面向け。削除の完了だけでなく、記録への書き戻し等も含む）。 */
   executed: string[]
   message: string
   /** 消せずに残ったID（無ければキー自体が無い＝最初から記録に無かった/消せた）。 */
   remaining: { loadBalancerID?: string; asgID?: string; clusterID?: string }
+  /**
+   * 削除は受け付けられた（204、または404+`deleting:true`）が、**待ち切れず（timeout）に
+   * 止まった**ときだけ立つ（#39）。画面はこれを見て「削除中です。しばらくして⑥をもう一度
+   * 押してください」の黄色い注意を出す（残っています＝失敗、の赤い表示とは区別する）。
+   */
+  inProgress?: { loadBalancerID?: string; asgID?: string; clusterID?: string }
+}
+
+export type TeardownFlowOpts = {
+  confirmed: boolean
+  /**
+   * 進捗メッセージ（「〜の削除を待っています（N分経過）…」を30秒ごとに1回）。画面へ流すのに使う
+   * （IPCハンドラが `apprunDedicated:teardown-progress` で event.sender.send する）。省略可。
+   */
+  progress?: (msg: string) => void
+  /** waitUntilGone のポーリング間隔（既定5秒）。テストで短縮せず、代わりに `sleep` を偽物にする。 */
+  intervalMs?: number
+  /** waitUntilGone の最長待ち時間（既定10分）。 */
+  timeoutMs?: number
+  /**
+   * waitUntilGone がポーリングの合間に待つのに使う関数（既定は実際の setTimeout）。
+   * **テストではここへ即時に解決する偽物を渡し、実際には待たずにループを回す**（#39のテスト方針）。
+   */
+  sleep?: (ms: number) => Promise<void>
+}
+
+export type WaitUntilGoneResult = { ok: true } | { ok: false; reason: 'timeout' }
+
+const WAIT_UNTIL_GONE_DEFAULT_INTERVAL_MS = 5000
+const WAIT_UNTIL_GONE_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000 // 10分
+const PROGRESS_INTERVAL_MS = 30 * 1000 // 30秒ごとに進捗を出す
+
+/**
+ * 一覧から ID が消える（`isPresent` が false を返す）のを待つ、純粋なループ（#39）。
+ * `listFn` を呼び、`isPresent(data)` で「まだ残っているか」を判定する。
+ *
+ * **一覧の取得そのものが失敗したときは「まだ残っている」とみなして待ち続ける**——DELETE自体は
+ * 204（またはdeleting:trueの404）で受理済みのため、一覧の一時的な失敗だけで「消えた」と
+ * 決めつけない（分からないものを都合よく倒さない・掟1と同じ方針。2026-08-14「成功と読んだ
+ * 応答は結果を確かめるまで成功ではない」の逆側でもある——確認できないことは「消えた」の
+ * 証明にもならない）。
+ *
+ * **経過時間は実時間（Date.now）ではなく、ループを回した回数 × intervalMs で数える。**
+ * これにより、テストで `sleep` を即時に解決する偽物へ差し替えれば、実際には1ミリ秒も
+ * 待たずに「5秒おき・最長10分」のループの動きをそのまま確かめられる（#39のテスト方針）。
+ */
+export async function waitUntilGone(
+  listFn: () => Promise<ApprunDedicatedResult>,
+  isPresent: (data: unknown) => boolean,
+  opts: {
+    intervalMs?: number
+    timeoutMs?: number
+    sleep?: (ms: number) => Promise<void>
+    /** 経過時間(ms)が30秒の倍数を跨ぐたびに1回呼ばれる（画面への進捗表示用）。省略可。 */
+    onProgress?: (elapsedMs: number) => void
+  } = {},
+): Promise<WaitUntilGoneResult> {
+  const intervalMs = opts.intervalMs ?? WAIT_UNTIL_GONE_DEFAULT_INTERVAL_MS
+  const timeoutMs = opts.timeoutMs ?? WAIT_UNTIL_GONE_DEFAULT_TIMEOUT_MS
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  let elapsedMs = 0
+  let lastProgressMs = 0
+  for (;;) {
+    const res = await listFn()
+    const present = res.ok ? isPresent(res.data) : true
+    if (!present) return { ok: true }
+    if (elapsedMs >= timeoutMs) return { ok: false, reason: 'timeout' }
+    await sleep(intervalMs)
+    elapsedMs += intervalMs
+    if (opts.onProgress && elapsedMs - lastProgressMs >= PROGRESS_INTERVAL_MS) {
+      lastProgressMs = elapsedMs
+      opts.onProgress(elapsedMs)
+    }
+  }
+}
+
+/** 経過時間(ms)を「N分経過」に丸める（画面向けの進捗文言・#39）。30秒→「1分経過」に丸まる。 */
+function formatElapsedMinutes(ms: number): string {
+  return `${Math.max(1, Math.round(ms / 60000))}分経過`
+}
+
+/** JSON文字列を安全にパースする（失敗すれば null）。ApprunDedicatedResult.detail は生の応答本文（JSON文字列）。 */
+function safeParseJson(text: string | undefined): unknown {
+  if (!text) return null
+  try { return JSON.parse(text) } catch { return null }
+}
+
+/**
+ * `waitUntilGone` を呼び、timeout なら `TeardownFlowResult`（ok:false・inProgress付き）を返す。
+ * 消えたのが確認できたら `null`（呼び出し側はそのまま続けてよい）。204・404+deleting:true・
+ * 409回復のいずれからも同じ形で使う共通部分（#39）。
+ */
+async function waitOrStop(
+  label: string,
+  listFn: () => Promise<ApprunDedicatedResult>,
+  isPresent: (data: unknown) => boolean,
+  opts: TeardownFlowOpts,
+  executed: string[],
+  remaining: TeardownFlowResult['remaining'],
+  inProgress: TeardownFlowResult['inProgress'],
+): Promise<TeardownFlowResult | null> {
+  const wait = await waitUntilGone(listFn, isPresent, {
+    intervalMs: opts.intervalMs,
+    timeoutMs: opts.timeoutMs,
+    sleep: opts.sleep,
+    onProgress: ms => opts.progress?.(`${label}の削除を待っています（${formatElapsedMinutes(ms)}）…`),
+  })
+  if (wait.ok) return null
+  return {
+    ok: false, executed,
+    message: `${label}の削除を受け付けましたが、まだ削除中です。しばらくして⑥をもう一度押してください`,
+    remaining, inProgress,
+  }
+}
+
+/** ロードバランサを削除し、一覧から消えるまで待つ。成功（次へ進んでよい）なら null。 */
+async function attemptDeleteLoadBalancer(
+  auth: CloudCredentials, projectDir: string, clusterID: string, asgID: string, loadBalancerID: string,
+  opts: TeardownFlowOpts, baseUrl: string | undefined, executed: string[],
+): Promise<TeardownFlowResult | null> {
+  const remaining = { loadBalancerID, asgID, clusterID }
+  const res = await deleteLoadBalancer(auth, clusterID, asgID, loadBalancerID, baseUrl)
+  if (res.ok) {
+    const stop = await waitOrStop(
+      'ロードバランサ',
+      () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
+      data => readLoadBalancerRows(data).some(r => r.loadBalancerID === loadBalancerID),
+      opts, executed, remaining, { loadBalancerID },
+    )
+    if (stop) return stop
+    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+    executed.push(`ロードバランサ『${loadBalancerID}』を削除しました（消えたことを確認）`)
+    return null
+  }
+  if (res.status === 404) {
+    const listRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
+    if (!listRes.ok) {
+      return {
+        ok: false, executed,
+        message: `ロードバランサの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
+        remaining,
+      }
+    }
+    const row = readLoadBalancerRows(listRes.data).find(r => r.loadBalancerID === loadBalancerID)
+    if (!row) {
+      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+      executed.push(`ロードバランサ『${loadBalancerID}』は既に存在しませんでした（記録から外しました）`)
+      return null
+    }
+    if (row.deleting === true) {
+      const stop = await waitOrStop(
+        'ロードバランサ',
+        () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
+        data => readLoadBalancerRows(data).some(r => r.loadBalancerID === loadBalancerID),
+        opts, executed, remaining, { loadBalancerID },
+      )
+      if (stop) return stop
+      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+      executed.push(`ロードバランサ『${loadBalancerID}』を削除しました（消えたことを確認）`)
+      return null
+    }
+    return {
+      ok: false, executed,
+      message: `ロードバランサの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+      remaining,
+    }
+  }
+  return {
+    ok: false, executed,
+    message: `ロードバランサの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+    remaining,
+  }
+}
+
+/**
+ * ASGを削除し、一覧から消えるまで待つ。成功（次へ進んでよい）なら null。
+ * **409（本文の title に `Load Balancers` を含む）**＝LBがまだ残っているとき（#39 5-11実測）は、
+ * LBの一覧を引き直して見つかったIDを記録に戻し、`deleting:true` なら消えるまで待ってから
+ * ASGのDELETEを再試行する（`for` ループで戻る）。見つからなければレースで解消したとみて
+ * 即座に再試行。回復にも上限（5回）を設け、想定外の繰り返しでは止める（無限ループの防止）。
+ */
+async function attemptDeleteAsg(
+  auth: CloudCredentials, projectDir: string, clusterID: string, asgID: string,
+  opts: TeardownFlowOpts, baseUrl: string | undefined, executed: string[],
+): Promise<TeardownFlowResult | null> {
+  const remaining = { asgID, clusterID }
+  for (let attempt = 0; ; attempt++) {
+    if (attempt >= 5) {
+      return {
+        ok: false, executed,
+        message: 'オートスケーリンググループの削除を繰り返し試みましたが完了しませんでした。コントロールパネルで確認してください。',
+        remaining,
+      }
+    }
+    const res = await deleteAsg(auth, clusterID, asgID, baseUrl)
+    if (res.ok) {
+      const stop = await waitOrStop(
+        'オートスケーリンググループ',
+        () => listAsg(auth, clusterID, undefined, baseUrl),
+        data => readAsgRows(data).some(r => r.asgID === asgID),
+        opts, executed, remaining, { asgID },
+      )
+      if (stop) return stop
+      writeApprunDedicatedRecordFs(projectDir, { asgID: null })
+      executed.push(`オートスケーリンググループ『${asgID}』を削除しました（消えたことを確認）`)
+      return null
+    }
+    if (res.status === 404) {
+      const listRes = await listAsg(auth, clusterID, undefined, baseUrl)
+      if (!listRes.ok) {
+        return {
+          ok: false, executed,
+          message: `オートスケーリンググループの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
+          remaining,
+        }
+      }
+      const row = readAsgRows(listRes.data).find(r => r.asgID === asgID)
+      if (!row) {
+        writeApprunDedicatedRecordFs(projectDir, { asgID: null })
+        executed.push(`オートスケーリンググループ『${asgID}』は既に存在しませんでした（記録から外しました）`)
+        return null
+      }
+      if (row.deleting === true) {
+        const stop = await waitOrStop(
+          'オートスケーリンググループ',
+          () => listAsg(auth, clusterID, undefined, baseUrl),
+          data => readAsgRows(data).some(r => r.asgID === asgID),
+          opts, executed, remaining, { asgID },
+        )
+        if (stop) return stop
+        writeApprunDedicatedRecordFs(projectDir, { asgID: null })
+        executed.push(`オートスケーリンググループ『${asgID}』を削除しました（消えたことを確認）`)
+        return null
+      }
+      return {
+        ok: false, executed,
+        message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+        remaining,
+      }
+    }
+    if (res.status === 409) {
+      const title = readApiErrorTitle(safeParseJson(res.detail))
+      if (title && title.includes('Load Balancers')) {
+        const listRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
+        if (!listRes.ok) {
+          return {
+            ok: false, executed,
+            message: `オートスケーリンググループの削除に失敗しました（ロードバランサが残っています）。ロードバランサの一覧でも確かめられませんでした: ${listRes.message}`,
+            remaining,
+          }
+        }
+        const found = readLoadBalancerRows(listRes.data)[0]
+        if (!found) continue // 一覧には無い（レースで解消したとみられる）。ASGのDELETEを再試行する。
+        writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: found.loadBalancerID })
+        executed.push(`ロードバランサ『${found.loadBalancerID}』がまだ残っていたため、記録に戻しました`)
+        if (found.deleting === true) {
+          const stop = await waitOrStop(
+            'ロードバランサ',
+            () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
+            data => readLoadBalancerRows(data).some(r => r.loadBalancerID === found.loadBalancerID),
+            opts, executed, { loadBalancerID: found.loadBalancerID, asgID, clusterID }, { loadBalancerID: found.loadBalancerID },
+          )
+          if (stop) return stop
+          writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+          executed.push(`ロードバランサ『${found.loadBalancerID}』を削除しました（消えたことを確認）`)
+          continue // LBが消えた。ASGのDELETEを再試行する。
+        }
+        return {
+          ok: false, executed,
+          message: 'ロードバランサが残っているため削除できません。⑥をもう一度押すと、そこから削除します',
+          remaining: { loadBalancerID: found.loadBalancerID, asgID, clusterID },
+        }
+      }
+      return {
+        ok: false, executed,
+        message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+        remaining,
+      }
+    }
+    return {
+      ok: false, executed,
+      message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+      remaining,
+    }
+  }
+}
+
+/**
+ * クラスタを削除し、一覧から消えるまで待つ。成功（次へ進んでよい）なら null。
+ * **409（本文の title に `Auto Scaling Group` を含む）**＝ASGがまだ残っているときは、ASGの
+ * 一覧を引き直して見つかったIDを記録に戻し、`deleting:true` なら消えるまで待ってから
+ * クラスタのDELETEを再試行する（attemptDeleteAsg と同じ形。#39）。
+ * クラスタ一覧には `deleting` が無い（原本の形・5-8）ため、404で一覧にまだあれば
+ * （新しい「deleting:trueなら待つ」枝には入らず）従来どおり「残っています」で止める。
+ */
+async function attemptDeleteCluster(
+  auth: CloudCredentials, projectDir: string, clusterID: string,
+  opts: TeardownFlowOpts, baseUrl: string | undefined, executed: string[],
+): Promise<TeardownFlowResult | null> {
+  const remaining = { clusterID }
+  for (let attempt = 0; ; attempt++) {
+    if (attempt >= 5) {
+      return {
+        ok: false, executed,
+        message: 'クラスタの削除を繰り返し試みましたが完了しませんでした。コントロールパネルで確認してください。',
+        remaining,
+      }
+    }
+    const res = await deleteCluster(auth, clusterID, baseUrl)
+    if (res.ok) {
+      const stop = await waitOrStop(
+        'クラスタ',
+        () => listClusters(auth, baseUrl),
+        data => readClusterRows(data).some(r => r.clusterID === clusterID),
+        opts, executed, remaining, { clusterID },
+      )
+      if (stop) return stop
+      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
+      executed.push(`クラスタ『${clusterID}』を削除しました（消えたことを確認）`)
+      return null
+    }
+    if (res.status === 404) {
+      const listRes = await listClusters(auth, baseUrl)
+      if (!listRes.ok) {
+        return {
+          ok: false, executed,
+          message: `クラスタの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
+          remaining,
+        }
+      }
+      const present = readClusterRows(listRes.data).some(r => r.clusterID === clusterID)
+      if (present) {
+        return {
+          ok: false, executed,
+          message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+          remaining,
+        }
+      }
+      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
+      executed.push(`クラスタ『${clusterID}』は既に存在しませんでした（記録から外しました）`)
+      return null
+    }
+    if (res.status === 409) {
+      const title = readApiErrorTitle(safeParseJson(res.detail))
+      if (title && title.includes('Auto Scaling Group')) {
+        const listRes = await listAsg(auth, clusterID, undefined, baseUrl)
+        if (!listRes.ok) {
+          return {
+            ok: false, executed,
+            message: `クラスタの削除に失敗しました（オートスケーリンググループが残っています）。一覧でも確かめられませんでした: ${listRes.message}`,
+            remaining,
+          }
+        }
+        const found = readAsgRows(listRes.data)[0]
+        if (!found) continue // 一覧には無い（レースで解消したとみられる）。クラスタのDELETEを再試行する。
+        writeApprunDedicatedRecordFs(projectDir, { asgID: found.asgID })
+        executed.push(`オートスケーリンググループ『${found.asgID}』がまだ残っていたため、記録に戻しました`)
+        if (found.deleting === true) {
+          const stop = await waitOrStop(
+            'オートスケーリンググループ',
+            () => listAsg(auth, clusterID, undefined, baseUrl),
+            data => readAsgRows(data).some(r => r.asgID === found.asgID),
+            opts, executed, { asgID: found.asgID, clusterID }, { asgID: found.asgID },
+          )
+          if (stop) return stop
+          writeApprunDedicatedRecordFs(projectDir, { asgID: null })
+          executed.push(`オートスケーリンググループ『${found.asgID}』を削除しました（消えたことを確認）`)
+          continue // ASGが消えた。クラスタのDELETEを再試行する。
+        }
+        return {
+          ok: false, executed,
+          message: 'オートスケーリンググループが残っているため削除できません。⑥をもう一度押すと、そこから削除します',
+          remaining: { asgID: found.asgID, clusterID },
+        }
+      }
+      return {
+        ok: false, executed,
+        message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+        remaining,
+      }
+    }
+    return {
+      ok: false, executed,
+      message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+      remaining,
+    }
+  }
 }
 
 /**
  * 記録にある ID だけを、**LB → ASG → クラスタ の順**で削除する（5-7・逆順）。
  * 記録に無い資源は触らない。ある段が失敗したら、そこで止める（それより下＝クラスタ側は
  * 触らない——LBが残ったままASGを消せる保証がAPI仕様上どこにも無いため、5-7の順序を厳密に守る）。
- * 各段の成否を即座に記録へ反映する（消せたものは記録から外す＝nullに戻す。消せなかったものは残す）。
+ * **各段は、DELETEの応答（204/404+deleting:true）を受け取ったあと、一覧からIDが完全に
+ * 消えるのを確認してから次の段へ進む**（waitUntilGone・#39）。消せたものは記録から外す
+ * （＝nullに戻す）。消せなかった・待ち切れなかったものは記録に残す。
  *
  * **`opts.confirmed !== true` なら、API を一切呼ばずに中止する**（2026-09-10 レビューの修理・A・
  * 掟10の3点セット）。
  *
- * **「既に無い（404）」を、一覧で確かめてから完了扱いにする**（2026-09-10 レビューの修理・E）。
- * DELETE が404を返しただけでは「もう存在しない」の証拠にならない（別の原因の404もありうる）ので、
- * 一覧を引いてIDが本当に無いことを確かめてから、初めて記録を外す。IDがまだ一覧にあれば従来どおり
- * 「残っています」で止め、一覧そのものが失敗したときも「確かめられない」として止める。
- * また、DELETE が204（受理）でも、その直後に同じ一覧を引き、**IDがまだあって `deleting !== true`**
- * なら「本当に消えた」と言い切らず記録を残して止める（掟10 2026-08-14「成功と読んだ応答は
- * 結果を確かめるまで成功ではない」と同じ形）。無い／`deleting:true`／一覧そのものが失敗したときは
- * 記録を null に戻して先へ進む（**一覧の失敗では止めない**——DELETE自体は204だったため）。
+ * 各段の内訳は `attemptDeleteLoadBalancer` / `attemptDeleteAsg` / `attemptDeleteCluster` に
+ * 分けてある（204→待ち／404→一覧で確認→deleting:trueなら待ち・無ければ記録から外す／
+ * 409→下位資源を記録に戻して待つか止める、をそれぞれ担う）。
  */
 export async function teardownFlow(
-  auth: CloudCredentials, projectDir: string, opts: { confirmed: boolean }, baseUrl?: string,
+  auth: CloudCredentials, projectDir: string, opts: TeardownFlowOpts, baseUrl?: string,
 ): Promise<TeardownFlowResult> {
   const record = readApprunDedicatedFs(projectDir)
   const executed: string[] = []
@@ -501,50 +894,11 @@ export async function teardownFlow(
         remaining: { loadBalancerID: record.loadBalancerID as string, asgID: record.asgID ?? undefined, clusterID: record.clusterID ?? undefined },
       }
     }
-    const clusterID = record.clusterID as string
-    const asgID = record.asgID as string
-    const loadBalancerID = record.loadBalancerID as string
-    const res = await deleteLoadBalancer(auth, clusterID, asgID, loadBalancerID, baseUrl)
-    if (!res.ok) {
-      if (res.status === 404) {
-        const listRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
-        if (!listRes.ok) {
-          return {
-            ok: false, executed,
-            message: `ロードバランサの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
-            remaining: { loadBalancerID, asgID, clusterID },
-          }
-        }
-        const present = readLoadBalancerRows(listRes.data).some(r => r.loadBalancerID === loadBalancerID)
-        if (present) {
-          return {
-            ok: false, executed,
-            message: `ロードバランサの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-            remaining: { loadBalancerID, asgID, clusterID },
-          }
-        }
-        writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
-        executed.push(`ロードバランサ『${loadBalancerID}』は既に存在しませんでした（記録から外しました）`)
-      } else {
-        return {
-          ok: false, executed,
-          message: `ロードバランサの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-          remaining: { loadBalancerID, asgID, clusterID },
-        }
-      }
-    } else {
-      const listRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
-      const stillThere = listRes.ok ? readLoadBalancerRows(listRes.data).find(r => r.loadBalancerID === loadBalancerID) : undefined
-      if (stillThere && stillThere.deleting !== true) {
-        return {
-          ok: false, executed,
-          message: '削除は受け付けられましたが、まだ残っています。しばらくして⑥をもう一度押してください',
-          remaining: { loadBalancerID, asgID, clusterID },
-        }
-      }
-      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
-      executed.push(`ロードバランサ『${loadBalancerID}』を削除しました`)
-    }
+    const stop = await attemptDeleteLoadBalancer(
+      auth, projectDir, record.clusterID as string, record.asgID as string, record.loadBalancerID as string,
+      opts, baseUrl, executed,
+    )
+    if (stop) return stop
   }
 
   // ── ASG ──
@@ -556,101 +910,19 @@ export async function teardownFlow(
         remaining: { asgID: record.asgID as string, clusterID: record.clusterID ?? undefined },
       }
     }
-    const clusterID = record.clusterID as string
-    const asgID = record.asgID as string
-    const res = await deleteAsg(auth, clusterID, asgID, baseUrl)
-    if (!res.ok) {
-      if (res.status === 404) {
-        const listRes = await listAsg(auth, clusterID, undefined, baseUrl)
-        if (!listRes.ok) {
-          return {
-            ok: false, executed,
-            message: `オートスケーリンググループの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
-            remaining: { asgID, clusterID },
-          }
-        }
-        const present = readAsgRows(listRes.data).some(r => r.asgID === asgID)
-        if (present) {
-          return {
-            ok: false, executed,
-            message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-            remaining: { asgID, clusterID },
-          }
-        }
-        writeApprunDedicatedRecordFs(projectDir, { asgID: null })
-        executed.push(`オートスケーリンググループ『${asgID}』は既に存在しませんでした（記録から外しました）`)
-      } else {
-        return {
-          ok: false, executed,
-          message: `オートスケーリンググループの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-          remaining: { asgID, clusterID },
-        }
-      }
-    } else {
-      const listRes = await listAsg(auth, clusterID, undefined, baseUrl)
-      const stillThere = listRes.ok ? readAsgRows(listRes.data).find(r => r.asgID === asgID) : undefined
-      if (stillThere && stillThere.deleting !== true) {
-        return {
-          ok: false, executed,
-          message: '削除は受け付けられましたが、まだ残っています。しばらくして⑥をもう一度押してください',
-          remaining: { asgID, clusterID },
-        }
-      }
-      writeApprunDedicatedRecordFs(projectDir, { asgID: null })
-      executed.push(`オートスケーリンググループ『${asgID}』を削除しました`)
-    }
+    const stop = await attemptDeleteAsg(auth, projectDir, record.clusterID as string, record.asgID as string, opts, baseUrl, executed)
+    if (stop) return stop
   }
 
   // ── クラスタ ──
   if (hasCluster) {
-    const clusterID = record.clusterID as string
-    const res = await deleteCluster(auth, clusterID, baseUrl)
-    if (!res.ok) {
-      if (res.status === 404) {
-        const listRes = await listClusters(auth, baseUrl)
-        if (!listRes.ok) {
-          return {
-            ok: false, executed,
-            message: `クラスタの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
-            remaining: { clusterID },
-          }
-        }
-        const present = readClusterRows(listRes.data).some(r => r.clusterID === clusterID)
-        if (present) {
-          return {
-            ok: false, executed,
-            message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-            remaining: { clusterID },
-          }
-        }
-        writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
-        executed.push(`クラスタ『${clusterID}』は既に存在しませんでした（記録から外しました）`)
-      } else {
-        return {
-          ok: false, executed,
-          message: `クラスタの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
-          remaining: { clusterID },
-        }
-      }
-    } else {
-      const listRes = await listClusters(auth, baseUrl)
-      // クラスタ一覧には deleting が無い（原本の形。5-8）。存在すれば「まだ残っている」とみなす。
-      const stillThere = listRes.ok && readClusterRows(listRes.data).some(r => r.clusterID === clusterID)
-      if (stillThere) {
-        return {
-          ok: false, executed,
-          message: '削除は受け付けられましたが、まだ残っています。しばらくして⑥をもう一度押してください',
-          remaining: { clusterID },
-        }
-      }
-      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
-      executed.push(`クラスタ『${clusterID}』を削除しました`)
-    }
+    const stop = await attemptDeleteCluster(auth, projectDir, record.clusterID as string, opts, baseUrl, executed)
+    if (stop) return stop
   }
 
   return {
     ok: true, executed,
-    message: '削除の要求はすべて受け付けられ、一覧から消えた（または削除中になった）ことを確認しました。コントロールパネルでもご確認ください。',
+    message: '削除の要求はすべて受け付けられ、一覧から消えたことを確認しました。コントロールパネルでもご確認ください。',
     remaining: {},
   }
 }

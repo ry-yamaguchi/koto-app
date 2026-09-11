@@ -209,4 +209,11 @@ describe('破棄しても止まらない費用', () => {
     expect(remainingCostWarning({ deleteRegistry: true, registryName: 'myapp' })).toBeNull()
     expect(remainingCostWarning({ deleteRegistry: false, registryName: 'myapp' })!).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
   })
+
+  // PublishedListModal では clearPublishRecord で行が消えるため、「どこで消せるか」は
+  // この一文だけが唯一の手がかりになる（2026-09-11）。
+  it('残った費用の消し方（コントロールパネル）を必ず伝える', () => {
+    expect(remainingCostWarning({ deleteRegistry: false, registryName: 'myapp' })!).toContain('コントロールパネル')
+    expect(remainingCostWarning({ deleteRegistry: true, registryName: 'myapp', keptBucketName: 'koto-data-x' })!).toContain('コントロールパネル')
+  })
 })

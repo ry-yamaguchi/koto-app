@@ -107,7 +107,7 @@ export default function OnboardingModal({ onSetApiKey, onClose, onCreateProject,
                 type={show ? 'text' : 'password'}
                 value={key}
                 onChange={e => { setKey(e.target.value); setResult(null) }}
-                placeholder="アカウントトークン"
+                placeholder="発行したAPIキーを貼り付け"
                 className="flex-1 bg-surface border border-line rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-muted outline-none focus:border-sakura transition-colors"
               />
               <button

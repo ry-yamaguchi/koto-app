@@ -805,7 +805,7 @@ export default function App() {
 
       {mode === 'ide' && <StatusBar activeFile={activeFileObj} meta={projectMeta} apiKey={sakuraApiKey} />}
 
-      {showSettings && <SettingsModal apiKey={sakuraApiKey} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsModal apiKey={sakuraApiKey} onClose={() => setShowSettings(false)} onOpenCredentials={() => setShowCredentials(true)} />}
 
       {showPublish && currentDir && (
         <PublishModal projectDir={currentDir} apiKey={sakuraApiKey} onClose={() => setShowPublish(false)} onRun={runInTerminal} onOpenCredentials={() => setShowCredentials(true)} onOpenPublishedList={() => setShowPublishedList(true)} />

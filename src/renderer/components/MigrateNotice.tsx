@@ -1,4 +1,4 @@
-// 🗂 プロジェクトの形を新しくする案内（2026-08-20 Ryosuke 指示）。
+// 🧹 プロジェクトの形を新しくする案内（2026-08-20 Ryosuke 指示）。
 //
 // **確認は出すが、拒否はできない。** 押すまで進まない案内にする。
 // 「よろしいですか？」と聞いて選ばせる形にはしない——選択肢が無いのに聞くのは不誠実だから。
@@ -36,7 +36,7 @@ export default function MigrateNotice({ plan, onRun }: {
             onClick={() => void run()}
             disabled={state === 'running'}
             className="mt-2 sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-          >{state === 'running' ? '整理しています…' : '🗂 フォルダを整理する'}</button>
+          >{state === 'running' ? '整理しています…' : '🧹 フォルダを整理する'}</button>
         )}
       </div>
     </div>

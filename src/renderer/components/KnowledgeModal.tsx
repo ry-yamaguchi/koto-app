@@ -408,6 +408,11 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
             >📦 さくらの資料パック</button>
           </div>
         )}
+        {apiKey && (
+          <p className="px-6 pt-2 text-[11px] text-ink-muted leading-relaxed">
+            登録済み＝いまAIが参照できる資料／Webから作る＝好きなページを選んで登録／さくらの資料パック＝よく使う公式ドキュメントをまとめて登録
+          </p>
+        )}
 
         <div className="px-6 pb-6 space-y-4 pt-4">
           {!apiKey ? (

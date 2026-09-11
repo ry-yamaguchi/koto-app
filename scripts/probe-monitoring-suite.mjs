@@ -33,8 +33,8 @@
 
 const ZONE = process.env.SAKURA_ZONE || 'is1a'
 const API = `https://secure.sakura.ad.jp/cloud/zone/${ZONE}/api/monitoring/1.0`
-const TOKEN = process.env.SAKURA_TOKEN || ''
-const SECRET = process.env.SAKURA_SECRET || ''
+const TOKEN = process.env.SAKURA_TOKEN || process.env.SAKURA_CLOUD_TOKEN || ''
+const SECRET = process.env.SAKURA_SECRET || process.env.SAKURA_CLOUD_SECRET || ''
 
 const c = { g: s => `\x1b[32m${s}\x1b[0m`, r: s => `\x1b[31m${s}\x1b[0m`, y: s => `\x1b[33m${s}\x1b[0m`, d: s => `\x1b[2m${s}\x1b[0m` }
 const ok = s => console.log(`  ${c.g('✅')} ${s}`)
@@ -86,7 +86,7 @@ function dump(label, r) {
 
 async function main() {
   if (!TOKEN || !SECRET) {
-    console.error('❌ SAKURA_TOKEN と SAKURA_SECRET を指定してください。')
+    console.error('❌ SAKURA_TOKEN と SAKURA_SECRET（または SAKURA_CLOUD_TOKEN と SAKURA_CLOUD_SECRET）を指定してください。')
     console.error("   例: SAKURA_TOKEN='...' SAKURA_SECRET='...' node scripts/probe-monitoring-suite.mjs")
     console.error('   （値は引用符で囲んでください。記号がシェルに解釈されて切れることがあります）')
     process.exit(1)
@@ -143,8 +143,22 @@ async function main() {
   mRoutings.ok ? ok('ルーティングの一覧を取得できました') : ng(`取得できません（HTTP ${mRoutings.status}）`)
   dump('metrics/routings', mRoutings)
 
+  // ── 2026-09-10 追加（専有型のログ・メトリクス設定・実機確認で判明）──────────────
+  // 専有型のマニュアル（apprun-dedicated/operation.html「ログ・メトリクスの設定」）によると、
+  // 専有型もモニタリングスイートの置き場を使い、種類は「エージェントログ／コンテナログ／
+  // ロードバランサアクセスログ」と各メトリクス。専有型 API（v1.4.0）にはログの設定口が無いので、
+  // 設定はモニタリングスイートのルーティング（publisher_code + variant + 任意の resource_id）で
+  // 行うはず。**専有型の publisher コードと variant 名は未知**なので、全パブリッシャの一覧から
+  // 実測する（掟1・推測しない）。GET のみ。
+  console.log('\n⑥ 全パブリッシャの一覧（★専有型の publisher コードと variant 名を推測せず知るため）')
+  const pubs = await get('publishers/')
+  pubs.ok ? ok('取得できました') : ng(`取得できません（HTTP ${pubs.status}）`)
+  dump('publishers', pubs)
+
   console.log('\n────────────────────────────────')
   console.log('この結果を共有してください。')
+  console.log(' ・⑥に専有型らしいコード（apprun-dedicated 等）と variants が出ていれば、専有型のログ設定も Koto から作れます')
+  console.log(' ・コンパネで専有型のログ・メトリクス設定を保存したあとに実行すると、③⑤にその実物のルーティング行が出ます')
   console.log(' ・③に AppRun のルーティングが出ていれば、ログは Koto から同じものを作れます')
   console.log(' ・④の variants に metrics 用の名前が出ていれば、メトリクスも同じ形で作れます')
   console.log(' ・①の provisioning/state には logs と metrics の両方が入っています（初期化の要否）')

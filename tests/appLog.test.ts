@@ -6,6 +6,8 @@ import {
   APPRUN_PUBLISHER, APPRUN_VARIANT, isTelemetryKind,
   // 後方互換の薄い皮（kind: 'logs' 固定）も、生きたまま同じ判断を返すことを確かめる
   decideLogAction, pickLogStorageId, hasAppLogRouting, APPRUN_LOG_PUBLISHER, APPRUN_LOG_VARIANT,
+  // #38: AppRun 専有型（プロジェクト単位）
+  DEDICATED_PUBLISHER, DEDICATED_VARIANTS, hasProjectRouting,
   type TelemetryKind,
 } from '../src/shared/appLog'
 
@@ -68,6 +70,58 @@ describe('固定値は実測どおり', () => {
     expect(APPRUN_VARIANT.metrics).toBe('applicationmetrics')
     expect(APPRUN_VARIANT.logs).not.toBe(APPRUN_VARIANT.metrics)
     expect(APPRUN_LOG_VARIANT).toBe('applicationlog') // 後方互換の薄い皮
+  })
+})
+
+// #38: AppRun 専有型（apprun-dedicated）。共用型と違い**プロジェクト単位**（resource_id を
+// 送らない・実測は null）。実測は docs/apprun-dedicated-plan.md 5-12（2026-09-10）。
+describe('#38 専有型: DEDICATED_VARIANTS は実測6件と一致する（名前・kind）', () => {
+  it('publisher は apprun-dedicated', () => {
+    expect(DEDICATED_PUBLISHER).toBe('apprun-dedicated')
+  })
+
+  it('logs 3件・metrics 3件、名前は実測どおり（5-12）', () => {
+    const logs = DEDICATED_VARIANTS.filter(v => v.kind === 'logs').map(v => v.name)
+    const metrics = DEDICATED_VARIANTS.filter(v => v.kind === 'metrics').map(v => v.name)
+    expect(logs.sort()).toEqual(['agent_logs', 'container_logs', 'lb_access_logs'].sort())
+    expect(metrics.sort()).toEqual(['container_metrics', 'lb_metrics', 'node_metrics'].sort())
+    expect(DEDICATED_VARIANTS.length).toBe(6)
+  })
+
+  it('名前は6件とも重複が無い（logs/metrics 取り違えていない）', () => {
+    const names = DEDICATED_VARIANTS.map(v => v.name)
+    expect(new Set(names).size).toBe(6)
+  })
+
+  it('label は空文字ではない（画面に空欄を出さない。文言そのものは実測待ちの3件があるため固定しない）', () => {
+    for (const v of DEDICATED_VARIANTS) expect(v.label.length).toBeGreaterThan(0)
+  })
+})
+
+describe('#38 専有型: hasProjectRouting は resource_id を見ない（プロジェクト単位・5-12実測）', () => {
+  it('resource_id が null でも、publisher.code と variant が一致すれば true', () => {
+    const data = { results: [{ id: 1, resource_id: null, publisher: { code: 'apprun-dedicated' }, variant: 'agent_logs' }] }
+    expect(hasProjectRouting(data, 'apprun-dedicated', 'agent_logs')).toBe(true)
+  })
+
+  it('resource_id が何であっても（別の値・欠落）判定は変わらない', () => {
+    const withId = { results: [{ resource_id: '100000000099', publisher: { code: 'apprun-dedicated' }, variant: 'node_metrics' }] }
+    const withoutId = { results: [{ publisher: { code: 'apprun-dedicated' }, variant: 'node_metrics' }] }
+    expect(hasProjectRouting(withId, 'apprun-dedicated', 'node_metrics')).toBe(true)
+    expect(hasProjectRouting(withoutId, 'apprun-dedicated', 'node_metrics')).toBe(true)
+  })
+
+  it('publisher か variant が違えば false（共用型のルーティングを専有型のものと取り違えない）', () => {
+    const other = { results: [{ resource_id: null, publisher: { code: 'apprun' }, variant: 'applicationlog' }] }
+    expect(hasProjectRouting(other, 'apprun-dedicated', 'agent_logs')).toBe(false)
+    const wrongVariant = { results: [{ resource_id: null, publisher: { code: 'apprun-dedicated' }, variant: 'container_logs' }] }
+    expect(hasProjectRouting(wrongVariant, 'apprun-dedicated', 'agent_logs')).toBe(false)
+  })
+
+  it('形が違えば（results が無い・配列でない）false', () => {
+    expect(hasProjectRouting(null, 'apprun-dedicated', 'agent_logs')).toBe(false)
+    expect(hasProjectRouting({}, 'apprun-dedicated', 'agent_logs')).toBe(false)
+    expect(hasProjectRouting({ results: 'x' }, 'apprun-dedicated', 'agent_logs')).toBe(false)
   })
 })
 

@@ -118,7 +118,7 @@ describe('消しすぎの検出: 公開成功後、main の書いた記録を画
     const s = read('src/renderer/components/AppRunPanel.tsx')
     // 2026-09-08 検分で、この分岐に refreshRegistryName()（錠前の直し2）が足された。
     // 呼び出しの形ごと見る（掟10）: if (r.ok) の中に両方入っていること。
-    const at = s.indexOf('const doApply = async () => {')
+    const at = s.indexOf('const doApply = async (applyOpts:')
     expect(at).toBeGreaterThan(0)
     const end = s.indexOf('\n  const doTeardown = async () => {', at)
     expect(end).toBeGreaterThan(at)
