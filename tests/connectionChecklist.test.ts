@@ -2,11 +2,17 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// roadmap #35: 接続テストの見せ方を、共用型と専有型で揃える。
+// roadmap #35 → 委譲仕様 UX-E（判断8）: 接続テストの見せ方を、共用型と専有型で揃える。
 // 表示（チェックリストのUI）を複製しない——ConnectionChecklist.tsx という1つの部品を
-// 両方のパネルが使っていることをソースで固定する（掟10）。
+// AccessKeySection.tsx 経由で両方のパネルが使っていることをソースで固定する（掟10）。
+//
+// UX-E で①「キー」節ごと AccessKeySection.tsx に一元化したため、<ConnectionChecklist> を
+// 描くJSXそのものは AccessKeySection.tsx の中に1箇所だけあり（tests/accessKeySection.test.ts
+// が固定する）、各パネルは test.checks に渡す配列（項目名・note）を組み立てるだけになった。
+// ここでは「各パネルが AccessKeySection へ正しい内訳・注記を渡しているか」を固定する。
 
 const checklist = readFileSync(join(__dirname, '..', 'src/renderer/components/ConnectionChecklist.tsx'), 'utf-8')
+const accessKeySection = readFileSync(join(__dirname, '..', 'src/renderer/components/AccessKeySection.tsx'), 'utf-8')
 const appRunPanel = readFileSync(join(__dirname, '..', 'src/renderer/components/AppRunPanel.tsx'), 'utf-8')
 const dedicatedPanel = readFileSync(join(__dirname, '..', 'src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf-8')
 
@@ -25,17 +31,28 @@ describe('ConnectionChecklist.tsx: ✓/✗ と項目名・失敗理由・注記�
   })
 })
 
-describe('AppRunPanel（共用型）は ConnectionChecklist を使う', () => {
-  it('import している', () => {
-    expect(appRunPanel).toContain("import ConnectionChecklist from './ConnectionChecklist'")
+describe('AccessKeySection.tsx（①を一元化した共通部品）は ConnectionChecklist を使う', () => {
+  it('import し、test.checks を渡している', () => {
+    expect(accessKeySection).toContain("import ConnectionChecklist")
+    expect(accessKeySection).toContain('<ConnectionChecklist items={test.checks} note={test.note} />')
   })
 
-  it('AppRun参照/コンテナレジストリ一覧/請求（コスト）参照の3項目を渡している', () => {
-    const at = appRunPanel.indexOf('{connChecks && (')
+  it('チェックリストの手描き（インラインの map）はもう無い（ConnectionChecklist に一元化した）', () => {
+    expect(accessKeySection).not.toContain("c.ok ? '✓' : '✗'")
+  })
+})
+
+describe('AppRunPanel（共用型）は AccessKeySection の test.checks に3項目を渡している', () => {
+  it('AccessKeySection を使っている', () => {
+    expect(appRunPanel).toContain('<AccessKeySection')
+  })
+
+  it('AppRun参照/コンテナレジストリ一覧/請求（コスト）参照の3項目と注記を渡している', () => {
+    const at = appRunPanel.indexOf('<AccessKeySection')
     expect(at).toBeGreaterThan(0)
-    const end = appRunPanel.indexOf('/>', at)
+    const end = appRunPanel.indexOf('</AccessKeySection>', at)
+    expect(end).toBeGreaterThan(at)
     const block = appRunPanel.slice(at, end)
-    expect(block).toContain('<ConnectionChecklist')
     expect(block).toContain("label: 'AppRun 参照'")
     expect(block).toContain("label: 'コンテナレジストリ 一覧'")
     expect(block).toContain("label: '請求（コスト）参照'")
@@ -47,24 +64,30 @@ describe('AppRunPanel（共用型）は ConnectionChecklist を使う', () => {
   })
 })
 
-describe('AppRunDedicatedPanel（専有型）も同じ ConnectionChecklist を使う（roadmap #35 本題）', () => {
-  it('import している', () => {
-    expect(dedicatedPanel).toContain("import ConnectionChecklist from './ConnectionChecklist'")
+describe('AppRunDedicatedPanel（専有型）も AccessKeySection の test.checks に2項目を渡している（roadmap #35 本題）', () => {
+  it('AccessKeySection を使っている', () => {
+    expect(dedicatedPanel).toContain('<AccessKeySection')
   })
 
   it('専有型API参照（制限・プラン）/請求（コスト）参照の2項目を渡し、レジストリは注記で「後で確認する」と案内する', () => {
-    const at = dedicatedPanel.indexOf('{connChecks && (')
+    const at = dedicatedPanel.indexOf('<AccessKeySection')
     expect(at).toBeGreaterThan(0)
-    const end = dedicatedPanel.indexOf('/>', at)
+    const end = dedicatedPanel.indexOf('</AccessKeySection>', at)
+    expect(end).toBeGreaterThan(at)
     const block = dedicatedPanel.slice(at, end)
-    expect(block).toContain('<ConnectionChecklist')
     expect(block).toContain("label: '専有型API 参照（制限・プラン）'")
     expect(block).toContain("label: '請求（コスト）参照'")
     expect(block).toContain('レジストリの権限は、アプリの公開に対応したときに確認します')
   })
 
-  it('共用型と同じ「✅ すべて確認できました / ⚠️ 一部の権限が確認できませんでした」の文言に揃えている', () => {
-    expect(dedicatedPanel).toContain('✅ すべて確認できました')
-    expect(dedicatedPanel).toContain('⚠️ 一部の権限が確認できませんでした')
+  // roadmap #35 の元々の目的（共用型と専有型で①の文言を揃える）は、UX-E で
+  // AccessKeySection.tsx に一元化したことでファイルレベルでも達成された——
+  // 「✅ すべて確認できました」「⚠️ 一部の権限が確認できませんでした」という文言は
+  // dedicatedPanel 自身にはもう出てこず、AccessKeySection.tsx に1箇所だけある。
+  it('①の要約文言はもう複製していない（AccessKeySection.tsx に一元化）', () => {
+    expect(dedicatedPanel).not.toContain('✅ すべて確認できました')
+    expect(dedicatedPanel).not.toContain('⚠️ 一部の権限が確認できませんでした')
+    expect(accessKeySection).toContain('✅ すべて確認できました')
+    expect(accessKeySection).toContain('一部の権限が確認できませんでした')
   })
 })

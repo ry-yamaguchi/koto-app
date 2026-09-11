@@ -98,15 +98,33 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
     expect(s.slice(at, at + 120)).toContain('show: !entry.isDir,')
   })
 
-  it('moveEntry は window.confirm で確認してから electronAPI.fs.moveFiles を呼ぶ', () => {
+  // 2026-09-11（判断9）: window.confirm → ConfirmModal（useConfirm）。CLAUDE.md 掟5改定。
+  it('moveEntry は ConfirmModal（useConfirm の confirm）で確認してから electronAPI.fs.moveFiles を呼ぶ', () => {
     const s = sidebarSrc()
     const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
     expect(at).toBeGreaterThan(-1)
     const body = s.slice(at, at + 1200)
-    expect(body).toContain('window.confirm(')
+    expect(body).toContain('const ok = await confirm({')
+    expect(body).toContain("title: 'ファイルを移動します',")
+    expect(body).toContain('if (!ok) return')
     expect(body).toContain('window.electronAPI.fs.moveFiles(currentDir, [rel], dest)')
     // confirm より後で実行している（確認を素通りしていない）
-    expect(body.indexOf('window.confirm(')).toBeLessThan(body.indexOf('window.electronAPI.fs.moveFiles('))
+    expect(body.indexOf('const ok = await confirm({')).toBeLessThan(body.indexOf('window.electronAPI.fs.moveFiles('))
+  })
+
+  it('moveEntry は window.confirm へ退行していない（2026-09-11 CLAUDE.md 掟5改定: 確認は ConfirmModal で出す）', () => {
+    const s = sidebarSrc()
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    expect(at).toBeGreaterThan(-1)
+    const body = s.slice(at, at + 1200)
+    expect(body).not.toContain('window.confirm(')
+  })
+
+  it('Sidebar は useConfirm を import し、confirmElement を描画している', () => {
+    const s = sidebarSrc()
+    expect(s).toContain("import { useConfirm } from '../useConfirm'")
+    expect(s).toContain('const { confirm, element: confirmElement } = useConfirm()')
+    expect(s).toContain('{confirmElement}')
   })
 
   it('moveEntry はディレクトリを弾く（多層防御。ContextMenu 側のフィルタだけに頼らない）', () => {
@@ -325,8 +343,10 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     expect(s).not.toContain('静的サイトではないため')
     expect(s).toContain('いまは確認できません（プロジェクトが選ばれていない可能性があります）')
     expect(s).toContain('⚠️')
-    // 0件のときの表示は従来どおり
-    expect(s).toContain('✅ すべてのファイルが、どこかのページ・コードから使われています。')
+    // 0件のときの表示: ③事前チェック（AppRunPanel.tsx）・④セキュリティチェックと同じ
+    // 「全部✅→1行に畳む」表記に揃えた（判断6・2026-09-11、foldUnused）。
+    expect(s).toContain('✅ 問題なし（内訳を見る）')
+    expect(s).toContain('すべてのファイルが、どこかのページ・コードから使われています。')
     expect(s).toContain('🧹 使われていないファイルの確認')
     // 対象外のときは移動ボタンを出さない（対象が無いので押せる必要が無い）。
     // ボタンの描画条件が supported を含むことで固定する（対象外では出ない）。
@@ -341,7 +361,7 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     expect(s).toContain("runtime === 'dynamic' && (")
     expect(s).toContain('プログラムが動くタイプです')
     // 0件（✅の節）の描画ブロックには但し書きの文言が無い
-    const okAt = s.indexOf('✅ すべてのファイルが、どこかのページ・コードから使われています。')
+    const okAt = s.indexOf('✅ 問題なし（内訳を見る）')
     const dynamicAt = s.indexOf('プログラムが動くタイプです')
     expect(okAt).toBeGreaterThan(-1)
     expect(dynamicAt).toBeGreaterThan(okAt) // 但し書きは0件の分岐より後（unused.length>0の分岐）にある
@@ -359,11 +379,15 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     for (const word of ['collapsed', 'expanded', 'showAll', 'setOpen']) expect(s).not.toContain(word)
   })
 
-  it('移動ボタンは window.confirm で確認してから実行する（AppRunPanel の confirm パターン）', () => {
+  it('移動ボタンは ConfirmModal（useConfirm）で確認してから実行する（2026-09-11 CLAUDE.md 掟5改定）', () => {
     const s = src()
     const at = s.indexOf('const move = async () => {')
     expect(at).toBeGreaterThan(-1)
-    expect(s.slice(at, at + 400)).toContain('window.confirm(')
+    const block = s.slice(at, at + 700)
+    expect(block).toContain('await confirm(')
+    expect(block).not.toContain('window.confirm(')
+    // 確認より前に実行（移動）が来ていないか（掟10）
+    expect(block.indexOf('await confirm(')).toBeLessThan(block.indexOf('moveToMaterials'))
   })
 
   it('拒否できない誘導文言を使っていない（確認は「よろしいですか」で1回だけ・選ばせない体裁ではない）', () => {

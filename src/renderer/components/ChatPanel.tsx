@@ -8,7 +8,7 @@ import type { MigratePlan } from '../../shared/migratePlan'
 import { saveRagSettings } from '../ragContext'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
-import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
+import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel, DEFAULT_MODEL } from '../usage'
 import { shouldTryImagesDirectly } from '../visionSupport'
 import { shouldSendTools } from '../toolSupport'
 import { useModels } from '../hooks/useModels'
@@ -33,6 +33,8 @@ import { CHAT_TEXT_WRAP } from '../textWrap'
 import { resolvePublishRoot } from '../publishRootRenderer'
 import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { turnKey, updateTurn } from '../chatTurnRegistry'
+import { useConfirm } from '../useConfirm'
+import { runClearConversation } from '../confirmedActions'
 
 type Message = ChatMessage
 
@@ -434,6 +436,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     }
   }, [projectDir, ragBusy, ragSettings, apiKey, reloadRagSettings, applyOp])
 
+  // 会話削除・Claudeモード同意の確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
+  // useAiChat（Claudeモード同意）とこのコンポーネント自身（会話の全削除）で同じインスタンスを共有する。
+  const { confirm, element: confirmElement } = useConfirm()
+
   // 送信パイプライン（予算・切替・検索・ツールループ・自己修復・モデル割り振り）は共通フックへ集約。
   // 表示はフラットな messages 配列へ反映する。
   const chat = useAiChat({
@@ -511,6 +517,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     // （画面反映も applyOp が行う。updateShown は使われない）。
     onMessageEvent: (ev) => applyOp(ev),
     twoStageVision: true,
+    confirm,
   })
   const { statusNote, stalled, elapsedSec, setRoutedModel } = chat
   // 表示上のローディングは、あいさつ生成中と送信中の両方を含める
@@ -968,6 +975,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               else { setModel(id); setDefaultModel(id, 'ide'); setRoutedModel(null) }
             }}
             buttonClassName="flex items-center gap-1 max-w-[12rem] text-xs bg-elevated border border-line rounded-md px-1.5 py-0.5 text-ink hover:border-sakura cursor-pointer transition-colors"
+            defaultId={claudeActive ? undefined : DEFAULT_MODEL}
           />
           {/* 頭脳の切替（2026-07-29 ユーザー要望）。右下のステータスバー・設定と同じ BrainToggle を
               モデル選択の横にも置く（切替＝setClaudeMode の書き込み口は1つのまま）。 */}
@@ -998,9 +1006,15 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
             title="会話全体をコピー"
           >📋</button>
           <button
-            onClick={() => {
+            onClick={async () => {
               if (messages.filter(m => !m.hidden).length === 0) return
-              if (window.confirm('この会話をすべて削除します。よろしいですか？（元に戻せません）')) applyOp({ kind: 'replaceAll', messages: [] })
+              await runClearConversation(
+                'この会話をすべて削除します。よろしいですか？（元に戻せません）',
+                {
+                  confirm: (body) => confirm({ title: '会話をすべて削除します', body, confirmLabel: '削除する', danger: true }),
+                  clear: () => applyOp({ kind: 'replaceAll', messages: [] }),
+                },
+              )
             }}
             className="text-xs text-ink-muted hover:text-ink"
             title="会話をクリア"
@@ -1309,6 +1323,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           </div>
         </div>
       </div>
+      {confirmElement}
     </div>
   )
 }

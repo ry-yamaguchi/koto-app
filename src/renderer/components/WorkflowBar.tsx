@@ -3,6 +3,7 @@ import { planRun } from '../runPlan'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { TARGET_PROFILES, getTargetProfile, isAvailableTarget, TargetId } from '../targetProfiles'
 import { resolvePublishRoot } from '../publishRootRenderer'
+import { useConfirm } from '../useConfirm'
 
 export interface ProjectMeta {
   name?: string
@@ -56,6 +57,8 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
   const [showPortHint, setShowPortHint] = useState(false)
   // 実行に必要なランタイムが見つからない時の導入パネル（runtime と Homebrew の有無）
   const [missingRuntime, setMissingRuntime] = useState<{ runtime: 'php' | 'node' | 'python3'; hasBrew: boolean } | null>(null)
+  // インストール系の確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
+  const { confirm, element: confirmElement } = useConfirm()
   // ヒント自動消去用タイマー
   const hintTimer = useRef<number | null>(null)
   // 疎通確認タイムアウトヒント自動消去用タイマー
@@ -460,9 +463,15 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
             <>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   // 実行前に確認を挟む（所見16。プロジェクト削除等と同様、インストール系は確認を対称にする）。
-                  if (!window.confirm('必要なツールをインストールします。よろしいですか？')) return
+                  const ok = await confirm({
+                    title: 'ツールをインストールします',
+                    body: '必要なツールをインストールします。よろしいですか？',
+                    confirmLabel: 'インストールする',
+                    danger: false,
+                  })
+                  if (!ok) return
                   onRunCmd('brew install ' + runtimeBrewPkg[missingRuntime.runtime])
                   setMissingRuntime(null)
                 }}
@@ -481,9 +490,15 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
               </p>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   // 取得スクリプト（curl）の実行前に確認を挟む（所見16。開発ツールをMacへ導入する旨を明示）。
-                  if (!window.confirm('お使いのMacに開発ツール（Homebrew）をインストールします。よろしいですか？')) return
+                  const ok = await confirm({
+                    title: 'Homebrew をインストールします',
+                    body: 'お使いのMacに開発ツール（Homebrew）をインストールします。よろしいですか？',
+                    confirmLabel: 'インストールする',
+                    danger: false,
+                  })
+                  if (!ok) return
                   onRunCmd('/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"')
                   setMissingRuntime(null)
                 }}
@@ -513,6 +528,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
           </div>
         </div>
       )}
+      {confirmElement}
     </div>
   )
 }

@@ -6,6 +6,10 @@ import { getTargetProfile } from '../targetProfiles'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import CopyButton from './CopyButton'
 import { askAiAboutCheck } from '../../shared/preflight'
+import { askAiAboutFailure } from '../../shared/askAi'
+import { publishButtonLabel } from '../../shared/publishLabels'
+import { readPublishTargets } from '../publishRecord'
+import AccessKeySection from './AccessKeySection'
 
 // Vercel（海外PaaS）への公開パネル。HanamiiPanel と同じ流儀を踏襲する:
 // トークン（＋チームID）は「認証情報」に一元登録し（方式B）、このパネルは使う瞬間に読んで
@@ -47,6 +51,10 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
   const [result, setResult] = useState<{ url: string | null; readyState: string | null } | null>(null)
   const [msg, setMsg] = useState('')
   const [msgDetail, setMsgDetail] = useState('')
+  // 公開ボタンの文言（判断8・publishButtonLabel）に使う「既に公開済みか」。
+  // Vercel には isPublished 相当のIPCが無いため、公開記録（publish.targets）の
+  // 一元判定（readPublishTargets・publishRecord.ts）を再利用する（掟10: 複製しない）。
+  const [published, setPublished] = useState(false)
   // ── 公開する前の確認（2026-08-15）──────────────────────────────────
   // Vercel は**壊れていてもデプロイが成功する**（常駐サーバが起動せず、
   // ソースが丸見えのページが出る）。押す前に確かめ、駄目なものは止める。
@@ -133,6 +141,12 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectDir])
 
+  useEffect(() => {
+    let cancelled = false
+    readPublishTargets(projectDir).then(targets => { if (!cancelled) setPublished(targets.includes('vercel')) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [projectDir])
+
   const runPreflight = useCallback(async () => {
     setChecking(true); setConfirmBroken(false)
     try { setPreflight(await window.electronAPI.vercel.preflight(projectDir)) }
@@ -165,6 +179,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
       const r = await window.electronAPI.vercel.publish(projectDir, { token, teamId: teamId ?? undefined, name })
       if (!r.ok) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? ''); return }
       setResult({ url: r.url ?? null, readyState: r.readyState ?? null })
+      setPublished(true)
       // 統一公開記録（publish.targets）と公開開始マーカーの後片づけは main 側（vercel:publish）が
       // 済ませている（roadmap #20・main は1 invoke で完走するため、窓を閉じても記録が残る）。
       // ここでは設定値（tokenId/name）だけを保存する。saveVercelMeta の readMeta→write が
@@ -194,45 +209,36 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
         )}
       </div>
 
-      {/* ① 認証情報（トークンは「認証情報」で一元管理） */}
-      <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
-        <p className="text-sm font-semibold text-ink">① トークン</p>
-        {!tokenLoaded ? (
-          <p className="text-xs text-ink-muted">確認中…</p>
-        ) : token ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-brand-green font-semibold">✓ 認証情報に Vercel トークンが登録済み</span>
-              <button onClick={onOpenCredentials} className="text-xs text-ink-muted hover:text-ink">認証情報を開く</button>
-            </div>
-            {tokens && tokens.length > 1 && (
-              <div className="flex items-center gap-2">
-                <label className="text-[11px] text-ink-secondary flex-none">使うトークン</label>
-                <select
-                  value={tokenId}
-                  onChange={e => switchToken(e.target.value)}
-                  className="flex-1 bg-surface border border-line rounded-lg px-2 py-1.5 text-xs text-ink outline-none focus:border-sakura"
-                >
-                  {tokens.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                </select>
-              </div>
-            )}
-            {teamId && (
-              <p className="text-[11px] text-ink-muted">チームID: <span className="font-mono">{teamId}</span></p>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-ink-secondary leading-relaxed">
-              Vercel のトークンを「認証情報」で登録してください（他のキーと同じ場所で一元管理します）。
-            </p>
-            <button
-              onClick={onOpenCredentials}
-              className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90"
-            >🔑 認証情報を開いて登録</button>
+      {/* ① トークン（AccessKeySection に統一・判断8） */}
+      <AccessKeySection
+        stepNo="①"
+        serviceTitle="Vercel"
+        keyLabel="トークン"
+        registered={!!token}
+        onOpenCredentials={onOpenCredentials}
+      >
+        {!tokenLoaded && <p className="text-xs text-ink-muted">確認中…</p>}
+        {tokenLoaded && !token && (
+          <p className="text-xs text-ink-secondary leading-relaxed">
+            Vercel のトークンを登録してください（他のキーと同じ場所で一元管理します）。
+          </p>
+        )}
+        {tokenLoaded && token && tokens && tokens.length > 1 && (
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] text-ink-secondary flex-none">使うトークン</label>
+            <select
+              value={tokenId}
+              onChange={e => switchToken(e.target.value)}
+              className="flex-1 bg-surface border border-line rounded-lg px-2 py-1.5 text-xs text-ink outline-none focus:border-sakura"
+            >
+              {tokens.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
           </div>
         )}
-      </section>
+        {tokenLoaded && token && teamId && (
+          <p className="text-[11px] text-ink-muted">チームID: <span className="font-mono">{teamId}</span></p>
+        )}
+      </AccessKeySection>
 
       {/* 🔰 初めて公開する方へ */}
       {token && <VercelFirstTimeGuide />}
@@ -312,7 +318,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
             }`}
           >{publishing
             ? (progress || '公開中…（アップロード→ビルド。数十秒〜数分かかることがあります）')
-            : confirmBroken ? '⚠️ それでも公開する' : '🚀 公開する'}</button>
+            : confirmBroken ? '⚠️ それでも公開する' : publishButtonLabel(published)}</button>
 
           {result && (
             <div className="rounded-lg border border-line bg-overlay p-3 space-y-1">
@@ -339,6 +345,8 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
 // HanamiiPanel/AppRunPanel の同種ブロックと同じパターン（各パネルにローカル定義する流儀）。
 function ErrorMessageBlock({ msg, detail }: { msg: string; detail: string }) {
   const copyText = detail ? `${msg}\n${detail}` : msg
+  // Vercel には破棄（teardown）が無く、この表示は常に公開の失敗（判断2）。
+  const askAiText = askAiAboutFailure('公開', 'Vercel', msg, detail)
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-2">
       <div className="flex items-start gap-2">
@@ -355,6 +363,12 @@ function ErrorMessageBlock({ msg, detail }: { msg: string; detail: string }) {
           <pre className="mt-1 text-[11px] text-ink-muted font-mono leading-relaxed whitespace-pre-wrap break-all select-text">{detail}</pre>
         </details>
       )}
+      <button
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text: askAiText } }))
+        }}
+        className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+      >🤖 AIに相談する</button>
     </div>
   )
 }

@@ -168,7 +168,7 @@ describe('AppRunDedicatedPanel.tsx: 構成図は⑤「クラスタを作成す�
     expect(diagramAt).toBeGreaterThan(0)
     expect(buttonAt).toBeGreaterThan(diagramAt)
     const between = panel.slice(diagramAt, buttonAt)
-    // 挟んでよいのは formError（条件つきの警告文）だけ。新しい <input>/<select> は無い。
+    // 挟んでよいのは generalErrors（条件つきの警告文。判断7・2026-09-11）だけ。新しい <input>/<select> は無い。
     expect(between).not.toContain('<input')
     expect(between).not.toContain('<select')
   })

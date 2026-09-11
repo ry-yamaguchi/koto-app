@@ -5,6 +5,7 @@ import {
   getSettings, setSettings, getUsage, getUsageByModel, resetThisMonth, budgetStatus, PRICING,
   modelLabel, getDefaultModel, setDefaultModel, priceFor,
   getUsageForKey, effectiveLimit, getKeyLimit,
+  purposeLabel, orderModelsForPicker, DEFAULT_MODEL, DEFAULT_CHAT_MODEL,
   type BudgetSettings, type MonthUsage, type ModelUsageRow,
 } from '../usage'
 import { useModels } from '../hooks/useModels'
@@ -370,11 +371,11 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               onChange={e => { setDefaultModel(e.target.value, 'ide'); setIdeModel(e.target.value) }}
               className="mt-1.5 w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-sm text-ink outline-none focus:border-sakura cursor-pointer transition-colors"
             >
-              {models.map(m => {
-                const p = priceFor(m.id)
+              {orderModelsForPicker(models.map(m => m.id), DEFAULT_MODEL).map(id => {
+                const p = priceFor(id)
                 return (
-                  <option key={m.id} value={m.id}>
-                    {m.label}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
+                  <option key={id} value={id} title={`${modelLabel(id)}（${id}）`}>
+                    {purposeLabel(id)}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
                   </option>
                 )
               })}
@@ -393,11 +394,11 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               onChange={e => { setDefaultModel(e.target.value, 'chat'); setChatModel(e.target.value) }}
               className="mt-1.5 w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-sm text-ink outline-none focus:border-sakura cursor-pointer transition-colors"
             >
-              {models.map(m => {
-                const p = priceFor(m.id)
+              {orderModelsForPicker(models.map(m => m.id), DEFAULT_CHAT_MODEL).map(id => {
+                const p = priceFor(id)
                 return (
-                  <option key={m.id} value={m.id}>
-                    {m.label}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
+                  <option key={id} value={id} title={`${modelLabel(id)}（${id}）`}>
+                    {purposeLabel(id)}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
                   </option>
                 )
               })}

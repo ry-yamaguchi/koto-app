@@ -238,13 +238,31 @@ describe('RollbackSection.tsx: 固定の警告・解除ボタン・確認ダイ�
   })
 
   it('確認・実行のガードは rollbackSwitch.ts の runSwitch に委譲している（main 側の対の歯止めと同じ設計）', () => {
-    expect(rollbackSection).toContain("import { runSwitch } from '../rollbackSwitch'")
+    expect(rollbackSection).toContain("import { runSwitch, buildSwitchConfirmMessage } from '../rollbackSwitch'")
     expect(rollbackSection).toContain('const outcome = await runSwitch(')
     expect(rollbackSection).toContain('if (!outcome.proceeded) return')
   })
 
-  it('runSwitch へは本物の window.confirm・window.electronAPI.cloud.rollback を注入している', () => {
-    expect(rollbackSection).toContain('confirm: (msg) => window.confirm(msg)')
+  // 2026-09-11（判断9）: window.confirm → ConfirmModal（useConfirm）。ConfirmModal は React の
+  // 状態更新とクリック待ちを伴うため runSwitch へ直接は注入できない——doSwitch が
+  // `await confirm(...)` で先に答えを得てから、その boolean を返すだけの同期関数
+  // （makeSwitchDeps の第3引数）を渡す（歯止め自体＝runSwitch のロジックは変更しない・掟10）。
+  it('doSwitch は ConfirmModal（useConfirm の confirm）で先に確認してから、makeSwitchDeps へ答え（boolean）を渡す', () => {
+    expect(rollbackSection).toContain("import { useConfirm } from '../useConfirm'")
+    expect(rollbackSection).toContain('const { confirm, element: confirmElement } = useConfirm()')
+    expect(rollbackSection).toContain('const confirmed = await confirm({')
+    expect(rollbackSection).toContain('body: buildSwitchConfirmMessage(req)')
+    expect(rollbackSection).toContain('makeSwitchDeps(projectDir, (v) => { if (v === null) setSwitchingLatest(true); else setSwitching(v) }, confirmed)')
+    expect(rollbackSection).toContain('{confirmElement}')
+  })
+
+  it('window.confirm へ退行していない（2026-09-11 CLAUDE.md 掟5改定: 確認は ConfirmModal で出す）', () => {
+    expect(rollbackSection).not.toContain('window.confirm(')
+  })
+
+  it('makeSwitchDeps は confirmed（ConfirmModal で確定済みの答え）を同期の confirm として注入し、rollback は本物の electronAPI を呼ぶ', () => {
+    expect(rollbackSection).toContain('export function makeSwitchDeps(projectDir: string, onRollbackStart: (versionName: string | null) => void, confirmed: boolean): SwitchDeps {')
+    expect(rollbackSection).toContain('confirm: () => confirmed,')
     expect(rollbackSection).toContain('window.electronAPI.cloud.rollback(projectDir, v, opts)')
   })
 

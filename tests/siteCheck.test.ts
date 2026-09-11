@@ -493,11 +493,17 @@ describe('使っていない画像の片づけ', () => {
     expect(block).not.toContain('unlink')
   })
 
-  it('★★ 消す前に一覧を見せて確認する（掟5）', () => {
+  it('★★ 消す前に一覧を見せて確認する（掟5・ConfirmModal 経由）', () => {
     const at = panel.indexOf('const cleanUnusedImages')
     const block = panel.slice(at, at + 900)
-    expect(block).toContain('window.confirm')
+    // 2026-09-11: window.confirm → ConfirmModal（useConfirm 経由）へ統一（判断9・UX-B2）。
+    // AppRunPanel.tsx は apply/teardown 用の `confirm` state と名前が衝突するため、
+    // useConfirm() が返す確認関数はここでは `confirmDialog` という名で使う。
+    expect(block).toContain('await confirmDialog(')
+    expect(block).not.toContain('window.confirm(')
     expect(block).toContain('files.slice(0, 8)')
+    // 確認より前に実行（ゴミ箱への移動）が来ていないか（掟10）
+    expect(block.indexOf('await confirmDialog(')).toBeLessThan(block.indexOf('window.electronAPI.fs.trash'))
   })
 
   it('★ 片づけたら、その場で結果を出し直す', () => {

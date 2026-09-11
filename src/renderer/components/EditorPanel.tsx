@@ -3,6 +3,8 @@ import Editor, { OnMount } from '@monaco-editor/react'
 import '../monacoSetup'
 import type { OpenFile, Theme } from '../App'
 import SakuraLogo from './SakuraLogo'
+import { useConfirm } from '../useConfirm'
+import { runCloseUnsaved } from '../confirmedActions'
 
 interface Props {
   openFiles: OpenFile[]
@@ -117,6 +119,7 @@ function ImagePreview({ file }: { file: OpenFile }) {
 export default function EditorPanel({ openFiles, activeFile, onSetActive, onClose, onSave, onContentChange, theme }: Props) {
   const editorRef = useRef<any>(null)
   const monacoRef = useRef<any>(null)
+  const { confirm, element: confirmElement } = useConfirm()
 
   const applyTheme = (monaco: any, t: Theme) => {
     monaco.editor.defineTheme('sakura-dark', DARK_THEME)
@@ -194,10 +197,17 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
                 >•</span>
               )}
               <button
-                onClick={e => {
+                onClick={async e => {
                   e.stopPropagation()
-                  if (file.isDirty && !window.confirm(`「${file.name}」には保存していない変更があります。保存せずに閉じますか？`)) return
-                  onClose(file.path)
+                  if (!file.isDirty) { onClose(file.path); return }
+                  await runCloseUnsaved(
+                    file.path,
+                    `「${file.name}」には保存していない変更があります。保存せずに閉じますか？`,
+                    {
+                      confirm: (body) => confirm({ title: '未保存の変更を破棄しますか', body, confirmLabel: '保存せずに閉じる', danger: true }),
+                      close: (path) => onClose(path),
+                    },
+                  )
                 }}
                 title={file.isDirty ? '未保存のまま閉じる' : '閉じる'}
                 className={`text-ink-muted hover:text-ink flex-none w-4 h-4 items-center justify-center rounded hover:bg-overlay transition-all ${
@@ -254,6 +264,7 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
           />
         )}
       </div>
+      {confirmElement}
     </div>
   )
 }

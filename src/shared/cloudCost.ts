@@ -51,6 +51,40 @@ export const REGISTRY_INCLUDED_STORAGE_GIB = 5
  */
 export const REGISTRY_EXTRA_GIB_YEN = 22
 
+/**
+ * 「💰 想定される費用」節（③の手前・番号は付けない）に出す3行（判断4・利用者目線レビュー・2026-09-11）。
+ *
+ * ── なぜ要るか ────────────────────────────────────────────────────────
+ * 共用型は「月220円（レジストリ）」が3か所、「月495円（保存場所）」が別の1か所、
+ * 「すぐ返すの料金」は金額なしと、費用の説明が7〜8か所に散っていた。**1か所にまとめ、
+ * 個別の確認・注記からは「この操作で増える／止まる金額」だけに絞る**（重複した一般説明
+ * だけを削り、破棄・作成の直前の警告＝掟5は削らない）。
+ *
+ * 金額は必ず `REGISTRY_MONTHLY_YEN` / `BUCKET_MONTHLY_YEN` から取る（呼び出し側で
+ * 上書きできるのはテスト用——「定数を見ずに220/495を書き戻す」変異を検知するため）。
+ */
+export function costSummaryLines(opts: {
+  /** このプロジェクトが保存場所を使っているか（現在の状態を1行に添えるだけで、行の有無は変えない）。 */
+  hasBucket: boolean
+  /** いまの「起動のしかた」（`service.scale.min`）。1以上なら「すぐ返す」。 */
+  scaleMin: number
+  /** テスト用（既定は `REGISTRY_MONTHLY_YEN`）。数字をハードコードに戻すと変わってしまう変異を検知する。 */
+  registryYen?: number
+  /** テスト用（既定は `BUCKET_MONTHLY_YEN`）。 */
+  bucketYen?: number
+}): string[] {
+  const registryYen = opts.registryYen ?? REGISTRY_MONTHLY_YEN
+  const bucketYen = opts.bucketYen ?? BUCKET_MONTHLY_YEN
+  const usingScaleLabel = opts.scaleMin >= 1
+    ? '（いまの設定は「すぐ返す」です）'
+    : '（いまの設定は「最初のアクセスが遅くてもよい」です）'
+  return [
+    `コンテナレジストリ 月額${registryYen}円（公開したアプリを消しても残る）`,
+    `データの保存場所 月額${bucketYen}円（使う場合${opts.hasBucket ? '・このプロジェクトは使っています' : ''}）`,
+    `アプリ本体: 使った分だけ。『すぐ返す』にすると待機中も料金${usingScaleLabel}`,
+  ]
+}
+
 // ── 文言に Markdown 記法を書かないこと（2026-08-09 ユーザー指摘）───────────
 // ここが返す文字列は、画面では素のテキストとして描画され、破棄の結果メッセージには
 // そのまま連結される。**強調** と書いても太字にはならず、`**` が画面にそのまま出る。

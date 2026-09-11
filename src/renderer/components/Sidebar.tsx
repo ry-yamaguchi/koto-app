@@ -11,6 +11,7 @@ import { PUBLISH_DIR, PUBLISH_DIR_LABEL } from '../../shared/publishRoot'
 import { isSubmitEnter } from '../keyInput'
 import { subscribe, getSnapshot, loadingKeys, getTurn } from '../chatTurnRegistry'
 import { getWorkspaceDir } from '../workspace'
+import { useConfirm } from '../useConfirm'
 
 interface FileEntry {
   name: string
@@ -27,6 +28,12 @@ interface Props {
   // 「🕘 履歴」（前の状態に戻す）モーダルを開く
   onOpenHistory?: () => void
   refreshKey?: number
+  /**
+   * 「📡 公開したものと費用を見る」（判断3・2026-09-11）。
+   * OSメニュー「表示 → 公開したもの一覧…」・PublishModal の奥のリンクと**同じ関数**
+   * （App.tsx の setShowPublishedList(true)）を渡す。ここで複製しない（掟10）。
+   */
+  onOpenPublishedList?: () => void
 }
 
 // 最近開いたプロジェクト（スイッチャー用）
@@ -243,7 +250,7 @@ function GroupLabel({ text, hint }: { text: string; hint: string }) {
   )
 }
 
-export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject, onOpenHistory, refreshKey = 0 }: Props) {
+export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject, onOpenHistory, onOpenPublishedList, refreshKey = 0 }: Props) {
   // B-1b: 実行状態の置き場（chatTurnRegistry.ts）を購読し、実行中のプロジェクトに ⏳ を出す。
   // 値そのものは使わず（購読のたびに loadingKeys() を読み直す）、変わるたびに再描画させるためだけに呼ぶ。
   useSyncExternalStore(subscribe, getSnapshot)
@@ -282,6 +289,8 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
    * それらも一緒に消える。
    */
   const [pendingRegistry, setPendingRegistry] = useState<{ registryName: string | null; adopted: boolean }>({ registryName: null, adopted: false })
+  /** ファイルの移動確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。 */
+  const { confirm, element: confirmElement } = useConfirm()
 
   // 開いたプロジェクトを「最近」に記録
   useEffect(() => {
@@ -391,7 +400,13 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   }
 
   const deleteEntry = async (entry: FileEntry) => {
-    if (!window.confirm(`「${entry.name}」をゴミ箱に移動します。よろしいですか？`)) return
+    const ok = await confirm({
+      title: 'ファイルをゴミ箱へ移します',
+      body: `「${entry.name}」をゴミ箱に移動します。よろしいですか？`,
+      confirmLabel: 'ゴミ箱へ移す',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await window.electronAPI.fs.trash(entry.path)
       window.dispatchEvent(new CustomEvent('sakura:file-deleted', { detail: entry.path }))
@@ -411,7 +426,12 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     const dest: 'materials' | 'publish' = isInPublishDir(currentDir, entry.path) ? 'materials' : 'publish'
     const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
     const destLabel = dest === 'publish' ? PUBLISH_DIR_LABEL : MATERIALS_DIR
-    if (!window.confirm(`「${entry.name}」を「${destLabel}」へ移動します。よろしいですか？\n\n🕘 元に戻すで戻せます。`)) return
+    const ok = await confirm({
+      title: 'ファイルを移動します',
+      body: `「${entry.name}」を「${destLabel}」へ移動します。よろしいですか？\n\n🕘 元に戻すで戻せます。`,
+      confirmLabel: '移動する',
+    })
+    if (!ok) return
     try {
       const r = await window.electronAPI.fs.moveFiles(currentDir, [rel], dest)
       if (r.ok) {
@@ -732,6 +752,16 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
           </>
         ) : (
           <div className="px-4 py-6">
+            {/* 判断3（2026-09-11）: プロジェクトを開いていないときの唯一の入口。
+                これまでは OSメニュー「表示 → 公開したもの一覧…」と、プロジェクトを開いた
+                ③公開の奥のリンクからしか開けなかった。掟11: これは「見てほしい印」ではなく
+                常設してよい入口なので、プロジェクトの有無に関わらず一覧の上に常に出す。 */}
+            {onOpenPublishedList && (
+              <button
+                onClick={onOpenPublishedList}
+                className="w-full text-left text-[12px] text-sakura hover:underline mb-3"
+              >📡 公開したものと費用を見る</button>
+            )}
             {/* 仕様変更（2026-07-14 ユーザー要望）: プロジェクトが既に有るときは「初期セットアップ風の
                 大きなブロック」を出さず、一覧を主役にする。新規作成・フォルダを開くは一覧の下に小さく置く。
                 ヒーローブロック（ロゴ＋大ボタン）はプロジェクトが1つも無いときだけ表示する。 */}
@@ -935,6 +965,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
           </div>
         </div>
       )}
+      {confirmElement}
     </div>
   )
 }

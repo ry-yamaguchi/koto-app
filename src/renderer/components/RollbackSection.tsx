@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { pinnedNotice, servingVersionNames } from '../../shared/apprunTraffic'
-import { runSwitch } from '../rollbackSwitch'
-import type { SwitchDeps } from '../rollbackSwitch'
+import { runSwitch, buildSwitchConfirmMessage } from '../rollbackSwitch'
+import type { SwitchDeps, SwitchRequest } from '../rollbackSwitch'
+import { useConfirm } from '../useConfirm'
 
 // RollbackSection — 公開したものを前のバージョンに戻す（roadmap #32）。stepNo は
 // 呼び出し元の番号体系に乗せるための見出し番号（AppRunPanel.tsx から "⑨" を渡す。
@@ -34,23 +35,32 @@ function formatDate(iso: string | null): string {
 }
 
 /**
- * runSwitch へ渡す deps（confirm・rollback）の組み立て（2026-09-10 検分の直し）。
+ * runSwitch へ渡す deps（confirm・rollback）の組み立て（2026-09-10 検分の直し・
+ * 2026-09-11 判断9でブラウザ標準の確認ダイアログ（旧: グローバルの confirm 関数）を
+ * ConfirmModal に置き換え）。
  *
  * ── なぜ切り出したか ──────────────────────────────────────────────────
- * 以前は tests/apprunTraffic.test.ts の `toContain('confirm: (msg) => window.confirm(msg)')`
- * という**文字列一致**でしか、「本物の window.confirm・window.electronAPI.cloud.rollback を
- * 注入しているか」を守れていなかった。DOM を実際にクリックして確かめるテスト基盤
- * （jsdom 等）がこのプロジェクトには無いため、ここを独立した小関数として切り出し、
- * 偽の confirm/rollback を渡して**振る舞いで**（confirm が false を返したら rollback は
- * 一度も呼ばれない、を実際に呼んで）固定する（tests/rollbackSectionDeps.test.ts）。
+ * 以前は tests/apprunTraffic.test.ts の文字列一致でしか、「本物の確認・
+ * electronAPI.cloud.rollback を注入しているか」を守れていなかった。DOM を実際に
+ * クリックして確かめるテスト基盤（jsdom 等）がこのプロジェクトには無いため、
+ * ここを独立した小関数として切り出し、偽の confirm/rollback を渡して**振る舞いで**
+ * （confirm が false を返したら rollback は一度も呼ばれない、を実際に呼んで）
+ * 固定する（tests/rollbackSectionDeps.test.ts）。
  *
  * `onRollbackStart` は「本当に rollback を呼ぶ直前」（＝確認ダイアログを通った後）だけに
  * 呼ばれる。busy 表示（switching/switchingLatest）を、確認をキャンセルしたときに誤って
  * 立てない（元の doSwitch の振る舞いをそのまま保つ）ための注入。
+ *
+ * ── ConfirmModal への置き換え（判断9・2026-09-11）───────────────────────
+ * `runSwitch` は `deps.confirm(message)` を**同期の boolean**として扱う（rollbackSwitch.ts の
+ * 歯止めロジックは変更しない・掟10）。ConfirmModal は React の状態更新とクリック待ちを伴う
+ * ため本質的に非同期（Promise<boolean>）——そこで、確認そのものは `doSwitch` 側で
+ * `await confirm(...)` として**先に**済ませ、ここへは「もう確定した答え」を返すだけの
+ * 同期関数を注入する。呼び出し側（doSwitch）は `confirmed` を必ず渡す。
  */
-export function makeSwitchDeps(projectDir: string, onRollbackStart: (versionName: string | null) => void): SwitchDeps {
+export function makeSwitchDeps(projectDir: string, onRollbackStart: (versionName: string | null) => void, confirmed: boolean): SwitchDeps {
   return {
-    confirm: (msg) => window.confirm(msg),
+    confirm: () => confirmed,
     rollback: (v, opts) => {
       onRollbackStart(v)
       return window.electronAPI.cloud.rollback(projectDir, v, opts)
@@ -68,6 +78,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
   const [switching, setSwitching] = useState<string | null>(null) // 実行中のバージョン名（null=最新に戻す動作中はキーを別に持つ）
   const [switchingLatest, setSwitchingLatest] = useState(false)
   const [actionMsg, setActionMsg] = useState('')
+  const { confirm, element: confirmElement } = useConfirm()
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -96,11 +107,17 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
   const doSwitch = async (versionName: string | null, label: string) => {
     setActionMsg('')
     try {
-      // runSwitch が window.confirm を通す（掟5）。キャンセルなら rollback には一切触れない
-      // （ここが「確認していないのに実行される」を防ぐ唯一の場所。main 側にも同じガードがある）。
+      // ConfirmModal（判断9）で確認を先に済ませ、その答え（boolean）を runSwitch へ注入する
+      // （掟5）。キャンセルなら rollback には一切触れない（main 側にも同じガードがある）。
+      const req: SwitchRequest = { versionName, label, isSplit: state?.kind === 'split' }
+      const confirmed = await confirm({
+        title: '⏪ 公開したものを前のバージョンに戻します',
+        body: buildSwitchConfirmMessage(req),
+        confirmLabel: '切り替える',
+      })
       const outcome = await runSwitch(
-        { versionName, label, isSplit: state?.kind === 'split' },
-        makeSwitchDeps(projectDir, (v) => { if (v === null) setSwitchingLatest(true); else setSwitching(v) }),
+        req,
+        makeSwitchDeps(projectDir, (v) => { if (v === null) setSwitchingLatest(true); else setSwitching(v) }, confirmed),
       )
       if (!outcome.proceeded) return
       const { result } = outcome
@@ -201,6 +218,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
           </p>
         </>
       )}
+      {confirmElement}
     </section>
   )
 }

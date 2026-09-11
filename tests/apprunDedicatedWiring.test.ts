@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan, selectableZones, defaultZone, STAGE_LABEL, resourceIdLabel, type CreateClusterFlowStage } from '../src/renderer/components/AppRunDedicatedPanel'
+import { priceSummary, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan, cheapestMonthlyText, selectableZones, defaultZone, STAGE_LABEL, resourceIdLabel, type CreateClusterFlowStage } from '../src/renderer/components/AppRunDedicatedPanel'
 import { readZones } from '../src/shared/apprunDedicatedShapes'
 
 // roadmap #23。段階①「下調べ画面」の配線に加え、段階②「作る」＋④「破棄」の配線を固定する
@@ -17,6 +17,10 @@ const applyFile = readFileSync(join(__dirname, '..', 'src/main/cloud/apprunDedic
 const panel = readFileSync(join(__dirname, '..', 'src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf-8')
 const publishModal = readFileSync(join(__dirname, '..', 'src/renderer/components/PublishModal.tsx'), 'utf-8')
 const targetProfiles = readFileSync(join(__dirname, '..', 'src/renderer/targetProfiles.ts'), 'utf-8')
+// 委譲仕様 UX-E（判断8）: ①「キー」節は AccessKeySection.tsx に一元化した。
+// panel.tsx 側の配線（何を渡しているか）と、共通部品側の見た目の判断（どう見せるか）を
+// 別々に固定する（掟10）。
+const accessKeySection = readFileSync(join(__dirname, '..', 'src/renderer/components/AccessKeySection.tsx'), 'utf-8')
 
 describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃っている', () => {
   it('main: apprunDedicated:limits / plans / clusters の3つを登録している（段階①）', () => {
@@ -170,17 +174,25 @@ describe('PublishModal: AppRun は一覧で1行にまとめ、タブで共用型
     expect(block).toContain("onClick={() => setTarget('sakura-apprun-dedicated')}")
   })
 
-  it('専有型タブには常時課金であることを出す', () => {
+  // ── 判断4（利用者目線レビュー・2026-09-11）: 費用の説明を1か所に一本化 ──────────────
+  // 以前はここ（タブ直下）・AppRunDedicatedPanel.tsx のパネル冒頭・④冒頭の3か所に
+  // ほぼ同文の注意（常時課金・月2万円〜・アプリの公開はまだ）が出ていた。
+  // タブ直下の注意は削り、AppRunDedicatedPanel.tsx のパネル冒頭に一本化する。
+  it('専有型タブ直下には、費用・提供範囲の注意を重複して出さない（パネル冒頭に一本化）', () => {
     const at = publishModal.indexOf("(target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') ? (")
     const block = publishModal.slice(at, at + 2300)
-    expect(block).toContain('月2万円〜の常時課金')
+    expect(block).not.toContain('常時課金')
+    expect(block).not.toContain('アプリの公開（独自ドメイン）はまだできません')
+    // ハードコードの金額も無い（cheapestMonthlyText で計算する・下のdescribeで固定）
+    expect(block).not.toMatch(/2万円/)
+    expect(block).not.toMatch(/20,000/)
+    expect(block).not.toMatch(/22,000/)
   })
 
-  it('レビュー指摘5の直し: 専有型タブには「アプリの公開（独自ドメイン）はまだできません」も出す（旧UIのボタン名にあった「準備中」注記が、タブになって消えていたため）。金額の警告はそのまま残す', () => {
-    const at = publishModal.indexOf("(target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') ? (")
-    const block = publishModal.slice(at, at + 2300)
-    expect(block).toContain('月2万円〜の常時課金') // 金額の警告は変えていない
-    expect(block).toContain('アプリの公開（独自ドメイン）はまだできません')
+  it('「📦 さくらのAppRun」を選ぶ前のボタン説明文にも、金額をハードコードしていない', () => {
+    expect(publishModal).not.toMatch(/2万円/)
+    expect(publishModal).not.toMatch(/20,000/)
+    expect(publishModal).not.toMatch(/22,000/)
   })
 
   it('タブに応じて AppRunPanel / AppRunDedicatedPanel を切り替えて表示する', () => {
@@ -272,12 +284,23 @@ describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
     expect(panel).toContain('実在するかどうかはここでは確認できません')
   })
 
-  it('④: 常時課金であることを最初に大きく書いている', () => {
-    expect(panel).toContain('専有型は常時課金です')
+  // ── 判断4（利用者目線レビュー・2026-09-11）─────────────────────────────
+  // 「専有型は常時課金です」はパネル冒頭に一本化し、④からは削った（④は同意の本文だけにする）。
+  it('④: 常時課金の注意はパネル冒頭に一本化されており、④では繰り返さない', () => {
+    const at = panel.indexOf('④ 費用の確認と同意')
+    const end = panel.indexOf('⑤ クラスタを作る', at)
+    const block = panel.slice(at, end)
+    expect(block).not.toContain('常時課金です')
   })
 
-  it('④: 最小構成でも月2万円を超えると明示している', () => {
-    expect(panel).toContain('2万円を超えます')
+  it('④: 最小構成の月額は cheapestMonthlyText（最安プランの計算）から出し、金額をハードコードしていない', () => {
+    const at = panel.indexOf('④ 費用の確認と同意')
+    const end = panel.indexOf('⑤ クラスタを作る', at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('cheapestMonthlyText({ workerPlans, lbPlans })')
+    expect(block).not.toMatch(/2万円/)
+    expect(block).not.toMatch(/20,000/)
+    expect(block).not.toMatch(/22,000/)
   })
 
   // 2026-09-08: zones はこのパネルから直接呼ばず、zonesCache.ts の loadZones() 経由に
@@ -320,6 +343,64 @@ describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
   })
 })
 
+// ── 判断4（利用者目線レビュー・2026-09-11）: cheapestMonthlyText（最安プランからの見積り） ──
+// 「月2万円〜」「22,000円」等のハードコードを、pickCheapestWorkerPlan / pickCheapestLbPlan と
+// 料金表（monthlyYenForPlanPath）から計算する純関数に置き換えた。
+describe('cheapestMonthlyText: 最安のワーカ1台＋LBの月額を「月◯万円〜」で示す（ハードコードしない）', () => {
+  const worker = { name: 'ワーカ 1コア/2GB', path: 'cloud/apprun/dedicated/worker/1vcpu_2gb', nodeCount: null }
+  const lb = { name: 'LB 1コア/2GB', path: 'cloud/apprun/dedicated/lb/1vcpu_2gb_1', nodeCount: 1 }
+
+  it('★ プラン未取得（null）なら、金額を推測して埋めない', () => {
+    expect(cheapestMonthlyText({ workerPlans: null, lbPlans: null })).toBe('月額はプランを取得すると表示されます')
+  })
+
+  it('プランが取得できたが1件も無ければ、同じく推測しない', () => {
+    expect(cheapestMonthlyText({ workerPlans: [], lbPlans: [] })).toBe('月額はプランを取得すると表示されます')
+  })
+
+  it('料金表で額を引ける最安プラン（ワーカ11,000円＋LB11,000円×1台）から「月2万円〜」を出す', () => {
+    expect(cheapestMonthlyText({ workerPlans: [worker], lbPlans: [lb] })).toBe('月2万円〜')
+  })
+
+  it('料金表に無い path のプランしか無ければ、額を出せない（推測しない）', () => {
+    const unknown = { name: '？', path: 'cloud/apprun/dedicated/worker/999vcpu_999gb', nodeCount: null }
+    expect(cheapestMonthlyText({ workerPlans: [unknown], lbPlans: [lb] })).toBe('月額はプランを取得すると表示されます')
+  })
+
+  it('万円未満に切り下げる（万の位まで。中途半端な端数は出さない）', () => {
+    // 4コア/4GB=33,000円 × ワーカ + 1コア/2GB=11,000円 × LB1台 = 44,000円 → 月4万円〜
+    const bigWorker = { name: 'ワーカ 4コア/4GB', path: 'cloud/apprun/dedicated/worker/4vcpu_4gb', nodeCount: null }
+    expect(cheapestMonthlyText({ workerPlans: [bigWorker], lbPlans: [lb] })).toBe('月4万円〜')
+  })
+})
+
+describe('専有型の費用・提供範囲の注意は、パネル冒頭の1か所だけ（判断4・重複の解消）', () => {
+  it('パネル冒頭は cheapestMonthlyText(...) で実額を出し、「動いていなくても請求されます」もここにある', () => {
+    const at = panel.indexOf('📦 さくらのAppRun 専有型')
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('① APIキー', at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('cheapestMonthlyText({ workerPlans, lbPlans })')
+    expect(block).toContain('常時課金です')
+    expect(block).toContain('動いていなくても請求されます')
+    expect(block).toContain('アプリケーションの公開（独自ドメインでの利用）はこのバージョンではまだできません。')
+  })
+
+  // 「常時課金です」という言い回しが、パネル全体を通じて1回しか出ないこと
+  // （PublishModal のタブ直下・④冒頭にあった重複はここへ一本化して削った）。
+  it('★「常時課金です」は AppRunDedicatedPanel.tsx に1回だけ出る（重複が復活していない）', () => {
+    const matches = panel.match(/常時課金です/g) ?? []
+    expect(matches.length).toBe(1)
+  })
+
+  // 選択前のボタン説明（「専有型（上級者向け・常時課金）」の一言）は残ってよい——
+  // 重複していたのは「動いていなくても請求されます」等の詳しい注意（タブ直下）のほうで、
+  // それを削って一本化した。
+  it('★ PublishModal.tsx には、詳しい注意（動いていなくても請求されます）の重複がない', () => {
+    expect(publishModal).not.toContain('動いていなくても請求されます')
+  })
+})
+
 describe('⑤: 同意（consentedAt）が無ければ作成ボタンを出さない', () => {
   it('!consentedAt の分岐では作成フォーム（doCreate ボタン）を描かず、④への案内文だけを出す', () => {
     const at = panel.indexOf("{/* ⑤ クラスタを作る */}")
@@ -329,8 +410,15 @@ describe('⑤: 同意（consentedAt）が無ければ作成ボタンを出さな
     expect(block).toContain('④で費用に同意すると')
   })
 
-  it('doCreate はフォーム側の formError を通ってからしか呼ばれない（disabled={!!formError || creating}）', () => {
-    expect(panel).toContain('disabled={!!formError || creating}')
+  // 2026-09-11（判断7）: formError（1本の早期return文字列）を、欄ごとの
+  // computeDedicatedFormErrors/hasErrors に分けた（visibleFormErrors は「表示するか」だけを
+  // 判断し、「送信してよいか」は touched/submitted に関係なく常に全欄を見る＝doCreate を止める
+  // 力は弱めていない）。
+  it('doCreate はフォーム側の検証（hasErrors）を通ってからしか呼ばれない（disabled={hasErrors || creating}）', () => {
+    expect(panel).toContain('disabled={hasErrors || creating}')
+    const at = panel.indexOf('const doCreate = async () => {')
+    expect(at).toBeGreaterThan(0)
+    expect(panel.slice(at, at + 100)).toContain('if (hasErrors || creating) return')
   })
 })
 
@@ -355,15 +443,22 @@ describe('⑤: 記録があるとき（hasAnyResource）は入力欄・作成ボ
 })
 
 describe('⑤: 押す前の確認ダイアログに月額（見積り）を出す（掟5）', () => {
-  it('doCreate は runCreate（apprunDedicatedActions.ts）へ price.text を含む確認文言を渡し、confirm には window.confirm を注入する（2026-09-10 レビューの修理・J）', () => {
+  it('doCreate は price.text を含む確認文言を ConfirmModal（useConfirm）で先に確認し、その答えを runCreate の confirm へ注入する（判断9・2026-09-11）', () => {
     const at = panel.indexOf('const doCreate = async () => {')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('const doTeardown = async () => {')
     const block = panel.slice(at, end)
-    expect(block).toContain('runCreate(')
-    expect(block).toContain('confirmMessage: `${price.text}')
+    expect(block).toContain('const confirmMessage = `${price.text}')
     expect(block).toContain('この費用が毎月かかります')
-    expect(block).toContain('confirm: (m) => window.confirm(m)')
+    // ConfirmModal（useConfirm の confirm）で先に確認してから、確定した答え（ok）を
+    // runCreate の deps.confirm へ同期関数として渡す（apprunDedicatedActions.ts のロジックは
+    // 触らない・掟10。歯止め自体は tests/apprunDedicatedActions.test.ts が固定する）。
+    expect(block).toContain("const ok = await confirm({ title: '専有型クラスタを作成します', body: confirmMessage, confirmLabel: '作成する', danger: true })")
+    expect(block).toContain('runCreate(')
+    expect(block).toContain('{ confirmMessage, spec }')
+    expect(block).toContain('confirm: () => ok,')
+    // window.confirm へ退行していないこと（2026-09-11 CLAUDE.md 掟5改定）。
+    expect(block).not.toContain('window.confirm(')
     // create実行そのもの（IPC呼び出し）は runCreate の deps.create の中——doCreate 自身は
     // 「確認が通ったら呼ばれる関数」を渡すだけで、呼ぶかどうかの判断は持たない。
     expect(block).toContain('window.electronAPI.apprunDedicated.create(projectDir, auth, s, opts)')
@@ -676,7 +771,9 @@ describe('#28: selectableZones / defaultZone（GET /zone の一覧からゾー�
     expect(block).toContain('<select')
     expect(block).toContain('<input')
     expect(block).toContain('value={zone}')
-    expect(block).toContain('onChange={e => setZone(e.target.value)}')
+    // 2026-09-11（判断7）: onChange は touch('zone') も呼ぶようになった（visibleFormErrors の
+    // 「触った欄だけ出す」判定のため）。setZone を呼んでいること自体は変わっていない。
+    expect(block).toContain("setZone(e.target.value); touch('zone')")
   })
 
   it('⑤: 一覧が取得できなかったとき、正直なメッセージ「ゾーン一覧を取得できませんでした。手で入力してください。」を出す', () => {
@@ -859,9 +956,21 @@ describe('事故の直し1: ①APIキーの見出し・説明文・接続テス�
     expect(panel).not.toContain('① 認証情報')
   })
 
-  it('説明文が共用型と同じ趣旨（「認証情報」で登録・切替／専有型に専用のAPIキーはない）', () => {
-    expect(panel).toContain('さくらのクラウドのAPIキー（アクセストークン／トークンシークレット）は「認証情報」で登録・切替します。')
-    expect(panel).toContain('AppRun 専有型に専用のAPIキーはなく、このキーで操作します。')
+  // 委譲仕様 UX-E（判断8）: ①の説明文は AccessKeySection.tsx の1文
+  // 「Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。」に統一した
+  // （旧: 共用型・専有型それぞれが別々の長い説明文を持っていた＝掟10違反）。
+  // 専有型は serviceTitle="さくらのクラウド" を渡し、共用型と全く同じ部品・同じ文言を使う。
+  it('説明文は AccessKeySection（共用型と全く同じ部品）が出す。旧来の専有型だけの長い説明文は複製していない', () => {
+    expect(panel).not.toContain('さくらのクラウドのAPIキー（アクセストークン／トークンシークレット）は「認証情報」で登録・切替します。')
+    const at = panel.indexOf('<AccessKeySection')
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('</AccessKeySection>', at)
+    const section = panel.slice(at, end)
+    expect(section).toContain('serviceTitle="さくらのクラウド"')
+    expect(section).toContain('keyLabel="APIキー"')
+    // 専有型と共用型は同じキーを使う、という1文は専有型の①にだけ残す。
+    expect(section).toContain('共用型と同じキーです。')
+    expect(accessKeySection).toContain('Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。')
   })
 
   it('この操作に使うキー（旧「この確認に使うキー」ではない）', () => {
@@ -871,20 +980,26 @@ describe('事故の直し1: ①APIキーの見出し・説明文・接続テス�
 
   // roadmap #35: ①「🔌 接続テスト」は共用型 cloud.testConnection と同じ「チェックリスト」の形
   // （apprunDedicated.testConnection）を呼ぶ。内訳（専有型API参照・請求参照）は main 側で組む。
-  it('🔌 接続テストのボタンがあり、apprunDedicated.testConnection を呼ぶ（GETのみ・何も作らない）', () => {
+  // UX-E（判断8）: 「🔌 接続テスト」ボタン自体は AccessKeySection.tsx が描く（①を一元化）。
+  // ここでは (a) testConnection 自身が apprunDedicated.testConnection を呼ぶこと、
+  // (b) パネルがそれを <AccessKeySection> の test.run として正しく渡していることを確かめる。
+  it('apprunDedicated.testConnection を呼ぶ（GETのみ・何も作らない）testConnection を、<AccessKeySection> の test.run として渡している', () => {
     const at = panel.indexOf('const testConnection = async () => {')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('\n  }', at)
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
     expect(block).toContain('window.electronAPI.apprunDedicated.testConnection(auth)')
-    expect(panel).toContain('>🔌 接続テスト</button>')
-    // ボタンは「🔑 認証情報で登録・切替」の隣（同じ行の flex コンテナ内）にある。
-    const rowAt = panel.indexOf('>🔑 認証情報で登録・切替</button>')
-    const rowEnd = panel.indexOf('</div>', rowAt)
-    expect(rowAt).toBeGreaterThan(0)
-    const row = panel.slice(rowAt, rowEnd)
-    expect(row).toContain('onClick={testConnection}')
+
+    const sectionAt = panel.indexOf('<AccessKeySection')
+    const sectionEnd = panel.indexOf('</AccessKeySection>', sectionAt)
+    expect(sectionAt).toBeGreaterThan(0)
+    const section = panel.slice(sectionAt, sectionEnd)
+    expect(section).toContain('run: testConnection,')
+    expect(section).toContain('state: conn,')
+
+    // 「🔌 接続テスト」ボタンの実体は AccessKeySection.tsx 側に1つだけある（複製していない）。
+    expect(accessKeySection).toContain('>🔌 接続テスト</button>')
   })
 
   it('接続テストの状態は未実施(idle) / 確認中(testing) / OK(ok) / NG(ng) の4つ（共用型 AppRunPanel の conn/connMsg と同じ作法）', () => {
@@ -933,57 +1048,31 @@ describe('事故の直し1: apiReachable を廃止し、conn/connMsg の1組に�
     expect(panel).not.toContain("conn === 'idle' && apiReachable")
   })
 
-  it('NGのとき、平易な判定文（⚠️ このキーでは専有型APIに通じませんでした）と ErrorBlock の両方を出す（三項ではない）', () => {
-    const at = panel.indexOf("{/* ① APIキー")
-    const end = panel.indexOf("{/* ② サービスプリンシパル", at)
-    expect(at).toBeGreaterThan(0)
-    expect(end).toBeGreaterThan(at)
-    const block = panel.slice(at, end)
-    // 三項（connMsg ? ErrorBlock : 平易な文）ではなく、conn === 'ng' のとき両方を描く形になっていること。
-    expect(block).not.toMatch(/connMsg\s*\?\s*<ErrorBlock/)
-    // "conn === 'ng' && (" だけだと、ボタン横の要約 span（{conn === 'ng' && (connChecks ? … : …)}）
-    // にも同じ部分文字列が現れ、そちらを先に拾ってしまう（掟10: 当て先が他の行にも出ないか確認する）。
-    // ここで探したいのは「!connChecks && conn === 'ng' && (」で始まる、下の説明段落。
-    const ngAt = block.indexOf("!connChecks && conn === 'ng' && (")
-    expect(ngAt).toBeGreaterThan(0)
-    const ngBlock = block.slice(ngAt, ngAt + 400)
-    expect(ngBlock).toContain('⚠️ このキーでは専有型APIに通じませんでした。')
-    expect(ngBlock).toContain('<ErrorBlock msg={connMsg} />')
+  // UX-E（判断8）: 専有型だけが持っていた「⚠️ このキーでは専有型APIに通じませんでした」＋
+  // ErrorBlock という別仕立ての表示はやめ、共用型と同じ「全体エラーは test.message で出す」
+  // 形に揃えた。connMsg は AccessKeySection の test.message にそのまま渡すだけでよい。
+  it('NGのときの全体メッセージは、専有型だけの別文言ではなく AccessKeySection の test.message（connMsg）に一本化した', () => {
+    expect(panel).not.toContain('このキーでは専有型APIに通じませんでした')
+    expect(panel).not.toContain('<ErrorBlock msg={connMsg} />')
+    const sectionAt = panel.indexOf('<AccessKeySection')
+    const sectionEnd = panel.indexOf('</AccessKeySection>', sectionAt)
+    expect(sectionAt).toBeGreaterThan(0)
+    const section = panel.slice(sectionAt, sectionEnd)
+    expect(section).toContain('message: connMsg,')
   })
 
-  // roadmap #35: 共用型 AppRunPanel と全く同じ文言に揃えた（旧: 専有型だけ「✅ 通じました」の
-  // 1本だった。「なぜ少ないのか」が分からないという指摘を受け、内訳（チェックリスト）を出すのに
-  // 合わせて要約の文言も揃える）。
-  //
-  // 2026-09-09 検分・指摘2で直した点: ③「🔍 調べる」も conn を書くため、この要約が
-  // conn だけを見ていると「請求（コスト）参照を一度も確認していないのに『✅ すべて
-  // 確認できました』と表示される」という嘘が生まれる。「通じた」（conn）と「すべて
-  // 確認できた」（checks＝connChecks）は別の事実なので、要約は connChecks の有無でも
-  // 文言を変える: checks があれば（🔌 接続テスト経由）従来どおりの文言、無ければ
-  // （③ 調べる経由）「確認できた」と言わない簡潔な文言にする。
-  it('ボタン横の span は、connChecks の有無で文言を変える（checksあり:「すべて確認できました」／checksなし:「通じました」。確認していないことを確認できたと言わない）', () => {
-    const rowAt = panel.indexOf('>🔌 接続テスト</button>')
-    expect(rowAt).toBeGreaterThan(0)
-    const spanEnd = panel.indexOf('</span>\n        </div>', rowAt)
-    expect(spanEnd).toBeGreaterThan(rowAt)
-    const block = panel.slice(rowAt, spanEnd)
-    // conn==='ok' の分岐は connChecks の三項になっている（checksが無ければ「確認できた」と言わない）。
-    const okAt = block.indexOf("conn === 'ok' && (connChecks")
-    expect(okAt).toBeGreaterThan(0)
-    const okBlock = block.slice(okAt, block.indexOf(')}', okAt))
-    expect(okBlock).toContain('✅ すべて確認できました')
-    expect(okBlock).toContain('✅ 通じました')
-    const ngAt = block.indexOf("conn === 'ng' && (connChecks")
-    expect(ngAt).toBeGreaterThan(0)
-    const ngBlock = block.slice(ngAt, block.indexOf(')}', ngAt))
-    expect(ngBlock).toContain('⚠️ 一部の権限が確認できませんでした')
-    expect(ngBlock).toContain('⚠️ 通じませんでした')
-    // Q（2026-09-10 レビューの修理・バッチ3）: 全項目（api・billing）が失敗していれば
-    // 「一部の…」ではなく「すべての項目で…」と正しく言う。その判定式がこの ng 分岐の中にあることを
-    // 一意に確かめる（api・billing 片方だけの判定に弱めていないか）。
-    expect(ngBlock).toContain('{!connChecks.api.ok && !connChecks.billing.ok')
-    expect(ngBlock).toContain("? '⚠️ すべての項目で確認できませんでした'")
-    expect(ngBlock).toContain(": '⚠️ 一部の権限が確認できませんでした'")
+  // roadmap #35 → UX-E: 「checksあり:すべて確認できました／checksなし:通じました」「全滅なら
+  // すべての項目で・一部だけなら一部の権限が」という要約の判定は、共用型・専有型の両方が
+  // 同じことを求めていたので AccessKeySection.tsx（ngSummary/okSummary 相当）に一元化した
+  // （掟10）。ここでは判定式そのものを専有型パネルが複製していないことだけを確かめ、
+  // 判定の中身（全滅/一部の言い分け）は tests/accessKeySection.test.ts が固定する。
+  it('①の要約文言の判定（checksの有無・全滅かどうか）は AccessKeySection.tsx に一元化し、専有型パネルは複製していない', () => {
+    expect(panel).not.toContain("'⚠️ すべての項目で確認できませんでした'")
+    expect(panel).not.toContain("'✅ すべて確認できました'")
+    expect(panel).not.toContain('!connChecks.api.ok && !connChecks.billing.ok')
+    expect(accessKeySection).toContain('function ngSummary(')
+    expect(accessKeySection).toContain('すべての項目で確認できませんでした')
+    expect(accessKeySection).toContain('一部の権限が確認できませんでした')
   })
 
   it('③「🔍 調べる」（investigate）は、connChecks を null に戻すだけで、書き込みはしない（確認していないので）', () => {
@@ -996,18 +1085,18 @@ describe('事故の直し1: apiReachable を廃止し、conn/connMsg の1組に�
     expect(writes).toEqual(['null'])
   })
 
-  it('未登録（!keyReady）のときの案内文がある（共用型 AppRunPanel 849-853 行あたりと同じ）', () => {
-    const rowAt = panel.indexOf('>🔌 接続テスト</button>')
-    expect(rowAt).toBeGreaterThan(0)
-    // 固定長の窓（旧 rowAt + 1100）は、ボタンと {!keyReady && ( の間にコメントが増えるたびに
-    // 切れてしまっていた（2026-09-09 検分・指摘2／2026-09-10 レビューの修理・Q でも再発）。
-    // 次の一意な目印（ConnectionChecklist の描画開始）までを窓にする——コメントが増えても
-    // 崩れない（掟10「当て先が他の行にも出ないか」）。
-    const nextAt = panel.indexOf('<ConnectionChecklist', rowAt)
-    expect(nextAt).toBeGreaterThan(rowAt)
-    const block = panel.slice(rowAt, nextAt)
-    expect(block).toContain('{!keyReady && (')
-    expect(block).toContain('先に認証情報でAPIキーを登録してください。')
+  // UX-E（判断8）: 「先に認証情報でAPIキーを登録してください」という単独の案内文は無くなった。
+  // 未登録時は AccessKeySection が registered=false の大きな「🔑 認証情報を登録する」ボタンを
+  // 出し、かつ「🔌 接続テスト」ボタン自体も自動で無効化する（disabled={... || !registered}）ため、
+  // 同じ意味の案内を専有型パネル側にもう1つ持つ必要がなくなった（重複の解消）。
+  it('未登録時の重複ヒントは無くなった。AccessKeySection 側が registered を渡されて自動で無効化する', () => {
+    const sectionAt = panel.indexOf('<AccessKeySection')
+    const sectionEnd = panel.indexOf('</AccessKeySection>', sectionAt)
+    expect(sectionAt).toBeGreaterThan(0)
+    const section = panel.slice(sectionAt, sectionEnd)
+    expect(section).not.toContain('{!keyReady && (')
+    expect(section).toContain('registered={keyReady}')
+    expect(accessKeySection).toContain("disabled={test.state === 'testing' || !registered}")
   })
 })
 
@@ -1039,7 +1128,12 @@ describe('②: 手順A/Bの2段階（公式マニュアルどおり）と、プ�
   it('手順Bは「IAMポリシー」で、プリンシパル欄にサービスプリンシパルを・ロール欄にロールを選ぶ手順', () => {
     const at = panel.indexOf('手順B: そのサービスプリンシパルにロールを付ける')
     expect(at).toBeGreaterThan(0)
-    const block = panel.slice(at, at + 700)
+    // 固定長の窓（旧 at + 700）は、②が「詳しい手順を見る」の <details> に入った分の
+    // インデント増加（判断7・2026-09-11）で必要な内容の手前で切れてしまっていた。
+    // 次の一意な目印（プリンシパル欄の注意書き）までを窓にする（掟10「固定長で切らない」）。
+    const end = panel.indexOf('プリンシパル欄に「ロール名」を入れないでください', at)
+    expect(end).toBeGreaterThan(at)
+    const block = panel.slice(at, end)
     expect(block).toContain('IAMポリシー')
     expect(block).toContain('「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ')
     expect(block).toContain('「ロール」欄で「{ROLE_TEXT}」を選ぶ')
@@ -1128,14 +1222,18 @@ describe('#25/事故の直し1: ①APIキーに、③「調べる」の疎通結
     expect(block).not.toContain('setConn(')
   })
 
-  it('①に成功時「✅ このキーで専有型APIに通じました」、失敗時「⚠️ このキーでは専有型APIに通じませんでした」を出す', () => {
-    const at = panel.indexOf('{/* ① APIキー')
-    const end = panel.indexOf('{/* ② サービスプリンシパル', at)
-    expect(at).toBeGreaterThan(0)
-    expect(end).toBeGreaterThan(at)
-    const block = panel.slice(at, end)
-    expect(block).toContain('✅ このキーで専有型APIに通じました')
-    expect(block).toContain('⚠️ このキーでは専有型APIに通じませんでした。')
+  // UX-E（判断8）: ①の成功/失敗の要約は、投げ先（🔌 接続テスト／③調べる）に関わらず
+  // investigate() が setConn/setConnMsg を書けば、AccessKeySection が conn（test.state）を
+  // 見てそのまま出す。旧来の専有型だけの固定文言「✅ このキーで専有型APIに通じました」
+  // 「⚠️ このキーでは専有型APIに通じませんでした」は、共用型と揃えるため無くなった
+  // （AccessKeySection.tsx の okSummary/ngSummary 相当が代わりに出す。tests/accessKeySection.test.ts 参照）。
+  it('①の成功/失敗は investigate() が書く conn/connMsg を、共用型と同じ AccessKeySection の要約表示に委ねる（専有型だけの固定文言は複製しない）', () => {
+    expect(panel).not.toContain('このキーで専有型APIに通じました')
+    expect(panel).not.toContain('このキーでは専有型APIに通じませんでした')
+    const sectionAt = panel.indexOf('<AccessKeySection')
+    const sectionEnd = panel.indexOf('</AccessKeySection>', sectionAt)
+    const section = panel.slice(sectionAt, sectionEnd)
+    expect(section).toContain('state: conn,')
   })
 })
 
@@ -1334,12 +1432,15 @@ describe('⑥: 記録があるとき、または破棄結果が残っている�
     expect(panel).toContain('disabled={tearingDown}')
   })
 
-  it('doTeardown は runTeardown（apprunDedicatedActions.ts）へ確認文言を渡し、confirm には window.confirm を注入する（2026-09-10 レビューの修理・J）', () => {
+  it('doTeardown は確認文言を ConfirmModal（useConfirm）で先に確認し、その答えを runTeardown の confirm へ注入する（判断9・2026-09-11）', () => {
     const at = panel.indexOf('const doTeardown = async () => {')
     expect(at).toBeGreaterThan(0)
-    const block = panel.slice(at, at + 1200)
+    const block = panel.slice(at, at + 1400)
     expect(block).toContain('runTeardown(')
-    expect(block).toContain('confirm: (m) => window.confirm(m)')
+    expect(block).toContain("const ok = await confirm({ title: '⚠️ 専有型クラスタを破棄します', body: confirmMessage, confirmLabel: '破棄する', danger: true })")
+    expect(block).toContain('confirm: () => ok,')
+    // window.confirm へ退行していないこと（2026-09-11 CLAUDE.md 掟5改定）。
+    expect(block).not.toContain('window.confirm(')
     // teardown実行そのもの（IPC呼び出し）は runTeardown の deps.teardown の中。
     expect(block).toContain('window.electronAPI.apprunDedicated.teardown(projectDir, auth, opts)')
     expect(block).toContain('消さない限り課金が続きます')

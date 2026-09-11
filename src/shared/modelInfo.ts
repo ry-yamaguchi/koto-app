@@ -46,6 +46,55 @@ export function modelLabel(id: string): string {
   return [...MODELS, ...VISION_MODELS].find(m => m.id === id)?.label ?? id
 }
 
+// ============================================================================
+// 【UX-A・判断1】モデル選択を「目的ベース」のラベルにする（2026-09-11・利用者目線レビュー推奨①）。
+// 技術名（preview/Kimi-K2.7-Code 等）はチャット欄ヘッダー・新規プロジェクト画面・設定の
+// 3か所にそのまま並んでいたが、初めての利用者には読めない。**表示の元はここ1つ**に持ち、
+// 各画面は purposeLabel() を呼ぶだけにする（複製しない・掟10）。技術名は title（ツールチップ）
+// へ回す（modelLabel(id)＋id）。
+//
+// 根拠: README「モデルごとの対応状況」表（2026-09-10 実測）と、上の MODELS/VISION_MODELS の
+// 各コメント（実測の tools/vision 対応）。**表に無い新しいモデルは載せない**
+// （推測で目的を付けない＝掟1の実測主義）→ purposeLabel は未知の id には技術名を返す。
+// ============================================================================
+export const MODEL_PURPOSE: Record<string, { purpose: string; note?: string }> = {
+  'preview/Kimi-K2.7-Code': { purpose: '標準', note: 'おすすめ・コードが得意' },
+  'preview/gemma-4-31B-it': { purpose: '高速・軽い', note: '相談向け' },
+  'gpt-oss-120b': { purpose: '推論型' },
+  'preview/Qwen3.6-35B-A3B': { purpose: '推論型', note: '長い応答は途中で切れることあり' },
+  'preview/Kimi-K2.6': { purpose: '画像も読める', note: '推論型' },
+  'preview/Qwen3-VL-30B-A3B-Instruct': { purpose: '画像読み取り用', note: 'ツール非対応' },
+  'llm-jp-3.1-8x13b-instruct4': { purpose: '日本語特化', note: 'ツール非対応・文脈を無視することあり' },
+  'preview/Qwen3-0.6B-cpu': { purpose: '小型', note: 'ツール非対応' },
+  'preview/Phi-4-mini-instruct-cpu': { purpose: '小型', note: 'ツール非対応' },
+}
+
+/**
+ * モデル選択UIに出す「目的ベース」のラベル。
+ * MODEL_PURPOSE に無い id（表に無い新しいモデル）は、推測で目的を付けず技術名（modelLabel）のまま返す。
+ */
+export function purposeLabel(id: string): string {
+  const p = MODEL_PURPOSE[id]
+  if (!p) return modelLabel(id)
+  return p.note ? `${p.purpose}（${p.note}）` : p.purpose
+}
+
+/**
+ * モデル選択UIでの並び順を決める（純関数）。既定モデル（defaultId）が一覧にあれば先頭へ出し、
+ * 残りは元の順序を保つ。重複は1つにまとめ、defaultId 以外の未知の id も落とさない。
+ * defaultId が一覧に無ければ（例: Claudeモデル一覧に さくらの既定idを渡した場合）並びは変えない。
+ */
+export function orderModelsForPicker(ids: string[], defaultId: string): string[] {
+  const rest: string[] = []
+  const seen = new Set<string>()
+  for (const id of ids) {
+    if (seen.has(id)) continue
+    seen.add(id)
+    if (id !== defaultId) rest.push(id)
+  }
+  return seen.has(defaultId) ? [defaultId, ...rest] : rest
+}
+
 const VISION_IDS = new Set(VISION_MODELS.map(m => m.id))
 
 /** モデルが画像入力に対応しているか（ID命名からも推定）。

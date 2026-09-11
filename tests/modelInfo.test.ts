@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { MODELS, VISION_MODELS, DEFAULT_MODEL, pickBestModel, SYSTEM_ROLE_UNSUPPORTED, foldSystemForModel } from '../src/shared/modelInfo'
+import {
+  MODELS, VISION_MODELS, DEFAULT_MODEL, pickBestModel, SYSTEM_ROLE_UNSUPPORTED, foldSystemForModel,
+  MODEL_PURPOSE, purposeLabel, orderModelsForPicker,
+} from '../src/shared/modelInfo'
 
 // 2026-09-04 世代交代の回帰テスト（Qwen3-Coder 系の提供終了に伴う一括更新）。
 // 根拠: check:models 実測で Qwen3-Coder-480B-A35B-Instruct-FP8 / Qwen3-Coder-30B-A3B-Instruct が
@@ -112,5 +115,105 @@ describe('配線: main/sakura/engine.ts が畳み込みを両方の口で通し�
     expect(count).toBe(2)
     // 畳み込んだ結果を使わず素の args.messages を送る旧形へ戻っていない
     expect(src).not.toContain('messages: args.messages as any')
+  })
+})
+
+// ── UX-A・判断1（2026-09-11 利用者目線レビュー推奨①）: モデル選択を目的ベースのラベルに ──────
+// 技術名（preview/Kimi-K2.7-Code 等）が3画面にそのまま並んでいたのを、目的ベースの短い文へ。
+// 根拠は README「モデルごとの対応状況」表（2026-09-10 実測）と MODELS/VISION_MODELS の各コメント。
+describe('purposeLabel（表示の元は MODEL_PURPOSE の1箇所だけ）', () => {
+  it('MODEL_PURPOSE にある9モデルすべてで、README根拠どおりの目的ラベルを返す', () => {
+    expect(purposeLabel('preview/Kimi-K2.7-Code')).toBe('標準（おすすめ・コードが得意）')
+    expect(purposeLabel('preview/gemma-4-31B-it')).toBe('高速・軽い（相談向け）')
+    expect(purposeLabel('gpt-oss-120b')).toBe('推論型')
+    expect(purposeLabel('preview/Qwen3.6-35B-A3B')).toBe('推論型（長い応答は途中で切れることあり）')
+    expect(purposeLabel('preview/Kimi-K2.6')).toBe('画像も読める（推論型）')
+    expect(purposeLabel('preview/Qwen3-VL-30B-A3B-Instruct')).toBe('画像読み取り用（ツール非対応）')
+    expect(purposeLabel('llm-jp-3.1-8x13b-instruct4')).toBe('日本語特化（ツール非対応・文脈を無視することあり）')
+    expect(purposeLabel('preview/Qwen3-0.6B-cpu')).toBe('小型（ツール非対応）')
+    expect(purposeLabel('preview/Phi-4-mini-instruct-cpu')).toBe('小型（ツール非対応）')
+  })
+
+  it('MODELS・VISION_MODELS の全idが MODEL_PURPOSE でカバーされている（載せ忘れがない）', () => {
+    const ids = [...MODELS, ...VISION_MODELS].map(m => m.id)
+    for (const id of ids) expect(MODEL_PURPOSE[id], `MODEL_PURPOSE に ${id} が無い`).toBeDefined()
+  })
+
+  // ★ 変異試験(a): 「未知の id にも目的を付ける」（推測で目的を付ける）バグを検知する砦。
+  it('★ 表に無い未知の id は、推測で目的を付けず技術名（modelLabel）のまま返す', () => {
+    // MODELS/VISION_MODELS にも無い、まったく未知の id → modelLabel が id をそのまま返す
+    expect(purposeLabel('some-brand-new-model-2027')).toBe('some-brand-new-model-2027')
+    // 対照: MODEL_PURPOSE にある既知の id は、技術名ではなく目的ラベルを返す（id そのままにならない）
+    expect(purposeLabel('preview/Kimi-K2.7-Code')).not.toBe('preview/Kimi-K2.7-Code')
+  })
+})
+
+describe('orderModelsForPicker（一覧の並び: 既定モデルを先頭に・UX-A判断1）', () => {
+  it('既定モデルが一覧にあれば先頭へ出し、残りは元の順序のまま', () => {
+    const ids = ['gpt-oss-120b', 'preview/Kimi-K2.7-Code', 'preview/gemma-4-31B-it']
+    expect(orderModelsForPicker(ids, 'preview/gemma-4-31B-it')).toEqual([
+      'preview/gemma-4-31B-it', 'gpt-oss-120b', 'preview/Kimi-K2.7-Code',
+    ])
+  })
+
+  // ★ 変異試験(b): 「既定を先頭にしない」バグを検知する砦。
+  it('★ DEFAULT_MODEL を一覧の途中に混ぜても、先頭に出てくる', () => {
+    const ids = ['a', 'b', DEFAULT_MODEL, 'c']
+    expect(orderModelsForPicker(ids, DEFAULT_MODEL)[0]).toBe(DEFAULT_MODEL)
+  })
+
+  it('既定モデルが一覧に無ければ、並びを変えない（Claudeモデル一覧にさくらの既定idを渡した場合など）', () => {
+    const ids = ['claude-x', 'claude-y']
+    expect(orderModelsForPicker(ids, DEFAULT_MODEL)).toEqual(['claude-x', 'claude-y'])
+  })
+
+  it('重複を1つにまとめる', () => {
+    const ids = ['a', 'b', 'a', DEFAULT_MODEL, 'b']
+    expect(orderModelsForPicker(ids, DEFAULT_MODEL)).toEqual([DEFAULT_MODEL, 'a', 'b'])
+  })
+
+  it('未知の id も落とさない', () => {
+    const ids = ['unknown-1', DEFAULT_MODEL, 'unknown-2']
+    expect(orderModelsForPicker(ids, DEFAULT_MODEL)).toEqual([DEFAULT_MODEL, 'unknown-1', 'unknown-2'])
+  })
+})
+
+describe('配線: モデル選択UI3か所（チャット欄ヘッダー／新規プロジェクト画面／設定）が purposeLabel( を使っている（掟10・呼び出しの形ごと）', () => {
+  const modelSelectSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ModelSelect.tsx'), 'utf-8')
+  const chatAppSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatApp.tsx'), 'utf-8')
+  const chatPanelSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf-8')
+  const newProjectSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/NewProjectModal.tsx'), 'utf-8')
+  const settingsSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/SettingsModal.tsx'), 'utf-8')
+
+  it('① チャット欄ヘッダー・新規プロジェクト画面が共通で使う ModelSelect.tsx: ボタン表示・一覧表示の両方が purposeLabel( を呼ぶ', () => {
+    expect(modelSelectSrc).toContain('purposeLabel(value)')
+    expect(modelSelectSrc).toContain('purposeLabel(m.id)')
+    // 技術名は title（ツールチップ）へ。modelLabel(id)＋id の形を、呼び出しの形ごと固定する
+    expect(modelSelectSrc).toContain('`${modelLabel(value)}（${value}）`')
+    expect(modelSelectSrc).toContain('`${modelLabel(m.id)}（${m.id}）`')
+  })
+
+  it('チャット欄ヘッダー（ChatApp.tsx＝チャットモード）が ModelSelect に defaultId={DEFAULT_CHAT_MODEL} を渡している', () => {
+    expect(chatAppSrc).toContain('defaultId={DEFAULT_CHAT_MODEL}')
+  })
+
+  it('チャット欄ヘッダー（ChatPanel.tsx＝IDEモード）が ModelSelect に defaultId={claudeActive ? undefined : DEFAULT_MODEL} を渡している', () => {
+    expect(chatPanelSrc).toContain('defaultId={claudeActive ? undefined : DEFAULT_MODEL}')
+  })
+
+  it('② 新規プロジェクト画面（NewProjectModal.tsx）が ModelSelect に defaultId={brain === \'claude\' ? undefined : DEFAULT_MODEL} を渡している', () => {
+    expect(newProjectSrc).toContain("defaultId={brain === 'claude' ? undefined : DEFAULT_MODEL}")
+  })
+
+  it('③ 設定（SettingsModal.tsx）の「IDEで使うモデル」「チャットで使うモデル」の2つの select が、それぞれ purposeLabel(id) を呼ぶ', () => {
+    expect(settingsSrc).toContain('IDEで使うモデル')
+    expect(settingsSrc).toContain('チャットで使うモデル')
+    const count = settingsSrc.split('purposeLabel(id)').length - 1
+    expect(count).toBe(2)
+  })
+
+  it('設定の一覧も orderModelsForPicker で既定を先頭に並べている（IDE=DEFAULT_MODEL・チャット=DEFAULT_CHAT_MODEL）', () => {
+    expect(settingsSrc).toContain('orderModelsForPicker(models.map(m => m.id), DEFAULT_MODEL)')
+    expect(settingsSrc).toContain('orderModelsForPicker(models.map(m => m.id), DEFAULT_CHAT_MODEL)')
   })
 })

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { runSecurityCheck, SecurityCheckResult, CheckRecord, checkRecordKey, formatCheckRecord } from '../securityCheck'
+import { foldSecurity } from '../appRunFolding'
 import CopyButton from './CopyButton'
 
 // 🛡 セキュリティチェックの節。公開フローの「事前チェック」の次に置く
@@ -75,36 +76,58 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
         <p className="text-xs text-ink-secondary">⏳ {progress || '準備しています…'}</p>
       )}
 
+      {/* ── 全部✅なら1行に畳む（判断6・利用者目線レビュー・2026-09-11）──────────────
+          ③事前チェック（AppRunPanel.tsx）の「preflight.checks.every(c => c.status === 'ok')」
+          と同じ型を横展開する。判断そのものは foldSecurity に一元化してある（掟10）。 */}
       {result && (
-        <div className={`rounded-lg border p-3 space-y-2 ${result.verdict === 'warn' ? 'border-brand-red/60' : 'border-line'}`}>
-          <div className="flex items-center gap-2">
-            <p className="text-xs font-semibold text-ink flex-1">
-              {result.verdict === 'ok' ? '✅ 問題なし' : result.verdict === 'warn' ? '⚠️ 要確認' : '⏭ 実施できませんでした'}
+        foldSecurity(result) ? (
+          <details className="rounded-lg border border-line p-3">
+            <summary className="cursor-pointer select-none text-xs font-semibold text-ink hover:text-sakura">
+              ✅ 問題なし（内訳を見る）
+            </summary>
+            <div className="mt-2 space-y-2">
               {result.mode && (
-                <span className="ml-2 font-normal text-ink-muted">
+                <p className="text-[11px] text-ink-muted">
                   {result.mode === 'node' ? 'アプリとして検査（サーバーで実行される前提）' : 'サイトとして検査（ファイルがそのまま見える前提）'}
-                </span>
+                </p>
               )}
-            </p>
-            <CopyButton text={result.report} title="チェック結果をコピー" />
+              <div className="flex items-center justify-end">
+                <CopyButton text={result.report} title="チェック結果をコピー" />
+              </div>
+              <pre className="text-xs text-ink-secondary whitespace-pre-wrap select-text max-h-52 overflow-y-auto font-sans">{result.report}</pre>
+            </div>
+          </details>
+        ) : (
+          <div className={`rounded-lg border p-3 space-y-2 ${result.verdict === 'warn' ? 'border-brand-red/60' : 'border-line'}`}>
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-semibold text-ink flex-1">
+                {result.verdict === 'warn' ? '⚠️ 要確認' : '⏭ 実施できませんでした'}
+                {result.mode && (
+                  <span className="ml-2 font-normal text-ink-muted">
+                    {result.mode === 'node' ? 'アプリとして検査（サーバーで実行される前提）' : 'サイトとして検査（ファイルがそのまま見える前提）'}
+                  </span>
+                )}
+              </p>
+              <CopyButton text={result.report} title="チェック結果をコピー" />
+            </div>
+            {/* 結果は目印方式で「判定＋指摘（最大5件）」だけに絞ってある（＝要約）。
+                思考の文章は securityCheck 側で捨てるので、ここには届かない */}
+            <pre className="text-xs text-ink-secondary whitespace-pre-wrap select-text max-h-52 overflow-y-auto font-sans">{result.report}</pre>
+            {result.verdict === 'warn' && (
+              <span className="block">
+                <button
+                  onClick={() => {
+                    // 指摘の全文＋「実際に修正しろ」の明確な指示をチャットへ（そのまま送信される）。
+                    // rc.1 では指示が弱く、AIが翻訳・再レビューだけで終わった（2026-08-21 実機）
+                    window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: `簡易セキュリティチェックで次の指摘がありました。該当するファイルを実際に修正して解消してください。直せない項目があれば、その理由と対処方法を教えてください。\n\n${result.report}` } }))
+                  }}
+                  className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                >🛠 AIに修正させる</button>
+                <span className="ml-2 text-[11px] text-ink-muted">押すとチャットに移り、AIが直します</span>
+              </span>
+            )}
           </div>
-          {/* 結果は目印方式で「判定＋指摘（最大5件）」だけに絞ってある（＝要約）。
-              思考の文章は securityCheck 側で捨てるので、ここには届かない */}
-          <pre className="text-xs text-ink-secondary whitespace-pre-wrap select-text max-h-52 overflow-y-auto font-sans">{result.report}</pre>
-          {result.verdict === 'warn' && (
-            <span className="block">
-              <button
-                onClick={() => {
-                  // 指摘の全文＋「実際に修正しろ」の明確な指示をチャットへ（そのまま送信される）。
-                  // rc.1 では指示が弱く、AIが翻訳・再レビューだけで終わった（2026-08-21 実機）
-                  window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: `簡易セキュリティチェックで次の指摘がありました。該当するファイルを実際に修正して解消してください。直せない項目があれば、その理由と対処方法を教えてください。\n\n${result.report}` } }))
-                }}
-                className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
-              >🛠 AIに修正させる</button>
-              <span className="ml-2 text-[11px] text-ink-muted">押すとチャットに移り、AIが直します</span>
-            </span>
-          )}
-        </div>
+        )
       )}
     </section>
   )

@@ -4,6 +4,7 @@ import {
   registryCostNotice, ongoingCostNotice, registryDeleteLabel, registryDeleteHelp,
   registryUnknownNotice, urlChangesOnTeardownNotice,
   teardownTargets, remainingCostWarning, BUCKET_MONTHLY_YEN,
+  costSummaryLines,
 } from '../src/shared/cloudCost'
 
 // 2026-08-06 ユーザー指摘: AppRunアプリを削除しても、コンテナレジストリが残ると月額課金が続く。
@@ -215,5 +216,68 @@ describe('破棄しても止まらない費用', () => {
   it('残った費用の消し方（コントロールパネル）を必ず伝える', () => {
     expect(remainingCostWarning({ deleteRegistry: false, registryName: 'myapp' })!).toContain('コントロールパネル')
     expect(remainingCostWarning({ deleteRegistry: true, registryName: 'myapp', keptBucketName: 'koto-data-x' })!).toContain('コントロールパネル')
+  })
+})
+
+// ── 判断4（利用者目線レビュー・2026-09-11）: 「💰 想定される費用」節の3行 ──────────
+// 共用型は費用の説明が7〜8か所に散っていた。1か所（この関数）にまとめ、
+// 個別の確認・注記は「この操作で増える／止まる金額」だけに絞る。
+describe('想定される費用の3行（costSummaryLines）', () => {
+  it('3行返す：レジストリ・保存場所・アプリ本体', () => {
+    const lines = costSummaryLines({ hasBucket: false, scaleMin: 0 })
+    expect(lines).toHaveLength(3)
+    expect(lines[0]).toContain('コンテナレジストリ')
+    expect(lines[1]).toContain('データの保存場所')
+    expect(lines[2]).toContain('アプリ本体')
+  })
+
+  it('レジストリ行: 金額と「消しても残る」を伝える', () => {
+    const [registryLine] = costSummaryLines({ hasBucket: false, scaleMin: 0 })
+    expect(registryLine).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
+    expect(registryLine).toContain('消しても残る')
+  })
+
+  it('保存場所行: 金額と「使う場合」を伝える', () => {
+    const [, bucketLine] = costSummaryLines({ hasBucket: false, scaleMin: 0 })
+    expect(bucketLine).toContain(`月額${BUCKET_MONTHLY_YEN}円`)
+    expect(bucketLine).toContain('使う場合')
+  })
+
+  it('保存場所を使っているプロジェクトでは、それが分かる一言が付く', () => {
+    const [, withBucket] = costSummaryLines({ hasBucket: true, scaleMin: 0 })
+    const [, withoutBucket] = costSummaryLines({ hasBucket: false, scaleMin: 0 })
+    expect(withBucket).not.toBe(withoutBucket)
+    expect(withBucket).toContain('使っています')
+  })
+
+  it('アプリ本体行: 「すぐ返す」だと待機中も料金がかかることを伝え、いまの設定が分かる', () => {
+    const cold = costSummaryLines({ hasBucket: false, scaleMin: 0 })[2]
+    const warm = costSummaryLines({ hasBucket: false, scaleMin: 1 })[2]
+    expect(cold).toContain('すぐ返す')
+    expect(cold).toContain('最初のアクセスが遅くてもよい')
+    expect(warm).toContain('すぐ返す')
+    expect(cold).not.toBe(warm)
+  })
+
+  // ★ 変異試験(c): 数字をハードコード（220/495）に戻すと、上書きしても反映されなくなる形で固定する。
+  // 呼び出し側で渡した値が出力に出ていれば、実装が定数（またはその引数）を見ていることが分かる。
+  it('★ 金額は定数から取る（ハードコードに戻す変異を検知）: opts で上書きすると反映される', () => {
+    const lines = costSummaryLines({ hasBucket: false, scaleMin: 0, registryYen: 999, bucketYen: 888 })
+    expect(lines[0]).toContain('999円')
+    expect(lines[0]).not.toContain(`${REGISTRY_MONTHLY_YEN}円`)
+    expect(lines[1]).toContain('888円')
+    expect(lines[1]).not.toContain(`${BUCKET_MONTHLY_YEN}円`)
+  })
+
+  it('既定値（opts を渡さない）は現行の定数と一致する', () => {
+    const lines = costSummaryLines({ hasBucket: false, scaleMin: 0 })
+    expect(lines[0]).toContain(`${REGISTRY_MONTHLY_YEN}円`)
+    expect(lines[1]).toContain(`${BUCKET_MONTHLY_YEN}円`)
+  })
+
+  it('画面文言に Markdown 記法を混ぜない', () => {
+    for (const line of costSummaryLines({ hasBucket: true, scaleMin: 1 })) {
+      expect(line).not.toMatch(/\*\*|__|`|\[[^\]]+\]\([^)]+\)/)
+    }
   })
 })
