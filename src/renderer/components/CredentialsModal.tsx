@@ -11,7 +11,11 @@ interface Props {
 }
 
 interface FieldDef { key: string; label: string; secret?: boolean; placeholder?: string }
-interface ServiceDef { id: string; title: string; hint: string; fields: FieldDef[]; active?: boolean; budget?: boolean; custom?: boolean }
+interface ServiceDef {
+  id: string; title: string; hint: string; fields: FieldDef[]; active?: boolean; budget?: boolean; custom?: boolean
+  /** 公式の発行ページ／説明ページ（実在を確かめた URL だけを入れる・掟1。2026-09-11 利用者目線レビュー）。 */
+  helpUrl?: string
+}
 
 const SERVICES: ServiceDef[] = [
   {
@@ -23,6 +27,7 @@ const SERVICES: ServiceDef[] = [
   },
   {
     id: 'cloud', title: 'さくらのクラウド', hint: 'IaaS API のアクセストークンとシークレット',
+    helpUrl: 'https://manual.sakura.ad.jp/cloud/api/apikey.html',
     fields: [
       { key: 'token', label: 'アクセストークン', secret: true },
       { key: 'secret', label: 'アクセストークンシークレット', secret: true },
@@ -51,7 +56,8 @@ const SERVICES: ServiceDef[] = [
     fields: [{ key: 'apiKey', label: 'APIトークン', secret: true, placeholder: 'hnm_…' }],
   },
   {
-    id: 'vercel', title: 'Vercel（海外PaaS）', hint: '③公開→Vercel で使うトークン。https://vercel.com/account/tokens で発行します。',
+    id: 'vercel', title: 'Vercel（海外PaaS）', hint: '③公開→Vercel で使うトークン。',
+    helpUrl: 'https://vercel.com/account/tokens',
     active: true,
     fields: [
       { key: 'apiKey', label: 'トークン', secret: true, placeholder: '発行したトークンを貼り付け' },
@@ -942,7 +948,15 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
                 <div className="flex items-start justify-between mb-2">
                   <div>
                     <h3 className="text-sm font-semibold text-ink">{def.title}</h3>
-                    <p className="text-[11px] text-ink-muted mt-0.5">{def.hint}</p>
+                    <p className="text-[11px] text-ink-muted mt-0.5">
+                      {def.hint}
+                      {def.helpUrl && (
+                        <>
+                          {' '}
+                          <a href={def.helpUrl} className="text-sakura hover:underline">🌐 発行ページを開く ↗</a>
+                        </>
+                      )}
+                    </p>
                     {/* さくらのVPS は公開機能（②初期セットアップ／③公開）としては開発中（targetProfiles で
                         非表示）。V1a時点では「① 接続」（鍵認証での疎通確認）のみ利用できる。 */}
                     {def.id === 'vps' && (

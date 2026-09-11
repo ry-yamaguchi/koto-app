@@ -344,72 +344,179 @@ describe('teardownFlow: 5. DELETE LB が404のとき、一覧で本当に無い�
   })
 })
 
-// ── 6. DELETEが204でも一覧にまだ残っていれば完了と言い切らない（掟10 2026-08-14と同じ形） ───
+// ── 6. #39（2026-09-10 実測・5-11）: 削除は非同期。各段は一覧から消えるまで待ってから次へ ──
+//
+// 旧仕様（DELETE 204/404 の直後に一覧を1回だけ見て、消えていなければ即 ok:false／deleting:true や
+// 一覧失敗は「消えた扱い」で先へ進む）は、実 API で (1) ASG が409で止まる (2) LBの記録が消えて
+// 押し直せない、という事故を起こした（CLAUDE.md 掟10「削除の204は『消えた』ではない」）。
+// ここからは「一覧から消えるまで待つ」新仕様をテストする。`sleep` を偽物にして即時に回す
+// （intervalMs/timeoutMs は既定のままでよい——実時間は待たないため既定でも高速に終わる）。
 
-describe('teardownFlow: 6. DELETEが204でも、直後の一覧確認でまだ残っていれば ok:false', () => {
-  it('LB: 204のあと一覧にIDがあり deleting:false → 記録は残り ok:false', async () => {
+describe('teardownFlow: 6. 各段は一覧から消えるまで待つ（#39・5-11実測）', () => {
+  it('1. LB 204 → 一覧 deleting:true が2回 → 3回目で消える → ASGのDELETEはその後に呼ばれる。記録は消えるまで残る（途中で確認）', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
     const calls: string[] = []
-    const baseUrl = await listen(routedServer({
-      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
-      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'l1', name: 'myapp', deleting: false, created: 1, serviceClassPath: 'x' }] } },
-    }, calls))
-    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
-    expect(r.ok).toBe(false)
-    expect(r.message).toContain('まだ残っています')
-    const rec = readApprunDedicatedFs(projectDir)
-    expect(rec.loadBalancerID).toBe('l1')
-  })
-
-  it('LB: 204のあと一覧に無い → 記録から消えて先へ進む（ASG削除まで呼ばれる）', async () => {
-    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
-    const calls: string[] = []
-    const baseUrl = await listen(routedServer({
-      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
-      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
-      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
-      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
-      'DELETE /clusters/c1': { status: 204, body: {} },
-      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
-    }, calls))
-    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    let lbListCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1/load_balancers/l1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') {
+        lbListCount++
+        return send(200, { loadBalancers: lbListCount <= 2 ? [{ loadBalancerID: 'l1', name: 'myapp', deleting: true, created: 1, serviceClassPath: 'x' }] : [] })
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg?maxItems=20') return send(200, { autoScalingGroups: [] })
+      if (key === 'DELETE /clusters/c1') return send(204, {})
+      if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    let sleepCalls = 0
+    const sleep = async () => {
+      sleepCalls++
+      // waitUntilGone のループの途中（まだ消えたと確認する前）は、記録がそのまま残っていること。
+      const rec = readApprunDedicatedFs(projectDir)
+      expect(rec.loadBalancerID).toBe('l1')
+    }
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
     expect(r.ok).toBe(true)
+    expect(sleepCalls).toBe(2) // deleting:trueが2回続いた分だけ待つ（1回目・2回目の一覧のあと）
+    expect(lbListCount).toBe(3) // 3回目の一覧で消えたと確認する
+    const lbDeleteAt = calls.indexOf('DELETE /clusters/c1/asg/a1/load_balancers/l1')
+    const asgDeleteAt = calls.indexOf('DELETE /clusters/c1/asg/a1')
+    expect(lbDeleteAt).toBeGreaterThanOrEqual(0)
+    expect(asgDeleteAt).toBeGreaterThan(lbDeleteAt) // ASGのDELETEは、LBが消えたと確認した後に呼ばれる
+    expect(r.executed.some(e => e.includes('ロードバランサ『l1』を削除しました（消えたことを確認）'))).toBe(true)
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.loadBalancerID).toBeFalsy()
     expect(rec.asgID).toBeFalsy()
     expect(rec.clusterID).toBeFalsy()
   })
 
-  it('LB: 204のあと一覧に無い場合と同じく、deleting:true でも先へ進む', async () => {
-    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' })
+  it('2. LBが消えないまま timeout → ok:false・inProgress.loadBalancerID・記録は3つとも残る・ASGのDELETEは呼ばれない', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
     const calls: string[] = []
     const baseUrl = await listen(routedServer({
       'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
       'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'l1', name: 'myapp', deleting: true, created: 1, serviceClassPath: 'x' }] } },
-      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
-      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
-      'DELETE /clusters/c1': { status: 204, body: {} },
-      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
     }, calls))
-    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
-    expect(r.ok).toBe(true)
+    const sleep = async () => {} // 即時に解決する偽物（実際には待たない）
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, intervalMs: 1000, timeoutMs: 3000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.inProgress?.loadBalancerID).toBe('l1')
+    expect(r.message).toContain('削除中です')
+    expect(calls).not.toContain('DELETE /clusters/c1/asg/a1')
     const rec = readApprunDedicatedFs(projectDir)
-    expect(rec.loadBalancerID).toBeFalsy()
+    expect(rec.loadBalancerID).toBe('l1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.clusterID).toBe('c1')
   })
 
-  it('LB: 204のあと一覧そのものが失敗 → 一覧の失敗では止めない（DELETE自体は204だったため）。先へ進む', async () => {
-    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' })
+  it('3. ASGが409（本文に Load Balancers: l1）→ LBのIDを記録に戻し、LB一覧の deleting:true を待ってからASGを再度DELETEする', async () => {
+    // loadBalancerIDは既に記録から外れている想定（前回の破棄がLBだけ消して途中で止まった、等）。
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1' })
     const calls: string[] = []
-    const baseUrl = await listen(routedServer({
-      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
-      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 500, body: { status: 500, title: 'boom' } },
-      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
-      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
-      'DELETE /clusters/c1': { status: 204, body: {} },
-      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
-    }, calls))
-    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    let asgDeleteCount = 0
+    let lbListCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1') {
+        asgDeleteCount++
+        if (asgDeleteCount === 1) {
+          return send(409, { status: 409, title: 'Cannot delete Auto Scaling Group because it has associated Load Balancers: l1' })
+        }
+        return send(204, {})
+      }
+      if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') {
+        lbListCount++
+        return send(200, { loadBalancers: lbListCount === 1 ? [{ loadBalancerID: 'l1', name: 'myapp', deleting: true, created: 1, serviceClassPath: 'x' }] : [] })
+      }
+      if (key === 'GET /clusters/c1/asg?maxItems=20') return send(200, { autoScalingGroups: [] })
+      if (key === 'DELETE /clusters/c1') return send(204, {})
+      if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
     expect(r.ok).toBe(true)
+    expect(asgDeleteCount).toBe(2) // 1回目は409、LBが消えるのを待ってから2回目で成功
+    expect(r.executed.some(e => e.includes('ロードバランサ『l1』がまだ残っていたため、記録に戻しました'))).toBe(true)
+    expect(r.executed.some(e => e.includes('ロードバランサ『l1』を削除しました（消えたことを確認）'))).toBe(true)
+    expect(r.executed.some(e => e.includes('オートスケーリンググループ『a1』を削除しました（消えたことを確認）'))).toBe(true)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.asgID).toBeFalsy()
+    expect(rec.clusterID).toBeFalsy()
+  })
+
+  it('3b. ASGが409で、LB一覧に deleting:false のLBが残っている → 止まり、LBのIDが記録に戻る（親の独立した変異試験で素通りした経路・2026-09-11）', async () => {
+    // 記録からLBだけ外れている（前回の破棄で「消えた扱い」にしてしまった状態）。
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1' })
+    const calls: string[] = []
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1') {
+        return send(409, { status: 409, title: 'Cannot delete Auto Scaling Group because it has associated Load Balancers: l1' })
+      }
+      if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') {
+        return send(200, { loadBalancers: [{ loadBalancerID: 'l1', name: 'myapp', deleting: false, created: 1, serviceClassPath: 'x' }] })
+      }
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('ロードバランサが残っているため')
+    // **記録に戻っていること**（ここが無いと、次に⑥を押してもLBを消しにいけない）
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBe('l1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.clusterID).toBe('c1')
+    expect(r.remaining.loadBalancerID).toBe('l1')
+    // クラスタのDELETEへは進まない
+    expect(calls.some(c => c === 'DELETE /clusters/c1')).toBe(false)
+  })
+
+  it('4. 削除中のLBへDELETE→404、一覧に deleting:true で残っていれば待ってから消えたら次へ（「削除しました（消えたことを確認）」。「既に存在しませんでした」ではない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    let lbListCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1/load_balancers/l1') return send(404, { status: 404, title: 'not found' })
+      if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') {
+        lbListCount++
+        return send(200, { loadBalancers: lbListCount === 1 ? [{ loadBalancerID: 'l1', name: 'myapp', deleting: true, created: 1, serviceClassPath: 'x' }] : [] })
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg?maxItems=20') return send(200, { autoScalingGroups: [] })
+      if (key === 'DELETE /clusters/c1') return send(204, {})
+      if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(r.executed.some(e => e.includes('ロードバランサ『l1』を削除しました（消えたことを確認）'))).toBe(true)
+    expect(r.executed.some(e => e.includes('既に存在しませんでした'))).toBe(false)
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.loadBalancerID).toBeFalsy()
   })

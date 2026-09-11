@@ -344,8 +344,8 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             >
               <p className="text-sm font-semibold text-ink">📦 さくらのAppRun</p>
               <p className="text-xs text-ink-muted mt-0.5">
-                アプリをコンテナで公開。Docker不要・IDEが自動でビルド／レジストリ作成／公開URL発行まで行う「共用型」と、
-                独自ドメインが使える「専有型（上級者向け・常時課金）」を、選んだ後にタブで切り替えられます。
+                アプリを動かせる公開先です。むずかしい準備は要りません（Koto がまとめて行います）。
+                使った分だけ課金の「共用型」と、独自ドメインが使える「専有型（上級者向け・月2万円〜の常時課金）」を選べます。
               </p>
             </button>
 
@@ -549,7 +549,7 @@ function PublishStatusBox({ publish, latestChangeAt, apprunLegacy, onForget }: {
                       <button
                         onClick={async () => { await onForget(row.target); setConfirming(null) }}
                         className="text-brand-red hover:underline font-semibold"
-                      >この一覧から消す（公開したものは残ります）</button>
+                      >記録を片づける（公開したものは残ります）</button>
                       {'　'}
                       <button onClick={() => setConfirming(null)} className="text-ink-muted hover:underline">やめる</button>
                     </>

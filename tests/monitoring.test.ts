@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import http from 'node:http'
 import type { Server } from 'node:http'
-import { MonitoringClient, monitoringBase, fetchTelemetryStatus, enableTelemetry, ensureTelemetryRouting } from '../src/main/cloud/monitoring'
+import {
+  MonitoringClient, monitoringBase, fetchTelemetryStatus, enableTelemetry, ensureTelemetryRouting,
+  fetchDedicatedTelemetryStatus, enableDedicatedTelemetry,
+} from '../src/main/cloud/monitoring'
+import { DEDICATED_PUBLISHER, DEDICATED_VARIANTS } from '../src/shared/appLog'
 
 // #30: さくらの開発者の助言「ログとメトリクスは有効にしてて欲しい」でメトリクスへ拡張。
 // **実APIは叩かない**（掟4）。tests/apprunDedicated.test.ts と同じく、ローカルに本物の
@@ -54,27 +58,34 @@ const REAL = {
   resourceIdLogs: '100000000003',
 }
 
-type Recorded = { method: string; path: string }
+type Recorded = { method: string; path: string; body?: any }
 
 /**
  * リクエスト（メソッド・パス）を記録しながら応答する偽サーバを立てる。
- * `responder` は path から { status, body } を決めるだけの純関数（POST の本文は見ない）。
- * GET／POST どちらでも本文を最後まで読んでから応答する（読まずに応答すると、
- * まれに書き込み中のソケットで詰まるため。他の describe の listen() と同じ配慮）。
+ * `responder` は path・method から { status, body } を決める純関数。第3引数（body）は
+ * POST の本文を JSON.parse した値（読めなければ null）——#38 の専有型テストで、
+ * 「どの variant を接続したか」を本文から読んで状態を進めるために使う（既存の呼び出し側は
+ * 引数を無視するだけなので挙動は変わらない）。GET／POST どちらでも本文を最後まで読んでから
+ * 応答する（読まずに応答すると、まれに書き込み中のソケットで詰まるため。他の describe の
+ * listen() と同じ配慮）。
  */
 function listenRecording(
-  responder: (path: string, method: string) => { status: number; body: unknown },
+  responder: (path: string, method: string, body?: any) => { status: number; body: unknown },
 ): Promise<{ baseUrl: string; requests: Recorded[] }> {
   const requests: Recorded[] = []
   return new Promise((resolve, reject) => {
     server = http.createServer((req, res) => {
       const method = req.method ?? ''
       const path = req.url ?? ''
-      requests.push({ method, path })
+      const record: Recorded = { method, path }
+      requests.push(record)
       let raw = ''
       req.on('data', (c) => { raw += c })
       req.on('end', () => {
-        const { status, body } = responder(path, method)
+        let parsedBody: any = null
+        try { parsedBody = raw ? JSON.parse(raw) : null } catch { parsedBody = null }
+        record.body = parsedBody
+        const { status, body } = responder(path, method, parsedBody)
         res.writeHead(status, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(body))
       })
@@ -507,5 +518,225 @@ describe('状態の取得に失敗したとき、status と応答本文を messa
       expect(r.message).toContain('500')
       expect((r as any).detail ?? '').toContain('internal error, contact support')
     }
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// #38: AppRun 専有型（apprun-dedicated）のログ・メトリクス（プロジェクト単位）。
+// 実測は docs/apprun-dedicated-plan.md 5-12（2026-09-10）。**resource_id を送らない**
+// （実測: resource_id は null）ことと、「同意なしでは initialize を呼ばない」
+// 「接続済みの variant は POST し直さない」を、共用型と同じく偽サーバで振る舞い固定する
+// （掟10: 文字列一致ではなく、実際に飛んだリクエストの本数・種類で固定する）。
+// ══════════════════════════════════════════════════════════════════════════
+
+const DEDICATED_LOGS_VARIANTS = DEDICATED_VARIANTS.filter(v => v.kind === 'logs').map(v => v.name)
+const DEDICATED_METRICS_VARIANTS = DEDICATED_VARIANTS.filter(v => v.kind === 'metrics').map(v => v.name)
+
+/**
+ * #38 専有型（プロジェクト単位）用の状態つき偽サーバ。共用型の statusResponder と同じ考え方だが、
+ * ①ルーティングが `resource_id` ではなく `publisher.code` + `variant` の一致で判定される
+ * ②POST /{kind}/routings/ を受けるたびに、その variant を「繋がった」側へ進める
+ * （どの variant を接続したかは呼び出し側のテストが確かめる）。
+ */
+function dedicatedResponder(opts: {
+  logsUserExist: boolean
+  metricsUserExist: boolean
+  hasLogsStorage: boolean
+  hasMetricsStorage: boolean
+  routedVariants?: string[]
+}) {
+  let logsInit = opts.logsUserExist
+  let metricsInit = opts.metricsUserExist
+  const routed = new Set(opts.routedVariants ?? [])
+  return (path: string, method: string, body?: any): { status: number; body: unknown } => {
+    if (path.startsWith('/management/provisioning/state/')) {
+      return {
+        status: 200,
+        body: { logs: { system_exist: false, user_exist: logsInit }, metrics: { system_exist: false, user_exist: metricsInit } },
+      }
+    }
+    if (path.startsWith('/management/provisioning/initialize/') && method === 'POST') {
+      if (body?.logs) logsInit = true
+      if (body?.metrics) metricsInit = true
+      return { status: 200, body: { ok: true } }
+    }
+    if (path.startsWith('/logs/storages/')) {
+      return {
+        status: 200,
+        body: (logsInit && opts.hasLogsStorage)
+          ? { count: 1, results: [{ id: REAL.logStorageId, name: 'デフォルト', is_system: false }] }
+          : { count: 0, results: [] },
+      }
+    }
+    if (path.startsWith('/metrics/storages/')) {
+      return {
+        status: 200,
+        body: (metricsInit && opts.hasMetricsStorage)
+          ? { count: 1, results: [{ id: REAL.metricsStorageId, name: 'デフォルト', is_system: false }] }
+          : { count: 0, results: [] },
+      }
+    }
+    if (path.startsWith('/logs/routings/')) {
+      if (method === 'POST') {
+        if (typeof body?.variant === 'string') routed.add(body.variant)
+        return { status: 200, body: { id: 1 } }
+      }
+      const rows = DEDICATED_LOGS_VARIANTS.filter(v => routed.has(v))
+        .map((v, i) => ({ id: i, resource_id: null, publisher: { code: DEDICATED_PUBLISHER }, variant: v }))
+      return { status: 200, body: { count: rows.length, results: rows } }
+    }
+    if (path.startsWith('/metrics/routings/')) {
+      if (method === 'POST') {
+        if (typeof body?.variant === 'string') routed.add(body.variant)
+        return { status: 200, body: { id: 1 } }
+      }
+      const rows = DEDICATED_METRICS_VARIANTS.filter(v => routed.has(v))
+        .map((v, i) => ({ id: i, resource_id: null, publisher: { code: DEDICATED_PUBLISHER }, variant: v }))
+      return { status: 200, body: { count: rows.length, results: rows } }
+    }
+    return { status: 404, body: {} }
+  }
+}
+
+describe('fetchDedicatedTelemetryStatus(#38): 6 variant の状態と logs/metrics ごとの action', () => {
+  it('全部未接続・置き場なし → 6件すべて routed:false、action は logs/metrics とも ask', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      dedicatedResponder({ logsUserExist: false, metricsUserExist: false, hasLogsStorage: false, hasMetricsStorage: false }),
+    )
+    const r = await fetchDedicatedTelemetryStatus(CREDS, baseUrl)
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('unreachable')
+    expect(r.variants.length).toBe(6)
+    expect(r.variants.every(v => v.routed === false)).toBe(true)
+    expect(r.actions.logs.kind).toBe('ask')
+    expect(r.actions.metrics.kind).toBe('ask')
+    // 何も作らない（GETのみ）
+    expect(requests.every(x => x.method === 'GET')).toBe(true)
+  })
+
+  it('logs は置き場あり・未接続、metrics は3件とも接続済み → logsはroute、metricsはnone', async () => {
+    const { baseUrl } = await listenRecording(
+      dedicatedResponder({
+        logsUserExist: true, metricsUserExist: true, hasLogsStorage: true, hasMetricsStorage: true,
+        routedVariants: DEDICATED_METRICS_VARIANTS,
+      }),
+    )
+    const r = await fetchDedicatedTelemetryStatus(CREDS, baseUrl)
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('unreachable')
+    expect(r.variants.filter(v => v.kind === 'logs').every(v => v.routed === false)).toBe(true)
+    expect(r.variants.filter(v => v.kind === 'metrics').every(v => v.routed === true)).toBe(true)
+    expect(r.actions.logs.kind).toBe('route')
+    expect(r.actions.metrics.kind).toBe('none')
+  })
+
+  it('状態の読み取りが1本でも失敗したら message/detail を持って ok:false（推測で進めない）', async () => {
+    const { baseUrl } = await listenRecording((path) => {
+      if (path.startsWith('/logs/storages/')) return { status: 500, body: { error: { message: 'internal error' } } }
+      return { status: 200, body: { count: 0, results: [] } }
+    })
+    const r = await fetchDedicatedTelemetryStatus(CREDS, baseUrl)
+    expect(r.ok).toBe(false)
+    if (r.ok) throw new Error('unreachable')
+    expect(r.message).toContain('500')
+  })
+})
+
+describe('enableDedicatedTelemetry(#38): 専有型（プロジェクト単位）の歯止め（完了条件の変異試験と対になる）', () => {
+  // (a) 置き場あり・未接続 → POST /logs/routings/ を3本（3variants）だけ飛ばし、
+  //     本文に resource_id キーが無い・publisher_code:'apprun-dedicated'。
+  it('(a) 置き場あり・未接続 → POST /logs/routings/ が3本だけ。resource_idキーが無く publisher_code は apprun-dedicated', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      dedicatedResponder({ logsUserExist: true, metricsUserExist: false, hasLogsStorage: true, hasMetricsStorage: false }),
+    )
+    const r = await enableDedicatedTelemetry(CREDS, 'logs', DEDICATED_LOGS_VARIANTS, { consented: false }, baseUrl)
+    expect(r.ok).toBe(true)
+    const posts = requests.filter(x => x.method === 'POST' && x.path === '/logs/routings/')
+    expect(posts.length).toBe(3)
+    expect(posts.map(p => p.body.variant).sort()).toEqual([...DEDICATED_LOGS_VARIANTS].sort())
+    for (const p of posts) {
+      expect(p.body).not.toHaveProperty('resource_id')
+      expect(p.body.publisher_code).toBe('apprun-dedicated')
+    }
+    // 初期化は呼ばれない（置き場が既にあるので追加費用は無い）
+    expect(requests.some(x => x.path.includes('initialize'))).toBe(false)
+  })
+
+  // (b) 置き場なし・consented:false → POST ゼロ本・needsConsent。
+  it('(b) 置き場なし・consented:false → POSTゼロ本・needsConsent', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      dedicatedResponder({ logsUserExist: false, metricsUserExist: false, hasLogsStorage: false, hasMetricsStorage: false }),
+    )
+    const r = await enableDedicatedTelemetry(CREDS, 'logs', DEDICATED_LOGS_VARIANTS, { consented: false }, baseUrl)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect((r as any).needsConsent).toBe(true)
+    expect(requests.some(x => x.method === 'POST')).toBe(false)
+  })
+
+  // (c) 置き場なし・consented:true → initialize 1本 → storages 読み直し → routings 3本の順。
+  it('(c) 置き場なし・consented:true → initialize 1本 → storages 読み直し → routings 3本の順', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      dedicatedResponder({ logsUserExist: false, metricsUserExist: false, hasLogsStorage: true, hasMetricsStorage: false }),
+    )
+    const r = await enableDedicatedTelemetry(CREDS, 'logs', DEDICATED_LOGS_VARIANTS, { consented: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    const initIdx = requests.findIndex(x => x.method === 'POST' && x.path.startsWith('/management/provisioning/initialize/'))
+    expect(initIdx).toBeGreaterThan(-1)
+    const storagesAfterInitIdx = requests.findIndex((x, i) => i > initIdx && x.method === 'GET' && x.path.startsWith('/logs/storages/'))
+    expect(storagesAfterInitIdx).toBeGreaterThan(initIdx)
+    const routingPosts = requests.filter(x => x.method === 'POST' && x.path === '/logs/routings/')
+    expect(routingPosts.length).toBe(3)
+    expect(routingPosts.every((p, i) => requests.indexOf(p) > storagesAfterInitIdx)).toBe(true)
+  })
+
+  // (d) 既に3本とも接続済み → POST ゼロ本。
+  it('(d) 既に3本とも接続済み → POSTゼロ本', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      dedicatedResponder({
+        logsUserExist: true, metricsUserExist: false, hasLogsStorage: true, hasMetricsStorage: false,
+        routedVariants: DEDICATED_LOGS_VARIANTS,
+      }),
+    )
+    const r = await enableDedicatedTelemetry(CREDS, 'logs', DEDICATED_LOGS_VARIANTS, { consented: false }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(requests.some(x => x.method === 'POST')).toBe(false)
+  })
+
+  it('一部だけ未接続 → 未接続の分だけPOSTし、繋がっているものは触らない', async () => {
+    const alreadyRouted = [DEDICATED_LOGS_VARIANTS[0]]
+    const { baseUrl, requests } = await listenRecording(
+      dedicatedResponder({ logsUserExist: true, metricsUserExist: false, hasLogsStorage: true, hasMetricsStorage: false, routedVariants: alreadyRouted }),
+    )
+    const r = await enableDedicatedTelemetry(CREDS, 'logs', DEDICATED_LOGS_VARIANTS, { consented: false }, baseUrl)
+    expect(r.ok).toBe(true)
+    const posts = requests.filter(x => x.method === 'POST' && x.path === '/logs/routings/')
+    expect(posts.length).toBe(2)
+    expect(posts.map(p => p.body.variant).sort()).toEqual(
+      DEDICATED_LOGS_VARIANTS.filter(v => !alreadyRouted.includes(v)).sort(),
+    )
+  })
+
+  it('metrics でも同じ形（publisher_code・resource_idの扱いはkindによらず共通）', async () => {
+    const { baseUrl, requests } = await listenRecording(
+      dedicatedResponder({ logsUserExist: false, metricsUserExist: true, hasLogsStorage: false, hasMetricsStorage: true }),
+    )
+    const r = await enableDedicatedTelemetry(CREDS, 'metrics', DEDICATED_METRICS_VARIANTS, { consented: false }, baseUrl)
+    expect(r.ok).toBe(true)
+    const posts = requests.filter(x => x.method === 'POST' && x.path === '/metrics/routings/')
+    expect(posts.length).toBe(3)
+    for (const p of posts) {
+      expect(p.body).not.toHaveProperty('resource_id')
+      expect(p.body.publisher_code).toBe('apprun-dedicated')
+    }
+  })
+
+  it('状態の読み取りが失敗したら POST を一切飛ばさない', async () => {
+    const { baseUrl, requests } = await listenRecording((path) => {
+      if (path.startsWith('/management/provisioning/state/')) return { status: 403, body: { error: { message: 'forbidden' } } }
+      return { status: 200, body: { count: 0, results: [] } }
+    })
+    const r = await enableDedicatedTelemetry(CREDS, 'logs', DEDICATED_LOGS_VARIANTS, { consented: true }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(requests.some(x => x.method === 'POST')).toBe(false)
   })
 })

@@ -69,7 +69,7 @@ describe('AppRunPanel.tsx: region は表示専用（roadmap #34・2026-09-08 実
   })
 
   it('region の欄は常に spec.region を表示するだけで <select> を出さない。実測に基づく注記があり、誤った文言は無い', () => {
-    const at = panel.indexOf('<dt className="text-ink-muted">region</dt>')
+    const at = panel.indexOf('<dt className="text-ink-muted">地域</dt>')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('</dd>', at)
     const block = panel.slice(at, end)
@@ -88,7 +88,7 @@ describe('AppRunPanel.tsx: region は表示専用（roadmap #34・2026-09-08 実
 
 describe('AppRunPanel.tsx: 公開が成功したら registryName を取り直す（doApply → refreshRegistryName・消しすぎの検出）', () => {
   it('doApply() は cloud.apply が ok を返したあと refreshRegistryName() を呼ぶ', () => {
-    const at = panel.indexOf('const doApply = async () => {')
+    const at = panel.indexOf('const doApply = async (applyOpts:')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('\n  const doTeardown = async () => {', at)
     expect(end).toBeGreaterThan(at)

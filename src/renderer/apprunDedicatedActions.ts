@@ -88,3 +88,43 @@ export async function runTeardown<R>(req: TeardownReq, deps: RunTeardownDeps<R>)
     end()
   }
 }
+
+// ── B-2（2026-09-10 実機・Ryosuke さん指摘「消した後の表示が変」）: ⑤⑥の結果ブロックを
+// いつ出すかの判定を、React/DOM から切り離した純関数として持つ（掟10）。
+//
+// 直したかった事故: 破棄（⑥）が成功して記録（apprunState）が空になると、⑤の節が
+// 「hasAnyResource が false」の分岐へ切り替わり、そこに**古い createResult（⑤の前回の
+// 『✅ 作成できました』）がそのまま出ていた**。加えて、⑥の結果表示は「記録に何かある間」
+// だけ描く節の中に置いていたため、破棄が完了して記録が空になった瞬間に⑥の節ごと消え、
+// 「✅ すべて削除しました」という肝心の結果も一緒に見えなくなっていた。
+//
+// tests/apprunDedicatedActions.test.ts が、実装を壊すと落ちる形（掟10）で固定する。
+
+/** shouldShowCreateResult が見る最小限の形（apprunState の一部）。IDが1つでもあれば「何か作られている」。 */
+export type ApprunResourceRecord = { clusterID?: string | null; asgID?: string | null; loadBalancerID?: string | null } | null | undefined
+
+/**
+ * ⑤「クラスタを作る」の結果ブロックを出すか。
+ * - createResult が無ければ出さない。
+ * - createResult.ok が false（途中で止まった）なら、記録の状態に関わらず常に出す
+ *   （失敗の内容・ここまで作られたIDは、破棄の判断に要る情報のため）。
+ * - createResult.ok が true でも、**記録（apprunState）が空なら出さない**——
+ *   その後の破棄で作ったものが消えているのに、「✅ 作成できました」という古い成功表示を
+ *   見せ続けない（2026-09-10 実機で発見）。
+ */
+export function shouldShowCreateResult(createResult: { ok: boolean } | null | undefined, apprunState: ApprunResourceRecord): boolean {
+  if (!createResult) return false
+  if (!createResult.ok) return true
+  return !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)
+}
+
+/**
+ * ⑥「作ったものを壊す」の結果ブロックを出すか。teardownResult があるときは常に true——
+ * **⑥の節（記録があるときだけ出る）の有無に関係なく**、破棄の結果（「✅ すべて削除しました」
+ * を含む）を出す。破棄が完了して記録が空になっても、結果自体は隠さない。
+ * 次の⑤の作成を始めたら teardownResult 自体を null に戻す（呼び出し側＝画面の責務。
+ * doCreate の中で setTeardownResult(null) する）——ここは「今の値をそのまま出すか」だけを見る。
+ */
+export function shouldShowTeardownResult(teardownResult: unknown | null | undefined): boolean {
+  return teardownResult != null
+}

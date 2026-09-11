@@ -381,7 +381,7 @@ interface Window {
        */
       /** `pending: true` は「失敗ではなく、まだ確認できていない」（起動に時間がかかっている）。 */
       /** `verifyNote`: 公開先の中身が本当に新しくなったかの確認結果（確認できたときだけ入る）。 */
-      apply(projectDir: string, opts?: { confirmed?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string; verifyNote?: string; staleImages?: { total: number; removable: number; keep: number } }>
+      apply(projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string; verifyNote?: string; staleImages?: { total: number; removable: number; keep: number }; needsScaleDecision?: { appId: string; recorded: number; actual: number }; adoptedScaleMin?: number }>
       /** deleteRegistry: false でコンテナレジストリを残す（月額課金は続く）。未指定は削除する。 */
       /** `keptBucketName` は「破棄したのに残った保存場所」。残っていれば月額も続く。 */
       /**
@@ -692,12 +692,18 @@ interface Window {
         loadBalancerID?: string | null
       }>
       // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
+      // #39: 各段は一覧から消えるまで待つ。待ち切れず(timeout)止まったときだけ inProgress が立つ
+      // （「まだ残っています」＝失敗、とは区別する。画面は黄色い注意＋再開導線を出す）。
       teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }): Promise<{
         ok: boolean
         executed: string[]
         message: string
         remaining: { loadBalancerID?: string; asgID?: string; clusterID?: string }
+        inProgress?: { loadBalancerID?: string; asgID?: string; clusterID?: string }
       }>
+      // #39: 破棄の進捗メッセージ購読（「〜の削除を待っています（N分経過）…」を30秒ごとに1回）。
+      // 戻り値の関数を呼ぶと購読解除。
+      onTeardownProgress(cb: (msg: string) => void): () => void
       // いま何が作られているか（.sakuraide.json の publish.apprunDedicated）を返す。API は呼ばない。
       state(projectDir: string): Promise<{
         servicePrincipalId?: string | null
@@ -711,6 +717,33 @@ interface Window {
         lbServiceClassPath?: string | null
         createdAt?: string | null
       }>
+      /**
+       * #38「⑦ ログ・メトリクス」: 専有型はクラスタ単位ではなく**プロジェクト単位**
+       * （resource_id を送らない・5-12実測）。6 variant（logs 3・metrics 3）それぞれの
+       * 接続状況と、logs/metrics ごとの `action`（共用型 cloud.telemetryStatus と同じ形。
+       * 'none'＝全部繋がっている／'route'＝置き場はあるので繋ぐだけ／'ask'＝置き場が無く
+       * 同意が要る）を返す。**何も作らない**（GETのみ）。
+       */
+      telemetryStatus(auth: { token: string; secret: string }): Promise<
+        | {
+            ok: true
+            variants: { variant: string; label: string; kind: 'logs' | 'metrics'; routed: boolean }[]
+            actions: {
+              logs: { kind: 'none'; note?: string } | { kind: 'route'; storageId: string } | { kind: 'ask'; note: string }
+              metrics: { kind: 'none'; note?: string } | { kind: 'route'; storageId: string } | { kind: 'ask'; note: string }
+            }
+          }
+        | { ok: false; message: string; detail?: string }
+      >
+      /**
+       * 専有型（プロジェクト単位）の、指定した種類の未接続 variant を繋ぐ。
+       * `opts.consented` は「費用に同意する」ボタンを押したときだけ `true` を渡す
+       * （共用型 cloud.enableTelemetry と同じ約束）。渡さない・false のときは、置き場が
+       * 無ければ初期化を呼ばずに `needsConsent: true` を返す。
+       */
+      enableTelemetry(auth: { token: string; secret: string }, kind: 'logs' | 'metrics', opts?: { consented?: boolean }): Promise<
+        { ok: true } | { ok: false; needsConsent?: boolean; message?: string; detail?: string }
+      >
     }
     // 📚 資料（さくらのAI Engine RAG API）。apiKey は認証情報の中央ストアから renderer が渡す（方式B）。
     rag: {

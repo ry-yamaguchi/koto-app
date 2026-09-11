@@ -27,7 +27,8 @@
 import type { CloudCredentials } from './auth'
 import {
   decideTelemetryAction, decideEnableTelemetry, parseProvisioningState, pickStorageId, hasAppRouting,
-  APPRUN_PUBLISHER, APPRUN_VARIANT, type TelemetryKind, type TelemetryAction,
+  hasProjectRouting, APPRUN_PUBLISHER, APPRUN_VARIANT, DEDICATED_PUBLISHER, DEDICATED_VARIANTS,
+  type TelemetryKind, type TelemetryAction,
 } from '../../shared/appLog'
 
 /** モニタリングスイートAPI のベースURL（公式ライブラリの既定と同じ）。 */
@@ -107,14 +108,19 @@ export class MonitoringClient {
    * アプリのログ／メトリクスを、指定のストレージへ流す。
    * 本文のキーはログ `log_storage_id` ／メトリクス `metrics_storage_id` だけが違う
    * （原本 `monitoring-suite-api.json` v1.3.0 で確認・掟1）。
+   *
+   * `resourceId` は**任意**（#38）。専有型（apprun-dedicated）はクラスタ単位ではなく
+   * プロジェクト単位でルーティングするため、`resource_id` を**キーごと送らない**
+   * （実測 5-12: 実物の行は `resource_id: null`）。共用型（既存の呼び出し）は
+   * 引き続き必ず渡しているので、挙動は変わらない。
    */
   async createTelemetryRouting(
     kind: TelemetryKind,
-    opts: { resourceId: string; publisherCode: string; variant: string; storageId: string },
+    opts: { resourceId?: string; publisherCode: string; variant: string; storageId: string },
   ): Promise<ApiResult> {
     const storageIdKey = kind === 'logs' ? 'log_storage_id' : 'metrics_storage_id'
     return this.api('POST', `${kind}/routings/`, {
-      resource_id: opts.resourceId,
+      ...(opts.resourceId ? { resource_id: opts.resourceId } : {}),
       publisher_code: opts.publisherCode,
       variant: opts.variant,
       [storageIdKey]: opts.storageId,
@@ -208,6 +214,21 @@ function firstStateFailure(
 }
 
 /**
+ * 状態を読む3つの GET（provisioning/state・storages・routings）を、指定した種類ぶんだけ
+ * 並列で引く（#38: 共用型 fetchTelemetryStatus/enableTelemetry・専有型
+ * fetchDedicatedTelemetryStatus/enableDedicatedTelemetry の4箇所で同じ形だったのを
+ * 一元化・掟10）。呼び出し側は `fail` を見て、あれば早期returnするだけでよい。
+ */
+async function readTelemetryState(mon: MonitoringClient, kind: TelemetryKind): Promise<{
+  prov: ApiResult; storages: ApiResult; routings: ApiResult; fail: { message: string; detail: string } | null
+}> {
+  const [prov, storages, routings] = await Promise.all([
+    mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
+  ])
+  return { prov, storages, routings, fail: firstStateFailure(prov, storages, routings) }
+}
+
+/**
  * ログ／メトリクスが、いま何をすれば残るようになるかを聞く。
  * **何も作らず、何も変えない**（GET だけ）。`cloud:telemetryStatus` はこれを呼ぶだけにする。
  * GET 以外のリクエストが飛ばないことは tests/monitoring.test.ts で固定している。
@@ -217,10 +238,7 @@ export async function fetchTelemetryStatus(
   kind: TelemetryKind,
   resourceId: string,
 ): Promise<TelemetryStatusResult> {
-  const [prov, storages, routings] = await Promise.all([
-    mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
-  ])
-  const fail = firstStateFailure(prov, storages, routings)
+  const { prov, storages, routings, fail } = await readTelemetryState(mon, kind)
   if (fail) return { ok: false, ...fail }
   const action = decideTelemetryAction({
     storageReady: parseProvisioningState(prov.data, kind),
@@ -249,10 +267,7 @@ export async function enableTelemetry(
   resourceId: string,
   opts: { consented: boolean },
 ): Promise<EnableTelemetryResult> {
-  const [prov, storages0, routings] = await Promise.all([
-    mon.provisioningState(), mon.listTelemetryStorages(kind), mon.listTelemetryRoutings(kind),
-  ])
-  const stateFail = firstStateFailure(prov, storages0, routings)
+  const { prov, storages: storages0, routings, fail: stateFail } = await readTelemetryState(mon, kind)
   if (stateFail) return { ok: false, ...stateFail }
 
   const decision = decideEnableTelemetry({
@@ -283,6 +298,121 @@ export async function enableTelemetry(
     resourceId, publisherCode: APPRUN_PUBLISHER, variant: APPRUN_VARIANT[kind], storageId,
   })
   if (!routed.ok) return { ok: false, message: `接続に失敗しました（HTTP ${routed.status}）`, detail: routed.text }
+  return { ok: true }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// #38: AppRun 専有型（apprun-dedicated）のログ・メトリクス。
+//
+// 共用型（上の fetchTelemetryStatus/enableTelemetry）との違いは実測（5-12）どおり2つだけ:
+//   ① publisher が別（DEDICATED_PUBLISHER）で、variant が6種類（logs 3・metrics 3）
+//   ② **クラスタ単位ではなくプロジェクト単位**（`resource_id` を送らない・一致判定も見ない。
+//      `hasAppRouting` ではなく `hasProjectRouting` を使う）
+// 「置き場が無ければ同意を取ってから作る」という判断（decideTelemetryAction /
+// decideEnableTelemetry）は共用型とまったく同じものを呼ぶ（複製しない・掟10）。
+// ══════════════════════════════════════════════════════════════════════════
+
+export type DedicatedTelemetryVariantStatus = { variant: string; label: string; kind: TelemetryKind; routed: boolean }
+
+export type DedicatedTelemetryStatusResult =
+  | { ok: true; variants: DedicatedTelemetryVariantStatus[]; actions: Record<TelemetryKind, TelemetryAction> }
+  | { ok: false; message: string; detail?: string }
+
+/**
+ * 専有型（プロジェクト単位）の6 variant すべての接続状況と、logs/metrics それぞれの
+ * `action`（`decideTelemetryAction` の結果。'none'＝全部繋がっている／'route'＝置き場は
+ * あるので繋ぐだけ／'ask'＝置き場が無く同意が要る）を返す。**何も作らず、何も変えない**
+ * （GET だけ）。`apprunDedicated:telemetryStatus` はこれを呼ぶだけにする。
+ */
+export async function fetchDedicatedTelemetryStatus(
+  creds: CloudCredentials,
+  baseUrl?: string,
+): Promise<DedicatedTelemetryStatusResult> {
+  const mon = new MonitoringClient({ credentials: creds, dryRun: false, baseUrl })
+  const [logsState, metricsState] = await Promise.all([
+    readTelemetryState(mon, 'logs'), readTelemetryState(mon, 'metrics'),
+  ])
+  const fail = logsState.fail ?? metricsState.fail
+  if (fail) return { ok: false, ...fail }
+
+  const stateByKind: Record<TelemetryKind, typeof logsState> = { logs: logsState, metrics: metricsState }
+
+  const variants: DedicatedTelemetryVariantStatus[] = DEDICATED_VARIANTS.map(v => ({
+    variant: v.name,
+    label: v.label,
+    kind: v.kind,
+    routed: hasProjectRouting(stateByKind[v.kind].routings.data, DEDICATED_PUBLISHER, v.name),
+  }))
+
+  const actions = {} as Record<TelemetryKind, TelemetryAction>
+  for (const kind of ['logs', 'metrics'] as TelemetryKind[]) {
+    const kindVariants = variants.filter(v => v.kind === kind)
+    const allRouted = kindVariants.length > 0 && kindVariants.every(v => v.routed)
+    actions[kind] = decideTelemetryAction({
+      storageReady: parseProvisioningState(stateByKind[kind].prov.data, kind),
+      storageId: pickStorageId(stateByKind[kind].storages.data),
+      alreadyRouted: allRouted,
+    }, kind)
+  }
+
+  return { ok: true, variants, actions }
+}
+
+/**
+ * 専有型（プロジェクト単位）の、指定した種類の未接続 variant を繋ぐ。
+ *
+ * **先に状態を読み、`decideEnableTelemetry` の判断に従うだけ**（共用型 enableTelemetry と同じ
+ * 歯止め。`opts.consented` が `true` でない限り、課金の始まる `initializeProvisioning` は
+ * 一度も呼ばれない）。`variants` のうち**既に繋がっているものはスキップし、POSTは未接続の
+ * 分だけ**飛ぶ（全部繋がっていれば置き場の初期化チェックそのものをせず、POSTゼロ本で終える）。
+ * `apprunDedicated:enableTelemetry` はこれを呼ぶだけにする。
+ */
+export async function enableDedicatedTelemetry(
+  creds: CloudCredentials,
+  kind: TelemetryKind,
+  variants: string[],
+  opts: { consented: boolean },
+  baseUrl?: string,
+): Promise<EnableTelemetryResult> {
+  const mon = new MonitoringClient({ credentials: creds, dryRun: false, baseUrl })
+  const { prov, storages: storages0, routings, fail: stateFail } = await readTelemetryState(mon, kind)
+  if (stateFail) return { ok: false, ...stateFail }
+
+  const pending = variants.filter(v => !hasProjectRouting(routings.data, DEDICATED_PUBLISHER, v))
+  if (pending.length === 0) return { ok: true } // 全部繋がっている＝何もしない
+
+  // ここに来た時点で「まだ繋いでいない variant がある」ので、alreadyRouted は常に false
+  // として decideEnableTelemetry に渡す（1つでも未接続なら置き場の要否を判断する）。
+  const decision = decideEnableTelemetry({
+    storageReady: parseProvisioningState(prov.data, kind),
+    storageId: pickStorageId(storages0.data),
+    alreadyRouted: false,
+  }, { consented: opts.consented === true })
+
+  if (decision.do === 'need-consent') {
+    return { ok: false, needsConsent: true, message: '費用の同意が必要です' }
+  }
+
+  let storageId = decision.do === 'route' ? decision.storageId : null
+
+  if (decision.do === 'initialize-then-route') {
+    const init = await mon.initializeProvisioning(kind)
+    if (!init.ok) return { ok: false, message: `保存場所の用意に失敗しました（HTTP ${init.status}）`, detail: init.text }
+
+    const storages = await mon.listTelemetryStorages(kind)
+    if (!storages.ok) return { ok: false, message: '保存場所の取得に失敗しました', detail: storages.text }
+    storageId = pickStorageId(storages.data)
+  }
+
+  if (!storageId) return { ok: false, message: '保存場所を用意しましたが、見つかりませんでした（時間をおいて再度お試しください）' }
+
+  // **`resourceId` は渡さない**（5-12実測: プロジェクト単位。resource_id: null）。
+  for (const variant of pending) {
+    const routed = await mon.createTelemetryRouting(kind, {
+      publisherCode: DEDICATED_PUBLISHER, variant, storageId,
+    })
+    if (!routed.ok) return { ok: false, message: `接続に失敗しました（HTTP ${routed.status}）`, detail: routed.text }
+  }
   return { ok: true }
 }
 

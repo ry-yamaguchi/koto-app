@@ -16,6 +16,7 @@ import type { Plan } from './planner'
 import { buildCreateBody, buildPatchBody, apiErrorMessage, type RegistryAuth } from './client'
 import { teardownPlanFor, keepMarkerKey, storageEnvVars, containsSecretEnv, consentedBuckets, STORAGE_ENV } from '../../shared/objectStorage'
 import { permissionNameFor } from '../../shared/storageKeys'
+import { readActualMinScale, judgeScale, type ScaleDecision } from '../../shared/scaleDecision'
 
 /**
  * apply が必要とするクラウドクライアントの最小インターフェース。
@@ -26,6 +27,7 @@ export interface CloudClientLike {
   readonly dryRun: boolean
   ensureUser(): Promise<any>
   listApps(): Promise<any>
+  getApp(id: string): Promise<any>
   createApp(body: unknown): Promise<any>
   patchApp(id: string, body: unknown): Promise<any>
   deleteApp(id: string): Promise<any>
@@ -101,6 +103,11 @@ export type ApplyOptions = {
    * ※electron 非依存は維持（型は client.ts の純粋型）。
    */
   registryAuth?: RegistryAuth
+  /**
+   * 「起動のしかた（min_scale）」がさくら側と食い違ったとき、どちらで公開するか
+   * （画面の選択カードから、確認をやり直すときだけ渡す。未指定＝食い違えば ask で止まる）。
+   */
+  scaleDecision?: ScaleDecision
 }
 
 /** applyPlan の結果。 */
@@ -114,6 +121,16 @@ export type ApplyResult = {
   skipped: string[]
   /** 失敗時・確認待ち時などのメッセージ。 */
   message?: string
+  /**
+   * 「起動のしかた」がさくら側と食い違い、`scaleDecision` 未指定で止まったときだけ載る。
+   * **この場合 PATCH は呼んでいない**（呼び出し側が選び直して再度呼ぶ）。
+   */
+  needsScaleDecision?: { appId: string; recorded: number; actual: number }
+  /**
+   * `scaleDecision:'sakura'` で、さくら側の実物の値を採用して公開したときだけ載る。
+   * 呼び出し側（main）がこの値で env.json の `service.scale.min` を書き戻す。
+   */
+  adoptedScaleMin?: number
 }
 
 /** API応答（dryRunでない）から作成リソースのIDらしき値を取り出す。無ければ null。 */
@@ -154,6 +171,9 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
   const state = cloneState(opts.state)
   const executed: string[] = []
   const skipped: string[] = []
+  // 「起動のしかた」が食い違い、decision:'sakura' で実物の値を採用したときだけ入る
+  // （main が env.json へ書き戻すため。update アクションの中で設定する）。
+  let adoptedScaleMin: number | undefined
 
   // 1. 破壊的操作の確認ガード。
   if (plan.hasDestructive && confirmed !== true) {
@@ -297,8 +317,42 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
           skipped.push(`${a.description}: 対象アプリのIDが state に無く再デプロイできません（一度破棄して作り直してください）`)
           continue
         }
+
+        // ── 「起動のしかた（min_scale）」の食い違い判定（Ryosuke さん決定・案②・2026-09-10） ──
+        // buildPatchBody は毎回 min_scale を送るので、さくら側で直接変えていても
+        // 黙って Koto の設定で上書きしてしまう（#31）。PATCH の**前**に実物を読み、
+        // 食い違えば止めて聞く（歯止めは main 側の純関数・掟10の基準）。
+        let actualMinScale: number | null = null
+        try {
+          const detail = await client.getApp(id)
+          if (detail && detail.dryRun === false && detail.ok) {
+            actualMinScale = readActualMinScale(detail.data)
+          }
+        } catch {
+          // 確認できなかっただけ。actualMinScale は null のまま
+          // （judgeScale が「分からないときは Koto の設定で進める」に倒す）。
+        }
+        const judged = judgeScale({ recorded: spec.service.scale.min, actual: actualMinScale, decision: opts.scaleDecision })
+        if (judged.kind === 'ask') {
+          // **PATCH を呼ばない。** それまでに実行した分の state はそのまま返す
+          // （記録は「実際に起きたこと」・掟10）。
+          return {
+            ok: false,
+            state,
+            executed,
+            skipped,
+            needsScaleDecision: { appId: id, recorded: judged.recorded, actual: judged.actual },
+            message: '起動のしかたが、さくら側と Koto の設定で違います。どちらで公開するか選んでください。',
+          }
+        }
+        // spec そのものは書き換えない。複製に決定した min を差し込んで渡す。
+        const patchSpec = judged.min === spec.service.scale.min
+          ? spec
+          : { ...spec, service: { ...spec.service, scale: { ...spec.service.scale, min: judged.min } } }
+        if (opts.scaleDecision === 'sakura') adoptedScaleMin = judged.min
+
         await client.ensureUser()
-        const res = await client.patchApp(id, buildPatchBody(spec, registryAuth, runtimeEnv))
+        const res = await client.patchApp(id, buildPatchBody(patchSpec, registryAuth, runtimeEnv))
         if (res && res.dryRun === false && res.ok === false) {
           return {
             ok: false,
@@ -310,6 +364,8 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
         }
         // アプリIDは不変。state の ref はそのまま維持する。
         executed.push(a.description)
+        // 黙らない。「分からないので Koto の設定で進めた」ことを執行記録に残す。
+        if (judged.note) executed.push(`ℹ️ ${judged.note}`)
         continue
       }
     }
@@ -401,7 +457,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
     state.meta = { ...state.meta, storagePermissionId: newPermissionId }
   }
 
-  return { ok: true, state, executed, skipped }
+  return { ok: true, state, executed, skipped, ...(adoptedScaleMin !== undefined ? { adoptedScaleMin } : {}) }
 }
 
 /** state から (kind, name) に対応する ResourceRef を探す（key は `${kind}:${name}`）。 */

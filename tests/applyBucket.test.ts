@@ -39,6 +39,9 @@ const noCloud: CloudClientLike = {
   dryRun: false,
   async ensureUser() { return { ok: true } },
   async listApps() { return { ok: true, data: [] } },
+  // 実物と一致（min_scale:0＝defaultSpec の既定）させ、この節（永続データ）のテストが
+  // 「起動のしかた」の食い違い（scaleDecision.ts・2026-09-10）に巻き込まれないようにする。
+  async getApp() { return { ok: true, dryRun: false, data: { min_scale: 0 } } },
   async createApp() { return { ok: true } },
   async patchApp() { return { ok: true } },
   async deleteApp() { return { ok: true } },

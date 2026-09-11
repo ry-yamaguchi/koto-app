@@ -4,7 +4,7 @@ import CopyButton from './CopyButton'
 import { withApprunDedicatedRecord } from '../../shared/publishMeta'
 import { readLimits, readWorkerClasses, readLbClasses, readClusters, readNextCursor, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
 import { loadZones } from '../zonesCache'
-import { runCreate, runTeardown } from '../apprunDedicatedActions'
+import { runCreate, runTeardown, shouldShowCreateResult, shouldShowTeardownResult } from '../apprunDedicatedActions'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import ConnectionChecklist from './ConnectionChecklist'
 
@@ -323,6 +323,65 @@ export function buildClusterDiagram(input: ClusterDiagramInput): { lines: string
     ],
     total: `合計 ${input.priceText}`,
   }
+}
+
+// ── ⑥「いまの構成と月額目安」（3b・利用者目線レビュー・判断不要） ─────────────────────
+// 破棄の前に「何を消すか」を一目にする。**計算を複製しない**（掟10）——月額は既存の
+// priceSummary(...) の text をそのまま使う。記録にプランの path が無い旧データのときは
+// 金額行を省く（推測で埋めない）。
+export type TeardownSummaryRecord = {
+  name?: string | null
+  zone?: string | null
+  workerServiceClassPath?: string | null
+  lbServiceClassPath?: string | null
+  createdAt?: string | null
+} | null | undefined
+
+export type TeardownSummaryPlans = {
+  worker?: readonly PlanRow[] | null
+  lb?: readonly PlanRow[] | null
+} | null | undefined
+
+const TEARDOWN_SUMMARY_UNKNOWN = '不明'
+
+/**
+ * workerServiceClassPath/lbServiceClassPath から表示名を引く。プラン一覧が未取得（null・未取得）
+ * のとき、または一覧の中に一致するプランが無いときは、**path をそのまま**返す（推測で名前を
+ * 作らない）。path 自体が無ければ null。
+ */
+function planLabelForPath(path: string | null | undefined, rows: readonly PlanRow[] | null | undefined): string | null {
+  if (!path) return null
+  return (rows ?? []).find(p => p.path === path)?.name ?? path
+}
+
+/**
+ * ⑥のリソースID一覧の上に出す「いまの構成と月額目安」の行を組み立てる（純関数・テスト対象。
+ * tests/apprunDedicatedTeardownSummary.test.ts）。
+ *
+ * ワーカの台数（minNodes/maxNodes）は記録（ApprunDedicatedRecord）に残っていない
+ * （⑤の入力欄の値であり、⑤の外へは保存していない）ため、ここでは「1台」を目安として
+ * priceSummary を呼ぶ——「月額目安」という見出しでそれが概算であることを示す。
+ */
+export function buildTeardownSummary(record: TeardownSummaryRecord, plans: TeardownSummaryPlans): { lines: string[] } {
+  const r = record ?? {}
+  const lines: string[] = [
+    `名前: ${r.name ?? TEARDOWN_SUMMARY_UNKNOWN}`,
+    `ゾーン: ${r.zone ?? TEARDOWN_SUMMARY_UNKNOWN}`,
+    `ワーカプラン: ${planLabelForPath(r.workerServiceClassPath, plans?.worker) ?? TEARDOWN_SUMMARY_UNKNOWN}`,
+    `ロードバランサプラン: ${planLabelForPath(r.lbServiceClassPath, plans?.lb) ?? TEARDOWN_SUMMARY_UNKNOWN}`,
+    `作成日時: ${r.createdAt ? new Date(r.createdAt).toLocaleString('ja-JP') : TEARDOWN_SUMMARY_UNKNOWN}`,
+  ]
+  // 記録にプランの path が無い旧データのときは金額行を省く（推測で埋めない）。
+  if (r.workerServiceClassPath && r.lbServiceClassPath) {
+    const lbRow = (plans?.lb ?? []).find(p => p.path === r.lbServiceClassPath) ?? null
+    const price = priceSummary(
+      { path: r.workerServiceClassPath },
+      { path: r.lbServiceClassPath, nodeCount: lbRow?.nodeCount ?? null },
+      1,
+    )
+    lines.push(`月額目安: ${price.text}`)
+  }
+  return { lines }
 }
 
 export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: Props) {
@@ -670,7 +729,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           confirm: (m) => window.confirm(m),
           activity: { begin: () => beginActivity('専有型クラスタの作成', { closeWarning: PUBLISH_CLOSE_WARNING }) },
           create: async (s, opts) => {
-            setCreating(true); setCreateResult(null)
+            // B-2（2026-09-10実機）: 新しい⑤の作成を始めたら、⑥の古い結果表示は消す
+            // （shouldShowTeardownResult は teardownResult の有無だけを見るため、消す責務はここ）。
+            setCreating(true); setCreateResult(null); setTeardownResult(null)
             const auth = await window.electronAPI.cloud.loadKey()
             if (!auth || !auth.token || !auth.secret) {
               return { ok: false, stage: 'consent', message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。' } as any
@@ -692,6 +753,13 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // ── ⑥ 作ったものを壊す（破棄） ───────────────────────────────
   const [tearingDown, setTearingDown] = useState(false)
   const [teardownResult, setTeardownResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['teardown']>> | null>(null)
+  // #39: 各段が一覧から消えるまで待つ間の進捗（「〜の削除を待っています（N分経過）…」）。
+  // 実行中（tearingDown）だけ表示する（doTeardown の外へ漏らさない・掟11）。
+  const [teardownProgress, setTeardownProgress] = useState<string | null>(null)
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.apprunDedicated.onTeardownProgress((msg) => setTeardownProgress(msg))
+    return () => { unsubscribe() }
+  }, [])
 
   const doTeardown = async () => {
     if (tearingDown) return
@@ -707,7 +775,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           confirm: (m) => window.confirm(m),
           activity: { begin: () => beginActivity('専有型クラスタの破棄', { closeWarning: PUBLISH_CLOSE_WARNING }) },
           teardown: async (opts) => {
-            setTearingDown(true); setTeardownResult(null)
+            setTearingDown(true); setTeardownResult(null); setTeardownProgress(null)
             const auth = await window.electronAPI.cloud.loadKey()
             if (!auth || !auth.token || !auth.secret) {
               return { ok: false, executed: [], message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。', remaining: {} }
@@ -726,9 +794,74 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
     }
   }
 
+  // ── ⑦ ログ・メトリクス（#38。プロジェクト単位＝クラスタごとではない。共用型
+  //    TelemetryNotice と同じ見せ方・同じ文言の作法） ──────────────────────────────
+  type TelemetryVariantStatus = { variant: string; label: string; kind: 'logs' | 'metrics'; routed: boolean }
+  type TelemetryActionShape = { kind: 'none'; note?: string } | { kind: 'route'; storageId: string } | { kind: 'ask'; note: string }
+  type TelemetryActions = { logs: TelemetryActionShape; metrics: TelemetryActionShape }
+  const [telemetryVariants, setTelemetryVariants] = useState<TelemetryVariantStatus[] | null>(null)
+  const [telemetryActions, setTelemetryActions] = useState<TelemetryActions | null>(null)
+  const [telemetryLoading, setTelemetryLoading] = useState(true)
+  const [telemetryError, setTelemetryError] = useState('')
+  const [telemetryConfirmingKind, setTelemetryConfirmingKind] = useState<'logs' | 'metrics' | null>(null)
+  const [telemetryBusyKind, setTelemetryBusyKind] = useState<'logs' | 'metrics' | null>(null)
+  const [telemetryDoneKind, setTelemetryDoneKind] = useState<'logs' | 'metrics' | null>(null)
+
+  const refreshTelemetry = useCallback(async () => {
+    setTelemetryLoading(true); setTelemetryError('')
+    try {
+      const auth = await window.electronAPI.cloud.loadKey()
+      if (!auth || !auth.token || !auth.secret) {
+        setTelemetryVariants(null); setTelemetryActions(null)
+        return
+      }
+      const r = await window.electronAPI.apprunDedicated.telemetryStatus(auth)
+      if (r.ok) { setTelemetryVariants(r.variants); setTelemetryActions(r.actions) } else {
+        setTelemetryVariants(null); setTelemetryActions(null)
+        setTelemetryError(r.message ? `${r.message}${r.detail ? `（${r.detail}）` : ''}` : '状態を確認できませんでした')
+      }
+    } catch (e: any) {
+      setTelemetryVariants(null); setTelemetryActions(null)
+      setTelemetryError(e?.message ?? String(e))
+    } finally {
+      setTelemetryLoading(false)
+    }
+  }, [])
+
+  // consented は**必ず呼び出し側が明示的に渡す**（TelemetryNotice.tsx と同じ約束）。
+  // 「置き場が既にある（route）」ボタンは追加費用が無いので false、「用意する（費用に同意）」
+  // ボタン（同意カードの中）だけが true を渡す。
+  const enableTelemetryKind = async (kind: 'logs' | 'metrics', consented: boolean) => {
+    setTelemetryBusyKind(kind); setTelemetryError('')
+    try {
+      const auth = await window.electronAPI.cloud.loadKey()
+      if (!auth || !auth.token || !auth.secret) {
+        setTelemetryError('さくらのクラウドAPIキーが未登録です。①で登録してください。')
+        return
+      }
+      const r = await window.electronAPI.apprunDedicated.enableTelemetry(auth, kind, { consented })
+      if (!r.ok) {
+        if ('needsConsent' in r && r.needsConsent) {
+          // 保存場所が消えていた等で、あらためて同意が要ると main 側に判断された。
+          // 状態を取り直してから同意カードへ戻す（TelemetryNotice.tsx の直しと同じ理由）。
+          setTelemetryConfirmingKind(kind)
+          await refreshTelemetry()
+          return
+        }
+        setTelemetryError(r.message ? `${r.message}${r.detail ? `（${r.detail}）` : ''}` : '設定できませんでした')
+        return
+      }
+      setTelemetryConfirmingKind(null)
+      setTelemetryDoneKind(kind)
+      await refreshTelemetry()
+    } finally {
+      setTelemetryBusyKind(null)
+    }
+  }
+
   // ── 初期化 ──────────────────────────────────────────────────
   useEffect(() => {
-    refreshKey(); refreshCloudKeys(); refreshApprunState()
+    refreshKey(); refreshCloudKeys(); refreshApprunState(); refreshTelemetry()
     ;(async () => {
       const m = await readMeta()
       const v = m.publish?.apprunDedicated
@@ -756,10 +889,14 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       // 倒す**（CLAUDE.md 掟10: 分からないものは安全側に倒す）。
       setZones(null); setZonesError(null)
       loadZones().then(r => { if (r.ok) setZones(r.rows) })
+      // ⑦ ログ・メトリクスもキーに紐づく状態なので、切り替えたら取り直す
+      // （前のキーで確かめた「繋がっています」を残さない）。
+      setTelemetryConfirmingKind(null); setTelemetryDoneKind(null)
+      refreshTelemetry()
     }
     window.addEventListener('sakura:credentials-changed', h)
     return () => window.removeEventListener('sakura:credentials-changed', h)
-  }, [refreshKey, refreshCloudKeys])
+  }, [refreshKey, refreshCloudKeys, refreshTelemetry])
 
   const selectedKeyId = activeKeyId ?? cloudKeys[0]?.id ?? null
   const selectedKeyLabel = cloudKeys.find(k => k.id === selectedKeyId)?.label ?? '（未選択）'
@@ -1286,7 +1423,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
             >{creating ? 'クラスタ→ASG→LB の順で作成しています…' : 'クラスタを作成する'}</button>
 
-            {createResult && (
+            {shouldShowCreateResult(createResult, apprunState) && createResult && (
               <div className="space-y-1">
                 <p className={createResult.ok ? 'text-xs font-semibold text-brand-green' : 'text-xs font-semibold text-brand-red'}>
                   {createResult.ok ? '✅ 作成できました' : `⚠️ 途中で止まりました（${STAGE_LABEL[createResult.stage as CreateClusterFlowStage] ?? createResult.stage}）`}
@@ -1308,31 +1445,67 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         )}
       </section>
 
-      {/* ⑥ 作ったものを壊す（破棄） */}
-      {hasAnyResource && (
+      {/* ⑥ 作ったものを壊す（破棄）。
+          B-2（2026-09-10実機・Ryosuke さん指摘）: 破棄が完了して記録（apprunState）が空になっても、
+          結果（「✅ すべて削除しました」）は消さない——節のガードを hasAnyResource だけに
+          頼らず、shouldShowTeardownResult（apprunDedicatedActions.ts・掟10）も見る。 */}
+      {(hasAnyResource || shouldShowTeardownResult(teardownResult)) && (
         <section className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-3">
           <p className="text-sm font-semibold text-ink">⑥ 作ったものを壊す（破棄）</p>
-          <p className="text-xs font-semibold text-brand-red leading-relaxed">
-            ⚠️ 消さない限り課金が続きます。この操作は元に戻せません。
-          </p>
-          <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
-            {apprunState?.loadBalancerID && <li>ロードバランサ『{apprunState.loadBalancerID}』</li>}
-            {apprunState?.asgID && <li>オートスケーリンググループ『{apprunState.asgID}』</li>}
-            {apprunState?.clusterID && <li>クラスタ『{apprunState.clusterID}』</li>}
-          </ul>
-          <button
-            onClick={doTeardown}
-            disabled={tearingDown}
-            className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-          >{tearingDown ? '削除しています…' : 'すべて削除する'}</button>
 
-          {teardownResult && (
+          {hasAnyResource && (
+            <>
+              <p className="text-xs font-semibold text-brand-red leading-relaxed">
+                ⚠️ 消さない限り課金が続きます。この操作は元に戻せません。
+              </p>
+              {/* 3b: いまの構成と月額目安（利用者目線レビュー・判断不要）。計算は複製せず
+                  priceSummary の結果をそのまま使う（buildTeardownSummary・掟10）。 */}
+              <div className="rounded-lg border border-line bg-overlay p-3 space-y-0.5">
+                <p className="text-[11px] font-semibold text-ink-secondary">いまの構成と月額目安</p>
+                {buildTeardownSummary(apprunState, { worker: workerPlans, lb: lbPlans }).lines.map((line, i) => (
+                  <p key={i} className="text-xs text-ink-secondary select-text">{line}</p>
+                ))}
+              </div>
+              <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
+                {apprunState?.loadBalancerID && <li>ロードバランサ『{apprunState.loadBalancerID}』</li>}
+                {apprunState?.asgID && <li>オートスケーリンググループ『{apprunState.asgID}』</li>}
+                {apprunState?.clusterID && <li>クラスタ『{apprunState.clusterID}』</li>}
+              </ul>
+              <button
+                onClick={doTeardown}
+                disabled={tearingDown}
+                className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+              >{tearingDown ? '削除しています…' : 'すべて削除する'}</button>
+              {/* #39: 各段が一覧から消えるまで待つ間の進捗（30秒ごとに1回、teardown-progress で届く）。 */}
+              {tearingDown && teardownProgress && (
+                <p className="text-xs text-ink-secondary leading-relaxed">{teardownProgress}</p>
+              )}
+            </>
+          )}
+
+          {shouldShowTeardownResult(teardownResult) && teardownResult && (
             <div className="space-y-1">
+              <p className={teardownResult.ok ? 'text-xs font-semibold text-brand-green' : teardownResult.inProgress ? 'text-xs font-semibold text-brand-yellow' : 'text-xs font-semibold text-brand-red'}>
+                {teardownResult.ok ? '✅ すべて削除しました' : teardownResult.inProgress ? '⏳ 削除中です' : '⚠️ 削除できませんでした'}
+              </p>
               {teardownResult.executed.map((e, i) => (
                 <p key={i} className="text-xs text-brand-green leading-relaxed">✅ {e}</p>
               ))}
               <ErrorBlock msg={teardownResult.message} />
-              {!teardownResult.ok && (
+              {teardownResult.inProgress ? (
+                // #39: 待ち切れず(timeout)止まっただけ。記録は残っている＝⑥をもう一度押せば再開できる
+                // （赤い「残っています＝課金が続きます」＝失敗、とは区別する黄色い注意）。
+                <div className="space-y-1 rounded-lg border border-brand-yellow/70 bg-overlay p-3">
+                  <p className="text-xs font-semibold text-brand-yellow leading-relaxed">
+                    削除中です。しばらくして⑥をもう一度押してください。
+                  </p>
+                  <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
+                    {teardownResult.inProgress.loadBalancerID && <li>ロードバランサ『{teardownResult.inProgress.loadBalancerID}』</li>}
+                    {teardownResult.inProgress.asgID && <li>オートスケーリンググループ『{teardownResult.inProgress.asgID}』</li>}
+                    {teardownResult.inProgress.clusterID && <li>クラスタ『{teardownResult.inProgress.clusterID}』</li>}
+                  </ul>
+                </div>
+              ) : !teardownResult.ok && (
                 <div className="space-y-1">
                   <p className="text-xs font-semibold text-brand-red leading-relaxed">
                     残っています＝課金が続きます。コントロールパネルから直接削除することもできます。
@@ -1349,6 +1522,83 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           )}
         </section>
       )}
+
+      {/* ⑦ ログ・メトリクス（#38・roadmap #38。プロジェクト単位のログ・メトリクス。共用型
+          TelemetryNotice と同じ見せ方・同じ文言の作法。クラスタの記録が無くても表示してよい
+          （プロジェクト単位のため）。専有型は⑦まで（共用型「⑧ ログ・メトリクス」とは番号が
+          違うが構わない）。 */}
+      <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
+        <p className="text-sm font-semibold text-ink">⑦ ログ・メトリクス</p>
+        <p className="text-[11px] text-ink-muted leading-relaxed">
+          この設定はクラスタごとではなく、このプロジェクトの専有型全体に効きます（コントロールパネルの『ログ・メトリクス設定』と同じものです）。
+        </p>
+        {!keyReady ? (
+          <p className="text-[11px] text-brand-yellow leading-relaxed">①で登録してください。</p>
+        ) : telemetryLoading ? (
+          <p className="text-xs text-ink-secondary">確認しています…</p>
+        ) : !telemetryVariants || !telemetryActions ? (
+          <ErrorBlock msg={telemetryError || '状態を確認できませんでした。'} />
+        ) : (
+          <>
+            <ul className="text-xs text-ink-secondary space-y-0.5 pl-1">
+              {telemetryVariants.map(v => (
+                <li key={v.variant}>{v.routed ? '✅ ' : '・'}{v.label}{v.routed ? ' 繋がっています' : ' 未接続'}</li>
+              ))}
+            </ul>
+            {(['logs', 'metrics'] as const).map(kind => {
+              const action = telemetryActions[kind]
+              if (!action || action.kind === 'none') return null
+              const label = kind === 'logs' ? 'ログ' : 'メトリクス'
+              return (
+                <div key={kind} className="rounded-lg border border-line p-3 space-y-2">
+                  {action.kind === 'route' && (
+                    <>
+                      <p className="text-xs text-ink leading-relaxed">
+                        {kind === 'logs' ? '📋' : '📈'} {label}の保存場所はすでにあります。このプロジェクトの{label}をつなげます（追加費用はありません）。
+                      </p>
+                      <button
+                        onClick={() => enableTelemetryKind(kind, false)}
+                        disabled={telemetryBusyKind === kind}
+                        className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
+                      >{telemetryBusyKind === kind ? 'つないでいます…' : `${label}をつなぐ`}</button>
+                    </>
+                  )}
+                  {action.kind === 'ask' && (
+                    telemetryConfirmingKind === kind ? (
+                      <div className="rounded-lg border border-brand-yellow/70 p-3 space-y-2">
+                        <p className="text-xs text-ink leading-relaxed">
+                          {label}の保存場所（さくらのモニタリングスイート）を新しく用意します。
+                          <span className="font-semibold">月額の基本料金（日割りなし）</span>がかかります。
+                          金額はさくらのクラウドのコントロールパネルでご確認ください。
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => enableTelemetryKind(kind, true)}
+                            disabled={telemetryBusyKind === kind}
+                            className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
+                          >{telemetryBusyKind === kind ? '用意しています…' : '用意する（費用に同意）'}</button>
+                          <button
+                            onClick={() => setTelemetryConfirmingKind(null)}
+                            disabled={telemetryBusyKind === kind}
+                            className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura disabled:opacity-40"
+                          >やめる</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setTelemetryError(''); setTelemetryConfirmingKind(kind) }}
+                        className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura"
+                      >{kind === 'logs' ? 'ログをつなぐ' : 'メトリクスをつなぐ'}</button>
+                    )
+                  )}
+                  {telemetryDoneKind === kind && <p className="text-[11px] text-ink-secondary leading-relaxed">✅ つながりました。</p>}
+                </div>
+              )
+            })}
+            {telemetryError && <ErrorBlock msg={telemetryError} />}
+          </>
+        )}
+      </section>
     </div>
   )
 }

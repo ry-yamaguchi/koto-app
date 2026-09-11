@@ -407,7 +407,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
               >
                 {selected ? '✓ ' : ''}{TARGET_PROFILES[id].label}
                 <span className="text-[10px] text-ink-muted ml-1">
-                  {TARGET_PROFILES[id].autoPublish ? '（自動公開対応）' : '（AIの最適化のみ）'}
+                  {TARGET_PROFILES[id].autoPublish ? '（ここから公開できます）' : '（③公開からは公開できません・AIが構成を合わせるだけ）'}
                 </span>
               </button>
             )

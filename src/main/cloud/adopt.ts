@@ -105,6 +105,7 @@ export function adoptedSpec(input: AdoptInput): EnvSpec {
   // 再デプロイ（PATCH）は min_scale を送る（client.ts の buildPatchBody・roadmap #31）ので、
   // ここで書き写した min はそのまま次の公開で実物に反映される。max_scale は送らない
   // （選ばせているのは min だけで、範囲までは Koto が決めない方針のため）。
+  // 読めないときの 0 は仮の値。再公開のとき applyPlan が実物と突き合わせ、違えば聞く（scaleDecision）。
   const min = typeof s.minScale === 'number' && s.minScale >= 0 ? s.minScale : 0
   const maxRaw = typeof s.maxScale === 'number' && s.maxScale >= 1 ? s.maxScale : 1
   const max = maxRaw < min ? min : maxRaw

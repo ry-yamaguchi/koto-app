@@ -41,7 +41,12 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(ipc).toContain("import { createClusterFlow, teardownFlow")
     expect(ipc).toContain('from \'../cloud/apprunDedicatedApply\'')
     expect(ipc).toContain('createClusterFlow(auth, projectDir, spec, { confirmed: isConfirmed(opts) })')
-    expect(ipc).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts) })')
+    // #39: 各段が一覧から消えるまで待つ間の進捗を画面へ流すため、progress を渡すようになった。
+    expect(ipc).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress })')
+  })
+
+  it('main: #39 teardown ハンドラは event.sender.send で apprunDedicated:teardown-progress を流す（cloud:apply-progress と同じ形）', () => {
+    expect(ipc).toContain("event.sender.send('apprunDedicated:teardown-progress', msg)")
   })
 
   it('main: registerApprunDedicatedHandlers が index.ts から呼ばれている', () => {
@@ -59,6 +64,12 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(preload).toContain("state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir)")
   })
 
+  it('preload: #39 onTeardownProgress は apprunDedicated:teardown-progress を購読し、解除用の関数を返す', () => {
+    expect(preload).toContain("onTeardownProgress: (cb: (msg: string) => void) => {")
+    expect(preload).toContain("ipcRenderer.on('apprunDedicated:teardown-progress', handler)")
+    expect(preload).toContain("ipcRenderer.removeListener('apprunDedicated:teardown-progress', handler)")
+  })
+
   it('global.d.ts: Window.electronAPI.apprunDedicated の型に zones/create/teardown/state がある（create/teardownはopts.confirmed付き）', () => {
     expect(globalDts).toContain('apprunDedicated: {')
     expect(globalDts).toContain('limits(auth: { token: string; secret: string })')
@@ -68,6 +79,45 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(globalDts).toContain('create(projectDir: string, auth: { token: string; secret: string }, spec:')
     expect(globalDts).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean })')
     expect(globalDts).toContain('state(projectDir: string)')
+  })
+
+  it('global.d.ts: #39 teardown の戻り値に inProgress があり、onTeardownProgress の型もある', () => {
+    const at = globalDts.indexOf('teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean })')
+    expect(at).toBeGreaterThan(0)
+    const block = globalDts.slice(at, globalDts.indexOf('onTeardownProgress(cb: (msg: string) => void): () => void'))
+    expect(block).toContain('inProgress?: { loadBalancerID?: string; asgID?: string; clusterID?: string }')
+    expect(globalDts).toContain('onTeardownProgress(cb: (msg: string) => void): () => void')
+  })
+
+  // #38「⑦ ログ・メトリクス」: main/preload/global.d.ts の3点セット。判断・GET/POSTの
+  // 実装は src/main/cloud/monitoring.ts に一元化してあり（tests/monitoring.test.ts が偽サーバで
+  // 振る舞いを固定）、ここは配線（呼ぶだけになっているか）だけを固定する。
+  it('main: apprunDedicated:telemetryStatus / enableTelemetry を登録し、monitoring.ts の関数を呼ぶだけ（#38）', () => {
+    expect(ipc).toContain("ipcMain.handle('apprunDedicated:telemetryStatus'")
+    expect(ipc).toContain("ipcMain.handle('apprunDedicated:enableTelemetry'")
+    expect(ipc).toContain("import { fetchDedicatedTelemetryStatus, enableDedicatedTelemetry } from '../cloud/monitoring'")
+    expect(ipc).toContain('return fetchDedicatedTelemetryStatus(auth)')
+    expect(ipc).toContain('return enableDedicatedTelemetry(auth, kind, variants, { consented: isTelemetryConsented(opts) })')
+  })
+
+  it('main: apprunDedicated:enableTelemetry は isTelemetryKind で kind を検証してから呼ぶ（不正な kind では fetch しない）', () => {
+    const at = ipc.indexOf("ipcMain.handle('apprunDedicated:enableTelemetry'")
+    expect(at).toBeGreaterThan(0)
+    const closeAt = ipc.indexOf('\n  })', at)
+    expect(closeAt).toBeGreaterThan(at)
+    const body = ipc.slice(at, closeAt)
+    expect(body).toContain("if (!isTelemetryKind(kind)) return { ok: false, message: '種類が不正です' }")
+    expect(ipc).toContain("import { isTelemetryKind, DEDICATED_VARIANTS } from '../../shared/appLog'")
+  })
+
+  it('preload: electronAPI.apprunDedicated.{telemetryStatus,enableTelemetry} を公開している（#38）', () => {
+    expect(preload).toContain("telemetryStatus: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:telemetryStatus', auth)")
+    expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:enableTelemetry', auth, kind, opts)")
+  })
+
+  it('global.d.ts: Window.electronAPI.apprunDedicated の型に telemetryStatus/enableTelemetry がある（#38）', () => {
+    expect(globalDts).toContain('telemetryStatus(auth: { token: string; secret: string })')
+    expect(globalDts).toContain("enableTelemetry(auth: { token: string; secret: string }, kind: 'logs' | 'metrics', opts?: { consented?: boolean })")
   })
 })
 
@@ -234,11 +284,15 @@ describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
   // 一元化した（起動時キャッシュの使い回し）。パネルからの直接呼び出しは6つに減り、
   // zones の実際の呼び出しは zonesCache.ts 側にあることを別途確かめる。
   // 2026-09-09（roadmap #35）: ①「🔌 接続テスト」が testConnection（チェックリストの形）を
-  // 呼ぶようになり、7つに増えた。
-  it('apprunDedicated への直接呼び出しは limits/plans/clusters/create/teardown/state/testConnection の7つ（zonesはzonesCache.ts経由）', () => {
+  // 呼ぶようになり、7つに増えた。2026-09-10（#39）: ⑥の進捗購読 onTeardownProgress が増え、8つに。
+  // #38: ⑦「ログ・メトリクス」が telemetryStatus/enableTelemetry を呼ぶようになり、10に増えた。
+  it('apprunDedicated への直接呼び出しは limits/plans/clusters/create/teardown/state/testConnection/onTeardownProgress/telemetryStatus/enableTelemetry の10（zonesはzonesCache.ts経由）', () => {
     const calls = [...panel.matchAll(/electronAPI\.apprunDedicated\.(\w+)/g)].map(m => m[1])
     expect(calls.length).toBeGreaterThan(0)
-    expect(new Set(calls)).toEqual(new Set(['limits', 'plans', 'clusters', 'create', 'teardown', 'state', 'testConnection']))
+    expect(new Set(calls)).toEqual(new Set([
+      'limits', 'plans', 'clusters', 'create', 'teardown', 'state', 'testConnection', 'onTeardownProgress',
+      'telemetryStatus', 'enableTelemetry',
+    ]))
   })
 
   it('zones の実際の呼び出しは zonesCache.ts にある（roadmap #28）', () => {
@@ -249,6 +303,20 @@ describe('AppRunDedicatedPanel: ①〜⑥の節がある', () => {
   it('⑤: ネットワークは共有セグメント固定と明示し、スイッチ/IPプールの入力欄を出さない', () => {
     expect(panel).toContain('共有セグメントに繋ぎます')
     expect(panel).not.toMatch(/ipPool|netmaskLen|defaultGateway/i)
+  })
+
+  // #38: ⑦「ログ・メトリクス」（プロジェクト単位。共用型「⑧ ログ・メトリクス」とは番号が違う）。
+  it('⑦ ログ・メトリクス（#38）', () => { expect(panel).toContain('⑦ ログ・メトリクス') })
+
+  it('⑦: プロジェクト単位（クラスタごとではない）ことを注記している', () => {
+    expect(panel).toContain('この設定はクラスタごとではなく、このプロジェクトの専有型全体に効きます（コントロールパネルの『ログ・メトリクス設定』と同じものです）。')
+  })
+
+  it('⑦: キーが無ければ①で登録するよう案内する', () => {
+    const at = panel.indexOf('<p className="text-sm font-semibold text-ink">⑦ ログ・メトリクス</p>')
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 700)
+    expect(block).toContain('①で登録してください。')
   })
 })
 
@@ -301,8 +369,8 @@ describe('⑤: 押す前の確認ダイアログに月額（見積り）を出�
     expect(block).toContain('window.electronAPI.apprunDedicated.create(projectDir, auth, s, opts)')
   })
 
-  it('runCreate/runTeardown は apprunDedicatedActions.ts から import している（振る舞いの固定はそちら・tests/apprunDedicatedActions.test.ts）', () => {
-    expect(panel).toContain("import { runCreate, runTeardown } from '../apprunDedicatedActions'")
+  it('runCreate/runTeardown/shouldShowCreateResult/shouldShowTeardownResult は apprunDedicatedActions.ts から import している（振る舞いの固定はそちら・tests/apprunDedicatedActions.test.ts）', () => {
+    expect(panel).toContain("import { runCreate, runTeardown, shouldShowCreateResult, shouldShowTeardownResult } from '../apprunDedicatedActions'")
   })
 
   it('price は priceSummary（表に無いプランは月額を出せません、と正直に返す関数）から作る', () => {
@@ -1143,9 +1211,10 @@ describe('⑤: STAGE_LABEL / resourceIdLabel（2026-09-10 レビューの修理�
   })
 
   it('画面の結果表示は STAGE_LABEL と resourceIdLabel を使い、英語ステージ名や旧来の`?? \'（未作成）\'`を直書きしていない', () => {
-    const at = panel.indexOf('{createResult && (')
+    const at = panel.indexOf('{shouldShowCreateResult(createResult, apprunState) && createResult && (')
     expect(at).toBeGreaterThan(0)
-    const end = panel.indexOf('{teardownResult && (')
+    const end = panel.indexOf('{/* ⑥ 作ったものを壊す（破棄）')
+    expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
     expect(block).toContain('STAGE_LABEL[createResult.stage as CreateClusterFlowStage] ?? createResult.stage')
     expect(block).toContain("resourceIdLabel(createResult.clusterID, 'clusterID', createResult.stage as CreateClusterFlowStage)")
@@ -1226,10 +1295,43 @@ describe('⑤: 入力チェックの純関数', () => {
   })
 })
 
-describe('⑥: 記録があるときだけ表示し、破棄は確認ダイアログを通る', () => {
-  it('hasAnyResource（clusterID/asgID/loadBalancerIDのいずれか）が無ければ⑥のsectionを描かない', () => {
-    expect(panel).toContain('{hasAnyResource && (')
+describe('⑥: 記録があるとき、または破棄結果が残っているときに表示し、破棄は確認ダイアログを通る（B-2・2026-09-10実機修理）', () => {
+  it('⑥のsectionは hasAnyResource か shouldShowTeardownResult(teardownResult) のどちらかがあれば描く（記録が空になっても破棄結果だけは残せる）', () => {
+    expect(panel).toContain('{(hasAnyResource || shouldShowTeardownResult(teardownResult)) && (')
     expect(panel).toContain('const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)')
+  })
+
+  it('破棄フォーム（警告文・対象一覧・「すべて削除する」ボタン）は hasAnyResource のときだけ描く', () => {
+    const at = panel.indexOf('{(hasAnyResource || shouldShowTeardownResult(teardownResult)) && (')
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('{shouldShowTeardownResult(teardownResult) && teardownResult && (', at)
+    expect(end).toBeGreaterThan(at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('{hasAnyResource && (')
+    expect(block).toContain('すべて削除する')
+  })
+
+  it('#39: ⑥の実行中は進捗（teardown-progress）を「削除しています…」の下に出す', () => {
+    const at = panel.indexOf("{tearingDown ? '削除しています…' : 'すべて削除する'}")
+    expect(at).toBeGreaterThan(0)
+    const block = panel.slice(at, at + 300)
+    expect(block).toContain('{tearingDown && teardownProgress && (')
+    expect(block).toContain('{teardownProgress}')
+  })
+
+  it('#39: teardownResult.inProgress が立っているときは黄色い注意（赤い「残っています」とは別）を出し、⑥のボタンは押せるまま', () => {
+    const at = panel.indexOf('{shouldShowTeardownResult(teardownResult) && teardownResult && (')
+    expect(at).toBeGreaterThan(0)
+    const end = panel.indexOf('</section>', at)
+    const block = panel.slice(at, end)
+    expect(block).toContain('teardownResult.inProgress ?')
+    expect(block).toContain('削除中です。しばらくして⑥をもう一度押してください。')
+    expect(block).toContain('border-brand-yellow')
+    expect(block).toContain('teardownResult.inProgress.loadBalancerID')
+    expect(block).toContain('teardownResult.inProgress.asgID')
+    expect(block).toContain('teardownResult.inProgress.clusterID')
+    // ボタンの disabled は tearingDown だけを見ており、inProgress では止めない（再開できる）。
+    expect(panel).toContain('disabled={tearingDown}')
   })
 
   it('doTeardown は runTeardown（apprunDedicatedActions.ts）へ確認文言を渡し、confirm には window.confirm を注入する（2026-09-10 レビューの修理・J）', () => {
@@ -1292,14 +1394,30 @@ describe('apprunDedicatedApply.ts: 作る順・壊す順がコード上で明示
     expect(lbAt).toBeGreaterThan(asgAt)
   })
 
-  it('teardownFlow は LB→ASG→クラスタ の順で呼ぶ（5-7の逆順）', () => {
-    const at = applyFile.indexOf('export async function teardownFlow')
-    expect(at).toBeGreaterThan(0)
-    const lbAt = applyFile.indexOf('deleteLoadBalancer(auth,', at)
-    const asgAt = applyFile.indexOf('deleteAsg(auth,', at)
-    const clusterAt = applyFile.indexOf('deleteCluster(auth,', at)
-    expect(lbAt).toBeGreaterThan(at)
-    expect(asgAt).toBeGreaterThan(lbAt)
-    expect(clusterAt).toBeGreaterThan(asgAt)
+  it('teardownFlow は LB→ASG→クラスタ の順で呼ぶ（5-7の逆順。#39でattemptDeleteX関数に分割されたが順序は変わっていない）', () => {
+    const flowAt = applyFile.indexOf('export async function teardownFlow')
+    expect(flowAt).toBeGreaterThan(0)
+    // teardownFlow の本体は attemptDeleteLoadBalancer → attemptDeleteAsg → attemptDeleteCluster の
+    // 順で呼ぶ（#39: 各段は一覧から消えるまで待つ waitUntilGone を挟むため、実際の delete*(auth, …)
+    // 呼び出しは各 attemptDeleteX 関数の中にある。下でそれぞれ確かめる）。
+    const lbCallAt = applyFile.indexOf('attemptDeleteLoadBalancer(', flowAt)
+    const asgCallAt = applyFile.indexOf('attemptDeleteAsg(', flowAt)
+    const clusterCallAt = applyFile.indexOf('attemptDeleteCluster(', flowAt)
+    expect(lbCallAt).toBeGreaterThan(flowAt)
+    expect(asgCallAt).toBeGreaterThan(lbCallAt)
+    expect(clusterCallAt).toBeGreaterThan(asgCallAt)
+
+    // attemptDeleteLoadBalancer/Asg/Cluster 自体もこの順（LB→ASG→クラスタ）で定義されており、
+    // それぞれが対応する delete*(auth, …) を実際に呼んでいる。
+    const lbFnAt = applyFile.indexOf('async function attemptDeleteLoadBalancer')
+    const asgFnAt = applyFile.indexOf('async function attemptDeleteAsg')
+    const clusterFnAt = applyFile.indexOf('async function attemptDeleteCluster')
+    expect(lbFnAt).toBeGreaterThan(0)
+    expect(asgFnAt).toBeGreaterThan(lbFnAt)
+    expect(clusterFnAt).toBeGreaterThan(asgFnAt)
+    expect(flowAt).toBeGreaterThan(clusterFnAt) // teardownFlow 自体はこの3関数より後ろで定義されている
+    expect(applyFile.slice(lbFnAt, asgFnAt)).toContain('deleteLoadBalancer(auth,')
+    expect(applyFile.slice(asgFnAt, clusterFnAt)).toContain('deleteAsg(auth,')
+    expect(applyFile.slice(clusterFnAt, flowAt)).toContain('deleteCluster(auth,')
   })
 })

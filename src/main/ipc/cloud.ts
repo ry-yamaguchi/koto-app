@@ -83,6 +83,26 @@ function loadCloudSpec(projectDir: string): EnvSpec | null {
 }
 
 /**
+ * spec を検証し、保存場所の記録をディスクから維持してから env.json へ書き込む
+ * （`cloud:saveEnv` の本体）。**同じ経路を `cloud:apply` の「さくら側の起動のしかたを
+ * Koto の設定へ取り込む」書き戻しでも使う**（複製しない・掟10）。
+ */
+function writeValidatedSpec(projectDir: string, spec: unknown): { ok: true; spec: EnvSpec } | { ok: false; errors: string[] } {
+  const result = validateSpec(spec)
+  if (!result.ok) return { ok: false, errors: result.errors }
+  // **保存場所の記録だけは、画面からの写しで上書きしない。**
+  // 画面は開いた時点の spec を丸ごと書き戻すので、開いたあとに用意した
+  // 保存場所が消える（2026-08-14 実機で発覚）。判断は shared に集約。
+  let disk: EnvSpec | null = null
+  try { disk = loadCloudSpec(projectDir) } catch { disk = null }
+  result.spec = keepStorageFromDisk(result.spec, disk)
+  const file = cloudFilePath(projectDir, CLOUD_ENV_FILE)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(result.spec, null, 2) + '\n', 'utf-8')
+  return { ok: true, spec: result.spec }
+}
+
+/**
  * dockerfile ソースのビルドコンテキスト絶対パスを、プロジェクト内に閉じ込めて解決する。
  * context が絶対パスや .. でプロジェクト外を指す場合は throw（confineToProject 相当）。
  */
@@ -261,6 +281,7 @@ import { MonitoringClient, fetchTelemetryStatus, enableTelemetry, ensureTelemetr
 import { isTelemetryKind, type TelemetryKind } from '../../shared/appLog'
 import { permissionsToCleanUp } from '../../shared/storageKeys'
 import { summarizePreflight, sortChecks, type PreflightCheck } from '../../shared/preflight'
+import { readActualMinScale, scaleLabel } from '../../shared/scaleDecision'
 import {
   localRefs, checkRefs, resolveRef, backgroundImageIssues, sizedClassNames, sizedImageClassNames,
   localLinks, hasViewportMeta, imgWithoutSizing, unusedImages, heavyImages, humanBytes,
@@ -342,18 +363,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
   // env.json の書き込み（書き込み前に validateSpec を通し、不正なら error を返す）
   ipcMain.handle('cloud:saveEnv', (_, projectDir: string, spec: unknown) => {
     try {
-      const result = validateSpec(spec)
-      if (!result.ok) return { ok: false, errors: result.errors }
-      // **保存場所の記録だけは、画面からの写しで上書きしない。**
-      // 画面は開いた時点の spec を丸ごと書き戻すので、開いたあとに用意した
-      // 保存場所が消える（2026-08-14 実機で発覚）。判断は shared に集約。
-      let disk: EnvSpec | null = null
-      try { disk = loadCloudSpec(projectDir) } catch { disk = null }
-      result.spec = keepStorageFromDisk(result.spec, disk)
-      const file = cloudFilePath(projectDir, CLOUD_ENV_FILE)
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, JSON.stringify(result.spec, null, 2) + '\n', 'utf-8')
-      return { ok: true, spec: result.spec }
+      return writeValidatedSpec(projectDir, spec)
     } catch (e: any) {
       return { ok: false, errors: [e?.message ?? String(e)] }
     }
@@ -876,10 +886,14 @@ export function registerCloudHandlers(_deps: IpcDeps) {
   // 構築: env.json+state.json → computePlan →（dockerfile なら build/login/push して image ソースへ差し替え）
   //      → 実クライアント（dryRun=false）→ applyPlan → 成功なら state 保存
   // 進捗は event.sender へ 'cloud:apply-progress' で逐次通知する。
-  ipcMain.handle('cloud:apply', async (event, projectDir: string, opts?: { confirmed?: boolean }) => {
+  ipcMain.handle('cloud:apply', async (event, projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }) => {
     const progress = (msg: string) => {
       try { event.sender.send('cloud:apply-progress', msg) } catch { /* ウィンドウ破棄時は無視 */ }
     }
+    // 値の形は main で検証する。'koto'/'sakura' 以外（renderer からの取り違え等）は
+    // 未指定として扱う——applyPlan は decision 未指定を「食い違えば止めて聞く」に倒す
+    // ので、不正値を勝手にどちらかへ倒すより安全（scaleDecision.ts の judgeScale と同じ方針）。
+    const scaleDecision = opts?.scaleDecision === 'koto' || opts?.scaleDecision === 'sakura' ? opts.scaleDecision : undefined
     // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。main の1 invoke は
     // 完走するが、記録（下の成功時の書き込み）が起きるのは最後なので、開始時点でも分かるように
     // 残す。API呼び出しが成功/失敗いずれで終わっても、最下部の finally で必ず消す（roadmap #20）。
@@ -1126,10 +1140,26 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           confirmed: opts?.confirmed === true,
           ...(storage ? { storage } : {}),
           ...(registryAuth ? { registryAuth } : {}),
+          ...(scaleDecision ? { scaleDecision } : {}),
         })
       } finally {
         // 一時的に発行した鍵は必ず片づける（失敗しても公開の結果は変えない）
         if (storage) await storage.dispose()
+      }
+
+      // ── 「起動のしかた」を、さくら側の実物へ取り込んだとき（scaleDecision:'sakura'）だけ、
+      //    env.json へ書き戻す（画面の表示を実物に合わせる）。**同じ書き込み経路を使う**
+      //    （cloud:saveEnv と同じ validateSpec → keepStorageFromDisk → 書き込み・掟10）。
+      //    **spec（元の、image解決前のもの）を土台にする。** resolvedSpec は dockerfile ソースを
+      //    image ソースへ書き換えた複製なので、そのまま書き戻すと env.json のソース設定が壊れる。
+      if (result.adoptedScaleMin !== undefined) {
+        const specToSave: EnvSpec = { ...spec, service: { ...spec.service, scale: { ...spec.service.scale, min: result.adoptedScaleMin } } }
+        const saved = writeValidatedSpec(projectDir, specToSave)
+        if (!saved.ok) {
+          // 書き戻しに失敗しても、公開そのものは成立している（PATCH は既に送ってある）。
+          // 黙って握りつぶさず、次回また聞かれることだけ伝える。
+          progress('⚠️ さくら側の起動のしかたを Koto の設定へ取り込めませんでした（次回の公開でもう一度確認します）')
+        }
       }
 
       // **失敗しても記録する。** 途中まで実行された分（作られたアプリ等）を捨てると、
@@ -1249,6 +1279,9 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         ...(health && !health.ok && appId
           ? { hint: 'app-unhealthy' as const, pending: health.pending, logUrl: appLogUrl(appId), askAi: askAiAboutFailure({ note: health.note, ...(health.detail ? { detail: health.detail } : {}) }) }
           : {}),
+        // 起動のしかたがさくら側と食い違い、止めて聞いているときだけ載る（画面が選択カードを出す）
+        ...(result.needsScaleDecision ? { needsScaleDecision: result.needsScaleDecision } : {}),
+        ...(result.adoptedScaleMin !== undefined ? { adoptedScaleMin: result.adoptedScaleMin } : {}),
       }
     } catch (e: any) {
       progress('⚠️ 失敗しました')
@@ -2062,6 +2095,28 @@ function findSiteIssues(root: string): SiteIssue[] {
           add('name', '公開名', 'warn', '確認できませんでした（公開はできます）。')
         }
       } catch { add('name', '公開名', 'warn', '確認できませんでした（公開はできます）。') }
+
+      // 「起動のしかた（min_scale）」が、さくら側と Koto の設定で食い違っていないか
+      // （Ryosuke さん決定・案②・2026-09-10）。**未公開（mine 無し）なら項目を出さない**
+      // （まだ実物が無いので食い違いようがない）。ここは**止めない**（warn）。実際に止めて
+      // 聞くのは公開を押したとき（歯止めは main の公開の実行層＝純関数側。掟10の基準）。
+      const mine = state.resources.find(r => r.kind === 'apprun-app')?.id
+      if (mine) {
+        const kotoLabel = scaleLabel(spec.service.scale.min)
+        try {
+          const detail = await client.getApp(mine)
+          const actual = detail.dryRun === false && detail.ok ? readActualMinScale(detail.data) : null
+          if (actual === null) {
+            add('scale', '起動のしかた', 'warn', `確認できませんでした（公開すると Koto の設定『${kotoLabel}』で公開します）。`)
+          } else if (actual === spec.service.scale.min) {
+            add('scale', '起動のしかた', 'ok', `さくら側と Koto の設定は一致しています（${kotoLabel}）。`)
+          } else {
+            add('scale', '起動のしかた', 'warn', `さくら側は『${scaleLabel(actual)}』、Koto の設定は『${kotoLabel}』です。公開を押すと、どちらにするかを聞きます。`)
+          }
+        } catch {
+          add('scale', '起動のしかた', 'warn', `確認できませんでした（公開すると Koto の設定『${kotoLabel}』で公開します）。`)
+        }
+      }
 
       // 保存場所が**実在するか**（409 を「ある」と読んだ失敗の再発防止）
       const bucket = consentedBuckets(spec.persistence?.objectStorage)[0]

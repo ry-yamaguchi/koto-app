@@ -58,6 +58,31 @@ export const APPRUN_VARIANT: Record<TelemetryKind, string> = {
   metrics: 'applicationmetrics',
 }
 
+// ── #38: AppRun 専有型（apprun-dedicated）─────────────────────────────────
+// 専有型は共用型と違い、**クラスタ単位ではなくプロジェクト単位**でルーティングする
+// （resource_id を送らない・実測は null。docs/apprun-dedicated-plan.md 5-12・2026-09-10）。
+// publisher が別（'apprun-dedicated'）で variant も6種類（logs 3・metrics 3）に増えるが、
+// 「置き場が無ければ同意を取ってから作る」という判断（decideTelemetryAction /
+// decideEnableTelemetry）はまったく同じなので複製しない（掟10）。ここでは固定値だけを増やす。
+
+/** 専有型用の publisher（実測 5-12・description「AppRun専有型」）。 */
+export const DEDICATED_PUBLISHER = 'apprun-dedicated'
+
+/**
+ * 専有型の variant 一覧（6件。実測 docs/apprun-dedicated-plan.md 5-12）。
+ *
+ * label は 6件とも 2026-09-10 の実測（`scripts/probe-monitoring-suite.mjs` ⑥ `GET /publishers/` の出力）どおり。
+ * 「コンテナーメトリクス」「ロードバランサーアクセスログ」の長音は実物の表記（docs/apprun-dedicated-plan.md 5-12）。
+ */
+export const DEDICATED_VARIANTS: { kind: TelemetryKind; name: string; label: string }[] = [
+  { kind: 'logs', name: 'agent_logs', label: 'エージェントログ' },
+  { kind: 'logs', name: 'container_logs', label: 'コンテナログ' },
+  { kind: 'logs', name: 'lb_access_logs', label: 'ロードバランサーアクセスログ' },
+  { kind: 'metrics', name: 'node_metrics', label: 'ノードメトリクス' },
+  { kind: 'metrics', name: 'container_metrics', label: 'コンテナーメトリクス' },
+  { kind: 'metrics', name: 'lb_metrics', label: 'ロードバランサーメトリクス' },
+]
+
 /** 画面文言に使う、種類ごとの言い回し。 */
 const TELEMETRY_COPY: Record<TelemetryKind, { label: string; already: string; ask: string; preparing: string }> = {
   logs: {
@@ -193,6 +218,25 @@ export function hasAppRouting(data: unknown, resourceId: string, kind: Telemetry
     && String(r.resource_id ?? '') === String(resourceId)
     && String(r?.publisher?.code ?? '') === APPRUN_PUBLISHER
     && String(r.variant ?? '') === APPRUN_VARIANT[kind],
+  )
+}
+
+/**
+ * 専有型（プロジェクト単位）用: `resource_id` を見ず、publisher.code と variant だけで
+ * このプロジェクトの、指定した variant のルーティングが既にあるかを判定する。
+ *
+ * 共用型の `hasAppRouting`（resource_id が一致すること必須）とは別の関数として持つ——
+ * **既存の関数の挙動は変えない**（呼び出し側を分けるだけで、判定ロジックは複製しない
+ * よう、一致判定の骨組み自体は hasAppRouting と同じ形にしてある）。5-12実測: 専有型の
+ * ルーティング行は `resource_id: null`（クラスタ単位ではなくプロジェクト単位のため）。
+ */
+export function hasProjectRouting(data: unknown, publisherCode: string, variant: string): boolean {
+  const d = (data ?? {}) as Record<string, unknown>
+  const results = Array.isArray(d.results) ? d.results : []
+  return results.some((r: any) =>
+    r
+    && String(r?.publisher?.code ?? '') === publisherCode
+    && String(r.variant ?? '') === variant,
   )
 }
 
