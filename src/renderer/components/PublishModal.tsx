@@ -345,7 +345,9 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               <p className="text-sm font-semibold text-ink">📦 さくらのAppRun</p>
               <p className="text-xs text-ink-muted mt-0.5">
                 アプリを動かせる公開先です。むずかしい準備は要りません（Koto がまとめて行います）。
-                使った分だけ課金の「共用型」と、独自ドメインが使える「専有型（上級者向け・月2万円〜の常時課金）」を選べます。
+                使った分だけ課金の「共用型」と、独自ドメインが使える「専有型（上級者向け・常時課金）」を選べます。
+                {/* 金額はプランを取得しないと分からないため、ここではハードコードしない
+                    （専有型パネルの冒頭に実額が出ます・判断4・2026-09-11）。 */}
               </p>
             </button>
 
@@ -473,16 +475,9 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 className={`px-3 py-2 -mb-px text-sm font-semibold border-b-2 transition-colors ${target === 'sakura-apprun-dedicated' ? 'border-sakura text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
               >専有型（上級者向け）</button>
             </div>
-            {target === 'sakura-apprun-dedicated' && (
-              <>
-                <p className="text-xs font-semibold text-brand-yellow leading-relaxed">
-                  ⚠️ 専有型は月2万円〜の常時課金です（動いていなくても請求されます）。共用型は使った分だけの従量課金です。
-                </p>
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  ℹ️ クラスタの作成・破棄まではできますが、アプリの公開（独自ドメイン）はまだできません。
-                </p>
-              </>
-            )}
+            {/* タブ直下にあった専有型の費用・提供範囲の注意は、AppRunDedicatedPanel.tsx の
+                パネル冒頭に一本化した（判断4・利用者目線レビュー・2026-09-11。以前はここ・
+                パネル冒頭・④冒頭の3か所にほぼ同文で出ていた）。 */}
             {target === 'sakura-apprun' ? (
               <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
             ) : (

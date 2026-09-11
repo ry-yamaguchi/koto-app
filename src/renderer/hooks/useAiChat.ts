@@ -35,6 +35,7 @@ import { runCompact, type EngineTurnSpec, type EngineTurnPorts } from '../../sha
 import type { AskPath } from '../../shared/chatTurnRpc'
 import { stripFunctions, dispatchAsk } from '../chatTurnBridge'
 import { turnKey, getTurn, updateTurn, resetTurn, subscribe, getSnapshot } from '../chatTurnRegistry'
+import type { ConfirmOptions } from '../useConfirm'
 
 export type ChatMessage = {
   role: 'user' | 'assistant'
@@ -133,6 +134,10 @@ export type UseAiChatArgs = {
    * projectDir と full を突き合わせて行う（このフックは判定せずそのまま渡す）。
    */
   onAiFileWritten?: (full: string) => void
+  /** window.confirm の代わりに ConfirmModal（Koto様式）を出す。呼び出し元（ChatPanel/ChatApp）の
+   *  useConfirm() をそのまま渡す（判断9・UX-B2・2026-09-11）。任意にすると渡し忘れに気づけない
+   *  （CLAUDE.md 掟10）ため必須にする。 */
+  confirm: (opts: ConfirmOptions) => Promise<boolean>
 }
 
 export function useAiChat(args: UseAiChatArgs) {
@@ -140,7 +145,7 @@ export function useAiChat(args: UseAiChatArgs) {
     apiKey, model, models, maxRounds, buildSystemPrompt, toolsProjectDir, convDir, sessionId,
     buildExecuteOpts, getHistory, updateShown, onUserMessage,
     errorPrefix = '', twoStageVision = false, buildRagBlock, onExternalFilesChanged,
-    onMessageEvent, onAiFileWritten,
+    onMessageEvent, onAiFileWritten, confirm,
   } = args
 
   // ── B-1b: 実行状態はプロジェクト別の置き場（chatTurnRegistry.ts）から読む ─────────────
@@ -599,12 +604,12 @@ export function useAiChat(args: UseAiChatArgs) {
       if (toolsProjectDir && claudeReady) {
         if (!hasClaudeConsent()) {
           // 所見7: 料金発生（Anthropicへ直接課金・AI Engineの月間上限とは別枠）と、設定での切替可否を明記する。
-          const agreed = window.confirm(
-            'Claudeモードでは、プロジェクトのコードと指示が Anthropic（米国）に送信され、Claudeの利用料金が別途発生します'
-            + '（Anthropicへ直接課金／さくらのAI Engineの月間上限とは別枠）。'
-            + '使わないときは 設定 でさくらのAI Engineに切り替えられます。'
-            + 'よろしいですか？（この確認は初回のみ）'
-          )
+          const agreed = await confirm({
+            title: 'Claudeモードを使いますか',
+            body: 'Claudeモードでは、プロジェクトのコードと指示が Anthropic（米国）に送信され、Claudeの利用料金が別途発生します（Anthropicへ直接課金／さくらのAI Engineの月間上限とは別枠）。使わないときは 設定 でさくらのAI Engineに切り替えられます。よろしいですか？（この確認は初回のみ）',
+            confirmLabel: '同意して使う',
+            danger: false,
+          })
           if (agreed) recordClaudeConsent()
         }
         if (hasClaudeConsent()) {

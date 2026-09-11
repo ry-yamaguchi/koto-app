@@ -10,15 +10,20 @@ import SecurityCheckSection from './SecurityCheckSection'
 import UnusedFilesSection from './UnusedFilesSection'
 import TelemetryNotice from './TelemetryNotice'
 import RollbackSection from './RollbackSection'
-import ConnectionChecklist from './ConnectionChecklist'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
+import { askAiAboutFailure, type AskAiFailureKind } from '../../shared/askAi'
 import { pinnedAfterApplyNotice } from '../../shared/apprunTraffic'
 import { scaleLabel, type ScaleDecision } from '../../shared/scaleDecision'
 import { nextApplyOpts } from '../scaleDecisionFlow'
-import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryDeleteDefault, adoptedRegistryNote, ongoingCostNotice, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
+import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryDeleteDefault, adoptedRegistryNote, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice, costSummaryLines, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
 import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
 import { isSubmitEnter } from '../keyInput'
+import { shouldBlockPublish } from '../publishGate'
+import { foldBuildMode, specSummaryPrimaryKeys } from '../appRunFolding'
+import { publishButtonLabel } from '../../shared/publishLabels'
+import AccessKeySection from './AccessKeySection'
+import { useConfirm } from '../useConfirm'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
 // （小文字英数字とハイフン・先頭末尾は英数字・3〜40文字）と同じ制約をここでも複製する
@@ -224,13 +229,20 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
   const [trashing, setTrashing] = useState(false)
   // 片づけた結果（黙って消すと「なぜ消えたのか」が分からない・2026-08-19 実機）
   const [trashNote, setTrashNote] = useState<string | null>(null)
+  // 画像の片づけの確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
+  // ※この関数の名前は `confirmDialog`（上の apply/teardown 用 `confirm` state と衝突するため）。
+  const { confirm: confirmDialog, element: confirmElement } = useConfirm()
   const cleanUnusedImages = async (files: string[]) => {
     const head = files.slice(0, 8).map(f => `・${f}`).join('\n')
     const more = files.length > 8 ? `\n・ほか ${files.length - 8} 件` : ''
-    if (!window.confirm(
-      `どこからも使われていない画像 ${files.length} 件をゴミ箱へ移します。\n\n${head}${more}\n\n`
-      + '完全には消えません（Finder のゴミ箱から戻せます）。よろしいですか？'
-    )) return
+    const ok = await confirmDialog({
+      title: '古いイメージをゴミ箱へ移します',
+      body: `どこからも使われていない画像 ${files.length} 件をゴミ箱へ移します。\n\n${head}${more}\n\n`
+        + '完全には消えません（Finder のゴミ箱から戻せます）。よろしいですか？',
+      confirmLabel: 'ゴミ箱へ移す',
+      danger: true,
+    })
+    if (!ok) return
     setTrashing(true)
     const failed: string[] = []
     try {
@@ -256,10 +268,27 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     catch (e: any) { setPreflight({ ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: e?.message ?? String(e) }) }
     finally { setChecking(false) }
   }
+
+  /**
+   * ③「🔍 公開前に確かめる」— 手で確かめたいときのボタン（判断5・2026-09-11）。
+   *
+   * 以前は「公開できるか確かめる」（preflight）と「何が作られるか確認」（plan）の
+   * 2つのボタンに分かれていたが、**同じことをするのに2回押させていた**。1つに統合し、
+   * 押すと preflight → plan の順で確かめ、どちらも今までどおり表示する。
+   * 接続テスト（①）はここに含めない（キー登録前から独立して試したいため・既存のまま）。
+   */
+  const checkBeforePublish = async () => {
+    await runPreflight()
+    await runPlan()
+  }
   // detail は失敗時の生ログ（stderr要約等・診断用）。OpResultView が折りたたみ「詳細を見る」で表示する（所見12）。
   // hint: main 側が「この失敗はレジストリを設定し直せば直る」と判断したときに付ける印。
   // これが付いたときだけ再設定のボタンを出す（常設しない・2026-08-09）。
   const [opResult, setOpResult] = useState<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string; verifyNote?: string; staleImages?: { total: number; removable: number; keep: number } } | null>(null)
+  // opResult がどの操作の結果か（判断2・「🤖 AIに相談する」の定型文に使う kind）。
+  // apply/teardown/cleanupImages が同じ opResult を共有するため、setOpResult とあわせて
+  // 各操作の先頭で立てる（OpResultView 自身は「今どの操作の結果を表示しているか」を知らない）。
+  const [opKind, setOpKind] = useState<AskAiFailureKind>('公開')
   // 構築中の進捗メッセージ（最新行）。apply 中だけ表示する。
   const [progress, setProgress] = useState<string | null>(null)
 
@@ -584,11 +613,27 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
     } finally { setPlanning(false) }
   }
 
-  // ── 構築（適用）: 先にプランを出してから確認ダイアログ ──
+  // ── 構築（適用）: 先に公開前チェック（preflight）→ プランを出してから確認ダイアログ ──
+  //
+  // ── なぜ preflight を先に呼ぶか（判断5・利用者目線レビュー・2026-09-11）───────────
+  // 以前はここで plan だけを取り直しており、③「公開できるか確かめる」を別に押さない限り
+  // ng（確実に失敗する）が分からなかった。「押す → 数分待つ → 分からないエラー」を防ぐため、
+  // 押した瞬間にここで確認する。止めるかどうかの判断は shouldBlockPublish（純関数・
+  // src/renderer/publishGate.ts）に切り出してあり、ここでは呼ぶだけにする（掟10）。
+  // 止まったときは、③の結果表示（親切カード・fixボタン）がそのまま案内を担う——
+  // ここで新しいエラー表示は作らない。
   const startApply = async () => {
     setOpResult(null)
     setPlanning(true); setPlanError(''); setPlan(null)
+    setProgress('公開前に確かめています…')
     try {
+      let pf: Awaited<ReturnType<Window['electronAPI']['cloud']['preflight']>>
+      try { pf = await window.electronAPI.cloud.preflight(projectDir) }
+      catch (e: any) { pf = { ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: e?.message ?? String(e) } }
+      setPreflight(pf)
+      setProgress(null)
+      if (shouldBlockPublish(pf).block) return
+
       const r = await window.electronAPI.cloud.plan(projectDir)
       if (r.ok) {
         setPlan(r.plan)
@@ -606,11 +651,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
       }
     } catch (e: any) {
       setPlanError(e?.message ?? String(e))
-    } finally { setPlanning(false) }
+    } finally { setProgress(null); setPlanning(false) }
   }
 
   const doApply = async (applyOpts: { confirmed: boolean; scaleDecision?: ScaleDecision } = { confirmed: true }) => {
     setBusy(true)
+    setOpKind('公開')
     // **新しい公開のたびに、回復ボタンの状態を戻す。** 前回整えた印を残したままだと、
     // 今回また同じ失敗をしたときにボタンが出ず、直せなくなる（2026-08-14）
     setRegistryFixed(false)
@@ -682,6 +728,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
 
   const doTeardown = async () => {
     setBusy(true)
+    setOpKind('破棄')
     try {
       // 記録が無いレジストリは削除できない。確認画面と同じ判断をここでも通す
       // （そうしないと「残るのに課金が続く」警告が出ない）。
@@ -730,6 +777,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
   const [cleaning, setCleaning] = useState(false)
   const askCleanupImages = async () => {
     setCleaning(true)
+    setOpKind('公開')
     setOpResult(null)
     try {
       const r = await window.electronAPI.cloud.cleanupImages(projectDir)
@@ -952,20 +1000,26 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         </div>
       )}
 
-      {/* ① APIキー（入力は「認証情報」に一本化。ここは状態表示と接続テストのみ） */}
-      <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">① APIキー</p>
-          {hasKey === null
-            ? <span className="text-xs text-ink-muted">確認中…</span>
-            : keyReady
-              ? <span className="text-xs text-brand-green font-semibold">✅ APIキー登録済み</span>
-              : <span className="text-xs text-brand-yellow font-semibold">⚠️ APIキーが未登録です</span>}
-        </div>
-        <p className="text-[11px] text-ink-muted leading-relaxed">
-          さくらのクラウドのAPIキー（アクセストークン／トークンシークレット）は「認証情報」で登録・切替します。AppRun に専用のAPIキーはなく、このキーで操作します。
-        </p>
-
+      {/* ① APIキー（AccessKeySection に統一・判断8。入力は「認証情報」に一本化。
+          ここは状態表示と接続テストのみ） */}
+      <AccessKeySection
+        stepNo="①"
+        serviceTitle="さくらのクラウド"
+        keyLabel="APIキー"
+        registered={keyReady}
+        onOpenCredentials={onOpenCredentials}
+        test={{
+          run: testConnection,
+          state: conn,
+          checks: connChecks ? [
+            { key: 'apprun', label: 'AppRun 参照', ok: connChecks.apprun.ok, message: connChecks.apprun.message },
+            { key: 'registry', label: 'コンテナレジストリ 一覧', ok: connChecks.registry.ok, message: connChecks.registry.message },
+            { key: 'billing', label: '請求（コスト）参照', ok: connChecks.billing.ok, message: connChecks.billing.message },
+          ] : undefined,
+          message: connMsg,
+          note: '※「作成」権限は実際に作成するまで確認できません（ここでは参照の可否のみ確認）。',
+        }}
+      >
         {/* この公開に使うキーの選択（登録キーが1つ以上あるとき） */}
         {cloudKeys.length > 0 ? (
           <div className="space-y-1">
@@ -1004,48 +1058,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
             >このキーに切り替える</button>
           </div>
         )}
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onOpenCredentials}
-            className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
-          >🔑 認証情報で登録・切替</button>
-          <button
-            onClick={testConnection}
-            disabled={conn === 'testing' || !keyReady}
-            title={keyReady ? '' : '先に認証情報でAPIキーを登録してください'}
-            className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-          >🔌 接続テスト</button>
-          <span className="flex-1 text-xs text-right">
-            {conn === 'ok' && <span className="text-brand-green font-semibold">✅ すべて確認できました</span>}
-            {conn === 'ng' && <span className="text-brand-yellow font-semibold">⚠️ 一部の権限が確認できませんでした</span>}
-            {conn === 'testing' && <span className="text-ink-secondary">確認中…</span>}
-          </span>
-        </div>
-        {!keyReady && (
-          <p className="text-[11px] text-ink-muted leading-relaxed">
-            先に認証情報でAPIキーを登録してください。
-          </p>
-        )}
-        {/* 3 点チェック結果（GET のみの非破壊プローブ）。専有型 AppRunDedicatedPanel と
-            同じ ConnectionChecklist を使う（同じ形に揃える・roadmap #35・掟10）。 */}
-        {connChecks && (
-          <ConnectionChecklist
-            items={[
-              { key: 'apprun', label: 'AppRun 参照', ok: connChecks.apprun.ok, message: connChecks.apprun.message },
-              { key: 'registry', label: 'コンテナレジストリ 一覧', ok: connChecks.registry.ok, message: connChecks.registry.message },
-              { key: 'billing', label: '請求（コスト）参照', ok: connChecks.billing.ok, message: connChecks.billing.message },
-            ]}
-            note="※「作成」権限は実際に作成するまで確認できません（ここでは参照の可否のみ確認）。"
-          />
-        )}
-        {/* 認証情報未保存など、項目別に出せない全体エラーのみ表示。 */}
-        {conn === 'ng' && connMsg && (
-          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">
-            {connMsg}
-          </p>
-        )}
-      </section>
+      </AccessKeySection>
 
       {/* ② 公開の設定（env.json） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
@@ -1092,24 +1105,34 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         )}
       </section>
 
+      {/* 💰 想定される費用（番号は付けない＝手順の外。判断4・利用者目線レビュー・2026-09-11）。
+          費用の説明が7〜8か所（月220円が3か所・月495円が別の1か所・「すぐ返す」は金額なし等）に
+          散っていたのを1か所にまとめる。個別の確認・注記は「この操作で増える／止まる金額」だけに
+          絞り（例: 破棄の確認は remainingCostWarning のまま）、ここへのリンク文で全体を示す。 */}
+      <details className="rounded-xl border border-line bg-surface p-4">
+        <summary className="cursor-pointer select-none text-sm font-semibold text-ink">💰 想定される費用</summary>
+        <ul className="mt-2 space-y-1">
+          {costSummaryLines({ hasBucket: !!placement, scaleMin: spec ? spec.service.scale.min : 0 }).map((line, i) => (
+            <li key={i} className="text-[11px] text-ink-secondary leading-relaxed select-text">・{line}</li>
+          ))}
+        </ul>
+      </details>
+
       {/* ③ 事前チェック（実行前の差分プレビュー＝plan/dry-run） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold text-ink">③ 事前チェック</p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={runPreflight}
-              disabled={checking}
-              className="flex-none bg-sakura text-white rounded-md px-3 py-1 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
-            >{checking ? '確かめています…' : '公開できるか確かめる'}</button>
-            <button
-              onClick={runPlan}
-              disabled={planning || !spec}
-              title={spec ? '' : '先に公開の設定を作成してください'}
-              className="flex-none bg-overlay text-ink border border-line rounded-md px-3 py-1 text-xs font-medium hover:border-sakura disabled:opacity-40"
-            >{planning ? '確認中…' : '何が作られるか確認'}</button>
-          </div>
+          {/* 「公開できるか確かめる」「何が作られるか確認」の2ボタンを1つに統合（判断5・
+              2026-09-11）。押すと preflight → plan の順で確かめ、どちらも今までどおり表示する。 */}
+          <button
+            onClick={checkBeforePublish}
+            disabled={checking || planning}
+            className="flex-none bg-sakura text-white rounded-md px-3 py-1 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
+          >{checking ? '確かめています…' : planning ? '確認中…' : '🔍 公開前に確かめる'}</button>
         </div>
+        <p className="text-[11px] text-ink-muted leading-relaxed">
+          公開ボタンを押したときにも自動で確かめます。手で確かめたいときはこちら。
+        </p>
         <p className="text-[11px] text-ink-muted leading-relaxed">
           公開する前に、さくら側の状態と、何が作成・更新・削除されるかを確認できます
           （どちらも何も変更しません）。
@@ -1236,26 +1259,32 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <p className="text-sm font-semibold text-ink">⑥ 公開・破棄</p>
 
-        {/* ビルド方式の切替（プロジェクトからビルドするとき） */}
+        {/* ビルド方式の切替（プロジェクトからビルドするとき）。
+            既定（標準）のときは畳む・Docker を選んでいるときは展開したまま（判断6・
+            利用者目線レビュー・2026-09-11）。判断は foldBuildMode に一元化してある（掟10）。 */}
         {needsPrereqs && (
-          <div className="rounded-lg border border-line bg-overlay p-3 space-y-1.5">
-            <p className="text-[11px] font-semibold text-ink-secondary">ビルド方式</p>
-            <div className="flex gap-2 text-xs">
-              <button onClick={() => switchMode('builtin')} disabled={modeSwitching}
-                className={`px-2.5 py-1 rounded border ${!isDockerMode ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}>
-                標準（Docker不要）
-              </button>
-              <button onClick={() => switchMode('docker')} disabled={modeSwitching}
-                className={`px-2.5 py-1 rounded border ${isDockerMode ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}>
-                エキスパート（自分のDockerfile・Docker使用）
-              </button>
+          <details className="rounded-lg border border-line bg-overlay p-3" open={!foldBuildMode(prereqs?.builderMode)}>
+            <summary className="cursor-pointer select-none text-[11px] font-semibold text-ink-secondary hover:text-ink">
+              {foldBuildMode(prereqs?.builderMode) ? '詳細: ビルド方式（標準）' : 'ビルド方式（エキスパート）'}
+            </summary>
+            <div className="mt-2 space-y-1.5">
+              <div className="flex gap-2 text-xs">
+                <button onClick={() => switchMode('builtin')} disabled={modeSwitching}
+                  className={`px-2.5 py-1 rounded border ${!isDockerMode ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}>
+                  標準（Docker不要）
+                </button>
+                <button onClick={() => switchMode('docker')} disabled={modeSwitching}
+                  className={`px-2.5 py-1 rounded border ${isDockerMode ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}>
+                  エキスパート（自分のDockerfile・Docker使用）
+                </button>
+              </div>
+              <p className="text-[11px] text-ink-muted">
+                {isDockerMode
+                  ? 'あなたの Dockerfile を Docker でビルドします（RUN 等が使えます／Docker の導入が必要）。'
+                  : 'IDE 内蔵のビルダーで「土台＋あなたのファイル」を組み立てます（Docker 不要・準備ゼロ）。'}
+              </p>
             </div>
-            <p className="text-[11px] text-ink-muted">
-              {isDockerMode
-                ? 'あなたの Dockerfile を Docker でビルドします（RUN 等が使えます／Docker の導入が必要）。'
-                : 'IDE 内蔵のビルダーで「土台＋あなたのファイル」を組み立てます（Docker 不要・準備ゼロ）。'}
-            </p>
-          </div>
+          </details>
         )}
 
         {/* dockerfile ソースのときだけ前提チェックリストを表示（いずれか✗なら構築不可） */}
@@ -1273,7 +1302,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
                   : prereqReason || ''
             }
             className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-          >🚀 公開する（作成・更新）</button>
+          >{publishButtonLabel(published)}</button>
           <button
             onClick={askTeardown}
             disabled={busy || !keyReady}
@@ -1303,8 +1332,9 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
           </p>
         )}
 
-        {/* 構築中の進捗（最新行＋スピナー） */}
-        {busy && progress && (
+        {/* 構築中の進捗（最新行＋スピナー）。🚀 を押した直後の「公開前に確かめています…」
+            （startApply 冒頭の自動 preflight・判断5）も、busy になる前にここへ出る。 */}
+        {(busy || planning) && progress && (
           <div className="rounded-lg border border-line bg-overlay px-3 py-2 flex items-center gap-2">
             <span className="inline-block w-3.5 h-3.5 border-2 border-sakura border-t-transparent rounded-full animate-spin" />
             <span className="text-xs text-ink-secondary leading-relaxed break-all">{progress}</span>
@@ -1340,7 +1370,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
 
         {/* 実行結果。親切カード（名前衝突/作成上限）が主役のケースでは、生の失敗メッセージ本体を
             折りたたみに降格する（所見17: 親切カードと生エラーの二重表示の解消）。 */}
-        {opResult && <OpResultView result={opResult} demoted={conflictCardShown || limitCardShown} />}
+        {opResult && <OpResultView result={opResult} demoted={conflictCardShown || limitCardShown} kind={opKind} target="さくらのAppRun" />}
         {/* 「困ったときだけ現れる」導線。push が401、または別プロジェクトのレジストリを
             指しているときに main が hint を付けてくる。押すと ensureRegistry をやり直し、
             このプロジェクトのレジストリと push 用パスワードを整える。 */}
@@ -1442,7 +1472,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
               <>
                 <p className="text-xs font-semibold text-ink">✅ レジストリが整いました</p>
                 <p className="text-[11px] text-ink-secondary leading-relaxed">
-                  上の「🚀 公開する（作成・更新）」をもう一度押してください。
+                  上の「{publishButtonLabel(published)}」をもう一度押してください。
                 </p>
               </>
             ) : (
@@ -1463,10 +1493,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         )}
       </section>
 
-      {/* 公開URL（デプロイ済みのとき） */}
-      <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
+      {/* 公開URL（デプロイ済みのとき）。番号の無い補助の節（判断6・利用者目線レビュー・
+          2026-09-11）: 見出しの色・枠を薄くし「手順の外」と分かる見た目にする
+          （番号付きの節の見た目は変えない）。 */}
+      <section className="rounded-xl border border-line-soft bg-surface p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">🌐 公開URL</p>
+          <p className="text-sm font-semibold text-ink-secondary">🌐 公開URL</p>
           <button onClick={refreshUrl} disabled={urlLoading || !spec} className="text-xs text-ink-muted hover:underline disabled:opacity-50">
             {urlLoading ? '取得中…' : '↻ 更新'}
           </button>
@@ -1480,11 +1512,13 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         ) : (
           <p className="text-xs text-ink-muted">{urlLoading ? '取得中…' : 'まだ公開URLはありません（公開すると表示されます）。'}</p>
         )}
-        {/* 公開したら必ず目に入る場所に、止まらない費用を書く。破棄画面まで来ない人が大半のため
-            （2026-08-06 ユーザー指摘: アプリを消してもレジストリが残ると月額課金が続く）。 */}
+        {/* 公開したら必ず目に入る場所に、費用の案内を書く。破棄画面まで来ない人が大半のため
+            （2026-08-06 ユーザー指摘: アプリを消してもレジストリが残ると月額課金が続く）。
+            一般的な内訳（レジストリ・保存場所の金額）は「💰 想定される費用」に集約した
+            （判断4・2026-09-11）。ここは**リンクだけ**にし、重複した説明を持たない。 */}
         {appUrl && (
           <p className="text-[11px] text-ink-secondary leading-relaxed bg-overlay rounded-lg px-3 py-2">
-            💰 {ongoingCostNotice({ registryName, bucket: placement ? { name: placement.bucket, shared: placement.shared } : null })}
+            💰 費用の全体は「💰 想定される費用」を見てください。
           </p>
         )}
       </section>
@@ -1626,10 +1660,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
           プロジェクト側の「🕘 履歴（前の状態に戻す）」（ファイルのスナップショット）とは別物。 */}
       {appUrl && <RollbackSection projectDir={projectDir} refreshSignal={trafficRefreshSignal} stepNo="⑨" />}
 
-      {/* コスト（直近の確定請求額をベストエフォートで取得・表示のみ） */}
-      <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
+      {/* コスト（直近の確定請求額をベストエフォートで取得・表示のみ）。番号の無い補助の節
+          （判断6・利用者目線レビュー・2026-09-11）: 🌐 公開URL と同じく薄い見た目にする。 */}
+      <section className="rounded-xl border border-line-soft bg-surface p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">💰 コスト</p>
+          <p className="text-sm font-semibold text-ink-secondary">💰 コスト</p>
           <button onClick={refreshCost} disabled={costLoading} className="text-xs text-ink-muted hover:underline disabled:opacity-50">
             {costLoading ? '取得中…' : '実額を取得'}
           </button>
@@ -1641,6 +1676,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         )}
         {!cost && <p className="text-[11px] text-ink-muted">「実額を取得」で直近に確定したクラウドの請求額を確認できます。</p>}
       </section>
+      {confirmElement}
     </div>
   )
 }
@@ -1702,10 +1738,15 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
     if (nameInput.trim() && nameInput !== spec.name) onRename(nameInput)
   }
 
+  // ── 常時表示は4項目だけ（判断6・利用者目線レビュー・2026-09-11）────────────────
+  // どれを常時表示にするかは specSummaryPrimaryKeys() に一元化してある（掟10）。
+  // 残り（実行環境・地域・サービス設定）は「詳細を見る」の <details> に入れる。
+  const [primaryLabel, scaleLabelText, storageLabel, ttlLabel] = specSummaryPrimaryKeys()
+
   return (
     <div className="space-y-2">
       <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1.5 text-xs">
-        <dt className="text-ink-muted">公開名</dt>
+        <dt className="text-ink-muted">{primaryLabel}</dt>
         <dd className="text-ink font-medium break-all">
           {editingName ? (
             <div className="flex items-center gap-1.5">
@@ -1739,19 +1780,7 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
             </span>
           )}
         </dd>
-        <dt className="text-ink-muted">実行環境</dt><dd className="text-ink">{spec.backend}</dd>
-        <dt className="text-ink-muted">地域</dt>
-        <dd className="text-ink">
-          {spec.region}
-          <span className="block text-[11px] text-ink-muted mt-1 leading-relaxed">
-            ※ どのゾーン経由でも同じ結果になります（コンテナレジストリは全ゾーン共通のため。2026-09-08 に4ゾーンで実測）。ここで選ぶ必要はありません。
-          </span>
-        </dd>
-        <dt className="text-ink-muted">サービス設定</dt>
-        <dd className="text-ink break-all">
-          port {spec.service.port} ／ <span className="font-mono">{sourceText}</span>
-        </dd>
-        <dt className="text-ink-muted">起動</dt>
+        <dt className="text-ink-muted">{scaleLabelText}</dt>
         <dd className="text-ink">
           {(() => {
             // 表示は3値（cold/warm/unknown）。scaleChoice の cold への安全側フォールバックを
@@ -1781,20 +1810,23 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
                         <> <a href={getTargetProfile('sakura-apprun').serviceUrl} className="text-sakura hover:underline">公式サイトを見る ↗</a></>
                       )}</>
                     : display === 'cold'
-                      ? 'アクセスが無い間は止まり、課金されません（最初のアクセスだけ起動を待ちます）。'
+                      // scaleLabel（src/shared/scaleDecision.ts）と同じ言い回しに揃える（判断4・
+                      // 2026-09-11）。以前の言い切り表現はやめ、scaleLabel の「安い」に統一する
+                      // ——止まっている間の実額を確かめたわけではないため。
+                      ? `${scaleLabel(0)}。アクセスが無い間は止まります（最初のアクセスだけ起動を待ちます）。`
                       : 'いまの設定を判断できません（env.json を確認してください）。'}
                 </p>
               </div>
             )
           })()}
         </dd>
-        <dt className="text-ink-muted">保存場所</dt>
+        <dt className="text-ink-muted">{storageLabel}</dt>
         <dd className="text-ink break-all">
           {spec.persistence.objectStorage.length === 0
             ? <span className="text-ink-muted">なし</span>
             : spec.persistence.objectStorage.map(b => b.bucket).join('、 ')}
         </dd>
-        <dt className="text-ink-muted">期限(TTL)</dt>
+        <dt className="text-ink-muted">{ttlLabel}</dt>
         <dd className="text-ink">
           <select
             value={ttl}
@@ -1812,6 +1844,26 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
           </span>
         </dd>
       </dl>
+
+      {/* 残り（実行環境・地域・サービス設定）は「詳細を見る」に入れる（判断6・2026-09-11）。 */}
+      <details>
+        <summary className="cursor-pointer select-none text-xs font-medium text-sakura hover:underline">詳細を見る</summary>
+        <dl className="mt-2 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1.5 text-xs">
+          <dt className="text-ink-muted">実行環境</dt><dd className="text-ink">{spec.backend}</dd>
+          <dt className="text-ink-muted">地域</dt>
+          <dd className="text-ink">
+            {spec.region}
+            <span className="block text-[11px] text-ink-muted mt-1 leading-relaxed">
+              ※ どのゾーン経由でも同じ結果になります（コンテナレジストリは全ゾーン共通のため。2026-09-08 に4ゾーンで実測）。ここで選ぶ必要はありません。
+            </span>
+          </dd>
+          <dt className="text-ink-muted">サービス設定</dt>
+          <dd className="text-ink break-all">
+            port {spec.service.port} ／ <span className="font-mono">{sourceText}</span>
+          </dd>
+        </dl>
+      </details>
+
       <div className="flex items-center gap-2 pt-1">
         <button
           onClick={onEdit}
@@ -1866,8 +1918,10 @@ function PlanView({ plan }: { plan: CloudPlan }) {
 // ── apply / teardown の結果表示 ──
 // detail は失敗時の生ログ（stderr要約等・診断用・所見12）。文言に混ぜず <details>「詳細を見る」で折りたたむ。
 // demoted=true（名前衝突/作成上限の親切カードが主役のケース・所見17）ではブロックごと折りたたみに降格する。
-function OpResultView({ result, demoted = false }: { result: { ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; pending?: boolean; verifyNote?: string }; demoted?: boolean }) {
+function OpResultView({ result, demoted = false, kind, target }: { result: { ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; pending?: boolean; verifyNote?: string }; demoted?: boolean; kind: AskAiFailureKind; target: string }) {
   const copyText = [result.message, result.detail].filter(Boolean).join('\n')
+  // 判断2: 失敗のときだけ「🤖 AIに相談する」を、既存の内容の下に添える（成功時には出さない）。
+  const askAiText = result.ok ? null : askAiAboutFailure(kind, target, result.message ?? '失敗しました', result.detail)
   // **「失敗しました」と言い切らない場合がある**（2026-08-14 Ryosuke 指摘）。
   // 公開そのものは終わっていて、アプリの起動確認が48秒に間に合わなかっただけのとき、
   // 実機ではサイトが開けていた。それを赤い「失敗」と書くのは事実に反する。
@@ -1912,6 +1966,14 @@ function OpResultView({ result, demoted = false }: { result: { ok: boolean; exec
             {result.skipped.map((s, i) => <li key={i}>{s}</li>)}
           </ul>
         </div>
+      )}
+      {askAiText && (
+        <button
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text: askAiText } }))
+          }}
+          className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+        >🤖 AIに相談する</button>
       )}
     </div>
   )

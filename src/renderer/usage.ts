@@ -16,8 +16,8 @@
 // 実体は shared へ移した（B'-3b）。MODELS / VISION_MODELS / modelLabel / pickBestModel /
 // estimateTokens は src/shared/modelInfo.ts を参照。ここでは他の関数が使うぶんを import し、
 // 従来どおりの公開API（MODELS 等）は re-export で維持する。
-import { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens } from '../shared/modelInfo'
-export { MODELS, VISION_MODELS, modelLabel, pickBestModel, estimateTokens }
+import { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, purposeLabel, orderModelsForPicker } from '../shared/modelInfo'
+export { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, purposeLabel, orderModelsForPicker }
 
 // isVisionModel / DEFAULT_VISION_MODEL は B'-3d-1a で shared/modelInfo.ts へ移した
 // （main のターン実行と両方が使うため。複製しない＝掟10）。ここは従来の呼び出し側のために re-export する。
@@ -81,7 +81,7 @@ export type ChatMode = 'ide' | 'chat'
 // IDE（コード/エージェント）は品質重視、チャット（会話/調査）は速度重視を既定にする。
 // ※ バージョンアップ時は npm run check:models / probe:models で見直すこと
 // （DEFAULT_MODEL 本体は pickBestModel と一緒に src/shared/modelInfo.ts へ移した。B'-3b）
-const DEFAULT_CHAT_MODEL = 'preview/gemma-4-31B-it'    // チャット既定（高速）。2026-09-04 実測 478ms・tools ok
+export const DEFAULT_CHAT_MODEL = 'preview/gemma-4-31B-it'    // チャット既定（高速）。2026-09-04 実測 478ms・tools ok
 
 export function getDefaultModel(mode: ChatMode = 'ide'): string {
   return localStorage.getItem(MODEL_PREF_KEY[mode])

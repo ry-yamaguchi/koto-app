@@ -7,6 +7,9 @@ import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import CopyButton from './CopyButton'
 import { clearPublishRecord } from '../publishRecord'
+import { askAiAboutFailure, type AskAiFailureKind } from '../../shared/askAi'
+import { publishButtonLabel } from '../../shared/publishLabels'
+import AccessKeySection from './AccessKeySection'
 
 // HANAMII の公開名の文字数上限。HANAMII 側の公開APIリファレンス（hanamii.jp/docs/api）には
 // 名前の上限が明記されていないが、HANAMII は AppRun 基盤上で動く（コンテナをビルドし EXPOSE から
@@ -106,6 +109,9 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   const [msg, setMsg] = useState('')
   // 失敗時の生API応答（JSON短縮・診断用・所見11）。主表示（msg）とは分け、折りたたみ「詳細を見る」で見せる。
   const [msgDetail, setMsgDetail] = useState('')
+  // msg がどの操作の失敗か（判断2・「🤖 AIに相談する」の定型文に使う kind）。publish/teardown が
+  // 同じ msg を共有するため、setMsg とあわせて各操作の先頭で立てる。
+  const [msgKind, setMsgKind] = useState<AskAiFailureKind>('公開')
   // 直近に公開を試みた名前（衝突時の代替名提案のベースにする）。
   const [lastAttemptedName, setLastAttemptedName] = useState('')
   const [confirmDel, setConfirmDel] = useState(false)
@@ -288,6 +294,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   // nameOverride: 衝突時の「代替名で公開し直す」ボタンから、state 更新の反映待ちをせず即座に使う名前を渡すため。
   const publish = async (nameOverride?: string) => {
     setMsgDetail('')
+    setMsgKind('公開')
     if (!token) { setMsg('先に「認証情報」で HANAMII トークンを登録してください'); return }
     if (!workspaceId) { setMsg('ワークスペースを選択してください'); return }
     const { sendEnvs, persistEnvs, healthCheck, emptySecretKey } = buildEnvsAndHealthCheck(envs, hcEnabled, hcPath)
@@ -332,16 +339,20 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   const [restarting, setRestarting] = useState(false)
   const [restartMsg, setRestartMsg] = useState('')
   const [restartMsgDetail, setRestartMsgDetail] = useState('')
+  // restartMsg は成功（noop・反映しました）でも失敗でも使う共有欄。ErrorMessageBlock の
+  // 「🤖 AIに相談する」を成功時に出さないため（判断2）、失敗かどうかをここで別に持つ。
+  const [restartOk, setRestartOk] = useState(true)
 
   const doRestart = async () => {
     if (!projectId || !token) return
-    setRestartMsg(''); setRestartMsgDetail('')
+    setRestartMsg(''); setRestartMsgDetail(''); setRestartOk(true)
     const { sendEnvs, persistEnvs, healthCheck, emptySecretKey } = buildEnvsAndHealthCheck(envs, hcEnabled, hcPath)
-    if (emptySecretKey) { setConfirmRestart(false); setRestartMsg(`シークレット環境変数「${emptySecretKey}」の値が未入力です。値を入力してから再起動してください。`); return }
+    if (emptySecretKey) { setConfirmRestart(false); setRestartOk(false); setRestartMsg(`シークレット環境変数「${emptySecretKey}」の値が未入力です。値を入力してから再起動してください。`); return }
     setRestarting(true)
     const r = await window.electronAPI.hanamii.restart(projectId, { token, envs: sendEnvs, healthCheck })
     setRestarting(false); setConfirmRestart(false)
-    if (!r.ok) { setRestartMsg(r.message ?? '再起動に失敗しました'); setRestartMsgDetail(r.detail ?? ''); return }
+    if (!r.ok) { setRestartOk(false); setRestartMsg(r.message ?? '再起動に失敗しました'); setRestartMsgDetail(r.detail ?? ''); return }
+    setRestartOk(true)
     setRestartMsg(r.noop ? '設定に変更がなかったため、再起動は不要でした。' : '✅ 再起動して設定を反映しました。')
     await saveHanamiiMeta({ envs: persistEnvs, healthCheck: { enabled: healthCheck.enabled, path: healthCheck.path } })
   }
@@ -371,6 +382,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   const teardown = async () => {
     if (!projectId || !token) return
     setMsg(''); setMsgDetail('')
+    setMsgKind('破棄')
     const r = await window.electronAPI.hanamii.teardown(projectId, token)
     if (r.ok) {
       await saveHanamiiMeta({ projectId: null })
@@ -402,42 +414,33 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         )}
       </div>
 
-      {/* ① 認証情報（トークンは「認証情報」で一元管理） */}
-      <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
-        <p className="text-sm font-semibold text-ink">① APIトークン</p>
-        {!tokenLoaded ? (
-          <p className="text-xs text-ink-muted">確認中…</p>
-        ) : token ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-brand-green font-semibold">✓ 認証情報に HANAMII トークンが登録済み</span>
-              <button onClick={onOpenCredentials} className="text-xs text-ink-muted hover:text-ink">認証情報を開く</button>
-            </div>
-            {tokens && tokens.length > 1 && (
-              <div className="flex items-center gap-2">
-                <label className="text-[11px] text-ink-secondary flex-none">使うトークン</label>
-                <select
-                  value={tokenId}
-                  onChange={e => switchToken(e.target.value)}
-                  className="flex-1 bg-surface border border-line rounded-lg px-2 py-1.5 text-xs text-ink outline-none focus:border-sakura"
-                >
-                  {tokens.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                </select>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-ink-secondary leading-relaxed">
-              HANAMII の管理画面で発行したAPIトークン（<span className="font-mono">hnm_…</span>）を「認証情報」で登録してください（他のキーと同じ場所で一元管理します）。
-            </p>
-            <button
-              onClick={onOpenCredentials}
-              className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90"
-            >🔑 認証情報を開いて登録</button>
+      {/* ① APIトークン（AccessKeySection に統一・判断8） */}
+      <AccessKeySection
+        stepNo="①"
+        serviceTitle="HANAMII"
+        keyLabel="APIトークン"
+        registered={!!token}
+        onOpenCredentials={onOpenCredentials}
+      >
+        {!tokenLoaded && <p className="text-xs text-ink-muted">確認中…</p>}
+        {tokenLoaded && !token && (
+          <p className="text-xs text-ink-secondary leading-relaxed">
+            HANAMII の管理画面で発行したAPIトークン（<span className="font-mono">hnm_…</span>）を登録してください（他のキーと同じ場所で一元管理します）。
+          </p>
+        )}
+        {tokenLoaded && token && tokens && tokens.length > 1 && (
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] text-ink-secondary flex-none">使うトークン</label>
+            <select
+              value={tokenId}
+              onChange={e => switchToken(e.target.value)}
+              className="flex-1 bg-surface border border-line rounded-lg px-2 py-1.5 text-xs text-ink outline-none focus:border-sakura"
+            >
+              {tokens.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
           </div>
         )}
-      </section>
+      </AccessKeySection>
 
       {/* ② ワークスペース */}
       {token && (
@@ -461,10 +464,12 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         </section>
       )}
 
-      {/* ②' 環境変数（任意） */}
+      {/* 環境変数（任意）。番号の無い補助の節（判断8・掟5「必ず通る節に番号、任意の設定・
+          補助情報は無番号」2026-09-11 基準化）: 見出しの色・枠を薄くし「手順の外」と分かる
+          見た目にする（番号付きの節の見た目は変えない・AppRun 共用型の「🌐 公開URL」と同じ形）。 */}
       {token && (
-        <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
-          <p className="text-sm font-semibold text-ink">環境変数（任意）</p>
+        <section className="rounded-xl border border-line-soft bg-surface p-4 space-y-2">
+          <p className="text-sm font-semibold text-ink-secondary">環境変数（任意）</p>
           <p className="text-[11px] text-ink-muted leading-relaxed">
             アプリに渡すキーと値。APIキーなど秘密の値は「シークレット」に。シークレットは端末に保存されないため、公開のたびに入力が必要です。
           </p>
@@ -524,10 +529,10 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         </section>
       )}
 
-      {/* ②'' ヘルスチェック（任意） */}
+      {/* ヘルスチェック（任意）。番号の無い補助の節（判断8・2026-09-11 基準化）。 */}
       {token && (
-        <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
-          <p className="text-sm font-semibold text-ink">ヘルスチェック（任意）</p>
+        <section className="rounded-xl border border-line-soft bg-surface p-4 space-y-2">
+          <p className="text-sm font-semibold text-ink-secondary">ヘルスチェック（任意）</p>
           <p className="text-[11px] text-ink-muted leading-relaxed">
             アプリが正常に動いているか、公開後に自動で確認するパス（任意）。
           </p>
@@ -614,7 +619,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
             onClick={() => publish()}
             disabled={busy || !workspaceId}
             className="w-full sakura-gradient text-white rounded-lg px-4 py-2.5 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-          >{busy ? '公開中…' : projectId ? '🚀 再公開する（最新の内容を反映）' : '🚀 公開する'}</button>
+          >{busy ? '公開中…' : publishButtonLabel(!!projectId)}</button>
 
           {/* 公開名の衝突（重複）時: ワンクリックで代替名に変えて公開し直す（初回公開のみ。redeploy は対象外）。 */}
           {conflictCardShown && (
@@ -655,7 +660,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
                   title="コード変更は反映されません。ビルドし直しが必要な場合は「再公開する」を使ってください。"
                 >🔄 再起動して反映（env・ヘルスチェックのみ・ビルドし直しなし）</button>
               )}
-              {restartMsg && <ErrorMessageBlock msg={restartMsg} detail={restartMsgDetail} demoted={false} />}
+              {restartMsg && <ErrorMessageBlock msg={restartMsg} detail={restartMsgDetail} demoted={false} kind="再公開" target="HANAMII" ok={restartOk} />}
             </div>
           )}
 
@@ -763,7 +768,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         </section>
       )}
 
-      {msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} />}
+      {msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} kind={msgKind} target="HANAMII" />}
     </div>
   )
 }
@@ -772,8 +777,12 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
 // - detail（生API応答のJSON短縮）があれば <details>「詳細を見る」で折りたたみ表示する（所見11:
 //   生JSONを文言に混ぜない。ただし過去に原因究明で役立った実績があるため、折りたたみで残す）。
 // - demoted=true（名前衝突カード等の親切カードが主役のケース・所見17）ではメッセージ本体ごと折りたたみに降格する。
-function ErrorMessageBlock({ msg, detail, demoted }: { msg: string; detail: string; demoted: boolean }) {
+function ErrorMessageBlock({ msg, detail, demoted, kind, target, ok = false }: { msg: string; detail: string; demoted: boolean; kind: AskAiFailureKind; target: string; ok?: boolean }) {
   const copyText = detail ? `${msg}\n${detail}` : msg
+  // 判断2: 「🤖 AIに相談する」を既存の内容の下に添える。成功時（ok=true）には出さない——
+  // このブロックは主に失敗専用（msg）だが、HANAMIIの「🔄 再起動」だけは成功メッセージも
+  // 同じ欄（restartMsg）に流すため、ok を明示的に受け取る（既定 false=失敗）。
+  const askAiText = ok ? null : askAiAboutFailure(kind, target, msg, detail)
   const body = (
     <>
       <div className="flex items-start gap-2">
@@ -792,6 +801,14 @@ function ErrorMessageBlock({ msg, detail, demoted }: { msg: string; detail: stri
       )}
       {detail && demoted && (
         <pre className="text-[11px] text-ink-muted font-mono leading-relaxed whitespace-pre-wrap break-all select-text">{detail}</pre>
+      )}
+      {askAiText && (
+        <button
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text: askAiText } }))
+          }}
+          className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+        >🤖 AIに相談する</button>
       )}
     </>
   )

@@ -85,7 +85,7 @@ export default function TitleBar({
               title="GitHubに保存（バックアップ・共有）"
               className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
             >
-              💾 保存
+              💾 GitHubに保存
             </button>
             {/* 「前の方が良かった」ときの戻し先。サイドバーの🕘だけでは見つけてもらえなかったため
                 （2026-08-05 利用者フィードバック）、上部にも文字付きで置く。 */}

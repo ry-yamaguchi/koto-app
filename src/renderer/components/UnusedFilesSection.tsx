@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
 import type { UnusedRuntime } from '../../shared/unusedFiles'
+import { foldUnused } from '../appRunFolding'
+import { useConfirm } from '../useConfirm'
 
 // 🧹 未使用ファイルの節（roadmap #18）。公開フローの4パネル（PublishModal / AppRunPanel /
 // HanamiiPanel / VercelPanel）に、SecurityCheckSection と同じ位置へ並べて埋め込む。
@@ -20,6 +22,8 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
   const [runtime, setRuntime] = useState<UnusedRuntime>('static')
   const [moving, setMoving] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  // 移動前の確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
+  const { confirm, element: confirmElement } = useConfirm()
 
   const check = useCallback(async (dir: string) => {
     try {
@@ -51,10 +55,14 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
   const move = async () => {
     const head = unused.slice(0, 8).map(f => `・${f}`).join('\n')
     const more = unused.length > 8 ? `\n・ほか ${unused.length - 8} 件` : ''
-    if (!window.confirm(
-      `使われていないかもしれないファイル ${unused.length} 件を「${MATERIALS_DIR}」へ移動します。\n\n${head}${more}\n\n`
-      + '🕘 履歴から元に戻せます。よろしいですか？'
-    )) return
+    const ok = await confirm({
+      title: '未使用ファイルを移動します',
+      body: `使われていないかもしれないファイル ${unused.length} 件を「${MATERIALS_DIR}」へ移動します。\n\n${head}${more}\n\n`
+        + '🕘 履歴から元に戻せます。よろしいですか？',
+      confirmLabel: '移動する',
+      danger: false,
+    })
+    if (!ok) return
     setMoving(true)
     setNote(null)
     try {
@@ -87,8 +95,17 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
         <p className="text-xs text-ink-secondary leading-relaxed">
           ⚠️ いまは確認できません（プロジェクトが選ばれていない可能性があります）。
         </p>
-      ) : unused.length === 0 ? (
-        <p className="text-xs text-ink-secondary">✅ すべてのファイルが、どこかのページ・コードから使われています。</p>
+      ) : foldUnused({ supported, unused }) ? (
+        // ③事前チェック（AppRunPanel.tsx）・④セキュリティチェックと同じ「全部✅→1行に畳む」
+        // 型を横展開する（判断6・2026-09-11。判断は foldUnused に一元化・掟10）。
+        <details className="text-xs">
+          <summary className="cursor-pointer select-none text-ink-secondary hover:text-ink">
+            ✅ 問題なし（内訳を見る）
+          </summary>
+          <p className="mt-1 text-[11px] text-ink-secondary leading-relaxed">
+            すべてのファイルが、どこかのページ・コードから使われています。
+          </p>
+        </details>
       ) : (
         <>
           <p className="text-xs text-ink">使われていないかもしれないファイルが {unused.length} 件あります</p>
@@ -115,6 +132,7 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
           className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
         >{moving ? '移動しています…' : '素材置き場へ移動'}</button>
       )}
+      {confirmElement}
     </section>
   )
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { scaleChoice, scaleMinFor, scaleDisplay } from '../src/renderer/components/AppRunPanel'
+import { scaleLabel } from '../src/shared/scaleDecision'
 
 // roadmap #31（共用型 AppRun の最小スケール選択）。
 //
@@ -119,11 +120,25 @@ describe('AppRunPanel.tsx: ②公開の設定に、最小スケールを選べ�
     expect(block).toContain("display === 'warm'")
     expect(block).toContain("display === 'cold'")
     expect(block).toContain('いまの設定を判断できません')
-    // cold の文言（課金されません）と unknown の文言は、同じ三項演算子の別の枝として
-    // 出ていること（display==='cold' の直後に続く文字列の中にだけ「課金されません」がある）
+    // cold の文言と unknown の文言は、同じ三項演算子の別の枝として出ていること
     const coldAt = block.indexOf("display === 'cold'")
     const coldBranch = block.slice(coldAt, block.indexOf('いまの設定を判断できません'))
-    expect(coldBranch).toContain('課金されません')
+    expect(coldBranch).toContain('アクセスが無い間は止まります')
+  })
+
+  // ── 判断4（利用者目線レビュー・2026-09-11）: 「起動のしかた」の説明を scaleLabel と揃える ──
+  // 以前は cold のとき「課金されません」と言い切っていたが、止まっている間の実額を
+  // 確かめたわけではないため、scaleLabel（src/shared/scaleDecision.ts）と同じ言い回し
+  // （「最初のアクセスが遅くてもよい（安い）」）に統一した。
+  it('★ cold の説明は scaleLabel(0) と同じ言い回しを使い、「課金されません」とは言い切らない', () => {
+    const at = panel.indexOf("const display = scaleDisplay(spec.service.scale.min)")
+    const end = panel.indexOf('})()', at)
+    const block = panel.slice(at, end)
+    const coldAt = block.indexOf("display === 'cold'")
+    const coldBranch = block.slice(coldAt, block.indexOf('いまの設定を判断できません'))
+    expect(coldBranch).toContain('scaleLabel(0)')
+    expect(coldBranch).not.toContain('課金されません')
+    expect(scaleLabel(0)).toBe('最初のアクセスが遅くてもよい（安い）')
   })
 
   // ── #31 の検分（2026-09-09）で見つかった【低】: リンク先とラベルの不一致 ──

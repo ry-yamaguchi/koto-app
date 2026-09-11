@@ -735,6 +735,7 @@ export default function App() {
                   onOpenFile={openFile}
                   onNewProject={() => setShowNewProject(true)}
                   onOpenHistory={() => setShowHistory(true)}
+                  onOpenPublishedList={() => setShowPublishedList(true)}
                   refreshKey={treeRefresh}
                 />
               </div>

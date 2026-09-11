@@ -6,7 +6,9 @@ import { readLimits, readWorkerClasses, readLbClasses, readClusters, readNextCur
 import { loadZones } from '../zonesCache'
 import { runCreate, runTeardown, shouldShowCreateResult, shouldShowTeardownResult } from '../apprunDedicatedActions'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
-import ConnectionChecklist from './ConnectionChecklist'
+import AccessKeySection from './AccessKeySection'
+import { askAiAboutFailure } from '../../shared/askAi'
+import { useConfirm } from '../useConfirm'
 
 // さくらのAppRun 専有型パネル（roadmap #23）。
 //
@@ -84,6 +86,78 @@ export function isValidResourceName(name: string): boolean {
 export const RESERVED_PORT_RANGE: readonly [number, number] = [5950, 5959]
 export function isReservedPort(port: number): boolean {
   return port >= RESERVED_PORT_RANGE[0] && port <= RESERVED_PORT_RANGE[1]
+}
+
+// ── ⑤フォームのエラー表示（判断7・利用者目線レビュー・2026-09-11）─────────────────
+//
+// 以前は formError という1本の文字列（早期returnの連鎖。最初に引っかかった条件だけを表示）
+// だった。ワーカプラン・ロードバランサプランは欄のすぐ下にも同じ趣旨の警告を別に出しており、
+// **同じ指摘が2か所に出る**うえ、**何も触っていない初期状態からいきなり赤字が出る**という
+// 指摘を受けた。欄ごとに独立して判定し（1本の早期returnにしない）、「触ったか」「送信したか」
+// で表示するかどうかを判断する（visibleFormErrors に一元化・掟10）。
+export type DedicatedFormField = 'clusterName' | 'resourceId' | 'ports' | 'zone' | 'workerPlan' | 'lbPlan' | 'nodes'
+export type DedicatedFormErrors = Partial<Record<DedicatedFormField, string>>
+export type DedicatedFormTouched = Partial<Record<DedicatedFormField, boolean>>
+
+/**
+ * ⑤フォームの入力チェック（欄ごとに独立。1つの欄に複数の問題があれば、最初に見つかったものだけを返す）。
+ * ワーカプラン／ロードバランサプランは、欄のすぐ下に既定選択なしの説明（「既定は選んでいません」）
+ * が常時出ているため、ここでも算出はするが（doCreate を止める判定に使う）、下の全体表示側には
+ * 出さない——同じ内容を2か所に出さないため（フィールド側の表示を優先する）。
+ */
+export function computeDedicatedFormErrors(input: {
+  clusterName: string
+  resourceId: string
+  ports: { port: number; protocol: 'http' | 'https' }[]
+  zone: string
+  selectedWorkerPath: string | null
+  selectedLbPath: string | null
+  minNodes: number
+  maxNodes: number
+}): DedicatedFormErrors {
+  const errors: DedicatedFormErrors = {}
+  const name = input.clusterName.trim()
+  if (!name) errors.clusterName = 'クラスタ名を入力してください'
+  else if (!isValidResourceName(name)) errors.clusterName = 'クラスタ名は1〜20文字の英数字・_・- で入力してください'
+
+  if (!input.resourceId.trim()) errors.resourceId = '②でサービスプリンシパルIDを入力してください'
+
+  if (input.ports.length === 0) errors.ports = '公開ポートを1つ以上指定してください'
+  else if (input.ports.some(p => !(p.port >= 1 && p.port <= 65535))) errors.ports = 'ポート番号は1〜65535で指定してください'
+  else if (input.ports.some(p => isReservedPort(p.port))) errors.ports = `ポート ${RESERVED_PORT_RANGE[0]}-${RESERVED_PORT_RANGE[1]} は予約されており使えません`
+
+  if (!input.zone.trim()) errors.zone = 'ゾーンを入力してください'
+
+  if (!input.selectedWorkerPath) errors.workerPlan = 'ワーカプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
+  if (!input.selectedLbPath) errors.lbPlan = 'ロードバランサプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
+
+  if (!(Number.isInteger(input.minNodes) && input.minNodes >= 1 && input.minNodes <= 10)) errors.nodes = 'ノード数（min）は1〜10で指定してください'
+  else if (!(Number.isInteger(input.maxNodes) && input.maxNodes >= 1 && input.maxNodes <= 10)) errors.nodes = 'ノード数（max）は1〜10で指定してください'
+  else if (input.minNodes > input.maxNodes) errors.nodes = 'ノード数は min ≦ max にしてください'
+
+  return errors
+}
+
+/**
+ * ⑤フォームの警告のうち、**いま画面に出してよいもの**だけを選ぶ（判断7・2026-09-11）。
+ *
+ * - 初期状態（touched が空・submitted===false）では何も返さない
+ *   （未入力なのは当たり前で、開いた瞬間に赤字を並べても指摘にならない）。
+ * - 触った欄があれば、**その欄の分だけ**返す（他の未入力欄はまだ黙っている）。
+ * - 「作成する」を押した後（submitted）は、触っていない欄も含めて**全部**返す
+ *   （ここで初めて「何が足りないか」を総ざらいする）。
+ */
+export function visibleFormErrors(
+  errors: DedicatedFormErrors,
+  touched: DedicatedFormTouched,
+  submitted: boolean,
+): DedicatedFormErrors {
+  if (submitted) return errors
+  const visible: DedicatedFormErrors = {}
+  for (const key of Object.keys(errors) as DedicatedFormField[]) {
+    if (touched[key]) visible[key] = errors[key]
+  }
+  return visible
 }
 
 // ── ⑤ ゾーン選択（roadmap #28: GET /zone の一覧から選ぶ。5-9） ─────────────────────
@@ -181,6 +255,35 @@ export function pickCheapestLbPlan(plans: readonly PlanRow[] | null | undefined)
   return pool.reduce((cheapest, p) =>
     totalMonthlyYenForPlan(p)! < totalMonthlyYenForPlan(cheapest)! ? p : cheapest
   )
+}
+
+/**
+ * 「月◯万円〜」という短い見積り文（判断4・利用者目線レビュー・2026-09-11）。
+ *
+ * PublishModal のタブ直下・このパネルの冒頭など、**まだ何も選んでいない段階**（プランを
+ * 取得する前）でも「だいたいいくらか」を示すための短い文。priceSummary（⑤の確認ダイアログ
+ * 用の詳しい内訳）とは別物——ここは**最安のワーカ1台＋ロードバランサ（非冗長なら1台）の
+ * 合計を万円単位に切り下げて示すだけ**。
+ *
+ * これ以前は「月2万円〜」「22,000円」等の金額を各所にハードコードしていた（料金表の実際の
+ * 値を反映しない・改定に追従しない）。**金額は必ず pickCheapestWorkerPlan / pickCheapestLbPlan
+ * と料金表（monthlyYenForPlanPath）から計算する**。プランをまだ取得できていない（引数が
+ * null、または額を引けるプランが無い）ときは、**金額を推測して埋めない**
+ * （掟1・2026-08-14「既定値が、勝手に課金を生むことがある」と同じ理由）。
+ */
+export function cheapestMonthlyText(plans: {
+  workerPlans: readonly PlanRow[] | null | undefined
+  lbPlans: readonly PlanRow[] | null | undefined
+}): string {
+  const worker = pickCheapestWorkerPlan(plans.workerPlans)
+  const lb = pickCheapestLbPlan(plans.lbPlans)
+  if (!worker || !lb) return '月額はプランを取得すると表示されます'
+  const workerYen = monthlyYenForPlanPath(worker.path)
+  const lbYen = monthlyYenForPlanPath(lb.path)
+  if (workerYen == null || lbYen == null) return '月額はプランを取得すると表示されます'
+  const total = workerYen + lbYen * (lb.nodeCount ?? 1)
+  const manYen = Math.floor(total / 10000)
+  return manYen > 0 ? `月${manYen}万円〜` : `月額${total.toLocaleString('ja-JP')}円〜`
 }
 
 /**
@@ -631,6 +734,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const [letsEncryptEmail, setLetsEncryptEmail] = useState('')
   const [creating, setCreating] = useState(false)
   const [createResult, setCreateResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['create']>> | null>(null)
+  // ⑤フォームの警告表示（判断7・2026-09-11）: どの欄を「触った」か、「作成」を押したか。
+  // visibleFormErrors（本ファイル上部の純関数）がこの2つと errors から表示可否を決める。
+  const [touched, setTouched] = useState<DedicatedFormTouched>({})
+  const [submitted, setSubmitted] = useState(false)
 
   // プランが取得できたら（③の「調べる」の後）既定を選んでおく。一度選んだら上書きしない。
   // **既定は「料金表で引ける中の最安」**（roadmap #26）。額を引けないプランは既定にしない
@@ -685,33 +792,44 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
   // 押す前にまとめて確かめる（掟5: 破壊操作は確認ダイアログ。ここは「常時課金の開始」という
   // 意味で同じ強さの確認を挟む）。入力が揃っていない間はボタンを押せない。
-  const formError: string | null = (() => {
-    const name = clusterName.trim()
-    if (!name) return 'クラスタ名を入力してください'
-    if (!isValidResourceName(name)) return 'クラスタ名は1〜20文字の英数字・_・- で入力してください'
-    if (!resourceId.trim()) return '②でサービスプリンシパルIDを入力してください'
-    if (ports.length === 0) return '公開ポートを1つ以上指定してください'
-    if (ports.some(p => !(p.port >= 1 && p.port <= 65535))) return 'ポート番号は1〜65535で指定してください'
-    if (ports.some(p => isReservedPort(p.port))) return `ポート ${RESERVED_PORT_RANGE[0]}-${RESERVED_PORT_RANGE[1]} は予約されており使えません`
-    if (!effectiveZone.trim()) return 'ゾーンを入力してください'
-    if (!selectedWorkerPath) return 'ワーカプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
-    if (!selectedLbPath) return 'ロードバランサプランを選んでください（③で「調べる」を押していない場合は先に押してください）'
-    if (!(Number.isInteger(minNodes) && minNodes >= 1 && minNodes <= 10)) return 'ノード数（min）は1〜10で指定してください'
-    if (!(Number.isInteger(maxNodes) && maxNodes >= 1 && maxNodes <= 10)) return 'ノード数（max）は1〜10で指定してください'
-    if (minNodes > maxNodes) return 'ノード数は min ≦ max にしてください'
-    return null
-  })()
+  //
+  // 判断ロジック（欄ごとの判定・touched/submitted による表示可否）は
+  // computeDedicatedFormErrors / visibleFormErrors に一元化してある（判断7・2026-09-11・掟10）。
+  // hasErrors（doCreate を止めるかどうか）は touched/submitted に関係なく常に全欄を見る
+  // ——「まだ表示していない」ことと「送信してよい」ことは別（表示を遅らせても、検証までは
+  // 遅らせない）。
+  const errors = computeDedicatedFormErrors({
+    clusterName, resourceId, ports, zone: effectiveZone,
+    selectedWorkerPath, selectedLbPath, minNodes, maxNodes,
+  })
+  const hasErrors = Object.keys(errors).length > 0
+  const visible = visibleFormErrors(errors, touched, submitted)
+  // ワーカプラン／ロードバランサプランは欄のすぐ下に既定選択なしの専用説明を常に出しているため、
+  // ここ（全体側）には出さない——同じ内容を2か所に出さないため（フィールド側の表示を優先する）。
+  const generalErrors = (Object.keys(visible) as DedicatedFormField[])
+    .filter(k => k !== 'workerPlan' && k !== 'lbPlan')
+    .map(k => visible[k] as string)
+  const touch = (field: DedicatedFormField) => setTouched(t => (t[field] ? t : { ...t, [field]: true }))
 
   // ⑤⑥の「確認→IPC」本体は apprunDedicatedActions.ts の純関数（runCreate/runTeardown）に
   // 切り出してある（2026-09-10 レビューの修理・J・rollbackSwitch.ts と同型）。ここ（doCreate/
-  // doTeardown）はそれを呼ぶ薄い皮——confirm に window.confirm を、activity に
+  // doTeardown）はそれを呼ぶ薄い皮——confirm に ConfirmModal の答えを、activity に
   // beginActivity（src/renderer/activity.ts）を注入するだけで、「確認が false なら
   // create/teardown を一度も呼ばない」「実行中は必ず活動レジストリへ計上する」歯止め自体は
   // ここには無い（tests/apprunDedicatedActions.test.ts が偽 confirm/create/teardown/activity で
   // 固定する。K・2026-09-10 レビューの修理・バッチ3——共用型の公開処理と同じく、作成・破棄の
   // 実行中は main の isBusy を立て、自動更新の「いますぐ再起動」が作業中を拒否できるようにする）。
+  //
+  // ── window.confirm → ConfirmModal（判断9・2026-09-11）─────────────────────
+  // runCreate/runTeardown は `deps.confirm(message)` を**同期の boolean**として扱う
+  // （apprunDedicatedActions.ts の歯止めロジックは変更しない・掟10）。ConfirmModal は
+  // React の状態更新とクリック待ちを伴うため本質的に非同期——そこで確認そのものは
+  // ここで `await confirm(...)` として**先に**済ませ、runCreate/runTeardown へは
+  // 「もう確定した答え」を返すだけの同期関数（`() => ok`）を渡す。
+  const { confirm, element: confirmElement } = useConfirm()
+
   const doCreate = async () => {
-    if (formError || creating) return
+    if (hasErrors || creating) return
     const spec = {
       name: clusterName.trim(),
       ports,
@@ -722,11 +840,13 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       minNodes, maxNodes,
       lbServiceClassPath: selectedLbPath as string,
     }
+    const confirmMessage = `${price.text}\n\nこの費用が毎月かかります。よろしいですか？`
     try {
+      const ok = await confirm({ title: '専有型クラスタを作成します', body: confirmMessage, confirmLabel: '作成する', danger: true })
       const outcome = await runCreate(
-        { confirmMessage: `${price.text}\n\nこの費用が毎月かかります。よろしいですか？`, spec },
+        { confirmMessage, spec },
         {
-          confirm: (m) => window.confirm(m),
+          confirm: () => ok,
           activity: { begin: () => beginActivity('専有型クラスタの作成', { closeWarning: PUBLISH_CLOSE_WARNING }) },
           create: async (s, opts) => {
             // B-2（2026-09-10実機）: 新しい⑤の作成を始めたら、⑥の古い結果表示は消す
@@ -768,11 +888,13 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       apprunState?.asgID ? `オートスケーリンググループ『${apprunState.asgID}』` : null,
       apprunState?.clusterID ? `クラスタ『${apprunState.clusterID}』` : null,
     ].filter(Boolean).join('・')
+    const confirmMessage = `次を削除します: ${targets}\n\nこの操作は元に戻せません。消さない限り課金が続きます。よろしいですか？`
     try {
+      const ok = await confirm({ title: '⚠️ 専有型クラスタを破棄します', body: confirmMessage, confirmLabel: '破棄する', danger: true })
       const outcome = await runTeardown(
-        { confirmMessage: `次を削除します: ${targets}\n\nこの操作は元に戻せません。消さない限り課金が続きます。よろしいですか？` },
+        { confirmMessage },
         {
-          confirm: (m) => window.confirm(m),
+          confirm: () => ok,
           activity: { begin: () => beginActivity('専有型クラスタの破棄', { closeWarning: PUBLISH_CLOSE_WARNING }) },
           teardown: async (opts) => {
             setTearingDown(true); setTeardownResult(null); setTeardownProgress(null)
@@ -862,6 +984,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // ── 初期化 ──────────────────────────────────────────────────
   useEffect(() => {
     refreshKey(); refreshCloudKeys(); refreshApprunState(); refreshTelemetry()
+    setTouched({}); setSubmitted(false)
     ;(async () => {
       const m = await readMeta()
       const v = m.publish?.apprunDedicated
@@ -904,10 +1027,17 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
   return (
     <div className="space-y-3">
+      {/* 専有型の注意文（常時課金・アプリ公開はまだ）は、以前は
+          PublishModal.tsx のタブ直下・このパネルの冒頭・④の冒頭の3か所にほぼ同文で出ており、
+          利用者目線レビューで重複を指摘された。ここ1か所に一本化する（判断4・2026-09-11）。 */}
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
         <p className="text-sm font-semibold text-ink">📦 さくらのAppRun 専有型</p>
+        <p className="text-xs font-semibold text-brand-red leading-relaxed">
+          ⚠️ 最小構成でも{cheapestMonthlyText({ workerPlans, lbPlans })}の常時課金です（動いていなくても請求されます）。
+          共用型（さくらのAppRun）は使った分だけの従量課金ですが、専有型は日額・月額の固定費です。
+        </p>
         <p className="text-xs text-ink-muted leading-relaxed">
-          仮想サーバレベルで専有するAppRun。独自ドメインが使えますが、常時課金・4階層の構成が必要な上級者向けサービスです。
+          仮想サーバレベルで専有するAppRun。独自ドメインが使えますが、4階層の構成が必要な上級者向けサービスです。
           <b className="text-ink">クラスタの作成・破棄までは行えます。</b>アプリケーションの公開（独自ドメインでの利用）はこのバージョンではまだできません。
         </p>
         <p className="text-[11px] text-ink-muted">
@@ -915,19 +1045,25 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         </p>
       </div>
 
-      {/* ① APIキー（入力は「認証情報」に一本化。ここは状態表示と接続テストのみ。共用型 AppRunPanel と同じ形） */}
-      <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">① APIキー</p>
-          {hasKey === null
-            ? <span className="text-xs text-ink-muted">確認中…</span>
-            : keyReady
-              ? <span className="text-xs text-brand-green font-semibold">✅ APIキー登録済み</span>
-              : <span className="text-xs text-brand-yellow font-semibold">⚠️ APIキーが未登録です</span>}
-        </div>
-        <p className="text-[11px] text-ink-muted leading-relaxed">
-          さくらのクラウドのAPIキー（アクセストークン／トークンシークレット）は「認証情報」で登録・切替します。AppRun 専有型に専用のAPIキーはなく、このキーで操作します。
-        </p>
+      {/* ① APIキー（AccessKeySection に統一・判断8。入力は「認証情報」に一本化。
+          ここは状態表示と接続テストのみ） */}
+      <AccessKeySection
+        stepNo="①"
+        serviceTitle="さくらのクラウド"
+        keyLabel="APIキー"
+        registered={keyReady}
+        onOpenCredentials={onOpenCredentials}
+        test={{
+          run: testConnection,
+          state: conn,
+          checks: connChecks ? [
+            { key: 'api', label: '専有型API 参照（制限・プラン）', ok: connChecks.api.ok, message: connChecks.api.message },
+            { key: 'billing', label: '請求（コスト）参照', ok: connChecks.billing.ok, message: connChecks.billing.message },
+          ] : undefined,
+          message: connMsg,
+          note: '※ レジストリの権限は、アプリの公開に対応したときに確認します。',
+        }}
+      >
         {cloudKeys.length > 0 ? (
           <div className="space-y-1">
             <label className="text-[11px] font-medium text-ink-secondary">この操作に使うキー</label>
@@ -945,138 +1081,24 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             まだクラウドのキーが登録されていません。「認証情報」でアクセストークン／シークレットを登録してください。
           </p>
         )}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onOpenCredentials}
-            className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
-          >🔑 認証情報で登録・切替</button>
-          <button
-            onClick={testConnection}
-            disabled={conn === 'testing' || !keyReady}
-            title={keyReady ? '' : '先に認証情報でAPIキーを登録してください'}
-            className="bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-          >🔌 接続テスト</button>
-          {/* 事故の直し（2026-09-09検分・指摘2）: 「通じた」と「すべて確認できた」は別の事実。
-              ③「🔍 調べる」は conn だけを書き、checks（チェックリストの内訳）は null に戻す
-              （投げ直すたびに一旦クリアする、上の investigate() 参照）。ここは conn 単体ではなく
-              connChecks の有無も見て文言を変える——確認していないことを「確認できた」と言わない。 */}
-          <span className="flex-1 text-xs text-right">
-            {conn === 'ok' && (connChecks
-              ? <span className="text-brand-green font-semibold">✅ すべて確認できました</span>
-              : <span className="text-brand-green font-semibold">✅ 通じました</span>)}
-            {/* Q（2026-09-10 レビューの修理・バッチ3）: 全項目が失敗しているのに「一部の…」は
-                言い過ぎ。api/billing の両方が失敗していれば「すべての項目で」と正しく言う。 */}
-            {conn === 'ng' && (connChecks
-              ? <span className="text-brand-yellow font-semibold">
-                  {!connChecks.api.ok && !connChecks.billing.ok
-                    ? '⚠️ すべての項目で確認できませんでした'
-                    : '⚠️ 一部の権限が確認できませんでした'}
-                </span>
-              : <span className="text-brand-yellow font-semibold">⚠️ 通じませんでした</span>)}
-            {conn === 'testing' && <span className="text-ink-secondary">確認中…</span>}
-          </span>
-        </div>
-        {!keyReady && (
-          <p className="text-[11px] text-ink-muted leading-relaxed">
-            先に認証情報でAPIキーを登録してください。
-          </p>
-        )}
-        {/* 🔌 接続テストの内訳。共用型 AppRunPanel と同じ ConnectionChecklist を使う
-            （同じ形に揃える・roadmap #35・掟10）。レジストリはまだ専有型からのアプリ公開に
-            対応していないため、今日の時点では確認しない（注記で案内する）。 */}
-        {connChecks && (
-          <ConnectionChecklist
-            items={[
-              { key: 'api', label: '専有型API 参照（制限・プラン）', ok: connChecks.api.ok, message: connChecks.api.message },
-              { key: 'billing', label: '請求（コスト）参照', ok: connChecks.billing.ok, message: connChecks.billing.message },
-            ]}
-            note="※ レジストリの権限は、アプリの公開に対応したときに確認します。"
-          />
-        )}
-        {/* 疎通の結果: 🔌 接続テスト（このセクション）または③「🔍 調べる」のどちらの結果でも、
-            この1つの conn/connMsg に反映される（事故の直し1: 同じ意味の状態を2つ持たない）。
-            ③の4本は内訳（connChecks）を持たないので、その場合はここで簡潔に伝える。 */}
-        {!connChecks && conn === 'ok' && (
-          <p className="text-[11px] text-brand-green font-semibold leading-relaxed">✅ このキーで専有型APIに通じました</p>
-        )}
-        {!connChecks && conn === 'ng' && (
-          <>
-            <p className="text-[11px] text-brand-yellow font-semibold leading-relaxed">
-              ⚠️ このキーでは専有型APIに通じませんでした。
-            </p>
-            <ErrorBlock msg={connMsg} />
-          </>
-        )}
-      </section>
+        {/* 専有型と共用型は「同じキー（さくらのクラウド）」を使う。接続テストの結果は
+            従来どおりタブごと（このタブの conn/connMsg/connChecks は共用型とは別の状態）。 */}
+        <p className="text-[11px] text-ink-muted leading-relaxed">
+          共用型と同じキーです。
+        </p>
+      </AccessKeySection>
 
       {/* ② サービスプリンシパルの用意（最初の一度だけ・手作業） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <p className="text-sm font-semibold text-ink">② サービスプリンシパルの用意（最初の一度だけ手作業）</p>
-        <p className="text-xs text-ink-secondary leading-relaxed">
-          専有型のクラスタを作るには「サービスプリンシパル」が要りますが、<b className="text-ink">これは Koto からは作れません</b>。
-          作成に使う IAM API は、通常のAPIキーでは使えない設計のためです（実測で権限エラー）。
-          サービスプリンシパルはプロジェクトの資源として使い回せるので、この手作業は最初の一度だけで済みます。
-        </p>
-        <a
-          href={CONTROL_PANEL_URL}
-          className="inline-block bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
-        >🔧 コントロールパネルを開く</a>
 
+        {/* 既定で見えるのは入力欄と1行の説明だけ（判断7・利用者目線レビュー・2026-09-11）。
+            手順A/B（5ステップ）は初心者には情報量が多いので「詳しい手順を見る」で畳む。 */}
         <div className="space-y-1">
-          <p className="text-[11px] font-semibold text-ink-secondary">手順A: サービスプリンシパルを作る</p>
-          <ol className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
-            <li>コントロールパネルの左メニュー「サービスプリンシパル」を開く</li>
-            <li>「サービスプリンシパルの作成」→ 名前と説明を入れて作成</li>
-            <li>作成後に表示される「リソースID」を控える（これを下に貼る）</li>
-          </ol>
-        </div>
-
-        <div className="space-y-1">
-          <p className="text-[11px] font-semibold text-ink-secondary">手順B: そのサービスプリンシパルにロールを付ける</p>
-          {/* 2026-09-07 Ryosuke さん指摘で削った2行:
-              「リソース階層名」「リソース階層タイプ」を"確かめる"手順を入れていたが、
-              この2つは**入力欄ではなく、選んだプロジェクトが表示されるだけの読み取り専用**。
-              操作できないものを手順に立てるのは、ただの水増しだった。
-              検分が「4欄すべてを名指ししていない」と指摘したのを、
-              **その欄が操作できるものかを確かめずに**受け入れたのが原因。
-              入力するのは「プリンシパル」と「ロール」の2つだけ。 */}
-          <ol start={4} className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
-            <li>左メニュー「IAMポリシー」を開き、画面右上で対象のプロジェクトを選ぶ</li>
-            <li>右上の「アクセス権の付与」を押す</li>
-            <li>「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ</li>
-            <li>「ロール」欄で「{ROLE_TEXT}」を選ぶ</li>
-            <li>「作成」を押す（反映まで最大3分）</li>
-          </ol>
-          <p className="text-[11px] text-ink-muted leading-relaxed">
-            ※「リソース階層名」「リソース階層タイプ」は、選んだプロジェクトが表示されるだけの欄です（ここでは変更しません）。
-            組織やフォルダ単位でも付けられますが、<b className="text-ink-secondary">サービスプリンシパルにはプロジェクト単位で付けるのが確実</b>です
-            （上位で付けた権限は、サービスプリンシパルの制約で効かないことがあると公式に明記されています）。
-          </p>
-        </div>
-
-        <div className="rounded-lg border border-brand-yellow/70 bg-overlay p-3 space-y-1">
-          <p className="text-[11px] font-semibold text-brand-yellow leading-relaxed">
-            ⚠️ プリンシパル欄に「ロール名」を入れないでください。
-          </p>
-          <p className="text-[11px] text-ink-secondary leading-relaxed">
-            プリンシパル欄で選ぶのは、手順Aで作った<b className="text-ink">サービスプリンシパル</b>です。
-            「{ROLE_TEXT}」は<b className="text-ink">ロールの名前</b>で、<b className="text-ink">ロール欄</b>で選びます。
-          </p>
-        </div>
-
-        <div className="space-y-1">
-          <p className="text-[11px] font-medium text-ink-secondary">ロール欄で選ぶもの</p>
-          <div className="flex items-center gap-2 rounded-lg border border-line bg-overlay px-3 py-2">
-            <code className="flex-1 text-xs text-ink font-mono select-text">{ROLE_TEXT}</code>
-            <CopyButton text={ROLE_TEXT} title="ロール名をコピー（プリンシパル欄ではなくロール欄で使います）" />
-          </div>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-[11px] font-medium text-ink-secondary">リソースID</label>
+          <label className="text-[11px] font-medium text-ink-secondary">サービスプリンシパルのリソースID（12桁）</label>
           <input
             value={resourceId}
-            onChange={e => setResourceId(e.target.value)}
+            onChange={e => { setResourceId(e.target.value); touch('resourceId') }}
             onBlur={() => saveResourceId(resourceId.trim())}
             placeholder="例: 113800956789"
             className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
@@ -1084,9 +1106,78 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           {idFormat === true && <p className="text-[11px] text-brand-green font-semibold">✓ 形は合っています（12文字）</p>}
           {idFormat === false && <p className="text-[11px] text-brand-yellow font-semibold">⚠️ 違うようです（12文字ではありません）</p>}
           <p className="text-[11px] text-ink-muted leading-relaxed">
-            ※ 確認できるのは文字数の形式だけです。実在するかどうかはここでは確認できません（IAM APIが使えないため）。実際にクラスタを作る段になって初めて分かります。
+            コントロールパネルで一度だけ作ります。作り方は「詳しい手順を見る」。
           </p>
         </div>
+
+        <details className="rounded-lg border border-line bg-overlay p-3 space-y-3">
+          <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">詳しい手順を見る</summary>
+          <div className="mt-2 space-y-3">
+            <p className="text-xs text-ink-secondary leading-relaxed">
+              専有型のクラスタを作るには「サービスプリンシパル」が要りますが、<b className="text-ink">これは Koto からは作れません</b>。
+              作成に使う IAM API は、通常のAPIキーでは使えない設計のためです（実測で権限エラー）。
+              サービスプリンシパルはプロジェクトの資源として使い回せるので、この手作業は最初の一度だけで済みます。
+            </p>
+            <a
+              href={CONTROL_PANEL_URL}
+              className="inline-block bg-overlay text-ink border border-line rounded-lg px-3 py-2 text-sm font-medium hover:border-sakura"
+            >🔧 コントロールパネルを開く</a>
+
+            <div className="space-y-1">
+              <p className="text-[11px] font-semibold text-ink-secondary">手順A: サービスプリンシパルを作る</p>
+              <ol className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
+                <li>コントロールパネルの左メニュー「サービスプリンシパル」を開く</li>
+                <li>「サービスプリンシパルの作成」→ 名前と説明を入れて作成</li>
+                <li>作成後に表示される「リソースID」を控える（これを下に貼る）</li>
+              </ol>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-[11px] font-semibold text-ink-secondary">手順B: そのサービスプリンシパルにロールを付ける</p>
+              {/* 2026-09-07 Ryosuke さん指摘で削った2行:
+                  「リソース階層名」「リソース階層タイプ」を"確かめる"手順を入れていたが、
+                  この2つは**入力欄ではなく、選んだプロジェクトが表示されるだけの読み取り専用**。
+                  操作できないものを手順に立てるのは、ただの水増しだった。
+                  検分が「4欄すべてを名指ししていない」と指摘したのを、
+                  **その欄が操作できるものかを確かめずに**受け入れたのが原因。
+                  入力するのは「プリンシパル」と「ロール」の2つだけ。 */}
+              <ol start={4} className="list-decimal pl-4 space-y-1 text-xs text-ink-secondary leading-relaxed">
+                <li>左メニュー「IAMポリシー」を開き、画面右上で対象のプロジェクトを選ぶ</li>
+                <li>右上の「アクセス権の付与」を押す</li>
+                <li>「プリンシパル」欄で、手順Aで作ったサービスプリンシパルを選ぶ</li>
+                <li>「ロール」欄で「{ROLE_TEXT}」を選ぶ</li>
+                <li>「作成」を押す（反映まで最大3分）</li>
+              </ol>
+              <p className="text-[11px] text-ink-muted leading-relaxed">
+                ※「リソース階層名」「リソース階層タイプ」は、選んだプロジェクトが表示されるだけの欄です（ここでは変更しません）。
+                組織やフォルダ単位でも付けられますが、<b className="text-ink-secondary">サービスプリンシパルにはプロジェクト単位で付けるのが確実</b>です
+                （上位で付けた権限は、サービスプリンシパルの制約で効かないことがあると公式に明記されています）。
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-brand-yellow/70 bg-overlay p-3 space-y-1">
+              <p className="text-[11px] font-semibold text-brand-yellow leading-relaxed">
+                ⚠️ プリンシパル欄に「ロール名」を入れないでください。
+              </p>
+              <p className="text-[11px] text-ink-secondary leading-relaxed">
+                プリンシパル欄で選ぶのは、手順Aで作った<b className="text-ink">サービスプリンシパル</b>です。
+                「{ROLE_TEXT}」は<b className="text-ink">ロールの名前</b>で、<b className="text-ink">ロール欄</b>で選びます。
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-[11px] font-medium text-ink-secondary">ロール欄で選ぶもの</p>
+              <div className="flex items-center gap-2 rounded-lg border border-line bg-overlay px-3 py-2">
+                <code className="flex-1 text-xs text-ink font-mono select-text">{ROLE_TEXT}</code>
+                <CopyButton text={ROLE_TEXT} title="ロール名をコピー（プリンシパル欄ではなくロール欄で使います）" />
+              </div>
+            </div>
+
+            <p className="text-[11px] text-ink-muted leading-relaxed">
+              ※ 確認できるのは文字数の形式だけです。実在するかどうかはここでは確認できません（IAM APIが使えないため）。実際にクラスタを作る段になって初めて分かります。
+            </p>
+          </div>
+        </details>
       </section>
 
       {/* ③ 使えるプランと制限（API から取得） */}
@@ -1164,12 +1255,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
         )}
       </section>
 
-      {/* ④ 費用の確認と同意 */}
+      {/* ④ 費用の確認と同意（常時課金であることの注意はパネル冒頭に一本化した・判断4・
+          2026-09-11。ここは同意そのものの本文だけにする） */}
       <section className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-3">
         <p className="text-sm font-semibold text-ink">④ 費用の確認と同意</p>
-        <p className="text-xs font-semibold text-brand-red leading-relaxed">
-          ⚠️ 専有型は常時課金です（動いていなくても請求されます）。共用型（さくらのAppRun）は使った分だけの従量課金ですが、専有型は日額・月額の固定費です。
-        </p>
 
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-ink-secondary border-collapse">
@@ -1198,7 +1287,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           税込・2026-09時点の<a href={OFFICIAL_PRICE_URL} className="text-sakura hover:underline">公式ページ</a>の値です。価格は変わることがあります。最新は公式ページでご確認ください。
         </p>
         <p className="text-xs font-semibold text-ink leading-relaxed">
-          最小構成（ワーカ 1コア/2GB + ロードバランサ 1コア/2GB相当）でも、月額 11,000円 + 11,000円 = <span className="text-brand-red">22,000円</span> で、2万円を超えます。
+          最小構成（ワーカ・ロードバランサとも最安プラン1台ずつ）でも、<span className="text-brand-red">{cheapestMonthlyText({ workerPlans, lbPlans })}</span>かかります。
         </p>
 
         {consentedAt ? (
@@ -1250,40 +1339,76 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               <label className="text-[11px] font-medium text-ink-secondary">クラスタ名（1〜20文字・英数字と _ -）</label>
               <input
                 value={clusterName}
-                onChange={e => setClusterName(e.target.value)}
+                onChange={e => { setClusterName(e.target.value); touch('clusterName') }}
                 placeholder="例: myapp"
                 className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
               />
             </div>
 
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-ink-secondary">公開ポート</label>
+            {/* 詳細設定（ポート・ノード数・Let's Encrypt メール）は既定のままで作れるので畳む
+                （判断7・利用者目線レビュー・2026-09-11）。既定で見えるのはクラスタ名・ゾーン・
+                ワーカプラン・ロードバランサプラン・構成図・作成ボタンだけ。 */}
+            <details className="rounded-lg border border-line bg-overlay p-3 space-y-3">
+              <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">詳細設定（ふつうは変えなくてよい）</summary>
+              <p className="text-[11px] text-ink-muted leading-relaxed">
+                既定のままで作れます。ポートは 80/443、ノード数は最小1・最大1。
+              </p>
+
               <div className="space-y-1">
-                {ports.map((p, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={p.port}
-                      onChange={e => updatePort(i, { ...p, port: Number(e.target.value) })}
-                      className="w-24 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
-                    />
-                    <select
-                      value={p.protocol}
-                      onChange={e => updatePort(i, { ...p, protocol: e.target.value as 'http' | 'https' })}
-                      className="bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
-                    >
-                      <option value="http">http</option>
-                      <option value="https">https</option>
-                    </select>
-                    {isReservedPort(p.port) && (
-                      <span className="text-[11px] text-brand-red">⚠️ {RESERVED_PORT_RANGE[0]}-{RESERVED_PORT_RANGE[1]}は予約で使えません</span>
-                    )}
-                    <button onClick={() => removePort(i)} className="text-[11px] text-ink-muted hover:text-brand-red">削除</button>
-                  </div>
-                ))}
+                <label className="text-[11px] font-medium text-ink-secondary">公開ポート</label>
+                <div className="space-y-1">
+                  {ports.map((p, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={p.port}
+                        onChange={e => { updatePort(i, { ...p, port: Number(e.target.value) }); touch('ports') }}
+                        className="w-24 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                      />
+                      <select
+                        value={p.protocol}
+                        onChange={e => { updatePort(i, { ...p, protocol: e.target.value as 'http' | 'https' }); touch('ports') }}
+                        className="bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                      >
+                        <option value="http">http</option>
+                        <option value="https">https</option>
+                      </select>
+                      {isReservedPort(p.port) && (
+                        <span className="text-[11px] text-brand-red">⚠️ {RESERVED_PORT_RANGE[0]}-{RESERVED_PORT_RANGE[1]}は予約で使えません</span>
+                      )}
+                      <button onClick={() => { removePort(i); touch('ports') }} className="text-[11px] text-ink-muted hover:text-brand-red">削除</button>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => { addPort(); touch('ports') }} className="text-[11px] text-sakura hover:underline">+ ポートを追加</button>
               </div>
-              <button onClick={addPort} className="text-[11px] text-sakura hover:underline">+ ポートを追加</button>
-            </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] text-ink-secondary">ノード数 min</label>
+                <input
+                  type="number" min={1} max={10} value={minNodes}
+                  onChange={e => { setMinNodes(Number(e.target.value)); touch('nodes') }}
+                  className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                />
+                <label className="text-[11px] text-ink-secondary">max</label>
+                <input
+                  type="number" min={1} max={10} value={maxNodes}
+                  onChange={e => { setMaxNodes(Number(e.target.value)); touch('nodes') }}
+                  className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-ink-secondary">Let&apos;s Encrypt 用メール（独自ドメインを使うなら）</label>
+                <input
+                  value={letsEncryptEmail}
+                  onChange={e => setLetsEncryptEmail(e.target.value)}
+                  placeholder="任意"
+                  className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                />
+                <p className="text-[11px] text-ink-muted leading-relaxed">将来の独自ドメイン公開用。いまは空欄でよい。</p>
+              </div>
+            </details>
 
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-ink-secondary">サービスプリンシパルID</label>
@@ -1295,7 +1420,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               {zoneSelectable ? (
                 <select
                   value={selectedZoneName ?? ''}
-                  onChange={e => setSelectedZoneName(e.target.value)}
+                  onChange={e => { setSelectedZoneName(e.target.value); touch('zone') }}
                   className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
                 >
                   {!selectedZoneName && <option value="">（選んでください）</option>}
@@ -1306,7 +1431,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               ) : (
                 <input
                   value={zone}
-                  onChange={e => setZone(e.target.value)}
+                  onChange={e => { setZone(e.target.value); touch('zone') }}
                   placeholder="例: tk1b"
                   className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
                 />
@@ -1339,7 +1464,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                 <>
                   <select
                     value={selectedWorkerPath ?? ''}
-                    onChange={e => setSelectedWorkerPath(e.target.value)}
+                    onChange={e => { setSelectedWorkerPath(e.target.value); touch('workerPlan') }}
                     className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
                   >
                     {!selectedWorkerPath && <option value="">（選んでください）</option>}
@@ -1356,20 +1481,6 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               ) : (
                 <p className="text-[11px] text-brand-yellow">③の「🔍 調べる」を押してプランを取得してください。</p>
               )}
-              <div className="flex items-center gap-2 pt-1">
-                <label className="text-[11px] text-ink-secondary">ノード数 min</label>
-                <input
-                  type="number" min={1} max={10} value={minNodes}
-                  onChange={e => setMinNodes(Number(e.target.value))}
-                  className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
-                />
-                <label className="text-[11px] text-ink-secondary">max</label>
-                <input
-                  type="number" min={1} max={10} value={maxNodes}
-                  onChange={e => setMaxNodes(Number(e.target.value))}
-                  className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
-                />
-              </div>
             </div>
 
             <div className="space-y-1">
@@ -1378,7 +1489,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                 <>
                   <select
                     value={selectedLbPath ?? ''}
-                    onChange={e => setSelectedLbPath(e.target.value)}
+                    onChange={e => { setSelectedLbPath(e.target.value); touch('lbPlan') }}
                     className="w-full bg-elevated border border-line rounded-lg px-2 py-1.5 text-sm text-ink outline-none focus:border-sakura"
                   >
                     {!selectedLbPath && <option value="">（選んでください）</option>}
@@ -1398,16 +1509,6 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               )}
             </div>
 
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-ink-secondary">Let&apos;s Encrypt 用メール（独自ドメインを使うなら）</label>
-              <input
-                value={letsEncryptEmail}
-                onChange={e => setLetsEncryptEmail(e.target.value)}
-                placeholder="任意"
-                className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura"
-              />
-            </div>
-
             {/* 簡易構成図（いま選んでいる内容がそのまま反映される・自前の枠と文字のみ）。
                 月額はここで計算し直さない——priceSummary の text をそのまま使う（掟10）。 */}
             <div className="rounded-lg border border-line bg-overlay p-3 space-y-0.5">
@@ -1415,11 +1516,16 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               <p className="text-xs font-semibold text-ink select-text pt-1.5 mt-1 border-t border-line-soft">{diagram.total}</p>
             </div>
 
-            {formError && <p className="text-xs text-brand-yellow leading-relaxed">⚠️ {formError}</p>}
+            {/* ⚠️の全体表示は、フィールド側に専用表示が無い欄だけ（ワーカ/LBプランは欄の
+                すぐ下に出るため、ここには出さない・判断7・2026-09-11）。触った欄／送信後だけ
+                出す（visibleFormErrors）。 */}
+            {generalErrors.map((msg, i) => (
+              <p key={i} className="text-xs text-brand-yellow leading-relaxed">⚠️ {msg}</p>
+            ))}
 
             <button
-              onClick={doCreate}
-              disabled={!!formError || creating}
+              onClick={() => { setSubmitted(true); void doCreate() }}
+              disabled={hasErrors || creating}
               className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
             >{creating ? 'クラスタ→ASG→LB の順で作成しています…' : 'クラスタを作成する'}</button>
 
@@ -1434,6 +1540,16 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                   <li>{createResult.loadBalancerID ? '✅' : '・'} ロードバランサ {resourceIdLabel(createResult.loadBalancerID, 'loadBalancerID', createResult.stage as CreateClusterFlowStage)}</li>
                 </ul>
                 <ErrorBlock msg={createResult.message} />
+                {/* 判断2: ⑤の失敗にも「🤖 AIに相談する」を添える（成功時には出さない）。 */}
+                {!createResult.ok && (
+                  <button
+                    onClick={() => {
+                      const text = askAiAboutFailure('公開', 'さくらのAppRun（専有型）', createResult.message ?? '失敗しました')
+                      window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text } }))
+                    }}
+                    className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                  >🤖 AIに相談する</button>
+                )}
                 {!createResult.ok && (createResult.clusterID || createResult.asgID || createResult.loadBalancerID) && (
                   <p className="text-xs text-brand-red leading-relaxed">
                     ここまで作られています。課金が続くので、⑥から破棄してください。
@@ -1492,6 +1608,16 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                 <p key={i} className="text-xs text-brand-green leading-relaxed">✅ {e}</p>
               ))}
               <ErrorBlock msg={teardownResult.message} />
+              {/* 判断2: ⑥の失敗にも「🤖 AIに相談する」を添える（成功時には出さない）。 */}
+              {!teardownResult.ok && (
+                <button
+                  onClick={() => {
+                    const text = askAiAboutFailure('破棄', 'さくらのAppRun（専有型）', teardownResult.message ?? '失敗しました')
+                    window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text } }))
+                  }}
+                  className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                >🤖 AIに相談する</button>
+              )}
               {teardownResult.inProgress ? (
                 // #39: 待ち切れず(timeout)止まっただけ。記録は残っている＝⑥をもう一度押せば再開できる
                 // （赤い「残っています＝課金が続きます」＝失敗、とは区別する黄色い注意）。
@@ -1599,6 +1725,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           </>
         )}
       </section>
+      {confirmElement}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import SakuraLogo from './SakuraLogo'
-import { getDefaultModel, setDefaultModel } from '../usage'
+import { getDefaultModel, setDefaultModel, DEFAULT_MODEL } from '../usage'
 import { isAvailableTarget, getTargetProfile, type TargetId } from '../targetProfiles'
 import { beginActivity } from '../activity'
 import { useModels } from '../hooks/useModels'
@@ -1172,6 +1172,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
                       localStorage.setItem(NEWPROJECT_MODEL_SAKURA_KEY, id)
                     }
                   }}
+                  defaultId={brain === 'claude' ? undefined : DEFAULT_MODEL}
                 />
               </div>
             </div>

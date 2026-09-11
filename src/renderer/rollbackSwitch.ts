@@ -1,9 +1,9 @@
 // rollbackSwitch.ts — RollbackSection.tsx の「バージョンを切り替える」判断・実行を、
 // React/DOM から切り離した純関数として持つ（掟10と同じ考え方: 守りは1箇所に集め、テストで固定する）。
 //
-// 2026-09-08 検分で指摘: 確認ダイアログ（window.confirm）を通ったときだけ実行する、という
-// 歯止めが**文字列一致でしか守られていなかった**（`if (!window.confirm(` → `if (false && !window.confirm(`
-// のような変異が、既存のテストをすべて素通りした）。ここでは confirm・rollback を「注入」で
+// 2026-09-08 検分で指摘: 確認ダイアログ（当時は window.confirm）を通ったときだけ実行する、という
+// 歯止めが**文字列一致でしか守られていなかった**（呼び出しの条件に `false &&` を挟むだけで
+// 通ってしまうような変異が、既存のテストをすべて素通りした）。ここでは confirm・rollback を「注入」で
 // 受け取る形にし、**偽の confirm/rollback を渡した振る舞いテスト**（tests/rollbackSwitch.test.ts）で
 // 「confirm が false を返したら rollback は一度も呼ばれない」ことを固定する。
 // （main 側の対の歯止めは src/main/cloud/rollback.ts の performRollback。）

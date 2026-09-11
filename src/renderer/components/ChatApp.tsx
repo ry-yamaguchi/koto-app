@@ -4,7 +4,7 @@ import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
 import { canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
-import { MODELS, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel } from '../usage'
+import { MODELS, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel, DEFAULT_CHAT_MODEL } from '../usage'
 import { useModels } from '../hooks/useModels'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { CHAT_CONTEXT } from '../aiContext'
@@ -21,6 +21,8 @@ import { useFileDrag } from '../hooks/useFileDrag'
 import { CHAT_TEXT_WRAP } from '../textWrap'
 import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { subscribe, getSnapshot, loadingKeys, turnKey, getTurn } from '../chatTurnRegistry'
+import { useConfirm } from '../useConfirm'
+import { runDeleteConversation } from '../confirmedActions'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
 function GeoSquares({ className = '' }: { className?: string }) {
@@ -168,6 +170,10 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     else updateShown(prev => (op.kind === 'replaceAll' ? op.messages : applyToMessages(prev, op as any)))
   }, [activeId, getConvClient, updateShown])
 
+  // 会話削除・Claudeモード同意の確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
+  // useAiChat（Claudeモード同意）とこのコンポーネント自身（会話の削除）で同じインスタンスを共有する。
+  const { confirm, element: confirmElement } = useConfirm()
+
   // 送信パイプライン（予算・切替・検索・ツールループ）は共通フックへ集約。
   // 表示はアクティブセッション内のメッセージ列へ反映する。
   const chat = useAiChat({
@@ -203,6 +209,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
       if (isFirst) updateSession(activeId, { title: titleFromMessage(text || '画像') })
     },
     errorPrefix: '⚠️ ',
+    confirm,
   })
   const { isLoading, statusNote, stalled, elapsedSec, setRoutedModel } = chat
 
@@ -371,26 +378,36 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     const hasMessages = id === activeId || !chatWorkspace
       ? target.messages.length > 0
       : (await loadConversationView(sessionDir(chatWorkspace, id))).length > 0
-    if (hasMessages) {
-      if (!window.confirm(`「${target.title}」を削除します。よろしいですか？（元に戻せません）`)) return
-    }
-    convClientsRef.current.delete(id) // このセッション宛ての直列化クライアントも使い終わり
-    if (chatWorkspace) void window.electronAPI.appSessions.delete(chatWorkspace, id)
-    setSessions(prev => {
-      const next = prev.filter(s => s.id !== id)
-      if (next.length === 0) {
-        const fresh = newSession()
-        setActiveId(fresh.id)
-        if (chatWorkspace) {
-          void window.electronAPI.appSessions.create(chatWorkspace, {
-            id: fresh.id, title: fresh.title, model: fresh.model, createdAt: fresh.createdAt,
-          })
+    // 実際の削除（記録・状態からの除去）そのものは runDeleteConversation の deps.remove に閉じ込める
+    // （掟10: confirm が false なら一度も呼ばれないことを tests/confirmedActions.test.ts で固定する）。
+    const remove = () => {
+      convClientsRef.current.delete(id) // このセッション宛ての直列化クライアントも使い終わり
+      if (chatWorkspace) void window.electronAPI.appSessions.delete(chatWorkspace, id)
+      setSessions(prev => {
+        const next = prev.filter(s => s.id !== id)
+        if (next.length === 0) {
+          const fresh = newSession()
+          setActiveId(fresh.id)
+          if (chatWorkspace) {
+            void window.electronAPI.appSessions.create(chatWorkspace, {
+              id: fresh.id, title: fresh.title, model: fresh.model, createdAt: fresh.createdAt,
+            })
+          }
+          return [fresh]
         }
-        return [fresh]
-      }
-      if (id === activeId) setActiveId(next[0].id)
-      return next
-    })
+        if (id === activeId) setActiveId(next[0].id)
+        return next
+      })
+    }
+    if (!hasMessages) { remove(); return }
+    await runDeleteConversation(
+      id,
+      `「${target.title}」を削除します。よろしいですか？（元に戻せません）`,
+      {
+        confirm: (body) => confirm({ title: '会話を削除します', body, confirmLabel: '削除する', danger: true }),
+        remove: () => remove(),
+      },
+    )
   }
 
   const send = useCallback(() => {
@@ -509,6 +526,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
               value={activeSession?.model ?? ''}
               onChange={id => { if (!activeSession) return; updateSession(activeId, { model: id }); setDefaultModel(id, 'chat'); setRoutedModel(null) }}
               buttonClassName="flex items-center gap-1 text-[13px] bg-elevated border border-line rounded-lg px-3 py-1.5 text-ink hover:border-sakura cursor-pointer transition-colors"
+              defaultId={DEFAULT_CHAT_MODEL}
             />
             {/* 頭脳の切替（2026-07-29 ユーザー要望）。右下の BrainToggle と同じもの・同じ書き込み口。 */}
             <BrainToggle apiKey={apiKey} compact />
@@ -748,6 +766,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
           </div>
         </div>
       </div>
+      {confirmElement}
     </div>
   )
 }

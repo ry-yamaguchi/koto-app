@@ -3,6 +3,8 @@ import CopyButton from './CopyButton'
 import SakuraLogo from './SakuraLogo'
 import { getKeyLimit, setKeyLimit, getSettings } from '../usage'
 import { isSubmitEnter } from '../keyInput'
+import { useConfirm } from '../useConfirm'
+import { runDiscardCredentialEdits, runEraseVpsKey } from '../confirmedActions'
 
 interface Props {
   apiKey: string                       // さくらのAI Engine の現在キー（チャットで使用）
@@ -10,23 +12,34 @@ interface Props {
   onClose: () => void
 }
 
+/**
+ * 【UX-A・判断10】認証情報のグループ分け（2026-09-11・利用者目線レビュー推奨①）。
+ * 全10サービスをどれか1つに割り当てる。増やすときは3つのどれかに必ず入れる（groupServices が固定・
+ * tests/credentials.test.ts）。
+ *   - first: これだけで作る・試すまでできる（さくらのAI Engine のみ）
+ *   - perTarget: 使う公開先のものだけ登録すれば十分（公開先・Claude頭脳・Web検索）
+ *   - auto: 開発中、または Koto が自動管理していて通常は手入力不要
+ */
+export type CredentialGroup = 'first' | 'perTarget' | 'auto'
+
 interface FieldDef { key: string; label: string; secret?: boolean; placeholder?: string }
-interface ServiceDef {
-  id: string; title: string; hint: string; fields: FieldDef[]; active?: boolean; budget?: boolean; custom?: boolean
+export interface ServiceDef {
+  id: string; title: string; hint: string; fields: FieldDef[]; group: CredentialGroup
+  active?: boolean; budget?: boolean; custom?: boolean
   /** 公式の発行ページ／説明ページ（実在を確かめた URL だけを入れる・掟1。2026-09-11 利用者目線レビュー）。 */
   helpUrl?: string
 }
 
-const SERVICES: ServiceDef[] = [
+export const SERVICES: ServiceDef[] = [
   {
     id: 'aiEngine', title: 'さくらのAI Engine', hint: 'チャット・生成で使うAPIキー（「使用中」がチャットに使われます）',
-    active: true, budget: true,
+    active: true, budget: true, group: 'first',
     // placeholder は さくらのAI Engine コントロールパネル上の呼称「アカウントトークン」に合わせる
     // （ユーザー指摘 2026-07-13。HTTPヘッダ上は Bearer だが、利用者がコピーする値の名前で案内する）。
     fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: 'アカウントトークン' }],
   },
   {
-    id: 'cloud', title: 'さくらのクラウド', hint: 'IaaS API のアクセストークンとシークレット',
+    id: 'cloud', title: 'さくらのクラウド', hint: 'IaaS API のアクセストークンとシークレット', group: 'perTarget',
     helpUrl: 'https://manual.sakura.ad.jp/cloud/api/apikey.html',
     fields: [
       { key: 'token', label: 'アクセストークン', secret: true },
@@ -35,7 +48,7 @@ const SERVICES: ServiceDef[] = [
   },
   {
     id: 'registry', title: 'コンテナレジストリ（push用・自動管理）', hint: '③公開→「さくらのAppRun」で自動作成・保存されます。通常は手入力不要です。',
-    custom: true,
+    custom: true, group: 'auto',
     fields: [
       { key: 'name', label: 'レジストリ名', placeholder: '例: myreg（→ myreg.sakuracr.jp）' },
       { key: 'user', label: 'ユーザー名' },
@@ -43,7 +56,7 @@ const SERVICES: ServiceDef[] = [
     ],
   },
   {
-    id: 'vps', title: 'さくらのVPS', hint: 'SSHデプロイ先の接続情報（秘密鍵はIDEが自動生成・管理します）',
+    id: 'vps', title: 'さくらのVPS', hint: 'SSHデプロイ先の接続情報（秘密鍵はIDEが自動生成・管理します）', group: 'auto',
     fields: [
       { key: 'host', label: 'ホスト名/IP', placeholder: '例: xxx.vs.sakura.ne.jp または IPアドレス' },
       { key: 'port', label: 'ポート番号（既定22）', placeholder: '22' },
@@ -52,13 +65,13 @@ const SERVICES: ServiceDef[] = [
   },
   {
     id: 'hanamii', title: 'HANAMII（国産PaaS）', hint: '③公開→「HANAMII」で使うAPIトークン（hnm_…）。HANAMII の管理画面で発行します。',
-    active: true,
+    active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIトークン', secret: true, placeholder: 'hnm_…' }],
   },
   {
     id: 'vercel', title: 'Vercel（海外PaaS）', hint: '③公開→Vercel で使うトークン。',
     helpUrl: 'https://vercel.com/account/tokens',
-    active: true,
+    active: true, group: 'perTarget',
     fields: [
       { key: 'apiKey', label: 'トークン', secret: true, placeholder: '発行したトークンを貼り付け' },
       { key: 'teamId', label: 'チームID（個人アカウントなら空欄）', placeholder: '例: team_xxxxxxxx' },
@@ -66,26 +79,54 @@ const SERVICES: ServiceDef[] = [
   },
   {
     id: 'github', title: '💾 GitHubに保存（バックアップ・共有）', hint: 'Fine-grained PAT・Contents Read/Write＋リポジトリ作成権限が必要です。',
-    active: true,
+    active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: '個人アクセストークン（PAT）', secret: true, placeholder: 'github_pat_…' }],
   },
   {
     id: 'anthropic', title: 'Claude（Anthropic API）', hint: '登録すると、プロジェクトを開いたチャットの頭脳が Claude に切り替わります。キーは Claude Console（platform.claude.com）で発行します。',
-    active: true,
+    active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: 'sk-ant-…' }],
   },
   // Web検索の2サービスは専用の統合カードで表示する（custom: true は一覧に出さない）
   {
     id: 'tavily', title: 'Web検索: Tavily', hint: '',
-    active: true, custom: true,
+    active: true, custom: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: 'tvly-…' }],
   },
   {
     id: 'braveSearch', title: 'Web検索: Brave Search API', hint: '',
-    active: true, custom: true,
+    active: true, custom: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: 'X-Subscription-Token' }],
   },
 ]
+
+/** グループの表示順（先頭から）と見出し文言。 */
+export const CREDENTIAL_GROUP_ORDER: CredentialGroup[] = ['first', 'perTarget', 'auto']
+export const CREDENTIAL_GROUP_LABEL: Record<CredentialGroup, string> = {
+  first: 'まず必要',
+  perTarget: '公開先ごとに必要',
+  auto: '開発中・自動管理',
+}
+/** 見出し直下の1行案内（3つ目「開発中・自動管理」は既定で折りたたむため案内なし）。 */
+export const CREDENTIAL_GROUP_DESCRIPTION: Partial<Record<CredentialGroup, string>> = {
+  first: 'これだけで作る・試すまでできます',
+  perTarget: '使う公開先のものだけ登録すれば十分です',
+}
+
+export interface CredentialGroupSection { group: CredentialGroup; label: string; services: ServiceDef[] }
+
+/**
+ * サービス一覧を3グループ（まず必要 → 公開先ごとに必要 → 開発中・自動管理）へ分ける純関数。
+ * 順序は常に first → perTarget → auto（CREDENTIAL_GROUP_ORDER）。件数はグループの絞り込みだけで決まる
+ * （手で並べ替えない・掟10の「除外リストは手で並べ直さない」と同じ理由）。
+ */
+export function groupServices(services: ServiceDef[]): CredentialGroupSection[] {
+  return CREDENTIAL_GROUP_ORDER.map(group => ({
+    group,
+    label: CREDENTIAL_GROUP_LABEL[group],
+    services: services.filter(s => s.group === group),
+  }))
+}
 
 // Web検索の優先プロバイダ（秘密情報ではないため平文のlocalStorageに保存）
 export type SearchProvider = 'tavily' | 'brave'
@@ -697,10 +738,14 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   // setSingleKey）で true にし、保存が完了したら false に戻す。初回読み込みの setStore はここを経由しないため
   // dirty にはならない。
   const [dirty, setDirty] = useState(false)
+  // 未保存破棄・鍵消去の確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
+  const { confirm, element: confirmElement } = useConfirm()
   // コンテナレジストリ認証の登録状況（③公開→AppRun が自動作成。ここでは表示のみ）
   const [regInfo, setRegInfo] = useState<{ name: string; user: string; password: string } | null>(null)
   // パスワードを表示中か（既定は伏せる。ほかのキーと同じ 👁 の作法）
   const [showRegPw, setShowRegPw] = useState(false)
+  // 【UX-A・判断10】「開発中・自動管理」グループは既定で折りたたむ。毎回畳む＝保存しない（仕様どおり単純に）。
+  const [autoOpen, setAutoOpen] = useState(false)
 
   const changeSearchPref = (p: SearchProvider) => {
     setSearchPref(p)
@@ -919,9 +964,252 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   // 閉じる操作（背景クリック・✕・「閉じる」ボタン）の共通ハンドラ（所見5）。
   // 未保存の変更（dirty）があるときだけ確認を挟み、破棄を選んだ場合のみ閉じる。
   // 「保存」ボタン経由の閉じる（save 後にユーザーが改めて閉じる）は dirty=false なので確認は出ない。
-  const requestClose = () => {
-    if (dirty && !window.confirm('保存していない変更があります。破棄して閉じますか？')) return
-    onClose()
+  const requestClose = async () => {
+    if (!dirty) { onClose(); return }
+    await runDiscardCredentialEdits(
+      '保存していない変更があります。破棄して閉じますか？',
+      {
+        confirm: (body) => confirm({ title: '未保存の変更を破棄しますか', body, confirmLabel: '破棄して閉じる', danger: true }),
+        discard: () => onClose(),
+      },
+    )
+  }
+
+  // 通常サービス1件分のカード（入力あり・複数エントリ＋使用中の切替）。
+  // custom（registry・tavily・braveSearch）はここを通らず、専用の描画（下の2関数）を使う。
+  const renderServiceCard = (def: ServiceDef) => {
+    const st = svc(def.id)
+    return (
+      <div key={def.id} className="bg-surface/40 border border-line rounded-xl p-4">
+        <div className="flex items-start justify-between mb-2">
+          <div>
+            <h3 className="text-sm font-semibold text-ink">{def.title}</h3>
+            <p className="text-[11px] text-ink-muted mt-0.5">
+              {def.hint}
+              {def.helpUrl && (
+                <>
+                  {' '}
+                  <a href={def.helpUrl} className="text-sakura hover:underline">🌐 発行ページを開く ↗</a>
+                </>
+              )}
+            </p>
+            {/* さくらのVPS は公開機能（②初期セットアップ／③公開）としては開発中（targetProfiles で
+                非表示）。V1a時点では「① 接続」（鍵認証での疎通確認）のみ利用できる。 */}
+            {def.id === 'vps' && (
+              <p className="text-[11px] text-brand-yellow mt-0.5">※ VPSでの公開機能は開発中です（現在は「🚀 公開」→さくらのVPSの「① 接続」のみ利用できます）</p>
+            )}
+          </div>
+          {/* ── 読めなかったことを、はっきり言う（2026-08-19 実機）──────────────
+              復号できないのに「未登録」と見せると、利用者はそこへ入力し直し、
+              **元の設定が上書きされて消える**。署名の違うビルド（署名版と手元の
+              未署名ビルド）はキーチェーンの鍵が別になるため、実際に起こる。 */}
+          {unreadable && (
+            <div className="rounded-xl border border-brand-red/60 bg-surface p-3 text-xs text-ink leading-relaxed select-text">
+              ⚠️ <b>保存されている設定を読み取れませんでした。</b>
+              このアプリとは<b>別の版（署名の異なるビルド）で保存された</b>可能性があります。
+              下の入力欄は「未登録」に見えていますが、<b className="text-brand-red">
+              このまま保存すると、元の設定は失われます</b>。
+              元の版のアプリで開くと読めることがあります。
+            </div>
+          )}
+          <button onClick={() => addEntry(def.id)} className="text-xs font-medium text-sakura hover:underline flex-none">＋ 追加</button>
+        </div>
+
+        {st.entries.length === 0 && (
+          <p className="text-[11px] text-ink-muted py-2">未登録（「＋ 追加」で登録）</p>
+        )}
+
+        <div className="space-y-3">
+          {st.entries.map(e => (
+            <div key={e.id} className="bg-elevated border border-line rounded-lg p-3 space-y-2.5">
+              <div className="flex items-center gap-2">
+                {def.active && (
+                  <label className="flex items-center gap-1 text-[11px] text-ink-secondary cursor-pointer flex-none" title="チャットで使用するキー">
+                    <input type="radio" checked={st.activeId === e.id} onChange={() => setActive(def.id, e.id)} />
+                    使用中
+                  </label>
+                )}
+                <input
+                  value={e.label}
+                  onChange={ev => setLabel(def.id, e.id, ev.target.value)}
+                  placeholder="名前（例: 本番）"
+                  className="flex-1 bg-surface border border-line rounded-md px-2 py-1 text-xs font-medium text-ink outline-none focus:border-sakura"
+                />
+                <button onClick={() => removeEntry(def.id, e.id)} className="text-xs text-ink-muted hover:text-brand-red flex-none px-1" title="削除">🗑</button>
+              </div>
+              {def.fields.map(f => (
+                <Field key={f.key} def={f} value={e.values[f.key] ?? ''} onChange={v => setValue(def.id, e.id, f.key, v)} />
+              ))}
+              {def.id === 'aiEngine' && <KeyTestButton apiKey={e.values.apiKey ?? ''} />}
+              {def.id === 'github' && <GithubTestButton apiKey={e.values.apiKey ?? ''} />}
+              {def.id === 'anthropic' && <AnthropicTestButton apiKey={e.values.apiKey ?? ''} />}
+              {def.id === 'hanamii' && <HanamiiTestButton token={e.values.apiKey ?? ''} />}
+              {def.id === 'vercel' && <VercelTestButton token={e.values.apiKey ?? ''} teamId={e.values.teamId ?? ''} />}
+              {def.id === 'vps' && (
+                <VpsKeyStatus
+                  hasKey={!!(e.values.privateKey && e.values.publicKey)}
+                  onClear={async () => {
+                    await runEraseVpsKey(
+                      e.id,
+                      '鍵を消去します（再生成が必要になります）。よろしいですか？',
+                      {
+                        confirm: (body) => confirm({ title: '鍵を消去します', body, confirmLabel: '消去する', danger: true }),
+                        erase: async (entryId) => { await clearVpsKeypair(entryId) },
+                      },
+                    )
+                  }}
+                />
+              )}
+              {def.budget && (
+                <LimitControl value={e.values._limit ?? ''} onChange={v => setValue(def.id, e.id, '_limit', v)} />
+              )}
+            </div>
+          ))}
+        </div>
+        {def.id === 'github' && <div className="mt-3"><GithubPatGuide /></div>}
+        {def.id === 'anthropic' && <div className="mt-3"><AnthropicKeyGuide /></div>}
+      </div>
+    )
+  }
+
+  // コンテナレジストリ（③公開→AppRun が自動作成・保存。ここでは読み取り専用で状況表示）
+  const renderRegistryCard = () => (
+    <div key="registry" className="bg-surface/40 border border-line rounded-xl p-4 space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold text-ink">コンテナレジストリ（自動管理）</h3>
+        <p className="text-[11px] text-ink-muted mt-0.5">
+          ③公開→「さくらのAppRun」で自動作成・保存されます。通常は操作不要です。
+        </p>
+      </div>
+      {regInfo ? (
+        <div className="bg-elevated border border-line rounded-lg p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-brand-green font-medium">登録済み</span>
+            <button
+              onClick={async () => {
+                await window.electronAPI.registry.clearKey()
+                await refreshRegInfo()
+                window.dispatchEvent(new Event('sakura:credentials-changed'))
+              }}
+              className="text-[11px] text-ink-muted hover:text-brand-red transition-colors"
+              title="登録済みのレジストリ認証を消去します（トラブル時用。次回の③公開で再作成されます）"
+            >消去</button>
+          </div>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-ink-muted flex-none w-16">サーバ</span>
+              <span className="text-ink font-mono break-all">{regInfo.name}.sakuracr.jp</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-ink-muted flex-none w-16">ユーザー</span>
+              <span className="text-ink font-mono break-all">{regInfo.user}</span>
+            </div>
+            {/* ── パスワードは見えるようにする（2026-08-22 Ryosuke 指摘）──────
+                ここだけ 👁 が無く、**利用者が自分の持ち物を取り出せなかった**。
+                ほかのキーは利用者が発行して手元に控えがあるが、**この値は Koto が
+                自動生成したもので Koto の中にしか存在しない**。見えないままだと、
+                docker で自分のイメージを取ることも、Koto を離れることもできない。 */}
+            <div className="flex items-center gap-2">
+              <span className="text-ink-muted flex-none w-16">パスワード</span>
+              <span className="text-ink font-mono break-all flex-1 select-text">{showRegPw ? regInfo.password : '••••••••'}</span>
+              <button
+                onClick={() => setShowRegPw(v => !v)}
+                className="flex-none text-[11px] text-ink-muted hover:text-ink"
+                title={showRegPw ? '隠す' : '表示'}
+              >{showRegPw ? '🙈 隠す' : '👁 表示'}</button>
+              <CopyButton text={regInfo.password} title="パスワードをコピー" />
+            </div>
+            <p className="text-[10px] text-ink-muted leading-relaxed">
+              この値は Koto が作って保存したもので、<b>ほかのどこにも控えがありません</b>。
+              ご自身で <code>docker login {regInfo.name}.sakuracr.jp</code> するときにも使えます。
+            </p>
+          </div>
+        </div>
+      ) : (
+        <p className="text-[11px] text-ink-muted">未登録（さくらのAppRun を公開すると自動で作成されます）</p>
+      )}
+    </div>
+  )
+
+  // Web検索（Tavily / Brave のキーと優先順位を1枠に統合）
+  const renderWebSearchCard = () => (
+    <div key="websearch" className="bg-surface/40 border border-line rounded-xl p-4 space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold text-ink">Web検索</h3>
+        <p className="text-[11px] text-ink-muted mt-0.5">
+          AIチャットの検索機能に使用。<b className="text-ink-secondary">どちらか一方の登録でOK</b>です（両方登録時は優先側を使用）。
+        </p>
+      </div>
+      <Field
+        def={{ key: 'apiKey', label: 'Tavily APIキー（無料 月1,000回・クレカ不要 / app.tavily.com）', secret: true, placeholder: 'tvly-…' }}
+        value={singleKey('tavily')}
+        onChange={v => setSingleKey('tavily', v)}
+      />
+      <Field
+        def={{ key: 'apiKey', label: 'Brave Search APIキー（毎月$5クレジット＝約1,000回 / brave.com/search/api）', secret: true, placeholder: 'X-Subscription-Token' }}
+        value={singleKey('braveSearch')}
+        onChange={v => setSingleKey('braveSearch', v)}
+      />
+      <div>
+        <label className="text-[11px] font-medium text-ink-secondary">優先して使うサービス（未登録側は自動でもう一方を使用）</label>
+        <div className="flex gap-1.5 mt-1">
+          {([['tavily', 'Tavily'], ['brave', 'Brave']] as [SearchProvider, string][]).map(([p, label]) => (
+            <button
+              key={p}
+              onClick={() => changeSearchPref(p)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                searchPref === p
+                  ? 'sakura-gradient text-white border-transparent'
+                  : 'bg-surface text-ink-secondary border-line hover:text-ink hover:border-sakura'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+
+  // 【UX-A・判断10】グループ見出し付きで並べる（まず必要 → 公開先ごとに必要 → 開発中・自動管理）。
+  // custom（registry・tavily/braveSearch統合カード）は SERVICES.map に出てこないため、
+  // 該当グループの末尾へ手で足す（registry→auto・Web検索→perTarget。件数は groupServices が固定する）。
+  const renderGroupSection = ({ group, label, services }: CredentialGroupSection) => {
+    const cards = services.filter(def => !def.custom).map(renderServiceCard)
+    if (group === 'auto') cards.push(renderRegistryCard())
+    if (group === 'perTarget') cards.push(renderWebSearchCard())
+
+    if (group === 'auto') {
+      return (
+        <div key={group}>
+          {autoOpen ? (
+            <div className="space-y-4">
+              <h3 className="text-xs font-bold text-ink-secondary">{label}</h3>
+              {cards}
+            </div>
+          ) : (
+            <button
+              onClick={() => setAutoOpen(true)}
+              className="w-full text-left text-xs font-medium text-ink-secondary hover:text-ink border border-dashed border-line rounded-xl px-4 py-2.5 transition-colors"
+            >
+              {`${label}（${services.length}件）を表示`}
+            </button>
+          )}
+        </div>
+      )
+    }
+
+    return (
+      <div key={group} className="space-y-4">
+        <div>
+          <h3 className="text-xs font-bold text-ink-secondary">{label}</h3>
+          {CREDENTIAL_GROUP_DESCRIPTION[group] && (
+            <p className="text-[11px] text-ink-muted mt-0.5">{CREDENTIAL_GROUP_DESCRIPTION[group]}</p>
+          )}
+        </div>
+        {cards}
+      </div>
+    )
   }
 
   return (
@@ -941,189 +1229,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
             🔒 入力した値は <b className="text-ink-secondary">Macの安全な保管領域（キーチェーン）で暗号化して保存</b>されます。
           </p>
 
-          {SERVICES.filter(def => !def.custom).map(def => {
-            const st = svc(def.id)
-            return (
-              <div key={def.id} className="bg-surface/40 border border-line rounded-xl p-4">
-                <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <h3 className="text-sm font-semibold text-ink">{def.title}</h3>
-                    <p className="text-[11px] text-ink-muted mt-0.5">
-                      {def.hint}
-                      {def.helpUrl && (
-                        <>
-                          {' '}
-                          <a href={def.helpUrl} className="text-sakura hover:underline">🌐 発行ページを開く ↗</a>
-                        </>
-                      )}
-                    </p>
-                    {/* さくらのVPS は公開機能（②初期セットアップ／③公開）としては開発中（targetProfiles で
-                        非表示）。V1a時点では「① 接続」（鍵認証での疎通確認）のみ利用できる。 */}
-                    {def.id === 'vps' && (
-                      <p className="text-[11px] text-brand-yellow mt-0.5">※ VPSでの公開機能は開発中です（現在は「🚀 公開」→さくらのVPSの「① 接続」のみ利用できます）</p>
-                    )}
-                  </div>
-          {/* ── 読めなかったことを、はっきり言う（2026-08-19 実機）──────────────
-              復号できないのに「未登録」と見せると、利用者はそこへ入力し直し、
-              **元の設定が上書きされて消える**。署名の違うビルド（署名版と手元の
-              未署名ビルド）はキーチェーンの鍵が別になるため、実際に起こる。 */}
-          {unreadable && (
-            <div className="rounded-xl border border-brand-red/60 bg-surface p-3 text-xs text-ink leading-relaxed select-text">
-              ⚠️ <b>保存されている設定を読み取れませんでした。</b>
-              このアプリとは<b>別の版（署名の異なるビルド）で保存された</b>可能性があります。
-              下の入力欄は「未登録」に見えていますが、<b className="text-brand-red">
-              このまま保存すると、元の設定は失われます</b>。
-              元の版のアプリで開くと読めることがあります。
-            </div>
-          )}
-                  <button onClick={() => addEntry(def.id)} className="text-xs font-medium text-sakura hover:underline flex-none">＋ 追加</button>
-                </div>
-
-                {st.entries.length === 0 && (
-                  <p className="text-[11px] text-ink-muted py-2">未登録（「＋ 追加」で登録）</p>
-                )}
-
-                <div className="space-y-3">
-                  {st.entries.map(e => (
-                    <div key={e.id} className="bg-elevated border border-line rounded-lg p-3 space-y-2.5">
-                      <div className="flex items-center gap-2">
-                        {def.active && (
-                          <label className="flex items-center gap-1 text-[11px] text-ink-secondary cursor-pointer flex-none" title="チャットで使用するキー">
-                            <input type="radio" checked={st.activeId === e.id} onChange={() => setActive(def.id, e.id)} />
-                            使用中
-                          </label>
-                        )}
-                        <input
-                          value={e.label}
-                          onChange={ev => setLabel(def.id, e.id, ev.target.value)}
-                          placeholder="名前（例: 本番）"
-                          className="flex-1 bg-surface border border-line rounded-md px-2 py-1 text-xs font-medium text-ink outline-none focus:border-sakura"
-                        />
-                        <button onClick={() => removeEntry(def.id, e.id)} className="text-xs text-ink-muted hover:text-brand-red flex-none px-1" title="削除">🗑</button>
-                      </div>
-                      {def.fields.map(f => (
-                        <Field key={f.key} def={f} value={e.values[f.key] ?? ''} onChange={v => setValue(def.id, e.id, f.key, v)} />
-                      ))}
-                      {def.id === 'aiEngine' && <KeyTestButton apiKey={e.values.apiKey ?? ''} />}
-                      {def.id === 'github' && <GithubTestButton apiKey={e.values.apiKey ?? ''} />}
-                      {def.id === 'anthropic' && <AnthropicTestButton apiKey={e.values.apiKey ?? ''} />}
-                      {def.id === 'hanamii' && <HanamiiTestButton token={e.values.apiKey ?? ''} />}
-                      {def.id === 'vercel' && <VercelTestButton token={e.values.apiKey ?? ''} teamId={e.values.teamId ?? ''} />}
-                      {def.id === 'vps' && (
-                        <VpsKeyStatus
-                          hasKey={!!(e.values.privateKey && e.values.publicKey)}
-                          onClear={async () => {
-                            if (!window.confirm('鍵を消去します（再生成が必要になります）。よろしいですか？')) return
-                            await clearVpsKeypair(e.id)
-                          }}
-                        />
-                      )}
-                      {def.budget && (
-                        <LimitControl value={e.values._limit ?? ''} onChange={v => setValue(def.id, e.id, '_limit', v)} />
-                      )}
-                    </div>
-                  ))}
-                </div>
-                {def.id === 'github' && <div className="mt-3"><GithubPatGuide /></div>}
-                {def.id === 'anthropic' && <div className="mt-3"><AnthropicKeyGuide /></div>}
-              </div>
-            )
-          })}
-
-          {/* コンテナレジストリ（③公開→AppRun が自動作成・保存。ここでは読み取り専用で状況表示） */}
-          <div className="bg-surface/40 border border-line rounded-xl p-4 space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold text-ink">コンテナレジストリ（自動管理）</h3>
-              <p className="text-[11px] text-ink-muted mt-0.5">
-                ③公開→「さくらのAppRun」で自動作成・保存されます。通常は操作不要です。
-              </p>
-            </div>
-            {regInfo ? (
-              <div className="bg-elevated border border-line rounded-lg p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-brand-green font-medium">登録済み</span>
-                  <button
-                    onClick={async () => {
-                      await window.electronAPI.registry.clearKey()
-                      await refreshRegInfo()
-                      window.dispatchEvent(new Event('sakura:credentials-changed'))
-                    }}
-                    className="text-[11px] text-ink-muted hover:text-brand-red transition-colors"
-                    title="登録済みのレジストリ認証を消去します（トラブル時用。次回の③公開で再作成されます）"
-                  >消去</button>
-                </div>
-                <div className="space-y-1.5 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="text-ink-muted flex-none w-16">サーバ</span>
-                    <span className="text-ink font-mono break-all">{regInfo.name}.sakuracr.jp</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-ink-muted flex-none w-16">ユーザー</span>
-                    <span className="text-ink font-mono break-all">{regInfo.user}</span>
-                  </div>
-                  {/* ── パスワードは見えるようにする（2026-08-22 Ryosuke 指摘）──────
-                      ここだけ 👁 が無く、**利用者が自分の持ち物を取り出せなかった**。
-                      ほかのキーは利用者が発行して手元に控えがあるが、**この値は Koto が
-                      自動生成したもので Koto の中にしか存在しない**。見えないままだと、
-                      docker で自分のイメージを取ることも、Koto を離れることもできない。 */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-ink-muted flex-none w-16">パスワード</span>
-                    <span className="text-ink font-mono break-all flex-1 select-text">{showRegPw ? regInfo.password : '••••••••'}</span>
-                    <button
-                      onClick={() => setShowRegPw(v => !v)}
-                      className="flex-none text-[11px] text-ink-muted hover:text-ink"
-                      title={showRegPw ? '隠す' : '表示'}
-                    >{showRegPw ? '🙈 隠す' : '👁 表示'}</button>
-                    <CopyButton text={regInfo.password} title="パスワードをコピー" />
-                  </div>
-                  <p className="text-[10px] text-ink-muted leading-relaxed">
-                    この値は Koto が作って保存したもので、<b>ほかのどこにも控えがありません</b>。
-                    ご自身で <code>docker login {regInfo.name}.sakuracr.jp</code> するときにも使えます。
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-[11px] text-ink-muted">未登録（さくらのAppRun を公開すると自動で作成されます）</p>
-            )}
-          </div>
-
-          {/* Web検索（Tavily / Brave のキーと優先順位を1枠に統合） */}
-          <div className="bg-surface/40 border border-line rounded-xl p-4 space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold text-ink">Web検索</h3>
-              <p className="text-[11px] text-ink-muted mt-0.5">
-                AIチャットの検索機能に使用。<b className="text-ink-secondary">どちらか一方の登録でOK</b>です（両方登録時は優先側を使用）。
-              </p>
-            </div>
-            <Field
-              def={{ key: 'apiKey', label: 'Tavily APIキー（無料 月1,000回・クレカ不要 / app.tavily.com）', secret: true, placeholder: 'tvly-…' }}
-              value={singleKey('tavily')}
-              onChange={v => setSingleKey('tavily', v)}
-            />
-            <Field
-              def={{ key: 'apiKey', label: 'Brave Search APIキー（毎月$5クレジット＝約1,000回 / brave.com/search/api）', secret: true, placeholder: 'X-Subscription-Token' }}
-              value={singleKey('braveSearch')}
-              onChange={v => setSingleKey('braveSearch', v)}
-            />
-            <div>
-              <label className="text-[11px] font-medium text-ink-secondary">優先して使うサービス（未登録側は自動でもう一方を使用）</label>
-              <div className="flex gap-1.5 mt-1">
-                {([['tavily', 'Tavily'], ['brave', 'Brave']] as [SearchProvider, string][]).map(([p, label]) => (
-                  <button
-                    key={p}
-                    onClick={() => changeSearchPref(p)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                      searchPref === p
-                        ? 'sakura-gradient text-white border-transparent'
-                        : 'bg-surface text-ink-secondary border-line hover:text-ink hover:border-sakura'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+          {groupServices(SERVICES).map(renderGroupSection)}
 
           <div className="flex items-center gap-2 pt-1">
             <button onClick={requestClose} className="flex-1 py-2.5 rounded-xl text-sm font-medium text-ink-secondary bg-surface border border-line hover:text-ink transition-colors">閉じる</button>
@@ -1133,6 +1239,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
           </div>
         </div>
       </div>
+      {confirmElement}
     </div>
   )
 }

@@ -83,7 +83,10 @@ describe('公開前の確認が、実物と繋がっている', () => {
 
   it('画面から呼ばれている', () => {
     expect(panel).toContain('runPreflight')
-    expect(panel).toContain('公開できるか確かめる')
+    // 判断5（2026-09-11）で「公開できるか確かめる」「何が作られるか確認」の2ボタンは
+    // 「🔍 公開前に確かめる」に統合された（checkBeforePublish が両方を順に呼ぶ）。
+    expect(panel).toContain('🔍 公開前に確かめる')
+    expect(panel).toContain('checkBeforePublish')
   })
 
   // ★ 今日の失敗のうち、押す前に分かったはずの4件
