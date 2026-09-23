@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { isProtectedWritePath, protectedWriteMessage } from '../src/shared/protectedPaths'
 import { validateDelegatePath } from '../src/main/claude/toolText'
+import { DATA_LAYER_LOCAL_DIR } from '../src/shared/objectStorage'
 
 // AI が書き換えてはいけない場所の判定（2026-08-05 追加）。
 //
@@ -21,6 +22,18 @@ describe('Koto と git の管理領域は書かせない', () => {
     expect(isProtectedWritePath('.sakuraide/chat.json')).toBe(true)
     expect(isProtectedWritePath('.sakura-cloud/env.json')).toBe(true)
     expect(isProtectedWritePath('.sakuraide.json')).toBe(true)
+  })
+
+  it('手元のデータ置き場（.koto-data）— アプリが動いて貯めた利用者のデータ（2026-09-23）', () => {
+    // 公開の除外（KOTO_INTERNAL_DIRS）へ入れた結果、ここも保護対象になる。
+    // AI が書き換える正当な理由が無い場所で、書き換えられると**利用者のデータが壊れる**
+    // （アプリ自身は Koto を通さず直接書くので、この保護で困ることはない）。
+    expect(isProtectedWritePath('.koto-data/dates/dates.json')).toBe(true)
+    expect(isProtectedWritePath('public/.koto-data/config/join.json')).toBe(true)
+    // 名前が似ているだけのものは巻き込まない（アプリが読み込む部品・利用者のフォルダ）
+    expect(isProtectedWritePath('koto-data.cjs')).toBe(false)
+    expect(isProtectedWritePath('public/koto-data.js')).toBe(false)
+    expect(isProtectedWritePath('koto-data/memo.txt')).toBe(false)
   })
 
   it('.git 配下 — hooks へ書けると危険コマンド判定を迂回して任意のコードが動く', () => {
@@ -73,6 +86,18 @@ describe('入力の端', () => {
     const msg = protectedWriteMessage('.sakuraide/chat.json')
     expect(msg).toContain('.sakuraide/chat.json')
     expect(msg).toContain('書き込めません')
+  })
+
+  it('★ 手元のデータ（.koto-data）は、利用者のデータに当てはまる説明で断る', () => {
+    // 断られる中身は**利用者自身のアプリのデータ**（予定・連絡先）であって、
+    // 「Koto の履歴・設定・秘密」ではない。「テスト用のデータを入れて」と頼んだ
+    // 利用者に理由が伝わらず、AI も別の場所へ書こうとして空回りする（2026-09-23 検分）。
+    const msg = protectedWriteMessage(`${DATA_LAYER_LOCAL_DIR}/entries/1.json`)
+    expect(msg).toContain(`${DATA_LAYER_LOCAL_DIR}/entries/1.json`)
+    expect(msg).toContain('アプリの画面')
+    expect(msg, '履歴・設定・秘密という説明は、このフォルダには当てはまらない').not.toContain('履歴・設定')
+    // 書き込みが止まること自体は従来どおり
+    expect(isProtectedWritePath(`${DATA_LAYER_LOCAL_DIR}/entries/1.json`)).toBe(true)
   })
 })
 

@@ -5,12 +5,36 @@
 //   ・**黙ってはやらない。** 何をどこへ移したかを終わってから伝える。
 //   ・移す前に 🕘 履歴のスナップショットを取る（Koto 自身の安全網。
 //     利用者は「元に戻す」で丸ごと戻せる）。
-//   ・移すのは**公開されるものだけ**。素材・Koto の内部・README は直下に残す。
+//   ・移すのは**公開されるもの**＋**アプリと一緒に動く実行時データ**（RUNTIME_DATA_DIRS）。
+//     素材・チャット履歴・README は直下に残す。
 //   ・**途中で失敗したら、そこで止めて元へ戻す**（半分だけ移った状態を残さない）。
 //
 // 判断（何が公開されるか）は publishExclude.ts に任せる。ここは並べ替えるだけ。
 
 import { PUBLISH_DIR, PUBLISH_DIR_LABEL, shouldMove } from './publishRoot'
+import { DATA_LAYER_LOCAL_DIR } from './objectStorage'
+
+/**
+ * **公開はしないが、アプリと同じ根に付いていくもの**（実行時データ）。
+ *
+ * ── なぜ例外が要るか（2026-09-23 検分）───────────────────────────────────
+ * 移す・残すの判断は `isPublished`（publishExclude.ts）一本だった。`.koto-data` を
+ * 「公開しないもの」に入れた結果、**この変更の前は `public/` へ一緒に移っていたものが
+ * 直下に残る**ようになった。ところがアプリが走る根は `resolvePublishRoot`（＝移行後は
+ * `public/`）なので、移行した瞬間にアプリは空の `public/.koto-data` を見に行く。
+ * 利用者から見ると「移行したらデータが全部消えた」になる（ファイルは直下に残っているが、
+ * 画面にもアプリにも出てこない）。
+ *
+ * だから `.koto-data` は「公開する／しない」とは別の軸で扱う:
+ * **公開物には入れない（publishExclude）。でもアプリと同じ根へ付いていく（ここ）。**
+ * 名前の正は `objectStorage.ts` の定数（文字列を2か所に書かない・掟10）。
+ */
+export const RUNTIME_DATA_DIRS: readonly string[] = [DATA_LAYER_LOCAL_DIR]
+
+/** その名前が「アプリと一緒に動く実行時データ」か（移行では `public/` へ付いていく）。 */
+export function movesWithApp(name: string, isDir: boolean): boolean {
+  return isDir && RUNTIME_DATA_DIRS.includes(name)
+}
 
 /** プロジェクト直下の1件（呼び出し側が readdir した結果）。 */
 export type Entry = { name: string; isDir: boolean }
@@ -37,7 +61,9 @@ export function planMigrate(
   const keep: string[] = []
   for (const e of entries ?? []) {
     if (!e || !e.name) continue
-    if (shouldMove(e.name, isPublishedOf(e.name, e.isDir))) move.push(e.name)
+    // 公開されるもの（isPublished）に加えて、**アプリと同じ根に付いていくもの**も移す。
+    // 後者を残すと、移行した瞬間にアプリが自分のデータを見失う（RUNTIME_DATA_DIRS のコメント）。
+    if (shouldMove(e.name, isPublishedOf(e.name, e.isDir)) || movesWithApp(e.name, e.isDir)) move.push(e.name)
     else keep.push(e.name)
   }
   return { move, keep }

@@ -12,6 +12,7 @@
 import { ipcMain } from 'electron'
 import type { IpcDeps } from './types'
 import { sakuraClient, isContextLimitError, safeMaxTokens, runSakuraChat, runSakuraStream } from '../sakura/engine'
+import { MODELS_TIMEOUT_MS, MODELS_MAX_RETRIES } from '../../shared/chatTimeouts'
 
 export { sakuraClient, isContextLimitError, safeMaxTokens }
 
@@ -54,7 +55,11 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
   // モデル一覧（接続テストにも使われる）。生エラーは describeSakuraError() で日本語化してから投げ直す。
   ipcMain.handle('sakura:models', async (_, apiKey: string) => {
     try {
-      const res = await sakuraClient(apiKey).models.list()
+      // 待ち時間の上限（2026-09-23 検分の指摘13）。sakuraClient は `new OpenAI({ apiKey, baseURL })`
+      // だけなので、渡さないと openai 4.104.0 の既定（600秒・再試行2回＝最悪およそ1,800秒）のまま。
+      // この口は ⚙️ 設定の「接続テスト」とモデル選択の両方から呼ばれ、**⏹ に相当する止め方が無い**。
+      // ※ models.list の引数は RequestOptions ひとつ（node_modules/openai/resources/models.d.ts:14）。
+      const res = await sakuraClient(apiKey).models.list({ timeout: MODELS_TIMEOUT_MS, maxRetries: MODELS_MAX_RETRIES })
       return (res.data ?? []).map((m: any) => m.id).filter((x: any) => typeof x === 'string')
     } catch (e) {
       throw new Error(describeSakuraError(e))

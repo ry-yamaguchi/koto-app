@@ -3,7 +3,10 @@
 // 表示行リストを作り、公開後にコードが変わっていないか（stale）を判定する。
 // electron/DOM 非依存の純粋関数のみを置く（tests/publishStatus.test.ts の対象）。
 
-export type PublishTargetKind = 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 'vercel'
+// 'sakura-apprun-dedicated' は さくらのAppRun 専有型（roadmap #23・D-3、2026-09-11 Ryosuke 決定）。
+// 表示・一覧・破棄・費用は共用型（'sakura-apprun'）と同じ扱いを基本にし、専有型固有の違い
+// （破棄の範囲＝アプリのみ・クラスタは専有型タブの⑥）は src/shared/teardownSupport.ts に書く。
+export type PublishTargetKind = 'hanamii' | 'sakura-apprun' | 'sakura-apprun-dedicated' | 'sakura-rental' | 'vercel'
 
 // 公開先ごとの表示ラベル（PublishModal・各パネルの表記に合わせる）。
 // 破棄の導線が増えたため（📡 公開したもの一覧・プロジェクト削除）外へも出す。
@@ -11,6 +14,7 @@ export type PublishTargetKind = 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 
 export const PUBLISH_TARGET_LABEL: Record<PublishTargetKind, string> = {
   hanamii: '🌸 HANAMII',
   'sakura-apprun': '📦 さくらのAppRun',
+  'sakura-apprun-dedicated': '📦 さくらのAppRun（専有型）',
   'sakura-rental': '🌐 さくらのレンタルサーバ',
   vercel: '▲ Vercel',
 }
@@ -26,8 +30,21 @@ export const PUBLISH_TARGET_LABEL: Record<PublishTargetKind, string> = {
 export const PUBLISH_TARGET_CONSOLE: Record<PublishTargetKind, string> = {
   hanamii: 'https://hanamii.jp/',
   'sakura-apprun': 'https://secure.sakura.ad.jp/cloud/apprun/',
+  // 専有型の専用ページ URL は未確認なので推測しない（掟1）。専有型パネルが既に入口として
+  // 使っているクラウドのコントロールパネルを指す。
+  'sakura-apprun-dedicated': 'https://secure.sakura.ad.jp/cloud/',
   'sakura-rental': 'https://secure.sakura.ad.jp/rs/cp/',
   vercel: 'https://vercel.com/dashboard',
+}
+
+/**
+ * 既知の公開先の種類か（純関数）。PUBLISH_TARGET_LABEL の**自前のキー**だけを既知とみなす。
+ * 種類の一覧をここへ書き下すと二重管理になる（掟10）ので、ラベル表のキーで判定する。
+ * `PUBLISH_TARGET_LABEL[key]` の真偽で見ると、'constructor' や 'toString' のような
+ * Object.prototype 由来のキー（破損データ）まで既知と読んでしまうため、own property で見る。
+ */
+export function isKnownPublishTarget(key: string | null | undefined): key is PublishTargetKind {
+  return typeof key === 'string' && Object.prototype.hasOwnProperty.call(PUBLISH_TARGET_LABEL, key)
 }
 
 export interface PublishTargetRecord {
@@ -76,7 +93,7 @@ export function buildPublishStatusRows(
   publish = publish ?? {}
 
   const targets = publish.targets ?? {}
-  const order: PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-rental']
+  const order: PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental']
 
   for (const t of order) {
     const rec = targets[t]
@@ -158,8 +175,9 @@ const PENDING_RECENCY_THRESHOLD_MS = 5_000
 export function detectInterruptedPublish(meta: PublishMeta, nowMs: number): PendingPublish | null {
   const pending = meta?.pending
   if (!pending) return null
-  const validTargets: PublishTargetKind[] = ['hanamii', 'sakura-apprun', 'sakura-rental', 'vercel']
-  if (!pending.target || !validTargets.includes(pending.target)) return null
+  // 既知の公開先かどうかは isKnownPublishTarget（PUBLISH_TARGET_LABEL の自前キー）で判定する
+  // （種類の一覧をここに複製しない・掟10。latestPublishedTarget と同じ判定）。
+  if (!isKnownPublishTarget(pending.target)) return null
   const started = new Date(pending.startedAt).getTime()
   if (isNaN(started)) return null
   if (nowMs - started < PENDING_RECENCY_THRESHOLD_MS) return null
@@ -182,8 +200,8 @@ export function latestPublishedTarget(meta: PublishMeta | undefined | null): Pub
   if (!targets) return null
   let best: { target: PublishTargetKind; at: number } | null = null
   for (const [key, rec] of Object.entries(targets)) {
-    const target = key as PublishTargetKind
-    if (!PUBLISH_TARGET_LABEL[target]) continue // 未知のキー（将来の公開先・破損データ）は無視する
+    if (!isKnownPublishTarget(key)) continue // 未知のキー（将来の公開先・破損データ）は無視する
+    const target = key
     const at = new Date(rec?.publishedAt ?? '').getTime()
     if (isNaN(at)) continue
     if (!best || at > best.at) best = { target, at }
@@ -245,6 +263,8 @@ export function withoutPublishTarget(
  * AppRun の日時不明の行は `.sakura-cloud/state.json`（構築の記録）から作られており、
  * **ここを消しても消えない**。あちらは「破棄」で扱うものなので、片づけの対象にしない
  * （押しても何も起きないボタンを出さない）。
+ * 専有型（'sakura-apprun-dedicated'）には state.json からの救済が無い（publish.targets の記録だけ）ので、
+ * 日時不明でも片づけられる。
  */
 export function canForgetRow(row: Pick<PublishStatusRow, 'target' | 'dateUnknown'>): boolean {
   return !(row.target === 'sakura-apprun' && row.dateUnknown)

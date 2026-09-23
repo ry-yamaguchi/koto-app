@@ -3,7 +3,9 @@ import {
   isValidBucketName, sharedBucketName, prefixForProject, resolvePlacement,
   objectKeyFor, teardownPlanFor, publicUrlFor, storageCostNote,
   keepMarkerKey, projectPrefixesFromKeys, foreignKeys, parseListResponse, decodeXmlEntities,
-  storageEnvVars, containsSecretEnv, usesDataLayer, writesFilesDirectly, consentedBuckets, keepStorageFromDisk,
+  storageEnvVars, containsSecretEnv, usesDataLayer, writesFilesDirectly, fileWriteLines, consentedBuckets, keepStorageFromDisk,
+  moduleKindOf, dataLayerFileFor, moduleKindOfExtension, moduleKindForDataLayer,
+  DATA_LAYER_FILE, DATA_LAYER_FILE_CJS,
   type StoragePlacement,
 } from '../src/shared/objectStorage'
 
@@ -383,6 +385,82 @@ describe('自分でファイルに保存していないかの検出（静かに�
   })
 })
 
+// ── どこに書いているか（2026-09-23 実機の事故）──────────────────────────
+// 「データが消えます。AI に書き直してもらってください」と出したあと、AI が
+// **ファイルを読まずに「書き直しは完了しています」と答えた**（実際には1文字も
+// 変わっておらず、書き込みは 66行目に残っていた）。Koto は場所を知っているのに
+// AI へ渡していなかった。**行番号を渡せる**ようにして、この行き止まりを断つ。
+describe('ファイルへの書き込みが何行目にあるか', () => {
+  it('1件を拾う。**行番号は1始まり**', () => {
+    const src = "import fs from 'node:fs'\nconst x = 1\nfs.writeFileSync('d.json', x)\n"
+    expect(fileWriteLines(src)).toEqual([3])
+  })
+
+  it('複数件を、出てくる順に拾う', () => {
+    const src = [
+      "import fs from 'node:fs'",      // 1
+      "fs.writeFileSync('a.json', x)", // 2
+      'const y = 2',                   // 3
+      "fs.appendFile('log.txt', y)",   // 4
+    ].join('\n')
+    expect(fileWriteLines(src)).toEqual([2, 4])
+  })
+
+  it('Python の open(..., "w") も行で拾う', () => {
+    expect(fileWriteLines("x = 1\nopen('data.json', 'w')")).toEqual([2])
+  })
+
+  // ── 改行をまたぐ形（2026-09-23 検分）────────────────────────────────
+  // 行ごとに当てる作りにしたとき、**整形でごく普通に現れる形**を取りこぼしていた。
+  // 見つからなければ「⚠️ データが消えてしまいます」も「🔎 書き直せたか確かめる」も
+  // 出ないまま公開され、再公開のたびに利用者の入力が消える。**開始行で拾う**
+  it('複数行に分かれた Python の open(..., "w") を、開始行で拾う', () => {
+    const src = 'x = 1\nwith open(\n    "data.json", "w"\n) as f:\n    f.write(x)\n'
+    expect(fileWriteLines(src)).toEqual([2])
+  })
+
+  // 引数の途中で折り返す形。**条件から改行を締め出すと、ここで取りこぼす**
+  it('引数が改行で折り返された open(..., "w") も拾う', () => {
+    expect(fileWriteLines('open("data.json",\n    "w")')).toEqual([1])
+  })
+
+  it('改行を挟んだ fs.writeFileSync（require で読み込む形）も拾う', () => {
+    const src = "const fs = require('fs')\nfs\n  .writeFileSync(p, d)\n"
+    expect(fileWriteLines(src)).toEqual([2])
+  })
+
+  it('書き込みが無ければ空', () => {
+    expect(fileWriteLines("import fs from 'node:fs'\nfs.readFileSync('config.json')")).toEqual([])
+    expect(fileWriteLines("open('data.json', 'r')")).toEqual([])
+  })
+
+  it('壊れた入力でも落ちない', () => {
+    expect(fileWriteLines('')).toEqual([])
+    expect(fileWriteLines(null as unknown as string)).toEqual([])
+    expect(fileWriteLines(undefined as unknown as string)).toEqual([])
+  })
+
+  // **判定の条件は1か所だけ**（掟10）。片方だけ直すと、画面が「危ない」と
+  // 言いながら場所を1つも示せない、という食い違いが生まれる
+  it('writesFilesDirectly と同じ条件で動く', () => {
+    const cases = [
+      "import fs from 'node:fs'\nfs.writeFileSync('d.json', x)",
+      "await fs.promises.writeFile('d.json', x)",
+      "fs.appendFile('log.txt', x)",
+      "open('data.json', 'w')",
+      // **改行をまたぐ形も、両方で同じ答えになること**（片方だけ直すと食い違う）
+      'with open(\n    "data.json", "w"\n) as f:\n',
+      "const fs = require('fs')\nfs\n  .writeFileSync(p, d)\n",
+      "import fs from 'node:fs'\nfs.readFileSync('config.json')",
+      "open('data.json', 'r')",
+      '',
+    ]
+    for (const src of cases) {
+      expect(fileWriteLines(src).length > 0).toBe(writesFilesDirectly(src))
+    }
+  })
+})
+
 // ── 費用の同意（2026-08-14 発覚）─────────────────────────────────────
 // `defaultSpec` は長らく、**すべてのプロジェクトの env.json** に
 // `{ bucket: '<名前>-data' }` を書いていた。apply に保存場所の操作が繋がって
@@ -466,5 +544,141 @@ describe('保存場所の記録を、古い写しで消させない', () => {
     const incoming = { persistence: { objectStorage: [] } }
     keepStorageFromDisk(incoming, { persistence: { objectStorage: [CONSENTED] } })
     expect(incoming.persistence.objectStorage).toEqual([])
+  })
+})
+
+// ── アプリの形の見分け（2026-09-23 実機・利用者のアプリが起動しなくなった）──
+//
+// koto-data は import を使う形（koto-data.js）でしか用意していなかった。
+// require で動いているアプリにそれを読み込ませようとして、AI は package.json に
+// `"type": "module"` を足した。その結果、**アプリ全体が require を使えなくなり、
+// 起動しなくなった**（ReferenceError: require is not defined in ES module scope）。
+//
+// いまは「アプリの形に合う方を置く」。見分けはこの純関数1か所だけ（掟10）。
+// **迷ったら require 側に倒す。** Node の既定がそうであり、倒し間違えても
+// 「読み込めない」で済む。逆に import 側へ倒すと、アプリを作り変えさせてしまう。
+
+describe('アプリの形（import か require か）の見分け', () => {
+  it('"type": "module" なら import のアプリ', () => {
+    expect(moduleKindOf('{"type":"module"}')).toBe('esm')
+    expect(moduleKindOf('{ "name": "app", "type": "module", "version": "1.0.0" }')).toBe('esm')
+  })
+
+  it('type が無ければ require のアプリ', () => {
+    expect(moduleKindOf('{"name":"app"}')).toBe('cjs')
+    expect(moduleKindOf('{}')).toBe('cjs')
+  })
+
+  it('"type": "commonjs" と書いてあれば require のアプリ', () => {
+    expect(moduleKindOf('{"type":"commonjs"}')).toBe('cjs')
+  })
+
+  // ★ package.json が無いアプリ（Node は .js を require として扱う）
+  it('package.json が無ければ require のアプリ', () => {
+    expect(moduleKindOf(null)).toBe('cjs')
+    expect(moduleKindOf(undefined)).toBe('cjs')
+    expect(moduleKindOf('')).toBe('cjs')
+    expect(moduleKindOf('   ')).toBe('cjs')
+  })
+
+  // ★ 壊れた JSON を「import が使える」と読まない（推測しない）
+  it('壊れた package.json は require のアプリとして扱う', () => {
+    expect(moduleKindOf('{"type": "module"')).toBe('cjs')
+    expect(moduleKindOf('not json at all')).toBe('cjs')
+    expect(moduleKindOf('null')).toBe('cjs')
+    expect(moduleKindOf('[]')).toBe('cjs')
+    expect(moduleKindOf('"module"')).toBe('cjs')
+  })
+
+  it('置くファイルの名前は、形から一意に決まる', () => {
+    expect(dataLayerFileFor('esm')).toBe(DATA_LAYER_FILE)
+    expect(dataLayerFileFor('esm')).toBe('koto-data.js')
+    expect(dataLayerFileFor('cjs')).toBe(DATA_LAYER_FILE_CJS)
+    expect(dataLayerFileFor('cjs')).toBe('koto-data.cjs')
+  })
+})
+
+// ── 拡張子と、近い順の package.json（2026-09-23 検分）──────────────────
+// Node の決まりは package.json の type だけではない:
+//   (1) `.mjs` は常に import・`.cjs` は常に require（type より強い）
+//   (2) package.json が無ければ**親へ遡って**いちばん近いものを見る
+// これを見ずに「公開の根の1枚」だけで決めると、require を使えないファイルに
+// require を勧めて `ReferenceError: require is not defined` で起動しなくなる。
+describe('データ層の形を、拡張子と近い順の package.json で決める', () => {
+  it('.mjs は import、.cjs は require（拡張子だけで決まる）', () => {
+    expect(moduleKindOfExtension('server.mjs')).toBe('esm')
+    expect(moduleKindOfExtension('public/app.CJS')).toBe('cjs')
+  })
+
+  it('.js / 拡張子なしでは決まらない（null）', () => {
+    expect(moduleKindOfExtension('server.js')).toBeNull()
+    expect(moduleKindOfExtension('Makefile')).toBeNull()
+    expect(moduleKindOfExtension('')).toBeNull()
+  })
+
+  // ★ 拡張子が package.json より強い
+  it('server.mjs があれば、type の無い package.json でも import', () => {
+    expect(moduleKindForDataLayer({
+      targets: ['server.mjs'],
+      packageJsonTexts: ['{"name":"app"}'],
+    })).toBe('esm')
+  })
+
+  it('server.cjs があれば、"type": "module" でも require', () => {
+    expect(moduleKindForDataLayer({
+      targets: ['server.cjs'],
+      packageJsonTexts: ['{"type":"module"}'],
+    })).toBe('cjs')
+  })
+
+  // ★ 割れたら推測しない（どちらに倒しても片方が壊れる）
+  it('.mjs と .cjs が混ざるときは拡張子で決めず、package.json へ落とす', () => {
+    expect(moduleKindForDataLayer({
+      targets: ['a.mjs', 'b.cjs'],
+      packageJsonTexts: ['{"type":"module"}'],
+    })).toBe('esm')
+    expect(moduleKindForDataLayer({
+      targets: ['a.mjs', 'b.cjs'],
+      packageJsonTexts: ['{"name":"app"}'],
+    })).toBe('cjs')
+  })
+
+  // ★ 近いほうが勝つ。**type が無くても、見つかった時点で決まる**（Node と同じ）
+  it('近い順に見て、最初に見つかった package.json で決める', () => {
+    expect(moduleKindForDataLayer({
+      targets: ['server.js'],
+      packageJsonTexts: [null, '{"type":"module"}'],
+    })).toBe('esm')
+    expect(moduleKindForDataLayer({
+      targets: ['server.js'],
+      packageJsonTexts: ['{"name":"inner"}', '{"type":"module"}'],
+    })).toBe('cjs')
+  })
+
+  // ★ 1枚も無ければ require 側（Node の既定）
+  it('package.json が1枚も無ければ require のアプリ', () => {
+    expect(moduleKindForDataLayer({ targets: ['server.js'], packageJsonTexts: [null, null] })).toBe('cjs')
+    expect(moduleKindForDataLayer({})).toBe('cjs')
+  })
+})
+
+// ★ require のアプリは koto-data.cjs を読み込む。これを「使っていない」と
+//   判定すると、画面が「保存が見つかりません」と嘘をつく
+describe('koto-data を使っているかの判定（.cjs も拾う）', () => {
+  it('require(\'./koto-data.cjs\') を使っていると判定する', () => {
+    expect(usesDataLayer("const { save } = require('./koto-data.cjs')")).toBe(true)
+    expect(usesDataLayer('const d = require("../lib/koto-data.cjs")')).toBe(true)
+  })
+
+  it('import の形も、これまでどおり拾う', () => {
+    expect(usesDataLayer("import { save } from './koto-data.js'")).toBe(true)
+    expect(usesDataLayer("import { save } from './koto-data'")).toBe(true)
+    expect(usesDataLayer("const { save } = require('./koto-data.js')")).toBe(true)
+    expect(usesDataLayer("const m = await import('./koto-data.cjs')")).toBe(true)
+  })
+
+  it('関係のないファイルは拾わない', () => {
+    expect(usesDataLayer("import fs from 'node:fs'")).toBe(false)
+    expect(usesDataLayer("require('./koto-data-helper.ts')")).toBe(false)
   })
 })

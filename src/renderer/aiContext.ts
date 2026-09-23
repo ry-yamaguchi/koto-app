@@ -7,6 +7,7 @@ import { getTargetProfile, profileToContext } from './targetProfiles'
 import { MATERIALS_DIR } from '../shared/publishExclude'
 import { PUBLISH_DIR } from '../shared/publishRoot'
 import { importedContext } from './importProject'
+import { PUBLISH_TARGET_LABEL } from './publishStatus'
 // 実体は shared へ移した（B'-3b）。searchStatusContext は src/shared/aiToolsCore.ts を参照。
 import { searchStatusContext } from '../shared/aiToolsCore'
 import { UNTRUSTED_RULE } from '../shared/untrustedBlock'
@@ -87,10 +88,27 @@ const IMAGE_RULE_IDE =
 const DATA_RULE =
   '【データの保存（とても重要）】\n' +
   '- 入力内容・投稿・記録などを保存する必要があるときは、必ず koto-data を使うこと。\n' +
-  "  例: import { list, get, save, remove } from './koto-data.js'\n" +
+  '- **読み込み方は、いまのアプリの形に合わせること。** 形を変えてはいけません。\n' +
+  "  import を使うアプリ（package.json に \"type\": \"module\" がある）: import { list, get, save, remove } from './koto-data.js'\n" +
+  "  require を使うアプリ（それ以外）: const { list, get, save, remove } = require('./koto-data.cjs')\n" +
   '  保存 await save(\'entries\', {...}) / 一覧 await list(\'entries\') / 取得 await get(\'entries\', id) / 削除 await remove(\'entries\', id)\n' +
   '- **自分でファイル（JSON等）に書き込んで保存しないこと。** 公開先のサーバーではファイルが消えるため、利用者のデータが失われます。\n' +
-  '- koto-data.js が無ければ Koto が自動で用意します。中身を書き換える必要はありません。\n'
+  // 2026-09-23 実機: ここが「koto-data.js が無ければ Koto が自動で用意します」と
+  // 約束していたが、**当時の Koto は実際には置いていなかった**（置く条件が
+  // 「すでに使っている」で、書き直す前は必ず0件だったため）。存在しないファイルからの
+  // 読み込みを頼まれた AI は完了できず、読み込めるようにしようと package.json に
+  // "type": "module" を足し、**アプリが起動しなくなった**。
+  // いまは「AIに書き直してもらう」を押した時点で、アプリの形に合う方を必ず置く。
+  // **ここには、Koto が実際にすることだけを書く。**
+  // 2026-09-23 検分: ここは「Koto が用意します」と条件を付けずに言い切っていたが、
+  // 置く入口は③公開の2つのボタンだけで、**いちばん通る道（① 作る → すぐ ② 試す）では
+  // 1つも置かれなかった**。list_files で確かめても両方無いので AI は身動きが取れず、
+  // 片方を推測して書く。いまは ② 試す・③ 公開の直前でも必ず置くようにしたうえで、
+  // **まだ無くてもそのまま書いてよい**ことをここで伝える（「無いから書けない」で
+  // 止まらせない）。**ここには、Koto が実際にすることだけを書く。**
+  '- koto-data のファイルは Koto が用意します（「② 試す」「③ 公開」を押した直前に、import のアプリには koto-data.js、require のアプリには koto-data.cjs を置きます）。中身を書き換える必要はありません。\n' +
+  '- **まだファイルが見当たらなくても、上の形のとおりに書いてよい。** 自分で koto-data を作らないこと。既にどちらかが置かれているなら、**置かれているほうを読み込むこと**（list_files で確かめられます）。\n' +
+  '- **package.json の "type" を変更してはいけません。** 変更するとアプリ全体の読み込み方が変わり、起動しなくなります（import と require を行き来させる書き換えを提案しないこと）。\n'
 
 export const IDE_CONTEXT =
   'あなたは「Koto」のAIアシスタントです。' + APP_INTRO +
@@ -160,13 +178,16 @@ export const CHAT_CONTEXT =
   '- [💾 プロジェクトに保存] でファイルを保存した場合も、続きの開発・実行・公開はIDEモードで行うことを添えてください。\n' +
   WEB_RULES
 
-const TARGET_LABEL: Record<string, string> = {
+// 公開先ラベルの唯一の定義は publishStatus.ts の PUBLISH_TARGET_LABEL（掟10）。
+// ここでは、まだ公開されていない・PublishTargetKind に無い target（プロジェクト作成時に選べる
+// 「公開先の前提」）のぶんだけを補って合成する。PUBLISH_TARGET_LABEL とキーが重複しないこと
+// （重複すると、どちらの表記が勝つか読み手が分からなくなる）。
+const LOCAL_ONLY_TARGET_LABEL: Record<string, string> = {
   local: 'ローカルのみ（公開設定なし）',
-  'sakura-rental': 'さくらのレンタルサーバ（PHP + MySQL）',
-  'sakura-apprun': 'さくらのAppRun（Dockerコンテナ）',
   'sakura-vps': 'さくらのVPS',
   'sakura-cloud': 'さくらのクラウド',
 }
+const TARGET_LABEL: Record<string, string> = { ...LOCAL_ONLY_TARGET_LABEL, ...PUBLISH_TARGET_LABEL }
 
 interface ProjectMeta {
   name?: string; description?: string; kind?: string; siteType?: string; base?: string; target?: string

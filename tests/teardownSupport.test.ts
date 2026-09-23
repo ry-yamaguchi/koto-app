@@ -3,15 +3,20 @@ import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNo
 import type { PublishTargetKind } from '../src/renderer/publishStatus'
 
 // 2026-08-09 Ryosuke の指摘で、破棄の導線を「③公開」以外にも増やした
-// （📡 公開したもの一覧・プロジェクト削除時）。公開先は4つあるが破棄の口は2つしかないため、
+// （📡 公開したもの一覧・プロジェクト削除時）。公開先は5つあるが破棄の口は3つしかないため、
 // ここを間違えると「押しても何も起きないボタン」が生まれる。
 
-const ALL: PublishTargetKind[] = ['sakura-apprun', 'hanamii', 'vercel', 'sakura-rental']
+const ALL: PublishTargetKind[] = ['sakura-apprun', 'sakura-apprun-dedicated', 'hanamii', 'vercel', 'sakura-rental']
 
 describe('破棄できる公開先', () => {
   it('AppRun と HANAMII は Koto から破棄できる', () => {
     expect(teardownSupport('sakura-apprun')).toBe('supported')
     expect(teardownSupport('hanamii')).toBe('supported')
+  })
+
+  // D-3（2026-09-11 Ryosuke 決定）: 専有型もアプリの削除は Koto からできる（実際の呼び出しは D-4）
+  it('AppRun 専有型も Koto から破棄できる', () => {
+    expect(teardownSupport('sakura-apprun-dedicated')).toBe('supported')
   })
 
   it('Vercel とレンタルサーバは破棄の実装が無い', () => {
@@ -30,6 +35,7 @@ describe('破棄できない公開先の案内', () => {
 
   it('破棄できる公開先には案内を出さない', () => {
     expect(manualTeardownGuide('sakura-apprun')).toBe('')
+    expect(manualTeardownGuide('sakura-apprun-dedicated')).toBe('')
     expect(manualTeardownGuide('hanamii')).toBe('')
   })
 })
@@ -38,6 +44,17 @@ describe('破棄で何が消えるか', () => {
   // AppRun は「アプリだけ消えてレジストリが残る」と誤解されると月220円が続く
   it('AppRun はレジストリも消えることを書く', () => {
     expect(teardownScopeNote('sakura-apprun')).toContain('コンテナレジストリ')
+  })
+
+  // 専有型は「アプリだけ消える」。クラスタ・LB は月額が続くので、⑥で別に消すことを必ず伝える
+  it('★ AppRun 専有型は、アプリ（全バージョン）だけ消え、クラスタ・LB は⑥で別に消すと書く', () => {
+    const note = teardownScopeNote('sakura-apprun-dedicated')
+    expect(note).toContain('全バージョン')
+    expect(note).toContain('クラスタ')
+    expect(note).toContain('ロードバランサ')
+    expect(note).toContain('⑥')
+    expect(note).toContain('課金が続きます')
+    expect(note).not.toBe(teardownScopeNote('sakura-apprun')) // 共用型の文を使い回さない
   })
 
   it('破棄できる公開先には必ず説明がある', () => {

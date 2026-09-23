@@ -323,3 +323,41 @@ describe('moveToMaterialsFs: 途中失敗のロールバック', () => {
     expect(exists(`${MATERIALS_DIR}/b.html`)).toBe(false)
   })
 })
+
+// ── 手元のデータ置き場は「使われていない」に出さない（2026-09-23 実機・ScheduleAPP）──
+// データの保存（koto-data）へ書き直したアプリが動き、public/.koto-data/ に実データが
+// 貯まった。ところが ③公開 の「⑤ 🧹 使われていないファイルの確認」にその2件が出た:
+//     ・.koto-data/config/join.json
+//     ・.koto-data/dates/dates.json
+// 「素材置き場へ移動」を押すと**アプリがデータを失う**。中身は実行時にしか読み書き
+// されず、どのコードからも名前で参照されることが永久に無いので、除外しない限り必ず出る。
+// 直しは公開の除外（publishExclude.ts の KOTO_INTERNAL_DIRS）に入れること1つだけ
+//（この一覧は publishView＝公開と同じ除外定義でファイルを集めるため。掟10）。
+describe('checkUnusedFiles: 手元のデータ置き場（.koto-data）は片づけの対象に出さない', () => {
+  it('★ 実機の再現: .koto-data の中のアプリのデータが「使われていない」に出ない', () => {
+    write('public/package.json', JSON.stringify({ main: 'server.js', scripts: { start: 'node server.js' } }))
+    write('public/server.js', "const { list, get, save, remove } = require('./koto-data.cjs')")
+    write('public/koto-data.cjs', 'module.exports = {}')
+    write('public/index.html', '<h1>予定</h1>')
+    // アプリが実際に書いたデータ（実機と同じ2件）
+    write('public/.koto-data/dates/dates.json', '[{"id":"1","date":"2026-09-23"}]')
+    write('public/.koto-data/config/join.json', '{"member":"りょうすけ"}')
+    // 比較対象: 書き直す前の置き場は、従来どおり未使用として出てよい（止めすぎない）
+    write('public/data/schedule.json', '{"old":true}')
+
+    const r = checkUnusedFiles(dir)
+    expect(r.supported).toBe(true)
+    expect(r.unused).not.toContain('.koto-data/dates/dates.json')
+    expect(r.unused).not.toContain('.koto-data/config/join.json')
+    expect(r.unused.some(f => f.includes('.koto-data'))).toBe(false)
+    expect(r.unused).toContain('data/schedule.json') // 本当に使われていないものは出し続ける
+  })
+
+  it('★ 利用者が自分で作った koto-data（ドット無し）は、これまでどおり見る', () => {
+    // 名前が似ているだけの別物まで黙って隠すと、片づけの機能が効かなくなる（止めすぎも害）。
+    write('index.html', '<h1>ページ</h1>')
+    write('koto-data/memo.txt', 'これは自分で作ったフォルダ')
+    const r = checkUnusedFiles(dir)
+    expect(r.unused).toContain('koto-data/memo.txt')
+  })
+})

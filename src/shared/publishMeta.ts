@@ -90,6 +90,10 @@ export function withoutPendingPublish(meta: unknown): Record<string, unknown> {
  * 各 ID は「実際に作られたか」を表す。**成功した段だけ値を持つ**——途中で失敗しても、
  * 作れたところまでの ID は残す（2026-08-14「失敗しても、途中まで起きたことは記録する」）。
  * 破棄で消せたものは `null` に戻す（消せなかったものは値を残し、「残っている」と示せるようにする）。
+ *
+ * 「公開した事実」（📡 公開したもの一覧・③公開の公開状況に出す日時と URL）はここではなく、
+ * 他の公開先と同じ `publish.targets['sakura-apprun-dedicated']` に `withPublishRecord` で書く（D-3）。
+ * ここは資源の ID だけを持つ。
  */
 export type ApprunDedicatedRecord = {
   /** ②で案内している、手作業で用意したサービスプリンシパルのID。 */
@@ -112,6 +116,31 @@ export type ApprunDedicatedRecord = {
   lbServiceClassPath?: string | null
   /** クラスタを作成した時刻（ISO文字列）。 */
   createdAt?: string | null
+
+  // ── D-1（土台）: 段階③⑤「アプリを公開する」の記録（roadmap #23・12-2） ──────────────
+  // クラスタ・ASG・LBと同じ方針（成功した段だけ値を持つ・null は「まだ/消せた」）。
+  /** 作られたアプリケーションのID（POST /applications の応答）。 */
+  applicationID?: string | null
+  /** アプリケーション作成に使った名前（deriveApplicationName で作った値）。 */
+  applicationName?: string | null
+  /** 現在有効なバージョン番号（PUT /applications/{id} の activeVersion と同じ値）。 */
+  activeVersion?: number | null
+  /** 公開に使ったコンテナイメージの参照（push 先のタグ付きref）。 */
+  imageRef?: string | null
+  /** 独自ドメインのホスト名（exposedPorts[].host にそのまま渡す値）。 */
+  hosts?: string[] | null
+  /** アプリケーション内部でリッスンするポート（exposedPorts[].targetPort）。 */
+  appPort?: number | null
+  /** バージョン作成に使った cpu（mCPU）。 */
+  appCpu?: number | null
+  /** バージョン作成に使った memory（MB）。 */
+  appMemory?: number | null
+  /** バージョン作成に使った fixedScale。 */
+  appFixedScale?: number | null
+  /** ロードバランサノードのアドレス（DNSのAレコードに案内する値。readLoadBalancerNodeAddresses から）。 */
+  lbAddresses?: string[] | null
+  /** アプリケーションを最後に公開した時刻（ISO文字列）。 */
+  appPublishedAt?: string | null
 }
 
 /**

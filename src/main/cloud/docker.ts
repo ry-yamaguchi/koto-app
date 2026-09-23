@@ -16,6 +16,7 @@
 import { execFile, spawn } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
+import { awaitLoginPath } from '../loginPath'
 
 // ── 検証規則（純関数・IO無し・electron 非依存） ───────────────────────────────
 
@@ -86,10 +87,17 @@ function summarizeStderr(stderr: string): string {
   return last.slice(0, 300)
 }
 
+// ── PATH が決まるのを待ってから docker を起こす（D-18 C）────────────────────
+// この4つ（dockerAvailable / buildImage / loginRegistry / pushImage）はどれも `docker` を
+// 起動する入口なので、**すべて**で `await awaitLoginPath()` を通す。1つでも抜けると、
+// そこだけが最小限の PATH のまま docker を探し、「入っているのに見つからない」に戻る。
+// 決まっていれば 0 コスト（解決済みの Promise を待つだけ）。
+
 /**
  * docker コマンドが利用可能か確認する（`docker --version` が成功すれば true）。
  */
-export function dockerAvailable(): Promise<boolean> {
+export async function dockerAvailable(): Promise<boolean> {
+  await awaitLoginPath()
   return new Promise(resolve => {
     execFile('docker', ['--version'], { timeout: 15000 }, err => {
       resolve(!err)
@@ -103,7 +111,8 @@ export function dockerAvailable(): Promise<boolean> {
  * - ref は呼び出し側で buildRef により検証済みであること（ここでも軽く形式確認はしない＝
  *   buildRef を通すことを前提とする）。
  */
-export function buildImage(contextAbsPath: string, ref: string): Promise<{ ok: boolean; log: string }> {
+export async function buildImage(contextAbsPath: string, ref: string): Promise<{ ok: boolean; log: string }> {
+  await awaitLoginPath()
   return new Promise(resolve => {
     try {
       if (typeof contextAbsPath !== 'string' || !path.isAbsolute(contextAbsPath)) {
@@ -141,11 +150,12 @@ export function buildImage(contextAbsPath: string, ref: string): Promise<{ ok: b
  * パスワードは argv に渡さず stdin へ書き込んで閉じる（プロセス一覧に出さない）。
  * server/user は呼び出し側で検証済みであること。
  */
-export function loginRegistry(
+export async function loginRegistry(
   server: string,
   user: string,
   password: string
 ): Promise<{ ok: boolean; message?: string }> {
+  await awaitLoginPath()
   return new Promise(resolve => {
     try {
       // server は念のためここでも検証（不正なら throw → catch で失敗扱い）。
@@ -200,7 +210,8 @@ export function loginRegistry(
  * イメージをプッシュする。`docker push <ref>`。
  * ref は呼び出し側で buildRef により検証済みであること。
  */
-export function pushImage(ref: string): Promise<{ ok: boolean; log: string }> {
+export async function pushImage(ref: string): Promise<{ ok: boolean; log: string }> {
+  await awaitLoginPath()
   return new Promise(resolve => {
     try {
       execFile(

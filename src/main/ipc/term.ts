@@ -5,13 +5,17 @@ import * as fs from 'fs'
 import * as pty from 'node-pty'
 import type { IpcDeps } from './types'
 import { sendToWindow } from '../windowSend'
+import { awaitLoginPath } from '../loginPath'
 
 export function registerTermHandlers(deps: IpcDeps) {
   // Terminal IPC
   const terminals = new Map<number, pty.IPty>()
   let termId = 0
 
-  ipcMain.handle('term:create', (_, cwd?: string) => {
+  ipcMain.handle('term:create', async (_, cwd?: string) => {
+    // D-18 C: PATH がまだ決まっていなければ、決まるまで待つ（決まっていれば 0 コスト）。
+    // pty へ渡す env は process.env の写しなので、**起動した瞬間の PATH で固まる**。
+    await awaitLoginPath()
     const id = ++termId
     const shell = process.env.SHELL || '/bin/zsh'
     // プロジェクトフォルダが指定されていればそこで起動（無ければホーム）

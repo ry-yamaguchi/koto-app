@@ -18,7 +18,10 @@ describe('buildFeedbackBody', () => {
 describe('buildFeedbackUrl', () => {
   it('points at the koto repository issues/new endpoint', () => {
     const url = buildFeedbackUrl('0.2.64', '25.5.0', 'arm64')
-    expect(url.startsWith('https://github.com/ry-yamaguchi/koto/issues/new?body=')).toBe(true)
+    expect(url.startsWith('https://github.com/ry-yamaguchi/koto-app/issues/new?body=')).toBe(true)
+    // ★ 宛先が**非公開**リポジトリに戻っていないこと（2026-09-16 の実機で 404 になった当の欠陥）。
+    //   `koto-app` は `koto` を含むので、startsWith だけでは戻りを検知できない。
+    expect(url).not.toMatch(/github\.com\/ry-yamaguchi\/koto\/issues/)
   })
 
   it('URL-encodes the body so it round-trips back to buildFeedbackBody output', () => {

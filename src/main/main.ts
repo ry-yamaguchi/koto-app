@@ -8,9 +8,10 @@ import * as os from 'os'
 import { registerAllHandlers } from './ipc'
 import { checkClaudeBinary } from './claude/client'
 import { buildFeedbackUrl } from './feedback'
-import { applyLoginPath } from './loginPath'
+import { applyLoginPath, describeLoginPathResult } from './loginPath'
 import { sendToWindow } from './windowSend'
 import { initUpdater } from './updater'
+import { scheduleBrowserCacheTrim } from './browserCacheLimit'
 
 const APP_NAME = 'Koto'
 const SAKURA_AI_URL = 'https://ai.sakura.ad.jp/'
@@ -368,8 +369,21 @@ async function runClaudeBinarySmokeCheckIfRequested() {
 // GUI（Finder/Dock）起動では PATH が最小限になり、Homebrew等で入れた node/npm/docker が
 // 「入っているのに見つからない」状態になる。ウィンドウ生成より前に一度だけ補正する（loginPath.ts 参照）。
 // これで proc:run（AIのrun_command）・ターミナル・shell:which の3か所がまとめて直る。
+// 2026-09-16: 一度調べた PATH を覚えるようにした（loginPath.ts の「覚える」節）。
+// 前と同じ状況なら **シェルを起動しない**（cached＝0 秒。以前は毎回 1.22 秒かかっていた）。
+//
+// 2026-09-16（D-18）: 覚えが無い／古いときは **窓を出す前に待たない**。
+// ここでは取得を始めるだけで先へ進み、決まったら process.env.PATH へ入る
+// （子プロセスに受け継がれるので、あとから起動する道具にはすべて効く）。
+// 決まる前に道具を押された場合に備えて、道具を起動する入口は `awaitLoginPath()` を通す。
 const pathFix = applyLoginPath()
-console.log(`[login-path] ${pathFix.ok ? 'ok' : 'skip'}${pathFix.message ? ` (${pathFix.message})` : ''} PATH=${process.env.PATH}`)
+console.log(`[login-path] ${describeLoginPathResult(pathFix.immediate)} PATH=${process.env.PATH}`)
+if (pathFix.immediate.source === 'pending') {
+  // **窓より後の結果も必ず1行残す。** でないと「いつ PATH が直ったのか」が追えない。
+  pathFix.done
+    .then(r => console.log(`[login-path] ${describeLoginPathResult(r)} PATH=${process.env.PATH}`))
+    .catch(e => console.log(`[login-path] skip (${e?.message ?? String(e)}・あとから反映)`))
+}
 
 // ── 同じ保存領域で2つ動かさない（2026-08-19 の事故）──────────────────────
 // Koto の設定とAPIキー（中央ストア）は **localStorage（leveldb）** にある。
@@ -434,6 +448,14 @@ app.whenReady().then(() => {
   // 自動更新。既定は「ダウンロードだけして、次回起動時に適用」（勝手に再起動しない）。
   // 配信元が未公開・オフラインでも、状態が error になるだけでアプリの動作には影響しない。
   initUpdater({ getMainWindow: () => mainWindow, autoCheck: true })
+  // ブラウザの一時ファイル（Cache / Code Cache）の上限（browserCacheLimit.ts）。
+  // **窓を出したあと**に遅らせて実行する（起動を遅くしない）。消すのは Electron の API 経由で
+  // 一時ファイルだけ——認証情報・利用実績・学習・Local Storage には触れない。
+  scheduleBrowserCacheTrim({
+    userDataDir: app.getPath('userData'),
+    clearCache: () => session.defaultSession.clearCache(),
+    clearCodeCaches: (options) => session.defaultSession.clearCodeCaches(options),
+  })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 // Dock やアイコンのクリックで飛ぶ。**準備前にも飛ぶ**ので、そのまま窓を作ると

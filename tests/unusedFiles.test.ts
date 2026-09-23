@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   ALWAYS_USED_RE, findUnusedFiles, nextFreeMaterialName,
-  NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE,
+  NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE, DATA_LAYER_ALWAYS_USED_RE,
 } from '../src/shared/unusedFiles'
+import { DATA_LAYER_FILES } from '../src/shared/objectStorage'
 
 // findUnusedFiles（roadmap #18）の判定は「参照らしき文字列が出現するか」という
 // 控えめな判定（真の到達グラフではない）。誤る方向は「未使用と言いすぎない」側に
@@ -265,5 +266,34 @@ describe('findUnusedFiles: 第3引数 opts.extraAlwaysUsed（roadmap #22）', ()
     const unused = findUnusedFiles(files, readerOf({}), { extraAlwaysUsed: PHP_ALWAYS_USED_RE })
     expect(unused).not.toContain('app/models/User.php')
     expect(unused).toContain('test001')
+  })
+})
+
+// ── Koto が置く「データの保存」の部品（2026-09-23 検分）──────────────────
+// Koto はこれを**AI が書き直す前に**置く（② 試す・③ 公開の直前、保存場所の用意、
+// 「AIに書き直してもらう」）。置いた直後は参照が0件なので、出現判定では必ず
+// 未使用に出る。UnusedFilesSection は③公開の同じ画面に並んでおり、利用者が
+// 「移動する」を押すと素材（公開しません）へ移る。その直後に AI が読み込む形へ
+// 書き直すと、②試す・③公開が Cannot find module で落ちる。
+describe('findUnusedFiles: koto-data は参照が無くても片づけの対象にしない', () => {
+  // ★ 置いた直後（参照0件）の状態。ここが今回の踏みやすい穴
+  it.each(['koto-data.js', 'koto-data.cjs'])('★ %s は参照が0件でも未使用に出ない', (rel) => {
+    const unused = findUnusedFiles([rel, 'server.js'], readerOf({ 'server.js': "const fs = require('node:fs')" }))
+    expect(unused).not.toContain(rel)
+  })
+
+  it('公開の根より下に置かれていても守る', () => {
+    const unused = findUnusedFiles(['public/koto-data.cjs'], readerOf({}))
+    expect(unused).toEqual([])
+  })
+
+  it('名前の正は objectStorage.ts の DATA_LAYER_FILES（二重定義を作らない）', () => {
+    for (const f of DATA_LAYER_FILES) expect(DATA_LAYER_ALWAYS_USED_RE.test(f)).toBe(true)
+  })
+
+  // ★（対） 似ているだけの名前まで守ると、片づけが効かなくなる
+  it('（対） 似ているだけの名前は、参照が無ければ未使用のまま', () => {
+    const unused = findUnusedFiles(['koto-data.json', 'my-koto-data.js', 'koto-data.ts'], readerOf({}))
+    expect(unused).toEqual(['koto-data.json', 'my-koto-data.js', 'koto-data.ts'])
   })
 })

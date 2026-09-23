@@ -5,7 +5,7 @@
 // 利用者が設定画面で申告するものではない。だから「書かれたコードから検出」し、
 // **公開先を選ぶ瞬間に提案する**。そこで初めて「データが残るかどうか」が決まるため。
 //
-//   AppRun / HANAMII / Vercel … 残らない → オブジェクトストレージが要る
+//   AppRun（共用型・専有型）/ HANAMII / Vercel … 残らない → オブジェクトストレージが要る
 //   さくらのレンタルサーバ    … 残る     → サーバ自身のファイルでよい（追加費用なし）
 //
 // ── いま静かに壊れていること ──────────────────────────────────────────
@@ -16,11 +16,13 @@
 
 import { STORAGE_ENV } from './objectStorage'
 
-export type PublishTarget = 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 'vercel'
+// 種類は src/renderer/publishStatus.ts の PublishTargetKind と同じ並び（専有型は D-3 で追加）。
+export type PublishTarget = 'hanamii' | 'sakura-apprun' | 'sakura-apprun-dedicated' | 'sakura-rental' | 'vercel'
 
 /** 公開先がデータを保持できるか。 */
 export function targetKeepsData(target: PublishTarget): boolean {
   // レンタルサーバは共用ホスティングでファイルが残る。ほかはコンテナ/サーバーレス
+  //（AppRun 専有型もコンテナなので共用型と同じく残らない）
   return target === 'sakura-rental'
 }
 
@@ -50,6 +52,19 @@ export function storageNeedFor(opts: {
   const declared = opts.usesDataLayer === true
 
   if (declared) {
+    // **宣言していても、書き込みが残っていれば危ない**（2026-09-23 検分）。
+    // koto-data を使い始めたファイルが1つでもあれば usesDataLayer は真になるが、
+    // 別のファイル（あるいは同じファイルの直し残し）に fs.writeFileSync が
+    // 残っていれば、そのデータは公開のたびに消える。ここで declared を優先すると
+    // 画面の警告も「書き直せたか確かめる」も丸ごと消え、**Koto は知っているのに
+    // 何も言わない**状態になる。書き直しが残っている側へ倒す
+    if (opts.writesFiles && !targetKeepsData(opts.target)) {
+      return {
+        kind: 'will-lose-data',
+        note: 'データの保存を使い始めていますが、ファイルに直接書いている箇所が残っています。'
+          + 'そこに書かれたデータは、この公開先ではアプリを作り直すたびに消えます。残りも書き直してください。',
+      }
+    }
     if (targetKeepsData(opts.target)) {
       // 宣言はしているが、公開先自身も保持できる。用意しておけば公開先を
       // 変えても引き継げるので、**用意する側に倒す**

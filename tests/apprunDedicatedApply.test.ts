@@ -77,7 +77,7 @@ const NOT_CONFIRMED = { confirmed: false as const }
 const SPEC: ApprunDedicatedClusterSpec = {
   name: 'myapp',
   ports: [{ port: 80, protocol: 'http' }, { port: 443, protocol: 'https' }],
-  servicePrincipalID: '113800956789',
+  servicePrincipalID: '111111111111',
   zone: 'tk1b',
   workerServiceClassPath: 'cloud/apprun/dedicated/worker/1vcpu_2gb',
   minNodes: 1,
@@ -273,6 +273,95 @@ describe('createClusterFlow: 4. POST が失敗しても、一覧に同名があ�
 
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.clusterID).toBeFalsy()
+  })
+})
+
+// ── A（2026-09-17）: POSTが2xxで返ったのにIDが読めないときも、名前で探して記録する ──────────
+
+describe('createClusterFlow: A. POST /clusters が200で形違いの応答を返しIDが読めないとき、名前で探して記録する', () => {
+  it('名前で探すGETが飛び、同名クラスタがあれば記録に clusterID が入る（⑥の節が出せる状態になる）', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'cluster-found', name: 'myapp', created: 1 }] } },
+      // 形が違う応答（cluster.clusterID が無い）。
+      'POST /clusters': { status: 200, body: { clusterIdWrongKey: 'oops' } },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('cluster-create')
+    expect(r.clusterID).toBe('cluster-found')
+    // 上限チェック用＋名前探し用で GET /clusters?maxItems=20 が2回呼ばれている。
+    expect(calls.filter(c => c === 'GET /clusters?maxItems=20').length).toBe(2)
+    // 名前探しで見つかった時点で返る——実在確認（getCluster）は呼ばれない。
+    expect(calls).not.toContain('GET /clusters/cluster-found')
+
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBe('cluster-found')
+    expect(rec.name).toBe('myapp')
+  })
+
+  it('見つからなければ、文面に課金への言及とコントロールパネルへの案内が入る', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+      'POST /clusters': { status: 200, body: {} },
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('cluster-create')
+    expect(r.clusterID).toBeUndefined()
+    expect(r.message).toContain('課金')
+    expect(r.message).toContain('コントロールパネル')
+
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBeFalsy()
+  })
+})
+
+describe('createClusterFlow: A. ASG・LBの枝には名前探しを足していない（経路を増やしていないことの固定）', () => {
+  it('ASG作成が200で形違いでも、名前で探すGETは飛ばず、課金の案内だけを返す', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'c1' } } },
+      'GET /clusters/c1': { status: 200, body: { cluster: { clusterID: 'c1' } } },
+      'POST /clusters/c1/asg': { status: 200, body: {} }, // 形が違う
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('asg-create')
+    expect(r.clusterID).toBe('c1')
+    expect(r.message).toContain('課金')
+    expect(r.message).toContain('コントロールパネル')
+    expect(calls.some(c => c.startsWith('GET /clusters/c1/asg'))).toBe(false)
+  })
+
+  it('LB作成が200で形違いでも、名前で探すGETは飛ばず、課金の案内だけを返す', async () => {
+    consent()
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /limits': { status: 200, body: { limit: { clusterCount: 3 } } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+      'POST /clusters': { status: 200, body: { cluster: { clusterID: 'c1' } } },
+      'GET /clusters/c1': { status: 200, body: { cluster: { clusterID: 'c1' } } },
+      'POST /clusters/c1/asg': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'a1' } } },
+      'GET /clusters/c1/asg/a1': { status: 200, body: { autoScalingGroup: { autoScalingGroupID: 'a1' } } },
+      'POST /clusters/c1/asg/a1/load_balancers': { status: 200, body: {} }, // 形が違う
+    }, calls))
+    const r = await createClusterFlow(AUTH, projectDir, SPEC, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.stage).toBe('lb-create')
+    expect(r.clusterID).toBe('c1')
+    expect(r.asgID).toBe('a1')
+    expect(r.message).toContain('課金')
+    expect(r.message).toContain('コントロールパネル')
+    expect(calls.some(c => c.startsWith('GET /clusters/c1/asg/a1/load_balancers'))).toBe(false)
   })
 })
 
@@ -840,6 +929,89 @@ describe('teardownFlow: LB → ASG → クラスタ の順で呼ばれる', () =
   })
 })
 
+// ── C（D-19・2026-09-16）: 破棄したら、記録の IP も消える ─────────────────────────────
+//
+// 記録の `lbAddresses` は「いまのクラスタのロードバランサの IP」であり、⑧は
+// 「DNS の A レコードをこの IP に向けてください」としてそれを出す。**クラスタが無くなれば
+// その IP はもう存在しない**ので、記録に残してはいけない（次に作ったクラスタの画面で、
+// 前のクラスタの IP を現在のものとして見せることになる）。
+// アプリの段（clearAppRecord）は前から消していたが、**アプリを公開していないプロジェクト**
+// （⑤でクラスタだけ作り「🔄 IP を取り直す」を押した場合）はその段を通らない。
+
+describe('teardownFlow: C 破棄したあと、記録に IP（lbAddresses）が残らない（D-19）', () => {
+  it('★★ アプリを公開していない（記録は クラスタ・ASG・LB と IP だけ）→ 破棄後に lbAddresses が消える', async () => {
+    writeApprunDedicatedRecordFs(projectDir, {
+      clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', lbAddresses: ['59.106.222.212'],
+    })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).lbAddresses ?? null).toBeNull()
+  })
+
+  it('★★ 記録に LB が無く、クラスタだけ消す道でも lbAddresses は消える', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', lbAddresses: ['59.106.222.212'] })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).lbAddresses ?? null).toBeNull()
+  })
+
+  it('★★ 既に消えていた（404＋一覧にも無い）道でも lbAddresses は消える', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', lbAddresses: ['59.106.222.212'] })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1': { status: 404, body: { status: 404, title: 'not found' } },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).lbAddresses ?? null).toBeNull()
+  })
+
+  it('★★ ロードバランサだけ消せた（ASG で止まった）時点でも、その IP は記録に残らない', async () => {
+    writeApprunDedicatedRecordFs(projectDir, {
+      clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', lbAddresses: ['59.106.222.212'],
+    })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
+      'DELETE /clusters/c1/asg/a1': { status: 500, body: { status: 500, title: 'fail' } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false) // ASG は残っている＝課金は続く（そこは従来どおり）
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBeFalsy()
+    expect(rec.lbAddresses ?? null).toBeNull() // LB が消えた＝その IP はもう無い
+  })
+
+  it('★★ 破棄が LB の段で失敗したときは、記録の IP を消さない（まだ生きている IP まで消さない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, {
+      clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', lbAddresses: ['59.106.222.212'],
+    })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 500, body: { status: 500, title: 'fail' } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(readApprunDedicatedFs(projectDir).lbAddresses).toEqual(['59.106.222.212'])
+  })
+})
+
 describe('teardownFlow: LBだけ失敗（404でも500でもない通常失敗）したら「残っている」と返り、記録からLBが消えない', () => {
   it('LB削除が失敗したら ASG・クラスタの削除は試みず、3つとも記録に残る', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
@@ -895,21 +1067,286 @@ describe('teardownFlow: 記録に無い資源は破棄で触らない', () => {
   })
 })
 
+// ── H-3 C（2026-09-17）: クラスタの在否判定に readClusterIDs（名前が無い行も拾う）を使う ──────
+
+describe('teardownFlow: H-3 C. クラスタの在否判定は、名前が無い行も「まだ残っている」に数える', () => {
+  it('★ DELETE後、一覧に name の無い行として残り続ける間は「消えた」と判定しない（timeoutする）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      // 仕様逸脱: 行は残っているが name が無い。readClusterRows なら拾えず「消えた」誤判定になる。
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'c1' }] } },
+    }, calls))
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, intervalMs: 1000, timeoutMs: 3000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.inProgress?.clusterID).toBe('c1')
+    const rec = readApprunDedicatedFs(projectDir)
+    // 「消えた」と誤判定していれば記録から外れてしまう。名前が無くても残っている扱いなので記録は残る。
+    expect(rec.clusterID).toBe('c1')
+  })
+
+  it('name の無い行が一覧から消えれば、正しく「消えた」と判定する', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })
+    const calls: string[] = []
+    let listCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'DELETE /clusters/c1') return send(204, {})
+      if (key === 'GET /clusters?maxItems=20') {
+        listCount++
+        // 1回目は name の無い行がまだ残っている。2回目で消える。
+        return send(200, { clusters: listCount <= 1 ? [{ clusterID: 'c1' }] : [] })
+      }
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(listCount).toBe(2)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBeFalsy()
+  })
+
+  it('404の経路でも、name の無い行が一覧に残っていれば「残っています」と判定し、記録から外さない', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1': { status: 404, body: { status: 404, title: 'not found' } },
+      // 仕様逸脱: name が無い行だが実在する。readClusterRows なら拾えず「既に存在しない」誤判定になる。
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [{ clusterID: 'c1' }] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('残っています')
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBe('c1')
+  })
+})
+
+// ── M-1（2026-09-17）: readClusterIDs と同じ理由をASG・ロードバランサ・アプリケーションの
+// 在否判定にも広げる（H-3 C の直前のクラスタ版と同じ形）。 ─────────────────────────────
+
+describe('teardownFlow: M-1. ロードバランサの在否判定は、名前が無い行も「まだ残っている」に数える', () => {
+  it('★ DELETE後、一覧に name の無い行として残り続ける間は「消えた」と判定しない（timeoutする）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 204, body: {} },
+      // 仕様逸脱: 行は残っているが name が無い。readLoadBalancerRows なら拾えず「消えた」誤判定になる。
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'l1' }] } },
+    }, calls))
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, intervalMs: 1000, timeoutMs: 3000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.inProgress?.loadBalancerID).toBe('l1')
+    const rec = readApprunDedicatedFs(projectDir)
+    // 「消えた」と誤判定していれば記録から外れてしまう。名前が無くても残っている扱いなので記録は残る。
+    expect(rec.loadBalancerID).toBe('l1')
+  })
+
+  it('name の無い行が一覧から消えれば、正しく「消えた」と判定する（壊していないことの固定）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    let lbListCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1/load_balancers/l1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') {
+        lbListCount++
+        // 1回目は name の無い行がまだ残っている。2回目で消える。
+        return send(200, { loadBalancers: lbListCount <= 1 ? [{ loadBalancerID: 'l1' }] : [] })
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg?maxItems=20') return send(200, { autoScalingGroups: [] })
+      if (key === 'DELETE /clusters/c1') return send(204, {})
+      if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(lbListCount).toBe(2)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBeFalsy()
+  })
+})
+
+describe('teardownFlow: M-1. 404 の経路でも、名前が無い行を「既に存在しない」にしない', () => {
+  // DELETE が 404 を返したときは一覧で確かめる。ここで名前の無い行を捨てると
+  // 「既に存在しませんでした（記録から外しました）」と表示して**記録から ID を落とす**。
+  // 消えていないのに記録が消えると、Koto からは破棄できなくなり課金が止まらない。
+  it('★ ロードバランサ: DELETE が 404 でも、name の無い行として残っていれば記録から外さない', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 404, body: { status: 404, title: 'Not Found' } },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [{ loadBalancerID: 'l1' }] } },
+    }, calls))
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.message ?? '').toContain('課金が続きます')
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.loadBalancerID).toBe('l1')
+  })
+
+  it('ロードバランサ: 本当に一覧から消えていれば、これまでどおり記録から外す（壊していないことの固定）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 404, body: { status: 404, title: 'Not Found' } },
+      'GET /clusters/c1/asg/a1/load_balancers?maxItems=20': { status: 200, body: { loadBalancers: [] } },
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [] } },
+      'DELETE /clusters/c1': { status: 204, body: {} },
+      'GET /clusters?maxItems=20': { status: 200, body: { clusters: [] } },
+    }, calls))
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).loadBalancerID).toBeFalsy()
+  })
+
+  it('★ ASG: DELETE が 404 でも、name の無い行として残っていれば記録から外さない', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1': { status: 404, body: { status: 404, title: 'Not Found' } },
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [{ autoScalingGroupID: 'a1' }] } },
+    }, calls))
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(readApprunDedicatedFs(projectDir).asgID).toBe('a1')
+  })
+})
+
+describe('teardownFlow: M-1. ASGの在否判定は、名前が無い行も「まだ残っている」に数える', () => {
+  it('★ DELETE後、一覧に name の無い行として残り続ける間は「消えた」と判定しない（timeoutする）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'DELETE /clusters/c1/asg/a1': { status: 204, body: {} },
+      // 仕様逸脱: 行は残っているが name が無い。readAsgRows なら拾えず「消えた」誤判定になる。
+      'GET /clusters/c1/asg?maxItems=20': { status: 200, body: { autoScalingGroups: [{ autoScalingGroupID: 'a1' }] } },
+    }, calls))
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, intervalMs: 1000, timeoutMs: 3000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.inProgress?.asgID).toBe('a1')
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.asgID).toBe('a1')
+  })
+
+  it('name の無い行が一覧から消えれば、正しく「消えた」と判定する（壊していないことの固定）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1' })
+    const calls: string[] = []
+    let asgListCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg?maxItems=20') {
+        asgListCount++
+        return send(200, { autoScalingGroups: asgListCount <= 1 ? [{ autoScalingGroupID: 'a1' }] : [] })
+      }
+      if (key === 'DELETE /clusters/c1') return send(204, {})
+      if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(asgListCount).toBe(2)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.asgID).toBeFalsy()
+  })
+})
+
+describe('teardownFlow: M-1. アプリケーションの在否判定は、name/clusterIDが無い行も「まだ残っている」に数える', () => {
+  it('★ DELETE後、一覧に name/clusterID の無い行として残り続ける間は「消えた」と判定しない（timeoutする）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } })
+      if (key === 'GET /applications/app1/containers') return send(200, { nodes: [] })
+      if (key === 'DELETE /applications/app1') return send(204, {})
+      // 仕様逸脱: 行は残っているが name/clusterID が無い。readApplicationRows なら拾えず「消えた」誤判定になる。
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [{ applicationID: 'app1' }] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    // appOnly:true にして、この段（アプリ）だけで完結させる（LB/ASG/クラスタのルートを足さずに済む）。
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, intervalMs: 1000, timeoutMs: 3000, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.inProgress?.applicationID).toBe('app1')
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBe('app1')
+  })
+
+  it('name/clusterID の無い行が一覧から消えれば、正しく「消えた」と判定する（壊していないことの固定）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    let appListCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } })
+      if (key === 'GET /applications/app1/containers') return send(200, { nodes: [] })
+      if (key === 'DELETE /applications/app1') return send(204, {})
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') {
+        appListCount++
+        return send(200, { applications: appListCount <= 1 ? [{ applicationID: 'app1' }] : [] })
+      }
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(appListCount).toBe(2)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBeFalsy()
+  })
+})
+
 // ── 純関数（本文の組み立て・上限カウント・予約ポート） ──────────────────────────
 
 describe('buildClusterCreateBody（5-2）', () => {
-  it('name/ports/servicePrincipalID を含む。letsEncryptEmail は無ければ含めない', () => {
+  // F-1（2026-09-16）: letsEncryptEmail は⑤フォームから外し、⑧に一本化した
+  // （ApprunDedicatedClusterSpec からも消したので、ここで含める／含めないの分岐は無くなった）。
+  it('name/ports/servicePrincipalID を含む', () => {
     const body = buildClusterCreateBody(SPEC)
     expect(body).toEqual({
       name: 'myapp',
       ports: [{ port: 80, protocol: 'http' }, { port: 443, protocol: 'https' }],
-      servicePrincipalID: '113800956789',
+      servicePrincipalID: '111111111111',
     })
-  })
-
-  it('letsEncryptEmail があれば含める（独自ドメイン用）', () => {
-    const body = buildClusterCreateBody({ ...SPEC, letsEncryptEmail: 'owner@example.com' })
-    expect((body as any).letsEncryptEmail).toBe('owner@example.com')
   })
 })
 
@@ -950,5 +1387,552 @@ describe('isReservedPort: 5950-5959 は予約（5-5・画面の入力チェッ�
   })
   it('RESERVED_PORT_RANGE がドキュメントの値と一致する', () => {
     expect(RESERVED_PORT_RANGE).toEqual([5950, 5959])
+  })
+})
+
+// ── D-2b-2: teardownFlow 先頭のアプリ削除・appOnly ──────────────────────────
+// 12-1「破棄はアプリ→LB→ASG→クラスタで組む」・12-2-7「⑥破棄の順序の先頭にアプリ」。
+// attemptDeleteApplication は attemptDeleteLoadBalancer と同じ作り（204→一覧から消えるまで
+// waitOrStop・404→一覧で確かめる）だが、readApplicationRows に `deleting` が無いため
+// 404後の分岐は attemptDeleteCluster と同じ（一覧にまだあれば断定的に「残っています」で止める）。
+
+describe('teardownFlow: D-2b-2 記録に applicationID があれば、LBより先にアプリを削除し、一覧から消えるまで待つ', () => {
+  it('DELETE /applications/{id} → 一覧に残っている間は待ち、消えたらLBのDELETEへ進む。app系の記録欄は全部nullに戻る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, {
+      clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1',
+      applicationID: 'app1', applicationName: 'myapp', activeVersion: 3, imageRef: 'img:1',
+      hosts: ['app.example.com'], lbAddresses: ['1.2.3.4'], appPublishedAt: '2026-09-01T00:00:00.000Z',
+      appPort: 8080, appCpu: 500, appMemory: 512, appFixedScale: 1,
+    })
+    const calls: string[] = []
+    let appListCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      // activeVersion: null（既に無効）を返す——このテストの主眼はDELETE後の一覧待ちなので、
+      // 無効化の段（PUT）は関与させない。
+      if (key === 'GET /applications/app1') return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } })
+      // D-10: コンテナは既に0件（読めた形で空）→ 待たずにDELETEへ進む（このテストの主眼ではない）。
+      if (key === 'GET /applications/app1/containers') return send(200, { nodes: [] })
+      if (key === 'DELETE /applications/app1') return send(204, {})
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') {
+        appListCount++
+        return send(200, { applications: appListCount <= 2 ? [{ applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: 3 }] : [] })
+      }
+      if (key === 'DELETE /clusters/c1/asg/a1/load_balancers/l1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') return send(200, { loadBalancers: [] })
+      if (key === 'DELETE /clusters/c1/asg/a1') return send(204, {})
+      if (key === 'GET /clusters/c1/asg?maxItems=20') return send(200, { autoScalingGroups: [] })
+      if (key === 'DELETE /clusters/c1') return send(204, {})
+      if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    let sleepCalls = 0
+    const sleep = async () => { sleepCalls++ }
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(sleepCalls).toBe(2) // 一覧にまだ残っている1回目・2回目のあとで待つ
+    expect(appListCount).toBe(3) // 3回目の一覧で消えたと確認する
+    // 先頭は「いまのactiveVersionを見る」GET（既にnullなのでPUTは呼ばれない）、次にコンテナの
+    // 様子を見るGET（D-10）、その次にDELETE。
+    expect(calls[0]).toBe('GET /applications/app1')
+    expect(calls.some(c => c.startsWith('PUT '))).toBe(false)
+    const appDeleteAt = calls.indexOf('DELETE /applications/app1')
+    const lbDeleteAt = calls.indexOf('DELETE /clusters/c1/asg/a1/load_balancers/l1')
+    expect(appDeleteAt).toBe(2) // GET→コンテナ確認GETの直後（アプリの削除は他資源より先）
+    expect(lbDeleteAt).toBeGreaterThan(appDeleteAt) // LBの削除はアプリが消えたと確認した後
+    expect(r.executed.some(e => e.includes('アプリケーション『app1』を削除しました（消えたことを確認）'))).toBe(true)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBeFalsy()
+    expect(rec.applicationName).toBeFalsy()
+    expect(rec.activeVersion).toBeFalsy()
+    expect(rec.imageRef).toBeFalsy()
+    expect(rec.hosts).toBeFalsy()
+    expect(rec.lbAddresses).toBeFalsy()
+    expect(rec.appPublishedAt).toBeFalsy()
+    expect(rec.appPort).toBeFalsy()
+    expect(rec.appCpu).toBeFalsy()
+    expect(rec.appMemory).toBeFalsy()
+    expect(rec.appFixedScale).toBeFalsy()
+    expect(rec.loadBalancerID).toBeFalsy()
+    expect(rec.asgID).toBeFalsy()
+    expect(rec.clusterID).toBeFalsy()
+  })
+})
+
+describe('teardownFlow: D-2b-2 appOnly:true はアプリケーションの段だけ行い、LB/ASG/クラスタには一切触らない', () => {
+  it('記録にアプリ・クラスタ・ASG・LBが揃っていても、DELETEは /applications/{id} の1本だけ', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      // activeVersion: null（既に無効）なのでPUTは呼ばれない。
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      // D-10: コンテナは既に0件（読めた形で空）→ 待たずにDELETEへ進む。
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 204, body: {} },
+      'GET /applications?clusterID=c1&maxItems=20': { status: 200, body: { applications: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(calls.filter(c => c.startsWith('DELETE ')).length).toBe(1)
+    expect(calls).toEqual([
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications?clusterID=c1&maxItems=20',
+    ])
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBeFalsy()
+    // appOnly はLB/ASG/クラスタに触らない——記録に残ったまま。
+    expect(rec.clusterID).toBe('c1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.loadBalancerID).toBe('l1')
+  })
+
+  it('appOnly かつ記録にアプリが無ければ、fetchを一切呼ばず ok:true（LB等の記録も変わらない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({}, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(calls).toEqual([])
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.clusterID).toBe('c1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.loadBalancerID).toBe('l1')
+  })
+})
+
+describe('teardownFlow: D-2b-2 アプリの削除が失敗したら、LBには進まず remaining.applicationID が残る', () => {
+  it('DELETE /applications/{id} が通常失敗（404でも204でもない）→ LBのDELETEは呼ばれず、remaining.applicationID が立つ。記録は全部残る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      // activeVersion: null（既に無効）なのでPUTは呼ばれず、DELETEへ直接進む。
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 500, body: { status: 500, title: 'fail' } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(calls).toEqual(['GET /applications/app1', 'GET /applications/app1/containers', 'DELETE /applications/app1'])
+    expect(calls.some(c => c.includes('load_balancers'))).toBe(false)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBe('app1')
+    expect(rec.loadBalancerID).toBe('l1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.clusterID).toBe('c1')
+  })
+})
+
+// ── B（2026-09-17）: アプリの削除で止まっても、下位資源(LB/ASG/クラスタ)を remaining/inProgress に示す ──
+
+describe('teardownFlow: B. アプリの削除で止まったとき、remaining/inProgress にLB・ASG・クラスタも載る', () => {
+  it('★ アプリの削除が通常失敗すると、remaining にロードバランサ・ASG・クラスタが載る（appOnly指定なし）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 500, body: { status: 500, title: 'fail' } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, CONFIRMED, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(r.remaining.loadBalancerID).toBe('l1')
+    expect(r.remaining.asgID).toBe('a1')
+    expect(r.remaining.clusterID).toBe('c1')
+    // LB/ASG/クラスタには一度も触っていない（表示だけを足した。実際のDELETEは飛ばない）。
+    expect(calls.some(c => c.startsWith('DELETE /clusters'))).toBe(false)
+  })
+
+  it('★ ただし appOnly:true のときは remaining に載らない（わざと残す仕様を壊していないことの固定）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 500, body: { status: 500, title: 'fail' } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(r.remaining.loadBalancerID).toBeUndefined()
+    expect(r.remaining.asgID).toBeUndefined()
+    expect(r.remaining.clusterID).toBeUndefined()
+  })
+
+  it('★ 時間切れ（timeout）のときも同じ形で inProgress にLB・ASG・クラスタが載る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 204, body: {} },
+      // 一覧から消えない→ timeout。
+      'GET /applications?clusterID=c1&maxItems=20': { status: 200, body: { applications: [{ applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null }] } },
+    }, calls))
+    const sleep = async () => {}
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, intervalMs: 1000, timeoutMs: 3000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.inProgress?.applicationID).toBe('app1')
+    expect(r.inProgress?.loadBalancerID).toBe('l1')
+    expect(r.inProgress?.asgID).toBe('a1')
+    expect(r.inProgress?.clusterID).toBe('c1')
+    expect(r.remaining.loadBalancerID).toBe('l1')
+    expect(r.remaining.asgID).toBe('a1')
+    expect(r.remaining.clusterID).toBe('c1')
+  })
+})
+
+// ── D-9（2026-09-16 実機実測）: DELETEの前に、有効なバージョンを無効化してから確かめる ──────
+//
+// 専有型の⑥「すべて削除する」で、アプリの削除が実際に HTTP 400
+// `{"status":400,"title":"Cannot delete application because it has active version"}` で
+// 失敗した（0.6.19-rc.1 実機）。有効なバージョン（activeVersion）を持ったままでは削除できない
+// ため、DELETEの前に getApplication→（必要なら）updateApplication で無効化→再確認、を挟む
+// （ensureApplicationDeactivated）。appOnly:true でアプリの段だけを切り出して確かめる
+// （LB/ASG/クラスタは無関係）。
+
+describe('teardownFlow: D-9 DELETEの前に有効なバージョンを無効化する（2026-09-16実機実測の400対応）', () => {
+  it('(a) activeVersion:1 → PUTが呼ばれ本文が{"activeVersion":null}、再取得でnullを確かめてからDELETEが呼ばれる（順序を固定）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const bodies: Record<string, any> = {}
+    let getCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      let raw = ''
+      req.on('data', c => { raw += c })
+      req.on('end', () => {
+        if (raw) { try { bodies[key] = JSON.parse(raw) } catch { bodies[key] = raw } }
+        const send = (status: number, body: unknown) => {
+          if (status === 204) { res.writeHead(204); res.end(); return }
+          res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+        }
+        if (key === 'GET /applications/app1') {
+          getCount++
+          // 1回目: activeVersion:1（無効化が要る）。2回目（PUT後の確認）: null。
+          const activeVersion = getCount === 1 ? 1 : null
+          return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion } })
+        }
+        if (key === 'PUT /applications/app1') return send(204, {})
+        // D-10: コンテナは既に0件（読めた形で空）→ 待たずにDELETEへ進む。
+        if (key === 'GET /applications/app1/containers') return send(200, { nodes: [] })
+        if (key === 'DELETE /applications/app1') return send(204, {})
+        if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
+        send(404, { error: `test router: 未定義のルート ${key}` })
+      })
+    })
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    // 要求の順序を並びごと固定する。
+    expect(calls).toEqual([
+      'GET /applications/app1',
+      'PUT /applications/app1',
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications?clusterID=c1&maxItems=20',
+    ])
+    expect(bodies['PUT /applications/app1']).toEqual({ activeVersion: null })
+    expect(r.executed.some(e => e.includes('アプリケーション『app1』のバージョンを無効にしました'))).toBe(true)
+  })
+
+  it('(b) activeVersion:null → PUTを呼ばずにDELETEへ進む', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 204, body: {} },
+      'GET /applications?clusterID=c1&maxItems=20': { status: 200, body: { applications: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(calls).toEqual([
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications?clusterID=c1&maxItems=20',
+    ])
+    expect(calls.some(c => c.startsWith('PUT '))).toBe(false)
+    expect(r.executed.some(e => e.includes('のバージョンを無効にしました'))).toBe(false)
+  })
+
+  it('(c) DELETEが400「Cannot delete application because it has active version」→ 無効化からやり直し、2回目のDELETEで成功する', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    let getCount = 0
+    let deleteCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') {
+        getCount++
+        // 1回目: null（1回目のDELETEが400になるまでは無効化不要に見える）。
+        // 2回目（やり直しの確認）: 5（実は残っていた）。3回目（PUT後の確認）: null。
+        const activeVersion = getCount === 2 ? 5 : null
+        return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion } })
+      }
+      if (key === 'PUT /applications/app1') return send(204, {})
+      // D-10: コンテナは既に0件（読めた形で空）→ 待たずにDELETEへ進む（このテストの主眼ではない）。
+      if (key === 'GET /applications/app1/containers') return send(200, { nodes: [] })
+      if (key === 'DELETE /applications/app1') {
+        deleteCount++
+        if (deleteCount === 1) {
+          return send(400, { status: 400, title: 'Cannot delete application because it has active version' })
+        }
+        return send(204, {})
+      }
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(deleteCount).toBe(2)
+    expect(calls).toEqual([
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications/app1',
+      'PUT /applications/app1',
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications?clusterID=c1&maxItems=20',
+    ])
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBeFalsy()
+  })
+
+  it('(d) 3回やり直しても400のまま→止まり、remaining.applicationIDが残り、messageに生の応答が載る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const rawTitle = 'Cannot delete application because it has active version'
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'DELETE /applications/app1': { status: 400, body: { status: 400, title: rawTitle } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(r.message).toContain(rawTitle) // 生の応答（title）がmessageに載る
+    expect(calls.filter(c => c === 'DELETE /applications/app1').length).toBe(3)
+    expect(calls.filter(c => c === 'GET /applications/app1').length).toBe(3)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBe('app1')
+  })
+
+  it('(e) getApplicationが失敗しても、無効化を試みてからDELETEに進む（黙って成功に倒さない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    let getCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') {
+        getCount++
+        if (getCount === 1) return send(500, { status: 500, title: 'boom' }) // 1回目は取れない（分からない）
+        return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } }) // 無効化後の確認
+      }
+      if (key === 'PUT /applications/app1') return send(204, {})
+      // D-10: コンテナは既に0件（読めた形で空）→ 待たずにDELETEへ進む（このテストの主眼ではない）。
+      if (key === 'GET /applications/app1/containers') return send(200, { nodes: [] })
+      if (key === 'DELETE /applications/app1') return send(204, {})
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    // 取れなかった（1回目のGETが500）のに「無効化不要」に倒さず、PUTを試みている。
+    expect(calls).toEqual([
+      'GET /applications/app1',
+      'PUT /applications/app1',
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications?clusterID=c1&maxItems=20',
+    ])
+  })
+})
+
+// ── D-10（2026-09-16 実機実測・課金が止まらない穴）: 無効化しても、動いているコンテナは
+// 即座には消えない。DELETEの400には「active version」以外に「currently running」もある ────
+//
+// 実機で⑥「すべて削除する」が「アプリケーションの削除に失敗しました。残っています＝
+// 課金が続きます: Cannot delete application because it is currently running（HTTP 400）」で
+// 止まった。無効化（バージョンを無効にする）自体は成功していたが、コンテナの停止と撤去は
+// 非同期（1分ごとの周期）で、直後にDELETEを撃つとまだ動いているコンテナに当たる。
+// 判定は appDeleteRetryable（src/shared/apprunDedicatedApp.ts）1か所に集約し、DELETEの前に
+// コンテナが0件になるまで待つ段（waitUntilGoneの再利用）を足した。
+
+describe('teardownFlow: D-10 DELETEが400「currently running」でもやり直す（2026-09-16実機実測）', () => {
+  it('★ 回帰: 1回目400「currently running」→ やり直し、2回目のDELETEで成功する（破棄が最後まで進む）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    let deleteCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } })
+      // コンテナは既に0件（読めた形で空）→ 待たずにDELETEへ進む（このテストの主眼はDELETEのやり直し）。
+      if (key === 'GET /applications/app1/containers') return send(200, { nodes: [] })
+      if (key === 'DELETE /applications/app1') {
+        deleteCount++
+        if (deleteCount === 1) {
+          return send(400, { status: 400, title: 'Cannot delete application because it is currently running' })
+        }
+        return send(204, {})
+      }
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(deleteCount).toBe(2)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBeFalsy()
+  })
+
+  it('★ 3回とも400「currently running」なら、課金が続くことを隠さずに止める（「有効なバージョン」とは書かない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const rawTitle = 'Cannot delete application because it is currently running'
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 400, body: { status: 400, title: rawTitle } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(r.message).toContain('課金が続きます')
+    expect(r.message).not.toContain('有効なバージョン') // 理由が違うのに決め打ちの文面を出すと嘘になる
+    expect(calls.filter(c => c === 'DELETE /applications/app1').length).toBe(3)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBe('app1')
+  })
+
+  it('★ やり直せない400（別の文言）は、やり直さずに1回で止まる（止めすぎ・やり直しすぎの両方を固定）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
+      'DELETE /applications/app1': { status: 400, body: { status: 400, title: 'Some other reason entirely' } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(calls.filter(c => c === 'DELETE /applications/app1').length).toBe(1) // やり直していない
+    expect(r.message).toContain('残っています')
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBe('app1')
+  })
+})
+
+describe('teardownFlow: D-10 DELETEの前にコンテナが0件になるまで待つ（waitUntilGoneの再利用）', () => {
+  it('★ コンテナ一覧の取得自体が失敗しても、待たずに破棄は進む（読めないことを理由に止めない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    let sleepCalls = 0
+    const sleep = async () => { sleepCalls++ }
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      'GET /applications/app1/containers': { status: 500, body: { status: 500, title: 'boom' } },
+      'DELETE /applications/app1': { status: 204, body: {} },
+      'GET /applications?clusterID=c1&maxItems=20': { status: 200, body: { applications: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(sleepCalls).toBe(0) // 待ちループには入らない（読めない＝0件と読み替えず、そのままDELETE）
+    expect(calls).toEqual([
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications?clusterID=c1&maxItems=20',
+    ])
+    expect(r.executed.some(e => e.includes('時間切れ'))).toBe(false)
+  })
+
+  it('★ コンテナ一覧は200でも形が読めない（readContainerStatesがnull）ときも、0件と読み替えず待たずに進む', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    let sleepCalls = 0
+    const sleep = async () => { sleepCalls++ }
+    const baseUrl = await listen(routedServer({
+      'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
+      // 200だが原本の形（nodes配列）ではない。
+      'GET /applications/app1/containers': { status: 200, body: { foo: 'bar' } },
+      'DELETE /applications/app1': { status: 204, body: {} },
+      'GET /applications?clusterID=c1&maxItems=20': { status: 200, body: { applications: [] } },
+    }, calls))
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(sleepCalls).toBe(0)
+    expect(calls).toEqual([
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications?clusterID=c1&maxItems=20',
+    ])
+  })
+
+  it('コンテナが1件→0件になったら、待ちを抜けてDELETEする（進捗メッセージが1回出る）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    let containersCount = 0
+    const baseUrl = await listen((req, res) => {
+      const key = `${req.method} ${req.url}`
+      calls.push(key)
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } })
+      if (key === 'GET /applications/app1/containers') {
+        containersCount++
+        // 1・2回目: 1件動いている。3回目: 0件（止まった）。
+        const running = containersCount <= 2
+        return send(200, { nodes: [{ containersStats: running ? [{ state: 'Running', status: 'running' }] : [] }] })
+      }
+      if (key === 'DELETE /applications/app1') return send(204, {})
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+    let sleepCalls = 0
+    const sleep = async () => { sleepCalls++ }
+    const progressMsgs: string[] = []
+    const r = await teardownFlow(
+      AUTH, projectDir, { confirmed: true, appOnly: true, sleep, progress: m => progressMsgs.push(m) }, baseUrl,
+    )
+    expect(r.ok).toBe(true)
+    expect(containersCount).toBe(3) // 初回の確認1回＋待ちループで2回（3回目に0件を確認）
+    expect(sleepCalls).toBe(1) // 「まだ残っている」で待つのは1回だけ
+    expect(progressMsgs).toContain('コンテナが止まるのを待っています…')
+    const deleteAt = calls.indexOf('DELETE /applications/app1')
+    const lastContainersAt = calls.lastIndexOf('GET /applications/app1/containers')
+    expect(deleteAt).toBeGreaterThan(lastContainersAt) // 0件を確認したあとにDELETE
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBeFalsy()
   })
 })

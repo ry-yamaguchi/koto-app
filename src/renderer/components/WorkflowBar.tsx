@@ -214,6 +214,14 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
     setMissingRuntime(null)
     try {
       const api = window.electronAPI
+      // **走らせる直前に koto-data を置く**（2026-09-23 検分）。
+      // AI への指示（aiContext.ts の DATA_RULE）は「Koto が用意します」と約束している。
+      // ところが以前の入口は ③公開 の「保存場所を用意する」と「AIに書き直してもらう」
+      // の2つだけで、いちばん通る道（① 作る → すぐ ② 試す）では1つも置かれなかった。
+      // AI は指示どおり require('./koto-data.cjs') を書くので、ここを通さないと
+      // `Cannot find module './koto-data.cjs'` でアプリが起動しない。
+      // **既にあれば触らないので、何度押しても安全。**
+      try { await api.storage.ensureLayer(projectDir) } catch { /* 置けなくても試すのは続ける */ }
       const join = (p: string) => `${root}/${p}`
       const plan = await planRun({
         exists: (rel) => api.fs.exists(join(rel)),

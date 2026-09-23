@@ -13,6 +13,8 @@ interface Props {
 const TARGET_SHORT: Record<string, string> = {
   'sakura-rental': 'レンタルサーバ',
   'sakura-apprun': 'AppRun',
+  // 専有型は共用型と見分けがつくよう、短縮名も別にする（'AppRun' と同一にしない。D-3、2026-09-11）
+  'sakura-apprun-dedicated': 'AppRun（専有型）',
 }
 
 // Monaco の言語ID（英小文字）を、わかりやすい表示名に整形する

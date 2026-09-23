@@ -65,11 +65,38 @@ export function normalizeKeep(keep: number | null | undefined): number | null {
 }
 
 /**
+ * 「いま動いているタグ」を1つの集合にまとめる純関数（掟10）。
+ *
+ * ── なぜ要るか（2026-09-17 の穴・A）──────────────────────────────────
+ * 「いま動いているタグを必ず残す」守りは、もとは共用型（`currentTag`）1件だけを
+ * 見ていた。専有型でも同じプロジェクトのイメージを使って公開できるため、
+ * 専有型の稼働タグが `currentTag` に載っていないと、片づけの対象に混ざってしまう
+ * （専有型の稼働イメージが消えうる）。**守るタグは複数になりうる**ので、
+ * 合流のしかたを1箇所にまとめ、テストで固定する。
+ *
+ * 空文字・null・undefined・重複は落とす。
+ */
+export function mergeCurrentTags(opts: {
+  currentTag?: string | null
+  /** `currentTag`（共用型）以外で「いま動いている」タグ（専有型など）。複数でもよい。 */
+  extra?: readonly (string | null | undefined)[]
+}): string[] {
+  const raw = [opts.currentTag, ...(opts.extra ?? [])]
+  const set = new Set<string>()
+  for (const v of raw) {
+    const s = typeof v === 'string' ? v.trim() : ''
+    if (s) set.add(s)
+  }
+  return [...set]
+}
+
+/**
  * どのタグを消し、どれを残すかを決める純関数。
  *
  * - `keep` が null/undefined のときは**何も消さない**（remove は空）。既定はこちら。
  * - 自動タグ（AUTO_TAG_PATTERN）でないものは untouched へ。**利用者が決めた名前は尊重する。**
- * - `currentTag` は自動タグでも untouched へ。**動いているアプリの足元を外さない。**
+ * - `currentTag`・`protectedTags` は自動タグでも untouched へ。**動いているアプリの足元を外さない。**
+ *   （**既存の `currentTag` 単体の呼び方はそのまま使える。** 内部で `mergeCurrentTags` に合流させるだけ）
  * - 残った自動タグを新しい順に並べ、先頭 `keep` 件を残し、それ以外を remove へ。
  *
  * タグは固定長（`v` + 8桁 + `-` + 6桁）なので、文字列の降順＝新しい順になる。
@@ -78,15 +105,17 @@ export function planTagCleanup(opts: {
   tags: readonly string[]
   keep?: number | null
   currentTag?: string | null
+  /** `currentTag`（共用型）以外で守るタグ（専有型の稼働タグなど）。複数でもよい。 */
+  protectedTags?: readonly (string | null | undefined)[]
 }): CleanupPlan {
-  const current = typeof opts.currentTag === 'string' ? opts.currentTag.trim() : ''
+  const currentSet = new Set(mergeCurrentTags({ currentTag: opts.currentTag, extra: opts.protectedTags }))
   // 重複と空を落とす（レジストリの応答をそのまま信じない）
   const all = [...new Set((opts.tags ?? []).map(t => String(t ?? '').trim()).filter(t => t.length > 0))]
 
   const untouched: string[] = []
   const candidates: string[] = []
   for (const tag of all) {
-    if (!isAutoTag(tag) || tag === current) untouched.push(tag)
+    if (!isAutoTag(tag) || currentSet.has(tag)) untouched.push(tag)
     else candidates.push(tag)
   }
   untouched.sort()

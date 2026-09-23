@@ -26,6 +26,9 @@ import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from '@anth
 import { fetchUrlPage } from '../ipc/web'
 import { queryDocuments } from '../rag/client'
 import { sakuraClient, isContextLimitError, safeMaxTokens } from '../ipc/sakura'
+import {
+  DELEGATE_TIMEOUT_MS, DELEGATE_MAX_RETRIES, delegateTimeoutMessage, isSdkTimeoutError,
+} from '../../shared/chatTimeouts'
 import { snapshotBeforeWrite } from '../backup/store'
 import {
   IDE_MCP_SERVER_NAME,
@@ -191,16 +194,28 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
         const chosenModel = (model as string | undefined) ?? DELEGATE_DEFAULT_MODEL
 
         const client = sakuraClient(aiEngineKey)
+        // 待ち時間の上限（2026-09-23）。ここは非ストリーミング＝生成が全部終わるまでが1回の通信
+        // なので、ストリーミングより長い側の値を使う（shared/chatTimeouts.ts が唯一の定義）。
+        // 渡さないと openai 4.104.0 の既定（600秒・再試行2回＝最悪およそ30分）のままになる。
+        //
+        // ── 🗂 まとめ作りとは別の定数を使う（2026-09-23 検分の指摘4）────────────────
+        // 最初は NON_STREAM_TIMEOUT_MS（300秒＝まとめ作り用）を当てていたが、まとめ作りは
+        // max_tokens=4096、こちらは DELEGATE_MAX_TOKENS=16384 で**4倍吐かせる**。
+        // 同じ値だと、これまで既定の600秒で通っていた「大きめのファイルを委譲して書かせる」
+        // 依頼が、混み合った日や遅いモデルで突然時間切れになる（＝後退）。
         const mk = (maxTokens: number) => client.chat.completions.create({
           model: chosenModel,
           messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
           max_tokens: maxTokens,
           temperature: 0.2,
-        })
+        }, { timeout: DELEGATE_TIMEOUT_MS, maxRetries: DELEGATE_MAX_RETRIES })
         let res
         try {
           res = await mk(DELEGATE_MAX_TOKENS)
         } catch (e: any) {
+          // 時間切れは日本語で返す（検分の指摘4）。直す前は SDK の 'Request timed out.' が
+          // そのまま throw され、利用者の画面に英語のまま出ていた。
+          if (isSdkTimeoutError(e)) return textResult(delegateTimeoutMessage())
           // sakura.ts の chat/chat-stream と同じフォールバック: コンテキスト超過エラーなら
           // エラー文に書かれた上限から安全な max_tokens を割り出して1回だけ縮めて再試行する。
           const safe = isContextLimitError(e?.message ?? '') ? safeMaxTokens(e?.message ?? '', DELEGATE_MAX_TOKENS) : null
@@ -247,6 +262,9 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
         onDelegated({ model: chosenModel, promptTokens, completionTokens }) // 副作用のみ（usage記録用）
         return textResult(summarizeDelegateResult(written, parsed.notes, { promptTokens, completionTokens }))
       } catch (e: any) {
+        // 縮めて再試行したほうが時間切れになる道もあるので、ここでも日本語に直す
+        // （直す前は「エラー: 委譲に失敗しました（Request timed out.）」と英語が混ざっていた）。
+        if (isSdkTimeoutError(e)) return textResult(delegateTimeoutMessage())
         return textResult(`エラー: 委譲に失敗しました（${e?.message ?? e}）`)
       }
     }

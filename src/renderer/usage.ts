@@ -16,8 +16,8 @@
 // 実体は shared へ移した（B'-3b）。MODELS / VISION_MODELS / modelLabel / pickBestModel /
 // estimateTokens は src/shared/modelInfo.ts を参照。ここでは他の関数が使うぶんを import し、
 // 従来どおりの公開API（MODELS 等）は re-export で維持する。
-import { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, purposeLabel, orderModelsForPicker } from '../shared/modelInfo'
-export { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, purposeLabel, orderModelsForPicker }
+import { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, modelPickerText, orderModelsForPicker } from '../shared/modelInfo'
+export { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, modelPickerText, orderModelsForPicker }
 
 // isVisionModel / DEFAULT_VISION_MODEL は B'-3d-1a で shared/modelInfo.ts へ移した
 // （main のターン実行と両方が使うため。複製しない＝掟10）。ここは従来の呼び出し側のために re-export する。

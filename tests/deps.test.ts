@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  listDependencies, planDependencies, isNativeBinary, packageOfNative,
-  nativeDepsMessage, installTimeNote,
+  listDependencies, planDependencies, isNativeBinary, packageOfNative, packageDirOfNative,
+  nativeDepsMessage, nativeDepsMessageForBlocked, installTimeNote, declaresNativeBuild,
+  nativeBinaryKind, runsOnPublishTarget, blockReasonForPackage, primaryBlockReason,
 } from '../src/shared/deps'
 import { installTargetsFromCommand, confirmReason } from '../src/renderer/aiTools'
 
@@ -47,19 +48,304 @@ describe('持っていけない部品を見分ける', () => {
     expect(packageOfNative('app/node_modules/a/node_modules/bcrypt/lib/x.node')).toBe('bcrypt')
   })
 
+  // ── 同名の別コピーを見分ける（検分の指摘・2026-09-17）────────────────────
+  // npm は版が食い違う依存を入れ子の node_modules に別コピーとして置く。名前だけを
+  // キーに集計すると2つが合流し、「どちらかに公開先用があれば通す」という通しすぎになる。
+  it('★★ 持ち主の「フォルダ」が分かる（同名の別コピーを見分けるため）', () => {
+    expect(packageDirOfNative('node_modules/bar/b.node')).toBe('node_modules/bar')
+    expect(packageDirOfNative('node_modules/foo/node_modules/bar/b.node'))
+      .toBe('node_modules/foo/node_modules/bar')
+    expect(packageDirOfNative('node_modules/@napi-rs/canvas/x.node'))
+      .toBe('node_modules/@napi-rs/canvas')
+  })
+
+  it('★★ 上位と入れ子の同名ライブラリは、別のフォルダとして区別される', () => {
+    expect(packageDirOfNative('node_modules/bar/b.node'))
+      .not.toBe(packageDirOfNative('node_modules/foo/node_modules/bar/b.node'))
+  })
+
+  it('ライブラリのフォルダ自身を渡しても、そのフォルダを返す（.node のパスでなくてよい）', () => {
+    expect(packageDirOfNative('node_modules/foo/node_modules/bar'))
+      .toBe('node_modules/foo/node_modules/bar')
+  })
+
   it('★ 「動きません」で終わらせず、どうすればよいかまで書く', () => {
-    const m = nativeDepsMessage(['app/node_modules/sqlite3/build/Release/x.node'])
+    const m = nativeDepsMessage(['sqlite3'])
     expect(m).toContain('sqlite3')
     expect(m).toContain('Linux')
     expect(m).toMatch(/AIに|Dockerfile/)
   })
 
-  it('同じライブラリの部品が複数あっても、名前は1回だけ出す', () => {
-    const m = nativeDepsMessage([
-      'app/node_modules/sqlite3/build/Release/a.node',
-      'app/node_modules/sqlite3/build/Release/b.node',
-    ])
+  it('同じライブラリの名前が複数回渡っても、1回だけ出す', () => {
+    const m = nativeDepsMessage(['sqlite3', 'sqlite3'])
     expect(m.match(/sqlite3/g)?.length).toBe(1)
+  })
+})
+
+// ── declaresNativeBuild（2026-09-16・502 で発覚した穴）──────────────────
+// `--ignore-scripts` は組み立てを止める守りだが、止めている以上「組み立て済みの
+// .node が無い」のは当たり前になり、`.node` の有無だけでは安全と判断できない。
+// ライブラリ自身の宣言（binding.gyp・gypfile・install系スクリプト）を見る。
+describe('declaresNativeBuild: 組み立てが要ると自分で宣言しているか', () => {
+  it('★ binding.gyp があれば true', () => {
+    expect(declaresNativeBuild({}, true)).toBe(true)
+  })
+
+  it('★ gypfile: true なら true', () => {
+    expect(declaresNativeBuild({ gypfile: true }, false)).toBe(true)
+  })
+
+  it('★ install が prebuild-install || node-gyp rebuild --release なら true（better-sqlite3 の形）', () => {
+    const pkg = { scripts: { install: 'prebuild-install || node-gyp rebuild --release' } }
+    expect(declaresNativeBuild(pkg, false)).toBe(true)
+  })
+
+  it('★ install が node-pre-gyp install --fallback-to-build なら true', () => {
+    const pkg = { scripts: { install: 'node-pre-gyp install --fallback-to-build' } }
+    expect(declaresNativeBuild(pkg, false)).toBe(true)
+  })
+
+  it('★★ postinstall が node -e "try{require(\'./postinstall\')}catch(e){}" なら false（core-js・誤検知しない）', () => {
+    const pkg = { scripts: { postinstall: 'node -e "try{require(\'./postinstall\')}catch(e){}"' } }
+    expect(declaresNativeBuild(pkg, false)).toBe(false)
+  })
+
+  it('★★ postinstall が node install.js なら false（esbuild・誤検知しない）', () => {
+    const pkg = { scripts: { postinstall: 'node install.js' } }
+    expect(declaresNativeBuild(pkg, false)).toBe(false)
+  })
+
+  it('husky の prepare（install 系ではない）も false', () => {
+    const pkg = { scripts: { prepare: 'husky install' } }
+    expect(declaresNativeBuild(pkg, false)).toBe(false)
+  })
+
+  it('何も無い普通のライブラリ（express 相当）は false', () => {
+    expect(declaresNativeBuild({ name: 'express', scripts: { test: 'echo ok' } }, false)).toBe(false)
+    expect(declaresNativeBuild({}, false)).toBe(false)
+  })
+
+  it('壊れた package.json（null・文字列・配列）でも落ちない', () => {
+    expect(declaresNativeBuild(null, false)).toBe(false)
+    expect(declaresNativeBuild('express', false)).toBe(false)
+    expect(declaresNativeBuild([], false)).toBe(false)
+    // binding.gyp があるなら、package.json がどんな形でも true（独立した目印）
+    expect(declaresNativeBuild(null, true)).toBe(true)
+  })
+})
+
+// ── nativeBinaryKind（改善案 1-7・案3・2026-09-17）────────────────────────
+// `.node` があるだけで断るのは止めすぎだった。Koto は公開先の形を指定して入れているので、
+// 入ってくる `.node` が最初から公開先で動くものであることがある。
+// **本物のバイト列を組み立てて**確かめる（ELF ヘッダだけでは glibc と musl を
+// 区別できず、libc の参照名で分かれる——2026-09-17 に実際のファイルで確かめた）。
+const ascii = (s: string) => Array.from(s, c => c.charCodeAt(0))
+
+/** ELF のヘッダ（64bit・リトルエンディアン）＋ 末尾に文字列を置いたバイト列を作る。 */
+function elfBytes(opts?: { cls?: number; machine?: number; tail?: string }): Uint8Array {
+  const head = new Uint8Array(0x40)
+  head.set([0x7f, 0x45, 0x4c, 0x46], 0)   // ELF の目印
+  head[4] = opts?.cls ?? 0x02             // class: 64bit
+  head[5] = 0x01                          // data: リトルエンディアン
+  const machine = opts?.machine ?? 0x3e   // e_machine: x86-64
+  head[0x12] = machine & 0xff
+  head[0x13] = (machine >> 8) & 0xff
+  const tail = ascii(opts?.tail ?? '')
+  const out = new Uint8Array(head.length + tail.length)
+  out.set(head, 0)
+  out.set(tail, head.length)
+  return out
+}
+
+describe('nativeBinaryKind: 部品の種類を見分ける', () => {
+  it('★★ ELF ＋ musl の参照 → linux-musl-x64（公開先で動く・これを通す）', () => {
+    const buf = elfBytes({ tail: '\0/lib/ld-musl-x86_64.so.1\0libc.musl-x86_64.so.1\0' })
+    expect(nativeBinaryKind(buf)).toBe('linux-musl-x64')
+  })
+
+  it('★★ ELF ＋ libc.so.6 → linux-glibc-x64（Linux 用でも公開先では動かない）', () => {
+    expect(nativeBinaryKind(elfBytes({ tail: '\0libc.so.6\0' }))).toBe('linux-glibc-x64')
+  })
+
+  it('★★ 両方あっても musl を先に見る（順序を入れ替えると誤判定する）', () => {
+    expect(nativeBinaryKind(elfBytes({ tail: '\0libc.so.6\0libc.musl-x86_64.so.1\0' }))).toBe('linux-musl-x64')
+  })
+
+  it('★★ ELF だが libc の参照が無い → unknown（musl と決めつけない）', () => {
+    expect(nativeBinaryKind(elfBytes({ tail: '\0just some data\0' }))).toBe('unknown')
+  })
+
+  it('★★ ELF だが e_machine が違う（arm64）→ linux-other', () => {
+    expect(nativeBinaryKind(elfBytes({ machine: 0xb7, tail: '\0libc.musl-x86_64.so.1\0' }))).toBe('linux-other')
+  })
+
+  it('★ ELF だが 32bit（class=01）→ linux-other', () => {
+    expect(nativeBinaryKind(elfBytes({ cls: 0x01, tail: '\0libc.so.6\0' }))).toBe('linux-other')
+  })
+
+  it('★★ Mach-O の4通りの目印 → macho（お使いのパソコン用）', () => {
+    const magics = [
+      [0xcf, 0xfa, 0xed, 0xfe], [0xce, 0xfa, 0xed, 0xfe],
+      [0xfe, 0xed, 0xfa, 0xcf], [0xfe, 0xed, 0xfa, 0xce],
+    ]
+    for (const m of magics) {
+      expect(nativeBinaryKind(new Uint8Array([...m, 0x07, 0x00, 0x00, 0x01]))).toBe('macho')
+    }
+  })
+
+  it('短すぎる入力・空・見覚えのない先頭でも落ちない', () => {
+    expect(nativeBinaryKind(new Uint8Array(0))).toBe('unknown')
+    expect(nativeBinaryKind(new Uint8Array([0x7f, 0x45]))).toBe('unknown')
+    // ELF の目印はあるが、ヘッダの途中で切れている
+    expect(nativeBinaryKind(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x02]))).toBe('linux-other')
+    expect(nativeBinaryKind(new Uint8Array([0x4d, 0x5a, 0x90, 0x00]))).toBe('unknown')
+  })
+
+  it('★ 通してよいのは linux-musl-x64 だけ', () => {
+    expect(runsOnPublishTarget('linux-musl-x64')).toBe(true)
+    for (const k of ['linux-glibc-x64', 'linux-other', 'macho', 'unknown'] as const) {
+      expect(runsOnPublishTarget(k)).toBe(false)
+    }
+  })
+})
+
+describe('blockReasonForPackage: 断るかどうかはライブラリ単位で決める', () => {
+  it('★★ 公開先で動く部品を1つでも持っていれば通す（sharp の形）', () => {
+    expect(blockReasonForPackage(['linux-musl-x64'], false)).toBe(null)
+  })
+
+  it('★★ お使いのパソコン用と公開先用の両方を同梱していれば通す（各OS用を全部入れる形）', () => {
+    expect(blockReasonForPackage(['macho', 'linux-glibc-x64', 'linux-musl-x64'], false)).toBe(null)
+  })
+
+  it('★★ .node があれば、組み立ての宣言より .node を先に見る（誤って「組み立て前」にしない）', () => {
+    expect(blockReasonForPackage(['linux-musl-x64'], true)).toBe(null)
+  })
+
+  it('★ お使いのパソコン用しか無ければ断る', () => {
+    expect(blockReasonForPackage(['macho'], false)).toBe('macho-only')
+  })
+
+  it('★ 公開先とは別の種類の Linux 用しか無ければ断る', () => {
+    expect(blockReasonForPackage(['linux-glibc-x64'], false)).toBe('other-linux')
+    expect(blockReasonForPackage(['macho', 'linux-other'], false)).toBe('other-linux')
+  })
+
+  it('★ 種類が分からないものは通さない', () => {
+    expect(blockReasonForPackage(['unknown'], false)).toBe('unknown')
+    expect(blockReasonForPackage(['macho', 'unknown'], false)).toBe('unknown')
+  })
+
+  it('★ .node が1つも無く、組み立てが要ると宣言していれば断る（これまでどおり）', () => {
+    expect(blockReasonForPackage([], true)).toBe('needs-build')
+  })
+
+  it('.node も宣言も無い普通のライブラリは通す', () => {
+    expect(blockReasonForPackage([], false)).toBe(null)
+  })
+
+  it('理由が混ざったら、断定できるものを先に使う', () => {
+    expect(primaryBlockReason(['unknown', 'needs-build'])).toBe('needs-build')
+    expect(primaryBlockReason(['unknown', 'other-linux'])).toBe('other-linux')
+    expect(primaryBlockReason(['unknown'])).toBe('unknown')
+  })
+})
+
+describe('断る文面を、理由ごとに書き分ける', () => {
+  const tail = /AIに「このライブラリを使わない作りに直して」と頼むか、公開先を「エキスパート（自分の Dockerfile）」に切り替えてください。$/
+
+  it('★ 組み立てられていないとき（これまでの文面のまま）', () => {
+    const m = nativeDepsMessage(['better-sqlite3'], 'needs-build')
+    expect(m).toContain('パソコンごとに組み立てが必要な部品を含んでいます')
+    expect(m).toMatch(tail)
+  })
+
+  it('★ お使いのパソコン用しか入っていないとき', () => {
+    const m = nativeDepsMessage(['bcrypt'], 'macho-only')
+    expect(m).toContain('お使いのパソコン用の部品しか入っていません')
+    expect(m).not.toContain('組み立てが必要')
+    expect(m).toMatch(tail)
+  })
+
+  it('★ 公開先とは別の種類の Linux 用のとき', () => {
+    const m = nativeDepsMessage(['bcrypt'], 'other-linux')
+    expect(m).toContain('公開先とは別の種類の Linux 用の部品です')
+    expect(m).not.toContain('組み立てが必要')
+    expect(m).toMatch(tail)
+  })
+
+  it('★ 種類を確かめられなかったとき', () => {
+    const m = nativeDepsMessage(['bcrypt'], 'unknown')
+    expect(m).toContain('種類を確かめられませんでした')
+    expect(m).toMatch(tail)
+  })
+
+  it('★★ 専門用語（ELF・musl・glibc・Mach-O）を画面に出さない', () => {
+    for (const r of ['needs-build', 'macho-only', 'other-linux', 'unknown'] as const) {
+      const m = nativeDepsMessage(['bcrypt'], r)
+      expect(m).not.toMatch(/ELF|musl|glibc|Mach-O|x86_64|arm64/i)
+    }
+  })
+
+  it('理由を渡さなければ、これまでの文面（組み立てられていない）になる', () => {
+    expect(nativeDepsMessage(['sqlite3'])).toBe(nativeDepsMessage(['sqlite3'], 'needs-build'))
+  })
+})
+
+// ── 理由が混ざっても、事実と違う説明をしない（検分の指摘・2026-09-17）──────────
+//
+// 理由を1つに畳んで名前を全部並べると、当てはまらない理由を告げることになる。
+// 例: better-sqlite3（組み立てが要る）と、お使いのパソコン用の部品しか無いライブラリが
+// 同時に引っかかると、両方の名前を並べて「組み立てが必要」と出てしまい、後者の持ち主は
+// 「組み立てを待てば直る」と原因を取り違える。
+describe('断る文面: 理由が混ざったら、理由ごとにまとめて並べる', () => {
+  const MIXED = [
+    { name: 'better-sqlite3', reason: 'needs-build' as const },
+    { name: '@img/sharp-darwin-arm64', reason: 'macho-only' as const },
+  ]
+
+  it('★★ 組み立てが要らないライブラリに「組み立てが必要」と言わない', () => {
+    const m = nativeDepsMessageForBlocked(MIXED)
+    const build = m.split('\n').find(l => l.includes('組み立てが必要')) ?? ''
+    expect(build).toContain('better-sqlite3')
+    expect(build, 'お使いのパソコン用しか無いライブラリに「組み立てが必要」と言っている')
+      .not.toContain('@img/sharp-darwin-arm64')
+  })
+
+  it('★★ お使いのパソコン用しか無いライブラリには、その理由が付く', () => {
+    const m = nativeDepsMessageForBlocked(MIXED)
+    const mac = m.split('\n').find(l => l.includes('お使いのパソコン用の部品しか入っていません')) ?? ''
+    expect(mac).toContain('@img/sharp-darwin-arm64')
+    expect(mac).not.toContain('better-sqlite3')
+  })
+
+  it('★ 理由の数だけ文が並び、次の一手は最後に1回だけ', () => {
+    const m = nativeDepsMessageForBlocked(MIXED)
+    expect(m.split('\n').length).toBe(2)
+    expect(m.match(/エキスパート/g)?.length).toBe(1)
+  })
+
+  it('★ 理由が1つだけなら、これまでの文面と同じ', () => {
+    expect(nativeDepsMessageForBlocked([{ name: 'bcrypt', reason: 'macho-only' }]))
+      .toBe(nativeDepsMessage(['bcrypt'], 'macho-only'))
+  })
+
+  it('★ 同じ理由のライブラリは1文にまとまる', () => {
+    const m = nativeDepsMessageForBlocked([
+      { name: 'a', reason: 'other-linux' },
+      { name: 'b', reason: 'other-linux' },
+    ])
+    expect(m.split('\n').length).toBe(1)
+    expect(m).toContain('a、b')
+  })
+
+  it('★★ 混ざっても専門用語（ELF・musl・glibc・Mach-O）を画面に出さない', () => {
+    const m = nativeDepsMessageForBlocked([
+      { name: 'a', reason: 'needs-build' }, { name: 'b', reason: 'macho-only' },
+      { name: 'c', reason: 'other-linux' }, { name: 'd', reason: 'unknown' },
+    ])
+    expect(m).not.toMatch(/ELF|musl|glibc|Mach-O|x86_64|arm64/i)
+    expect(m.split('\n').length).toBe(4)
   })
 })
 
@@ -93,7 +379,13 @@ describe('依存ライブラリの用意が繋がっている', () => {
 
   it('★ 持っていけない部品があれば、層を作らずに止める', () => {
     const img = read('src/main/cloud/imageBuild.ts')
-    expect(img).toMatch(/nativeFiles\.length > 0[\s\S]{0,200}throw new Error\(nativeDepsMessage/)
+    // **理由まで渡していること**を、呼び出しの形ごと一意に指す（検分の指摘・2026-09-17）。
+    // 以前は `throw new Error(nativeDepsMessage` までしか見ておらず、**第2引数（理由）を
+    // 落とす変異を素通り**させていた。実際に投げられる文面は
+    // tests/imageBuildNativeBlock.test.ts が本物の呼び出しで固定している。
+    expect(img).toMatch(
+      /nativeBlocked\.length > 0[\s\S]{0,400}throw new Error\(nativeDepsMessageForBlocked\(r\.nativeBlocked\)\)/)
+    expect(img, '理由を落とした古い呼び方に戻っている').not.toMatch(/nativeDepsMessage\(r\.nativePackages/)
   })
 
   it('★ 依存があっても「動かせない」と断らない（改善案 1-5 の本体）', () => {

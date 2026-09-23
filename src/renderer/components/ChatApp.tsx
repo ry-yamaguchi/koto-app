@@ -23,6 +23,7 @@ import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { subscribe, getSnapshot, loadingKeys, turnKey, getTurn } from '../chatTurnRegistry'
 import { useConfirm } from '../useConfirm'
 import { runDeleteConversation } from '../confirmedActions'
+import { chatStatusLine } from '../../shared/chatStatusLine'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
 function GeoSquares({ className = '' }: { className?: string }) {
@@ -669,7 +670,8 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                   <div className="bg-surface border border-line rounded-2xl rounded-tl-md px-4 py-3">
                     <div className="flex gap-2 items-center h-5">
                       <span className="text-xs text-ink-secondary">
-                        {statusNote || (stalled ? '⏳ 時間がかかっています…（⏹ で停止できます）' : '考えています…')}
+                        {/* 判断は shared/chatStatusLine.ts の純関数1か所（掟10）。ChatPanel.tsx と同じものを呼ぶ。 */}
+                        {chatStatusLine(statusNote, stalled)}
                         {elapsedSec >= 3 && <span className="ml-1 tabular-nums text-ink-muted">{elapsedSec}秒</span>}
                       </span>
                       <div className="flex gap-1.5 items-center">

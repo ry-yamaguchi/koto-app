@@ -46,7 +46,7 @@ export async function readPublishTargets(projectDir: string): Promise<PublishTar
     const meta = JSON.parse(await window.electronAPI.fs.readFile(metaPath(projectDir)))
     const targets = meta?.publish?.targets
     if (!targets || typeof targets !== 'object') return []
-    const order: PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-rental']
+    const order: PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental']
     return order.filter(t => !!targets[t])
   } catch {
     return []

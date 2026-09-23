@@ -8,21 +8,58 @@
 // 気づいたのは偶然で、テストは1件も無かった。
 //
 // **新しい公開先を足すときは、必ずこのモジュールを使うこと。** 手で並べ直さない。
-// 各形式（rsync / zip / 名前の集合）への変換もここに置いてあるので、呼び出し側は選ぶだけでよい。
+// 各形式（rsync / zip / 名前の集合 / .dockerignore）への変換もここに置いてあるので、
+// 呼び出し側は選ぶだけでよい。
+//
+// ── 公開経路の一覧（2026-09-23 に数え直した）──────────────────────────────
+// 「5つ」と書いていたが、**AppRun には2つある**。数え違いのせいでエキスパート経路が
+// 点検からも試験からも落ちていた（4回目の穴）。
+//   1. レンタルサーバ（rsync）        … PublishModal.tsx → `rsyncExcludeArgs()`
+//   2. Vercel（ディレクトリを歩く）    … vercel/client.ts → `publishExcludedDirNames()`
+//   3. HANAMII（zip）                 … ipc/hanamii.ts   → `zipExcludePatterns()`
+//   4. AppRun 標準（内蔵ビルダー）      … cloud/imageBuild.ts → `publishExcludedDirNames()`
+//   5. AppRun エキスパート（docker）   … cloud/imagePublish.ts → `dockerignoreLines()`
+//      ⚠️ ここだけは Koto がファイルを集めない。`docker build <公開の根>` が
+//      コンテキストを丸ごと読むので、**除外は `.dockerignore` でしか効かない。**
+//   6. GitHub保存（バックアップ）       … github/enumerate.ts → `excludedDirNames()`
+//      （公開ではないので `PUBLISH_ONLY_DIRS` は外さない）
 //
 // このモジュールは fs/electron/DOM に依存しない純粋な定義のみ（renderer からも main からも使える）。
 
 import { PUBLISH_DIR } from './publishRoot'
+import { DATA_LAYER_LOCAL_DIR } from './objectStorage'
 
 /**
  * Koto が自分のためにプロジェクト内へ作るフォルダ。**公開物・配布物へ絶対に含めない。**
  * - `.sakuraide`        … チャット履歴（会話の全文。貼り付けたものが何であれ残る）
  * - `.sakuraide-backup` … 🕘 履歴のスナップショット（過去のソースの全文）
  * - `.sakura-cloud`     … クラウド連携の状態と環境変数（秘密が入り得る）
+ * - `.koto-data`        … 手元で試すときのアプリのデータ（利用者が入力した実データ）
  *
- * 名前は互換性のため変更しない（掟8）。
+ * ── `.koto-data` をここへ入れた理由（2026-09-23 実機・ScheduleAPP）────────────
+ * データの保存（koto-data）を使い始めたアプリは、手元で試す間このフォルダへ書く。
+ * 公開先ではオブジェクトストレージを使うので、**このフォルダは公開先では一切読まれない**。
+ * それでも公開物に入っていたため、**手元で入力した名前や予定が公開先へアップロード**
+ * されていた（④ 簡易セキュリティチェックが `data/*.db` に出す「公開するとデータの中身が
+ * 丸見えになる」と同じ性質のもの）。
+ *
+ * **「⑤ 🧹 使われていないファイルの確認」に出ていたのも、根はここ1つ。**
+ * あの一覧は公開と同じ除外定義（`publishExcludedDirNames()`。`src/main/ipc/fs.ts` の
+ * `PUBLISH_VIEW_WALK_RULE`）でファイルを集めるので、ここへ入れれば一覧からも消える。
+ * このフォルダの中身は実行時にしか読み書きされず、**どのコードからも名前で参照される
+ * ことが永久に無い**ため、除外しない限り必ず「使われていない」に出て、
+ * 「素材置き場へ移動」を押した利用者が**アプリのデータを失う**。
+ * `shared/unusedFiles.ts` 側に専用の例外は足さない（二重定義を作らない・掟10）。
+ *
+ * **素材置き場（`PUBLISH_ONLY_DIRS`）ではなくこちらに置く理由**: 中身は利用者が入力した
+ * 実データで、名前や連絡先が入りうる。GitHub保存は private 固定とはいえ、**利用者が
+ * 頼んでいない場所へデータを流す**ことになる。手元の試用データなので、失われても
+ * 作り直せる。`.sakuraide`（チャット履歴）と同じ扱いにする。
+ *
+ * 名前は互換性のため変更しない（掟8）。`.koto-data` の名前の正は
+ * `shared/objectStorage.ts` の `DATA_LAYER_LOCAL_DIR`（文字列を2か所に書かない・掟10）。
  */
-export const KOTO_INTERNAL_DIRS = ['.sakuraide', '.sakuraide-backup', '.sakura-cloud'] as const
+export const KOTO_INTERNAL_DIRS = ['.sakuraide', '.sakuraide-backup', '.sakura-cloud', DATA_LAYER_LOCAL_DIR] as const
 
 /** Koto のメタ情報ファイル（公開設定などを持つ。公開物ではない）。 */
 export const KOTO_INTERNAL_FILES = ['.sakuraide.json'] as const
@@ -207,4 +244,61 @@ export function zipExcludePatterns(extra: readonly string[] = []): string[] {
     ...SECRET_GLOBS.flatMap(g => [g, `*/${g}`]),
     ...extra,
   ]
+}
+
+/**
+ * `.dockerignore` に必ず入っていてほしい行。
+ *
+ * ── なぜ要るか（2026-09-23 検分・4回目の穴）─────────────────────────────
+ * AppRun の「エキスパート（Docker）」は、Koto がファイルを集めない**唯一の公開経路**。
+ * `docker build <公開の根>` がコンテキストを丸ごと読むので、
+ * `publishExcludedDirNames()` も `zipExcludePatterns()` も `rsyncExcludeArgs()` も効かない。
+ * 利用者の Dockerfile が `COPY . .` なら、手元のデータ（`.koto-data`）やチャット履歴が
+ * **イメージに焼き込まれ、レジストリへ push され、公開先で配られる**。
+ * この経路で除外を効かせる方法は `.dockerignore` **しか無い**。
+ *
+ * ビルド設定（`BUILD_CONFIG_FILES`）は入れない——この経路では Dockerfile が入力そのもの。
+ */
+export function dockerignoreLines(): string[] {
+  return [
+    ...HEAVY_DIRS,
+    ...KOTO_INTERNAL_DIRS,
+    ...PUBLISH_ONLY_DIRS,
+    ...KOTO_INTERNAL_FILES,
+    ...NOISE_FILES,
+    ...SECRET_GLOBS,
+  ]
+}
+
+/** `.dockerignore` の1行を比べられる形にする（前後の `/` と空白を落とす）。 */
+function normalizeIgnoreLine(line: string): string {
+  return line.trim().replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+/**
+ * その `.dockerignore` の中身に、**まだ入っていない除外行**（`dockerignoreLines()` の順）。
+ * 中身が空（ファイルが無い）なら全部返る。すべて入っていれば空配列。
+ */
+export function missingDockerignoreLines(content: string): string[] {
+  const have = new Set(
+    String(content ?? '').split('\n').map(normalizeIgnoreLine).filter(Boolean),
+  )
+  return dockerignoreLines().filter(l => !have.has(normalizeIgnoreLine(l)))
+}
+
+/**
+ * 新規プロジェクトへ書き出す `.gitignore` のうち、**Koto が面倒を見る行**。
+ *
+ * ── なぜ要るか（2026-09-23 検分）───────────────────────────────────────
+ * Koto 自身の GitHub保存は `excludedDirNames()` を通るので守られているが、
+ * 利用者や AI がターミナルで `git init && git add . && git push` をすると、
+ * 手元の実データ（`.koto-data`）やチャット履歴がそのままリポジトリへ入る。
+ * **プロジェクトに置く `.gitignore` も、同じ一元定義から組み立てる**（掟10）。
+ *
+ * `KOTO_INTERNAL_FILES`（`.sakuraide.json`）は入れない。Koto 自身の GitHub保存
+ * （`github/enumerate.ts`）も**これは保存している**ので、`.gitignore` だけ外すと
+ * 「Koto で保存すると入るのに、自分で push すると入らない」という食い違いになる。
+ */
+export function kotoIgnoreLines(): string[] {
+  return KOTO_INTERNAL_DIRS.map(d => `${d}/`)
 }

@@ -8,6 +8,8 @@ import {
   decideLogAction, pickLogStorageId, hasAppLogRouting, APPRUN_LOG_PUBLISHER, APPRUN_LOG_VARIANT,
   // #38: AppRun 専有型（プロジェクト単位）
   DEDICATED_PUBLISHER, DEDICATED_VARIANTS, hasProjectRouting,
+  // F-1 B-1（2026-09-16）: ⑦を1行に畳んでよいか
+  shouldCollapseTelemetrySection,
   type TelemetryKind,
 } from '../src/shared/appLog'
 
@@ -387,3 +389,30 @@ describe('公開の経路が、ログ・メトリクスの設定を通ってい�
 
 // 画面（AppRunPanel・TelemetryNotice）の配線・同意の歯止めは tests/telemetryNotice.test.ts に
 // 寄せてある（#30 検分の指摘5: 同じ主張を2ファイルへ複製しない・掟10）。
+
+// ── F-1 B-1（2026-09-16）: ⑦「ログ・メトリクス」を1行に畳んでよいか ──────────────────────
+describe('shouldCollapseTelemetrySection: 全部繋がっていて行動が要らないときだけ畳む', () => {
+  const allRouted = [
+    { routed: true }, { routed: true }, { routed: true },
+    { routed: true }, { routed: true }, { routed: true },
+  ]
+  const noAction = [{ kind: 'none' as const }, { kind: 'none' as const }]
+
+  it('★★ 全部 routed:true・行動も無し → 畳む', () => {
+    expect(shouldCollapseTelemetrySection(allRouted, noAction)).toBe(true)
+  })
+
+  it('★★ 1つでも未接続（routed:false）があれば畳まない', () => {
+    const oneMissing = [...allRouted.slice(0, 5), { routed: false }]
+    expect(shouldCollapseTelemetrySection(oneMissing, noAction)).toBe(false)
+  })
+
+  it('全部繋がっていても、ボタンが出るとき（kind !== \'none\'）は畳まない', () => {
+    expect(shouldCollapseTelemetrySection(allRouted, [{ kind: 'route' }, { kind: 'none' }])).toBe(false)
+    expect(shouldCollapseTelemetrySection(allRouted, [{ kind: 'none' }, { kind: 'ask' }])).toBe(false)
+  })
+
+  it('一覧が空（まだ取得できていない）なら畳まない（安全側）', () => {
+    expect(shouldCollapseTelemetrySection([], noAction)).toBe(false)
+  })
+})

@@ -65,6 +65,14 @@ interface CloudEnvSpec {
 }
 type CloudResourceKind = 'registry' | 'image' | 'apprun-app' | 'bucket'
 
+// ── さくらのAppRun 専有型の記録（.sakuraide.json の publish.apprunDedicated）────────────
+// src/shared/publishMeta.ts の ApprunDedicatedRecord をそのまま使う（掟10・複製しない）。
+// このファイルは ambient 宣言（トップレベルの import/export を書くとモジュール扱いになり
+// Window の拡張が壊れる）だが、型位置のインライン `import(...)` はトップレベル import ではないため
+// 使える（このファイルの他の型・上の updatePolicy 等と同じ形）。
+// apprunDedicated.state() と appStatus().record の両方がこの形を返す（D-4 で二重定義を避けるためここに1つ）。
+type ApprunDedicatedRecordShape = import('../shared/publishMeta').ApprunDedicatedRecord
+
 /** 引き取りの候補（shared/publishImport.ts の ImportCandidate と同じ形）。 */
 type ImportCandidate = {
   target: 'vercel' | 'sakura-apprun'
@@ -316,8 +324,28 @@ interface Window {
     }
     /** 永続データ（保存場所）。値は読まず、扱いだけを調べる。 */
     storage: {
-      scan(projectDir: string): Promise<{ ok: boolean; usesDataLayer: boolean; usedBy: string[]; writesFiles: string[]; message?: string }>
-      ensureLayer(projectDir: string): Promise<{ ok: boolean; placed: boolean; message?: string }>
+      /**
+       * `writesFiles` は**どのファイルの何行目か**まで返す（2026-09-23）。
+       * 場所を名指しできないと、AI の「完了しました」と画面の「まだです」の
+       * 間で利用者が立ち往生する。
+       */
+      scan(projectDir: string): Promise<{ ok: boolean; usesDataLayer: boolean; usedBy: string[]; writesFiles: { file: string; lines: number[] }[]; truncated?: boolean; message?: string }>
+      /**
+       * koto-data（.js / .cjs）を用意する。**既にあれば触らない。**
+       *
+       * `ready` は「読み込み先のファイルが実際にあるか」。**AI へ依頼文を送って
+       * よいかは、`placed` ではなくこれで決める**（既にあるときは置かないが、
+       * 頼んでよい）。`moduleKind` は依頼文を import と require のどちらで
+       * 書くかに使う（2026-09-23）。
+       */
+      ensureLayer(projectDir: string): Promise<{
+        ok: boolean
+        placed: boolean
+        ready?: boolean
+        file?: string | null
+        moduleKind?: 'esm' | 'cjs'
+        message?: string
+      }>
       status(): Promise<{ ok: boolean; siteId?: string; siteName?: string; s3Endpoint?: string; siteReady: boolean; buckets: { name: string }[]; suggested?: string; message?: string }>
       createBucket(name: string): Promise<{ ok: boolean; bucket?: string; message?: string }>
       placement(projectDir: string): Promise<{ ok: boolean; placement: { bucket: string; prefix: string; shared: boolean; consentedAt: string } | null; message?: string }>
@@ -328,6 +356,12 @@ interface Window {
         siteName?: string
         startedSite?: boolean
         dataLayerPlaced?: boolean
+        /**
+         * 実際に置いたデータ層のファイル名（`koto-data.js` / `koto-data.cjs`）。
+         * **画面はこれを表示する。** 名前を書き写すと、require のアプリで
+         * 置いていないファイル名を伝えることになる（2026-09-23 検分）。
+         */
+        dataLayerFile?: string | null
         note?: string
         message?: string
       }>
@@ -354,7 +388,9 @@ interface Window {
         onStart?: (abort: () => void) => void,
         /** 推論モデルの「思考」の差分。届いた分をそのまま渡す（進行中の表示に使う）。 */
         onReasoning?: (delta: string) => void,
-      ): Promise<{ usage: { prompt_tokens?: number; completion_tokens?: number } | null; aborted?: boolean; toolCalls?: any[] | null; reasoningText?: string | null }>
+        /** timedOut: 待ち時間の上限（shared/chatTimeouts.ts）で打ち切ったとき。
+         *  'first'＝返事が始まらなかった／'idle'＝返事の途中で止まった。⏹ 停止（aborted）とは別物。 */
+      ): Promise<{ usage: { prompt_tokens?: number; completion_tokens?: number } | null; aborted?: boolean; timedOut?: 'first' | 'idle'; toolCalls?: any[] | null; reasoningText?: string | null }>
     }
     secure: {
       available(): Promise<boolean>
@@ -419,6 +455,10 @@ interface Window {
         dryRun?: boolean
         plan?: { remove: string[]; keep: string[]; untouched: string[] }
         currentTag?: string | null
+        // 専有型でいま動いているタグ（2026-09-17 の穴・A）。読めなかった／専有型未使用なら null。
+        dedicatedTag?: string | null
+        // 専有型のアプリはあるはずなのに、稼働タグを把握できなかった（黙って通さない）。
+        dedicatedTagUnknown?: boolean
         keep?: number
         deleted?: string[]
         failed?: Array<{ digest: string; message: string; detail: string }>
@@ -691,32 +731,25 @@ interface Window {
         asgID?: string | null
         loadBalancerID?: string | null
       }>
-      // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
+      // 段階④「破棄」: 記録にある ID だけを アプリ→LB→ASG→クラスタ の順で削除する
+      // （B・2026-09-17でコメントを実装（apprunDedicatedApply.ts teardownFlow）に合わせて訂正。
+      // 以前は「LB→ASG→クラスタ」と書いていたが、実装はアプリの段が先頭にある）。
+      // opts.confirmed は上と同じ意味。
       // #39: 各段は一覧から消えるまで待つ。待ち切れず(timeout)止まったときだけ inProgress が立つ
       // （「まだ残っています」＝失敗、とは区別する。画面は黄色い注意＋再開導線を出す）。
       teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }): Promise<{
         ok: boolean
         executed: string[]
         message: string
-        remaining: { loadBalancerID?: string; asgID?: string; clusterID?: string }
-        inProgress?: { loadBalancerID?: string; asgID?: string; clusterID?: string }
+        remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+        inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
       }>
       // #39: 破棄の進捗メッセージ購読（「〜の削除を待っています（N分経過）…」を30秒ごとに1回）。
       // 戻り値の関数を呼ぶと購読解除。
       onTeardownProgress(cb: (msg: string) => void): () => void
       // いま何が作られているか（.sakuraide.json の publish.apprunDedicated）を返す。API は呼ばない。
-      state(projectDir: string): Promise<{
-        servicePrincipalId?: string | null
-        consentedAt?: string | null
-        clusterID?: string | null
-        asgID?: string | null
-        loadBalancerID?: string | null
-        name?: string | null
-        zone?: string | null
-        workerServiceClassPath?: string | null
-        lbServiceClassPath?: string | null
-        createdAt?: string | null
-      }>
+      // 形は上部の ApprunDedicatedRecordShape（D-4 でアプリの記録 applicationID 等が増えた）。
+      state(projectDir: string): Promise<ApprunDedicatedRecordShape>
       /**
        * #38「⑦ ログ・メトリクス」: 専有型はクラスタ単位ではなく**プロジェクト単位**
        * （resource_id を送らない・5-12実測）。6 variant（logs 3・metrics 3）それぞれの
@@ -744,6 +777,101 @@ interface Window {
       enableTelemetry(auth: { token: string; secret: string }, kind: 'logs' | 'metrics', opts?: { consented?: boolean }): Promise<
         { ok: true } | { ok: false; needsConsent?: boolean; message?: string; detail?: string }
       >
+      // ── ⑧「アプリを公開する」（D-4）────────────────────────────────────────
+      /**
+       * 前提を1回で返す（GET のみ・何も作らない）。hasLetsEncryptEmail は記録に clusterID があり auth が
+       * 使えるときだけ確かめ、取れなければ null（画面は null を false と同じに扱いメール欄を出す）。
+       * envReady は env.json があるか（無ければ「公開の設定を作る」を出す）。
+       */
+      appStatus(projectDir: string, auth: { token: string; secret: string }): Promise<
+        | { ok: true; hasLetsEncryptEmail: boolean | null; envReady: boolean; port: number | null; envCount: number; record: ApprunDedicatedRecordShape }
+        | { ok: false; message: string }
+      >
+      /**
+       * ⑧「🔄 IP を取り直す」（D-5・2026-09-16）: 記録の clusterID/asgID/loadBalancerID で LB ノードの一覧を
+       * 1回引き、DNS の A レコードに向ける**素の IP**（`59.106.222.212/24` → `59.106.222.212`）を記録
+       * （lbAddresses）して返す。GET と記録の書き込みだけ・何も作らない・待たない。空なら記録は触らず
+       * ok:false（「まだ付いていません」）。ノードのアドレスは付くまで数分かかることがある（5-13）。
+       */
+      lbAddresses(projectDir: string, auth: { token: string; secret: string }): Promise<
+        | { ok: true; lbAddresses: string[] }
+        | { ok: false; message: string }
+      >
+      /**
+       * ⑧「🔎 公開先と https を確かめる」（O-1・2026-09-17）: 記録のホスト名へ実際に繋ぎ、
+       * ドメインの向き先・証明書・ブラウザで開けるか・アプリの応答の**4つを別々に**調べる
+       * （DNS を設定したあとに押す。⑧の公開直後の確認は DNS を向ける前に走るので、そちらには
+       * 足せない＝時間軸が違う）。**読むだけ・何も作らない・鍵は要らない。**
+       * lines は画面にそのまま並べる行（判断は shared/publishVerify.ts の siteCheckLines）。
+       */
+      checkSite(projectDir: string): Promise<
+        | {
+            ok: true
+            host: string
+            dns: import('../shared/publishVerify').DnsCheck
+            cert: import('../shared/publishVerify').CertCheck
+            httpsOpen: import('../shared/publishVerify').HttpsOpenCheck
+            app: import('../shared/publishVerify').DedicatedVerifyOutcome | null
+            resolved: string[] | null
+            recorded: string[]
+            issuer: string | null
+            lines: string[]
+          }
+        | { ok: false; message: string }
+      >
+      /**
+       * 記録済みのクラスタの上にアプリを公開する（イメージの組み立て→レジストリへ push→アプリ/バージョン作成→有効化）。
+       * opts.confirmed は「確認ダイアログを通ったか」の印。confirmed !== true なら main 側はイメージの組み立てにも
+       * API にも入らず stage:'consent' で中止する。stage:'image' はイメージの段の失敗（hint:'reset-registry' は
+       * レジストリの接続情報が古い印。画面は共用型タブの「レジストリを設定し直す」ボタンへ誘導する案内文を
+       * 出すだけで、ボタン自体は複製しない）。成功時の url は `https://<host>/`、lbAddresses は
+       * DNS の A レコードに向ける IP（取れなかったときは無い）。
+       */
+      publishApp(projectDir: string, auth: { token: string; secret: string }, input: {
+        host: string
+        cpu: number
+        memory: number
+        fixedScale: number
+        healthCheckPath?: string
+        letsEncryptEmail?: string
+      }, opts?: { confirmed?: boolean }): Promise<{
+        ok: boolean
+        stage: import('../main/cloud/apprunDedicatedAppApply').PublishAppStage
+        message: string
+        applicationID?: string
+        version?: number
+        url?: string
+        lbAddresses?: string[]
+        /**
+         * D-7: 公開のあと、アプリが本当に応答したか（確認をとばしたときは付かない）。
+         * 画面は publishHeadline（shared/publishLabels.ts）でこの値から見出しを決める。
+         */
+        verify?: import('../shared/publishVerify').DedicatedVerifyOutcome
+        /**
+         * D-8: verify が `no-backend` のときだけ引く「いまのコンテナの様子」。
+         * 引けなかったときは付かない（0件＝1つも動いていない、と区別する）。
+         * 200 でも応答が原本の形でなければ「引けなかった」扱い（分からないものを0件として出さない）。
+         * 画面は containerStateSummary（shared/publishLabels.ts）で1行にして描く。
+         */
+        containerStates?: { state: string; status: string }[]
+        warnings?: string[]
+        detail?: string
+        hint?: 'reset-registry'
+      }>
+      /**
+       * 📡 一覧の「破棄」: 専有型のアプリ（全バージョン）だけを消す（LB/ASG/クラスタには触らない）。
+       * 戻り値は teardown と同じ形（アプリの段なので remaining/inProgress は applicationID が主）。
+       * 公開記録の削除は呼び出し側（📡 一覧の clearPublishRecord）の責務＝共用型と同じ。
+       */
+      teardownApp(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }): Promise<{
+        ok: boolean
+        executed: string[]
+        message: string
+        remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+        inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+      }>
+      /** 公開の進捗メッセージ購読（onTeardownProgress と同じ形）。戻り値の関数を呼ぶと購読解除。 */
+      onPublishProgress(cb: (msg: string) => void): () => void
     }
     // 📚 資料（さくらのAI Engine RAG API）。apiKey は認証情報の中央ストアから renderer が渡す（方式B）。
     rag: {

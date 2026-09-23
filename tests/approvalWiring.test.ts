@@ -32,9 +32,19 @@ describe('turnRunner.ts: approveToolCall はもう bridge.ask ではない', () 
     expect(src).toContain(
       "import { planApproval, writeDenialMessage, runCommandDenialMessage, type WriteMode } from '../../shared/approvalPlan'",
     )
-    expect(src).toContain("import { requestApproval } from './approvalStore'")
+    // 2026-09-23: ⏹ で承認待ちを解くため cancelApprovalsForTurn を同じ行から取り込んでいる
+    expect(src).toContain("import { requestApproval, cancelApprovalsForTurn } from './approvalStore'")
     expect(src).toContain('const plan = planApproval(name, argsJson, { writeMode, scopeDir, scopeRoot, deps })')
     expect(src).toContain('const approved = await requestApproval({ turnId, dir: scopeDir, label: plan.label })')
+  })
+
+  it('★ chatTurn:abort が承認の帳簿にも触る（⏹ で承認待ちが解ける・2026-09-23 実機）', () => {
+    // requestApproval は**タイムアウトしない**（答えが来るまで駐機）ので、ここを呼ばないと
+    // 「✋ 毎回確認」のとき ⏹ を押しても永久に固まる。新しい IPC は増やさず、この既存の口から呼ぶ。
+    expect(src).toContain("ipcMain.handle('chatTurn:abort', (_, turnId: string) => {")
+    expect(src).toContain('cancelApprovalsForTurn(turnId)')
+    // 直す前の形（stopRequested と abort だけで、承認には触らない）へ戻っていないこと
+    expect(src).not.toMatch(/if \(e\) \{ e\.stopRequested = true; e\.abort\?\.\(\) \}\s*\}\)/)
   })
 
   it('要否判定に使う writeMode は payload.spec.turnOpts から読む（送信時のスナップショット）', () => {

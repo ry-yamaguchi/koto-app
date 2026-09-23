@@ -3,8 +3,12 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   MODELS, VISION_MODELS, DEFAULT_MODEL, pickBestModel, SYSTEM_ROLE_UNSUPPORTED, foldSystemForModel,
-  MODEL_PURPOSE, purposeLabel, orderModelsForPicker,
+  MODEL_PURPOSE, purposeLabel, orderModelsForPicker, modelPickerText, modelLabel,
 } from '../src/shared/modelInfo'
+import ModelSelect, { pickerTooltip } from '../src/renderer/components/ModelSelect'
+import { CLAUDE_MODELS } from '../src/renderer/claudeMode'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 // 2026-09-04 世代交代の回帰テスト（Qwen3-Coder 系の提供終了に伴う一括更新）。
 // 根拠: check:models 実測で Qwen3-Coder-480B-A35B-Instruct-FP8 / Qwen3-Coder-30B-A3B-Instruct が
@@ -148,6 +152,93 @@ describe('purposeLabel（表示の元は MODEL_PURPOSE の1箇所だけ）', () 
   })
 })
 
+// ── UX-A2（2026-09-15 Ryosuke さん実機判断）: 表示を逆に。見える文字はモデル名、目的の説明はマウスオーバー ──
+describe('modelPickerText（見える文字＝モデル名・説明＝目的。表示の元はここ1つ）', () => {
+  it('表にある id → name はモデル名（modelLabel）、description は目的ラベル（purposeLabel）', () => {
+    expect(modelPickerText('preview/Kimi-K2.7-Code')).toEqual({
+      name: 'Kimi K2.7 Code（プレビュー）',
+      description: '標準（おすすめ・コードが得意）',
+    })
+    expect(modelPickerText('preview/gemma-4-31B-it')).toEqual({
+      name: 'Gemma 4 31B（プレビュー）',
+      description: '高速・軽い（相談向け）',
+    })
+    expect(modelPickerText('preview/Qwen3-VL-30B-A3B-Instruct')).toEqual({
+      name: 'Qwen3-VL 30B（画像対応・プレビュー）',
+      description: '画像読み取り用（ツール非対応）',
+    })
+    expect(modelPickerText('gpt-oss-120b')).toEqual({ name: 'GPT-OSS 120B', description: '推論型' })
+  })
+
+  it('MODEL_PURPOSE にある全モデルで name=modelLabel・description=purposeLabel、かつ name と description が同じ文にならない（二重に出さない）', () => {
+    for (const id of Object.keys(MODEL_PURPOSE)) {
+      const t = modelPickerText(id)
+      expect(t.name, id).toBe(modelLabel(id))
+      expect(t.description, id).toBe(purposeLabel(id))
+      expect(t.description, id).not.toBe('')
+      expect(t.description, id).not.toBe(t.name)
+    }
+  })
+
+  // ★ 変異試験(c): 「未知の id で description に name（or 技術名）を返す」バグを検知する砦。
+  it('★ 表に無い未知の id → name は id そのまま・description は空（推測しない。name を二重に出さない）', () => {
+    const t = modelPickerText('some-brand-new-model-2027')
+    expect(t.name).toBe('some-brand-new-model-2027')
+    expect(t.description).toBe('')
+    // 直す前の形（purposeLabel は未知の id に技術名を返す）に戻っていない
+    expect(t.description).not.toBe(purposeLabel('some-brand-new-model-2027'))
+  })
+
+  // ── 2026-09-15 検分で発覚: Claude 頭脳モードの一覧（claudeMode.ts の label）は さくらの表に無いため、
+  //    name=modelLabel(id) だけでは「claude-sonnet-5」のような技術 id が見えていた（v0.6.18 から）。
+  //    一覧が持つ label を第2引数で渡せるようにし、渡されればそれを name にする。
+  it('Claude 一覧の label を渡せば name はその label（技術 id を見せない）・description は空（表に無いので推測しない）', () => {
+    expect(CLAUDE_MODELS.length).toBeGreaterThan(0)
+    for (const m of CLAUDE_MODELS) {
+      const t = modelPickerText(m.id, m.label)
+      expect(t.name, m.id).toBe(m.label)
+      expect(t.name, m.id).not.toBe(m.id)
+      expect(t.description, m.id).toBe('')
+    }
+    // ライブ取得で表に無い新モデル（label は API の displayName）も同じ
+    expect(modelPickerText('claude-new-model', 'Claude New Model')).toEqual({ name: 'Claude New Model', description: '' })
+  })
+
+  it('★ label を渡さない Claude の id は技術 id のまま（＝渡し忘れると劣化が再発する。配線テストで渡す形を固定）', () => {
+    expect(modelPickerText('claude-sonnet-5').name).toBe('claude-sonnet-5')
+    expect(modelPickerText('claude-sonnet-5', 'Claude Sonnet 5（バランス）').name).toBe('Claude Sonnet 5（バランス）')
+  })
+
+  it('さくらの一覧の label（useModels は modelLabel(id) を label にする）を渡しても、渡さない場合と同じ結果', () => {
+    for (const id of Object.keys(MODEL_PURPOSE)) {
+      expect(modelPickerText(id, modelLabel(id)), id).toEqual(modelPickerText(id))
+    }
+  })
+
+  it('★ label を渡しても description は id で引く（label の括弧書きを説明に流用しない・表にある id の説明を消さない）', () => {
+    const t = modelPickerText('preview/Kimi-K2.7-Code', '別の表示名')
+    expect(t.name).toBe('別の表示名')
+    expect(t.description).toBe('標準（おすすめ・コードが得意）')
+  })
+
+  it('label が空文字なら modelLabel へフォールバック（空の名前を出さない）', () => {
+    expect(modelPickerText('preview/Kimi-K2.7-Code', '').name).toBe('Kimi K2.7 Code（プレビュー）')
+    expect(modelPickerText('claude-x', '').name).toBe('claude-x')
+  })
+})
+
+describe('pickerTooltip（ModelSelect のマウスオーバー判断・純関数）', () => {
+  it('表にある id → description をそのまま返す', () => {
+    expect(pickerTooltip('preview/Kimi-K2.7-Code')).toBe('標準（おすすめ・コードが得意）')
+    expect(pickerTooltip('llm-jp-3.1-8x13b-instruct4')).toBe('日本語特化（ツール非対応・文脈を無視することあり）')
+  })
+
+  it('★ 表に無い未知の id → null（ツールチップを出さない。空文字や技術名を返さない）', () => {
+    expect(pickerTooltip('some-brand-new-model-2027')).toBeNull()
+    expect(pickerTooltip('claude-x')).toBeNull()
+  })
+})
+
 describe('orderModelsForPicker（一覧の並び: 既定モデルを先頭に・UX-A判断1）', () => {
   it('既定モデルが一覧にあれば先頭へ出し、残りは元の順序のまま', () => {
     const ids = ['gpt-oss-120b', 'preview/Kimi-K2.7-Code', 'preview/gemma-4-31B-it']
@@ -178,19 +269,88 @@ describe('orderModelsForPicker（一覧の並び: 既定モデルを先頭に・
   })
 })
 
-describe('配線: モデル選択UI3か所（チャット欄ヘッダー／新規プロジェクト画面／設定）が purposeLabel( を使っている（掟10・呼び出しの形ごと）', () => {
+describe('配線: モデル選択UI3か所（チャット欄ヘッダー／新規プロジェクト画面／設定）が modelPickerText( を使っている（掟10・呼び出しの形ごと・UX-A2）', () => {
   const modelSelectSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ModelSelect.tsx'), 'utf-8')
   const chatAppSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatApp.tsx'), 'utf-8')
   const chatPanelSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf-8')
   const newProjectSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/NewProjectModal.tsx'), 'utf-8')
   const settingsSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/SettingsModal.tsx'), 'utf-8')
+  const lines = (src: string) => src.split('\n')
 
-  it('① チャット欄ヘッダー・新規プロジェクト画面が共通で使う ModelSelect.tsx: ボタン表示・一覧表示の両方が purposeLabel( を呼ぶ', () => {
-    expect(modelSelectSrc).toContain('purposeLabel(value)')
-    expect(modelSelectSrc).toContain('purposeLabel(m.id)')
-    // 技術名は title（ツールチップ）へ。modelLabel(id)＋id の形を、呼び出しの形ごと固定する
-    expect(modelSelectSrc).toContain('`${modelLabel(value)}（${value}）`')
-    expect(modelSelectSrc).toContain('`${modelLabel(m.id)}（${m.id}）`')
+  it('① ModelSelect.tsx: ボタン・一覧の見える文字が modelPickerText(id, label).name（モデル名。一覧の label を渡す）', () => {
+    expect(modelSelectSrc).toContain("import { modelPickerText, orderModelsForPicker } from '../../shared/modelInfo'")
+    // ボタン: value → 一覧から label を引いて name を <span className="truncate"> に出す（受け渡しの形ごと）
+    expect(modelSelectSrc).toContain('const current = models.find(m => m.id === value)')
+    expect(modelSelectSrc).toContain('const currentName = value ? modelPickerText(value, current?.label).name : \'\'')
+    expect(modelSelectSrc).toContain('<span className="truncate">{currentName}</span>')
+    // 一覧の各行: m.id + m.label → name（✓ の直後）
+    expect(modelSelectSrc).toContain("{selected ? '✓ ' : ''}{modelPickerText(m.id, m.label).name}")
+    // ★ 2026-09-15 検分の砦: label を渡さない形（Claude 一覧で技術 id が見える）へ戻っていない
+    expect(modelSelectSrc).not.toContain('modelPickerText(value).name')
+    expect(modelSelectSrc).not.toContain('modelPickerText(m.id).name')
+    // ★ 変異(a)の砦: 直す前の形（purposeLabel を見える文字に）へ戻っていない
+    expect(modelSelectSrc).not.toContain('purposeLabel(')
+  })
+
+  it('① ModelSelect（描画）: Claude 一覧を渡すとボタンに claudeMode.ts の名前が出て、技術 id は見えない', () => {
+    // 閉じた状態のボタンだけを描画（useEffect は動かない・ホバー無しなのでツールチップも出ない）
+    const html = renderToStaticMarkup(createElement(ModelSelect, { models: CLAUDE_MODELS, value: 'claude-sonnet-5', onChange: () => {} }))
+    expect(html).toContain('<span class="truncate">Claude Sonnet 5（バランス）</span>')
+    expect(html).not.toContain('>claude-sonnet-5<')
+    // ライブ取得で表に無い新モデル（label は API の displayName）も名前で出る
+    const html2 = renderToStaticMarkup(createElement(ModelSelect, { models: [{ id: 'claude-new-model', label: 'Claude New Model' }], value: 'claude-new-model', onChange: () => {} }))
+    expect(html2).toContain('<span class="truncate">Claude New Model</span>')
+    expect(html2).not.toContain('>claude-new-model<')
+    // 対照: さくらの一覧（useModels と同じ形）はこれまでどおり modelLabel の名前
+    const sakura = MODELS.map(m => ({ id: m.id, label: modelLabel(m.id) }))
+    const html3 = renderToStaticMarkup(createElement(ModelSelect, { models: sakura, value: DEFAULT_MODEL, onChange: () => {}, defaultId: DEFAULT_MODEL }))
+    expect(html3).toContain('<span class="truncate">Kimi K2.7 Code（プレビュー）</span>')
+    expect(html3).not.toContain('>preview/Kimi-K2.7-Code<')
+  })
+
+  it('Claude 頭脳モードの経路: ChatPanel / NewProjectModal が useClaudeModels の一覧（label 付き）を ModelSelect へ渡している', () => {
+    expect(chatPanelSrc).toContain('const claudeModels = useClaudeModels(claudeKey)')
+    expect(chatPanelSrc).toContain('models={claudeActive ? claudeModels : models}')
+    expect(newProjectSrc).toContain('const claudeModels = useClaudeModels(claudeKey)')
+    expect(newProjectSrc).toContain("models={brain === 'claude' ? claudeModels : sakuraModels}")
+  })
+
+  it('① ModelSelect.tsx: 説明は pickerTooltip（= modelPickerText(id).description・空なら null）を通し、ボタン直下と一覧枠の最下段の2か所に text-sm で出す', () => {
+    // 判断の純関数（本体は上の pickerTooltip の振る舞いテストで固定）
+    expect(modelSelectSrc).toContain('export function pickerTooltip(id: string): string | null')
+    expect(modelSelectSrc).toContain('const description = modelPickerText(id).description')
+    // ボタンのマウスオーバー → value の説明。開いている間は出さない
+    expect(modelSelectSrc).toContain('const buttonTip = !open && buttonHover && value ? pickerTooltip(value) : null')
+    // 一覧の行のマウスオーバー → その行の説明（行から外れたら hoverId が null → 消える）
+    expect(modelSelectSrc).toContain('const listTip = hoverId ? pickerTooltip(hoverId) : null')
+    expect(modelSelectSrc).toContain('onMouseEnter={() => setHoverId(m.id)}')
+    expect(modelSelectSrc).toContain('onMouseLeave={() => setHoverId(null)}')
+    // ★ 変異(b)の砦: ツールチップ2か所の文字は text-sm（一覧の text-xs より大きい）。当て先は描画行そのもの
+    const tipLines = lines(modelSelectSrc).filter(l => l.includes('{buttonTip}</div>') || l.includes('{listTip}</div>'))
+    expect(tipLines.length).toBe(2)
+    for (const l of tipLines) {
+      expect(l).toContain('text-sm')
+      expect(l).not.toContain('text-xs')
+    }
+    // ボタン直下: 仕様の見た目（bg-elevated border border-line rounded-md px-2 py-1 shadow-lg z-40）・ボタンの直下（top-full）
+    const buttonTipLine = tipLines.find(l => l.includes('{buttonTip}</div>'))!
+    for (const cls of ['top-full', 'z-40', 'bg-elevated', 'border border-line', 'rounded-md', 'px-2 py-1', 'shadow-lg']) expect(buttonTipLine).toContain(cls)
+    // 一覧の説明欄はスクロール領域（overflow-y-auto の div）の外＝枠の最下段。描画順で固定する
+    const scrollAt = modelSelectSrc.indexOf('<div className="max-h-[60vh] overflow-y-auto py-1">')
+    const listTipAt = modelSelectSrc.indexOf('{listTip}</div>')
+    expect(scrollAt).toBeGreaterThan(0)
+    expect(listTipAt).toBeGreaterThan(scrollAt)
+    // 直す前の形（外側の枠自体が overflow-y-auto）へ戻っていない
+    expect(modelSelectSrc).not.toContain('min-w-full max-h-[60vh] overflow-y-auto')
+  })
+
+  it('① ModelSelect.tsx: ネイティブの title に modelLabel( を使っていない（文字の大きさを変えられないため自前ツールチップに統一）', () => {
+    expect(modelSelectSrc).not.toContain('modelLabel(')
+    for (const l of lines(modelSelectSrc)) if (l.includes('title={')) expect(l).not.toContain('modelLabel(')
+    // 直す前の形（技術名＋id を title に）へ戻っていない
+    expect(modelSelectSrc).not.toContain('`${modelLabel(value)}（${value}）`')
+    expect(modelSelectSrc).not.toContain('`${modelLabel(m.id)}（${m.id}）`')
+    expect(modelSelectSrc).not.toContain('title={currentTitle}')
   })
 
   it('チャット欄ヘッダー（ChatApp.tsx＝チャットモード）が ModelSelect に defaultId={DEFAULT_CHAT_MODEL} を渡している', () => {
@@ -205,11 +365,29 @@ describe('配線: モデル選択UI3か所（チャット欄ヘッダー／新�
     expect(newProjectSrc).toContain("defaultId={brain === 'claude' ? undefined : DEFAULT_MODEL}")
   })
 
-  it('③ 設定（SettingsModal.tsx）の「IDEで使うモデル」「チャットで使うモデル」の2つの select が、それぞれ purposeLabel(id) を呼ぶ', () => {
+  it('③ 設定（SettingsModal.tsx）の「IDEで使うモデル」「チャットで使うモデル」の2つの select: option の見える文字が modelPickerText(id).name（＋単価）', () => {
     expect(settingsSrc).toContain('IDEで使うモデル')
     expect(settingsSrc).toContain('チャットで使うモデル')
-    const count = settingsSrc.split('purposeLabel(id)').length - 1
+    // option の本文の形ごと（名前＋単価）。2つの select で2回
+    const count = settingsSrc.split('{modelPickerText(id).name}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）').length - 1
     expect(count).toBe(2)
+    // ★ 変異(a)の砦: 直す前の形（purposeLabel を見える文字に）へ戻っていない
+    expect(settingsSrc).not.toContain('purposeLabel(')
+    // 技術名＋id を option の title に出す旧形も残っていない
+    expect(settingsSrc).not.toContain('title={`${modelLabel(id)}（${id}）`}')
+  })
+
+  it('③ 設定: 各 select の直下に、選択中モデルの description を text-sm で1行出す（title も description）', () => {
+    expect(settingsSrc).toContain('const ideDesc = modelPickerText(ideModel).description')
+    expect(settingsSrc).toContain('const chatDesc = modelPickerText(chatModel).description')
+    expect(settingsSrc).toContain('title={ideDesc || undefined}')
+    expect(settingsSrc).toContain('title={chatDesc || undefined}')
+    // 「直下」を描画順で固定: </select> の次の行が description の <p>（間に他の行が無い）
+    const ls = lines(settingsSrc)
+    const closers = ls.map((l, i) => (l.trim() === '</select>' ? i : -1)).filter(i => i >= 0)
+    expect(closers.length).toBe(2)
+    expect(ls[closers[0] + 1].trim()).toBe('{ideDesc && <p className="mt-1 text-sm text-ink-secondary">{ideDesc}</p>}')
+    expect(ls[closers[1] + 1].trim()).toBe('{chatDesc && <p className="mt-1 text-sm text-ink-secondary">{chatDesc}</p>}')
   })
 
   it('設定の一覧も orderModelsForPicker で既定を先頭に並べている（IDE=DEFAULT_MODEL・チャット=DEFAULT_CHAT_MODEL）', () => {

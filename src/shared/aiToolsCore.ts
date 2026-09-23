@@ -301,22 +301,104 @@ export function formatChatError(message: string, engine: 'sakura' | 'claude' = '
   return `エラー: ${message}\n\n💡 うまくいかないときは: もう一度送信するか、設定（🔑）で${keyHint}を確認してください。`
 }
 
+/**
+ * ツール1件の呼び名。**ツールごとの言葉はここ1か所だけ**（掟10）。
+ *
+ * ── なぜ表にしたか（2026-09-23 実機・Ryosuke）────────────────────────────
+ * 実行中の見出し（`toolStatusLabel`）は「いま何をしているか」しか言えない形だった。
+ * ところが chatTurn.ts は、**実行できなかった操作**も画面に出す必要がある
+ * （実機で「⚠️ 実行できなかった操作があります。」が3回出たが、**何が失敗したのかは
+ * 利用者に分からなかった**）。実行中と終わった後で言葉を作り直すと、2か所で
+ * 別々のツール名を並べることになるので、同じ表から両方を作る。
+ */
+type ToolPhrase = {
+  icon: string
+  /** 実行中の言い方（「…しています」）。見出しに使う。 */
+  doing: string
+  /** 何の操作だったか（名詞）。実行できなかったときに使う。 */
+  noun: string
+  /** 見出しの末尾に足す詳細。無いツールもある（`list_files`）。 */
+  detail?: (args: any) => string
+  /** 「どれに対して」の中身だけ（かぎ括弧などを付けない生の値）。 */
+  target?: (args: any) => string
+}
+
+const TOOL_PHRASES = new Map<string, ToolPhrase>([
+  ['fetch_url', { icon: '🌐', doing: 'ページを取得しています', noun: 'ページの取得', detail: a => `${a.url ?? ''}`, target: a => `${a.url ?? ''}` }],
+  ['search_web', { icon: '🔍', doing: 'Webを検索しています', noun: 'Webの検索', detail: a => `「${a.query ?? ''}」`, target: a => `${a.query ?? ''}` }],
+  ['read_file', { icon: '📄', doing: 'ファイルを読んでいます', noun: 'ファイルの読み取り', detail: a => `${a.path ?? ''}`, target: a => `${a.path ?? ''}` }],
+  ['write_file', { icon: '✏️', doing: 'ファイルを保存しています', noun: 'ファイルの保存', detail: a => `${a.path ?? ''}`, target: a => `${a.path ?? ''}` }],
+  ['edit_file', { icon: '✏️', doing: 'ファイルを編集しています', noun: 'ファイルの編集', detail: a => `${a.path ?? ''}`, target: a => `${a.path ?? ''}` }],
+  ['list_files', { icon: '📁', doing: 'ファイル一覧を確認しています', noun: 'ファイル一覧の確認' }],
+  ['run_command', { icon: '⚡', doing: 'コマンドを実行しています', noun: 'コマンドの実行', detail: a => `${a.command ?? ''}`, target: a => `${a.command ?? ''}` }],
+  ['open_preview', { icon: '🌐', doing: 'プレビューを開いています', noun: 'プレビューを開く操作', detail: a => `${a.path ?? 'index.html'}`, target: a => `${a.path ?? 'index.html'}` }],
+  ['search_docs', { icon: '📚', doing: '資料を検索しています', noun: '資料の検索', detail: a => `「${a.query ?? ''}」`, target: a => `${a.query ?? ''}` }],
+  ['search_in_files', { icon: '🔍', doing: '内容を検索しています', noun: '内容の検索', detail: a => `「${a.query ?? ''}」`, target: a => `${a.query ?? ''}` }],
+])
+
 /** ツール実行中にUIへ表示する短い説明文 */
 export function toolStatusLabel(name: string, argsJson: string): string {
   try {
     const args = JSON.parse(argsJson || '{}')
-    if (name === 'fetch_url') return `🌐 ページを取得しています… ${args.url ?? ''}`
-    if (name === 'search_web') return `🔍 Webを検索しています… 「${args.query ?? ''}」`
-    if (name === 'read_file') return `📄 ファイルを読んでいます… ${args.path ?? ''}`
-    if (name === 'write_file') return `✏️ ファイルを保存しています… ${args.path ?? ''}`
-    if (name === 'edit_file') return `✏️ ファイルを編集しています… ${args.path ?? ''}`
-    if (name === 'list_files') return '📁 ファイル一覧を確認しています…'
-    if (name === 'run_command') return `⚡ コマンドを実行しています… ${args.command ?? ''}`
-    if (name === 'open_preview') return `🌐 プレビューを開いています… ${args.path ?? 'index.html'}`
-    if (name === 'search_docs') return `📚 資料を検索しています… 「${args.query ?? ''}」`
-    if (name === 'search_in_files') return `🔍 内容を検索しています… 「${args.query ?? ''}」`
+    const p = TOOL_PHRASES.get(name)
+    if (p) return `${p.icon} ${p.doing}…${p.detail ? ` ${p.detail(args)}` : ''}`
   } catch { /* 引数が壊れていてもラベルは出す */ }
   return `🔧 ${name} を実行しています…`
+}
+
+/** 操作の対象（ファイル名・コマンド等）をこの長さで切る。長いコマンドで画面が流れないように。 */
+export const TOOL_TARGET_MAX = 40
+
+/**
+ * 「何の操作だったか」の1行（例: `✏️ ファイルの保存（server.js）`）。
+ *
+ * 実行できなかった操作を利用者に伝えるために使う。見出し（`toolStatusLabel`）と
+ * **同じ表・同じ絵文字**から作るので、成功した行と並べても読み方が変わらない。
+ * 対象が長いときは途中で切る（切ったことが分かるよう「…」を付ける）。
+ */
+export function toolActionName(name: string, argsJson: string): string {
+  const p = TOOL_PHRASES.get(name)
+  // 表に無いツール名は**英語の内部名を出さない**（2026-09-23 検分）。
+  // AI が存在しないツール名を呼ぶと toolExecCore が「未対応のツールです」を返し、
+  // その行がここを通って「⚠️ 実行できなかった操作… ・🔧 create_directory」と出ていた。
+  // 仕様は「利用者向けの日本語。内部用語を書かないこと」。claudeMode.ts の
+  // 『🔧 作業しています…』と同じ考えで、日本語の汎用文言へ丸める。
+  if (!p) return '🔧 その他の操作'
+  let target = ''
+  try {
+    const args = JSON.parse(argsJson || '{}')
+    target = p.target ? String(p.target(args) ?? '').trim() : ''
+  } catch { /* 引数が壊れていても、何の操作かは伝える */ }
+  if (target.length > TOOL_TARGET_MAX) target = target.slice(0, TOOL_TARGET_MAX) + '…'
+  return target ? `${p.icon} ${p.noun}（${target}）` : `${p.icon} ${p.noun}`
+}
+
+/** 実行できなかった操作を画面に並べる上限。これを超えたぶんは件数だけ伝える。 */
+export const UNEXECUTED_LIST_MAX = 5
+
+/**
+ * 実行できなかった操作を知らせる文（純関数）。
+ *
+ * ── なぜ名前まで出すか（2026-09-23 実機・Ryosuke）──────────────────────
+ * 以前は「⚠️ 実行できなかった操作があります。」の1行だけだった。実機の画面で3回出たが、
+ * **どの操作が失敗したのか利用者には分からず**、何を直せばよいかも分からなかった。
+ * 成功した操作の見出しと同じ枠に並ぶので、対照して読めるようにする。
+ *
+ * エラーの生の文字列（`EACCES: permission denied` など）は出さない。
+ * 利用者が読むのは「何ができなかったか」であって、英語の内部メッセージではない。
+ *
+ * @param actions `toolActionName` が作った行（失敗した順）
+ */
+export function unexecutedToolsNote(actions: readonly string[]): string {
+  const list = (actions ?? []).map(a => String(a ?? '').trim()).filter(Boolean)
+  if (!list.length) return '⚠️ 実行できなかった操作があります。' // 名前が分からないときも黙らない
+  const shown = list.slice(0, UNEXECUTED_LIST_MAX)
+  const rest = list.length - shown.length
+  return [
+    `⚠️ 実行できなかった操作があります（${list.length}件）。`,
+    ...shown.map(a => `　・${a}`),
+    ...(rest > 0 ? [`　・ほか ${rest}件は省略しました。`] : []),
+  ].join('\n')
 }
 
 // 推論(CoT)を回答へフォールバック表示する際、暴走（同じ段落の無限反復）や過長を抑えて要約する。

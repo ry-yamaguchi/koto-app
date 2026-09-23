@@ -211,7 +211,8 @@ describe('src/main/ipc/fs.ts・shell.ts・web.ts: ハンドラが抽出関数を
   it('shell.ts: runProjectCommand が export され、proc:run ハンドラから呼ばれている（PROC_OUTPUT_MAX/timeout/shell の形ごと）', () => {
     const src = readCode('src/main/ipc/shell.ts')
     expect(src).toContain('const PROC_OUTPUT_MAX = 8000')
-    expect(src).toContain('export function runProjectCommand(')
+    // D-18 C: PATH が決まるのを待つため async になった（`await awaitLoginPath()` を通す）。
+    expect(src).toContain('export async function runProjectCommand(')
     expect(src).toContain('timeout: 60000,')
     expect(src).toContain("shell: process.env.SHELL || '/bin/zsh',")
     expect(src).toContain(

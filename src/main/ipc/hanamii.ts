@@ -10,6 +10,7 @@ import { issueStorageEnvFor, cleanUpOldKeysFor } from '../cloud/storageForTarget
 import type { IpcDeps } from './types'
 import { zipExcludePatterns, BUILD_CONFIG_FILES } from '../../shared/publishExclude'
 import { resolvePublishRoot } from '../publishRootFs'
+import { ensureDataLayer } from '../dataLayer'
 import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs } from '../publishMetaFs'
 
 // ── HANAMII（国産PaaS）連携 ──────────────────────────────────────────
@@ -148,6 +149,10 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       // 送るのは`public/` の中身（無ければプロジェクト直下＝移行前）。
       // HANAMII は **ZIPのルート直下**の言語マニフェストを見るので、根がずれると公開が拒否される。
       const root = resolvePublishRoot(projectDir)
+      // **ZIP に詰める前に、koto-data を置く**（2026-09-23 検分）。AI への指示は
+      // 「Koto が用意します」と約束しているので、公開の直前にも約束を果たす。
+      // **既にあれば触らないので、何度呼んでも安全。**
+      try { ensureDataLayer(root, projectDir) } catch { /* 置けなくても公開は続ける */ }
       const hasManifest = ['package.json', 'requirements.txt', 'pyproject.toml', 'composer.json'].some(f => fs.existsSync(path.join(root, f)))
       const hasIndex = fs.existsSync(path.join(root, 'index.html'))
       const extra = (!hasManifest && hasIndex) ? staticServerFiles(opts.name || 'app') : undefined

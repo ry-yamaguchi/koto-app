@@ -4,7 +4,9 @@ import { join } from 'node:path'
 import { publishExcludedDirNames, MATERIALS_DIR,
   KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES, SECRET_FILE_PATTERNS,
   excludedDirNames, excludedFileNames, isSecretFile, rsyncExcludeArgs, zipExcludePatterns,
-  isPublished, isPublishedTop, BUILD_CONFIG_FILES, servedExcludedFileNames } from '../src/shared/publishExclude'
+  isPublished, isPublishedTop, BUILD_CONFIG_FILES, servedExcludedFileNames,
+  dockerignoreLines, missingDockerignoreLines, kotoIgnoreLines } from '../src/shared/publishExclude'
+import { DATA_LAYER_LOCAL_DIR } from '../src/shared/objectStorage'
 import { PUBLISH_DIR } from '../src/shared/publishRoot'
 import { SKIP_DIRS, isEnvFileName } from '../src/main/github/enumerate'
 
@@ -308,5 +310,154 @@ describe('isPublishedTop: ファイル一覧のいちばん上の階層の振り
 
   it('移行後でも、public/ 以外のディレクトリは公開されない', () => {
     expect(isPublishedTop('assets', true, true)).toBe(false)
+  })
+})
+
+// ── 手元のデータ置き場（.koto-data）2026-09-23 実機・ScheduleAPP ───────────────
+// データの保存（koto-data）へ書き直したアプリが、手元で試すあいだ
+// `public/.koto-data/` へ実データ（dates.json・join.json）を書いていた。
+// このフォルダが除外リストに無かったため、同時に2つのことが起きていた:
+//   ① 利用者が入力したデータが公開先へアップロードされる（公開先はオブジェクト
+//      ストレージを使うので、このフォルダは公開先では読まれない＝出す意味が無い）
+//   ② 中身は実行時にしか読み書きされず、どのコードからも名前で参照されないため
+//      「⑤ 🧹 使われていないファイルの確認」に必ず出る。「素材置き場へ移動」を
+//      押すと**アプリがデータを失う**
+// 根は1つ（除外リストに無い）なので、直しも1つ（KOTO_INTERNAL_DIRS へ入れる）。
+describe('.koto-data（手元のデータ置き場）は、どの公開経路からも外れる', () => {
+  it('名前の正は objectStorage.ts の定数（文字列を2か所に書かない・掟10）', () => {
+    expect(DATA_LAYER_LOCAL_DIR).toBe('.koto-data')
+    expect(KOTO_INTERNAL_DIRS).toContain(DATA_LAYER_LOCAL_DIR)
+  })
+
+  it('★ 手元のデータ置き場は、アプリが実際に書く場所と同じ名前である', () => {
+    // templates/koto-data.js・.cjs（利用者のプロジェクトへ置かれる本物）の LOCAL_DIR と
+    // 食い違うと、除外しているつもりの場所と実際にデータがある場所がずれる。
+    for (const f of ['templates/koto-data.js', 'templates/koto-data.cjs']) {
+      const src = readFileSync(join(__dirname, '..', f), 'utf-8')
+      expect(src, `${f} の保存先が定数と食い違っている`).toContain(`path.join(process.cwd(), '${DATA_LAYER_LOCAL_DIR}')`)
+    }
+  })
+
+  it('★ ディレクトリを歩く経路（Vercel / AppRun）で外れる', () => {
+    expect(publishExcludedDirNames().has(DATA_LAYER_LOCAL_DIR)).toBe(true)
+  })
+
+  it('★ rsync の経路（さくらのレンタルサーバ）で外れる', () => {
+    expect(rsyncExcludeArgs()).toContain(`--exclude='${DATA_LAYER_LOCAL_DIR}'`)
+  })
+
+  it('★ zip の経路（HANAMII）で、配下ごと外れる', () => {
+    expect(zipExcludePatterns()).toContain(`${DATA_LAYER_LOCAL_DIR}/*`)
+  })
+
+  it('★ GitHub保存（バックアップ）にも含めない', () => {
+    // 中身は利用者が入力した実データ（名前・連絡先が入りうる）。private 固定とはいえ、
+    // 頼まれていない場所へデータを流さない。.sakuraide（チャット履歴）と同じ扱い。
+    expect(excludedDirNames().has(DATA_LAYER_LOCAL_DIR)).toBe(true)
+    expect(SKIP_DIRS.has(DATA_LAYER_LOCAL_DIR)).toBe(true) // 実際に使われている一覧（結線）
+  })
+
+  it('★ 一覧の見分け（isPublished）でも「公開されない」と出る', () => {
+    expect(isPublished(DATA_LAYER_LOCAL_DIR, true)).toBe(false)
+  })
+
+  it('★ 似た名前の別物を巻き込まない（フォルダ名の一致であって、前方一致ではない）', () => {
+    // koto-data.js / koto-data.cjs は**アプリが読み込む部品**。外したらアプリが動かない。
+    for (const f of ['koto-data.js', 'koto-data.cjs', '.koto-data.js']) {
+      expect(isPublished(f, false), `${f} が公開物から外れてしまう`).toBe(true)
+      expect(excludedFileNames().has(f)).toBe(false)
+    }
+    // 利用者が自分で作った `koto-data`（ドット無し）・`.koto-database` は利用者のもの
+    for (const d of ['koto-data', '.koto-database', 'koto-data-backup']) {
+      expect(isPublished(d, true), `${d} が勝手に除外されてしまう`).toBe(true)
+      expect(publishExcludedDirNames().has(d)).toBe(false)
+    }
+    expect(rsyncExcludeArgs()).not.toContain("--exclude='koto-data'")
+    expect(zipExcludePatterns()).not.toContain('koto-data/*')
+  })
+})
+
+// ── 公開経路の「結線」（2026-09-23 検分・4回目の穴）───────────────────────────
+// 変換関数（rsyncExcludeArgs など）の戻り値を見るテストは、**実際に公開で使われる行**を
+// 縛らない。2026-08-05 / 08-09 / 08-14 / 09-23 と4回、同じ形で穴が空いている
+// （一元化したモジュールがあるのに、呼ぶ側が部分的に使った）。
+// ここはソースの文字列を読んで、公開する行そのものが一元定義を通っているかを見る。
+describe('公開する行そのものが、一元定義を通っている（結線）', () => {
+  const ROOT = join(__dirname, '..')
+  const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8')
+
+  it('★ レンタルサーバ: 公開Webルート（~/www）へ送る rsync は、すべて rsyncExcludeArgs( を通る', () => {
+    // public/ がある構成（今回の実機）はここを通っていなかった。
+    const src = read('src/renderer/components/PublishModal.tsx')
+    const wwwLines = src.split('\n').filter(l => l.includes('/www/"') && l.includes('rsync'))
+    expect(wwwLines.length, '~/www へ送る rsync が見つからない（判定が空振りしている）').toBeGreaterThan(0)
+    for (const l of wwwLines) {
+      expect(l, `一元定義を通っていない公開行がある: ${l.trim()}`).toContain('rsyncExcludeArgs(')
+    }
+  })
+
+  it('★ レンタルサーバ: 直す前の形（--exclude=\'.DS_Store\' だけを手で書く）へ戻っていない', () => {
+    expect(read('src/renderer/components/PublishModal.tsx'))
+      .not.toContain("rsync -avz --exclude='.DS_Store' public/")
+  })
+
+  it('★ 雛形の deploy.sh も、文字列を手で並べず rsyncExcludeArgs( から書き出す', () => {
+    // 利用者の手元に残るスクリプトなので、Koto 本体だけ直しても既存プロジェクトでは漏れ続ける。
+    const src = read('src/renderer/components/NewProjectModal.tsx')
+    const line = src.split('\n').find(l => l.includes('rsync -avz') && l.includes('${WWW}'))
+    expect(line, 'deploy.sh の rsync 行が見つからない').toBeTruthy()
+    expect(line).toContain('rsyncExcludeArgs()')
+  })
+})
+
+// ── AppRun エキスパート（Docker）＝ Koto がファイルを集めない唯一の経路 ──────────
+// `docker build <公開の根>` がコンテキストを丸ごと読むので、
+// publishExcludedDirNames / zipExcludePatterns / rsyncExcludeArgs のどれも効かない。
+// 除外は .dockerignore でしか効かない（2026-09-23 検分）。
+describe('.koto-data は AppRun エキスパート（Docker）の経路からも外れる', () => {
+  const ROOT = join(__dirname, '..')
+  const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8')
+
+  it('★ .dockerignore へ書く行に、Koto の内部フォルダと手元のデータが入る', () => {
+    const lines = dockerignoreLines()
+    expect(lines).toContain(DATA_LAYER_LOCAL_DIR)
+    for (const d of KOTO_INTERNAL_DIRS) expect(lines).toContain(d)
+    expect(lines).toContain('.env') // 秘密も像に焼き込まない
+  })
+
+  it('★ ビルド設定は外さない（この経路では Dockerfile が入力そのもの）', () => {
+    for (const f of BUILD_CONFIG_FILES) expect(dockerignoreLines()).not.toContain(f)
+  })
+
+  it('★ 足りない行だけを返す（既に書いてあるものは重ねない）', () => {
+    expect(missingDockerignoreLines(dockerignoreLines().join('\n'))).toEqual([])
+    expect(missingDockerignoreLines('')).toContain(DATA_LAYER_LOCAL_DIR)
+    // 末尾の `/` や先頭の `/` は書き方の違いであって、別物ではない
+    expect(missingDockerignoreLines(`${DATA_LAYER_LOCAL_DIR}/`)).not.toContain(DATA_LAYER_LOCAL_DIR)
+    expect(missingDockerignoreLines(`/${DATA_LAYER_LOCAL_DIR}`)).not.toContain(DATA_LAYER_LOCAL_DIR)
+  })
+
+  it('★ 公開の直前に .dockerignore を確かめてからビルドしている（結線）', () => {
+    // 利用者や AI が自分で書いた Dockerfile・.dockerignore のプロジェクトも守る。
+    const src = read('src/main/cloud/imagePublish.ts')
+    expect(src).toContain('missingDockerignoreLines(')
+    const checkAt = src.indexOf('missingDockerignoreLines(')
+    const buildAt = src.indexOf('buildImage(contextAbs, ref)')
+    expect(buildAt, 'docker ビルドの呼び出しが見つからない').toBeGreaterThan(0)
+    expect(checkAt, '確かめる前にビルドしている').toBeLessThan(buildAt)
+  })
+
+  it('★ 新規プロジェクトの .dockerignore も、手打ちせず一元定義から組み立てる', () => {
+    const src = read('src/renderer/components/NewProjectModal.tsx')
+    expect(src).toContain('dockerignoreLines()')
+    // 直す前の形（5行を手で並べる）へ戻っていない
+    expect(src).not.toContain('node_modules\nnpm-debug.log\n.git\n.gitignore\n.DS_Store\nREADME.md')
+  })
+
+  it('★ 新規プロジェクトの .gitignore にも入る（利用者が自分で git push しても漏れない）', () => {
+    expect(kotoIgnoreLines()).toContain(`${DATA_LAYER_LOCAL_DIR}/`)
+    const src = read('src/renderer/components/NewProjectModal.tsx')
+    // PHP 版・Node 版の2つとも
+    expect(src.split('kotoIgnoreLines()').length - 1).toBeGreaterThanOrEqual(2)
   })
 })

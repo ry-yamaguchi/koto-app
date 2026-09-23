@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { planMigrate, alreadyMigrated, needsMigration, shouldOfferMigration, migrateNotice, migrateDone, migrateFailed , skipMigrationForTarget } from '../src/shared/migratePlan'
+import { planMigrate, alreadyMigrated, needsMigration, shouldOfferMigration, migrateNotice, migrateDone, migrateFailed , skipMigrationForTarget, movesWithApp } from '../src/shared/migratePlan'
 import { PUBLISH_DIR, placeInProject, topSegment } from '../src/shared/publishRoot'
 import { isPublished, MATERIALS_DIR } from '../src/shared/publishExclude'
+import { DATA_LAYER_LOCAL_DIR } from '../src/shared/objectStorage'
 
 const P = (name: string, isDir = false) => ({ name, isDir })
 const judge = (name: string, isDir: boolean) => isPublished(name, isDir)
@@ -163,7 +164,7 @@ describe('公開しないプロジェクトでは移行を案内しない', () =
   })
 
   it('公開先が決まっていれば、これまでどおり案内する', () => {
-    for (const t of ['vercel', 'sakura-apprun', 'sakura-rental', 'hanamii']) {
+    for (const t of ['vercel', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental', 'hanamii']) {
       expect(skipMigrationForTarget(t)).toBe(false)
       expect(needsMigration(entries, t)).toBe(true)
     }
@@ -178,5 +179,37 @@ describe('公開しないプロジェクトでは移行を案内しない', () =
 
   it('すでに public があれば、公開先によらず案内しない', () => {
     expect(needsMigration([...entries, { name: 'public', isDir: true }], 'vercel')).toBe(false)
+  })
+})
+
+// ── 「公開しない」と「アプリと一緒に動く」は別の軸（2026-09-23 検分）─────────────
+// `.koto-data` を公開の除外へ入れた結果、**この変更の前は public/ へ一緒に移っていたものが
+// 直下に残る**ようになっていた。アプリが走る根は public/ なので、移行した瞬間に
+// アプリは空の public/.koto-data を見に行く＝利用者から見ると「データが全部消えた」。
+describe('移行: 手元のデータ（.koto-data）はアプリと同じ根へ付いていく', () => {
+  it('★ 移行前に直下にあれば、public/ へ移す側に入る', () => {
+    const { move, keep } = planMigrate([P('index.html'), P(DATA_LAYER_LOCAL_DIR, true)], judge)
+    expect(move, 'アプリのデータが直下に置き去りになる').toContain(DATA_LAYER_LOCAL_DIR)
+    expect(keep).not.toContain(DATA_LAYER_LOCAL_DIR)
+  })
+
+  it('★ それでも「公開されるもの」ではない（公開経路からは外れたまま）', () => {
+    // 移行で付いていくことと、公開物に入ることは別。ここが繋がると実データが公開される。
+    expect(isPublished(DATA_LAYER_LOCAL_DIR, true)).toBe(false)
+  })
+
+  it('★ チャット履歴などの内部フォルダは、これまでどおり直下に残る', () => {
+    const { keep } = planMigrate([P('.sakuraide', true), P('.sakura-cloud', true), P(MATERIALS_DIR, true)], judge)
+    for (const d of ['.sakuraide', '.sakura-cloud', MATERIALS_DIR]) expect(keep).toContain(d)
+  })
+
+  it('★ 同じ名前のファイル（フォルダではない）は巻き込まない', () => {
+    expect(movesWithApp(DATA_LAYER_LOCAL_DIR, false)).toBe(false)
+    expect(movesWithApp('koto-data', true)).toBe(false)
+  })
+
+  it('★ 案内にも「移すもの」として出る（黙って動かさない）', () => {
+    const plan = planMigrate([P(DATA_LAYER_LOCAL_DIR, true)], judge)
+    expect(migrateNotice(plan)).toContain(DATA_LAYER_LOCAL_DIR)
   })
 })
