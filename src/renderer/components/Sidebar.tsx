@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import SakuraLogo from './SakuraLogo'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
 import { clearPublishRecord, readHanamiiProjectId, readPublishTargets } from '../publishRecord'
-import { teardownSupport, manualTeardownGuide } from '../../shared/teardownSupport'
+import { teardownSupport, manualTeardownGuide, teardownScopeNote } from '../../shared/teardownSupport'
 import { REGISTRY_MONTHLY_YEN, registryDeleteDefault, projectDeleteRegistryNote } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 import { useFileDrag } from '../hooks/useFileDrag'
@@ -490,12 +490,29 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
             confirmed: true,
             deleteRegistry: registryDeleteDefault(pendingRegistry),
           })
-        } else {
+        } else if (t === 'sakura-apprun-dedicated') {
+          // ── 専有型（D-3・2026-09-11 Ryosuke 決定）────────────────────────────
+          // 消す範囲は**アプリ（全バージョン）だけ**。クラスタ・ロードバランサは専有型タブの⑥で
+          // 別に破棄する。実際の削除呼び出しは D-4 でつなぐので、ここでは**明示的に失敗に積む**
+          // （failed が空でなければ deleteProject はフォルダを消さない＝記録を失わせない安全側）。
+          // 共用型の cloud.teardown へは流さない: 専有型が同じ IPC で消せるか・置き場を使うかは
+          // ここからは分からず、推測で呼ぶと違うものを消しかねない（掟1）。
+          failed.push(`${PUBLISH_TARGET_LABEL[t]}: 専有型のアプリの破棄には、この版の Koto はまだ対応していません。`
+            + 'さくらのクラウドのコントロールパネルで削除してください')
+          continue
+        } else if (t === 'hanamii') {
           const id = await readHanamiiProjectId(dir)
           if (!id) { failed.push(`${PUBLISH_TARGET_LABEL[t]}: プロジェクトIDの記録がありません`); continue }
           const token = await getHanamiiToken()
           if (!token) { failed.push(`${PUBLISH_TARGET_LABEL[t]}: トークンが未登録です`); continue }
           r = await window.electronAPI.hanamii.teardown(id, token)
+        } else {
+          // teardownSupport が 'supported' と言うのに、ここに破棄の枝が無い種類。
+          // 以前は「sakura-apprun でなければ HANAMII」の二値前提で、新しい種類が HANAMII の
+          // 破棄へ流れて誤った失敗理由（プロジェクトIDが無い）になっていた。黙って通さず失敗に積む
+          // （消せないものを消せたことにしない）。
+          failed.push(`${PUBLISH_TARGET_LABEL[t]}: この画面からは破棄できません`)
+          continue
         }
         if (!r.ok) failed.push(`${PUBLISH_TARGET_LABEL[t]}: ${r.message ?? '原因不明'}`)
         else { try { await clearPublishRecord(dir, t) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ } }
@@ -877,6 +894,13 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                         {PUBLISH_TARGET_LABEL[t]}
                         {teardownSupport(t) === 'manual' && (
                           <span className="text-ink-muted"><br />{manualTeardownGuide(t)}</span>
+                        )}
+                        {/* 専有型は「アプリだけ消える。クラスタ・LB は⑥で別に」を**消す前に**見せる
+                            （消し忘れの課金を止めるのがこの枠の目的）。共用型・HANAMII には出さない:
+                            共用型は置き場の扱いを下の projectDeleteRegistryNote が別に言っており、
+                            scope note の「コンテナレジストリを削除します」と食い違う場合（借り物）がある。 */}
+                        {t === 'sakura-apprun-dedicated' && (
+                          <span className="text-ink-muted"><br />{teardownScopeNote(t)}</span>
                         )}
                       </li>
                     ))}

@@ -16,6 +16,10 @@
 // コメントもそのまま持ってきている（このリポジトリのコメントは「なぜ」を記録した資産）。
 
 import { type ChatEvent } from './chatEvents'
+import { streamTimeoutMessage, compactTimeoutMessage, isSdkTimeoutError, type StreamTimeoutKind } from './chatTimeouts'
+import { isToolError } from './toolExecCore'
+// 実行できなかった操作の呼び名は、実行中の見出しと**同じ表**から作る（掟10）。
+import { toolActionName, unexecutedToolsNote } from './aiToolsCore'
 
 // メッセージの形（renderer の ChatMessage と構造的に同じ。shared から renderer を import しない）
 export type TurnMessage = {
@@ -51,7 +55,15 @@ type ApiMsg = { role: string; content: any; tool_calls?: any[]; tool_call_id?: s
 export type StreamRequest = { apiKey: string; model: string; messages: any[]; maxTokens: number; tools?: any[] }
 // ⚠️ 仕様書は usage を `{...} | undefined` としていたが、実体（global.d.ts の sakura.chatStream /
 // sakura.chat）は `{...} | null` を返す。呼び出し側（window.electronAPI.sakura.*）の実際の型に合わせた。
-export type StreamResult = { usage?: { prompt_tokens?: number; completion_tokens?: number } | null; aborted?: boolean; toolCalls?: any[] | null; reasoningText?: string | null }
+export type StreamResult = {
+  usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+  aborted?: boolean
+  /** 待ち時間の上限（shared/chatTimeouts.ts）で打ち切ったとき。⏹ 停止（aborted）とは**別物**で、
+   *  画面に出す言葉も分ける（押してもいないのに「停止しました」と出さないため・2026-09-23 実機）。 */
+  timedOut?: StreamTimeoutKind
+  toolCalls?: any[] | null
+  reasoningText?: string | null
+}
 
 /** ターンの入力（送信の瞬間に確定する値）。 */
 export type EngineTurnSpec = {
@@ -201,9 +213,25 @@ function isAbortError(e: any): boolean {
   return e?.name === 'APIUserAbortError' || /abort/i.test(e?.message ?? '')
 }
 
+/**
+ * まとめ作りが**待ち時間の上限**で終わったかどうか（2026-09-23 検分の指摘1）。
+ *
+ * ── なぜ要るか ────────────────────────────────────────────────
+ * runSakuraChat に NON_STREAM_TIMEOUT_MS を入れたことで、まとめ作りが初めて時間切れで
+ * 終わるようになった。そのとき投げられるのは openai の APIConnectionTimeoutError で、
+ * message は 'Request timed out.'。上の isAbortError（/abort/i）には当たらないので、
+ * そのまま formatChatError へ落ち、画面に **英語のまま**「⚠️ エラー: Request timed out.」と
+ * 出ていた（手動の【🗂 まとめる】は r.error を直接吹き出しにする）。
+ * 判定は shared/chatTimeouts.ts の一元定義（isSdkTimeoutError）を使う。
+ */
+function isCompactTimeout(e: any): boolean {
+  return isSdkTimeoutError(e)
+}
+
 /** まとめ作りの結果。手動で押したときは**理由も見せる**ので、失敗を文言で返す。
- *  ⏹ 停止（isAbortError）はエラー文言にせず別枠で返す：呼び出し元がターンごと終える判断をする。 */
-type CompactOutcome = { msg: TurnMessage } | { error: string } | { aborted: true }
+ *  ⏹ 停止（isAbortError）はエラー文言にせず別枠で返す：呼び出し元がターンごと終える判断をする。
+ *  時間切れ（timedOut）も別枠：文言は chatTimeouts.ts の一元定義から作る（秒数を手で書かない）。 */
+type CompactOutcome = { msg: TurnMessage } | { error: string } | { aborted: true } | { timedOut: true }
 
 /**
  * 決めた範囲を1件の「まとめ」に畳む（**元の会話は消さない**）。
@@ -252,6 +280,9 @@ export async function runCompact(
     // ⏹ 停止はエラーではない。まとめ以外の失敗（ネットワーク断・空応答等）と区別して返す
     // （呼び出し元の分岐先が全く違う: エラーは「黙って続ける・1度だけ警告」、⏹停止は「ターンごと終える」）。
     if (isAbortError(e)) return { aborted: true }
+    // 時間切れは formatChatError へ渡さない（該当分岐が無く、SDK の 'Request timed out.' が
+    // **英語のまま**画面に出る）。利用者向けの日本語は chatTimeouts.ts の一元定義から作る。
+    if (isCompactTimeout(e)) return { timedOut: true }
     return { error: ports.h.formatChatError(e?.message ?? String(e)) }
   } finally {
     ports.emit({ kind: 'status', value: '' })
@@ -272,6 +303,9 @@ async function compactIfNeeded(
   // 「黙って続ける」対象ではない——利用者が止めた以上、ターンごと終える判断は呼び出し元がする。
   if ('aborted' in r) return r
   if ('msg' in r) return r.msg
+  // 時間切れも「まとめが作れなかった」ぶんは同じ扱い（黙って続ける・1度だけ警告）。
+  // 違うのは理由の文言だけなので、ここで日本語に直してから同じ道へ合流させる。
+  const reason = 'timedOut' in r ? compactTimeoutMessage() : r.error
   // ここへ来た時点で、送る量は予算を超えている＝**古いやり取りの一部が送れていない**。
   // 黙って忘れられるより、やり直せる手があることを1度だけ伝える。
   if (await ports.compactWarnOnce()) {
@@ -279,7 +313,7 @@ async function compactIfNeeded(
       kind: 'append',
       msg: {
         role: 'assistant', toolNote: true,
-        content: `⚠️ ${r.error}
+        content: `⚠️ ${reason}
 そのため、古いやり取りの一部はAIへ送れていません。上の【🗂 まとめる】でやり直せます。`,
       },
     })
@@ -425,7 +459,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         },
       ]
       let acc = ''
-      const { usage: u, aborted } = await ports.chatStream(
+      const { usage: u, aborted, timedOut } = await ports.chatStream(
         { apiKey, model: visionModel, messages: visionMessages, maxTokens: 1024, tools: undefined },
         (delta) => { ports.notifyActivity(); acc += delta },
         (abortFn) => { ports.setAbort(abortFn) },
@@ -433,6 +467,14 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       )
       ports.emit({ kind: 'status', value: '' })
       await ports.usage.record(visionModel, u?.prompt_tokens ?? (await ports.usage.estimate(text)), u?.completion_tokens ?? (await ports.usage.estimate(acc)))
+      // ── 時間切れは黙って終わらせない（2026-09-23 検分の指摘9）──────────────
+      // 直す前は timedOut を受け取っておらず（aborted は false・acc は空）、ここで黙って
+      // null を返していた。利用者には「画像かモデルが悪い」としか見えず、同じ操作を
+      // 繰り返すことになる。⏹ とは違う言葉を、一度だけ吹き出しに残す。
+      if (timedOut) {
+        ports.emit({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: streamTimeoutMessage(timedOut) } })
+        return null
+      }
       if (aborted || !acc.trim()) return null
       return acc
     }
@@ -454,7 +496,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         },
       ]
       let descAcc = ''
-      const { usage: visionUsage, aborted: visionAborted } = await ports.chatStream(
+      const { usage: visionUsage, aborted: visionAborted, timedOut: visionTimedOut } = await ports.chatStream(
         { apiKey, model: visionModel, messages: visionMessages, maxTokens: 1024, tools: undefined },
         (delta) => { ports.notifyActivity(); descAcc += delta }, // 差分は表示しない（statusNoteのみ表示のまま）
         (abortFn) => { ports.setAbort(abortFn) },
@@ -472,6 +514,14 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
         return { endedWithError: false } // ⏹ 停止はエラーではない
       }
+      // ── 時間切れ（2026-09-23 検分の指摘9）────────────────────────────
+      // 直す前はここも timedOut を見ていなかったので、視覚モデルが黙ると下の
+      // 「（画像の読み取りに失敗しました…）」だけが出て、時間切れだと分からなかった。
+      // ⏹ とは違う言葉を出す（押してもいないのに「停止しました」と出さない）。
+      if (visionTimedOut) {
+        ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: streamTimeoutMessage(visionTimedOut) } })
+        return { endedWithError: false } // やり直しの案内で終える（⚠️ を立てるほどではない）
+      }
       if (!descAcc.trim()) {
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: '（画像の読み取りに失敗しました。もう一度お試しください）' } })
         return { endedWithError: false } // やり直しの案内で終える（⚠️ を立てるほどではない）
@@ -488,11 +538,11 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     }
 
     // 1回分のストリーミングを実行して本文を返す（吹き出しを1つ追加して流し込む）
-    const streamOnce = async (apiMessages: ApiMsg[], noTools = false): Promise<{ content: string; aborted?: boolean; toolCalls?: any[] | null; toolFailed?: boolean; hadToolMarkup?: boolean }> => {
+    const streamOnce = async (apiMessages: ApiMsg[], noTools = false): Promise<{ content: string; aborted?: boolean; timedOut?: StreamTimeoutKind; toolCalls?: any[] | null; toolFailed?: boolean; hadToolMarkup?: boolean }> => {
       let acc = ''
       let thinkingAcc = '' // 推論モデルの思考（表示専用。APIにも履歴にも渡さない）
       ports.emit({ kind: 'append', msg: { role: 'assistant', content: '' } })
-      const { usage, aborted, toolCalls, reasoningText } = await ports.chatStream(
+      const { usage, aborted, timedOut, toolCalls, reasoningText } = await ports.chatStream(
         // maxTokens=16384: 推論型モデル（Kimi 等）は推論でトークンを消費してから write_file の引数として
         // ファイル全文を吐くため、4096 だと引数JSONが途中で切れて 400 になっていた（2026-07-14）。
         // 上限を超えるモデルは main 側（sakura.ts）が context-limit を検出して自動で縮めて再試行する。
@@ -514,6 +564,12 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       if (aborted) {
         acc += '\n\n（⏹ 停止しました）'
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc || undefined } })
+      } else if (timedOut) {
+        // 待ち時間の上限で打ち切った（2026-09-23 実機）。**⏹ とは違う言葉**を出す——
+        // 押してもいないのに「停止しました」と出ると、利用者が自分の操作と取り違える。
+        // 黙って終わらせないこと（直す前は、固まったまま画面に何も出なかった）。
+        acc += (acc ? '\n\n' : '') + streamTimeoutMessage(timedOut)
+        ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc || undefined } })
       }
       // 失敗の兆候：本文もツール呼び出しも無い（reasoningフォールバックがaccを書き換える前に判定する）
       const toolFailed = !acc.trim() && !toolCalls?.length
@@ -534,7 +590,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         usage?.prompt_tokens ?? (await ports.usage.estimate(inputText)),
         usage?.completion_tokens ?? (await ports.usage.estimate(acc)),
       )
-      return { content: acc, aborted, toolCalls, toolFailed, hadToolMarkup }
+      return { content: acc, aborted, timedOut, toolCalls, toolFailed, hadToolMarkup }
     }
 
     // ── まとめ等の system 行は、先頭の system に畳み込む（2026-08-31 実機・Ryosuke）────
@@ -617,6 +673,9 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         }
       }
       if (r.aborted) break
+      // 時間切れ（2026-09-23 実機）。理由は streamOnce が既に吹き出しへ書いているので、
+      // ここは**次のラウンドへ進まない**ことだけを引き受ける（再試行で更に待たせない）。
+      if (r.timedOut) break
       // 成功の記録：構造化ツール呼び出しが返った＝ツール対応の決定的証拠。次回以降は迷わず送る。
       if (r.toolCalls?.length) await ports.toolSupport.record(useModel, true)
       // 画像を渡して本文が返った＝**このモデルは画像を受け取れる**という証拠。
@@ -633,6 +692,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         r = await streamOnce(apiMessages, /* noTools */ true)
         ports.emit({ kind: 'status', value: '' })
         if (r.aborted) break
+        if (r.timedOut) break
       }
       if (r.hadToolMarkup) sawToolMarkup = true
       // モデル割り振り：テキスト形式のツールコールを吐いた＝構造化ツールを扱えない
@@ -773,7 +833,9 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         })
         break
       }
-      const note = tcs.map(tc => ports.h.toolStatusLabel(tc.function?.name ?? '', tc.function?.arguments ?? '')).join('\n')
+      // 1件ずつの行を残しておく（実行しなかったぶんを後で取り除くため・2026-09-23 実機）
+      const noteLines = tcs.map(tc => ports.h.toolStatusLabel(tc.function?.name ?? '', tc.function?.arguments ?? ''))
+      const note = noteLines.join('\n')
       // 暴走検出: 同じツールを同じ引数で REPEAT_LIMIT 回連続で呼んだら中断する
       // （周回数の上限まで無駄に回して費用と時間を使うのを防ぐ）。
       const sig = JSON.stringify(tcs.map(tc => [tc.function?.name ?? '', tc.function?.arguments ?? '']))
@@ -808,7 +870,26 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       // 本文が空（ツール呼び出しのみ）の吹き出しは、実行状況の表示に置き換える
       ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: r.content ? r.content + '\n\n' + note : note, toolNote: true } })
       apiMessages = [...apiMessages, { role: 'assistant', content: r.content ?? '', tool_calls: tcs }]
-      for (const tc of tcs) {
+      /** その操作が**成功したか**（1件ずつ・noteLines と同じ並び）。
+       *  ── なぜ「executeTool を呼べたか」ではないか（2026-09-23 検分の指摘3・6）──────
+       *  executeToolCore は失敗を例外にせず `エラー: …` の文字列で返すので、
+       *  「戻ってきた＝実行できた」と記録すると、保存に失敗しても
+       *  「✏️ ファイルを保存しています…」が画面に残る（＝今回の発端と同じ見え方）。 */
+      const ran: boolean[] = tcs.map(() => false)
+      let deniedAny = false
+      /** 実行できなかった操作の呼び名（失敗した順）。**何が失敗したのかを画面に出すため**
+       *  （2026-09-23 実機: 「⚠️ 実行できなかった操作があります。」が3回出たが、
+       *  どの操作なのか利用者には分からなかった）。 */
+      const failedActions: string[] = []
+      let stoppedInTools = false
+      for (let i = 0; i < tcs.length; i++) {
+        const tc = tcs[i]
+        // ── ラウンドの途中でも ⏹ を見る（2026-09-23 実機）────────────────
+        // ラッチを読むのはラウンドの冒頭1か所だけだったので、1ラウンドに複数のツールが
+        // 積まれていると**全部終わるまで ⏹ が効かなかった**。ここで残りを実行せずに抜ける。
+        // **既に実行したぶんの結果（apiMessages の role:'tool'）は捨てない**——捨てると
+        // tool_calls に対応する結果が欠けた履歴になり、AIへの送信が壊れる。
+        if (ports.stopRequested?.()) { stoppedInTools = true; break }
         const toolName = tc.function?.name ?? ''
         const toolArgs = tc.function?.arguments ?? ''
         // 実行前の承認フック（ChatPanel の write_file/run_command 確認UIなど）。
@@ -816,13 +897,51 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         if (ports.approveToolCall) {
           const denial = await ports.approveToolCall(toolName, toolArgs, turnOpts as { projectDir?: string | null; writeRoot?: string | null })
           if (denial !== null) {
+            // ── ⏹ による取り消しは「拒否」ではない（2026-09-23 検分の指摘2・12）────────
+            // main の cancelApprovalsForTurn は保留を **resolve(false)＝拒否**として解くので、
+            // 利用者が「許可しない」を押していなくても拒否の文言が返ってくる。そのまま
+            // deniedAny を立てると、⏹ を押しただけなのに画面には
+            // 「⛔ 許可されなかったため、実行していない操作があります。」が出る。
+            // しかもそれがラウンド最後の1件だと stoppedInTools が立たず ⛔ だけが残り、
+            // ⏹ の文言は次ラウンド冒頭から遅れて出るので、順序も読み取れなかった。
+            // 停止ラッチが立っているなら ⏹ の道筋へ寄せる（ループの冒頭の停止と同じ扱い）。
+            if (ports.stopRequested?.()) { stoppedInTools = true; break }
+            deniedAny = true
             apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: denial })
             continue
           }
         }
         const result = await ports.executeTool(toolName, toolArgs, { ...turnOpts, search, snapshotId, snapshotLabel })
-        if ((ports.h.writingTools as readonly string[]).includes(toolName)) wroteFiles = true
+        // 失敗（`エラー: …`）は「実行できなかった」として扱う。判定は shared/toolExecCore.ts の
+        // 一元定義（isToolError）を使う——文字列の形を2か所で決めない（掟10）。
+        const ok = !isToolError(result)
+        ran[i] = ok
+        // 失敗の中身（`エラー: …` の生文字列）は画面に出さない。利用者に要るのは
+        // **どの操作ができなかったか**（toolActionName が作る利用者向けの呼び名）。
+        if (!ok) failedActions.push(toolActionName(toolName, toolArgs))
+        // 失敗した書き込みで wroteFiles を立てない（立てると「ファイルは変更されていません」の
+        // 警告まで抑止され、何も変わっていないのに変わったように見える）。
+        if (ok && (ports.h.writingTools as readonly string[]).includes(toolName)) wroteFiles = true
         apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: result })
+      }
+      // ── 実行しなかった操作の見出しを、画面に残さない（2026-09-23 実機・Ryosuke）──────
+      // 「ファイルの確認しか実施していないのに『✏️ ファイルを保存しています…』が2件出ていた」。
+      // この見出しは**実行前**に出しており、承認も実行もまだ済んでいない。拒否された・
+      // ⏹ で止めた操作の行が残ると、起きていないことが起きたように読めてしまう。
+      // 「実行できなかった」（＝ツールが `エラー: …` を返した）ぶんも、同じくここで取り除く。
+      if (ran.some(done => !done)) {
+        const body = [
+          ...noteLines.filter((_, i) => ran[i]),
+          ...(deniedAny ? ['⛔ 許可されなかったため、実行していない操作があります。'] : []),
+          // 「⛔ 許可されなかった」「⏹ 停止した」との書き分けは保つ（別の出来事である）。
+          ...(failedActions.length ? [unexecutedToolsNote(failedActions)] : []),
+          ...(stoppedInTools ? ['⏹ 停止したため、残りの操作は実行していません。'] : []),
+        ].join('\n')
+        ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: r.content ? r.content + '\n\n' + body : body, toolNote: true } })
+      }
+      if (stoppedInTools) {
+        ports.emit({ kind: 'append', msg: { role: 'assistant', content: '（⏹ 停止しました）' } })
+        break
       }
       if (!(await ports.usage.check()).allowed) break // 上限到達時はループを止める
     }

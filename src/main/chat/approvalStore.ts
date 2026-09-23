@@ -86,6 +86,33 @@ export function answerApproval(id: string, approved: boolean): boolean {
   return true
 }
 
+/**
+ * そのターンの承認待ちを**取り消す**（⏹ 停止の道筋・2026-09-23 実機）。
+ *
+ * ── なぜ要るか ─────────────────────────────────────────────────────
+ * requestApproval は上のとおり**タイムアウトしない**（答えが来るまで駐機）。これは窓を閉じても
+ * ターンが死なないための設計だが、`chatTurn:abort` が承認の帳簿に一切触れていなかったため、
+ * 「✋ 毎回確認」にしていると **⏹ を押しても永久に固まる**道筋になっていた。
+ * ここが ⏹ からの唯一の出口になる（新しい IPC は増やさない——`chatTurn:abort` から呼ぶ）。
+ *
+ * 取り消しは **「拒否」として解決する**（false）。⏹ は「やめる」の意思表示であって、
+ * 承認したことにしてはいけない——勝手に書き込みが走ると利用者の資産が壊れる。
+ *
+ * @returns 取り消した件数（0 なら帳簿に何も無かった＝何も起きない）。
+ */
+export function cancelApprovalsForTurn(turnId: string): number {
+  let cancelled = 0
+  // 走査中に delete するので、いったん配列へ写してから回す。
+  for (const [id, entry] of Array.from(pending.entries())) {
+    if (entry.turnId !== turnId) continue // 掟11: 他のターン（他の環境）の保留には触らない
+    pending.delete(id)
+    entry.resolve(false)
+    cancelled += 1
+  }
+  if (cancelled) notify() // 一覧から消えたことを push（窓が生きていればダイアログが閉じる）
+  return cancelled
+}
+
 /** 現在の承認待ち一覧（画面が（再）起動したときの取りこぼし回収に使う・approval:list の実体）。 */
 export function listPending(): PendingApproval[] {
   return snapshot()

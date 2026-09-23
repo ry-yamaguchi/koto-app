@@ -35,6 +35,8 @@ import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { turnKey, updateTurn } from '../chatTurnRegistry'
 import { useConfirm } from '../useConfirm'
 import { runClearConversation } from '../confirmedActions'
+import { chatStatusLine } from '../../shared/chatStatusLine'
+import { streamTimeoutMessage } from '../../shared/chatTimeouts'
 
 type Message = ChatMessage
 
@@ -856,7 +858,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       // （元の実装は素の setMessages で at を一切付けていなかった。「振る舞いを変えない」を
       //  優先し、stamp を経由しない replaceAll で同じ中身をそのまま送る＝仕様書で迷った点）。
       applyOp({ kind: 'replaceAll', messages: [{ role: 'user', content: kickoff, hidden: true }, { role: 'assistant', content: '' }] })
-      const { usage } = await window.electronAPI.sakura.chatStream(
+      // timedOut も受け取る（2026-09-23 検分の指摘5・15）。runSakuraStream は時間切れのとき
+      // **throw せず** `{ usage: null, timedOut }` を return するので、下の catch には入らない。
+      // 受け取らないと、AI Engine が黙ったときに**空の吹き出しのまま何も書かれずに**終わる
+      // （直す前は最悪30分固まったのち catch で説明が出ていたので、説明が消えるのは後退）。
+      const { usage, timedOut } = await window.electronAPI.sakura.chatStream(
         {
           apiKey,
           model,
@@ -869,6 +875,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         },
         (abort) => { greetAbortRef.current = abort },
       )
+      if (timedOut) {
+        // 黙って終わらせない。文言は shared/chatTimeouts.ts の一元定義（秒数は定数から作られる）に、
+        // あいさつ用の案内（catch と同じ固定文）を添える。
+        applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: `${streamTimeoutMessage(timedOut)}\n\n（あいさつを準備できませんでした。つくりたいものを教えてください。）` }] })
+      }
       recordUsage(apiKey, model, usage?.prompt_tokens ?? estimateTokens(sys + kickoff), usage?.completion_tokens ?? estimateTokens(text))
     } catch (e: any) {
       // 所見22: あいさつ失敗は致命的でないため、生エラーは出さず穏当な固定文言にフォールバックする。
@@ -1165,7 +1176,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
             <div className="bg-elevated border border-line rounded-2xl rounded-tl-md px-3 py-2">
               <div className="flex gap-2 items-center h-4">
                 <span className="text-[11px] text-ink-secondary">
-                  {statusNote || (stalled ? '⏳ 時間がかかっています…（⏹ で停止できます）' : '考えています…')}
+                  {/* 判断は shared/chatStatusLine.ts の純関数1か所（掟10）。ChatApp.tsx と同じものを呼ぶ。 */}
+                  {chatStatusLine(statusNote, stalled)}
                   {/* 経過秒数（待つか止めるかの判断材料。推論モデルは沈黙が長い） */}
                   {elapsedSec >= 3 && <span className="ml-1 tabular-nums text-ink-muted">{elapsedSec}秒</span>}
                 </span>

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { TurnStartPayload, TurnAsk, TurnEvent, TurnAnswer } from '../shared/chatTurnRpc'
 import type { ApprunDedicatedClusterSpec } from './cloud/apprunDedicatedApply'
+import type { AppPublishInput } from './ipc/apprunDedicated'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   fs: {
@@ -144,7 +145,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   storage: {
     /** プロジェクトのデータの扱いを調べる（③公開で保存場所の要否を出す）。 */
     scan: (projectDir: string) => ipcRenderer.invoke('storage:scan', projectDir),
-    /** koto-data.js が要るなら置く（既にあれば触らない）。 */
+    /** koto-data（.js / .cjs）が要るなら置く（既にあれば触らない）。 */
     ensureLayer: (projectDir: string) => ipcRenderer.invoke('storage:ensureLayer', projectDir),
     /** 保存場所の状況（設定画面用）。費用の判断材料をまとめて返す。 */
     status: () => ipcRenderer.invoke('storage:status'),
@@ -415,6 +416,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     telemetryStatus: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:telemetryStatus', auth),
     enableTelemetry: (auth: { token: string; secret: string }, kind: 'logs' | 'metrics', opts?: { consented?: boolean }) =>
       ipcRenderer.invoke('apprunDedicated:enableTelemetry', auth, kind, opts),
+    // ── ⑧「アプリを公開する」（D-4）────────────────────────────────────────
+    // 前提（env.json の有無・Let's Encrypt のメールの有無・記録）を1回で返す。GETのみ・何も作らない。
+    appStatus: (projectDir: string, auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:appStatus', projectDir, auth),
+    // ⑧「🔄 IP を取り直す」（D-5）: LB ノードの一覧を1回引き、DNS の A レコードに向ける素の IP を記録して返す。
+    // GET と記録の書き込みだけ・何も作らない（公開で IP が空のまま終わったときの取り直し口）。
+    lbAddresses: (projectDir: string, auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:lbAddresses', projectDir, auth),
+    // ⑧「🔎 公開先と https を確かめる」（O-1）: ドメインの向き先・証明書・ブラウザで開けるか・
+    // アプリの応答の4つを1回だけ調べて、画面に出す行を返す。読むだけ・何も作らない・鍵は要らない。
+    checkSite: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:checkSite', projectDir),
+    // 記録済みのクラスタの上にアプリを公開する（イメージの組み立て→レジストリへ push→アプリ/バージョン作成）。
+    // opts.confirmed は「確認ダイアログを通ったか」の印（create/teardown と同じ約束）。
+    publishApp: (projectDir: string, auth: { token: string; secret: string }, input: AppPublishInput, opts?: { confirmed?: boolean }) =>
+      ipcRenderer.invoke('apprunDedicated:publishApp', projectDir, auth, input, opts),
+    // 📡 一覧の「破棄」から、専有型のアプリ（全バージョン）だけを消す（LB/ASG/クラスタには触らない）。
+    teardownApp: (projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }) =>
+      ipcRenderer.invoke('apprunDedicated:teardownApp', projectDir, auth, opts),
+    // 公開の進捗メッセージ購読（onTeardownProgress と同じ形）。戻り値の関数を呼ぶと購読解除。
+    onPublishProgress: (cb: (msg: string) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, msg: string) => cb(msg)
+      ipcRenderer.on('apprunDedicated:publish-progress', handler)
+      return () => ipcRenderer.removeListener('apprunDedicated:publish-progress', handler)
+    },
   },
   registry: {
     // コンテナレジストリ認証情報（レジストリ名・ユーザー名・パスワード）の保存・状態・読戻し・削除。

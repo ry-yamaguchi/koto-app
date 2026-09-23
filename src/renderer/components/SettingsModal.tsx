@@ -5,7 +5,7 @@ import {
   getSettings, setSettings, getUsage, getUsageByModel, resetThisMonth, budgetStatus, PRICING,
   modelLabel, getDefaultModel, setDefaultModel, priceFor,
   getUsageForKey, effectiveLimit, getKeyLimit,
-  purposeLabel, orderModelsForPicker, DEFAULT_MODEL, DEFAULT_CHAT_MODEL,
+  modelPickerText, orderModelsForPicker, DEFAULT_MODEL, DEFAULT_CHAT_MODEL,
   type BudgetSettings, type MonthUsage, type ModelUsageRow,
 } from '../usage'
 import { useModels } from '../hooks/useModels'
@@ -33,6 +33,10 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
   const [byModel, setByModel] = useState<ModelUsageRow[]>(getUsageByModel())
   const [ideModel, setIdeModel] = useState<string>(getDefaultModel('ide'))
   const [chatModel, setChatModel] = useState<string>(getDefaultModel('chat'))
+  // 【UX-A2・2026-09-15】選択中モデルの目的の説明。ネイティブ <select> はマウスオーバーの文字を
+  // 大きくできないので、select の直下に text-sm で1行出す（未知の id は空＝出さない）。
+  const ideDesc = modelPickerText(ideModel).description
+  const chatDesc = modelPickerText(chatModel).description
   // 上限金額は空欄=無制限として扱う
   const [limitText, setLimitText] = useState<string>(
     settings.monthlyLimitYen == null ? '' : String(settings.monthlyLimitYen)
@@ -369,17 +373,19 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
             <select
               value={ideModel}
               onChange={e => { setDefaultModel(e.target.value, 'ide'); setIdeModel(e.target.value) }}
+              title={ideDesc || undefined}
               className="mt-1.5 w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-sm text-ink outline-none focus:border-sakura cursor-pointer transition-colors"
             >
               {orderModelsForPicker(models.map(m => m.id), DEFAULT_MODEL).map(id => {
                 const p = priceFor(id)
                 return (
-                  <option key={id} value={id} title={`${modelLabel(id)}（${id}）`}>
-                    {purposeLabel(id)}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
+                  <option key={id} value={id}>
+                    {modelPickerText(id).name}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
                   </option>
                 )
               })}
             </select>
+            {ideDesc && <p className="mt-1 text-sm text-ink-secondary">{ideDesc}</p>}
             <p className="mt-1 text-[11px] text-ink-muted">
               コード作成・プロジェクト生成・公開前チェックで使います。
               Claude で動かしているときは、チャット画面右上のモデル選択で選びます。
@@ -392,17 +398,19 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
             <select
               value={chatModel}
               onChange={e => { setDefaultModel(e.target.value, 'chat'); setChatModel(e.target.value) }}
+              title={chatDesc || undefined}
               className="mt-1.5 w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-sm text-ink outline-none focus:border-sakura cursor-pointer transition-colors"
             >
               {orderModelsForPicker(models.map(m => m.id), DEFAULT_CHAT_MODEL).map(id => {
                 const p = priceFor(id)
                 return (
-                  <option key={id} value={id} title={`${modelLabel(id)}（${id}）`}>
-                    {purposeLabel(id)}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
+                  <option key={id} value={id}>
+                    {modelPickerText(id).name}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
                   </option>
                 )
               })}
             </select>
+            {chatDesc && <p className="mt-1 text-sm text-ink-secondary">{chatDesc}</p>}
             <p className="mt-1 text-[11px] text-ink-muted">
               チャットモードの会話で使います。会話ごとに個別変更もできます。
               Claude で動かしているときは、チャット画面右上のモデル選択で選びます。

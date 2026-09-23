@@ -16,6 +16,17 @@ import {
   deleteLoadBalancer,
   listAsg,
   listLoadBalancers,
+  listApplications,
+  createApplication,
+  getApplication,
+  updateApplication,
+  deleteApplication,
+  listApplicationVersions,
+  createApplicationVersion,
+  deleteApplicationVersion,
+  listWorkerNodes,
+  listLoadBalancerNodes,
+  patchClusterLoadBalancer,
   APPRUN_DEDICATED_API_BASE,
 } from '../src/main/cloud/apprunDedicated'
 
@@ -219,7 +230,7 @@ describe('段階②で追加: クラスタの作成・実在確認・削除', ()
         res.end(JSON.stringify({ cluster: { clusterID: 'cluster-1' } }))
       })
     })
-    const body = { name: 'myapp', ports: [{ port: 80, protocol: 'http' }], servicePrincipalID: '113800956789' }
+    const body = { name: 'myapp', ports: [{ port: 80, protocol: 'http' }], servicePrincipalID: '111111111111' }
     const r = await createCluster(AUTH, body, baseUrl)
     expect(seenMethod).toBe('POST')
     expect(seenUrl).toBe('/clusters')
@@ -341,5 +352,189 @@ describe('段階②で追加: 作成系も失敗時は生の応答本文を mess
     const r = await createCluster(AUTH, { name: '' }, baseUrl)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.message).toBe(body)
+  })
+})
+
+// ── D-1（土台）で追加: アプリケーション・バージョン・ノードのアドレス取得（roadmap #23 ⑤・12-1） ──
+// 段階②と同じ方針: 実APIは叩かず、ローカルの本物の http サーバに対して確かめる。
+
+describe('D-1: listApplications は clusterID と maxItems=20 が必ず付く', () => {
+  it('リクエストURLに ?clusterID=…&maxItems=20 が含まれる', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ applications: [] }))
+    })
+    const r = await listApplications(AUTH, 'cluster-1', undefined, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(seenUrl).toBe('/applications?clusterID=cluster-1&maxItems=20')
+  })
+})
+
+describe('D-1: アプリケーションの作成・取得・切替・削除', () => {
+  it('createApplication: POST /applications（成功応答は200・{application:{applicationID}}が原本の形）', async () => {
+    let seenMethod = ''; let seenUrl = ''; let seenBody = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      let raw = ''
+      req.on('data', c => { raw += c })
+      req.on('end', () => {
+        seenBody = raw
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ application: { applicationID: 'app-1' } }))
+      })
+    })
+    const body = { name: 'myapp', clusterID: 'cluster-1' }
+    const r = await createApplication(AUTH, body, baseUrl)
+    expect(seenMethod).toBe('POST')
+    expect(seenUrl).toBe('/applications')
+    expect(JSON.parse(seenBody)).toEqual(body)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.data).toEqual({ application: { applicationID: 'app-1' } })
+  })
+
+  it('getApplication: GET /applications/{id}', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ application: { applicationID: 'app-1' } }))
+    })
+    await getApplication(AUTH, 'app-1', baseUrl)
+    expect(seenUrl).toBe('/applications/app-1')
+  })
+
+  it('updateApplication: PUT /applications/{id}（activeVersion の切替。本文をJSONで送り204を受ける）', async () => {
+    let seenMethod = ''; let seenUrl = ''; let seenBody = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      let raw = ''
+      req.on('data', c => { raw += c })
+      req.on('end', () => { seenBody = raw; res.writeHead(204); res.end() })
+    })
+    const r = await updateApplication(AUTH, 'app-1', { activeVersion: 3 }, baseUrl)
+    expect(seenMethod).toBe('PUT')
+    expect(seenUrl).toBe('/applications/app-1')
+    expect(JSON.parse(seenBody)).toEqual({ activeVersion: 3 })
+    expect(r.ok).toBe(true)
+  })
+
+  it('deleteApplication: DELETE /applications/{id}（本文なし・204）', async () => {
+    let seenMethod = ''; let seenUrl = ''; let hadBody = false
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      req.on('data', () => { hadBody = true })
+      req.on('end', () => { res.writeHead(204); res.end() })
+    })
+    const r = await deleteApplication(AUTH, 'app-1', baseUrl)
+    expect(seenMethod).toBe('DELETE')
+    expect(seenUrl).toBe('/applications/app-1')
+    expect(hadBody).toBe(false)
+    expect(r.ok).toBe(true)
+  })
+})
+
+describe('D-1: バージョンの一覧・作成・削除', () => {
+  it('listApplicationVersions: maxItems の既定値が付く（原本 min1/max30/既定30。20は範囲内）', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"versions":[]}')
+    })
+    await listApplicationVersions(AUTH, 'app-1', undefined, baseUrl)
+    expect(seenUrl).toBe('/applications/app-1/versions?maxItems=20')
+  })
+
+  it('createApplicationVersion: POST /applications/{id}/versions（成功応答は200・{applicationVersion:{version}}が原本の形）', async () => {
+    let seenMethod = ''; let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ applicationVersion: { version: 1 } }))
+    })
+    const r = await createApplicationVersion(AUTH, 'app-1', { image: 'nginx:latest' }, baseUrl)
+    expect(seenMethod).toBe('POST')
+    expect(seenUrl).toBe('/applications/app-1/versions')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.data).toEqual({ applicationVersion: { version: 1 } })
+  })
+
+  it('deleteApplicationVersion: DELETE /applications/{id}/versions/{version}', async () => {
+    let seenMethod = ''; let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      res.writeHead(204); res.end()
+    })
+    await deleteApplicationVersion(AUTH, 'app-1', 3, baseUrl)
+    expect(seenMethod).toBe('DELETE')
+    expect(seenUrl).toBe('/applications/app-1/versions/3')
+  })
+})
+
+describe('D-1: ワーカノード・ロードバランサノードのアドレス一覧', () => {
+  it('listWorkerNodes: maxItems の既定値が付く（原本 min2/max100。20は範囲内）', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"workerNodes":[]}')
+    })
+    await listWorkerNodes(AUTH, 'cluster-1', 'asg-1', undefined, baseUrl)
+    expect(seenUrl).toBe('/clusters/cluster-1/asg/asg-1/worker_nodes?maxItems=20')
+  })
+
+  it('listLoadBalancerNodes: maxItems の既定値が付く（原本 min2/max30。20は範囲内）', async () => {
+    let seenUrl = ''
+    const baseUrl = await listen((req, res) => {
+      seenUrl = req.url ?? ''
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"loadBalancerNodes":[]}')
+    })
+    await listLoadBalancerNodes(AUTH, 'cluster-1', 'asg-1', 'lb-1', undefined, baseUrl)
+    expect(seenUrl).toBe('/clusters/cluster-1/asg/asg-1/load_balancers/lb-1/load_balancer_nodes?maxItems=20')
+  })
+})
+
+describe('D-1: patchClusterLoadBalancer（Let\'s Encrypt メールアドレスの設定）', () => {
+  it('PATCH /clusters/{id}/load_balancer に本文をJSONで送り204を受ける', async () => {
+    let seenMethod = ''; let seenUrl = ''; let seenBody = ''
+    const baseUrl = await listen((req, res) => {
+      seenMethod = req.method ?? ''; seenUrl = req.url ?? ''
+      let raw = ''
+      req.on('data', c => { raw += c })
+      req.on('end', () => { seenBody = raw; res.writeHead(204); res.end() })
+    })
+    const r = await patchClusterLoadBalancer(AUTH, 'cluster-1', { letsEncryptEmail: 'owner@example.com' }, baseUrl)
+    expect(seenMethod).toBe('PATCH')
+    expect(seenUrl).toBe('/clusters/cluster-1/load_balancer')
+    expect(JSON.parse(seenBody)).toEqual({ letsEncryptEmail: 'owner@example.com' })
+    expect(r.ok).toBe(true)
+  })
+})
+
+describe('段階③⑤ D-1: Content-Type（原本 v1.4.0 で PATCH …/load_balancer だけ merge-patch+json）', () => {
+  it('patchClusterLoadBalancer は application/merge-patch+json で送る', async () => {
+    let seenType = ''
+    let seenMethod = ''
+    const baseUrl = await listen((req, res) => {
+      seenType = String(req.headers['content-type'] ?? '')
+      seenMethod = req.method ?? ''
+      res.writeHead(204)
+      res.end()
+    })
+    const r = await patchClusterLoadBalancer(AUTH, 'c1', { letsEncryptEmail: 'a@example.com' }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(seenMethod).toBe('PATCH')
+    expect(seenType).toBe('application/merge-patch+json')
+  })
+
+  it('updateApplication（PUT）は従来どおり application/json', async () => {
+    let seenType = ''
+    const baseUrl = await listen((req, res) => {
+      seenType = String(req.headers['content-type'] ?? '')
+      res.writeHead(204)
+      res.end()
+    })
+    const r = await updateApplication(AUTH, 'app1', { activeVersion: 2 }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(seenType).toBe('application/json')
   })
 })

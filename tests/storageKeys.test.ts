@@ -136,4 +136,27 @@ describe('公開先ごとに鍵を分ける', () => {
     ]
     expect(permissionsToCleanUp({ all, projectName: 'data-test', keepId: '4', target: 'hanamii' })).toEqual(['3'])
   })
+
+  // ── 名前がぶつからないこと（2026-09-23 検分の指摘9）──────────────────────
+  // プロジェクト名は小文字英数字とハイフン（spec.ts の NAME_PATTERN）なので、
+  // `myapp-apprun-dedicated` という名前のプロジェクトを作れてしまう。ハイフンで公開先を
+  // 継ぎ足していると、その人が**共用型**へ公開した鍵の名前が、別プロジェクト `myapp` を
+  // **専有型**へ公開したときの名前と完全一致し、片づけが他人の現役の鍵を消す（掟11）。
+  it('★ 専有型の名前は、共用型の名前とぶつからない（プロジェクト名に現れない区切りを使う）', () => {
+    expect(permissionNameFor('myapp', 'apprun-dedicated')).toBe('koto-myapp_apprun-dedicated')
+    // 共用型は `koto-<名前>` のまま。名前にアンダースコアは入らないので、両者は一致しない
+    expect(permissionNameFor('myapp-apprun-dedicated', 'apprun')).toBe('koto-myapp-apprun-dedicated')
+    expect(permissionNameFor('myapp', 'apprun-dedicated')).not.toBe(permissionNameFor('myapp-apprun-dedicated', 'apprun'))
+  })
+
+  it('★ `myapp` の専有型の片づけが、`myapp-apprun-dedicated`（共用型）の現役の鍵を消さない', () => {
+    const all = [
+      { id: '1', displayName: 'koto-myapp-apprun-dedicated' }, // 別プロジェクトの共用型・**現役**
+      { id: '2', displayName: 'koto-myapp_apprun-dedicated' }, // myapp の専有型・古い鍵
+      { id: '3', displayName: 'koto-myapp_apprun-dedicated' }, // myapp の専有型・現役
+    ]
+    expect(permissionsToCleanUp({ all, projectName: 'myapp', keepId: '3', target: 'apprun-dedicated' })).toEqual(['2'])
+    // 逆も同じ: 別プロジェクトの共用型の片づけは、専有型の鍵に触れない
+    expect(permissionsToCleanUp({ all, projectName: 'myapp-apprun-dedicated', keepId: 'now', target: 'apprun' })).toEqual(['1'])
+  })
 })

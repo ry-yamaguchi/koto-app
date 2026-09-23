@@ -3,8 +3,10 @@
 // 段階①（下調べ画面）は GET のみだったが、段階②（作る）でクラスタ・ASG・ロードバランサの
 // 作成/削除が要るため、この段階から POST/DELETE を持つ（tests/apprunDedicated.test.ts の
 // 「破壊系メソッドが無いこと」固定は段階①専用の一時的なもので、段階②実装に伴い外した）。
-// **アプリケーション/バージョン（roadmap #23 の⑤独自ドメイン相当）はこの段では実装しない**
-// （docs/apprun-dedicated-plan.md 5-3/5-4 は対象外。取扱う資源はクラスタ・ASG・LBの3つのみ）。
+// **アプリケーション/バージョン（roadmap #23 の⑤独自ドメイン相当）は D-1（土台）から実装する**
+// （docs/apprun-dedicated-plan.md 5-3/5-4/12-1〜12-3。ここで足すのはクライアント（薄いHTTP
+// メソッド）のみ——「いつ・どんな順で呼ぶか」（publishAppFlow 相当）と UI・IPC・preload は
+// D-1 の対象外で、後続の別スペックで足す）。
 //
 // 認証: 既存の さくらのクラウドAPIキー（アクセストークン＝ユーザ名／トークンシークレット＝パスワード）を
 // そのまま BasicAuth で使う（docs/apprun-dedicated-plan.md 8. で実測済み。専有型専用のキーは無い）。
@@ -93,6 +95,7 @@ function formatError(status: number, bodyText: string): string {
  */
 async function requestJson<T>(
   auth: CloudCredentials, method: string, pathname: string, body: unknown | undefined, baseUrl?: string,
+  contentType: string = 'application/json',
 ): Promise<ApprunDedicatedResult<T>> {
   let res: Response
   let text: string
@@ -102,7 +105,7 @@ async function requestJson<T>(
       headers: {
         Authorization: basicAuthHeader(auth),
         Accept: 'application/json',
-        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(body !== undefined ? { 'Content-Type': contentType } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(20000),
@@ -231,4 +234,158 @@ export async function listLoadBalancers(
   return getJson(
     auth, `/clusters/${encodeURIComponent(clusterID)}/asg/${encodeURIComponent(asgID)}/load_balancers?maxItems=${maxItems}`, baseUrl,
   )
+}
+
+// ── ここから D-1（土台）で追加。アプリケーション・バージョン・ノードのアドレス取得（12-1〜12-3） ──
+// 応答の形の解釈は src/shared/apprunDedicatedShapes.ts に集約する（掟10・5-8の事故を受けた方針。
+// このファイルでは fetch を呼ぶだけで、data の中身は一切見ない）。
+// 「いつ・どんな順で呼ぶか」（publishAppFlow 相当）はここには置かない——薄いHTTPクライアントに
+// 徹する方針は段階②（クラスタ・ASG・LB）と同じ（ファイル冒頭コメント参照）。
+
+/**
+ * GET /applications?clusterID=…&maxItems= — 指定クラスタのアプリケーション一覧（12-1）。
+ * 原本（OpenAPI v1.4.0）: maxItems は必須・min1・max30・既定20（この段の他の一覧系と同じく
+ * LIST_MAX_ITEMS=20 を使う。範囲内であることは D-1 の実装時に原本で確認済み）。
+ * clusterID は原本では任意パラメータだが、Koto はプロジェクト＝1クラスタの範囲でしか使わないため
+ * ここでは必須引数にする（呼び出し側に「どのクラスタか」を必ず持たせる）。
+ */
+export async function listApplications(
+  auth: CloudCredentials, clusterID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return getJson(auth, `/applications?clusterID=${encodeURIComponent(clusterID)}&maxItems=${maxItems}`, baseUrl)
+}
+
+/**
+ * POST /applications — アプリケーションを作成する（12-1・原本 CreateApplicationRequest）。
+ * 必須は name・clusterID のみ。成功応答は200・`{ application: { applicationID } }`
+ * （src/shared/apprunDedicatedShapes.ts の readApplicationId で読む）。
+ */
+export async function createApplication(auth: CloudCredentials, body: unknown, baseUrl?: string): Promise<ApprunDedicatedResult> {
+  return requestJson(auth, 'POST', '/applications', body, baseUrl)
+}
+
+/**
+ * GET /applications/{applicationID} — アプリケーションの詳細を取得する。
+ * 成功応答は `{ application: { applicationID, name, clusterID, activeVersion, desiredCount,
+ * enoughResources: { cpu, memory }, … } }`（readApplication で読む）。
+ */
+export async function getApplication(auth: CloudCredentials, applicationID: string, baseUrl?: string): Promise<ApprunDedicatedResult> {
+  return getJson(auth, `/applications/${encodeURIComponent(applicationID)}`, baseUrl)
+}
+
+/**
+ * GET /applications/{applicationID}/containers — いま動いているコンテナの様子（D-8・2026-09-16）。
+ *
+ * 成功応答は `{ nodes: [ { containersStats: [ { state, status, image } ], desired, … } ] }`
+ * （原本 ListApplicationContainersResponse・ApplicationCurrentContainer。読むのは
+ * src/shared/apprunDedicatedShapes.ts の readContainerStates）。
+ *
+ * **maxItems は付けない。** 5-1 の表（原本 v1.4.0 から抽出した「maxItems が必須の一覧系**8本**」）に
+ * このエンドポイントは含まれていない。原本そのものはこの環境からは引けない（ネットワークへ出ない）ため、
+ * **必須かどうかは未確認**——掟1のとおり、確かめられない数値を推測で付けることはしない
+ * （付けて 400 になるより、付けずに 400 になったほうが原因が分かる。呼び出し側は失敗しても
+ * warnings に1行残して続行する）。
+ *
+ * **GET のみ。** ここでは何も作らない・消さない。
+ */
+export async function listApplicationContainers(
+  auth: CloudCredentials, applicationID: string, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return getJson(auth, `/applications/${encodeURIComponent(applicationID)}/containers`, baseUrl)
+}
+
+/**
+ * PUT /applications/{applicationID} — `activeVersion` を切り替える（原本 UpdateApplicationRequest。
+ * activeVersion は必須だが null 可＝有効なバージョン無しにできる）。204・本文なし。
+ */
+export async function updateApplication(
+  auth: CloudCredentials, applicationID: string, body: unknown, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return requestJson(auth, 'PUT', `/applications/${encodeURIComponent(applicationID)}`, body, baseUrl)
+}
+
+/**
+ * DELETE /applications/{applicationID} — アプリケーションを削除する。204。
+ * 原本の前提条件（アクティブなバージョンが無いこと・どのワーカノードでもコンテナが動いていないこと）
+ * を満たしているかはここでは確認しない（呼び出し側＝段取りの責務。5-7）。
+ */
+export async function deleteApplication(auth: CloudCredentials, applicationID: string, baseUrl?: string): Promise<ApprunDedicatedResult> {
+  return requestJson(auth, 'DELETE', `/applications/${encodeURIComponent(applicationID)}`, undefined, baseUrl)
+}
+
+/**
+ * GET /applications/{applicationID}/versions?maxItems= — バージョン一覧。
+ * 原本: maxItems は必須・min1・max30・既定30（既定はエンドポイントごとに違うが、この段の
+ * 他の一覧系と同じく LIST_MAX_ITEMS=20 を渡す。20 は min1〜max30 の範囲内）。
+ */
+export async function listApplicationVersions(
+  auth: CloudCredentials, applicationID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return getJson(auth, `/applications/${encodeURIComponent(applicationID)}/versions?maxItems=${maxItems}`, baseUrl)
+}
+
+/**
+ * POST /applications/{applicationID}/versions — バージョンを作成する（実質の本体・5-4）。
+ * 本文の組み立ては src/shared/apprunDedicatedApp.ts の buildVersionCreateBody（原本の必須9キー）。
+ * 成功応答は200・`{ applicationVersion: { version } }`（readVersionNumber で読む）。
+ */
+export async function createApplicationVersion(
+  auth: CloudCredentials, applicationID: string, body: unknown, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return requestJson(auth, 'POST', `/applications/${encodeURIComponent(applicationID)}/versions`, body, baseUrl)
+}
+
+/**
+ * DELETE /applications/{applicationID}/versions/{version} — 古いバージョンを消す（世代管理・12-3）。
+ * 204。どのバージョンを消すかは src/shared/apprunDedicatedApp.ts の versionsToDelete が決める。
+ */
+export async function deleteApplicationVersion(
+  auth: CloudCredentials, applicationID: string, version: number, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return requestJson(
+    auth, 'DELETE', `/applications/${encodeURIComponent(applicationID)}/versions/${encodeURIComponent(String(version))}`, undefined, baseUrl,
+  )
+}
+
+/**
+ * GET /clusters/{clusterID}/asg/{asgID}/worker_nodes?maxItems= — ワーカノードのアドレスを見るための一覧。
+ * 原本: maxItems は必須・**min2**・max100・既定20（LIST_MAX_ITEMS=20 は範囲内）。
+ */
+export async function listWorkerNodes(
+  auth: CloudCredentials, clusterID: string, asgID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return getJson(
+    auth, `/clusters/${encodeURIComponent(clusterID)}/asg/${encodeURIComponent(asgID)}/worker_nodes?maxItems=${maxItems}`, baseUrl,
+  )
+}
+
+/**
+ * GET …/load_balancers/{loadBalancerID}/load_balancer_nodes?maxItems= — LBノードのアドレス
+ * （DNSのAレコードに書く値。12-1）。原本: maxItems は必須・**min2**・max30・既定20（範囲内）。
+ */
+export async function listLoadBalancerNodes(
+  auth: CloudCredentials, clusterID: string, asgID: string, lbID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  return getJson(
+    auth,
+    `/clusters/${encodeURIComponent(clusterID)}/asg/${encodeURIComponent(asgID)}/load_balancers/${encodeURIComponent(lbID)}/load_balancer_nodes?maxItems=${maxItems}`,
+    baseUrl,
+  )
+}
+
+/**
+ * PATCH /clusters/{clusterID}/load_balancer — Let's Encrypt のメールアドレスを設定する（12-1）。
+ * 本文の組み立ては buildLetsEncryptPatchBody（`{ letsEncryptEmail }` のみ・`ports` は送らない）。204。
+ *
+ * ⚠️ 原本はこのエンドポイントだけ `Content-Type: application/merge-patch+json`
+ * （RFC7396 merge patch）を要求する。fetch は requestJson 1本に閉じ込める方針（ファイル冒頭）の
+ * ため、ここも他のメソッドと同じ `application/json` で送る——**この食い違いは未確認**
+ * （サーバがどちらの Content-Type でも同じに扱うか、実 API で確かめていない。報告に明記）。
+ */
+export async function patchClusterLoadBalancer(
+  auth: CloudCredentials, clusterID: string, body: unknown, baseUrl?: string,
+): Promise<ApprunDedicatedResult> {
+  // 原本（v1.4.0）でこのエンドポイントだけ requestBody が application/merge-patch+json（RFC 7396）。
+  // ports を省けば無変更（merge patch の意味）——実 API では未確認。
+  return requestJson(auth, 'PATCH', `/clusters/${encodeURIComponent(clusterID)}/load_balancer`, body, baseUrl, 'application/merge-patch+json')
 }

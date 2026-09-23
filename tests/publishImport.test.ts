@@ -446,3 +446,22 @@ describe('印の配線', () => {
     expect(s).toContain('onCreated(selected.managedBy.dir)')
   })
 })
+
+// D-3（専有型 sakura-apprun-dedicated）の後始末（2026-09-15）: 取り込み（④ 公開済みのものを
+// 引き取る）は Vercel と AppRun 共用型の API 応答形にだけ合わせて実装しており、専有型は
+// 対応していない（APIの形も未確認・掟1）。誤って対応範囲に見せない・PublishTargetKind を
+// 安易に import して型だけ広げない（広げても実体の取得ロジックが無ければ動かないものが増える）
+// ことを、ソース走査で固定する。
+describe('取り込みの対象は vercel / sakura-apprun のまま（専有型は対象に含めない）', () => {
+  const s = fs.readFileSync(path.join(__dirname, '..', 'src/shared/publishImport.ts'), 'utf-8')
+
+  it('ImportCandidate.target の型はリテラルのまま（PublishTargetKind を import していない）', () => {
+    expect(s).toContain("target: 'vercel' | 'sakura-apprun'")
+    expect(s).not.toContain('PublishTargetKind')
+    expect(s).not.toMatch(/from\s+'\.\.\/renderer\/publishStatus'/)
+  })
+
+  it("専有型の文字列 'sakura-apprun-dedicated' が無い", () => {
+    expect(s).not.toContain('sakura-apprun-dedicated')
+  })
+})

@@ -17,6 +17,8 @@
 //
 // このモジュールは fs/electron/DOM に依存しない純粋な定義のみ（renderer からも main からも使える）。
 
+import { DATA_LAYER_FILES } from './objectStorage'
+
 /**
  * 参照が無くても要る慣習ファイル（常に「使用中」扱いにする）。
  *
@@ -40,6 +42,23 @@
 // ランタイム別の守り（NODE_ALWAYS_USED_RE 等）ではなく共通側で守る。
 export const ALWAYS_USED_RE =
   /(^|\/)(index\.html|404\.html|favicon\.ico|robots\.txt|sitemap\.xml|manifest\.json|apple-touch-icon[^/]*|og[^/]*\.(?:png|jpe?g)|CNAME|\.htaccess|nginx\.conf|Dockerfile|\.dockerignore|ads\.txt|app-ads\.txt|google[0-9a-z]+\.html|BingSiteAuth\.xml|README\.md|LICENSE|CHANGELOG\.md)$|(^|\/)\.well-known\//i
+
+/**
+ * Koto 自身が置く「データの保存」の部品（`koto-data.js` / `koto-data.cjs`）。
+ *
+ * ── なぜ常に使用中にするか（2026-09-23 検分）──────────────────────────
+ * Koto はこれを**AI が書き直す前に**置く。置いた直後は参照が0件なので、
+ * 出現判定では**必ず未使用に出る**。UnusedFilesSection は③公開の同じ画面に
+ * 並んでおり、利用者が「移動する」を押すと素材（公開しません）へ移る。
+ * その直後に AI が読み込む形へ書き直すと、読み込み先が消えた状態になり、
+ * ②試す・③公開が `Cannot find module './koto-data.cjs'` で落ちる。
+ *
+ * **名前の正は objectStorage.ts の `DATA_LAYER_FILES`**（二重定義を作らない・掟10）。
+ */
+export const DATA_LAYER_ALWAYS_USED_RE = new RegExp(
+  `(^|/)(${DATA_LAYER_FILES.map(f => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`,
+  'i',
+)
 
 /** 実行環境の種類。'dynamic' はプログラムが動くもの（Node/PHP 等）。 */
 export type UnusedRuntime = 'static' | 'dynamic'
@@ -146,6 +165,9 @@ export function findUnusedFiles(
   const unused: string[] = []
   for (const rel of files) {
     if (ALWAYS_USED_RE.test(rel)) continue
+    // Koto が置いた「データの保存」の部品。**AI が書き直す前は参照が0件**なので、
+    // ここで守らないと置いた直後に片づけの対象へ出る（2026-09-23 検分）
+    if (DATA_LAYER_ALWAYS_USED_RE.test(rel)) continue
     if (opts?.extraAlwaysUsed?.test(rel)) continue
     const forms = referenceForms(rel)
     const used = texts.some(t => t.rel !== rel && forms.some(f => t.lower.includes(f)))

@@ -12,7 +12,7 @@ import {
   sanitizeProjectName,
 } from '../vercel/client'
 import type { IpcDeps } from './types'
-import { scanDataUsage } from '../dataLayer'
+import { scanDataUsage, ensureDataLayer } from '../dataLayer'
 import { judgeVercelFit } from '../../shared/vercelFit'
 import { summarizePreflight, sortChecks } from '../../shared/preflight'
 import { resolvePublishRoot } from '../publishRootFs'
@@ -101,6 +101,11 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       const teamId = opts?.teamId?.trim() || undefined
       const client = new VercelClient({ token, teamId })
       const name = sanitizeProjectName(opts.name || path.basename(projectDir))
+
+      // **集める前に koto-data を置く**（2026-09-23 検分）。AI への指示
+      // （aiContext.ts の DATA_RULE）は「Koto が用意します」と約束しているので、
+      // 公開の直前にも約束を果たす。**既にあれば触らないので、何度呼んでも安全。**
+      try { ensureDataLayer(resolvePublishRoot(projectDir), projectDir) } catch { /* 置けなくても公開は続ける */ }
 
       progress('ファイルを収集しています…')
       const files = collectDeployFiles(resolvePublishRoot(projectDir))

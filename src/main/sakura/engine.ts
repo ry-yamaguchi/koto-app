@@ -14,6 +14,16 @@ import OpenAI from 'openai'
 import { newStreamState, applyChunk, finishedToolCalls } from '../../shared/streamDelta'
 import { pickContent } from '../../shared/chatContent'
 import { foldSystemForModel } from '../../shared/modelInfo'
+import { forEachChunkWithIdleTimeout } from '../../shared/streamIdle'
+import {
+  STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_RETRIES,
+  NON_STREAM_TIMEOUT_MS, NON_STREAM_MAX_RETRIES, isSdkTimeoutError, type StreamTimeoutKind,
+} from '../../shared/chatTimeouts'
+
+// 時間切れ（openai SDK の APIConnectionTimeoutError）の判定は shared/chatTimeouts.ts に
+// 一本化した（掟10）。かつてここにあった `/timed out/i` は message 全体を見ていたため、
+// **さくら側や gateway が即座に返す 504 の本文**まで「自分の時間切れ」に化けさせ、
+// 本当の原因（サーバ側の異常）を隠していた（2026-09-23 検分の指摘8・14）。
 
 const SAKURA_BASE_URL = 'https://api.ai.sakura.ad.jp/v1'
 // C3: delegate_implementation（claude/tools.ts）からも同じクライアント生成を再利用する。
@@ -59,7 +69,13 @@ export function safeMaxTokens(errMsg: string, requested: number): number | null 
  * （本番の呼び出し側は渡さないので挙動は変わらない。runSakuraStream の args.baseURL と同じ形）。
  */
 export async function runSakuraChat(
-  args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; temperature?: number; baseURL?: string },
+  args: {
+    apiKey: string; model: string; messages: any[]; maxTokens?: number; temperature?: number; baseURL?: string
+    /** 待ち時間の上限（ミリ秒）。既定は NON_STREAM_TIMEOUT_MS。
+     *  baseURL と同じくテストのための差し込み口で、本番の呼び出し側は渡さない
+     *  （渡さなければ shared/chatTimeouts.ts の一元定義がそのまま効く）。 */
+    timeoutMs?: number
+  },
   cbs?: { onAbortReady?: (abort: () => void) => void },
 ): Promise<{ content: string; usage: any | null }> {
   const client = sakuraClient(args.apiKey, args.baseURL)
@@ -69,9 +85,11 @@ export async function runSakuraChat(
   cbs?.onAbortReady?.(() => controller.abort())
   // system が捨てられるモデルは user への畳み込みを通す（roadmap #21・foldSystemForModel のコメント参照）
   const messages = foldSystemForModel(args.model, args.messages)
+  // 生成が全部終わるまでが1回の通信なので、上限はストリーミングより長い
+  // （短くすると正常な 🗂 まとめ作りが時間切れで壊れる。shared/chatTimeouts.ts のコメント参照）。
   const mk = (maxTokens: number) => client.chat.completions.create(
     { model: args.model, messages: messages as any, max_tokens: maxTokens, temperature: args.temperature },
-    { signal: controller.signal },
+    { signal: controller.signal, timeout: args.timeoutMs ?? NON_STREAM_TIMEOUT_MS, maxRetries: NON_STREAM_MAX_RETRIES },
   )
   let res
   try {
@@ -104,15 +122,29 @@ export async function runSakuraChat(
  * 既存のcatch（例外を投げる版のSDKへの対応）は**そのまま残す**（両対応）。
  */
 export async function runSakuraStream(
-  args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; tools?: any[]; baseURL?: string },
+  args: {
+    apiKey: string; model: string; messages: any[]; maxTokens?: number; tools?: any[]; baseURL?: string
+    /** 「返事の先頭が届くまで」の上限（ミリ秒）。既定は STREAM_FIRST_CHUNK_TIMEOUT_MS。 */
+    timeoutMs?: number
+    /** 「返事が始まったあとの無音」の上限（ミリ秒）。既定は STREAM_IDLE_TIMEOUT_MS。
+     *  timeoutMs と同じく、baseURL と並ぶテストのための差し込み口（本番は渡さない）。 */
+    idleMs?: number
+  },
   cbs: { onDelta(d: string): void; onReasoning(d: string): void; onAbortReady(abort: () => void): void },
-): Promise<{ usage: any; aborted?: boolean; toolCalls?: any[] | null; reasoningText?: string | null }> {
+): Promise<{ usage: any; aborted?: boolean; timedOut?: StreamTimeoutKind; toolCalls?: any[] | null; reasoningText?: string | null }> {
   let abortRequested = false
   try {
     const client = sakuraClient(args.apiKey, args.baseURL)
     const requested = args.maxTokens ?? 4096
     // system が捨てられるモデルは user への畳み込みを通す（roadmap #21・foldSystemForModel のコメント参照）
     const messages = foldSystemForModel(args.model, args.messages)
+    // ── ⏹ を「通信を投げる前」から効かせる（2026-09-23 実機・Ryosuke）─────────
+    // かつてはリクエストを投げた**あと**に onAbortReady を呼んでいたため、
+    // 「返事が始まる前」に ⏹ を押すと止める相手がまだ存在せず、turnRunner の e.abort?.() は
+    // **1つ前のラウンドの、すでに終わった通信**の中断関数を呼ぶだけで空振りしていた。
+    // 同じ問題は runSakuraChat で一度直されていたのに、チャット本体へ適用されないまま残っていた。
+    // ここは runSakuraChat と同じ形にする——先に中断関数を渡し、リクエストにも signal を通す。
+    const controller = new AbortController()
     const mk = (maxTokens: number) => client.chat.completions.create({
       model: args.model,
       messages: messages as any,
@@ -124,8 +156,24 @@ export async function runSakuraStream(
       stream: true,
       stream_options: { include_usage: true },
       ...(args.tools?.length ? { tools: args.tools } : {}),
+    }, {
+      signal: controller.signal,
+      // ここで計るのは「**応答ヘッダ**が返るまで」。SDK 4.104.0 はヘッダが返った時点で
+      // この時計を解除する（core.js の fetchWithTimeout・382-401行の
+      // `.finally(() => clearTimeout(timeout))`。undici の fetch はヘッダで解決する）。
+      // つまり**1文字も届かなくても**ヘッダさえ来れば解除されるので、
+      // そのあとの無音は下の forEachChunkWithIdleTimeout が見る。
+      timeout: args.timeoutMs ?? STREAM_FIRST_CHUNK_TIMEOUT_MS,
+      maxRetries: STREAM_MAX_RETRIES,
     })
-    let stream
+    let stream: Awaited<ReturnType<typeof mk>> | null = null
+    // ★ リクエストを始める**前**に中断関数を渡す（応答待ちの間に ⏹ が押されても中断できるように）
+    cbs.onAbortReady(() => {
+      abortRequested = true
+      controller.abort() // 返事が始まる前でも、ここで通信ごと切れる
+      // ストリームが既に始まっていれば、そちらも明示的に止める（従来の形・両方効かせる）
+      try { stream?.controller.abort() } catch { /* 既に閉じている場合は無視 */ }
+    })
     try {
       stream = await mk(requested)
     } catch (err: any) {
@@ -134,7 +182,6 @@ export async function runSakuraStream(
       if (safe == null) throw err
       stream = await mk(safe)
     }
-    cbs.onAbortReady(() => { abortRequested = true; stream.controller.abort() })
     let usage: any = null
     // 推論型モデル（gpt-oss / Kimi 等）は tools 指定時に回答が reasoning_content/reasoning へ流れて
     // 本文が空になることがある。完了時のフォールバック用に蓄積しつつ、**到着した分はそのつど呼び出し側へも流す**
@@ -143,11 +190,33 @@ export async function runSakuraStream(
     // デルタの組み立ては純粋ロジックへ切り出してある（src/shared/streamDelta.ts）。
     // ここは「届いた差分を呼び出し側へ流す」ことだけを行う。
     const state = newStreamState()
-    for await (const chunk of stream) {
-      const { contentDelta, reasoningDelta } = applyChunk(state, chunk)
-      if (contentDelta) cbs.onDelta(contentDelta)
-      if (reasoningDelta) cbs.onReasoning(reasoningDelta)
-    }
+    // ── 返事が始まったあとの無音にも上限を設ける（2026-09-23 実機）────────────
+    // SDK の timeout は**応答ヘッダが返った時点で**解除されるので、ここから先は誰も見張っていない
+    // （streaming.js に setTimeout は0件）。素の for-await では「ヘッダだけ返して黙られる」と
+    // 永久に戻らない。見張りは shared/streamIdle.ts（偽の時計で試験できるように分けてある）。
+    // **推論（reasoning）のチャンクも「届いている」と数える**——中身を見ずにチャンク単位で
+    // 数えるので、本文が出るまで数十秒沈黙する推論モデルを誤って切らない。
+    const { timedOut, received } = await forEachChunkWithIdleTimeout(
+      stream,
+      (chunk) => {
+        const { contentDelta, reasoningDelta } = applyChunk(state, chunk)
+        if (contentDelta) cbs.onDelta(contentDelta)
+        if (reasoningDelta) cbs.onReasoning(reasoningDelta)
+      },
+      {
+        idleMs: args.idleMs ?? STREAM_IDLE_TIMEOUT_MS,
+        onTimeout: () => { try { stream?.controller.abort() } catch { /* 既に閉じている場合は無視 */ } },
+      },
+    )
+    // ⏹ で押されたわけではないので aborted にはしない（押してもいないのに
+    // 「停止しました」と出ると利用者が混乱する）。専用の印で呼び出し側へ伝える。
+    //
+    // ── 1件も届かないまま打ち切ったら 'first'（2026-09-23 検分の指摘11）────────
+    // SDK の時計はヘッダ到着で解除されるので、実機の症状「ヘッダだけ返して黙る」では
+    // STREAM_FIRST_CHUNK_TIMEOUT_MS は一度も発火せず、必ずこちらへ落ちる。
+    // 件数を見ずに 'idle' と決めていたため、1文字も届いていないのに
+    // 「途中までの内容はそのまま残しています」と表示されていた（残っているものが無い）。
+    if (timedOut && !abortRequested) return { usage: null, timedOut: received === 0 ? 'first' : 'idle' }
     usage = state.usage
     // SDK が例外を投げずに静かに終わる版への対応（2026-08-28 実測・openai 4.104.0）。
     // for-await が正常終了しても、abort を要求していたなら「止めた」ことにする
@@ -161,9 +230,12 @@ export async function runSakuraStream(
     }
   } catch (err: any) {
     // ユーザーによる停止はエラーではなく正常終了として扱う
-    if (err?.name === 'APIUserAbortError' || /abort/i.test(err?.message ?? '')) {
+    if (abortRequested || err?.name === 'APIUserAbortError' || /abort/i.test(err?.message ?? '')) {
       return { usage: null, aborted: true }
     }
+    // 返事が始まる前の時間切れ（SDK の APIConnectionTimeoutError）。
+    // ⏹ とは別物なので、別の印で返して別の言葉を出させる。
+    if (isSdkTimeoutError(err)) return { usage: null, timedOut: 'first' }
     throw err
   }
 }

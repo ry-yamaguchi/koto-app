@@ -52,6 +52,8 @@ export function modelLabel(id: string): string {
 // 3か所にそのまま並んでいたが、初めての利用者には読めない。**表示の元はここ1つ**に持ち、
 // 各画面は purposeLabel() を呼ぶだけにする（複製しない・掟10）。技術名は title（ツールチップ）
 // へ回す（modelLabel(id)＋id）。
+// → 2026-09-15 Ryosuke さん実機判断で**表示を逆に**: 見える文字はモデル名（modelLabel）、目的の
+//   説明はマウスオーバー。各画面は下の modelPickerText() を呼ぶ（purposeLabel は説明の元として残す）。
 //
 // 根拠: README「モデルごとの対応状況」表（2026-09-10 実測）と、上の MODELS/VISION_MODELS の
 // 各コメント（実測の tools/vision 対応）。**表に無い新しいモデルは載せない**
@@ -77,6 +79,25 @@ export function purposeLabel(id: string): string {
   const p = MODEL_PURPOSE[id]
   if (!p) return modelLabel(id)
   return p.note ? `${p.purpose}（${p.note}）` : p.purpose
+}
+
+/**
+ * 【UX-A2・2026-09-15 Ryosuke さん実機判断】モデル選択UIに出す文字（表示の元はここ1つ・掟10）。
+ * v0.6.18 は目的ラベルを見せて技術名を title へ回していたが、実機で「IDE もチャットもモデル名を
+ * 表示してほしい。目的の説明はマウスオーバーに」と判断が逆になった。
+ *   name        … 見える文字＝モデル名。呼び出し側の一覧が持つ label（ModelOption.label）を渡せばそれ、
+ *                 無ければ modelLabel（さくらの表。未知の id は id そのまま）。
+ *                 **Claude 頭脳モードの一覧**（claudeMode.ts の『Claude Sonnet 5（バランス）』等・ライブ取得の
+ *                 displayName）は さくらの表に無いので、label を渡さないと技術 id が見えてしまう
+ *                 （v0.6.18 の purposeLabel→modelLabel→id から続いていた劣化。2026-09-15 検分で発覚）。
+ *                 さくらの一覧（useModels）の label は modelLabel(id) そのものなので、渡しても結果は同じ。
+ *                 空文字の label は無いものとして扱う（空の名前を出さない）。
+ *   description … マウスオーバー（自前ツールチップ／設定は select 直下）に出す目的の説明。
+ *                 MODEL_PURPOSE に無い未知の id は **空**（推測しない。name と同じ文を二重に出さない）。
+ *                 label を渡しても description は id で引く（Claude の label の括弧書きを流用しない）。
+ */
+export function modelPickerText(id: string, label?: string): { name: string; description: string } {
+  return { name: label || modelLabel(id), description: MODEL_PURPOSE[id] ? purposeLabel(id) : '' }
 }
 
 /**

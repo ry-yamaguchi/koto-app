@@ -240,6 +240,29 @@ export function hasProjectRouting(data: unknown, publisherCode: string, variant:
   )
 }
 
+// ── F-1 B-1（2026-09-16）: ⑦「ログ・メトリクス」を1行に畳んでよいか ──────────────────
+// Ryosuke さんの指摘: ①〜⑧はクラスタごとの手順だが⑦だけプロジェクト全体の設定で、番号の
+// 並びに混ざると「クラスタを作るのに必要な手順」に見える。繋がったあとは✅が6行、常に出ており、
+// 隣の⑥の赤い警告の重みを薄める。**すべて繋がっていて、かつ行動（ボタン）が要らないときだけ**
+// 1行に畳む。1つでも未接続がある、またはボタン（route/ask）が出るときは、行動が要るので
+// 畳まない（隠さない）。
+
+/**
+ * ⑦の一覧を `<details>`（閉じた状態）に畳んでよいか（純関数）。
+ * `variants` が空（一覧をまだ取れていない）のときは畳まない（呼び出し側は元々この関数を
+ * telemetryVariants/telemetryActions が両方揃っているときにしか呼ばない想定だが、
+ * 安全側に倒す）。
+ */
+export function shouldCollapseTelemetrySection(
+  variants: { routed: boolean }[],
+  actions: { kind: TelemetryAction['kind'] }[],
+): boolean {
+  if (variants.length === 0) return false
+  const allRouted = variants.every(v => v.routed)
+  const anyActionShown = actions.some(a => a.kind !== 'none')
+  return allRouted && !anyActionShown
+}
+
 // ── 後方互換の薄い皮（`kind: 'logs'` 固定）─────────────────────────────
 // 既存の呼び出し側（src/main/ipc/cloud.ts の旧経路・tests）を壊さないために残す。
 // 中身は上の一般化した関数を呼ぶだけで、判断を複製しない（掟10）。

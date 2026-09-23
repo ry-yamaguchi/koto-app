@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE,
+  withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE, PUBLISH_TARGET_LABEL,
+  type PublishTargetKind,
   buildPublishStatusRows,
   isStale,
   formatPublishedAt,
@@ -10,6 +11,9 @@ import {
   detectInterruptedPublish,
   latestPublishedTarget,
 } from '../src/renderer/publishStatus'
+
+// 公開先の種類の全一覧（5種類）。種類を足したら、ここと PUBLISH_TARGET_LABEL / CONSOLE の両方を更新する。
+const ALL_KINDS: PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental']
 
 describe('buildPublishStatusRows', () => {
   it('returns empty array when publish is undefined/null', () => {
@@ -287,8 +291,11 @@ describe('withoutPublishTarget（破棄したら記録からも消す）', () =>
 // **そこから先へ行く道が無かった**（破棄も、記録を消すこともできない）。
 // 課金される公開先で同じことが起きると、放置がそのままお金になる。
 describe('キーが無くても片づけられる', () => {
-  it('公開先ごとに管理画面のURLがある', () => {
-    for (const t of ['hanamii', 'vercel', 'sakura-apprun', 'sakura-rental'] as const) {
+  it('★ 5種類すべてにラベルと管理画面のURLがある（種類を足して書き忘れない）', () => {
+    expect(Object.keys(PUBLISH_TARGET_LABEL).sort()).toEqual([...ALL_KINDS].sort())
+    expect(Object.keys(PUBLISH_TARGET_CONSOLE).sort()).toEqual([...ALL_KINDS].sort())
+    for (const t of ALL_KINDS) {
+      expect(PUBLISH_TARGET_LABEL[t].length).toBeGreaterThan(0)
       expect(PUBLISH_TARGET_CONSOLE[t]).toMatch(/^https:\/\//)
     }
   })
@@ -324,6 +331,70 @@ describe('キーが無くても片づけられる', () => {
     expect(canForgetRow({ target: 'sakura-apprun', dateUnknown: true })).toBe(false)
     expect(canForgetRow({ target: 'sakura-apprun', dateUnknown: false })).toBe(true)
     expect(canForgetRow({ target: 'vercel', dateUnknown: true })).toBe(true)
+  })
+})
+
+// ── さくらのAppRun 専有型（'sakura-apprun-dedicated'・D-3、2026-09-11 Ryosuke 決定）────
+// 表示・一覧・破棄・費用は共用型（'sakura-apprun'）と同じ扱い。共用型とは別のキーなので、
+// 両方に公開していても記録が上書きされず、一覧には2行並ぶ。
+describe('専有型（sakura-apprun-dedicated）', () => {
+  it('ラベルは共用型と区別でき、管理画面はクラウドのコントロールパネル（専用URLは推測しない）', () => {
+    expect(PUBLISH_TARGET_LABEL['sakura-apprun-dedicated']).toBe('📦 さくらのAppRun（専有型）')
+    expect(PUBLISH_TARGET_LABEL['sakura-apprun-dedicated']).not.toBe(PUBLISH_TARGET_LABEL['sakura-apprun'])
+    expect(PUBLISH_TARGET_CONSOLE['sakura-apprun-dedicated']).toBe('https://secure.sakura.ad.jp/cloud/')
+  })
+
+  it('一覧では共用型の直後に並び、共用型と同時に出せる', () => {
+    const rows = buildPublishStatusRows({
+      targets: {
+        'sakura-rental': { publishedAt: '2026-09-01T00:00:00Z', url: 'https://r/' },
+        'sakura-apprun-dedicated': { publishedAt: '2026-09-11T00:00:00Z', url: 'https://d.example.com/' },
+        'sakura-apprun': { publishedAt: '2026-09-02T00:00:00Z', url: 'https://a/' },
+        hanamii: { publishedAt: '2026-09-03T00:00:00Z', url: 'https://h/' },
+      },
+    })
+    expect(rows.map(r => r.target)).toEqual(['hanamii', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental'])
+    const row = rows.find(r => r.target === 'sakura-apprun-dedicated')
+    expect(row).toMatchObject({ label: '📦 さくらのAppRun（専有型）', url: 'https://d.example.com/', dateUnknown: false })
+  })
+
+  it('中断した公開（pending）の種類として認識される', () => {
+    const NOW = new Date('2026-09-11T12:00:00Z').getTime()
+    const startedAt = new Date(NOW - 60_000).toISOString()
+    expect(detectInterruptedPublish({ pending: { target: 'sakura-apprun-dedicated', startedAt } }, NOW))
+      .toEqual({ target: 'sakura-apprun-dedicated', startedAt })
+  })
+
+  it('最後に公開した公開先として選ばれる', () => {
+    expect(latestPublishedTarget({
+      targets: {
+        'sakura-apprun': { publishedAt: '2026-09-01T00:00:00.000Z', url: null },
+        'sakura-apprun-dedicated': { publishedAt: '2026-09-11T00:00:00.000Z', url: null },
+      },
+    })).toBe('sakura-apprun-dedicated')
+  })
+
+  it('片づけると専有型の行だけ消え、共用型の記録には触れない', () => {
+    const publish = {
+      targets: {
+        'sakura-apprun': { publishedAt: '2026-09-01T00:00:00.000Z', url: 'https://a/' },
+        'sakura-apprun-dedicated': { publishedAt: '2026-09-11T00:00:00.000Z', url: 'https://d/' },
+      },
+    }
+    const next = withoutPublishTarget(publish, 'sakura-apprun-dedicated')
+    expect(next.targets?.['sakura-apprun-dedicated']).toBeUndefined()
+    expect(next.targets?.['sakura-apprun']).toBeDefined()
+    expect(buildPublishStatusRows(next).map(r => r.target)).toEqual(['sakura-apprun'])
+  })
+
+  it('state.json からの救済が無いので、日時不明でも片づけられる（共用型と違う）', () => {
+    expect(canForgetRow({ target: 'sakura-apprun-dedicated', dateUnknown: true })).toBe(true)
+    expect(canForgetRow({ target: 'sakura-apprun-dedicated', dateUnknown: false })).toBe(true)
+  })
+
+  it('共用型のレガシー救済（state.json）は専有型の行を作らない', () => {
+    const rows = buildPublishStatusRows({}, { apprunLegacy: { createdAt: '2026-07-04T00:00:00Z' } })
+    expect(rows.map(r => r.target)).toEqual(['sakura-apprun'])
   })
 })
 

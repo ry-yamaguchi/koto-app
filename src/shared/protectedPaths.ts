@@ -20,6 +20,7 @@
 // このモジュールは fs/electron/DOM に依存しない純粋関数のみ（renderer からも main からも使う）。
 
 import { KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES } from './publishExclude'
+import { DATA_LAYER_LOCAL_DIR } from './objectStorage'
 
 /** Koto 自身の管理領域に加えて保護するもの。 */
 const OTHER_PROTECTED_DIRS = ['.git'] as const
@@ -56,6 +57,14 @@ export function isProtectedWritePath(rel: string): boolean {
 
 /** 拒否したときにAIへ返す説明（なぜ書けないのかを伝え、無駄な再試行をさせない）。 */
 export function protectedWriteMessage(rel: string): string {
+  // `.koto-data` だけは中身が**利用者自身のアプリのデータ**（予定・連絡先など）で、
+  // 「Koto が管理する領域（履歴・設定・秘密）」という説明が当てはまらない。
+  // 「テスト用のデータを入れておいて」と頼んだ利用者に理由が伝わらず、AI も
+  // 別の場所へ書こうとして空回りするので、この場合の一文をここに持つ（2026-09-23 検分）。
+  if (normalize(rel).split('/').filter(Boolean).includes(DATA_LAYER_LOCAL_DIR)) {
+    return `${rel} はアプリが保存したデータの置き場なので、AI からは書き換えません。`
+      + 'データの追加・変更・削除は、アプリの画面から行ってください。'
+  }
   return `${rel} は Koto が管理する領域のため書き込めません（履歴・設定・.git・秘密情報のファイル）。`
     + 'ユーザーの作業ファイルを対象にしてください。'
 }

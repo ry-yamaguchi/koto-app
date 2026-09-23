@@ -22,6 +22,11 @@ import { isSubmitEnter } from '../keyInput'
 import { shouldBlockPublish } from '../publishGate'
 import { foldBuildMode, specSummaryPrimaryKeys } from '../appRunFolding'
 import { publishButtonLabel } from '../../shared/publishLabels'
+// D-13 F（2026-09-16）: README・使い方ガイドは「共用型も専有型も同じです」と書いているのに、
+// 「アプリが書いたデータは残らない」の注意を出していたのは専有型の⑧だけだった。
+// **既定で推奨される共用型（大多数が通る道）にも出す。** 文言は複製せず、専有型と同じ
+// 純関数（shared/publishLabels.ts の ephemeralDataNote）を呼ぶ（掟10）。
+import { ephemeralDataNote } from '../../shared/publishLabels'
 import AccessKeySection from './AccessKeySection'
 import { useConfirm } from '../useConfirm'
 
@@ -131,7 +136,17 @@ type Confirm =
   | { kind: 'renameSpec'; name: string; retryPublish: boolean }
   // 古いイメージの片づけ（2026-08-19）。**消す前に必ず一覧を見せる**ため、
   // main から返ってきた計画をそのまま持たせる。
-  | { kind: 'cleanupImages'; plan: { remove: string[]; keep: string[]; untouched: string[] }; keep: number; currentTag: string | null }
+  | {
+      kind: 'cleanupImages'
+      plan: { remove: string[]; keep: string[]; untouched: string[] }
+      keep: number
+      currentTag: string | null
+      // 専有型（AppRunDedicated）でいま動いているタグ。読めなかった／専有型を使っていなければ null
+      // （2026-09-17 の穴・A: 共用型の片づけが専有型の稼働イメージを消しうる穴を塞ぐため）。
+      dedicatedTag: string | null
+      // 専有型のアプリはあるはずなのに、稼働タグを Koto が把握できなかった（黙って通さない）。
+      dedicatedTagUnknown: boolean
+    }
   | null
 
 /** 破棄に成功したら公開記録からも取り除く（「📡 公開したもの一覧」に幽霊を残さない・2026-08-06）。 */
@@ -789,7 +804,10 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         setOpResult({ ok: true, message: '片づける古いイメージはありませんでした。' })
         return
       }
-      setConfirm({ kind: 'cleanupImages', plan: r.plan, keep: r.keep ?? 5, currentTag: r.currentTag ?? null })
+      setConfirm({
+        kind: 'cleanupImages', plan: r.plan, keep: r.keep ?? 5, currentTag: r.currentTag ?? null,
+        dedicatedTag: r.dedicatedTag ?? null, dedicatedTagUnknown: r.dedicatedTagUnknown === true,
+      })
     } catch (e: any) {
       setOpResult({ ok: false, message: e?.message ?? String(e) })
     } finally { setCleaning(false) }
@@ -1313,6 +1331,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials }: P
         <p className="text-[11px] text-ink-muted leading-relaxed">
           「公開する」は事前チェックを表示して確認してから実行します。「破棄する」はデータの保存場所も含めて削除する場合があります。
         </p>
+        {/* D-13 F（2026-09-16）: 公開する**前に**読める位置（保存場所の注意のすぐ下・公開ボタンの近く）に、
+            データが残らないことを出す。文言は専有型の⑧と同じ関数から出し、複製しない（掟10）。
+            体裁は専有型の⑧と同じ（本文と同じ大きさ・太字。いちばん取り返しがつかない注意を、
+            いちばん小さく薄い字に置かない・2026-09-16 検分）。 */}
+        <p className="text-xs font-semibold text-ink-secondary leading-relaxed">{ephemeralDataNote()}</p>
         {/* ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）──────────────────
             公開のたびに新しいタグを打つので、レジストリに過去のイメージが残る。
             **常に出しておく。** 公開直後の結果カードからしか辿れないと、
@@ -2198,7 +2221,7 @@ function ConfirmDialog({
   // **消えるものを、そのまま並べて見せる。** 件数だけでは何が消えるか分からない。
   // 残るもの（いま公開しているタグ・直近N件・利用者が付けた名前）も一緒に出す。
   if (confirm.kind === 'cleanupImages') {
-    const { plan, keep, currentTag } = confirm
+    const { plan, keep, currentTag, dedicatedTag, dedicatedTagUnknown } = confirm
     return (
       <div className="space-y-3">
         <div className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-2">
@@ -2211,7 +2234,11 @@ function ConfirmDialog({
               超えると1GiBごとに{REGISTRY_EXTRA_GIB_YEN}円（税込）が加算されます。
             </span>
 
-            いま公開しているアプリには影響しません。
+            {/* 専有型の稼働タグを Koto が把握できていないときは、影響が無いと言い切らない
+                （2026-09-17 の穴・A: 断定したまま専有型の稼働イメージを消しうる状態を直す）。 */}
+            {dedicatedTagUnknown
+              ? '専有型（AppRunDedicated）で公開しているアプリが、いまどのイメージを使っているか確認できませんでした。そちらに影響しないとは言い切れません。下の「残るもの」を確かめてから進めてください。'
+              : 'いま公開しているアプリ（共用型・専有型とも）には影響しません。'}
           </p>
           <div className="rounded-lg border border-brand-red/50 bg-overlay p-2 space-y-1">
             <p className="text-xs font-semibold text-brand-red">消えるもの：</p>
@@ -2223,10 +2250,13 @@ function ConfirmDialog({
             <p className="text-xs font-semibold text-ink">残るもの：</p>
             <ul className="text-xs text-ink-secondary list-disc pl-4 space-y-0.5 max-h-40 overflow-y-auto">
               {currentTag && (
-                <li className="font-mono break-all select-text">{currentTag}（いま公開しているもの）</li>
+                <li className="font-mono break-all select-text">{currentTag}（共用型でいま公開しているもの）</li>
+              )}
+              {dedicatedTag && (
+                <li className="font-mono break-all select-text">{dedicatedTag}（専有型でいま公開しているもの）</li>
               )}
               {plan.keep.map(t => <li key={t} className="font-mono break-all select-text">{t}</li>)}
-              {plan.untouched.filter(t => t !== currentTag).map(t => (
+              {plan.untouched.filter(t => t !== currentTag && t !== dedicatedTag).map(t => (
                 <li key={t} className="font-mono break-all select-text">{t}（あなたが付けた名前）</li>
               ))}
             </ul>

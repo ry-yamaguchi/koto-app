@@ -10,3 +10,6 @@ dist/
 SAKURA_template_min.pptx
 release/
 build/bin/
+
+# Claude Code のローカル設定（launch.json など・共有しない）
+.claude/

@@ -21,9 +21,11 @@ import { checkBilling } from '../cloud/connectionCheck'
 import { applyPlan } from '../cloud/apply'
 import { performRollback } from '../cloud/rollback'
 import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapter'
-import { buildRef, dockerAvailable, buildImage, loginRegistry, pushImage } from '../cloud/docker'
-import { builderAvailable, buildAndPush } from '../cloud/imageBuild'
-import { detectRuntime, type RuntimeChoice } from '../../shared/runtimeDetect'
+import { dockerAvailable } from '../cloud/docker'
+import { builderAvailable, tagOfRef } from '../cloud/imageBuild'
+import { prepareAppImage } from '../cloud/imagePublish'
+import { CLOUD_ENV_FILE, CLOUD_STATE_FILE, cloudFilePath, loadCloudState, saveCloudState, loadCloudSpec } from '../cloud/specStore'
+import { resolveBuildContext, detectRuntimeFor } from '../cloud/buildContext'
 import { parseLocalRecords, buildInventory, sumMonthly, totalNotice, type ActualResource } from '../../shared/inventory'
 import { collectAppRunApps, collectDedicatedClusters } from '../cloud/inventoryCollect'
 import { listClusters } from '../cloud/apprunDedicated'
@@ -32,55 +34,9 @@ import { markPendingFs, clearPendingFs, writePublishRecordFs, readApprunDedicate
 import type { IpcDeps } from './types'
 
 // ── さくらのクラウド連携（段階1＝基盤）。cloud: 名前空間 ──
-// env.json / state.json は プロジェクト内 `.sakura-cloud/` に置く。
-// state.json はユーザー非編集（IDEが作成済みリソースを記録する内部ファイル）。
-const CLOUD_DIR = '.sakura-cloud'
-const CLOUD_ENV_FILE = 'env.json'
-const CLOUD_STATE_FILE = 'state.json'
-
-/** projectDir 内の .sakura-cloud/<file> の絶対パスを返す（プロジェクト外への脱出を防ぐ）。 */
-function cloudFilePath(projectDir: string, file: string): string {
-  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
-    throw new Error('プロジェクトフォルダのパスが不正です')
-  }
-  const full = path.normalize(path.join(projectDir, CLOUD_DIR, file))
-  const base = path.normalize(path.join(projectDir, CLOUD_DIR))
-  if (full !== base && !full.startsWith(base + path.sep)) {
-    throw new Error('不正なパスです（プロジェクトの外は操作できません）')
-  }
-  return full
-}
 
 // ── 段階2a: 構築/破棄の実行層（メインプロセス） ──
 
-/** projectDir の state.json を読む（無ければ空state）。env.json の name/backend を既定に使う。 */
-function loadCloudState(projectDir: string, spec: EnvSpec): EnvState {
-  const stateFile = cloudFilePath(projectDir, CLOUD_STATE_FILE)
-  if (!fs.existsSync(stateFile)) return emptyState(spec.name, spec.backend)
-  const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf-8'))
-  return {
-    name: typeof parsed?.name === 'string' ? parsed.name : spec.name,
-    backend: typeof parsed?.backend === 'string' ? parsed.backend : spec.backend,
-    resources: Array.isArray(parsed?.resources) ? parsed.resources : [],
-    ...(parsed?.meta && typeof parsed.meta === 'object' ? { meta: parsed.meta } : {}),
-  }
-}
-
-/** state.json を書き込む（.sakura-cloud を作成）。 */
-function saveCloudState(projectDir: string, state: EnvState): void {
-  const stateFile = cloudFilePath(projectDir, CLOUD_STATE_FILE)
-  fs.mkdirSync(path.dirname(stateFile), { recursive: true })
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + '\n', 'utf-8')
-}
-
-/** env.json を読んで検証済み spec を返す（無ければ null・不正なら throw）。 */
-function loadCloudSpec(projectDir: string): EnvSpec | null {
-  const envFile = cloudFilePath(projectDir, CLOUD_ENV_FILE)
-  if (!fs.existsSync(envFile)) return null
-  const result = validateSpec(JSON.parse(fs.readFileSync(envFile, 'utf-8')))
-  if (!result.ok) throw new Error(result.errors.join(' / '))
-  return result.spec
-}
 
 /**
  * spec を検証し、保存場所の記録をディスクから維持してから env.json へ書き込む
@@ -102,47 +58,6 @@ function writeValidatedSpec(projectDir: string, spec: unknown): { ok: true; spec
   return { ok: true, spec: result.spec }
 }
 
-/**
- * dockerfile ソースのビルドコンテキスト絶対パスを、プロジェクト内に閉じ込めて解決する。
- * context が絶対パスや .. でプロジェクト外を指す場合は throw（confineToProject 相当）。
- */
-function resolveBuildContext(projectDir: string, context: string): string {
-  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
-    throw new Error('プロジェクトフォルダのパスが不正です')
-  }
-  if (typeof context !== 'string' || context.length === 0) {
-    throw new Error('ビルドコンテキストが不正です')
-  }
-  if (path.isAbsolute(context)) {
-    throw new Error('ビルドコンテキストに絶対パスは指定できません')
-  }
-  const full = path.normalize(path.join(projectDir, context))
-  if (full !== projectDir && !full.startsWith(projectDir + path.sep)) {
-    throw new Error('不正なビルドコンテキストです（プロジェクトの外は指定できません）')
-  }
-  return full
-}
-
-/**
- * プロジェクトを見て、何で動かすかを決める（IO はここだけ。判断は shared）。
- * package.json が壊れていても落ちない（読めなければ「無い」として扱う）。
- */
-function detectRuntimeFor(contextAbs: string): RuntimeChoice {
-  let packageJson: unknown = null
-  try {
-    const p = path.join(contextAbs, 'package.json')
-    if (fs.existsSync(p)) packageJson = JSON.parse(fs.readFileSync(p, 'utf-8'))
-  } catch {
-    // 壊れた package.json は「無い」とはしない。**静的だと決めつけると
-    // ソースが丸見えになる**ので、直してもらうよう伝える
-    return { kind: 'unsupported', reason: 'package.json を読み取れませんでした。書式（JSON）が正しいか確認してください。' }
-  }
-  let fileNames: string[] = []
-  try {
-    fileNames = fs.readdirSync(contextAbs, { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name)
-  } catch { fileNames = [] }
-  return detectRuntime({ packageJson, fileNames })
-}
 
 /** プロジェクト直下の package.json を読む（無い・壊れていれば null）。 */
 function readProjectPackageJson(contextAbs: string): unknown {
@@ -169,34 +84,68 @@ function readProjectPackageJson(contextAbs: string): unknown {
  * 古いページが配られ続けていた。配る中身に混ぜた目印（.koto-build）を
  * 公開先から読み、版が一致するまで待つ。
  *
- * 判断は shared/publishVerify に集約し、ここは読みに行くだけ。
+ * 判断は shared/publishVerify（`judgeVerifyProbe`）に集約し、ここは読みに行くだけ。
+ *
+ * ── A（2026-09-16 の検分）: 503・502・500 を「接続できなかった」に倒さない ────────
+ * 直す前は `res.ok`／`res.status === 404` 以外の応答（503・502・500 …）を無視しており、
+ * 9回くり返したあと `reached` が立たないまま `unreachable`（「接続できなかった」）になっていた。
+ * **接続は成立していて、エラーが返っている**のに「接続できなかった」と書いていた（掟1）。
+ * いまは毎回の応答を `judgeVerifyProbe` に通し、**最後に観測した種類**で決める
+ * （届いたことがある結果は、あとの1回がたまたま繋がらなくても「確かめられなかった」に
+ * 薄めない。専有型の verify と同じ考え方）。
+ *
+ * `io` はテストで `fetch`／待ち時間を差し替えるための差し込み口（既定は実際の fetch／setTimeout）。
  */
-async function verifyPublished(
+export async function verifyPublished(
   publicUrl: string,
   tag: string,
   progress: (m: string) => void,
-): Promise<VerifyOutcome> {
+  io: { fetchImpl?: typeof fetch; sleepImpl?: (ms: number) => Promise<void> } = {},
+): Promise<{ outcome: VerifyOutcome; status?: number }> {
+  const doFetch = io.fetchImpl ?? fetch
+  const doSleep = io.sleepImpl ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
   const url = markerUrl(publicUrl)
   const delays = verifyDelaysMs()
-  let reached = false
+  let last: VerifyOutcome | null = null
+  let lastStatus: number | undefined
   for (let i = 0; i <= delays.length; i++) {
     try {
       // キャッシュに騙されないよう、毎回違う問い合わせにする
-      const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' as RequestCache })
-      if (res.ok) {
-        reached = true
-        if (matchesMarker(await res.text(), tag)) return 'ok'
-      } else if (res.status === 404) {
-        // 目印が無い＝古い版が配られている（目印は今回から入るため、初回は起こりうる）
-        reached = true
-      }
+      const res = await doFetch(`${url}?t=${Date.now()}`, { cache: 'no-store' as RequestCache })
+      const body = res.status === 200 ? await res.text() : ''
+      const probe: DedicatedProbe = { reached: true, status: res.status, body }
+      const outcome = judgeVerifyProbe(probe, tag)
+      if (outcome === 'ok') return { outcome: 'ok' }
+      last = outcome
+      lastStatus = res.status
     } catch { /* まだ立ち上がっていない・通信できない。次の待ちで再挑戦する */ }
     if (i < delays.length) {
       progress('🔎 公開先に新しい内容が出るのを待っています…')
-      await new Promise(r => setTimeout(r, delays[i]))
+      await doSleep(delays[i])
     }
   }
-  return reached ? 'stale' : 'unreachable'
+  return { outcome: last ?? 'unreachable', status: last ? lastStatus : undefined }
+}
+
+/**
+ * 「中身が新しくなったかの確認」をとばしたときの理由（runtimeSkipNote）を決める純関数。
+ *
+ * ── なぜ要るか（2026-09-17 の穴・B）────────────────────────────────
+ * `canVerify(runtimeKind, publicUrl)` が false になる理由は2つあるのに、これまでは
+ * 「公開URLはあるが静的配信でない」場合しか一言を残していなかった。
+ * **公開URLそのものが取れなかった**（`client.getApp` の例外・応答の形が違う等で null）
+ * ときは何も残らず、画面には「✅ 完了」だけが出て、利用者は確認できたと誤解しうる。
+ * 理由によって伝える内容を変える（URLが無いだけなら、公開先を自分で開けば確かめられる）。
+ *
+ * `canVerify` が true（＝実際に確認できる）ときは呼び出し側で使わない（呼べば null を返す）。
+ */
+export function runtimeSkipNoteFor(opts: { runtimeKind: string; publicUrl: string | null }): string | null {
+  if (canVerify(opts.runtimeKind, opts.publicUrl)) return null
+  if (!opts.publicUrl) {
+    return 'ℹ️ 公開先のURLを取得できなかったため、内容が新しくなったかの確認はとばしました（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
+  }
+  // それ以外（静的配信でない等）はこれまでの文のまま。
+  return 'ℹ️ このビルド方式は公開物に版の目印を持たないため、内容が新しくなったかの確認はとばしました（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
 }
 
 async function waitForHealthy(
@@ -272,10 +221,73 @@ function planTouchesApp(plan: Plan): boolean {
   )
 }
 
+/**
+ * コンテナレジストリの一覧を読む（読めなかったときは `null`）。
+ *
+ * B-2（2026-09-16 の検分）: `pickContainerRegistries`（cloud/client.ts）は、形が読めない応答
+ * （`_send` は JSON でない応答を生テキストで返すことがある）でも空配列 `[]` を返す——
+ * **「読めなかった」と「読めて0件だった」を区別できない**。破棄の場面でこれを
+ * 「一覧に無い＝削除済み」と読むと、読めていないのに記録から名前を落として
+ * 二度と見つけられなくなる。`apprunDedicatedShapes.ts` の `readContainerStates`
+ * （200でも読めたとは限らない・不明は `null`）と同じ形で、ここだけ区別できる読み手を用意する。
+ * 実際の絞り込み・整形は一元定義の `pickContainerRegistries` にそのまま任せる（掟10）。
+ */
+export function readContainerRegistryList(data: unknown): Array<{ id: string; subdomainLabel: string }> | null {
+  const items = (data as any)?.CommonServiceItems ?? (data as any)?.commonserviceitems
+  if (!Array.isArray(items)) return null
+  return pickContainerRegistries(data)
+}
+
+/**
+ * 破棄でレジストリを削除する（B・2026-09-16 の検分）。
+ *
+ * 直す前は、一覧の取得が失敗（HTTP 4xx/5xx）しても・例外が起きても `extraExecuted` に
+ * 1行も積まれず、黙って「✅ 完了しました」になっていた（すぐ隣の削除失敗の行だけが伝えていた、
+ * という非対称）。**破棄の成否（result.ok）は変えない**——ここが失敗しても「致命ではない
+ * （アプリは削除済み）」という判断は正しい。だが黙ってよい理由にはならないので、必ず1行返す。
+ *
+ * B-2: 一覧が 200 でも `readContainerRegistryList` が読めなかった（`null`）ときは
+ * 「一覧に無い＝削除済み」にしない（記録に名前を残す）。
+ */
+export async function teardownRegistry(
+  client: Pick<SakuraCloudClient, 'listContainerRegistries' | 'deleteContainerRegistry'>,
+  region: string,
+  name: string,
+): Promise<{ registryDeleted: boolean; note: string | null }> {
+  const cannotConfirm = (reason: string): { registryDeleted: boolean; note: string | null } => ({
+    registryDeleted: false,
+    note: `※ レジストリ『${name}』を削除できたか確認できませんでした（${reason}）。`
+      + 'さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額220円がかかり続けます）。',
+  })
+  try {
+    const listed = await client.listContainerRegistries(region)
+    if (listed.dryRun !== false) return { registryDeleted: false, note: null } // dry-run は従来どおり何もしない
+    if (!listed.ok) return cannotConfirm(`一覧の取得に失敗・HTTP ${listed.status}`)
+
+    const rows = readContainerRegistryList(listed.data)
+    if (rows === null) return cannotConfirm('一覧の応答を読み取れませんでした')
+
+    const found = rows.find(r => r.subdomainLabel === name)
+    if (!found) return { registryDeleted: true, note: null } // 一覧に無い＝既に削除済み（読めたうえでの判断）
+
+    const del = await client.deleteContainerRegistry(region, found.id)
+    if (del.dryRun === false && del.ok) {
+      return { registryDeleted: true, note: `コンテナレジストリ『${name}』を削除（ユーザー・イメージごと）` }
+    }
+    if (del.dryRun === false) {
+      return { registryDeleted: false, note: `※ レジストリ『${name}』の削除に失敗（HTTP ${del.status}）。コンパネで削除してください` }
+    }
+    return { registryDeleted: false, note: null }
+  } catch (e: any) {
+    // レジストリ削除の失敗は致命ではない（アプリは削除済み）——この判断は正しい。
+    // だがそれは黙ってよい理由にはならない。すぐ隣の削除失敗の行と同じ語り口で伝える。
+    return cannotConfirm(`一覧の取得または削除でエラーが発生・${e?.message ?? String(e)}`)
+  }
+}
+
 import { scanDataUsage, ensureDataLayer } from '../dataLayer'
 import { ObjectStorageClient } from '../cloud/objectStorage'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
-import { looksLikeRegistryProblem } from '../../shared/registryTrouble'
 import { parseAppStatus, judgeAppHealth, judgeRecheck, appLogUrl, askAiAboutFailure, type AppHealth } from '../../shared/appHealth'
 import { MonitoringClient, fetchTelemetryStatus, enableTelemetry, ensureTelemetryRouting } from '../cloud/monitoring'
 import { isTelemetryKind, type TelemetryKind } from '../../shared/appLog'
@@ -289,10 +301,9 @@ import {
 } from '../../shared/siteCheck'
 import { publishExcludedDirNames } from '../../shared/publishExclude'
 import { sharedBucketName, isValidBucketName, consentedBuckets, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, KOTO_ROOT, type BucketMode } from '../../shared/objectStorage'
-import { tagForPublish } from '../../shared/publishTag'
 import { planTagCleanup, digestsToDelete, normalizeKeep, DEFAULT_KEEP } from '../../shared/imageRetention'
 import { listTags, resolveDigests, deleteDigests } from '../cloud/imageCleanup'
-import { markerUrl, matchesMarker, verifyDelaysMs, verifyMessage, canVerify, type VerifyOutcome } from '../../shared/publishVerify'
+import { markerUrl, matchesMarker, verifyDelaysMs, verifyMessage, canVerify, judgeVerifyProbe, type VerifyOutcome, type DedicatedProbe } from '../../shared/publishVerify'
 import { resolvePublishRoot } from '../publishRootFs'
 import { readTraffics, readVersions, trafficState } from '../../shared/apprunTraffic'
 
@@ -899,6 +910,14 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     // 残す。API呼び出しが成功/失敗いずれで終わっても、最下部の finally で必ず消す（roadmap #20）。
     markPendingFs(projectDir, 'sakura-apprun')
     try {
+      // **公開物を組み立てる前に、koto-data を置く**（2026-09-23 検分）。
+      // AI への指示（aiContext.ts の DATA_RULE）は「Koto が用意します」と約束しているが、
+      // 以前の入口は「保存場所を用意する」と「AIに書き直してもらう」の2つだけだった。
+      // どちらも通らずに公開すると、`require('./koto-data.cjs')` の読み込み先が
+      // イメージに入らず、コンテナが `Cannot find module` で起動できない。
+      // **既にあれば触らないので、何度呼んでも安全。**
+      try { ensureDataLayer(resolvePublishRoot(projectDir), projectDir) } catch { /* 置けなくても公開は続ける */ }
+
       const creds = loadCredentials()
       if (!creds) return { ok: false, message: 'APIキー未登録（先にアクセストークン/シークレットを登録してください）' }
 
@@ -918,194 +937,30 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       let staleImages: { total: number; removable: number; keep: number } | undefined
       let runtimeKind = 'static'
       let verified: VerifyOutcome | undefined
+      // A（2026-09-16 の検分）: error-status のとき、届いた番号を一言に添えるための控え
+      let verifiedStatus: number | undefined
+      // E（D-7b・検分の指摘）: Docker 分岐の runtimeKind が 'docker' になったことで、
+      // ここで確認をとばす経路が実際に使われるようになった。「確認をとばした」ことを黙って
+      // 成功に見せない（専有型の同じ判断＝apprunDedicatedAppApply.ts の warnings と同じ方針）。
+      let runtimeSkipNote: string | null = null
 
       // ── image 以外のソース かつ プランがアプリの create/update を含むなら、
       //    同梱の crane で「公開ベース＋ファイル層＋起動設定」を組み立ててレジストリへ push する。
-      //    （Docker デーモン不要。Dockerfile も不要。）
+      //    （Docker デーモン不要。Dockerfile も不要。実体は cloud/imagePublish.ts の
+      //    prepareAppImage に集約——専有型の「⑧ アプリを公開する」からも同じ関数を呼ぶ・掟10）。
       if (spec.service.source.type !== 'image' && planTouchesApp(plan)) {
-        const source = spec.service.source
-        const builderMode = source.builder ?? 'builtin' // 既定は内蔵（Docker不要）
-
-        // 1. 共通の前提: レジストリ認証情報。
-        const regCreds = loadRegistryCredentials()
-        if (!hasRegistryCredentials() || !regCreds) {
-          return { ok: false, message: 'コンテナレジストリの認証情報が未登録です（認証情報で登録、または「レジストリを自動作成」してください）' }
-        }
-
-        // 1b. push 先が**このプロジェクトのレジストリ**かを確かめる。
-        // 接続情報はアプリ共通に1つだけで、最後に「↻ ユーザー再設定」を押したプロジェクトの
-        // もので上書きされる。突き合わせないと、別プロジェクトのレジストリへ push してしまい、
-        // 向こうを破棄したときにこちらのイメージが消える（2026-08-09 の実機検証で発覚）。
-        const push = resolvePushRegistry(state.meta?.registryName, regCreds.name)
-        if ('error' in push) {
-          if (push.error === 'no-credentials') {
-            return { ok: false, message: 'コンテナレジストリの認証情報が未登録です（「🛠 レジストリを自動作成」を押してください）' }
-          }
-          return {
-            ok: false,
-            // renderer はこの印を見て「レジストリを設定し直す」ボタンを出す。
-            // 平常時にそのボタンを常設すると誤爆の元になるため、必要なときだけ出す（2026-08-09）。
-            hint: 'reset-registry' as const,
-            message: `このプロジェクトはコンテナレジストリ『${push.recorded}』を使う設定ですが、`
-              + `いまは別のレジストリ『${push.credential}』の接続情報が入っています`
-              + `（別のプロジェクトで公開の準備をしたためです）。`
-              + `下の「レジストリを設定し直す」を押してから、もう一度公開してください。`
-              + `このまま公開すると、別のプロジェクトのレジストリにこのアプリのイメージが入ってしまいます。`,
-          }
-        }
-        // 記録が無いプロジェクトは、いま使っているレジストリを自分のものとして記録する
-        // （次回からは上の突き合わせが効く）。
-        if (push.adopt) {
-          try {
-            saveCloudState(projectDir, { ...state, meta: { ...state.meta, registryName: push.use } })
-            state.meta = { ...state.meta, registryName: push.use }
-          } catch { /* 記録できなくても公開は続行（次回また採用を試みる） */ }
-        }
-
-        // 1c. **記録があることと、実在することは別。**（2026-08-14 実機）
-        // コントロールパネルでレジストリを削除すると、Koto は手元の認証情報だけを見て
-        // 「レジストリ登録 ✓」と表示し、組み立ての最後で push に失敗する。
-        // 原因が画面に出ないうえ、回復のボタンも出ないので袋小路になる。
-        try {
-          const probe = new SakuraCloudClient({ credentials: creds, dryRun: false })
-          const listedNow = await probe.listContainerRegistries(spec.region)
-          if (listedNow.dryRun === false && listedNow.ok) {
-            const names = pickContainerRegistries(listedNow.data).map(r => r.subdomainLabel)
-            if (names.length > 0 && !names.includes(push.use)) {
-              return {
-                ok: false,
-                hint: 'reset-registry' as const,
-                message: `このプロジェクトが使うコンテナレジストリ『${push.use}』が見つかりません`
-                  + '（コントロールパネルで削除された可能性があります）。'
-                  + '下の「レジストリを設定し直す」を押してから、もう一度公開してください。',
-              }
-            }
-          }
-        } catch { /* 確認できなくても公開は試す（本当の失敗は下で拾う） */ }
-
-        let contextAbs: string
-        try {
-          // 公開の起点は`public/`（無ければプロジェクト直下）。
-          // env.json の context は、その根からの相対として解決する。
-          contextAbs = resolveBuildContext(resolvePublishRoot(projectDir), source.context)
-        } catch (e: any) {
-          return { ok: false, message: e?.message ?? String(e) }
-        }
-        if (!source.image || !source.tag) {
-          return { ok: false, message: 'env.json の service.source に image と tag を設定してください（イメージのビルドに必要です）' }
-        }
-
-        // 2. レジストリサーバ＋image＋tag から完全な参照を組み立てる（検証込み）。
-        //
-        // ── 公開のたびに違うタグを付ける（2026-08-19 実機・Ryosuke 報告）────────
-        // 「試すと画像が出るのに、公開すると出ない」。実測すると公開先には
-        // **画像を入れる前の古いページ**が出ていた（`images/` は 404）。
-        // 毎回 `…:latest` という**同じ名前**を渡していたため、中身が変わっても
-        // AppRun 側からは同じイメージに見えていた。名前を変えれば必ず取りに行く。
-        const server = registryServer(regCreds.name)
-        const publishRefTag = tagForPublish(source.tag, new Date())
-        publishedTag = publishRefTag
-        publishedImage = source.image
-        let ref: string
-        try {
-          ref = buildRef(server, source.image, publishRefTag)
-        } catch (e: any) {
-          return { ok: false, message: e?.message ?? String(e) }
-        }
-
-        // 3. ビルド方式で分岐。
-        if (builderMode === 'docker') {
-          // ── エキスパート: ユーザーのDockerfileを Docker でビルド（Docker導入が必要・任意のRUN可） ──
-          if (!(await dockerAvailable())) {
-            return { ok: false, message: 'Docker が見つかりません（エキスパートモードには Docker のインストールが必要です。標準モードなら Docker は不要です）' }
-          }
-          if (!fs.existsSync(path.join(contextAbs, 'Dockerfile'))) {
-            return { ok: false, message: 'Dockerfile が見つかりません（エキスパートモードはビルドコンテキストに Dockerfile が必要です）' }
-          }
-          progress('🐳 Dockerfile からイメージをビルドしています…')
-          const b = await buildImage(contextAbs, ref)
-          // 所見12: 生ログの行き止まりを避け、主文は「原因の見当＋次の行動」に。生ログは detail へ
-          // （renderer 側が折りたたみ「詳細を見る」で表示。原因究明に役立つ実績があるため捨てない）。
-          if (!b.ok) {
-            return {
-              ok: false,
-              message: 'アプリの組み立て（Dockerビルド）に失敗しました。よくある原因: Dockerfile の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
-              detail: b.log,
-            }
-          }
-          progress('🔑 レジストリにログインしています…')
-          const lg = await loginRegistry(server, regCreds.user, regCreds.password)
-          if (!lg.ok) {
-            return {
-              ok: false,
-              hint: 'reset-registry' as const,
-              message: 'レジストリへのログインに失敗しました。下の「レジストリを設定し直す」で push 用のパスワードを作り直してから、もう一度お試しください。',
-              detail: lg.message ?? '',
-            }
-          }
-          progress('📤 レジストリへプッシュしています…')
-          const ps = await pushImage(ref)
-          if (!ps.ok) {
-            return {
-              ok: false,
-              message: 'レジストリへの反映（プッシュ）に失敗しました。インターネット接続を確認して、もう一度お試しください。',
-              detail: ps.log,
-            }
-          }
-          progress('📤 レジストリへ反映しました')
-        } else {
-          // ── 標準: 同梱 crane で「公開ベース＋ファイル層＋起動設定」を組み立てて push（Docker不要） ──
-          if (!builderAvailable()) {
-            return { ok: false, message: '内蔵ビルダーが見つかりません（再インストールしてください）' }
-          }
-          // **何で動かすかを決める。** 長らく static 決め打ちで、Node のアプリを
-          // 公開してもソースの一覧が出るだけだった（2026-08-14 実機で発覚）。
-          // 判断は shared/runtimeDetect.ts に集約（掟10）。
-          const choice = detectRuntimeFor(contextAbs)
-          runtimeKind = choice.kind
-          if (choice.kind === 'unsupported') {
-            // **黙って static で公開しない。** 動かないうえにソースが丸見えになる
-            return { ok: false, message: choice.reason }
-          }
-          progress(choice.kind === 'node' ? `📦 イメージを組み立てています…（${choice.entry} で起動）` : '📦 イメージを組み立てています…')
-          const built = await buildAndPush({
-            contextAbs,
-            ref,
-            port: spec.service.port,
-            runtime: choice.kind,
-            ...(choice.kind === 'node' ? { entry: choice.entry } : {}),
-            registryAuth: { server, user: regCreds.user, password: regCreds.password },
-            // ライブラリの用意は数分かかることがある。**黙って待たせない**
-            onProgress: progress,
-          })
-          // 所見12: 生ログ（stderr要約）の行き止まりを避け、主文は「原因の見当＋次の行動」に。
-          // 生ログは detail へ（renderer 側が折りたたみ「詳細を見る」で表示）。
-          if (!built.ok) {
-            const detail = [built.message, built.log].filter(Boolean).join('\n')
-            // **回復の導線を、この経路にも出す。**（2026-08-14）
-            // これまで印を付けていたのは Docker の経路だけで、既定の使い方をしている
-            // 人だけが「直し方の分からない失敗」に取り残されていた
-            const registryTrouble = looksLikeRegistryProblem(detail)
-            return {
-              ok: false,
-              ...(registryTrouble ? { hint: 'reset-registry' as const } : {}),
-              message: registryTrouble
-                ? 'イメージの置き場（コンテナレジストリ）へ反映できませんでした。'
-                  + '削除された、または接続情報が古い可能性があります。'
-                  + '下の「レジストリを設定し直す」を押してから、もう一度お試しください。'
-                : 'アプリの組み立てに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
-              detail,
-            }
-          }
-          progress('📤 レジストリへ反映しました')
-        }
+        const prepared = await prepareAppImage({ projectDir, spec, state, creds, progress })
+        if (!prepared.ok) return prepared
+        publishedTag = prepared.tag
+        publishedImage = prepared.image
+        runtimeKind = prepared.runtimeKind
 
         // 4. 成功。spec を複製して source を image ソースへ差し替え、レジストリ認証を用意する。
         resolvedSpec = {
           ...spec,
-          service: { ...spec.service, source: { type: 'image', ref } },
+          service: { ...spec.service, source: { type: 'image', ref: prepared.ref } },
         }
-        registryAuth = { server, username: regCreds.user, password: regCreds.password }
+        registryAuth = prepared.registryAuth
 
         // 差し替え後の spec でプランを再算出（source 差し替えでも apprun-app の差分は不変だが安全側で再計算）。
         plan = computePlan(resolvedSpec, state)
@@ -1224,7 +1079,13 @@ export function registerCloudHandlers(_deps: IpcDeps) {
               if (info.dryRun === false && info.ok) publicUrl = extractAppUrl(info.data)
             } catch { /* URLが取れなければ確認しないだけ（公開は成立している） */ }
             if (canVerify(runtimeKind, publicUrl)) {
-              verified = await verifyPublished(publicUrl as string, publishedTag, progress)
+              const v = await verifyPublished(publicUrl as string, publishedTag, progress)
+              verified = v.outcome
+              verifiedStatus = v.status
+            } else {
+              // 確認できない理由（公開URLが取れない／静的配信でない）によって一言を分ける
+              // （2026-09-17 の穴・B。判定は runtimeSkipNoteFor に一元化・掟10）。
+              runtimeSkipNote = runtimeSkipNoteFor({ runtimeKind, publicUrl })
             }
           }
 
@@ -1246,7 +1107,14 @@ export function registerCloudHandlers(_deps: IpcDeps) {
                 image: publishedImage,
               })
               if (listed.ok) {
-                const p = planTagCleanup({ tags: listed.tags, keep: DEFAULT_KEEP, currentTag: publishedTag })
+                // K-1（2026-09-17）: 数えるだけの場所だが、**片づけ本体と同じ守る集合を使う**。
+                // ここだけ専有型の稼働タグを渡さないと、「あと何件片づけられます」が1件多く出て、
+                // 実際に片づけを押したときの件数と食い違う（掟10・判定を1か所に寄せる）。
+                const dedicatedRunningTag = tagOfRef(readApprunDedicatedFs(projectDir).imageRef ?? '') || null
+                const p = planTagCleanup({
+                  tags: listed.tags, keep: DEFAULT_KEEP, currentTag: publishedTag,
+                  protectedTags: [dedicatedRunningTag],
+                })
                 if (p.remove.length > 0) {
                   staleImages = { total: listed.tags.length, removable: p.remove.length, keep: DEFAULT_KEEP }
                 }
@@ -1265,7 +1133,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
       progress(finallyOk ? '✅ 完了' : health?.pending ? '⏳ 起動を確認できていません' : '⚠️ 失敗しました')
       // 確認できたときだけ一言添える（確認できない公開もあるので、無言を失敗と混ぜない）
-      const verifyNote = verified ? verifyMessage(verified) : ''
+      const verifyNote = verified ? verifyMessage(verified, verifiedStatus) : (runtimeSkipNote ?? '')
       return {
         ok: finallyOk,
         executed: result.executed,
@@ -1453,11 +1321,36 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const imageName = source.image
       const keep = normalizeKeep(opts?.keep ?? DEFAULT_KEEP) ?? DEFAULT_KEEP
       const currentTag = state.meta?.imageTag ?? null
-      const plan = planTagCleanup({ tags: listed.tags, keep, currentTag })
+
+      // ── 専有型の稼働タグも守る集合に加える（2026-09-17 の穴・A）─────────────
+      // 「いま動いているタグを必ず残す」守りは、これまで共用型（state.meta.imageTag）
+      // だけを見ていた。同じプロジェクトを専有型（AppRunDedicated）でも公開していると、
+      // そちらの稼働タグはここに一切現れないため、片づけの対象に混ざってしまう
+      // （専有型でいま動いているイメージを、共用型の片づけが消しうる）。
+      // **専有型の記録は state.meta には書かない**（別々に記録して守る集合で合流させる。
+      // apprunDedicatedAppApply.ts 側が publishMetaFs の `publish.apprunDedicated` に書いた
+      // ものを、ここでは読むだけ）。
+      // **読めなければ加えない。そのときは黙って通さず「分からなかった」ことを持ち帰る。**
+      let dedicatedTag: string | null = null
+      let dedicatedTagUnknown = false
+      try {
+        const dedicatedRec = readApprunDedicatedFs(projectDir)
+        // 専有型でアプリを作った形跡（applicationID）があるのに稼働タグが読み取れない
+        // ときだけ「分からなかった」とする。専有型を一度も使っていないプロジェクトにまで
+        // 「専有型のタグが分かりません」と言っても、無意味な不安を与えるだけ。
+        const hasDedicatedApp = typeof dedicatedRec?.applicationID === 'string' && dedicatedRec.applicationID.length > 0
+        const ref = typeof dedicatedRec?.imageRef === 'string' ? dedicatedRec.imageRef : ''
+        dedicatedTag = ref ? (tagOfRef(ref) || null) : null
+        if (hasDedicatedApp && !dedicatedTag) dedicatedTagUnknown = true
+      } catch {
+        dedicatedTagUnknown = true
+      }
+
+      const plan = planTagCleanup({ tags: listed.tags, keep, currentTag, protectedTags: [dedicatedTag] })
 
       // **消す前に、必ず一覧を見せる。** ここで止まるのが既定の道。
       if (opts?.confirmed !== true) {
-        return { ok: true, dryRun: true, plan, currentTag, keep }
+        return { ok: true, dryRun: true, plan, currentTag, keep, dedicatedTag, dedicatedTagUnknown }
       }
       if (plan.remove.length === 0) {
         return { ok: true, dryRun: false, plan, currentTag, keep, deleted: [], failed: [] }
@@ -1644,29 +1537,17 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           const regCreds = registryName ? { name: registryName } : null
           if (regCreds?.name && opts?.confirmed === true && opts?.deleteRegistry !== false) {
             const region = (typeof spec.region === 'string' && spec.region) ? spec.region : 'is1a'
-            const listed = await client.listContainerRegistries(region)
-            if (listed.dryRun === false && listed.ok) {
-              const found = pickContainerRegistries(listed.data).find(r => r.subdomainLabel === regCreds.name)
-              if (found) {
-                const del = await client.deleteContainerRegistry(region, found.id)
-                if (del.dryRun === false && del.ok) {
-                  registryDeleted = true
-                  extraExecuted.push(`コンテナレジストリ『${regCreds.name}』を削除（ユーザー・イメージごと）`)
-                  // 共通の資格情報は、いま消したレジストリを指しているときだけクリアする
-                  // （別プロジェクトのものを指している場合に消すと、そのプロジェクトの push 設定を壊す）。
-                  if (loadRegistryCredentials()?.name === regCreds.name) clearRegistryCredentials()
-                } else if (del.dryRun === false) {
-                  extraExecuted.push(`※ レジストリ『${regCreds.name}』の削除に失敗（HTTP ${del.status}）。コンパネで削除してください`)
-                }
-              } else {
-                // 一覧に無い＝既に削除済み。記録も落とす（存在しない名前を残すと次の公開で使ってしまう）。
-                registryDeleted = true
-                // 共通資格情報がこのレジストリを指しているときだけ掃除する。
-                if (loadRegistryCredentials()?.name === regCreds.name) clearRegistryCredentials()
-              }
-            }
+            // B（2026-09-16 の検分）: 一覧の取得が失敗しても・例外が起きても黙らない（すぐ隣の
+            // 削除失敗の行と同じ語り口で伝える）。判断は teardownRegistry に集約（掟10）。
+            const outcome = await teardownRegistry(client, region, regCreds.name)
+            registryDeleted = outcome.registryDeleted
+            if (outcome.note) extraExecuted.push(outcome.note)
+            // 共通の資格情報は、いま消した（＝既に削除済みと確認できた）レジストリを
+            // 指しているときだけクリアする（別プロジェクトのものを消すと push 設定を壊す）。
+            if (outcome.registryDeleted && loadRegistryCredentials()?.name === regCreds.name) clearRegistryCredentials()
           }
-        } catch { /* レジストリ削除失敗は致命ではない（アプリは削除済み） */ }
+        } catch { /* レジストリ削除失敗は致命ではない（アプリは削除済み）。teardownRegistry 自身は
+          例外を外へ投げないので、ここに来るのは対象の判定（同期処理）が壊れたときだけ */ }
 
         // 資源を空にした state を保存する。**レジストリを残したときは registryName を残す**
         // （消すと、残したレジストリを Koto が二度と見つけられず・消せなくなる）。
@@ -1772,16 +1653,35 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     try {
       // データの使い方も koto-data の置き場も、アプリ本体（＝公開される側）を見る。
       const scan = scanDataUsage(resolvePublishRoot(String(projectDir || '')))
-      return { ok: true, usesDataLayer: scan.usedBy.length > 0, usedBy: scan.usedBy, writesFiles: scan.writesFiles }
+      // **打ち切りの有無も運ぶ**（2026-09-23 検分）。運ばないと、調べていない
+      // だけのものを画面が「見つかりませんでした」と断定する
+      return {
+        ok: true,
+        usesDataLayer: scan.usedBy.length > 0,
+        usedBy: scan.usedBy,
+        writesFiles: scan.writesFiles,
+        truncated: scan.truncated,
+      }
     } catch (e: any) {
-      return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], message: e?.message ?? String(e) }
+      return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], truncated: true, message: e?.message ?? String(e) }
     }
   })
 
-  /** koto-data.js が要るなら置く（既にあれば触らない）。 */
+  /**
+   * koto-data（.js / .cjs）が要るなら置く（既にあれば触らない）。
+   *
+   * **「AIに書き直してもらう」の直前に呼ばれる。** 置けなければ依頼文を送らない
+   * ので、`ready`（読み込み先が実在するか）と `moduleKind`（import か require か）を
+   * 画面へ返す。依頼文の書き方は、実際に置いたファイルに合わせる（2026-09-23）。
+   */
   ipcMain.handle('storage:ensureLayer', (_e, projectDir: string) => {
-    try { return { ok: true, placed: ensureDataLayer(resolvePublishRoot(String(projectDir || ''))) } }
-    catch (e: any) { return { ok: false, placed: false, message: e?.message ?? String(e) } }
+    try {
+      const dir = String(projectDir || '')
+      const r = ensureDataLayer(resolvePublishRoot(dir), dir)
+      return { ok: true, placed: r.placed, ready: r.ready, file: r.file, moduleKind: r.moduleKind }
+    } catch (e: any) {
+      return { ok: false, placed: false, ready: false, file: null, message: e?.message ?? String(e) }
+    }
   })
 
   /**
@@ -2235,9 +2135,16 @@ function findSiteIssues(root: string): SiteIssue[] {
       fs.writeFileSync(file, JSON.stringify(validated.spec, null, 2) + '\n', 'utf-8')
 
       // 6. データ層も置いておく（既にあれば触らない）。これが無いと、
-      //    AI に書き直してもらった import 先が存在しない
+      //    AI に書き直してもらった import 先が存在しない。
+      //    **置いたファイル名も返す。** 画面が名前を決め打ちすると、require の
+      //    アプリで「koto-data.js を置きました」と嘘をつく（2026-09-23 検分）
       let placed = false
-      try { placed = ensureDataLayer(resolvePublishRoot(dir)) } catch { /* 置けなくても保存場所の用意は成立する */ }
+      let dataLayerFile: string | null = null
+      try {
+        const layer = ensureDataLayer(resolvePublishRoot(dir), dir)
+        placed = layer.placed
+        dataLayerFile = layer.file
+      } catch { /* 置けなくても保存場所の用意は成立する */ }
 
       return {
         ok: true,
@@ -2245,6 +2152,7 @@ function findSiteIssues(root: string): SiteIssue[] {
         siteName: site.display_name,
         startedSite: started,
         dataLayerPlaced: placed,
+        dataLayerFile,
         note: storageCostNote(mode, BUCKET_MONTHLY_YEN),
       }
     } catch (e: any) {

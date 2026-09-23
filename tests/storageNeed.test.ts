@@ -8,7 +8,8 @@ import { storageNeedFor, shouldOfferStorage, targetKeepsData, STORAGE_PORTABLE_N
 //   出さなすぎ → データが消えるのに黙っている（いま静かに壊れている形）
 //   出しすぎ   → 要らないのに月495円を勧める
 
-const STATELESS: PublishTarget[] = ['sakura-apprun', 'hanamii', 'vercel']
+// AppRun 専有型（D-3）もコンテナなので共用型と同じ側
+const STATELESS: PublishTarget[] = ['sakura-apprun', 'sakura-apprun-dedicated', 'hanamii', 'vercel']
 
 describe('公開先がデータを保持できるか', () => {
   it('コンテナ・サーバーレスは保持できない', () => {
@@ -17,6 +18,12 @@ describe('公開先がデータを保持できるか', () => {
 
   it('レンタルサーバは保持できる', () => {
     expect(targetKeepsData('sakura-rental')).toBe(true)
+  })
+
+  // 専有型はクラスタを自分で持つが、アプリはコンテナで動くのでファイルは残らない（共用型と同じ扱い・D-3）
+  it('AppRun 専有型は共用型と同じく保持できない', () => {
+    expect(targetKeepsData('sakura-apprun-dedicated')).toBe(targetKeepsData('sakura-apprun'))
+    expect(targetKeepsData('sakura-apprun-dedicated')).toBe(false)
   })
 })
 
@@ -42,6 +49,19 @@ describe('保存場所の要否', () => {
       expect(need.kind).toBe('will-lose-data')
       expect(shouldOfferStorage(need)).toBe(true)
       expect(need.kind === 'will-lose-data' && need.note).toContain('失われ')
+    }
+  })
+
+  // ★ 2026-09-23 検分。どこか1ファイルが koto-data を使い始めただけで
+  //   「用意済み」に倒れ、**別のファイルに残った書き込みを画面が黙って隠していた**。
+  //   導線（警告・書き直しの依頼・確かめるボタン）は warn に紐づいているので、
+  //   ここで declared を優先すると、Koto は知っているのに何も言わなくなる
+  it('koto-data を使っていても、書き込みが残っていれば警告側に倒す', () => {
+    for (const t of STATELESS) {
+      const need = storageNeedFor({ usesDataLayer: true, writesFiles: true, target: t })
+      expect(need.kind).toBe('will-lose-data')
+      expect(shouldOfferStorage(need)).toBe(true)
+      expect(need.kind === 'will-lose-data' && need.note).toContain('残っています')
     }
   })
 
@@ -73,7 +93,7 @@ describe('利用者に見せる文言', () => {
   it('Markdown 記法を混ぜない', () => {
     const notes = [
       STORAGE_PORTABLE_NOTE,
-      ...(['sakura-apprun', 'sakura-rental'] as PublishTarget[]).flatMap(t =>
+      ...(['sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental'] as PublishTarget[]).flatMap(t =>
         [storageNeedFor({ usesDataLayer: true, writesFiles: true, target: t }),
          storageNeedFor({ usesDataLayer: false, writesFiles: true, target: t })]
           .map(n => ('note' in n ? n.note : ''))),

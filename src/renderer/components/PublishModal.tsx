@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { getTargetProfile, isAutoPublishTarget } from '../targetProfiles'
 import StorageNotice from './StorageNotice'
-import { withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE, buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, detectInterruptedPublish, latestPublishedTarget, type PendingPublish } from '../publishStatus'
+import { withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE, PUBLISH_TARGET_LABEL, buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, detectInterruptedPublish, latestPublishedTarget, type PendingPublish, type PublishTargetKind } from '../publishStatus'
 import { clearPublishPending } from '../publishPending'
 import { rsyncExcludeArgs } from '../../shared/publishExclude'
 import SecurityCheckSection from './SecurityCheckSection'
@@ -12,15 +12,6 @@ import VercelPanel from './VercelPanel'
 import VpsPanel from './VpsPanel'
 import AppRunDedicatedPanel from './AppRunDedicatedPanel'
 import { resolvePublishRoot } from '../publishRootRenderer'
-
-// 公開先ごとの表示名（中断検知バナー用。TARGET_LABELS と同じ内容だが publishStatus.ts 側に
-// 定義があるためここでは PublishTargetKind → 表示名の最小限のみを持つ）。
-const PENDING_TARGET_LABELS: Record<PendingPublish['target'], string> = {
-  hanamii: '🌸 HANAMII',
-  'sakura-apprun': '📦 さくらのAppRun',
-  'sakura-rental': '🌐 さくらのレンタルサーバ',
-  vercel: '▲ Vercel',
-}
 
 // 「🚀 公開」モーダル：
 // - .sakuraide.json の公開先・設定を読み、フォーム入力（次回から再入力不要）
@@ -37,7 +28,8 @@ type Target = 'sakura-rental' | 'sakura-apprun' | 'hanamii' | 'vercel' | 'sakura
 // 統一公開記録（publish.targets）: 複数の公開先へ公開した履歴を一元管理する。
 // 書き込みは各公開フローの成功時（HanamiiPanel/AppRunPanel/VercelPanel/このファイルの publishRental）。
 // 既存の publish.* フィールド（account/host/lastPublishedAt 等）はそのまま残す（StatusBar 互換）。
-type PublishTargetKind = 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 'vercel'
+// 公開先の種類（PublishTargetKind）の唯一の定義は src/renderer/publishStatus.ts。ここに複製しない
+// （掟10。D-3・2026-09-11 で専有型を足した際、ここにあった複製を消して import に切り替えた）。
 interface PublishTargetRecord {
   publishedAt: string | null
   url: string | null
@@ -78,6 +70,18 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   const [meta, setMeta] = useState<Meta>({})
   const [target, setTarget] = useState<Target | null>(null)
   const [loaded, setLoaded] = useState(false)
+  // 共用型／専有型のタブは、以前は三項演算子で出し分けていたため、行き来するたびに
+  // パネルが丸ごと作り直され、⑦ログ・メトリクス（GET 6本）と⑧を取り直したうえ、
+  // ③「🔍 調べる」の結果（limits/plans/clusters/conn）が state ごと消えていた
+  // （2026-09-23 検分の指摘5）。一度開いたパネルは**外さずに CSS で隠す**ことで、
+  // 戻ってきたときに取り直さない。まだ一度も開いていないパネルは描かない——専有型は
+  // 上級者向けなので、使わない利用者に⑦の GET 6本を払わせないため。
+  const [mountedApprunTabs, setMountedApprunTabs] = useState<Partial<Record<'sakura-apprun' | 'sakura-apprun-dedicated', true>>>({})
+  useEffect(() => {
+    if (target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') {
+      setMountedApprunTabs(prev => (prev[target] ? prev : { ...prev, [target]: true }))
+    }
+  }, [target])
   // レンサバ用
   const [account, setAccount] = useState('')
   const [host, setHost] = useState('')
@@ -96,6 +100,10 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   // 公開の実行。🛡 簡易セキュリティチェックは**自動では走らせない**
   // （2026-08-21 Ryosuke 指定: 毎回は不要。確認したい時に各公開先の 🛡 節から手動で実行する）
   const startPublish = async (cmd: string) => {
+    // **送る直前に koto-data を置く**（2026-09-23 検分）。AI への指示は
+    // 「Koto が用意します」と約束しているので、公開の直前にも約束を果たす。
+    // **既にあれば触らないので、何度押しても安全。**
+    try { await window.electronAPI.storage.ensureLayer(projectDir) } catch { /* 置けなくても公開は続ける */ }
     onRun(cmd)
     setRunning(true)
   }
@@ -182,14 +190,24 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
       // 公開の起点は`public/`（無ければプロジェクト直下＝移行前）。
       const root = await resolvePublishRoot(projectDir)
       let cmd = `cd "${root}"`
-      if (hasPublic) {
-        cmd += ` && rsync -avz --exclude='.DS_Store' public/ "${dest}:/home/${account}/www/"`
-        if (hasApp) cmd += ` && rsync -avz --exclude='config.sample.php' --exclude='.DS_Store' app/ "${dest}:/home/${account}/app/"`
-      } else {
-        // public/ が無い構成（後付け公開）はプロジェクト全体を公開ディレクトリへ。
-        // ここは公開Webルートなので、除外を落とすと会話履歴や過去のソースが誰でも読める場所に置かれる。
-        // 除外の定義は shared/publishExclude.ts に一本化してある（手で並べ直さないこと）。
-        cmd += ` && rsync -avz${rsyncExcludeArgs(['deploy.sh'])} ./ "${dest}:/home/${account}/www/"`
+      // **公開の根（root）の中身が、そのまま公開Webルート（~/www）へ行く。**
+      //
+      // ⚠️ 2026-09-23 検分で見つけた2つの穴を、ここで同時に塞いでいる。
+      //   ① `public/` がある構成は `--exclude='.DS_Store'` しか付けておらず、
+      //      一元定義（shared/publishExclude.ts）を通っていなかった。今回の実機の
+      //      `public/.koto-data/`（利用者が入力した予定・連絡先）が ~/www へ丸ごと上がり、
+      //      `https://<アカウント>.sakura.ne.jp/.koto-data/…` として誰でも読める状態になる。
+      //   ② その行の同期元が `public/` のままだった。root は `public/` があればその中を指すので、
+      //      `cd <project>/public && rsync public/` ＝ 存在しない `public/public/` を指していた
+      //      （根を public/ へ寄せた 2026-08-20 の変更の取りこぼし）。
+      // 根そのものを送るのだから、**どちらの構成でも `./` でよい**。
+      // 除外は手で並べ直さないこと（経路ごとに書き写して4回穴が空いている・掟10）。
+      cmd += ` && rsync -avz${rsyncExcludeArgs(['deploy.sh'])} ./ "${dest}:/home/${account}/www/"`
+      // app/ は**公開Webルートの外**（~/app）。config.php など「秘密だが動くのに要るもの」を
+      // 置く場所なので、公開用の除外（.env や Dockerfile まで外す）はあえて掛けない。
+      // 根の外（プロジェクト直下）にあるので、根からの相対ではなく絶対パスで指す。
+      if (hasPublic && hasApp) {
+        cmd += ` && rsync -avz --exclude='config.sample.php' --exclude='.DS_Store' "${projectDir}/app/" "${dest}:/home/${account}/app/"`
       }
       cmd += ` && echo '==> 公開完了: https://${host}/'`
       await startPublish(cmd)
@@ -232,7 +250,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
         {interruptedPublish && (
           <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 mb-4 space-y-2">
             <p className="text-sm text-ink leading-relaxed">
-              ⚠️ 前回、{PENDING_TARGET_LABELS[interruptedPublish.target]}への公開が完了前に中断された可能性があります。実際に公開されたか、下の公開状況や公開先の管理画面でご確認ください。
+              ⚠️ 前回、{PUBLISH_TARGET_LABEL[interruptedPublish.target]}への公開が完了前に中断された可能性があります。実際に公開されたか、下の公開状況や公開先の管理画面でご確認ください。
             </p>
             <div className="flex justify-end">
               <button
@@ -246,11 +264,14 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
         {/* 公開先を選んだら「データの保存」について知らせる（2026-08-13）。
             **公開先ごとに答えが変わる**ので、ここに置く。レンタルサーバならファイルが
             残るので費用は要らない。コンテナ系では消えるので保存場所が要る。
-            sakura-vps は①接続のみ、sakura-apprun-dedicated はクラスタの作成・破棄までで、
-            どちらもアプリケーションの公開（データを伴う公開）の実装が無いため対象外。 */}
-        {loaded && target && target !== 'sakura-vps' && target !== 'sakura-apprun-dedicated' && (
+            sakura-vps は①接続のみで、アプリケーションの公開（データを伴う公開）の実装が無いため対象外。
+            sakura-apprun-dedicated は共用型と同じコンテナ系として出す（storageNeed.ts の PublishTarget に
+            含まれ、targetKeepsData=false。D-3・2026-09-11 Ryosuke 決定）。
+            target の型は公開先の一覧をここに書き写さず、上の条件で絞った結果（Target から 'sakura-vps' を
+            除いたもの）をそのまま渡す。StorageNotice 側の PublishTarget と食い違えば型検査で分かる。 */}
+        {loaded && target && target !== 'sakura-vps' && (
           <div className="mb-3">
-            <StorageNotice projectDir={projectDir} target={target as 'hanamii' | 'sakura-apprun' | 'sakura-rental' | 'vercel'} onAskAi={onClose} />
+            <StorageNotice projectDir={projectDir} target={target} onAskAi={onClose} />
           </div>
         )}
 
@@ -478,10 +499,17 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             {/* タブ直下にあった専有型の費用・提供範囲の注意は、AppRunDedicatedPanel.tsx の
                 パネル冒頭に一本化した（判断4・利用者目線レビュー・2026-09-11。以前はここ・
                 パネル冒頭・④冒頭の3か所にほぼ同文で出ていた）。 */}
-            {target === 'sakura-apprun' ? (
-              <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
-            ) : (
-              <AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+            {/* 出し分けは hidden（表示）だけで行い、パネルは外さない（指摘5）。
+                三項演算子に戻すと、タブを行き来するたびに③の調査結果が消えて⑦を取り直す。 */}
+            {mountedApprunTabs['sakura-apprun'] && (
+              <div className={target === 'sakura-apprun' ? undefined : 'hidden'}>
+                <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
+              </div>
+            )}
+            {mountedApprunTabs['sakura-apprun-dedicated'] && (
+              <div className={target === 'sakura-apprun-dedicated' ? undefined : 'hidden'}>
+                <AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+              </div>
             )}
           </div>
         ) : null}

@@ -3,6 +3,7 @@ import { app, ipcMain, shell } from 'electron'
 import { exec, execSync } from 'child_process'
 import * as net from 'net'
 import type { IpcDeps } from './types'
+import { awaitLoginPath } from '../loginPath'
 
 // ── AIのrun_commandツール用：プロジェクト内でコマンドを実行し、出力を返す ──
 // 常駐プロセス向きではない（60秒でタイムアウト）。出力は上限つきで切詰める。
@@ -10,9 +11,13 @@ import type { IpcDeps } from './types'
 // そのまま直呼びする。中身は proc:run ハンドラの実処理をそのまま関数として切り出したもの
 // （PROC_OUTPUT_MAX・timeout・maxBuffer・shell・返り値の形、すべて現行そのまま）。
 const PROC_OUTPUT_MAX = 8000
-export function runProjectCommand(
+export async function runProjectCommand(
   cwd: string, command: string
 ): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  // D-18 C: PATH がまだ決まっていなければ、決まるまで待つ（決まっていれば 0 コスト）。
+  // 起動直後にAIが `npm …` を走らせると、待たない場合は最小限の PATH のまま子プロセスが
+  // 立ち上がり、`npm: command not found` になる（2026-07-30 の報告の正体）。
+  await awaitLoginPath()
   return new Promise(resolve => {
     exec(command, {
       cwd,
@@ -69,8 +74,11 @@ export function registerShellHandlers(_deps: IpcDeps) {
   ipcMain.handle('shell:showInFolder', (_, p: string) => shell.showItemInFolder(p))
 
   // コマンドの存在確認（公開前チェック用。rsync / docker など）
-  ipcMain.handle('shell:which', (_, cmd: string) => {
+  ipcMain.handle('shell:which', async (_, cmd: string) => {
     if (!/^[A-Za-z0-9._-]+$/.test(cmd)) return null // 任意文字列のシェル実行は許さない
+    // D-18 C: PATH が決まる前に調べると **docker を「未インストール」と誤判定しうる**
+    // （AppRun 公開の前提チェック）。決まっていれば 0 コスト。
+    await awaitLoginPath()
     try {
       const p = execSync(`command -v ${cmd}`, { shell: process.env.SHELL || '/bin/zsh' }).toString().trim()
       return p || null

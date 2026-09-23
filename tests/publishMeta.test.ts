@@ -49,6 +49,30 @@ describe('withPublishRecord: publish.targets[target] にだけ差し込み、他
   })
 })
 
+// D-3: さくらのAppRun 専有型（'sakura-apprun-dedicated'）は共用型と別のキーで、同じ関数で記録する。
+// 「公開した事実」は publish.targets、資源の ID は publish.apprunDedicated と置き場が違うので、
+// 片方を書いてももう片方を消さないことを固定する。
+describe('専有型（sakura-apprun-dedicated）も同じ関数で記録できる', () => {
+  it('★ 共用型の記録と publish.apprunDedicated（資源ID）を消さずに、専有型の記録だけ足す', () => {
+    const meta = {
+      publish: {
+        targets: { 'sakura-apprun': { publishedAt: '2026-09-01T00:00:00.000Z', url: 'https://a/' } },
+        apprunDedicated: { clusterID: 'c1', loadBalancerID: 'l1', applicationID: 'app-1' },
+      },
+    }
+    const next = withPublishRecord(meta, 'sakura-apprun-dedicated', { publishedAt: '2026-09-11T00:00:00.000Z', url: 'https://d/' })
+    const publish = next.publish as any
+    expect(publish.targets['sakura-apprun-dedicated']).toEqual({ publishedAt: '2026-09-11T00:00:00.000Z', url: 'https://d/' })
+    expect(publish.targets['sakura-apprun']).toEqual({ publishedAt: '2026-09-01T00:00:00.000Z', url: 'https://a/' })
+    expect(publish.apprunDedicated).toEqual({ clusterID: 'c1', loadBalancerID: 'l1', applicationID: 'app-1' })
+  })
+
+  it('開始マーカー（pending）も専有型で書ける', () => {
+    const next = withPendingPublish({}, 'sakura-apprun-dedicated', '2026-09-11T00:00:00.000Z')
+    expect((next.publish as any).pending).toEqual({ target: 'sakura-apprun-dedicated', startedAt: '2026-09-11T00:00:00.000Z' })
+  })
+})
+
 describe('withPendingPublish / withoutPendingPublish: 開始マーカーの書き/消し', () => {
   it('pending を書く。publish の他のキー（targets 等）は保つ', () => {
     const meta = { publish: { targets: { hanamii: { publishedAt: null, url: null } } } }
@@ -115,13 +139,13 @@ describe('withApprunDedicatedRecord: publish.apprunDedicated にだけ差し込�
       target: 'sakura-apprun-dedicated',
       publish: {
         targets: { vercel: { publishedAt: '2026-01-01T00:00:00.000Z', url: 'https://v.example.com' } },
-        apprunDedicated: { servicePrincipalId: '113800956789', consentedAt: '2026-08-01T00:00:00.000Z' },
+        apprunDedicated: { servicePrincipalId: '111111111111', consentedAt: '2026-08-01T00:00:00.000Z' },
       },
     }
     const next = withApprunDedicatedRecord(meta, { clusterID: 'cluster-x' })
     const rec = (next.publish as any).apprunDedicated
     expect(rec.clusterID).toBe('cluster-x')
-    expect(rec.servicePrincipalId).toBe('113800956789')
+    expect(rec.servicePrincipalId).toBe('111111111111')
     expect(rec.consentedAt).toBe('2026-08-01T00:00:00.000Z')
     expect((next.publish as any).targets.vercel).toEqual({ publishedAt: '2026-01-01T00:00:00.000Z', url: 'https://v.example.com' })
   })
@@ -147,6 +171,49 @@ describe('withApprunDedicatedRecord: publish.apprunDedicated にだけ差し込�
     expect(rec.loadBalancerID).toBeNull()
     expect(rec.asgID).toBe('a1')
     expect(rec.clusterID).toBe('c1')
+  })
+
+  // D-1（土台）: 段階③⑤「アプリを公開する」用に足した欄（applicationID・applicationName・
+  // activeVersion・imageRef・hosts・appPort・appCpu・appMemory・appFixedScale・lbAddresses・
+  // appPublishedAt）。withApprunDedicatedRecord 自体は汎用のマージ関数なので振る舞いは変えていない
+  // ——型に足しただけで同じ関数が扱えることを固定する（既存のクラスタ・ASG・LBの欄を消さないことも）。
+  it('新しく足した「アプリを公開する」の欄が patch で残り、既存のクラスタ/ASG/LBの欄を消さない', () => {
+    const meta = {
+      publish: {
+        apprunDedicated: { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', consentedAt: '2026-08-01T00:00:00.000Z' },
+      },
+    }
+    const next = withApprunDedicatedRecord(meta, {
+      applicationID: 'app-1',
+      applicationName: 'myapp',
+      activeVersion: 3,
+      imageRef: 'xxx.sakuracr.jp/myapp:v20260911-120000',
+      hosts: ['app.example.com'],
+      appPort: 8080,
+      appCpu: 500,
+      appMemory: 512,
+      appFixedScale: 1,
+      lbAddresses: ['10.0.0.1'],
+      appPublishedAt: '2026-09-11T12:00:00.000Z',
+    })
+    const rec = (next.publish as any).apprunDedicated
+    // 新しい欄が反映されている。
+    expect(rec.applicationID).toBe('app-1')
+    expect(rec.applicationName).toBe('myapp')
+    expect(rec.activeVersion).toBe(3)
+    expect(rec.imageRef).toBe('xxx.sakuracr.jp/myapp:v20260911-120000')
+    expect(rec.hosts).toEqual(['app.example.com'])
+    expect(rec.appPort).toBe(8080)
+    expect(rec.appCpu).toBe(500)
+    expect(rec.appMemory).toBe(512)
+    expect(rec.appFixedScale).toBe(1)
+    expect(rec.lbAddresses).toEqual(['10.0.0.1'])
+    expect(rec.appPublishedAt).toBe('2026-09-11T12:00:00.000Z')
+    // 既存のクラスタ/ASG/LBの欄は消えていない。
+    expect(rec.clusterID).toBe('c1')
+    expect(rec.asgID).toBe('a1')
+    expect(rec.loadBalancerID).toBe('l1')
+    expect(rec.consentedAt).toBe('2026-08-01T00:00:00.000Z')
   })
 })
 

@@ -2,7 +2,7 @@
 //
 // ── なぜ一元化するのか（2026-08-09 Ryosuke の指摘）──────────────────────
 // 破棄の導線を「③公開」の各パネル以外にも増やす（📡 公開したもの一覧・プロジェクト削除時）。
-// 公開先は4つあるが**破棄の口があるのは2つだけ**なので、置き場所ごとに判定を書くと
+// 公開先は5つあるが**破棄の口があるのは3つだけ**（AppRun 共用型・専有型・HANAMII）なので、置き場所ごとに判定を書くと
 // 「押しても何も起きないボタン」がどこかに生まれる。判定はここ1箇所に置く。
 //
 // 破棄できない2つは、サービス側で消してもらうしかない。**消す方法を必ず添える**こと。
@@ -16,11 +16,15 @@ export type TeardownSupport = 'supported' | 'manual'
 /**
  * その公開先を Koto から破棄できるか。
  * - `sakura-apprun` … `cloud:teardown`（アプリ＋コンテナレジストリ）
+ * - `sakura-apprun-dedicated` … 専有型のアプリ（全バージョン）だけ。クラスタ・ロードバランサは
+ *   専有型タブの⑥で別に破棄する（2026-09-11 Ryosuke 決定。実際の削除呼び出しは D-4 でつなぐ）
  * - `hanamii`       … `hanamii:teardown`（プロジェクト削除）
  * - `vercel` / `sakura-rental` … 破棄の実装が無い
  */
 export function teardownSupport(target: PublishTargetKind): TeardownSupport {
-  return target === 'sakura-apprun' || target === 'hanamii' ? 'supported' : 'manual'
+  return target === 'sakura-apprun' || target === 'sakura-apprun-dedicated' || target === 'hanamii'
+    ? 'supported'
+    : 'manual'
 }
 
 /**
@@ -44,6 +48,9 @@ export function teardownScopeNote(target: PublishTargetKind): string {
   switch (target) {
     case 'sakura-apprun':
       return 'AppRun アプリとコンテナレジストリ（登録済みイメージごと）を削除します。'
+    case 'sakura-apprun-dedicated':
+      // クラスタ・LB は月額が続く資源なので、「アプリだけ消える」ことを必ず伝える
+      return '専有型のアプリ（全バージョン）を削除します。クラスタ・ロードバランサは専有型タブの⑥で別に破棄します（消すまで課金が続きます）'
     case 'hanamii':
       return 'HANAMII のプロジェクトを削除します。'
     default:

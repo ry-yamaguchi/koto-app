@@ -32,6 +32,7 @@ import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
 import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
 import { runCompact, type EngineTurnSpec, type EngineTurnPorts } from '../../shared/chatTurn'
+import { compactTimeoutMessage } from '../../shared/chatTimeouts'
 import type { AskPath } from '../../shared/chatTurnRpc'
 import { stripFunctions, dispatchAsk } from '../chatTurnBridge'
 import { turnKey, getTurn, updateTurn, resetTurn, subscribe, getSnapshot } from '../chatTurnRegistry'
@@ -409,6 +410,9 @@ export function useAiChat(args: UseAiChatArgs) {
       // 配線したとき、この分岐だけ差し替えれば済むように残す）。
       if ('msg' in r) appendBubble(r.msg)
       else if ('aborted' in r) appendBubble({ role: 'assistant', content: '（⏹ 停止しました）', toolNote: true })
+      // 時間切れ（2026-09-23 検分の指摘1）: SDK の 'Request timed out.' をそのまま出さない。
+      // 文言は shared/chatTimeouts.ts の一元定義（秒数は定数から作られる）。
+      else if ('timedOut' in r) appendBubble({ role: 'assistant', toolNote: true, content: compactTimeoutMessage() })
       else appendBubble({ role: 'assistant', toolNote: true, content: `⚠️ ${r.error}` })
     } finally {
       emit({ kind: 'loading', value: false })

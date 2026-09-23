@@ -18,14 +18,18 @@ import type { CloudCredentials } from './auth'
 import {
   getLimits, listClusters, createCluster, getCluster, deleteCluster,
   createAsg, getAsg, deleteAsg, createLoadBalancer, deleteLoadBalancer,
-  listAsg, listLoadBalancers, type ApprunDedicatedResult,
+  listAsg, listLoadBalancers, listApplications, deleteApplication,
+  getApplication, updateApplication, listApplicationContainers, type ApprunDedicatedResult,
 } from './apprunDedicated'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import type { ApprunDedicatedRecord } from '../../shared/publishMeta'
 import {
   readLimits, readClusters, readClusterId, readAsgId, readLoadBalancerId,
-  readClusterRows, readAsgRows, readLoadBalancerRows, readApiErrorTitle,
+  readClusterRows, readClusterIDs, readAsgRows, readAsgIDs, readLoadBalancerRows, readLoadBalancerIDs,
+  readApplicationRows, readApplicationIDs, readApplication, readApiErrorTitle,
+  readContainerStates,
 } from '../../shared/apprunDedicatedShapes'
+import { buildActiveVersionBody, appDeleteRetryable, appDeleteExhaustedMessage } from '../../shared/apprunDedicatedApp'
 
 // ── 入力の形 ──────────────────────────────────────────────────────────
 
@@ -38,8 +42,8 @@ export type ApprunDedicatedClusterSpec = {
   name: string
   ports: ApprunDedicatedPort[]
   servicePrincipalID: string
-  /** 独自ドメインを使うときだけ必須（Let's Encrypt発行に要る）。 */
-  letsEncryptEmail?: string
+  // F-1（2026-09-16）: Let's Encrypt メールの欄はここから外した（⑤フォームから削除・⑧に一本化）。
+  // ⑧の経路（main/ipc/apprunDedicated.ts の AppPublishInput）はそのまま残る。
   zone: string
   workerServiceClassPath: string
   minNodes: number
@@ -124,7 +128,6 @@ export function buildClusterCreateBody(spec: ApprunDedicatedClusterSpec): Record
     ports: spec.ports.map(p => ({ port: p.port, protocol: p.protocol })),
     servicePrincipalID: spec.servicePrincipalID,
   }
-  if (spec.letsEncryptEmail) body.letsEncryptEmail = spec.letsEncryptEmail
   return body
 }
 
@@ -321,7 +324,29 @@ export async function createClusterFlow(
   }
   const clusterID = readClusterId(clusterRes.data)
   if (!clusterID) {
-    return { ok: false, stage: 'cluster-create', message: 'クラスタを作成しましたが、応答からIDを取り出せませんでした（手動で確認してください）。' }
+    // A（2026-09-17）: 応答の形が想定と違いIDを読めなかった。POSTは2xxで返っているため、
+    // 上の「!ok」の枝（応答が取れなかった場合）より存在は確実——同じく一覧を名前で探し、
+    // 見つかれば記録する。記録が無いままだと専有型には取り込みの導線が無く、
+    // このクラスタはKotoから永久に破棄できなくなる。
+    const foundListRes = await listClusters(auth, baseUrl)
+    const found = foundListRes.ok ? readClusterRows(foundListRes.data).find(r => r.name === spec.name) : null
+    if (found) {
+      const stop = recordOrStop(projectDir, {
+        clusterID: found.clusterID, name: spec.name, zone: spec.zone,
+        workerServiceClassPath: spec.workerServiceClassPath, lbServiceClassPath: spec.lbServiceClassPath,
+        createdAt: new Date().toISOString(),
+      }, 'クラスタ', found.clusterID, { clusterID: found.clusterID })
+      if (stop) return stop
+      return {
+        ok: false, stage: 'cluster-create',
+        message: `クラスタを作成しましたが、応答からIDを取り出せませんでした。同じ名前のクラスタが見つかったので記録しました（ID『${found.clusterID}』）。`,
+        clusterID: found.clusterID,
+      }
+    }
+    return {
+      ok: false, stage: 'cluster-create',
+      message: `クラスタを作成しましたが、応答からIDを取り出せませんでした。作成の要求は通っているため、課金が始まっている可能性があります。さくらのクラウドのコントロールパネルで『${spec.name}』を確認し、不要なら削除してください。`,
+    }
   }
   // POSTが成功しIDが取れた時点で記録する（getClusterの結果を待たない。上のコメント参照）。
   const nowIso = new Date().toISOString()
@@ -369,7 +394,9 @@ export async function createClusterFlow(
   if (!asgID) {
     return {
       ok: false, stage: 'asg-create',
-      message: 'オートスケーリンググループを作成しましたが、応答からIDを取り出せませんでした（手動で確認してください）。',
+      // A（2026-09-17）: クラスタは既にclusterIDとして記録済み（⑥の節は出る）。ここは
+      // 名前探しを足さず、課金への言及だけを加える（経路を増やさないほうが安全。仕様書参照）。
+      message: `オートスケーリンググループを作成しましたが、応答からIDを取り出せませんでした。作成の要求は通っているため、課金が始まっている可能性があります。さくらのクラウドのコントロールパネルで『${spec.name}』を確認し、不要なら削除してください。`,
       clusterID,
     }
   }
@@ -413,7 +440,9 @@ export async function createClusterFlow(
   if (!loadBalancerID) {
     return {
       ok: false, stage: 'lb-create',
-      message: 'ロードバランサを作成しましたが、応答からIDを取り出せませんでした（手動で確認してください）。',
+      // A（2026-09-17）: クラスタ・ASGは既に記録済み（⑥の節は出る）。ここも名前探しは足さず、
+      // 課金への言及だけを加える（経路を増やさないほうが安全。仕様書参照）。
+      message: `ロードバランサを作成しましたが、応答からIDを取り出せませんでした。作成の要求は通っているため、課金が始まっている可能性があります。さくらのクラウドのコントロールパネルで『${spec.name}』を確認し、不要なら削除してください。`,
       clusterID, asgID,
     }
   }
@@ -422,8 +451,10 @@ export async function createClusterFlow(
 
   // 3-f. 実在確認（M）。LBには単体取得APIが無いため、一覧にIDがあるかで確かめる
   // （クラスタ・ASGの verify と同じ扱いに揃える。記録は残したまま——POSTは成功しているため）。
+  // M-1（2026-09-17）: 在否の判定に名前は要らない。name の無い行も拾う readLoadBalancerIDs を使う
+  // （readLoadBalancerRows は名前探し用で、name の無い行を捨てるため「消えた」誤判定を招く）。
   const verifyLbListRes = await listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl)
-  const lbFound = verifyLbListRes.ok && readLoadBalancerRows(verifyLbListRes.data).some(r => r.loadBalancerID === loadBalancerID)
+  const lbFound = verifyLbListRes.ok && readLoadBalancerIDs(verifyLbListRes.data).includes(loadBalancerID)
   if (!lbFound) {
     return {
       ok: false, stage: 'lb-verify',
@@ -445,6 +476,15 @@ export async function createClusterFlow(
 // にしていたため、(1) ASG が 409 で止まり (2) LB の ID が記録から外れて Koto から押し直せない、
 // が同時に起きた（CLAUDE.md 掟10「削除の 204 は『消えた』ではない」）。
 // → 各段は **一覧から ID が完全に消えるまで待ってから** 次の段へ進む（waitUntilGone）。
+//
+// ── C（D-19・2026-09-16）: 消えた資源の IP を記録に残さない ───────────────────────────
+// 記録の `lbAddresses` は「いまのクラスタのロードバランサの IP」である。ロードバランサや
+// クラスタが消えれば、**その IP はもう存在しない**——残しておくと、次に作ったクラスタの
+// 画面（⑧）が**前のクラスタの IP を「DNS の A レコード」として出す**ことになり、利用者は
+// 間違った先へ DNS を向ける。アプリの段（attemptDeleteApplication の clearAppRecord）は
+// 既に `lbAddresses: null` を含んでいたが、**アプリを公開していないプロジェクト**（⑤で
+// クラスタだけ作り、「🔄 IP を取り直す」を押した場合）はその段を通らないため、
+// **ロードバランサの段とクラスタの段でも消す**（どの道から破棄しても確実に消えるように）。
 
 export type TeardownFlowResult = {
   /** 記録にあったものが全部消せたか。1つでも残れば false。 */
@@ -453,13 +493,13 @@ export type TeardownFlowResult = {
   executed: string[]
   message: string
   /** 消せずに残ったID（無ければキー自体が無い＝最初から記録に無かった/消せた）。 */
-  remaining: { loadBalancerID?: string; asgID?: string; clusterID?: string }
+  remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
   /**
    * 削除は受け付けられた（204、または404+`deleting:true`）が、**待ち切れず（timeout）に
    * 止まった**ときだけ立つ（#39）。画面はこれを見て「削除中です。しばらくして⑥をもう一度
    * 押してください」の黄色い注意を出す（残っています＝失敗、の赤い表示とは区別する）。
    */
-  inProgress?: { loadBalancerID?: string; asgID?: string; clusterID?: string }
+  inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
 }
 
 export type TeardownFlowOpts = {
@@ -478,6 +518,12 @@ export type TeardownFlowOpts = {
    * **テストではここへ即時に解決する偽物を渡し、実際には待たずにループを回す**（#39のテスト方針）。
    */
   sleep?: (ms: number) => Promise<void>
+  /**
+   * true なら**アプリケーションの段だけ**行い、LB/ASG/クラスタには触らない（D-2b-2・12-2-7。
+   * 📡 一覧の「破棄」から、専有型のアプリだけを消したいときに使う）。記録にアプリケーションが
+   * 無ければ何もせず ok:true を返す。
+   */
+  appOnly?: boolean
 }
 
 export type WaitUntilGoneResult = { ok: true } | { ok: false; reason: 'timeout' }
@@ -569,6 +615,189 @@ async function waitOrStop(
   }
 }
 
+/**
+ * アプリケーションの削除は「有効なバージョン（activeVersion）を持ったままでは 400 になる」
+ * （2026-09-16 実機実測: `{"status":400,"title":"Cannot delete application because it has
+ * active version"}`）。DELETE より前に、有効なバージョンを無効化してから確かめる（この関数）。
+ *
+ * 1. `getApplication` でいまの `activeVersion` を見る。**取れなくても（応答が失敗・形が読めない）
+ *    ここで止めない**——「分からない」を「無効化不要」に倒さず、無効化を試みてから戻る。
+ * 2. `activeVersion` が null（＝確認できて、かつ無効）のときだけ何もせず ok:true で戻る。
+ *    それ以外（数値だった・分からなかった）は `updateApplication` で null に更新する。
+ *    更新そのものが失敗したら、生の応答を message に載せて ok:false。
+ * 3. 更新後、`getApplication` を **`waitUntilGone` と同じ「消えるまで待つ」ループ**で引き直し、
+ *    `activeVersion` が null になったことを確かめてから戻る（読めない／まだ非nullは「まだ残って
+ *    いる」扱いで待ち続ける——確かめられないことを成功に倒さない）。待ち切ってもnullにならなければ
+ *    ok:false。
+ *
+ * 成功したら `executed` に「バージョンを無効にしました」の1行を足す（呼ばれた＝実際に無効化の
+ * 要求を出した、という意味。既に null だった場合は何も足さない）。
+ */
+async function ensureApplicationDeactivated(
+  auth: CloudCredentials, applicationID: string, opts: TeardownFlowOpts, baseUrl: string | undefined, executed: string[],
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  // 1. いまの activeVersion を見る。取れない・形が読めないときは undefined（＝分からない）。
+  const getRes = await getApplication(auth, applicationID, baseUrl)
+  const app = getRes.ok ? readApplication(getRes.data) : null
+  const activeVersion: number | null | undefined = app ? app.activeVersion : undefined
+
+  // 確認できて、かつ null（＝有効なバージョン無し）なら何もしない。
+  if (activeVersion === null) return { ok: true }
+
+  // 2. 無効化する（分からない場合も含めて試みる）。
+  const updateRes = await updateApplication(auth, applicationID, buildActiveVersionBody(null), baseUrl)
+  if (!updateRes.ok) {
+    return {
+      ok: false,
+      message: `アプリケーションのバージョンを無効化できませんでした: ${updateRes.message}`,
+    }
+  }
+
+  // 3. null になったことを確かめてから戻る。確かめられない・まだ非nullなら待ってから引き直す
+  // （waitUntilGone と同じループ。isPresent＝「まだ有効なバージョンが残っているか」）。
+  const wait = await waitUntilGone(
+    () => getApplication(auth, applicationID, baseUrl),
+    data => {
+      const a = readApplication(data)
+      return a ? a.activeVersion !== null : true
+    },
+    { intervalMs: opts.intervalMs, timeoutMs: opts.timeoutMs, sleep: opts.sleep },
+  )
+  if (!wait.ok) {
+    return {
+      ok: false,
+      message: 'アプリケーションのバージョンを無効化しましたが、無効になったことを確認できませんでした（待機がタイムアウトしました）。コントロールパネルで確認してください。',
+    }
+  }
+
+  executed.push(`アプリケーション『${applicationID}』のバージョンを無効にしました`)
+  return { ok: true }
+}
+
+/**
+ * アプリケーションを削除し、一覧から消えるまで待つ。成功（次へ進んでよい）なら null（D-2b-2）。
+ * **LB/ASG/クラスタより先に呼ぶ**（12-2-7・12-1「破棄の順序はアプリ→LB→ASG→クラスタ」）。
+ * `attemptDeleteLoadBalancer` と同じ作り（DELETE→ok なら一覧から消えるまで waitOrStop・
+ * 404 は一覧で確かめる）。**ただし readApplicationRows には `deleting` が無い**（原本にこの
+ * フィールドは無い・未確認。5-8 と同じ「推測でキーを足さない」方針）ため、404後の分岐は
+ * `attemptDeleteCluster`（同じく `deleting` を持たない資源）と同じ形にする——一覧にまだ
+ * あれば断定的な「残っています」で止め、無ければ消えた扱いにする。
+ *
+ * **DELETE の前に `ensureApplicationDeactivated` で有効なバージョンを無効化し、さらに
+ * `listApplicationContainers` でコンテナが0件になるまで待つ**（2026-09-16 実機実測:
+ * 有効なバージョンを持ったままでは 400「active version」、無効化直後はコンテナがまだ
+ * 止まりきっていなくて 400「currently running」になる——どちらも「受け付けられた≠完了した」
+ * という同じ形）。それでも DELETE が 400（上記いずれかの文言）で失敗したら、無効化からやり直す
+ * （`attemptDeleteAsg` が 409 でLBの残存を回復するのと同じ形。最大3回。3回で駄目なら、
+ * どちらの理由で止まったか分かる文面にして、生の応答を載せて止める）。文言の判定は
+ * `appDeleteRetryable`（`src/shared/apprunDedicatedApp.ts`）1か所に集約する。
+ */
+async function attemptDeleteApplication(
+  auth: CloudCredentials, projectDir: string, clusterID: string, applicationID: string,
+  opts: TeardownFlowOpts, baseUrl: string | undefined, executed: string[],
+): Promise<TeardownFlowResult | null> {
+  const remaining = { applicationID }
+  // 記録の app 系の欄をすべて null に戻す（D-2b-2 仕様書どおりの欄）。
+  const clearAppRecord = () => writeApprunDedicatedRecordFs(projectDir, {
+    applicationID: null, applicationName: null, activeVersion: null, imageRef: null,
+    hosts: null, lbAddresses: null, appPublishedAt: null,
+    appPort: null, appCpu: null, appMemory: null, appFixedScale: null,
+  })
+
+  for (let attempt = 0; ; attempt++) {
+    // 無効化を試みる（既に null なら何もしない）。
+    const deactivated = await ensureApplicationDeactivated(auth, applicationID, opts, baseUrl, executed)
+    if (!deactivated.ok) {
+      return { ok: false, executed, message: deactivated.message, remaining }
+    }
+
+    // ── D-10（2026-09-16 実機実測）: 無効化しても、動いているコンテナは即座には消えない ──────
+    // 無効化の「要求が通った」ことと、コンテナが「実際に止まった」ことは別。間を置かずDELETEを
+    // 撃つと、まだ動いているコンテナに当たって 400「currently running」になる。DELETEの前に、
+    // コンテナが0件になるまで待つ（waitUntilGone を再利用。新しい待ちループは書かない）。
+    const containersRes = await listApplicationContainers(auth, applicationID, baseUrl)
+    const initialContainerStates = containersRes.ok ? readContainerStates(containersRes.data) : null
+    // **読めなかった（一覧の取得自体が失敗／応答の形が読めない）ときは、待ちを理由に止めない。
+    // 0件と読み替えもせず、そのままDELETEを試す**（読めないことを理由に破棄を止めると、
+    // 課金が止まらないほうへ倒れる）。
+    if (initialContainerStates && initialContainerStates.length > 0) {
+      opts.progress?.('コンテナが止まるのを待っています…')
+      const containersWait = await waitUntilGone(
+        () => listApplicationContainers(auth, applicationID, baseUrl),
+        data => {
+          const states = readContainerStates(data)
+          // ここでも同じ理由でnullを0件と読み替えない——読めない間は「まだ残っている」扱いで待つ。
+          return states === null ? true : states.length > 0
+        },
+        { intervalMs: opts.intervalMs, timeoutMs: opts.timeoutMs, sleep: opts.sleep },
+      )
+      if (!containersWait.ok) {
+        // 時間切れでも関門にはしない。待ちは成功率を上げるためのものなので、そのままDELETEを試す。
+        executed.push(`アプリケーション『${applicationID}』のコンテナが止まるのを待ちましたが、時間切れになりました。そのまま削除を試みます。`)
+      }
+    }
+
+    const res = await deleteApplication(auth, applicationID, baseUrl)
+    if (res.ok) {
+      const stop = await waitOrStop(
+        'アプリケーション',
+        () => listApplications(auth, clusterID, undefined, baseUrl),
+        // M-1（2026-09-17）: 在否の判定に名前は要らない。name/clusterID の無い行も拾う
+        // readApplicationIDs を使う（readApplicationRows は名前探し用で、それらの無い行を
+        // 捨てるため「消えた」誤判定を招く）。
+        data => readApplicationIDs(data).includes(applicationID),
+        opts, executed, remaining, { applicationID },
+      )
+      if (stop) return stop
+      clearAppRecord()
+      executed.push(`アプリケーション『${applicationID}』を削除しました（消えたことを確認）`)
+      return null
+    }
+    if (res.status === 404) {
+      const listRes = await listApplications(auth, clusterID, undefined, baseUrl)
+      if (!listRes.ok) {
+        return {
+          ok: false, executed,
+          message: `アプリケーションの削除に失敗しました（404）。一覧でも確かめられませんでした＝課金が続きます: ${listRes.message}`,
+          remaining,
+        }
+      }
+      // M-1（2026-09-17）: 同上。name/clusterID の無い行も在否判定に含める。
+      const present = readApplicationIDs(listRes.data).includes(applicationID)
+      if (present) {
+        return {
+          ok: false, executed,
+          message: `アプリケーションの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+          remaining,
+        }
+      }
+      clearAppRecord()
+      executed.push(`アプリケーション『${applicationID}』は既に存在しませんでした（記録から外しました）`)
+      return null
+    }
+    if (res.status === 400) {
+      const title = readApiErrorTitle(safeParseJson(res.detail))
+      if (appDeleteRetryable(title)) {
+        if (attempt >= 2) {
+          // 3回目（attempt: 0,1,2）でも 400。無効化・待ちをやり直しても解消しない。
+          // どちらの理由で止まったかによってmessageを変える（嘘にならないように）。
+          return {
+            ok: false, executed,
+            message: appDeleteExhaustedMessage(title, res.message),
+            remaining,
+          }
+        }
+        continue // 無効化からやり直す。
+      }
+    }
+    return {
+      ok: false, executed,
+      message: `アプリケーションの削除に失敗しました。残っています＝課金が続きます: ${res.message}`,
+      remaining,
+    }
+  }
+}
+
 /** ロードバランサを削除し、一覧から消えるまで待つ。成功（次へ進んでよい）なら null。 */
 async function attemptDeleteLoadBalancer(
   auth: CloudCredentials, projectDir: string, clusterID: string, asgID: string, loadBalancerID: string,
@@ -580,11 +809,13 @@ async function attemptDeleteLoadBalancer(
     const stop = await waitOrStop(
       'ロードバランサ',
       () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
-      data => readLoadBalancerRows(data).some(r => r.loadBalancerID === loadBalancerID),
+      // M-1（2026-09-17）: 在否の判定に名前は要らない。name の無い行も拾う readLoadBalancerIDs
+      // を使う（readLoadBalancerRows は名前探し用で、name の無い行を捨てるため「消えた」誤判定を招く）。
+      data => readLoadBalancerIDs(data).includes(loadBalancerID),
       opts, executed, remaining, { loadBalancerID },
     )
     if (stop) return stop
-    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+    writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null, lbAddresses: null })
     executed.push(`ロードバランサ『${loadBalancerID}』を削除しました（消えたことを確認）`)
     return null
   }
@@ -597,21 +828,27 @@ async function attemptDeleteLoadBalancer(
         remaining,
       }
     }
-    const row = readLoadBalancerRows(listRes.data).find(r => r.loadBalancerID === loadBalancerID)
-    if (!row) {
-      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+    // M-1（2026-09-17）: **在否は ID だけで見る。** readLoadBalancerRows は名前探し用で
+    // name の無い行を捨てるため、これで「無い」と判断すると**消えていないのに記録から外す**
+    // ことになり、Koto から破棄できなくなって課金が止まらない。
+    if (!readLoadBalancerIDs(listRes.data).includes(loadBalancerID)) {
+      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null, lbAddresses: null })
       executed.push(`ロードバランサ『${loadBalancerID}』は既に存在しませんでした（記録から外しました）`)
       return null
     }
-    if (row.deleting === true) {
+    // ここから先は「まだある」と分かっている。`deleting` を読むために行そのものを引く
+    // （読めなければ「削除中とは分からない」＝下の失敗の枝へ倒す。分からないものを進行中に倒さない）。
+    const row = readLoadBalancerRows(listRes.data).find(r => r.loadBalancerID === loadBalancerID)
+    if (row?.deleting === true) {
       const stop = await waitOrStop(
         'ロードバランサ',
         () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
-        data => readLoadBalancerRows(data).some(r => r.loadBalancerID === loadBalancerID),
+        // M-1（2026-09-17）: 同上。name の無い行も在否判定に含める。
+        data => readLoadBalancerIDs(data).includes(loadBalancerID),
         opts, executed, remaining, { loadBalancerID },
       )
       if (stop) return stop
-      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+      writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null, lbAddresses: null })
       executed.push(`ロードバランサ『${loadBalancerID}』を削除しました（消えたことを確認）`)
       return null
     }
@@ -653,7 +890,9 @@ async function attemptDeleteAsg(
       const stop = await waitOrStop(
         'オートスケーリンググループ',
         () => listAsg(auth, clusterID, undefined, baseUrl),
-        data => readAsgRows(data).some(r => r.asgID === asgID),
+        // M-1（2026-09-17）: 在否の判定に名前は要らない。name の無い行も拾う readAsgIDs を使う
+        // （readAsgRows は名前探し用で、name の無い行を捨てるため「消えた」誤判定を招く）。
+        data => readAsgIDs(data).includes(asgID),
         opts, executed, remaining, { asgID },
       )
       if (stop) return stop
@@ -670,17 +909,19 @@ async function attemptDeleteAsg(
           remaining,
         }
       }
-      const row = readAsgRows(listRes.data).find(r => r.asgID === asgID)
-      if (!row) {
+      // M-1（2026-09-17）: **在否は ID だけで見る**（ロードバランサの段と同じ理由）。
+      if (!readAsgIDs(listRes.data).includes(asgID)) {
         writeApprunDedicatedRecordFs(projectDir, { asgID: null })
         executed.push(`オートスケーリンググループ『${asgID}』は既に存在しませんでした（記録から外しました）`)
         return null
       }
-      if (row.deleting === true) {
+      const row = readAsgRows(listRes.data).find(r => r.asgID === asgID)
+      if (row?.deleting === true) {
         const stop = await waitOrStop(
           'オートスケーリンググループ',
           () => listAsg(auth, clusterID, undefined, baseUrl),
-          data => readAsgRows(data).some(r => r.asgID === asgID),
+          // M-1（2026-09-17）: 同上。name の無い行も在否判定に含める。
+          data => readAsgIDs(data).includes(asgID),
           opts, executed, remaining, { asgID },
         )
         if (stop) return stop
@@ -713,11 +954,12 @@ async function attemptDeleteAsg(
           const stop = await waitOrStop(
             'ロードバランサ',
             () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
-            data => readLoadBalancerRows(data).some(r => r.loadBalancerID === found.loadBalancerID),
+            // M-1（2026-09-17）: 同上。name の無い行も在否判定に含める。
+            data => readLoadBalancerIDs(data).includes(found.loadBalancerID),
             opts, executed, { loadBalancerID: found.loadBalancerID, asgID, clusterID }, { loadBalancerID: found.loadBalancerID },
           )
           if (stop) return stop
-          writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null })
+          writeApprunDedicatedRecordFs(projectDir, { loadBalancerID: null, lbAddresses: null })
           executed.push(`ロードバランサ『${found.loadBalancerID}』を削除しました（消えたことを確認）`)
           continue // LBが消えた。ASGのDELETEを再試行する。
         }
@@ -767,11 +1009,13 @@ async function attemptDeleteCluster(
       const stop = await waitOrStop(
         'クラスタ',
         () => listClusters(auth, baseUrl),
-        data => readClusterRows(data).some(r => r.clusterID === clusterID),
+        // C（2026-09-17）: 在否の判定に名前は要らない。name の無い行も拾う readClusterIDs を使う
+        // （readClusterRows は名前探し用で、name の無い行を捨てるため「消えた」誤判定を招く）。
+        data => readClusterIDs(data).includes(clusterID),
         opts, executed, remaining, { clusterID },
       )
       if (stop) return stop
-      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
+      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null, lbAddresses: null })
       executed.push(`クラスタ『${clusterID}』を削除しました（消えたことを確認）`)
       return null
     }
@@ -784,7 +1028,8 @@ async function attemptDeleteCluster(
           remaining,
         }
       }
-      const present = readClusterRows(listRes.data).some(r => r.clusterID === clusterID)
+      // C（2026-09-17）: 同上。name の無い行も在否判定に含める。
+      const present = readClusterIDs(listRes.data).includes(clusterID)
       if (present) {
         return {
           ok: false, executed,
@@ -792,7 +1037,7 @@ async function attemptDeleteCluster(
           remaining,
         }
       }
-      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null })
+      writeApprunDedicatedRecordFs(projectDir, { clusterID: null, name: null, zone: null, workerServiceClassPath: null, lbServiceClassPath: null, createdAt: null, lbAddresses: null })
       executed.push(`クラスタ『${clusterID}』は既に存在しませんでした（記録から外しました）`)
       return null
     }
@@ -815,7 +1060,8 @@ async function attemptDeleteCluster(
           const stop = await waitOrStop(
             'オートスケーリンググループ',
             () => listAsg(auth, clusterID, undefined, baseUrl),
-            data => readAsgRows(data).some(r => r.asgID === found.asgID),
+            // M-1（2026-09-17）: 同上。name の無い行も在否判定に含める。
+            data => readAsgIDs(data).includes(found.asgID),
             opts, executed, { asgID: found.asgID, clusterID }, { asgID: found.asgID },
           )
           if (stop) return stop
@@ -844,19 +1090,49 @@ async function attemptDeleteCluster(
 }
 
 /**
- * 記録にある ID だけを、**LB → ASG → クラスタ の順**で削除する（5-7・逆順）。
- * 記録に無い資源は触らない。ある段が失敗したら、そこで止める（それより下＝クラスタ側は
- * 触らない——LBが残ったままASGを消せる保証がAPI仕様上どこにも無いため、5-7の順序を厳密に守る）。
- * **各段は、DELETEの応答（204/404+deleting:true）を受け取ったあと、一覧からIDが完全に
+ * アプリケーションの段（`attemptDeleteApplication`）が失敗／時間切れで返した `TeardownFlowResult`
+ * に、記録上の下位資源（LB/ASG/クラスタ）のIDを合流させる（B-3・2026-09-17）。
+ *
+ * **`opts.appOnly:true` のときは合流させないこと。** `attemptDeleteApplication` は
+ * `appOnly:true`（📡 公開したもの一覧の🗑＝IPCの`apprunDedicated:teardownApp`）からも
+ * 呼ばれる。そこではLB/ASG/クラスタを**わざと残すのが仕様**（`PublishedListModal.tsx` が
+ * 利用者にそう約束している）なので、ここで3つを`remaining`へ入れると
+ * 「残っています＝課金が続きます」が利用者の意図に反する警告になってしまう。
+ * この関数は `teardownFlow`（`appOnly`を知っている側）からだけ呼び、
+ * `attemptDeleteApplication` の中では合流させない。
+ */
+function mergeLowerResourcesIntoAppStop(
+  stop: TeardownFlowResult, opts: TeardownFlowOpts, record: ApprunDedicatedRecord,
+): TeardownFlowResult {
+  if (opts.appOnly) return stop
+  const lower = {
+    loadBalancerID: record.loadBalancerID ?? undefined,
+    asgID: record.asgID ?? undefined,
+    clusterID: record.clusterID ?? undefined,
+  }
+  return {
+    ...stop,
+    remaining: { ...stop.remaining, ...lower },
+    ...(stop.inProgress ? { inProgress: { ...stop.inProgress, ...lower } } : {}),
+  }
+}
+
+/**
+ * 記録にある ID だけを、**アプリケーション → LB → ASG → クラスタ の順**で削除する
+ * （D-2b-2・12-1「破棄はアプリ→LB→ASG→クラスタで組む」・5-7の逆順の先頭にアプリを足したもの）。
+ * 記録に無い資源は触らない。ある段が失敗したら、そこで止める（それより下＝LB/ASG/クラスタ側は
+ * 触らない——アプリが残ったままLB/ASGを消せる保証がAPI仕様上どこにも無いため、順序を厳密に守る）。
+ * **各段は、DELETEの応答（204/404）を受け取ったあと、一覧からIDが完全に
  * 消えるのを確認してから次の段へ進む**（waitUntilGone・#39）。消せたものは記録から外す
  * （＝nullに戻す）。消せなかった・待ち切れなかったものは記録に残す。
  *
  * **`opts.confirmed !== true` なら、API を一切呼ばずに中止する**（2026-09-10 レビューの修理・A・
- * 掟10の3点セット）。
+ * 掟10の3点セット）。**`opts.appOnly:true` ならアプリケーションの段だけ行い、LB/ASG/クラスタは
+ * 一切呼ばない**（D-2b-2）。
  *
- * 各段の内訳は `attemptDeleteLoadBalancer` / `attemptDeleteAsg` / `attemptDeleteCluster` に
- * 分けてある（204→待ち／404→一覧で確認→deleting:trueなら待ち・無ければ記録から外す／
- * 409→下位資源を記録に戻して待つか止める、をそれぞれ担う）。
+ * 各段の内訳は `attemptDeleteApplication` / `attemptDeleteLoadBalancer` / `attemptDeleteAsg` /
+ * `attemptDeleteCluster` に分けてある（204→待ち／404→一覧で確認→（LB/ASGは）deleting:trueなら
+ * 待ち・無ければ記録から外す／409→下位資源を記録に戻して待つか止める、をそれぞれ担う）。
  */
 export async function teardownFlow(
   auth: CloudCredentials, projectDir: string, opts: TeardownFlowOpts, baseUrl?: string,
@@ -864,6 +1140,7 @@ export async function teardownFlow(
   const record = readApprunDedicatedFs(projectDir)
   const executed: string[] = []
 
+  const hasApplication = !!record.applicationID
   const hasCluster = !!record.clusterID
   const hasAsg = !!record.asgID
   const hasLb = !!record.loadBalancerID
@@ -873,6 +1150,7 @@ export async function teardownFlow(
     return {
       ok: false, executed: [], message: '確認ダイアログを通っていません',
       remaining: {
+        applicationID: record.applicationID ?? undefined,
         loadBalancerID: record.loadBalancerID ?? undefined,
         asgID: record.asgID ?? undefined,
         clusterID: record.clusterID ?? undefined,
@@ -880,8 +1158,37 @@ export async function teardownFlow(
     }
   }
 
-  if (!hasCluster && !hasAsg && !hasLb) {
+  if (!hasApplication && !hasCluster && !hasAsg && !hasLb) {
     return { ok: true, executed, message: '記録がありません（このプロジェクトでは何も作られていません）。', remaining: {} }
+  }
+
+  // ── アプリケーション（D-2b-2・12-1「破棄の順序はアプリ→LB→ASG→クラスタ」。LB/ASG/クラスタより先） ──
+  if (hasApplication) {
+    if (!hasCluster) {
+      // 親のIDが記録に無いと一覧を引けない（本来起きない想定だが、最後の砦として検知する）。
+      return {
+        ok: false, executed,
+        message: `アプリケーション『${record.applicationID}』の削除に必要なクラスタのIDが記録にありません。コントロールパネルで確認してください。`,
+        remaining: { applicationID: record.applicationID as string, clusterID: record.clusterID ?? undefined },
+      }
+    }
+    const stop = await attemptDeleteApplication(
+      auth, projectDir, record.clusterID as string, record.applicationID as string, opts, baseUrl, executed,
+    )
+    // B-3（2026-09-17）: appOnly:trueでなければ、記録上のLB/ASG/クラスタのIDを合流させて返す
+    // （下位資源は一度も触っていないが、画面の「残っています」に載せて存在を示すため）。
+    if (stop) return mergeLowerResourcesIntoAppStop(stop, opts, record)
+  }
+
+  // `appOnly:true` はここで打ち切る——LB/ASG/クラスタには一切触らない（TeardownFlowOpts.appOnly）。
+  if (opts.appOnly) {
+    return {
+      ok: true, executed,
+      message: hasApplication
+        ? 'アプリケーションの削除の要求は受け付けられ、一覧から消えたことを確認しました。'
+        : 'アプリの記録がありません（このプロジェクトではアプリが作られていません）。',
+      remaining: {},
+    }
   }
 
   // ── LB ──

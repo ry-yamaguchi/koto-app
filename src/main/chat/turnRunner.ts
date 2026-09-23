@@ -40,7 +40,7 @@ import * as path from 'path'
 import type { IpcDeps } from '../ipc/types'
 import { createAskBridge, type AskBridge } from './askBridge'
 import { applyConversationOps, loadConversation } from './convStore'
-import { requestApproval } from './approvalStore'
+import { requestApproval, cancelApprovalsForTurn } from './approvalStore'
 import { runEngineTurn, type EngineTurnPorts, type TurnHelpers } from '../../shared/chatTurn'
 import { runSakuraChat, runSakuraStream } from '../sakura/engine'
 import type { TurnStartPayload, TurnAnswer, TurnAsk } from '../../shared/chatTurnRpc'
@@ -422,6 +422,12 @@ export function registerChatTurnHandlers(_deps: IpcDeps): void {
   ipcMain.handle('chatTurn:abort', (_, turnId: string) => {
     const e = turns.get(turnId)
     if (e) { e.stopRequested = true; e.abort?.() }
+    // ── 書き込み確認の待ちも解く（2026-09-23 実機）───────────────────────
+    // approvalStore.requestApproval は**タイムアウトしない**（答えが来るまで駐機）ので、
+    // 「✋ 毎回確認」にしていると ⏹ を押しても永久に固まっていた。ここが唯一の出口。
+    // **拒否として**解く（承認したことにしない）。IPC は増やさない（この既存の口から呼ぶ）。
+    // turns に無いターン（既に終わっている）でも、取りこぼした保留があれば解いておく。
+    cancelApprovalsForTurn(turnId)
   })
 
   // renderer からの ask への回答。該当 turn の帳簿へ渡す（無ければ何もしない）。

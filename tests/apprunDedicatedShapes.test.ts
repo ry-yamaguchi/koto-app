@@ -4,6 +4,9 @@ import {
   readWorkerClasses,
   readLbClasses,
   readClusters,
+  readClusterIDs,
+  readAsgIDs,
+  readLoadBalancerIDs,
   readClusterId,
   readAsgId,
   readLoadBalancerId,
@@ -11,6 +14,17 @@ import {
   readZones,
   isZonesShape,
   readNextCursor,
+  readApplicationRows,
+  readApplicationIDs,
+  readApplicationId,
+  readApplication,
+  readVersionNumber,
+  readVersionRows,
+  readWorkerNodeAddresses,
+  readLoadBalancerNodeAddresses,
+  readContainerStates,
+  readHasLetsEncryptEmail,
+  readClusterPorts,
 } from '../src/shared/apprunDedicatedShapes'
 
 // roadmap #23。docs/apprun-dedicated-plan.md 5-8 の表（OpenAPI原本 v1.4.0 と2026-09-07の実測の
@@ -124,6 +138,60 @@ describe('readClusters: GET /clusters は { clusters: [...] }（5-8）', () => {
   it('形が無ければ空配列', () => {
     expect(readClusters({})).toEqual([])
     expect(readClusters(null)).toEqual([])
+  })
+})
+
+// C（2026-09-17）: 在否の判定（消えたか）専用のリーダー。readClusterRows は名前探し用のため
+// name の無い行を捨てるが、それを在否判定に流用すると「name欠落＝存在しない」という
+// 誤判定を生む（原本の仕様逸脱時に限られるが、判定の方針としては明確な誤り）。
+describe('readClusterIDs: クラスタの在否判定専用。name が無い行も clusterID があれば拾う', () => {
+  it('★ name が無い行でも、clusterID が文字列なら ID を拾う', () => {
+    expect(readClusterIDs({ clusters: [{ clusterID: 'a' }, { clusterID: 'b', name: 'x' }] })).toEqual(['a', 'b'])
+  })
+
+  it('clusterID が文字列でない行は落とす', () => {
+    expect(readClusterIDs({ clusters: [{ clusterID: 123 }, { clusterID: null }, {}] })).toEqual([])
+  })
+
+  it('null・文字列・空オブジェクトでも落ちない（形が違えば空配列）', () => {
+    expect(readClusterIDs(null)).toEqual([])
+    expect(readClusterIDs('not an object')).toEqual([])
+    expect(readClusterIDs({})).toEqual([])
+  })
+})
+
+// M-1（2026-09-17）: readClusterIDs と同じ理由をASG/LB/アプリケーションにも広げる。
+// readAsgRows/readLoadBalancerRows/readApplicationRows は名前探し用のため name（や他の必須欄）が
+// 無い行を捨てるが、それを在否判定に流用すると「name欠落＝存在しない」という誤判定を生む。
+describe('readAsgIDs: ASGの在否判定専用。name が無い行も autoScalingGroupID があれば拾う', () => {
+  it('★ name が無い行でも、autoScalingGroupID が文字列なら ID を拾う', () => {
+    expect(readAsgIDs({ autoScalingGroups: [{ autoScalingGroupID: 'a' }, { autoScalingGroupID: 'b', name: 'x' }] })).toEqual(['a', 'b'])
+  })
+
+  it('autoScalingGroupID が文字列でない行は落とす', () => {
+    expect(readAsgIDs({ autoScalingGroups: [{ autoScalingGroupID: 123 }, { autoScalingGroupID: null }, {}] })).toEqual([])
+  })
+
+  it('null・文字列・空オブジェクトでも落ちない（形が違えば空配列）', () => {
+    expect(readAsgIDs(null)).toEqual([])
+    expect(readAsgIDs('not an object')).toEqual([])
+    expect(readAsgIDs({})).toEqual([])
+  })
+})
+
+describe('readLoadBalancerIDs: ロードバランサの在否判定専用。name が無い行も loadBalancerID があれば拾う', () => {
+  it('★ name が無い行でも、loadBalancerID が文字列なら ID を拾う', () => {
+    expect(readLoadBalancerIDs({ loadBalancers: [{ loadBalancerID: 'a' }, { loadBalancerID: 'b', name: 'x' }] })).toEqual(['a', 'b'])
+  })
+
+  it('loadBalancerID が文字列でない行は落とす', () => {
+    expect(readLoadBalancerIDs({ loadBalancers: [{ loadBalancerID: 123 }, { loadBalancerID: null }, {}] })).toEqual([])
+  })
+
+  it('null・文字列・空オブジェクトでも落ちない（形が違えば空配列）', () => {
+    expect(readLoadBalancerIDs(null)).toEqual([])
+    expect(readLoadBalancerIDs('not an object')).toEqual([])
+    expect(readLoadBalancerIDs({})).toEqual([])
   })
 })
 
@@ -304,5 +372,364 @@ describe('readApiErrorTitle: 失敗応答は { status, title }（5-8）', () => 
     expect(readApiErrorTitle({ status: 400, title: 123 })).toBeNull()
     expect(readApiErrorTitle(null)).toBeNull()
     expect(readApiErrorTitle('plain text error')).toBeNull()
+  })
+})
+
+// ── D-1（土台）: アプリケーション・バージョン・ノードのアドレス（roadmap #23 ⑤・12-1） ───────
+// 原本（OpenAPI v1.4.0）のスキーマから決め打つ。5-8と同じ方針:
+// 「実物の形から読める」「隣の資源のキー（取り違え）は拾わない」「形が無ければ空/null」の3点を固定する。
+
+describe('readApplicationRows: GET /applications は { applications: [ReadApplication…] }（12-1）', () => {
+  it('実物の形から読める（4項目に絞る。activeVersion は number）', () => {
+    const data = {
+      applications: [
+        { applicationID: 'app-1', name: 'myapp', clusterID: 'cluster-1', activeVersion: 3, clusterName: 'x', desiredCount: 1, enoughResources: { cpu: true, memory: true }, scalingCooldownSeconds: 300 },
+      ],
+    }
+    expect(readApplicationRows(data)).toEqual([
+      { applicationID: 'app-1', name: 'myapp', clusterID: 'cluster-1', activeVersion: 3 },
+    ])
+  })
+
+  it('activeVersion が null（有効バージョン無し）や型違いは null にする', () => {
+    const data = {
+      applications: [
+        { applicationID: 'a', name: 'n', clusterID: 'c', activeVersion: null },
+        { applicationID: 'a2', name: 'n2', clusterID: 'c2', activeVersion: '3' },
+      ],
+    }
+    expect(readApplicationRows(data)).toEqual([
+      { applicationID: 'a', name: 'n', clusterID: 'c', activeVersion: null },
+      { applicationID: 'a2', name: 'n2', clusterID: 'c2', activeVersion: null },
+    ])
+  })
+
+  it('applicationID/name/clusterID のいずれか無い行は捨てる', () => {
+    const data = { applications: [{ name: 'n', clusterID: 'c', activeVersion: 1 }, { applicationID: 'a', clusterID: 'c' }] }
+    expect(readApplicationRows(data)).toEqual([])
+  })
+
+  it('★隣の資源のキー（clusters/versions等）は拾わない。形が無ければ空配列', () => {
+    expect(readApplicationRows({ clusters: [{ clusterID: 'x', name: 'y' }] })).toEqual([])
+    expect(readApplicationRows({ versions: [{ version: 1 }] })).toEqual([])
+    expect(readApplicationRows({})).toEqual([])
+    expect(readApplicationRows(null)).toEqual([])
+  })
+})
+
+// M-1（2026-09-17）: readClusterIDs と同じ理由。アプリケーションの在否判定専用。
+describe('readApplicationIDs: アプリケーションの在否判定専用。name/clusterID が無い行も applicationID があれば拾う', () => {
+  it('★ name/clusterID が無い行でも、applicationID が文字列なら ID を拾う', () => {
+    expect(readApplicationIDs({ applications: [{ applicationID: 'a' }, { applicationID: 'b', name: 'x', clusterID: 'c' }] })).toEqual(['a', 'b'])
+  })
+
+  it('applicationID が文字列でない行は落とす', () => {
+    expect(readApplicationIDs({ applications: [{ applicationID: 123 }, { applicationID: null }, {}] })).toEqual([])
+  })
+
+  it('null・文字列・空オブジェクトでも落ちない（形が違えば空配列）', () => {
+    expect(readApplicationIDs(null)).toEqual([])
+    expect(readApplicationIDs('not an object')).toEqual([])
+    expect(readApplicationIDs({})).toEqual([])
+  })
+})
+
+describe('readApplicationId: POST /applications の { application: { applicationID } }（12-1）', () => {
+  it('実物の形から読める', () => {
+    expect(readApplicationId({ application: { applicationID: 'app-abc123' } })).toBe('app-abc123')
+  })
+
+  it('★隣の資源の形（cluster/autoScalingGroup/loadBalancer）は拾わない', () => {
+    expect(readApplicationId({ cluster: { clusterID: 'cluster-1' } })).toBeNull()
+    expect(readApplicationId({ autoScalingGroup: { autoScalingGroupID: 'asg-1' } })).toBeNull()
+    expect(readApplicationId({ loadBalancer: { loadBalancerID: 'lb-1' } })).toBeNull()
+  })
+
+  it('形が無ければ null', () => {
+    expect(readApplicationId({})).toBeNull()
+    expect(readApplicationId(null)).toBeNull()
+    expect(readApplicationId({ application: { id: 'x' } })).toBeNull() // applicationID ではなく id
+  })
+})
+
+describe('readApplication: GET /applications/{id} の { application: {...} }（原本 ReadApplicationResponse）', () => {
+  it('実物の形から読める（原本 example そのまま）', () => {
+    const data = {
+      application: {
+        activeVersion: 3,
+        applicationID: 'A0199B39-B361-45B9-8DF4-FC8BE494D690',
+        clusterID: '13B9EA83-DDB0-4385-9533-3D693A6A310F',
+        clusterName: 'mock-cluster',
+        desiredCount: 3,
+        enoughResources: { cpu: true, memory: true },
+        name: 'my-app',
+        scalingCooldownSeconds: 300,
+      },
+    }
+    expect(readApplication(data)).toEqual({
+      applicationID: 'A0199B39-B361-45B9-8DF4-FC8BE494D690',
+      name: 'my-app',
+      clusterID: '13B9EA83-DDB0-4385-9533-3D693A6A310F',
+      activeVersion: 3,
+      desiredCount: 3,
+      enoughResources: { cpu: true, memory: true },
+    })
+  })
+
+  it('enoughResources.cpu/memory が boolean でなければ null（原本では nullable＝不明の意味）', () => {
+    const data = {
+      application: {
+        applicationID: 'a', name: 'n', clusterID: 'c', activeVersion: null, desiredCount: null,
+        enoughResources: { cpu: null, memory: 'yes' },
+      },
+    }
+    expect(readApplication(data)?.enoughResources).toEqual({ cpu: null, memory: null })
+  })
+
+  it('applicationID/name/clusterID のいずれか無ければ丸ごと null（形が無い扱い）', () => {
+    expect(readApplication({ application: { name: 'n', clusterID: 'c' } })).toBeNull()
+  })
+
+  it('★隣の資源の形は拾わない。形が無ければ null', () => {
+    expect(readApplication({ cluster: { clusterID: 'x' } })).toBeNull()
+    expect(readApplication({})).toBeNull()
+    expect(readApplication(null)).toBeNull()
+  })
+})
+
+describe('readVersionNumber: POST versions の { applicationVersion: { version } }（原本 CreateApplicationVersionResponse）', () => {
+  it('実物の形から読める', () => {
+    expect(readVersionNumber({ applicationVersion: { version: 3 } })).toBe(3)
+  })
+
+  it('★隣の資源の形（application/cluster）は拾わない。形が無ければ null', () => {
+    expect(readVersionNumber({ application: { applicationID: 'a' } })).toBeNull()
+    expect(readVersionNumber({})).toBeNull()
+    expect(readVersionNumber(null)).toBeNull()
+    expect(readVersionNumber({ applicationVersion: { version: '3' } })).toBeNull() // 文字列は拾わない
+  })
+})
+
+describe('readVersionRows: GET .../versions は { versions: [ApplicationVersionSummary…] }（原本 example そのまま）', () => {
+  it('実物の形から読める', () => {
+    const data = {
+      versions: [
+        { version: 3, image: 'nginx:2', activeNodeCount: 1, created: 1577836800 },
+        { version: 2, image: 'nginx:2', activeNodeCount: 0, created: 1577836800 },
+      ],
+    }
+    expect(readVersionRows(data)).toEqual([
+      { version: 3, image: 'nginx:2', activeNodeCount: 1, created: 1577836800 },
+      { version: 2, image: 'nginx:2', activeNodeCount: 0, created: 1577836800 },
+    ])
+  })
+
+  it('4つの必須キーのどれか型が違う行は捨てる', () => {
+    const data = { versions: [{ version: '1', image: 'x', activeNodeCount: 0, created: 1 }, { version: 1, image: 'x', activeNodeCount: 0 }] }
+    expect(readVersionRows(data)).toEqual([])
+  })
+
+  it('★隣の資源のキー（applications等）は拾わない。形が無ければ空配列', () => {
+    expect(readVersionRows({ applications: [{}] })).toEqual([])
+    expect(readVersionRows({})).toEqual([])
+    expect(readVersionRows(null)).toEqual([])
+  })
+})
+
+describe('readWorkerNodeAddresses: GET worker_nodes は { workerNodes: [WorkerNodeSummary…] }（原本 example）', () => {
+  it('実物の形から読める（networkInterfaces[].addresses[].address を平らに集める）', () => {
+    const data = {
+      workerNodes: [
+        {
+          workerNodeID: '123e4567-e89b-12d3-a456-426614174002',
+          status: 'healthy',
+          networkInterfaces: [
+            { interfaceIndex: 0, addresses: [{ address: '192.168.0.1' }] },
+            { interfaceIndex: 1, addresses: [{ address: '10.0.0.8' }] },
+          ],
+        },
+      ],
+    }
+    expect(readWorkerNodeAddresses(data)).toEqual([
+      { workerNodeID: '123e4567-e89b-12d3-a456-426614174002', status: 'healthy', addresses: ['192.168.0.1', '10.0.0.8'] },
+    ])
+  })
+
+  it('workerNodeID が無い行は捨てる。networkInterfaces/addresses が無ければ addresses は空配列', () => {
+    const data = { workerNodes: [{ status: 'healthy', networkInterfaces: [] }, { workerNodeID: 'w1' }] }
+    expect(readWorkerNodeAddresses(data)).toEqual([{ workerNodeID: 'w1', status: null, addresses: [] }])
+  })
+
+  it('★隣の資源のキー（loadBalancerNodes等）は拾わない。形が無ければ空配列', () => {
+    expect(readWorkerNodeAddresses({ loadBalancerNodes: [{}] })).toEqual([])
+    expect(readWorkerNodeAddresses({})).toEqual([])
+    expect(readWorkerNodeAddresses(null)).toEqual([])
+  })
+})
+
+describe('readLoadBalancerNodeAddresses: GET load_balancer_nodes は { loadBalancerNodes: [LoadBalancerNode…] }（原本 example）', () => {
+  it('実物の形から読める（interfaces[].addresses[].{address,vip} を平らに集める）', () => {
+    const data = {
+      loadBalancerNodes: [
+        {
+          loadBalancerNodeID: '550e8400-e29b-41d4-a716-446655440001',
+          status: 'healthy',
+          interfaces: [
+            { interfaceIndex: 1, addresses: [{ address: '10.0.0.8/24', vip: false }, { address: '10.0.1.2/24', vip: true }] },
+          ],
+        },
+      ],
+    }
+    expect(readLoadBalancerNodeAddresses(data)).toEqual([
+      {
+        loadBalancerNodeID: '550e8400-e29b-41d4-a716-446655440001',
+        status: 'healthy',
+        addresses: [{ address: '10.0.0.8/24', vip: false }, { address: '10.0.1.2/24', vip: true }],
+      },
+    ])
+  })
+
+  it('vip が boolean でなければ null（分からないものを false に倒さない）', () => {
+    const data = { loadBalancerNodes: [{ loadBalancerNodeID: 'l1', status: 'healthy', interfaces: [{ interfaceIndex: 0, addresses: [{ address: 'a' }] }] }] }
+    expect(readLoadBalancerNodeAddresses(data)[0].addresses).toEqual([{ address: 'a', vip: null }])
+  })
+
+  it('loadBalancerNodeID が無い行は捨てる', () => {
+    const data = { loadBalancerNodes: [{ status: 'healthy', interfaces: [] }] }
+    expect(readLoadBalancerNodeAddresses(data)).toEqual([])
+  })
+
+  it('★隣の資源のキー（workerNodes等）は拾わない。形が無ければ空配列', () => {
+    expect(readLoadBalancerNodeAddresses({ workerNodes: [{}] })).toEqual([])
+    expect(readLoadBalancerNodeAddresses({})).toEqual([])
+    expect(readLoadBalancerNodeAddresses(null)).toEqual([])
+  })
+})
+
+describe('readHasLetsEncryptEmail: GET /clusters/{id} の原本 ReadCluster は hasLetsEncryptEmail: boolean（値は返さない）', () => {
+  it('実物の形から読める（true / false）', () => {
+    expect(readHasLetsEncryptEmail({ cluster: { clusterID: 'c1', hasLetsEncryptEmail: true } })).toBe(true)
+    expect(readHasLetsEncryptEmail({ cluster: { clusterID: 'c1', hasLetsEncryptEmail: false } })).toBe(false)
+  })
+  it('★推測で拾わない: letsEncryptEmail（文字列の値）があっても、それは原本の応答の形ではないので null', () => {
+    expect(readHasLetsEncryptEmail({ cluster: { letsEncryptEmail: 'a@example.com' } })).toBe(null)
+  })
+  it('boolean でない・形が無ければ null', () => {
+    expect(readHasLetsEncryptEmail({ cluster: { hasLetsEncryptEmail: 'true' } })).toBe(null)
+    expect(readHasLetsEncryptEmail({})).toBe(null)
+    expect(readHasLetsEncryptEmail(null)).toBe(null)
+  })
+})
+
+// ── readClusterPorts（A・2026-09-17）: GET /clusters/{id} の cluster.ports ─────────────────
+// ⑧の公開の流れが、載せる先のクラスタの公開ポート（80/http・443/https）を確かめるのに使う。
+// readContainerStates と同じ方針: **配列でなければ null**（0件と読み替えない・掟10）。
+// 呼び出し側は null を「分からない」として扱い、公開そのものは止めない（warnings に1行だけ残す）。
+describe('readClusterPorts: GET /clusters/{id} の cluster.ports（配列でなければ null＝0件と読み替えない）', () => {
+  it('正しい形なら読める', () => {
+    const data = { cluster: { clusterID: 'c1', ports: [{ port: 80, protocol: 'http' }, { port: 443, protocol: 'https' }] } }
+    expect(readClusterPorts(data)).toEqual([{ port: 80, protocol: 'http' }, { port: 443, protocol: 'https' }])
+  })
+  it('★ ports が配列でなければ null（0件と読み替えない）', () => {
+    expect(readClusterPorts({ cluster: { clusterID: 'c1' } })).toBe(null) // キーが無い
+    expect(readClusterPorts({ cluster: { clusterID: 'c1', ports: 'none' } })).toBe(null) // 文字列
+    expect(readClusterPorts({ cluster: { clusterID: 'c1', ports: {} } })).toBe(null) // オブジェクト
+    expect(readClusterPorts({ cluster: { clusterID: 'c1', ports: null } })).toBe(null) // null
+  })
+  it('要素の形が違うものは落とす。全部落ちたら空配列（null ではない）', () => {
+    const data = {
+      cluster: {
+        ports: [
+          { port: '80', protocol: 'http' }, // port が文字列
+          { port: 443 }, // protocol が無い
+          null,
+          'not-an-object',
+        ],
+      },
+    }
+    expect(readClusterPorts(data)).toEqual([])
+  })
+  it('一部だけ形が正しければ、正しい要素だけ拾う', () => {
+    const data = { cluster: { ports: [{ port: 80, protocol: 'http' }, { port: '443', protocol: 'https' }] } }
+    expect(readClusterPorts(data)).toEqual([{ port: 80, protocol: 'http' }])
+  })
+  it('null・文字列・空オブジェクトでも落ちない', () => {
+    expect(readClusterPorts(null)).toBe(null)
+    expect(readClusterPorts('not-an-object')).toBe(null)
+    expect(readClusterPorts({})).toBe(null)
+    expect(readClusterPorts(undefined)).toBe(null)
+  })
+})
+
+// ── readContainerStates（D-8・2026-09-16）: GET /applications/{id}/containers ──────────
+// 原本 ListApplicationContainersResponse:
+//   { "nodes": [ { "containersStats": [ { "state", "status", "image" } ], "desired": 1 } ] }
+// 値は原本のまま返す（日本語へ言い換えない・全ての値を実測していないため・掟1）。
+// **空配列と null は別の意味**: `[]` ＝原本の形で読めて0件（1つも動いていない）／
+// `null` ＝原本の形として読めなかった（何台動いているかは分からない）。
+describe('readContainerStates: nodes[].containersStats[] の state/status だけを平らに読む', () => {
+  it('原本の形から読める（ノードが複数でも平らに並べる）', () => {
+    const data = {
+      nodes: [
+        { workerNodeID: 'wn-1', desired: 1, containersStats: [{ state: 'running', status: 'healthy', image: 'img:1' }] },
+        { workerNodeID: 'wn-2', desired: 1, containersStats: [{ state: 'CrashLoopBackOff', status: 'restarting', image: 'img:1' }] },
+      ],
+    }
+    expect(readContainerStates(data)).toEqual([
+      { state: 'running', status: 'healthy' },
+      { state: 'CrashLoopBackOff', status: 'restarting' },
+    ])
+  })
+
+  it('1つのノードに複数のコンテナがあっても、すべて拾う', () => {
+    const data = { nodes: [{ desired: 2, containersStats: [{ state: 'a', status: 'b' }, { state: 'c', status: 'd' }] }] }
+    expect(readContainerStates(data)).toEqual([{ state: 'a', status: 'b' }, { state: 'c', status: 'd' }])
+  })
+
+  it('★state/status のどちらかが文字列でない行があれば、読めた分だけを事実にしない（null＝未確認）', () => {
+    const data = { nodes: [{ containersStats: [{ state: 'running' }, { state: 'ok', status: 'ok' }] }] }
+    expect(readContainerStates(data)).toBe(null)
+    // 行が1件だけ・それが読めないときに [] を返すと、画面が「1つも動いていません」と断定してしまう
+    expect(readContainerStates({ nodes: [{ containersStats: [{ state: 1, status: 2 }] }] })).toBe(null)
+  })
+
+  it('★隣の形は拾わない（applications・workerNodes・containers 直下など）。形が違えば null', () => {
+    expect(readContainerStates({ containers: [{ state: 'running', status: 'healthy' }] })).toBe(null)
+    expect(readContainerStates({ workerNodes: [{ containersStats: [{ state: 'running', status: 'healthy' }] }] })).toBe(null)
+    expect(readContainerStates({ applications: [{ containersStats: [{ state: 'running', status: 'healthy' }] }] })).toBe(null)
+    expect(readContainerStates({ nodes: { containersStats: [{ state: 'running', status: 'healthy' }] } })).toBe(null)
+    expect(readContainerStates({ nodes: [{ containersStats: { state: 'running', status: 'healthy' } }] })).toBe(null)
+  })
+
+  it('形が無ければ null（null・空・配列でない）', () => {
+    expect(readContainerStates({})).toBe(null)
+    expect(readContainerStates(null)).toBe(null)
+    expect(readContainerStates(undefined)).toBe(null)
+    expect(readContainerStates('nodes')).toBe(null)
+  })
+
+  // ── 検分の指摘（2026-09-16）: 「読めなかった」を「0件」に倒さない ──────────────────
+  //
+  // 以前は形が違っても空配列を返していた。呼び出し側はそれを0件として扱い、画面は
+  // 「コンテナが1つも動いていません。」と**断定**する。**HTTP が 200 でも、応答の形が原本と
+  // 違えば分かることは何も無い。** D-7 の `unknown-read-as-ok` と同じ形なので null に倒す。
+  it('★★ ノードに containersStats のキーが無い応答は null（0件に倒さない＝未確認を事実として出さない）', () => {
+    // ← これがまさに素通りしていた形。以前の実装はこれを [] と読み、画面は「1つも動いていません」と言い切った
+    expect(readContainerStates({ nodes: [{ workerNodeID: 'wn-1', desired: 1 }] })).toBe(null)
+    // ノードが混在（片方だけ読める）でも、読めない側があれば全体を未確認に倒す
+    expect(readContainerStates({
+      nodes: [
+        { containersStats: [{ state: 'running', status: 'healthy' }] },
+        { workerNodeID: 'wn-2', desired: 1 },
+      ],
+    })).toBe(null)
+    // ノードがオブジェクトですらない
+    expect(readContainerStates({ nodes: ['wn-1'] })).toBe(null)
+    expect(readContainerStates({ nodes: [null] })).toBe(null)
+  })
+
+  it('★★ 原本の形で読めた結果が0件なら空配列（「1つも動いていない」は事実として出してよい）', () => {
+    expect(readContainerStates({ nodes: [] })).toEqual([])
+    expect(readContainerStates({ nodes: [{ workerNodeID: 'wn-1', desired: 1, containersStats: [] }] })).toEqual([])
   })
 })

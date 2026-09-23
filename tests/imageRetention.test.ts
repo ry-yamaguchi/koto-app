@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   AUTO_TAG_PATTERN, DEFAULT_KEEP, MIN_KEEP,
-  isAutoTag, normalizeKeep, planTagCleanup, digestsToDelete, retentionNotice,
+  isAutoTag, normalizeKeep, planTagCleanup, digestsToDelete, retentionNotice, mergeCurrentTags,
 } from '../src/shared/imageRetention'
 import { publishTag } from '../src/shared/publishTag'
 import { looksLikePermissionProblem, looksLikeUnsupported } from '../src/shared/registryTrouble'
@@ -98,6 +98,47 @@ describe('片づけの計画', () => {
     expect(p.remove).not.toContain('v20260819-100000')
   })
 
+  // ── 2026-09-17 の穴・A: 守るタグを「1件」から「集合」に広げる ────────────────
+  // 専有型（AppRunDedicated）で同じレジストリのイメージを使って公開したとき、その
+  // 稼働タグは `currentTag`（共用型）には載らない。`protectedTags` に足りて初めて守られる。
+  describe('守るタグの集合（専有型の稼働タグも消さない）', () => {
+    it('★★★ 専有型で動いているタグが remove に入らない（今回の穴そのもの）', () => {
+      // 共用型は 160000 を使っている想定。専有型は古い 100000 を使い続けている。
+      const p = planTagCleanup({ tags, keep: 5, currentTag: 'v20260819-160000', protectedTags: ['v20260819-100000'] })
+      expect(p.untouched).toContain('v20260819-100000')
+      expect(p.remove).not.toContain('v20260819-100000')
+    })
+
+    it('★★★ 共用型で動いているタグも、これまでどおり remove に入らない（壊していないことの固定）', () => {
+      const p = planTagCleanup({ tags, keep: 1, currentTag: 'v20260819-160000', protectedTags: ['v20260819-100000'] })
+      expect(p.untouched).toContain('v20260819-160000')
+      expect(p.remove).not.toContain('v20260819-160000')
+    })
+
+    it('★★ 両方あるとき、両方とも残る', () => {
+      const p = planTagCleanup({ tags, keep: 1, currentTag: 'v20260819-160000', protectedTags: ['v20260819-100000'] })
+      expect(p.untouched).toContain('v20260819-160000')
+      expect(p.untouched).toContain('v20260819-100000')
+      expect(p.remove).not.toContain('v20260819-160000')
+      expect(p.remove).not.toContain('v20260819-100000')
+    })
+
+    it('専有型のタグが読めないとき（null/undefined/空文字）は、これまでどおりの振る舞い（壊れない）', () => {
+      const withoutExtra = planTagCleanup({ tags, keep: 5, currentTag: 'v20260819-160000' })
+      for (const extra of [[null], [undefined], [''], [] as (string | null | undefined)[], undefined]) {
+        const p = planTagCleanup({ tags, keep: 5, currentTag: 'v20260819-160000', protectedTags: extra })
+        expect(p).toEqual(withoutExtra)
+      }
+    })
+
+    it('既存の呼び出しの形（currentTag だけ）が壊れていないこと', () => {
+      // protectedTags を渡さない呼び方は、これまでどおり動く。
+      const p = planTagCleanup({ tags, keep: 5, currentTag: 'v20260819-160000' })
+      expect(p.remove).toEqual(['v20260819-100000'])
+      expect(p.untouched).toContain('v20260819-160000')
+    })
+  })
+
   it('★★ 残す件数のほうが多ければ、何も消えない', () => {
     const p = planTagCleanup({ tags, keep: 99, currentTag: 'v20260819-160000' })
     expect(p.remove).toEqual([])
@@ -132,6 +173,29 @@ describe('片づけの計画', () => {
 
   it('既定の残数は5件', () => {
     expect(DEFAULT_KEEP).toBe(5)
+  })
+})
+
+describe('守るタグの合流（mergeCurrentTags・2026-09-17 の穴・A）', () => {
+  it('★★ currentTag と extra を1つの集合に合流させる', () => {
+    const r = mergeCurrentTags({ currentTag: 'v20260819-160000', extra: ['v20260819-100000'] })
+    expect(r).toContain('v20260819-160000')
+    expect(r).toContain('v20260819-100000')
+    expect(r.length).toBe(2)
+  })
+
+  it('空文字・null・undefined・重複は落とす', () => {
+    const r = mergeCurrentTags({ currentTag: 'v1', extra: ['v1', '', null, undefined, '  '] })
+    expect(r).toEqual(['v1'])
+  })
+
+  it('currentTag が無くても extra だけで成立する', () => {
+    const r = mergeCurrentTags({ extra: ['v20260819-100000'] })
+    expect(r).toEqual(['v20260819-100000'])
+  })
+
+  it('どちらも無ければ空集合', () => {
+    expect(mergeCurrentTags({})).toEqual([])
   })
 })
 
@@ -225,7 +289,20 @@ describe('配線', () => {
 
   it('★★ confirmed が無ければ一覧を返して止まる（消す前に一覧を出す）', () => {
     expect(cloud).toContain("if (opts?.confirmed !== true) {")
-    expect(cloud).toContain('return { ok: true, dryRun: true, plan, currentTag, keep }')
+    expect(cloud).toContain('return { ok: true, dryRun: true, plan, currentTag, keep, dedicatedTag, dedicatedTagUnknown }')
+  })
+
+  // ── 2026-09-17 の穴・A ───────────────────────────────────────────────
+  it('★★★ 片づけの計画（plan）は、専有型の稼働タグも守る集合に加えてから作る', () => {
+    const start = cloud.indexOf("ipcMain.handle('cloud:cleanupImages'")
+    const end = cloud.indexOf("if (opts?.confirmed !== true) {")
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const body = cloud.slice(start, end)
+    // state.meta（共用型）を直接は書き換えない専有型の記録を、読むだけで取り込んでいる。
+    expect(body).toContain('readApprunDedicatedFs(projectDir)')
+    expect(body).toContain('tagOfRef(')
+    expect(body).toContain('protectedTags: [dedicatedTag]')
   })
 
   it('★★ 別プロジェクトのレジストリを触らない（公開と同じ突き合わせを通す）', () => {

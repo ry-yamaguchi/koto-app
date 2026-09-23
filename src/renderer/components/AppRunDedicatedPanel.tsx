@@ -2,9 +2,44 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import CopyButton from './CopyButton'
 import { withApprunDedicatedRecord } from '../../shared/publishMeta'
+import { clearPublishRecord } from '../publishRecord'
 import { readLimits, readWorkerClasses, readLbClasses, readClusters, readNextCursor, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
 import { loadZones } from '../zonesCache'
 import { runCreate, runTeardown, shouldShowCreateResult, shouldShowTeardownResult } from '../apprunDedicatedActions'
+// D-4（2026-09-15）: ⑧「アプリを公開する」の歯止め（runPublishApp）と表示判定（shouldShowPublishSection）。
+// 上の import 行は tests/apprunDedicatedWiring.test.ts が文字列で固定しているため、別行で足す。
+import { runPublishApp, shouldShowPublishSection } from '../apprunDedicatedActions'
+// H-1（2026-09-17）: ⑤⑥⑦⑧ を同時に走らせないための判定（純関数）。上の import 行は
+// tests/apprunDedicatedWiring.test.ts が文字列で固定しているため、別行で足す。
+import { panelBusy, panelBusyReason } from '../apprunDedicatedActions'
+import { publishButtonLabel, publishFailureHintText, dnsGuidanceLines } from '../../shared/publishLabels'
+// D-7（2026-09-16 実機）: ⑧の公開結果の見出しは「公開したあと、アプリが本当に応答したか」で変える。
+// 判断は純関数 publishHeadline（上と同じ shared/publishLabels.ts）。文言は dedicatedVerifyMessage
+// （shared/publishVerify.ts）。**画面は描くだけ**（掟10）。上の import 行は wiring テストが文字列で
+// 固定しているため、別行で足す。
+import { publishHeadline } from '../../shared/publishLabels'
+import { dedicatedVerifyMessage, dedicatedVerifyNotServing } from '../../shared/publishVerify'
+// D-7b・C（検分の指摘・2026-09-16 実害「応答しないアプリのために DNS を設定しに行った」）:
+// no-backend（503）のときは DNS の案内より先に応答を確かめてもらう。判断は純関数
+// showDnsGuidanceExpanded（上と同じ shared/publishLabels.ts）。上の import 行は wiring テストが
+// 文字列で固定しているため、別行で足す。
+import { showDnsGuidanceExpanded } from '../../shared/publishLabels'
+// D-8（2026-09-16 実機）: 応答していない（no-backend）ときは「いまのコンテナの様子」も出す。
+// **状態の文字列は原本の値のまま**（勝手に日本語へ言い換えない）。⑧の説明には「像に書いたデータは
+// 公開し直すと消える」の注意も出す。どちらも判断・文言は純関数（上と同じ shared/publishLabels.ts）に
+// 置き、画面は描くだけ（掟10）。上の import 行は wiring テストが文字列で固定しているため、別行で足す。
+import { containerStateSummary, ephemeralDataNote } from '../../shared/publishLabels'
+import { APP_DEFAULTS, HOSTNAME_PATTERN } from '../../shared/apprunDedicatedApp'
+// F-1（2026-09-16）: ⑧のメール欄の出し分け（letsEncryptEmailFieldState）と最低限の形式検査
+// （isLikelyEmail）。上の import 行は tests/apprunDedicatedWiring.test.ts が文字列で固定して
+// いるため、別行で足す。
+import { letsEncryptEmailFieldState, isLikelyEmail } from '../../shared/apprunDedicatedApp'
+// G-1（2026-09-16）: ⑤の待ち受けポートに、必ず要る80/http・443/httpsが揃っているかの判定
+// （missingRequiredPorts）。上の import 行は tests/apprunDedicatedWiring.test.ts が文字列で
+// 固定しているため、別行で足す。
+import { missingRequiredPorts } from '../../shared/apprunDedicatedApp'
+// F-1（2026-09-16）: ⑦「ログ・メトリクス」を1行に畳んでよいか（shouldCollapseTelemetrySection）。
+import { shouldCollapseTelemetrySection } from '../../shared/appLog'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import AccessKeySection from './AccessKeySection'
 import { askAiAboutFailure } from '../../shared/askAi'
@@ -13,10 +48,14 @@ import { useConfirm } from '../useConfirm'
 // さくらのAppRun 専有型パネル（roadmap #23）。
 //
 // **クラスタの作成（⑤）・破棄（⑥）は行える**（段階②④・v0.6.9 で実装済み）。
-// まだ無いのは「アプリケーション/バージョン」（roadmap #23 の⑤独自ドメイン相当）の作成——
-// つまり Koto からアプリを独自ドメインで公開するところまでは実装していない。
+// **アプリの公開（⑧・独自ドメイン）も行える**（段階③⑤・D-4・2026-09-15。main の publishAppFlow＝
+// src/main/cloud/apprunDedicatedAppApply.ts を IPC apprunDedicated:publishApp 経由で呼ぶ）。
 // この画面がやるのは: ①認証情報の確認（疎通結果も表示） ②サービスプリンシパルの用意（手作業）の案内
-// ③制限・プラン・費用をAPIから引いて見せる ④費用の同意を取る ⑤クラスタを作る ⑥作ったものを壊す、の6つ。
+// ③制限・プラン・費用をAPIから引いて見せる ④費用の同意を取る ⑤クラスタを作る ⑥作ったものを壊す
+// ⑦ログ・メトリクス ⑧アプリを公開する（クラスタ・ASG・LB が揃っているときだけ出る）、の8つ。
+// ⑧が⑦の後ろにある理由: ⑦はプロジェクト単位で記録が無くても常時出る節、⑧はクラスタが揃った
+// ときだけ出る条件付きの節。⑦の見出しは wiring テスト・README・usage-guide が固定しており、
+// 番号を付け直すと固定文字列と文書の参照が全部ずれるため、番号は付け直さない。
 //
 // docs/apprun-dedicated-plan.md（調査結果と実装設計の集約）を前提にしている。数値・料金は
 // そこが正。API仕様が変われば同ファイルを読み直すこと（掟1）。
@@ -125,6 +164,21 @@ export function computeDedicatedFormErrors(input: {
   if (input.ports.length === 0) errors.ports = '公開ポートを1つ以上指定してください'
   else if (input.ports.some(p => !(p.port >= 1 && p.port <= 65535))) errors.ports = 'ポート番号は1〜65535で指定してください'
   else if (input.ports.some(p => isReservedPort(p.port))) errors.ports = `ポート ${RESERVED_PORT_RANGE[0]}-${RESERVED_PORT_RANGE[1]} は予約されており使えません`
+  else {
+    // G-1（2026-09-16）: ここだけは「警告」ではなく作成そのものを止める。専有型は必ず
+    // Let's Encrypt を使う作り（apprunDedicatedApp.ts の buildVersionCreateBody）で、
+    // 80/http が無ければ証明書は永久に出ず、443/https が無ければアプリを載せる先そのものが
+    // 無い——どちらが欠けても**使えないクラスタ**なのに、月額およそ2万2千円の固定費だけが
+    // かかり続ける。作らせてから気づかせるコストの方が、ここで止めるコストより高い。
+    const missing = missingRequiredPorts(input.ports)
+    if (missing.length === 2) {
+      errors.ports = '公開ポートに「80（http）」と「443（https）」の両方が必要です。80は独自ドメインの証明書（https）を自動で受け取るために、443はアプリの受け口として使います。詳細設定で足してください。'
+    } else if (missing.some(m => m.port === 80)) {
+      errors.ports = '公開ポートに「80（http）」が必要です。独自ドメインの証明書（https）を自動で受け取るために使います。詳細設定で足してください。'
+    } else if (missing.some(m => m.port === 443)) {
+      errors.ports = '公開ポートに「443（https）」が必要です。アプリの受け口として使います。詳細設定で足してください。'
+    }
+  }
 
   if (!input.zone.trim()) errors.zone = 'ゾーンを入力してください'
 
@@ -257,33 +311,108 @@ export function pickCheapestLbPlan(plans: readonly PlanRow[] | null | undefined)
   )
 }
 
+/** 最安構成の月額が「出せる／まだ調べていない／料金表に無い」のどれか（D-13 K）。 */
+export type CheapestMonthlyState =
+  | { kind: 'known'; amountText: string }
+  | { kind: 'not-fetched' }
+  | { kind: 'not-in-table' }
+
 /**
- * 「月◯万円〜」という短い見積り文（判断4・利用者目線レビュー・2026-09-11）。
+ * 最安構成（ワーカ1台＋ロードバランサ）の月額を、**3つの状態に分ける**純関数
+ * （判断4・利用者目線レビュー・2026-09-11／D-13 K・2026-09-16）。
  *
- * PublishModal のタブ直下・このパネルの冒頭など、**まだ何も選んでいない段階**（プランを
- * 取得する前）でも「だいたいいくらか」を示すための短い文。priceSummary（⑤の確認ダイアログ
- * 用の詳しい内訳）とは別物——ここは**最安のワーカ1台＋ロードバランサ（非冗長なら1台）の
- * 合計を万円単位に切り下げて示すだけ**。
+ * 金額は**最安のワーカ1台＋ロードバランサ（非冗長なら1台）の合計を万円単位に切り下げて**
+ * 示す。金額をハードコードしない（料金表の改定に追従しないため）——必ず
+ * pickCheapestWorkerPlan / pickCheapestLbPlan と料金表（monthlyYenForPlanPath）から計算する。
  *
- * これ以前は「月2万円〜」「22,000円」等の金額を各所にハードコードしていた（料金表の実際の
- * 値を反映しない・改定に追従しない）。**金額は必ず pickCheapestWorkerPlan / pickCheapestLbPlan
- * と料金表（monthlyYenForPlanPath）から計算する**。プランをまだ取得できていない（引数が
- * null、または額を引けるプランが無い）ときは、**金額を推測して埋めない**
- * （掟1・2026-08-14「既定値が、勝手に課金を生むことがある」と同じ理由）。
+ * ── なぜ「文」ではなく「状態」を返すのか（D-13 K・2026-09-16 実機で観測）────────────
+ * これ以前は、金額を出せないときに**文の断片**「月額はプランを取得すると表示されます」を
+ * 返していた。呼び出し側はそれを「最小構成…でも、〈ここ〉かかります。」の**文の途中**に
+ * はめ込むため、画面に
+ *   「最小構成（…）でも、月額はプランを取得すると表示されますかかります。」
+ * という壊れた日本語が出ていた（⑥の破棄直後に観測）。**断片を文にはめ込まない。**
+ * ここは状態だけを返し、文は alwaysOnChargeText / minimumCostText が**丸ごと**切り替える。
+ *
+ * ── なぜ「まだ調べていない」と「料金表に無い」を分けるのか ───────────────────────
+ * 利用者にとって次の一手が違う（前者は③の「🔍 調べる」を押せばよい・後者は押しても出ない）。
+ * **理由が違うものを同じ文で説明しない**（掟1・金額は推測で埋めない）。
  */
-export function cheapestMonthlyText(plans: {
+export function cheapestMonthlyState(plans: {
+  workerPlans: readonly PlanRow[] | null | undefined
+  lbPlans: readonly PlanRow[] | null | undefined
+}): CheapestMonthlyState {
+  // プランそのものが手元に無い＝まだ③で調べていない（＋取得したが1件も無かった場合も同じ扱い）。
+  const workerFetched = (plans.workerPlans ?? []).length > 0
+  const lbFetched = (plans.lbPlans ?? []).length > 0
+  if (!workerFetched || !lbFetched) return { kind: 'not-fetched' }
+  const worker = pickCheapestWorkerPlan(plans.workerPlans)
+  const lb = pickCheapestLbPlan(plans.lbPlans)
+  if (!worker || !lb) return { kind: 'not-in-table' }
+  const workerYen = monthlyYenForPlanPath(worker.path)
+  const lbYen = monthlyYenForPlanPath(lb.path)
+  if (workerYen == null || lbYen == null) return { kind: 'not-in-table' }
+  const total = workerYen + lbYen * (lb.nodeCount ?? 1)
+  const manYen = Math.floor(total / 10000)
+  return { kind: 'known', amountText: manYen > 0 ? `月${manYen}万円〜` : `月額${total.toLocaleString('ja-JP')}円〜` }
+}
+
+/**
+ * パネル冒頭の「常時課金」の一文（D-13 K）。**金額が出せるかどうかで文を丸ごと切り替える。**
+ * 金額が無いときは数字を推測で書かず、次の一手（③の「🔍 調べる」）を示す。
+ */
+export function alwaysOnChargeText(plans: {
   workerPlans: readonly PlanRow[] | null | undefined
   lbPlans: readonly PlanRow[] | null | undefined
 }): string {
-  const worker = pickCheapestWorkerPlan(plans.workerPlans)
-  const lb = pickCheapestLbPlan(plans.lbPlans)
-  if (!worker || !lb) return '月額はプランを取得すると表示されます'
-  const workerYen = monthlyYenForPlanPath(worker.path)
-  const lbYen = monthlyYenForPlanPath(lb.path)
-  if (workerYen == null || lbYen == null) return '月額はプランを取得すると表示されます'
-  const total = workerYen + lbYen * (lb.nodeCount ?? 1)
-  const manYen = Math.floor(total / 10000)
-  return manYen > 0 ? `月${manYen}万円〜` : `月額${total.toLocaleString('ja-JP')}円〜`
+  const s = cheapestMonthlyState(plans)
+  if (s.kind === 'known') {
+    return `⚠️ 最小構成でも${s.amountText}の常時課金です（動いていなくても請求されます）。`
+  }
+  if (s.kind === 'not-fetched') {
+    return '⚠️ 動いていなくても請求される固定料金がかかります。正確な金額は、③の「🔍 調べる」を押すと出せます。'
+  }
+  return '⚠️ 動いていなくても請求される固定料金がかかります。ただし、取得したプランが料金表に無いため、正確な金額は出せません。'
+}
+
+/**
+ * ④の料金表の下に出す「最小構成でもいくらか」の一文（D-13 K）。
+ * こちらも**文を丸ごと切り替える**（断片をはめ込まない）。
+ */
+export function minimumCostText(plans: {
+  workerPlans: readonly PlanRow[] | null | undefined
+  lbPlans: readonly PlanRow[] | null | undefined
+}): string {
+  const s = cheapestMonthlyState(plans)
+  const base = '最小構成（ワーカ・ロードバランサとも最安プラン1台ずつ）'
+  if (s.kind === 'known') return `${base}でも、${s.amountText}かかります。`
+  if (s.kind === 'not-fetched') return `${base}の正確な金額は、③の「🔍 調べる」を押すと出せます。`
+  return `${base}の金額は出せません（取得したプランが料金表にありません）。`
+}
+
+/**
+ * プランが選ばれていないときの一文を決める純関数（検分の指摘・2026-09-16）。
+ *
+ * ⑤の構成図の合計行（`priceSummary` の text）は、プランを**取得済みで選んでいないだけ**のときにも
+ * 「③の『🔍 調べる』でプランを取得すると出せます」と言っていた。だが同じ画面のすぐ上（プラン欄）は
+ * 「⚠️ プランを選んでください」と出している。**同じ画面の2か所が別の次の一手を指しており**、
+ * 非エンジニアは**押しても結果の変わらない③を押し直す**ことになる。
+ * `cheapestMonthlyState` が「まだ調べていない／料金表に無い」を言い分けたのと同じ取り違えが、
+ * こちら側に残っていた（掟1・理由が違うものを同じ文で説明しない）。
+ *
+ * `plansFetched` は**呼び出し側が知っていることだけ**を渡す:
+ *   ・`true`  … ワーカ・LB とも一覧が手元にある（＝選べば出る）→ 次の一手は「選ぶ」
+ *   ・`false` … 少なくとも片方の一覧が無い（＝まだ③を押していない）→ 次の一手は「調べる」
+ *   ・省略    … 呼び出し側が知らせていない。**どちらか断定せず**、両方を1文で示す
+ *     （⑥の破棄まとめ `buildTeardownSummary` のように、プラン一覧を持たない呼び出し元がある）
+ */
+export function priceUnselectedText(plansFetched?: boolean): string {
+  if (plansFetched === true) {
+    return '月額はまだ出せません（プランが選ばれていないため）。上の「ワーカプラン」「ロードバランサプラン」を選ぶと出せます。'
+  }
+  if (plansFetched === false) {
+    return '月額はまだ出せません（プランをまだ取得していないため）。③の「🔍 調べる」でプランを取得すると出せます。'
+  }
+  return '月額はまだ出せません（プランが選ばれていないため）。③の「🔍 調べる」でプランを取得し、ワーカとロードバランサのプランを選ぶと出せます。'
 }
 
 /**
@@ -297,18 +426,32 @@ export function cheapestMonthlyText(plans: {
  * 「負荷で最大N台まで増えると月額いくらになるか」も出す——最小構成の額だけを見せて、
  * 負荷時に増える分を隠さない。`maxNodes` 未指定（省略）時は `minNodes` と同じ扱いにし、
  * 既存の呼び出し元（3引数）の挙動は変えない。
+ *
+ * **`opts.plansFetched`（検分の指摘・2026-09-16）**: プランが選ばれていないときの**次の一手**は、
+ * プラン一覧を取得済みかどうかで変わる（取得済みなら「選ぶ」・未取得なら「③で調べる」）。
+ * 文の決定は `priceUnselectedText` に置き、ここはそれを使うだけ（掟10）。
+ * 省略した呼び出し元（⑥の破棄まとめなど）の文は**どちらとも断定しない形**になる。
  */
 export function priceSummary(
   workerPlan: { path: string | null } | null,
   lbPlan: { path: string | null; nodeCount: number | null } | null,
   minNodes: number,
   maxNodes: number = minNodes,
+  opts?: { plansFetched?: boolean },
 ): { text: string; totalYen: number | null } {
-  const workerYen = workerPlan ? monthlyYenForPlanPath(workerPlan.path) : null
-  const lbYen = lbPlan ? monthlyYenForPlanPath(lbPlan.path) : null
-  const lbNodeCount = lbPlan?.nodeCount ?? 1
-  const workerPart = workerYen != null ? `ワーカ ${workerYen.toLocaleString('ja-JP')}円 × ${minNodes}台` : 'ワーカ（月額を出せません）'
-  const lbPart = lbYen != null ? `ロードバランサ ${lbYen.toLocaleString('ja-JP')}円 × ${lbNodeCount}台` : 'ロードバランサ（月額を出せません）'
+  // ── D-13 K: 「まだ調べていない」と「料金表に無い」を**別の文**にする ────────────────
+  // 以前はどちらも「月額を出せません（料金表に無いプランが含まれています）」と言っていた。
+  // プランをまだ取得していないだけのときに**違う理由**を告げることになり、利用者は
+  // 「自分のプランが料金表に無い」と受け取ってしまう（次の一手も変わる——前者は③の
+  // 「🔍 調べる」を押せばよく、後者は押しても出ない）。理由が違うものを同じ文にしない（掟1）。
+  if (!workerPlan?.path || !lbPlan?.path) {
+    return { text: priceUnselectedText(opts?.plansFetched), totalYen: null }
+  }
+  const workerYen = monthlyYenForPlanPath(workerPlan.path)
+  const lbYen = monthlyYenForPlanPath(lbPlan.path)
+  const lbNodeCount = lbPlan.nodeCount ?? 1
+  const workerPart = workerYen != null ? `ワーカ ${workerYen.toLocaleString('ja-JP')}円 × ${minNodes}台` : 'ワーカ（料金表に無いプラン）'
+  const lbPart = lbYen != null ? `ロードバランサ ${lbYen.toLocaleString('ja-JP')}円 × ${lbNodeCount}台` : 'ロードバランサ（料金表に無いプラン）'
   if (workerYen == null || lbYen == null) {
     return { text: `${workerPart} ＋ ${lbPart} ＝ 月額を出せません（料金表に無いプランが含まれています）`, totalYen: null }
   }
@@ -379,6 +522,70 @@ export function resourceIdLabel(
   return currentIndex >= attemptedIndex ? '（作られたか未確認）' : '（未作成）'
 }
 
+// ── ⑧ アプリを公開する（D-4・2026-09-15）: 結果表示の段の日本語化・入力チェックの純関数 ──────
+// main側 apprunDedicatedAppApply.ts の PublishAppStage（IPC 側 apprunDedicated:publishApp がイメージの
+// 組み立て・push の失敗に使う 'image' を足したもの）を、global.d.ts の publishApp() の戻り値型から
+// 導出する（掟10・複製しない。global.d.ts 自身は `import('../main/cloud/apprunDedicatedAppApply')` で
+// main の型をそのまま使っている）。既存の STAGE_LABEL は⑤専用。
+export type PublishAppStage = Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['publishApp']>>['stage']
+
+/** ⑧の段の日本語対訳（Record で全段。main 側の段が増減したら、この複製も直す）。 */
+export const PUBLISH_STAGE_LABEL: Record<PublishAppStage, string> = {
+  consent: '確認',
+  'no-cluster': 'クラスタの記録',
+  invalid: '入力の検証',
+  record: '記録',
+  'lets-encrypt': 'Let\'s Encrypt メールの設定',
+  // J-1（2026-09-17）: ⑧でもクラスタの待ち受けポート（80/http・443/https）を確かめるようになった。
+  'cluster-ports': 'クラスタの公開ポートの確認',
+  'app-lookup': 'アプリケーションの検索',
+  'name-taken': 'アプリケーション名の重複',
+  'app-create': 'アプリケーションの作成',
+  'version-create': 'バージョンの作成',
+  activate: 'バージョンの有効化',
+  cleanup: '古いバージョンの掃除',
+  'lb-address': 'ロードバランサのIP取得',
+  image: 'イメージの組み立てと反映',
+  // 2026-09-23 検分の指摘12: 鍵を渡せずに止めたときを「入力の検証」と言わない
+  // （原因は「APIキーが未登録」「保存場所に接続できない」で、公開フォームの入力の誤りではない）。
+  storage: '保存場所の鍵の用意',
+  done: '完了',
+}
+
+export type PublishFormInput = {
+  host: string
+  /** クラスタに Let's Encrypt のメールが未設定と分かっている（hasLetsEncryptEmail === false）ときだけ true。 */
+  needsEmail: boolean
+  email: string
+  cpu: number
+  memory: number
+  fixedScale: number
+  healthCheckPath: string
+}
+
+/**
+ * ⑧の入力を画面側で先に見る（「押せない理由」の最小限。main の validateAppSpec が再検証して
+ * 'invalid' 段で止めるので、そちらの文言をここに複製しない）。違反があれば全部返す（欄ごとに独立）。
+ * ホスト名は**黙って小文字化しない**（validateAppSpec と同じ方針。大文字が混じればここで止める）。
+ * 範囲は validateAppSpec と同じ（cpu 100〜64000・memory 128〜131072・fixedScale 1〜50・整数）。
+ */
+export function computePublishFormErrors(input: PublishFormInput): string[] {
+  const errors: string[] = []
+  const host = input.host.trim()
+  if (!host) errors.push('ホスト名を入力してください（例: app.example.com）')
+  else if (!HOSTNAME_PATTERN.test(host)) errors.push('ホスト名は小文字の英数字・ハイフン・ドットで指定してください（例: app.example.com）')
+  const email = input.email.trim()
+  if (input.needsEmail && !email) errors.push('Let\'s Encrypt のメールアドレスを入力してください（証明書の発行に必要です）')
+  // F-1 A-3（2026-09-16）: 必須でなくても、値を入れたなら最低限の形は確かめる（isLikelyEmail・ゆるい判定）。
+  else if (email && !isLikelyEmail(email)) errors.push('Let\'s Encrypt のメールアドレスの形を確認してください（例: you@example.com）')
+  if (!Number.isInteger(input.cpu) || input.cpu < 100 || input.cpu > 64000) errors.push('mCPU は 100〜64000 の整数で指定してください')
+  if (!Number.isInteger(input.memory) || input.memory < 128 || input.memory > 131072) errors.push('メモリは 128〜131072（MB）の整数で指定してください')
+  if (!Number.isInteger(input.fixedScale) || input.fixedScale < 1 || input.fixedScale > 50) errors.push('台数は 1〜50 の整数で指定してください')
+  const hc = input.healthCheckPath.trim()
+  if (hc && !hc.startsWith('/')) errors.push('ヘルスチェックのパスは / から始めてください')
+  return errors
+}
+
 // ── ⑤ 直前の簡易構成図（Ryosuke さん要望「クラスタを作成するボタンの上に、簡易的な構成を
 // 示せないか」）。**自前の図形（箱と文字）で描く**——さくらの公式アイコンは、ガイドラインが
 // 「アイコンそのものの再配布」を禁じており、非公式ツールが画面に埋め込むと公認と誤解させうる
@@ -438,6 +645,10 @@ export type TeardownSummaryRecord = {
   workerServiceClassPath?: string | null
   lbServiceClassPath?: string | null
   createdAt?: string | null
+  // D-4（2026-09-15）: ⑧で公開したアプリ。applicationID があるときだけ末尾に「先に削除」の行を足す。
+  applicationID?: string | null
+  applicationName?: string | null
+  activeVersion?: number | null
 } | null | undefined
 
 export type TeardownSummaryPlans = {
@@ -484,6 +695,11 @@ export function buildTeardownSummary(record: TeardownSummaryRecord, plans: Teard
     )
     lines.push(`月額目安: ${price.text}`)
   }
+  // D-4（2026-09-15）: ⑧で公開したアプリがあれば末尾に1行（main の teardownFlow はアプリ→LB→ASG→クラスタの順に消す）。
+  // 無ければ行自体を足さない（既存の行数・並びを変えない）。
+  if (r.applicationID) {
+    lines.push(`アプリ『${r.applicationName ?? r.applicationID}』（バージョン ${r.activeVersion ?? TEARDOWN_SUMMARY_UNKNOWN}）→ 先に削除`)
+  }
   return { lines }
 }
 
@@ -495,9 +711,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   }, [metaPath])
 
   // このプロジェクトの公開先として記録する（VpsPanel と同じ作法）。
-  // ※ PublishTargetKind（公開記録の種別）には足さない——クラスタ・ASG・LBを作れるようになっても
-  //   「アプリを公開する」段（roadmap #23 の⑤独自ドメイン相当）はまだ無いため
-  //   （sakura-vps が同じ扱い。PublishModal.tsx 参照）。
+  // ※ PublishTargetKind（公開記録の種別）には 'sakura-apprun-dedicated' として登録済み
+  //   （唯一の定義は src/renderer/publishStatus.ts。D-3、2026-09-11 Ryosuke 決定）。
+  //   「アプリを公開する」段（⑧・D-4）の記録（applicationID 等・publish.targets の公開記録）は
+  //   main（publishAppFlow・apprunDedicated:publishApp）が同じ場所へ書く。
+  //   公開したものからの取り込み（publishImport）は専有型は対象外のまま。
   //
   // publish.apprunDedicated へのマージ書き込みは shared/publishMeta.ts の
   // withApprunDedicatedRecord に一元化してある（掟10・main側の apprunDedicatedApply.ts も
@@ -532,6 +750,13 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // 結局この通知も発火させるが、他画面（認証情報）からの切替はこの通知だけを経由するため、
   // どちらか片方だけに置くと取りこぼす。
   const genRef = useRef(0)
+
+  // ⑥の破棄が clearPublishRecord（publishRecord.ts）を呼ぶと 'sakura-meta-changed' が飛び、
+  // この画面自身の購読（onMetaChanged）が refreshApprunState/refreshAppStatus を走らせる。
+  // 破棄の側は順序を保つために同じ2つを await で取り直しているので、そのままだと
+  // GET /clusters/{id} が二重に飛ぶ（2026-09-23 検分の指摘6-3）。await する側に寄せ、
+  // その間だけ購読の側を黙らせる。
+  const selfMetaRefreshRef = useRef(false)
 
   const refreshKey = useCallback(async () => {
     try { setHasKey(await window.electronAPI.cloud.hasKey()) } catch { setHasKey(false) }
@@ -578,7 +803,16 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // ── ② サービスプリンシパル（リソースID・手作業） ──────────────────
   const [resourceId, setResourceId] = useState('')
   const idFormat = resourceIdFormatOk(resourceId)
-  const saveResourceId = async (v: string) => { await saveMeta({ servicePrincipalId: v }) }
+  // 最後にディスクへ書いた（か、ディスクから読んだ）値。②の欄は onBlur で保存するので、
+  // これが無いと「クリックして何も直さずに外へ出ただけ」でファイル書き込み →
+  // 'sakura-meta-changed' → refreshAppStatus → GET /clusters/{id} が1本飛び、
+  // ⑧「公開中: …」が触っていないのに一瞬消えて出し直される（2026-09-23 検分の指摘6）。
+  const savedResourceIdRef = useRef('')
+  const saveResourceId = async (v: string) => {
+    if (v === savedResourceIdRef.current) return // 値が変わっていない＝書かない（クラウドGETも起こさない）
+    savedResourceIdRef.current = v
+    await saveMeta({ servicePrincipalId: v })
+  }
 
   // ── ③ プラン・制限（API取得） ─────────────────────────────────
   const [checking, setChecking] = useState(false)
@@ -601,9 +835,13 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // 失敗（キー未登録・取得エラーいずれも）はここでは何もしない――「未実施」の表示のまま
   // 静かに留め、実際に失敗を伝えるのは③を押した investigate() の役目にする（キーをまだ
   // 登録していないだけの利用者に、開いた瞬間「取得できませんでした」を見せないため）。
+  // alive はアンマウント判定、myGen はキー切替の判定（別物なので併用する）。マウント直後に
+  // キーを切り替えると、このぶんの取得が遅れて戻って新しいキーの一覧を上書きしうる
+  // （2026-09-23 検分の指摘4）。zonesCache 側の generation は自分のキャッシュしか守らない。
   useEffect(() => {
     let alive = true
-    loadZones().then(r => { if (alive && r.ok) setZones(r.rows) })
+    const myGen = genRef.current
+    loadZones().then(r => { if (alive && genRef.current === myGen && r.ok) setZones(r.rows) })
     return () => { alive = false }
   }, [])
 
@@ -717,6 +955,38 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   // 後ろだと、⑤側で「記録があれば新規作成させない」判定に使えない）。
   const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)
 
+  // ── ⑧ アプリの状態（D-4・2026-09-15）: Let's Encrypt メールの有無・env.json の有無・記録（アプリ系の欄を含む）。
+  // main の apprunDedicated:appStatus が返す record（ApprunDedicatedRecord・src/shared/publishMeta.ts）を
+  // ⑧「公開中: …」と⑥のアプリ行に使う（上の apprunState＝state の型にはアプリ系の欄が無いため）。
+  // 方式B（掟4）: キーは使う瞬間に読んで引数で渡す。未登録なら null のまま（⑧は①への案内を出す）。
+  // 世代カウンタ（genRef）は testConnection/investigate と同じ扱い（キー切替後の古い応答で上書きしない）。
+  type AppStatusResult = Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['appStatus']>>
+  type AppStatusOk = Extract<AppStatusResult, { ok: true }>
+  const [appStatus, setAppStatus] = useState<AppStatusOk | null>(null)
+  const [appStatusError, setAppStatusError] = useState('')
+  const refreshAppStatus = useCallback(async () => {
+    const myGen = genRef.current
+    try {
+      const auth = await window.electronAPI.cloud.loadKey()
+      if (genRef.current !== myGen) return
+      if (!auth || !auth.token || !auth.secret) { setAppStatus(null); setAppStatusError(''); return }
+      const r = await window.electronAPI.apprunDedicated.appStatus(projectDir, auth)
+      if (genRef.current !== myGen) return
+      if (r.ok) { setAppStatus(r); setAppStatusError('') } else { setAppStatus(null); setAppStatusError(r.message) }
+    } catch (e: any) {
+      if (genRef.current !== myGen) return
+      setAppStatus(null); setAppStatusError(e?.message ?? String(e))
+    }
+  }, [projectDir])
+  const appRecord = appStatus?.record ?? null
+  // ⑥「いまの構成と月額目安」に渡す記録: apprunState にアプリ系の欄を appStatus.record から補う。
+  const teardownSummaryRecord = {
+    ...(apprunState ?? {}),
+    applicationID: appRecord?.applicationID ?? null,
+    applicationName: appRecord?.applicationName ?? null,
+    activeVersion: appRecord?.activeVersion ?? null,
+  }
+
   // ── ⑤ クラスタを作る ────────────────────────────────────────
   const [clusterName, setClusterName] = useState('')
   const [ports, setPorts] = useState<{ port: number; protocol: 'http' | 'https' }[]>([
@@ -731,7 +1001,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const [maxNodes, setMaxNodes] = useState(1)
   const [selectedWorkerPath, setSelectedWorkerPath] = useState<string | null>(null)
   const [selectedLbPath, setSelectedLbPath] = useState<string | null>(null)
-  const [letsEncryptEmail, setLetsEncryptEmail] = useState('')
+  // F-1（2026-09-16）: letsEncryptEmail の state はここから消した（⑤フォームから削除・⑧に一本化。
+  // 理由は⑧のメール欄の近くのコメント参照）。
   const [creating, setCreating] = useState(false)
   const [createResult, setCreateResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['create']>> | null>(null)
   // ⑤フォームの警告表示（判断7・2026-09-11）: どの欄を「触った」か、「作成」を押したか。
@@ -777,7 +1048,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
   const selectedWorkerPlan = (workerPlans ?? []).find(p => p.path === selectedWorkerPath) ?? null
   const selectedLbPlan = (lbPlans ?? []).find(p => p.path === selectedLbPath) ?? null
-  const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes, maxNodes)
+  // プラン一覧が手元にあるか（＝下のプラン欄が <select> を出している状態か）。
+  // ここが true なら、金額が出ない理由は「選んでいないだけ」——③を押し直しても変わらない。
+  // 欄の表示条件（`workerPlans && workerPlans.some(p => p.path)`）と同じ式にそろえる（検分の指摘）。
+  const plansFetched = (workerPlans ?? []).some(p => p.path) && (lbPlans ?? []).some(p => p.path)
+  const price = priceSummary(selectedWorkerPlan, selectedLbPlan, minNodes, maxNodes, { plansFetched })
   // ⑤ボタンのすぐ上に出す簡易構成図（いま選んでいる内容がそのまま反映される）。
   // 表示名は他の一覧（ワーカ/LBプランの <select>）と同じフォールバック（name ?? path）に揃える。
   const diagram = buildClusterDiagram({
@@ -829,12 +1104,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const { confirm, element: confirmElement } = useConfirm()
 
   const doCreate = async () => {
-    if (hasErrors || creating) return
+    if (hasErrors || panelBusy({ creating, tearingDown, publishing, lbRefreshing })) return
     const spec = {
       name: clusterName.trim(),
       ports,
       servicePrincipalID: resourceId.trim(),
-      ...(letsEncryptEmail.trim() ? { letsEncryptEmail: letsEncryptEmail.trim() } : {}),
       zone: effectiveZone.trim(),
       workerServiceClassPath: selectedWorkerPath as string,
       minNodes, maxNodes,
@@ -863,6 +1137,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       if (outcome.cancelled) return
       setCreateResult(outcome.result)
       await refreshApprunState()
+      await refreshAppStatus() // ⑧の表示条件（クラスタが揃ったか）と Let's Encrypt メールの有無を取り直す
     } catch (e: any) {
       setCreateResult({ ok: false, stage: 'consent', message: e?.message ?? String(e) } as any)
     } finally {
@@ -882,8 +1157,15 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   }, [])
 
   const doTeardown = async () => {
-    if (tearingDown) return
+    if (panelBusy({ creating, tearingDown, publishing, lbRefreshing })) return
+    // 破棄前の記録に applicationID があったか（破棄後は消えるため、ここで先に確定させる）。
+    // ⑧で公開した記録が残ったまま「すべて削除する」を通すと、main は公開記録を消さない
+    // （teardownApp と同じ手。上の D-4 のコメント）ので、ここで clearPublishRecord を呼ばないと
+    // 📡 一覧に存在しないアプリの幽霊が残る（tests/apprunDedicatedWiring.test.ts で固定）。
+    const hadApplicationID = !!appRecord?.applicationID
     const targets = [
+      // D-4: ⑧で公開したアプリがあれば先頭（main の teardownFlow はアプリ→LB→ASG→クラスタの順に消す）。
+      appRecord?.applicationID ? `アプリ『${appRecord.applicationName ?? appRecord.applicationID}』` : null,
       apprunState?.loadBalancerID ? `ロードバランサ『${apprunState.loadBalancerID}』` : null,
       apprunState?.asgID ? `オートスケーリンググループ『${apprunState.asgID}』` : null,
       apprunState?.clusterID ? `クラスタ『${apprunState.clusterID}』` : null,
@@ -908,13 +1190,206 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       )
       if (outcome.cancelled) return
       setTeardownResult(outcome.result)
-      await refreshApprunState()
+      // 破棄できて、かつ⑧で公開したアプリの記録があったなら、公開記録（publish.targets）も消す
+      // （📡 一覧が使う既存の関数。残すと存在しない公開が一覧に出続ける・AppRunPanel.doTeardown と同じ手）。
+      // clearPublishRecord は 'sakura-meta-changed' を発火し、この画面の購読が同じ2つを
+      // 走らせる。取り直しは下の await 側に寄せるので、その間は購読を黙らせる（指摘6-3）。
+      selfMetaRefreshRef.current = true
+      try {
+        if (outcome.result.ok && hadApplicationID) {
+          try { await clearPublishRecord(projectDir, 'sakura-apprun-dedicated') } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ }
+        }
+        await refreshApprunState()
+        await refreshAppStatus() // アプリの記録（applicationID 等）も消えているので取り直す
+      } finally {
+        selfMetaRefreshRef.current = false
+      }
     } catch (e: any) {
       setTeardownResult({ ok: false, executed: [], message: e?.message ?? String(e), remaining: {} })
     } finally {
       setTearingDown(false)
     }
   }
+
+  // ── ⑧ アプリを公開する（D-4・2026-09-15。段階③⑤・docs/apprun-dedicated-plan.md 12-2） ────
+  // 確認→IPC の歯止めは runPublishApp（apprunDedicatedActions.ts）。ここは⑤の doCreate と同じ薄い皮:
+  // 先に ConfirmModal で答えを取り、確定した boolean を同期関数として注入する。
+  const [host, setHost] = useState('')
+  const [leEmail, setLeEmail] = useState('')
+  const [appCpu, setAppCpu] = useState<number>(APP_DEFAULTS.cpu)
+  const [appMemory, setAppMemory] = useState<number>(APP_DEFAULTS.memory)
+  const [appFixedScale, setAppFixedScale] = useState<number>(APP_DEFAULTS.fixedScale)
+  const [healthCheckPath, setHealthCheckPath] = useState('')
+  const [publishing, setPublishing] = useState(false)
+  const [publishResult, setPublishResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['publishApp']>> | null>(null)
+  // 進捗（イメージの組み立て・push・各段）。実行中（publishing）だけ表示する（⑥の teardownProgress と同型）。
+  const [publishProgress, setPublishProgress] = useState<string | null>(null)
+  const [scaffolding, setScaffolding] = useState(false)
+  const [scaffoldError, setScaffoldError] = useState('')
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.apprunDedicated.onPublishProgress((msg) => setPublishProgress(msg))
+    return () => { unsubscribe() }
+  }, [])
+
+  // F-1 A-2（2026-09-16）: Let's Encrypt メール欄の出し分けは3状態（letsEncryptEmailFieldState・
+  // shared/apprunDedicatedApp.ts）に一元化した。false＝必須で出す、null＝任意で出す（確かめられ
+  // なかっただけで、実際は設定済みの人を止めないため）、true＝出さない（設定済み）。
+  // 公開が 'lets-encrypt' 段で失敗したときは、実際には未設定だったと確定するので、上の3状態に
+  // 関係なく「出す・必須」に倒す（失敗表示に入力の導線を添える）。
+  const leEmailConfirmedMissing = !!publishResult && !publishResult.ok && publishResult.stage === 'lets-encrypt'
+  const leEmailField = letsEncryptEmailFieldState(appStatus?.hasLetsEncryptEmail ?? null)
+  const showLeEmailField = leEmailField.show || leEmailConfirmedMissing
+  const needsLeEmail = leEmailField.required || leEmailConfirmedMissing
+  const publishErrors = computePublishFormErrors({
+    // 欄が出ていないときは、その値を検証にも送信にも使わない（画面に見えない値で止めない）。
+    host, needsEmail: needsLeEmail, email: showLeEmailField ? leEmail : '',
+    cpu: appCpu, memory: appMemory, fixedScale: appFixedScale, healthCheckPath,
+  })
+  const hostTrimmed = host.trim()
+  const hostOk = HOSTNAME_PATTERN.test(hostTrimmed)
+  const appPublished = !!appRecord?.applicationID
+
+  // env.json（公開の設定）が無ければ、共用型 AppRunPanel と同じ scaffoldEnv で作る（複製しない）。
+  const doScaffoldEnv = async () => {
+    if (scaffolding) return
+    setScaffolding(true); setScaffoldError('')
+    try {
+      const projName = projectDir.split('/').pop() ?? 'app'
+      const r = await window.electronAPI.cloud.scaffoldEnv(projectDir, projName)
+      if (r.ok) await refreshAppStatus()
+      else setScaffoldError(r.errors.join(' / '))
+    } catch (e: any) {
+      setScaffoldError(e?.message ?? String(e))
+    } finally { setScaffolding(false) }
+  }
+
+  const doPublish = async () => {
+    if (publishErrors.length > 0 || panelBusy({ creating, tearingDown, publishing, lbRefreshing }) || !appStatus) return
+    const input = {
+      host: hostTrimmed,
+      cpu: appCpu, memory: appMemory, fixedScale: appFixedScale,
+      // 空なら送らない（main が env.json の probePath を使う）。
+      ...(healthCheckPath.trim() ? { healthCheckPath: healthCheckPath.trim() } : {}),
+      // F-1 A-2: 欄が出ているとき（必須・任意のどちらでも）は送る。欄が出ていないのに値が渡らない、
+      // という食い違いを作らない。
+      ...(showLeEmailField ? { letsEncryptEmail: leEmail.trim() } : {}),
+    }
+    const confirmMessage = [
+      `ホスト名: ${input.host}`,
+      'イメージを組み立ててレジストリへ反映してから、専有型に載せます',
+      `mCPU ${appCpu}・メモリ ${appMemory}MB・台数 ${appFixedScale}`,
+      // 検分の指摘（2026-09-16）: 確認画面が mCPU・メモリ・**台数**を読み上げるのに、
+      // 「台数を2以上にするとコンテナごとに別のデータになる」「書いたデータは残らない」に
+      // 触れていなかった。**押す前にいちばん取り返しがつかないこと**を出す（文言は一元化・掟10）。
+      ephemeralDataNote(),
+      '公開のあと、DNS の A レコードをロードバランサの IP に向ける必要があります',
+    ].join('\n')
+    try {
+      const ok = await confirm({ title: '専有型にアプリを公開します', body: confirmMessage, confirmLabel: '公開する', danger: false })
+      const outcome = await runPublishApp(
+        { confirmMessage, input },
+        {
+          confirm: () => ok,
+          activity: { begin: () => beginActivity('専有型アプリの公開', { closeWarning: PUBLISH_CLOSE_WARNING }) },
+          publish: async (i, opts) => {
+            setPublishing(true); setPublishResult(null); setPublishProgress(null)
+            const auth = await window.electronAPI.cloud.loadKey()
+            if (!auth || !auth.token || !auth.secret) {
+              return { ok: false, stage: 'consent', message: 'さくらのクラウドAPIキーが未登録です。①で登録してください。' } as any
+            }
+            return window.electronAPI.apprunDedicated.publishApp(projectDir, auth, i, opts)
+          },
+        },
+      )
+      if (outcome.cancelled) return
+      setPublishResult(outcome.result)
+      await refreshApprunState()
+      await refreshAppStatus()
+    } catch (e: any) {
+      setPublishResult({ ok: false, stage: 'consent', message: e?.message ?? String(e) } as any)
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  // ── ⑧「🔄 IP を取り直す」（D-5・2026-09-16 実測）: LB ノードのアドレスは付くまで数分かかることがあり、
+  //    公開直後の lb-address 段で空のまま終わることがある。main の apprunDedicated:lbAddresses（GET 1回＋記録）で
+  //    取り直し、記録（appStatus.record.lbAddresses）と、出ていれば公開結果の IP 欄も更新する。
+  //    方式B（掟4）: キーは使う瞬間に loadKey で読んで引数で渡す。何も作らない（GET と記録の書き込みだけ）。
+  const [lbRefreshing, setLbRefreshing] = useState(false)
+  const [lbRefreshError, setLbRefreshError] = useState('')
+  const doRefreshLbAddresses = async () => {
+    if (lbRefreshing) return
+    setLbRefreshing(true); setLbRefreshError('')
+    try {
+      const auth = await window.electronAPI.cloud.loadKey()
+      if (!auth || !auth.token || !auth.secret) {
+        setLbRefreshError('さくらのクラウドAPIキーが未登録です。①で登録してください。')
+        return
+      }
+      const r = await window.electronAPI.apprunDedicated.lbAddresses(projectDir, auth)
+      if (!r.ok) { setLbRefreshError(r.message); return }
+      // 公開結果の表示が残っていれば、その IP 欄も取り直した値に差し替える（「取得できませんでした」を残さない）。
+      setPublishResult(prev => (prev && prev.ok ? { ...prev, lbAddresses: r.lbAddresses } : prev))
+      await refreshAppStatus()
+    } catch (e: any) {
+      setLbRefreshError(e?.message ?? String(e))
+    } finally { setLbRefreshing(false) }
+  }
+  // 同じボタンを「公開中: …」の下と、公開結果の「IP を取得できませんでした」の下の2か所に出す（1つの定義を使い回す）。
+  const lbRefreshButton = (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        onClick={() => { void doRefreshLbAddresses() }}
+        disabled={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
+        className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
+      >{lbRefreshing ? 'IP を取り直しています…' : '🔄 IP を取り直す'}</button>
+      {lbRefreshError && <span className="text-xs text-brand-yellow leading-relaxed select-text">{lbRefreshError}</span>}
+    </div>
+  )
+
+  // ── ⑧「🔎 公開先と https を確かめる」（O-1・2026-09-17）────────────────────────────
+  //    2026-09-16〜17 の観測: 証明書が一度も発行されていないのに「✅ 公開しました」と出していた
+  //    （Koto は証明書を一度も見ていなかった）。利用者はブラウザの警告を見て、何が悪いのか分からない。
+  //    さくらの API には証明書の状態を読む手段が無いので、main が実際に繋いで確かめる。
+  //    **⑧の公開直後の確認（verify）には足せない**——あれは DNS を向ける前に走るので、その時点で
+  //    正式な証明書は存在し得ない（時間軸が違う）。だから押したときに1回だけ調べる別のボタンにする。
+  //    「🔄 IP を取り直す」と同じ形（押した瞬間に1回だけ・何も作らない）。鍵は要らない（読むだけ）。
+  const [siteChecking, setSiteChecking] = useState(false)
+  const [siteCheckError, setSiteCheckError] = useState('')
+  const [siteCheckResult, setSiteCheckResult] = useState<string[] | null>(null)
+  const doCheckSite = async () => {
+    if (siteChecking || panelBusy({ creating, tearingDown, publishing, lbRefreshing })) return
+    setSiteChecking(true); setSiteCheckError(''); setSiteCheckResult(null)
+    try {
+      const r = await window.electronAPI.apprunDedicated.checkSite(projectDir)
+      if (!r.ok) { setSiteCheckError(r.message); return }
+      // 行の組み立ては純関数（siteCheckLines）が済ませている。画面は並べるだけ（掟10）。
+      setSiteCheckResult(r.lines)
+    } catch (e: any) {
+      setSiteCheckError(e?.message ?? String(e))
+    } finally { setSiteChecking(false) }
+  }
+  const siteCheckBlock = (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => { void doCheckSite() }}
+          disabled={siteChecking || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
+          className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
+        >{siteChecking ? '確かめています…' : '🔎 公開先と https を確かめる'}</button>
+        <span className="text-[11px] text-ink-muted leading-relaxed">DNS を設定したあとに押してください。</span>
+      </div>
+      {siteCheckError && <p className="text-xs text-brand-yellow leading-relaxed select-text">{siteCheckError}</p>}
+      {siteCheckResult && (
+        <ul className="space-y-0.5">
+          {siteCheckResult.map((line, i) => (
+            <li key={i} className="text-xs text-ink-secondary leading-relaxed select-text">{line}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 
   // ── ⑦ ログ・メトリクス（#38。プロジェクト単位＝クラスタごとではない。共用型
   //    TelemetryNotice と同じ見せ方・同じ文言の作法） ──────────────────────────────
@@ -929,20 +1404,28 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
   const [telemetryBusyKind, setTelemetryBusyKind] = useState<'logs' | 'metrics' | null>(null)
   const [telemetryDoneKind, setTelemetryDoneKind] = useState<'logs' | 'metrics' | null>(null)
 
+  // 世代カウンタ（genRef）は testConnection/investigate/refreshAppStatus と同じ扱い
+  // （キー切替後に遅れて戻った前のキーの応答で⑦を上書きしない。2026-09-23 検分の指摘3）。
+  // telemetryStatus は1回あたり GET 6本（logs/metrics × monitoring.ts）なので遅延が起きやすい。
+  // finally の setTelemetryLoading(false) だけはガードしない（切替後に「確認中…」で固まらせないため）。
   const refreshTelemetry = useCallback(async () => {
+    const myGen = genRef.current
     setTelemetryLoading(true); setTelemetryError('')
     try {
       const auth = await window.electronAPI.cloud.loadKey()
+      if (genRef.current !== myGen) return
       if (!auth || !auth.token || !auth.secret) {
         setTelemetryVariants(null); setTelemetryActions(null)
         return
       }
       const r = await window.electronAPI.apprunDedicated.telemetryStatus(auth)
+      if (genRef.current !== myGen) return
       if (r.ok) { setTelemetryVariants(r.variants); setTelemetryActions(r.actions) } else {
         setTelemetryVariants(null); setTelemetryActions(null)
         setTelemetryError(r.message ? `${r.message}${r.detail ? `（${r.detail}）` : ''}` : '状態を確認できませんでした')
       }
     } catch (e: any) {
+      if (genRef.current !== myGen) return
       setTelemetryVariants(null); setTelemetryActions(null)
       setTelemetryError(e?.message ?? String(e))
     } finally {
@@ -983,12 +1466,14 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
   // ── 初期化 ──────────────────────────────────────────────────
   useEffect(() => {
-    refreshKey(); refreshCloudKeys(); refreshApprunState(); refreshTelemetry()
+    refreshKey(); refreshCloudKeys(); refreshApprunState(); refreshTelemetry(); refreshAppStatus()
     setTouched({}); setSubmitted(false)
     ;(async () => {
       const m = await readMeta()
       const v = m.publish?.apprunDedicated
-      setResourceId(typeof v?.servicePrincipalId === 'string' ? v.servicePrincipalId : '')
+      const savedId = typeof v?.servicePrincipalId === 'string' ? v.servicePrincipalId : ''
+      setResourceId(savedId)
+      savedResourceIdRef.current = savedId // ディスクの値＝「書いたのと同じ」として覚えておく（指摘6）
       setConsentedAt(typeof v?.consentedAt === 'string' ? v.consentedAt : null)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1011,34 +1496,62 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
       // 指摘）。`GET /zone` の内容がキーで変わるかは確かめていないため、**捨てる側に
       // 倒す**（CLAUDE.md 掟10: 分からないものは安全側に倒す）。
       setZones(null); setZonesError(null)
-      loadZones().then(r => { if (r.ok) setZones(r.rows) })
+      // 捨てたあと入れ直す経路も世代で守る（2026-09-23 検分の指摘4）。A→B→C と続けて
+      // 切り替えると、B のぶんが C のあとに戻って⑤のゾーン選択が B の一覧のままになる。
+      const zonesGen = genRef.current
+      loadZones().then(r => { if (genRef.current === zonesGen && r.ok) setZones(r.rows) })
       // ⑦ ログ・メトリクスもキーに紐づく状態なので、切り替えたら取り直す
       // （前のキーで確かめた「繋がっています」を残さない）。
       setTelemetryConfirmingKind(null); setTelemetryDoneKind(null)
       refreshTelemetry()
+      // ⑧ アプリの状態（Let's Encrypt メールの有無等）もキーに紐づく。捨ててから取り直す。
+      setAppStatus(null); setAppStatusError('')
+      refreshAppStatus()
     }
     window.addEventListener('sakura:credentials-changed', h)
     return () => window.removeEventListener('sakura:credentials-changed', h)
-  }, [refreshKey, refreshCloudKeys, refreshTelemetry])
+  }, [refreshKey, refreshCloudKeys, refreshTelemetry, refreshAppStatus])
+
+  // D-4: 📡 公開したもの一覧から専有型のアプリを破棄すると clearPublishRecord が 'sakura-meta-changed' を
+  // 発火する（src/renderer/publishRecord.ts）。この画面の「公開中: …」（appStatus.record）と⑥のアプリ行を
+  // 古いまま残さないよう、記録（apprunState）とアプリの状態を取り直す（この画面自身の saveMeta も
+  // 同じイベントを発火するが、取り直すだけなので害は無い）。
+  useEffect(() => {
+    // 破棄の最中（selfMetaRefreshRef）は、破棄の側が同じ2つを await で取り直すので何もしない
+    // ——そうしないと GET /clusters/{id} が二重に飛ぶ（指摘6-3）。
+    const onMetaChanged = () => {
+      if (selfMetaRefreshRef.current) return
+      refreshApprunState(); refreshAppStatus()
+    }
+    window.addEventListener('sakura-meta-changed', onMetaChanged)
+    return () => window.removeEventListener('sakura-meta-changed', onMetaChanged)
+  }, [refreshApprunState, refreshAppStatus])
 
   const selectedKeyId = activeKeyId ?? cloudKeys[0]?.id ?? null
   const selectedKeyLabel = cloudKeys.find(k => k.id === selectedKeyId)?.label ?? '（未選択）'
   const keyReady = hasKey === true
 
+  // F-1 B-1（2026-09-16）: ⑦「ログ・メトリクス」を1行に畳んでよいか（すべて繋がっていて、
+  // かつ行動〔ボタン〕が要らないときだけ）。判定は shared/appLog.ts の純関数（掟10）。
+  const collapseTelemetry = !!telemetryVariants && !!telemetryActions
+    && shouldCollapseTelemetrySection(telemetryVariants, [telemetryActions.logs, telemetryActions.metrics])
+
   return (
     <div className="space-y-3">
-      {/* 専有型の注意文（常時課金・アプリ公開はまだ）は、以前は
+      {/* 専有型の注意文（常時課金・提供範囲）は、以前は
           PublishModal.tsx のタブ直下・このパネルの冒頭・④の冒頭の3か所にほぼ同文で出ており、
           利用者目線レビューで重複を指摘された。ここ1か所に一本化する（判断4・2026-09-11）。 */}
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
         <p className="text-sm font-semibold text-ink">📦 さくらのAppRun 専有型</p>
         <p className="text-xs font-semibold text-brand-red leading-relaxed">
-          ⚠️ 最小構成でも{cheapestMonthlyText({ workerPlans, lbPlans })}の常時課金です（動いていなくても請求されます）。
+          {/* D-13 K: 金額が出せるかどうかで**文を丸ごと**切り替える（断片を文にはめ込まない）。
+              判断は純関数 alwaysOnChargeText（このファイルの上）に集約し、ここは描くだけ（掟10）。 */}
+          {alwaysOnChargeText({ workerPlans, lbPlans })}
           共用型（さくらのAppRun）は使った分だけの従量課金ですが、専有型は日額・月額の固定費です。
         </p>
         <p className="text-xs text-ink-muted leading-relaxed">
           仮想サーバレベルで専有するAppRun。独自ドメインが使えますが、4階層の構成が必要な上級者向けサービスです。
-          <b className="text-ink">クラスタの作成・破棄までは行えます。</b>アプリケーションの公開（独自ドメインでの利用）はこのバージョンではまだできません。
+          <b className="text-ink">クラスタの作成・破棄（⑤⑥）と、アプリケーションの公開（⑧・独自ドメインが必要）まで行えます。</b>
         </p>
         <p className="text-[11px] text-ink-muted">
           <a href={OFFICIAL_PRICE_URL} className="hover:underline">🌐 公式サイトを見る ↗</a>
@@ -1100,7 +1613,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
             value={resourceId}
             onChange={e => { setResourceId(e.target.value); touch('resourceId') }}
             onBlur={() => saveResourceId(resourceId.trim())}
-            placeholder="例: 113800956789"
+            placeholder="例: 111111111111"
             className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
           />
           {idFormat === true && <p className="text-[11px] text-brand-green font-semibold">✓ 形は合っています（12文字）</p>}
@@ -1286,8 +1799,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           ロードバランサも同じ料金表が使われます（1コア/2GB・2コア/2GBの2プランのみ提供）。
           税込・2026-09時点の<a href={OFFICIAL_PRICE_URL} className="text-sakura hover:underline">公式ページ</a>の値です。価格は変わることがあります。最新は公式ページでご確認ください。
         </p>
-        <p className="text-xs font-semibold text-ink leading-relaxed">
-          最小構成（ワーカ・ロードバランサとも最安プラン1台ずつ）でも、<span className="text-brand-red">{cheapestMonthlyText({ workerPlans, lbPlans })}</span>かかります。
+        {/* D-13 K: 金額を出せないときに文の断片をはめ込むと「…表示されますかかります。」という
+            壊れた日本語になっていた（2026-09-16 実機で観測）。判断は純関数 minimumCostText に
+            集約し、ここは描くだけ（掟10）。 */}
+        <p className="text-xs font-semibold text-brand-red leading-relaxed">
+          {minimumCostText({ workerPlans, lbPlans })}
         </p>
 
         {consentedAt ? (
@@ -1345,9 +1861,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
               />
             </div>
 
-            {/* 詳細設定（ポート・ノード数・Let's Encrypt メール）は既定のままで作れるので畳む
+            {/* 詳細設定（ポート・ノード数）は既定のままで作れるので畳む
                 （判断7・利用者目線レビュー・2026-09-11）。既定で見えるのはクラスタ名・ゾーン・
-                ワーカプラン・ロードバランサプラン・構成図・作成ボタンだけ。 */}
+                ワーカプラン・ロードバランサプラン・構成図・作成ボタンだけ。
+                F-1（2026-09-16）: Let's Encrypt メール欄はここから消した（⑧に一本化）。 */}
             <details className="rounded-lg border border-line bg-overlay p-3 space-y-3">
               <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">詳細設定（ふつうは変えなくてよい）</summary>
               <p className="text-[11px] text-ink-muted leading-relaxed">
@@ -1381,6 +1898,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                   ))}
                 </div>
                 <button onClick={() => { addPort(); touch('ports') }} className="text-[11px] text-sakura hover:underline">+ ポートを追加</button>
+                {/* G-1-c（2026-09-16）: 消してよいと誤解されがちな2つのポートに、その場で理由を添える。 */}
+                <p className="text-[11px] text-ink-muted leading-relaxed">
+                  「80（http）」と「443（https）」は消さないでください。80は独自ドメインの証明書を受け取るために、443はアプリの受け口として必要です。
+                </p>
               </div>
 
               <div className="flex items-center gap-2">
@@ -1396,17 +1917,6 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                   onChange={e => { setMaxNodes(Number(e.target.value)); touch('nodes') }}
                   className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
                 />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-ink-secondary">Let&apos;s Encrypt 用メール（独自ドメインを使うなら）</label>
-                <input
-                  value={letsEncryptEmail}
-                  onChange={e => setLetsEncryptEmail(e.target.value)}
-                  placeholder="任意"
-                  className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura"
-                />
-                <p className="text-[11px] text-ink-muted leading-relaxed">将来の独自ドメイン公開用。いまは空欄でよい。</p>
               </div>
             </details>
 
@@ -1525,7 +2035,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
             <button
               onClick={() => { setSubmitted(true); void doCreate() }}
-              disabled={hasErrors || creating}
+              disabled={hasErrors || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
               className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
             >{creating ? 'クラスタ→ASG→LB の順で作成しています…' : 'クラスタを作成する'}</button>
 
@@ -1578,18 +2088,19 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                   priceSummary の結果をそのまま使う（buildTeardownSummary・掟10）。 */}
               <div className="rounded-lg border border-line bg-overlay p-3 space-y-0.5">
                 <p className="text-[11px] font-semibold text-ink-secondary">いまの構成と月額目安</p>
-                {buildTeardownSummary(apprunState, { worker: workerPlans, lb: lbPlans }).lines.map((line, i) => (
+                {buildTeardownSummary(teardownSummaryRecord, { worker: workerPlans, lb: lbPlans }).lines.map((line, i) => (
                   <p key={i} className="text-xs text-ink-secondary select-text">{line}</p>
                 ))}
               </div>
               <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
+                {appRecord?.applicationID && <li>アプリ『{appRecord.applicationName ?? appRecord.applicationID}』（バージョン {appRecord.activeVersion ?? '不明'}）</li>}
                 {apprunState?.loadBalancerID && <li>ロードバランサ『{apprunState.loadBalancerID}』</li>}
                 {apprunState?.asgID && <li>オートスケーリンググループ『{apprunState.asgID}』</li>}
                 {apprunState?.clusterID && <li>クラスタ『{apprunState.clusterID}』</li>}
               </ul>
               <button
                 onClick={doTeardown}
-                disabled={tearingDown}
+                disabled={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
                 className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
               >{tearingDown ? '削除しています…' : 'すべて削除する'}</button>
               {/* #39: 各段が一覧から消えるまで待つ間の進捗（30秒ごとに1回、teardown-progress で届く）。 */}
@@ -1626,6 +2137,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                     削除中です。しばらくして⑥をもう一度押してください。
                   </p>
                   <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
+                    {/* B（2026-09-17）: 削除順（アプリ→ロードバランサ→ASG→クラスタ）に揃える。 */}
+                    {teardownResult.inProgress.applicationID && <li>アプリケーション『{teardownResult.inProgress.applicationID}』</li>}
                     {teardownResult.inProgress.loadBalancerID && <li>ロードバランサ『{teardownResult.inProgress.loadBalancerID}』</li>}
                     {teardownResult.inProgress.asgID && <li>オートスケーリンググループ『{teardownResult.inProgress.asgID}』</li>}
                     {teardownResult.inProgress.clusterID && <li>クラスタ『{teardownResult.inProgress.clusterID}』</li>}
@@ -1637,6 +2150,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                     残っています＝課金が続きます。コントロールパネルから直接削除することもできます。
                   </p>
                   <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
+                    {/* B（2026-09-17）: 削除順（アプリ→ロードバランサ→ASG→クラスタ）に揃える。 */}
+                    {teardownResult.remaining.applicationID && <li>アプリケーション『{teardownResult.remaining.applicationID}』</li>}
                     {teardownResult.remaining.loadBalancerID && <li>ロードバランサ『{teardownResult.remaining.loadBalancerID}』</li>}
                     {teardownResult.remaining.asgID && <li>オートスケーリンググループ『{teardownResult.remaining.asgID}』</li>}
                     {teardownResult.remaining.clusterID && <li>クラスタ『{teardownResult.remaining.clusterID}』</li>}
@@ -1651,8 +2166,10 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
 
       {/* ⑦ ログ・メトリクス（#38・roadmap #38。プロジェクト単位のログ・メトリクス。共用型
           TelemetryNotice と同じ見せ方・同じ文言の作法。クラスタの記録が無くても表示してよい
-          （プロジェクト単位のため）。専有型は⑦まで（共用型「⑧ ログ・メトリクス」とは番号が
-          違うが構わない）。 */}
+          （プロジェクト単位のため）。この後ろに⑧「アプリを公開する」が続く（D-4・クラスタが
+          揃っているときだけ出る条件付きの節）。専有型の⑧（アプリを公開する）と共用型の⑧
+          （ログ・メトリクス）は番号が同じで指す機能が違うが、それで構わない（番号は付け直さない・
+          ファイル冒頭のコメント参照）。 */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <p className="text-sm font-semibold text-ink">⑦ ログ・メトリクス</p>
         <p className="text-[11px] text-ink-muted leading-relaxed">
@@ -1664,6 +2181,18 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           <p className="text-xs text-ink-secondary">確認しています…</p>
         ) : !telemetryVariants || !telemetryActions ? (
           <ErrorBlock msg={telemetryError || '状態を確認できませんでした。'} />
+        ) : collapseTelemetry ? (
+          // F-1 B-1（2026-09-16）: すべて繋がっていて、行動（ボタン）も要らないときだけ1行に畳む
+          // （Ryosuke さんの指摘: ✅が6行常時出ると、隣の⑥の赤い警告の重みが薄れる）。既存の
+          // 「詳細設定」と同じ <details> の書き方に合わせる（独自の開閉を作らない）。
+          <details className="rounded-lg border border-line bg-overlay p-3">
+            <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">✅ ログ・メトリクス 繋がっています</summary>
+            <ul className="text-xs text-ink-secondary space-y-0.5 pl-1 mt-2">
+              {telemetryVariants.map(v => (
+                <li key={v.variant}>{v.routed ? '✅ ' : '・'}{v.label}{v.routed ? ' 繋がっています' : ' 未接続'}</li>
+              ))}
+            </ul>
+          </details>
         ) : (
           <>
             <ul className="text-xs text-ink-secondary space-y-0.5 pl-1">
@@ -1684,7 +2213,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                       </p>
                       <button
                         onClick={() => enableTelemetryKind(kind, false)}
-                        disabled={telemetryBusyKind === kind}
+                        disabled={telemetryBusyKind === kind || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
                         className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
                       >{telemetryBusyKind === kind ? 'つないでいます…' : `${label}をつなぐ`}</button>
                     </>
@@ -1700,12 +2229,12 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                         <div className="flex gap-2">
                           <button
                             onClick={() => enableTelemetryKind(kind, true)}
-                            disabled={telemetryBusyKind === kind}
+                            disabled={telemetryBusyKind === kind || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
                             className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
                           >{telemetryBusyKind === kind ? '用意しています…' : '用意する（費用に同意）'}</button>
                           <button
                             onClick={() => setTelemetryConfirmingKind(null)}
-                            disabled={telemetryBusyKind === kind}
+                            disabled={telemetryBusyKind === kind || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
                             className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura disabled:opacity-40"
                           >やめる</button>
                         </div>
@@ -1713,7 +2242,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
                     ) : (
                       <button
                         onClick={() => { setTelemetryError(''); setTelemetryConfirmingKind(kind) }}
-                        className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura"
+                        disabled={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
+                        className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
                       >{kind === 'logs' ? 'ログをつなぐ' : 'メトリクスをつなぐ'}</button>
                     )
                   )}
@@ -1725,6 +2255,281 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials }: 
           </>
         )}
       </section>
+
+      {/* ⑧ アプリを公開する（D-4・2026-09-15。段階③⑤）。クラスタ・ASG・LB が揃っているときだけ出す
+          （shouldShowPublishSection・apprunDedicatedActions.ts）。⑦の後ろに置き、番号は付け直さない
+          （理由はファイル冒頭のコメント）。 */}
+      {shouldShowPublishSection(apprunState) && (
+        <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
+          <p className="text-sm font-semibold text-ink">⑧ アプリを公開する</p>
+          <p className="text-xs text-ink-secondary leading-relaxed">
+            クラスタの上にこのプロジェクトのアプリを載せて、<b className="text-ink">自分のドメイン名</b>で公開します。
+            公開のあと、DNS の A レコードの設定が要ります（ロードバランサの IP が複数なら A レコードも複数）。
+          </p>
+          {/* D-8（2026-09-16）: 像のフォルダに書き込みを与えたので、アプリは自分でフォルダ・ファイルを
+              作れる。ただしコンテナは使い捨てで、書いたデータは公開し直さなくても消える。文言は
+              ephemeralDataNote（shared/publishLabels.ts）に一元化（掟10）。
+              ⚠️ 体裁（検分の指摘・2026-09-16）: ここは `text-[11px] text-ink-muted` ＝**パネルで
+              いちばん小さく薄い字**だった。**いちばん取り返しがつかない注意**（データが消える）が
+              いちばん拾いにくい体裁で置かれていた。本文と同じ `text-xs text-ink-secondary` にし、
+              独自ドメイン・費用の注意と同じく**太字**で立てる。 */}
+          <p className="text-xs font-semibold text-ink-secondary leading-relaxed">{ephemeralDataNote()}</p>
+          {appRecord?.applicationID && (
+            <div className="space-y-1">
+              <p className="text-xs text-brand-green leading-relaxed select-text">
+                公開中: https://{appRecord.hosts?.[0] ?? '（ホスト名不明）'}/（バージョン {appRecord.activeVersion ?? '不明'}・
+                {appRecord.appPublishedAt ? new Date(appRecord.appPublishedAt).toLocaleString('ja-JP') : '公開日時不明'}）
+              </p>
+              {/* D-5: 記録の lbAddresses（素の IP）を常時出す。無ければ「まだ取れていません」＋取り直しボタン
+                  （LB ノードのアドレスは付くまで数分かかることがある・5-13）。 */}
+              {appRecord.lbAddresses && appRecord.lbAddresses.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-ink">
+                  <span>DNS の A レコード:</span>
+                  {appRecord.lbAddresses.map(ip => (
+                    <span key={ip} className="flex items-center gap-1"><span className="font-mono select-text">{ip}</span><CopyButton text={ip} title="IPをコピー" /></span>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <p className="text-xs text-brand-yellow leading-relaxed">IP がまだ取れていません（ロードバランサに IP が付くまで数分かかることがあります）。</p>
+                  {lbRefreshButton}
+                </div>
+              )}
+              {/* D-4h（2026-09-16 実機で判明）: IP を直接開くと LB が 404 を返す・https は証明書が
+                  発行されるまで開けない（かかる時間は実際のさくらのサーバーで未確認・D-13 B）、の
+                  案内を1関数（dnsGuidanceLines）から出す。文字列は publishLabels.ts に一元化（掟10）。 */}
+              {dnsGuidanceLines(appRecord.hosts?.[0] ?? '（ホスト名不明）').map((line, i) => (
+                <p key={i} className="text-[11px] text-ink-muted leading-relaxed">{line}</p>
+              ))}
+              {/* O-1（2026-09-17）: DNS を設定したあと、本当に開けるのかを確かめる口。
+                  公開直後の確認（verify）とは時間軸が違うので、別のボタンにしてある。 */}
+              {siteCheckBlock}
+            </div>
+          )}
+          {!keyReady ? (
+            <p className="text-[11px] text-brand-yellow leading-relaxed">①で登録してください。</p>
+          ) : !appStatus ? (
+            appStatusError ? <ErrorBlock msg={appStatusError} /> : <p className="text-xs text-ink-secondary">確認しています…</p>
+          ) : appStatus.envReady === false ? (
+            <div className="space-y-2">
+              <p className="text-xs text-brand-yellow leading-relaxed">公開の設定（env.json）がまだありません。</p>
+              <button
+                onClick={() => { void doScaffoldEnv() }}
+                disabled={scaffolding}
+                className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
+              >{scaffolding ? '作っています…' : '公開の設定を作る'}</button>
+              {scaffoldError && <ErrorBlock msg={scaffoldError} />}
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-ink-secondary">ホスト名（自分のドメイン名・小文字）</label>
+                {/* 即時検査（HOSTNAME_PATTERN）: 入力中に不一致なら枠を黄色にする。文言は下の publishErrors
+                    （computePublishFormErrors）に1か所だけ出す（同じ文を2か所に出さない）。 */}
+                <input
+                  value={host}
+                  onChange={e => setHost(e.target.value)}
+                  placeholder="例: app.example.com"
+                  className={`w-full bg-elevated border rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura ${hostTrimmed && !hostOk ? 'border-brand-yellow' : 'border-line'}`}
+                />
+              </div>
+              {/* F-1 A-2（2026-09-16）: 3状態を言い分ける。false→必須で出す・null→任意で出す・
+                  true→出さない（かわりに設定済みの旨を出す。アドレスそのものは API が返さないので出せない）。 */}
+              {showLeEmailField ? (
+                <div className="space-y-1">
+                  <label className="text-[11px] font-medium text-ink-secondary">
+                    Let&apos;s Encrypt のメールアドレス{needsLeEmail ? '（必須）' : '（任意）'}
+                  </label>
+                  <input
+                    value={leEmail}
+                    onChange={e => setLeEmail(e.target.value)}
+                    placeholder="例: you@example.com"
+                    className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink outline-none focus:border-sakura"
+                  />
+                  <p className="text-[11px] text-ink-muted leading-relaxed">
+                    {needsLeEmail
+                      ? '独自ドメインで https を使うために必要です。公開のときにクラスタへ設定します。'
+                      : '設定済みかどうかを確かめられませんでした。設定済みなら、空のままで大丈夫です。'}
+                  </p>
+                  {/* F-1 A-4: 専有型には証明書なしで公開する道が無い（ホスト名必須・Let's Encrypt固定）。
+                      メールを出したくない・独自ドメインが要らない人向けの出口。共用型タブは
+                      PublishModal.tsx に既にあるので、そこへ戻るよう文で案内する（導線は既存のものを指す）。 */}
+                  <p className="text-[11px] text-ink-muted leading-relaxed">
+                    メールアドレスを入れたくない・独自ドメインが要らないときは、上のタブから「共用型」を選ぶと公開できます。さくらが用意する住所で、https も自動です。
+                  </p>
+                </div>
+              ) : (
+                appStatus.hasLetsEncryptEmail === true && (
+                  <p className="text-[11px] text-brand-green leading-relaxed">✅ Let&apos;s Encrypt のメールは設定済みです（アドレスそのものはここには表示できません）。</p>
+                )
+              )}
+              <details className="rounded-lg border border-line bg-overlay p-3">
+                <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">詳細設定（ふつうは変えなくてよい）</summary>
+                <p className="text-[11px] text-ink-muted leading-relaxed mt-1">既定のままで公開できます。1台構成でも更新できるよう、既定は小さめです。</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <label className="text-[11px] text-ink-secondary">mCPU</label>
+                  <input
+                    type="number" min={100} max={64000} step={100} value={appCpu}
+                    onChange={e => setAppCpu(Number(e.target.value))}
+                    className="w-20 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                  />
+                  <label className="text-[11px] text-ink-secondary">メモリ(MB)</label>
+                  <input
+                    type="number" min={128} max={131072} value={appMemory}
+                    onChange={e => setAppMemory(Number(e.target.value))}
+                    className="w-24 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                  />
+                  <label className="text-[11px] text-ink-secondary">台数</label>
+                  <input
+                    type="number" min={1} max={50} value={appFixedScale}
+                    onChange={e => setAppFixedScale(Number(e.target.value))}
+                    className="w-16 bg-elevated border border-line rounded-lg px-2 py-1 text-sm text-ink outline-none focus:border-sakura"
+                  />
+                </div>
+                <div className="mt-2 space-y-1">
+                  <label className="text-[11px] font-medium text-ink-secondary">ヘルスチェックのパス</label>
+                  <input
+                    value={healthCheckPath}
+                    onChange={e => setHealthCheckPath(e.target.value)}
+                    placeholder="空なら env.json の probePath を使います（例: /health）"
+                    className="w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink font-mono outline-none focus:border-sakura"
+                  />
+                </div>
+              </details>
+              {publishErrors.map((msg, i) => (
+                <p key={i} className="text-xs text-brand-yellow leading-relaxed">⚠️ {msg}</p>
+              ))}
+              <button
+                onClick={() => { void doPublish() }}
+                disabled={publishErrors.length > 0 || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
+                className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
+              >{publishing ? '公開しています…' : publishButtonLabel(appPublished)}</button>
+              {/* H-1: 押せない理由を書く。**理由の分からない無効化は、壊れているのと区別がつかない。** */}
+              {!publishing && panelBusy({ creating, tearingDown, publishing, lbRefreshing }) && (
+                <p className="text-xs text-brand-yellow leading-relaxed">{panelBusyReason({ creating, tearingDown, publishing, lbRefreshing })}</p>
+              )}
+              {publishing && publishProgress && (
+                <p className="text-xs text-ink-secondary leading-relaxed">{publishProgress}</p>
+              )}
+            </>
+          )}
+
+          {publishResult && (
+            <div className="space-y-1">
+              {/* D-7: 成功の見出しは publishHeadline（shared/publishLabels.ts）が決める。
+                  公開の手続きが通っても、アプリが応答していなければ（503＝no-backend）
+                  「✅ 公開しました」とは言わない（2026-09-16 実機の事故）。 */}
+              <p className={publishResult.ok
+                ? (publishHeadline(publishResult.verify).tone === 'ok' ? 'text-xs font-semibold text-brand-green' : 'text-xs font-semibold text-brand-red')
+                : 'text-xs font-semibold text-brand-red'}>
+                {publishResult.ok ? publishHeadline(publishResult.verify).text : `⚠️ 途中で止まりました（${PUBLISH_STAGE_LABEL[publishResult.stage as PublishAppStage] ?? publishResult.stage}）`}
+              </p>
+              {publishResult.ok ? (
+                <>
+                  {/* 確かめた結果は必ず一文添える（確認をとばしたときは verify が無いので出さない・
+                      とばした理由は warnings に載る）。黙って成功に見せない。 */}
+                  {publishResult.verify && (
+                    <p className={dedicatedVerifyNotServing(publishResult.verify) ? 'text-xs text-brand-red leading-relaxed select-text' : 'text-xs text-ink-secondary leading-relaxed select-text'}>
+                      {dedicatedVerifyMessage(publishResult.verify)}
+                    </p>
+                  )}
+                  {/* D-13 G（2026-09-16）: すぐ上の一文（dedicatedVerifyMessage）は
+                      コントロールパネルで記録を見るよう案内するのに、**その場に行き先が無かった**。
+                      **直し方のある失敗を、直し方の分からない失敗として見せない**（回復の導線は
+                      全経路に出す）。⑥の「残っています」と同じ形・同じ CONTROL_PANEL_URL を使う。 */}
+                  {/* D-19b（検分・2026-09-16）: 出す条件は dedicatedVerifyNotServing（shared/publishVerify.ts）に
+                      集約した。503 だけでなく、404・502・504 のような失敗応答（error-status）でも
+                      すぐ上の一文が案内する確認先へ行けるようにする——
+                      **どの結果が「開けない」かの判断を画面に散らさない**（掟10）。 */}
+                  {dedicatedVerifyNotServing(publishResult.verify) && (
+                    <a href={CONTROL_PANEL_URL} className="inline-block text-[11px] text-sakura hover:underline">🔧 コントロールパネルを開く</a>
+                  )}
+                  {/* D-8（2026-09-16 実機）: 応答していないとき（no-backend）だけ main が引いてくる
+                      コンテナの状態。**文字列は原本の値のまま**出す（勝手に日本語へ言い換えない・掟1）。
+                      1行にするのは純関数 containerStateSummary（shared/publishLabels.ts）で、
+                      画面は描くだけ（掟10）。 */}
+                  {publishResult.containerStates && (
+                    <p className="text-xs text-ink-secondary leading-relaxed select-text">
+                      {containerStateSummary(publishResult.containerStates)}
+                    </p>
+                  )}
+                  {publishResult.url && (
+                    <div className="flex items-center gap-2 text-xs text-ink">
+                      <span className="font-mono select-text break-all">{publishResult.url}</span>
+                      <CopyButton text={publishResult.url} title="公開URLをコピー" />
+                    </div>
+                  )}
+                  {/* D-7b・C（検分の指摘）: no-backend（503）のときは、DNS の案内より先に
+                      すぐ上の dedicatedVerifyMessage（コントロールパネルでの確認先まで
+                      案内する一文）を読んでもらう。次の一手を1つに絞るため、DNS の案内
+                      （IP・コピー・dnsGuidanceLines）は <details>（閉じた状態）に畳む。
+                      判断は純関数 showDnsGuidanceExpanded（shared/publishLabels.ts）に
+                      集約し、画面は描くだけ（掟10）。 */}
+                  {(() => {
+                    const dnsBlock = (
+                      <>
+                        <p className="text-xs font-semibold text-ink leading-relaxed">DNS の A レコードをこの IP に向けてください:</p>
+                        {publishResult.lbAddresses && publishResult.lbAddresses.length > 0 ? (
+                          <ul className="text-xs text-ink-secondary space-y-0.5 pl-1">
+                            {publishResult.lbAddresses.map(ip => (
+                              <li key={ip} className="flex items-center gap-2"><span className="font-mono select-text">{ip}</span><CopyButton text={ip} title="IPをコピー" /></li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="space-y-1">
+                            <p className="text-xs text-brand-yellow leading-relaxed">IP を取得できませんでした。コントロールパネルのロードバランサで確認してください。</p>
+                            {/* D-5: 付くまで数分かかることがあるので、ここからも取り直せる（同じボタン）。 */}
+                            {lbRefreshButton}
+                          </div>
+                        )}
+                        {/* D-4h（2026-09-16 実機で判明）: IP を直接開くと LB が 404 を返す・https は証明書が
+                            発行されるまで開けない（かかる時間は実際のさくらのサーバーで未確認・D-13 B）、の
+                            案内を1関数（dnsGuidanceLines）から出す。文字列は publishLabels.ts に一元化（掟10）。 */}
+                        {dnsGuidanceLines(hostTrimmed).map((line, i) => (
+                          <p key={i} className="text-[11px] text-ink-muted leading-relaxed">{line}</p>
+                        ))}
+                      </>
+                    )
+                    return showDnsGuidanceExpanded(publishResult.verify) ? dnsBlock : (
+                      <details className="rounded-lg border border-line bg-overlay p-3">
+                        <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">アプリが応答したら、DNS の設定に進みます</summary>
+                        <div className="mt-2 space-y-2">{dnsBlock}</div>
+                      </details>
+                    )
+                  })()}
+                  {publishResult.warnings && publishResult.warnings.length > 0 && (
+                    <ul className="text-xs text-brand-yellow leading-relaxed list-disc pl-5">
+                      {publishResult.warnings.map((w, i) => <li key={i} className="select-text">{w}</li>)}
+                    </ul>
+                  )}
+                </>
+              ) : (
+                <>
+                  <ErrorBlock msg={publishResult.message} />
+                  {publishResult.detail && <ErrorBlock msg={publishResult.detail} />}
+                  {publishResult.stage === 'lets-encrypt' && (
+                    <p className="text-xs text-brand-yellow leading-relaxed">Let&apos;s Encrypt のメールがクラスタに未設定です。上のメール欄に入力して、もう一度お試しください。</p>
+                  )}
+                  {/* D-4f: hint:'reset-registry'（レジストリの接続情報が古い）は、共用型タブの
+                      「レジストリを設定し直す」ボタンへ誘導する1文だけ出す（ボタン自体は複製しない・
+                      publishFailureHintText・src/shared/publishLabels.ts）。 */}
+                  {publishFailureHintText(publishResult.hint) && (
+                    <p className="text-xs text-brand-yellow leading-relaxed">{publishFailureHintText(publishResult.hint)}</p>
+                  )}
+                  {/* 判断2: ⑧の失敗にも「🤖 AIに相談する」を添える（成功時には出さない）。detail も渡す（askAi.ts の第4引数）。 */}
+                  <button
+                    onClick={() => {
+                      const text = askAiAboutFailure('公開', 'さくらのAppRun（専有型）', publishResult.message ?? '失敗しました', publishResult.detail)
+                      window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text } }))
+                    }}
+                    className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+                  >🤖 AIに相談する</button>
+                </>
+              )}
+            </div>
+          )}
+        </section>
+      )}
       {confirmElement}
     </div>
   )

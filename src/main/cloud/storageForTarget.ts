@@ -99,6 +99,29 @@ export async function issueStorageEnvFor(opts: {
 }
 
 /**
+ * **いま発行したばかりの鍵だけ**を取り消す（2026-09-23 検分の指摘5・10）。
+ *
+ * 公開が途中で止まると、直前に発行した「バケットへ読み書きできる本物の鍵」が残る。
+ * 片づけ（`cleanUpOldKeysFor`）は**成功した公開のときにしか走らない**ので、
+ * ビルドが直らない間に何度も押した分だけ溜まっていく（実機で5件・storageKeys.ts 冒頭）。
+ *
+ * **消すのは引数の1件だけ。古い鍵には触れない**ので、動いているアプリが 403 で落ちる危険は無い。
+ * **まだ誰も使っていないと分かっているときだけ呼ぶこと**（版が作られたあとに呼ぶと、
+ * その版が動き出した瞬間に 403 になる。判断は `stageLeftNoVersion`）。
+ */
+export async function revokeIssuedKey(opts: { permissionId: string }): Promise<{ revoked: boolean }> {
+  const creds = loadCredentials()
+  if (!creds || !opts.permissionId) return { revoked: false }
+  const storage = await createStorageAdapter(creds)
+  try {
+    await storage.deletePermission(opts.permissionId)
+    return { revoked: true }
+  } finally {
+    await storage.dispose()
+  }
+}
+
+/**
  * この公開先の古い鍵を片づける。**新しい版が動いたと確かめてから呼ぶこと。**
  *
  * デプロイの応答が返っても、新しいコンテナはまだ立ち上がっていない。その間に

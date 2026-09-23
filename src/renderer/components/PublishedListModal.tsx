@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import CopyButton from './CopyButton'
 import { getWorkspaceDir } from '../workspace'
-import { formatPublishedAt } from '../publishStatus'
+import { formatPublishedAt, PUBLISH_TARGET_CONSOLE, type PublishTargetKind } from '../publishStatus'
 import { kindLabel, costNote } from '../../shared/inventory'
 import { listCloudKeys, getActiveCloudKeyId } from './CredentialsModal'
 import { clearPublishRecord } from '../publishRecord'
@@ -17,12 +17,18 @@ import { getHanamiiToken } from './CredentialsModal'
 // その代わりAPIキーもネットワークも使わないため、サービスが落ちていても開ける（この機能の主目的）。
 // 「いま公開中か」の正解はサービス側にしか無いので、その旨を画面に明示し管理画面へ誘導する。
 
-/** 公開先ごとの管理画面（「実際の状態はこちらで確認してください」の誘導先）。 */
-const CONSOLE_LINKS: Record<string, { label: string; url: string }> = {
-  hanamii: { label: 'HANAMII の管理画面', url: 'https://hanamii.jp/' },
-  'sakura-apprun': { label: 'さくらのクラウド コントロールパネル', url: 'https://secure.sakura.ad.jp/cloud/' },
-  'sakura-rental': { label: 'さくらのレンタルサーバ コントロールパネル', url: 'https://secure.sakura.ad.jp/rs/cp/' },
-  vercel: { label: 'Vercel のダッシュボード', url: 'https://vercel.com/dashboard' },
+/**
+ * 公開先ごとの管理画面の表示名（「実際の状態はこちらで確認してください」の誘導先）。
+ * URL は複製せず、唯一の定義 PUBLISH_TARGET_CONSOLE（publishStatus.ts）を使う（掟10）。
+ * Record<PublishTargetKind, string> なので、種類を足したときの足し忘れは tsc が検知する。
+ */
+const CONSOLE_LABEL: Record<PublishTargetKind, string> = {
+  hanamii: 'HANAMII の管理画面',
+  'sakura-apprun': 'さくらのクラウド コントロールパネル',
+  // 専有型は共用型と同じ入口（D-3・2026-09-11 Ryosuke 決定。専用 URL は未確認なので推測しない）
+  'sakura-apprun-dedicated': 'さくらのクラウド コントロールパネル',
+  'sakura-rental': 'さくらのレンタルサーバ コントロールパネル',
+  vercel: 'Vercel のダッシュボード',
 }
 
 export default function PublishedListModal({ onClose, onOpenProject }: {
@@ -137,6 +143,42 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
             await reload()
             return
           }
+        }
+      } else if (e.target === 'sakura-apprun-dedicated') {
+        // 専有型（D-3→D-4・2026-09-15）: アプリ（全バージョン）**だけ**を消す口（main の
+        // teardownFlow(..., { appOnly: true })＝IPC apprunDedicated:teardownApp）。上の確認画面が
+        // 約束した「アプリ（全バージョン）だけ。クラスタ・LB は専有型タブの⑥で」（teardownScopeNote）と一致させる。
+        // ⚠️ 共用型の cloud.teardown に相乗りさせない（共用型のアプリ＋コンテナレジストリを消す口で、
+        // 専有型のアプリには効かない）。
+        // ⚠️ 専有型タブ⑥の apprunDedicated.teardown も呼ばない（記録にあるものをアプリ→LB→ASG→クラスタの
+        // 順に**全部**消す口で、この確認画面の約束と合わない）。
+        // 方式B（掟4）: キーは renderer が読んで引数で渡す。main は保存しない。
+        const auth = await window.electronAPI.cloud.loadKey()
+        if (!auth || !auth.token || !auth.secret) {
+          setResult({ ok: false, text: 'さくらのクラウドの API キーが未登録です。「認証情報」で登録してから、もう一度お試しください。' })
+          return
+        }
+        // confirmed:true は上の確認オーバーレイ（🗑 理解した上で破棄する）を通った印（'sakura-apprun' と同じ）。
+        r = await window.electronAPI.apprunDedicated.teardownApp(e.dir, auth, { confirmed: true })
+        // #39 と同じ: 削除は受け付けられたが消えるまで待ち切れなかった（timeout）ときは inProgress が立つ。
+        // main の文言は専有型タブ向け（「⑥をもう一度」）なので、この一覧では 🗑 の押し直しを案内する。
+        // 記録は消さない（消えたのを確かめてから消す＝押し直せば main が続きを確かめる）。
+        if (!r.ok && 'inProgress' in r && r.inProgress) {
+          setResult({ ok: false, text: 'アプリの削除を受け付けましたが、まだ削除中です。しばらくしてから、もう一度 🗑 を押してください（消えたのを確かめるまで記録は残します）。' })
+          return
+        }
+        // レジストリ（イメージ）はこの口では消さない（専有型の記録にレジストリ名が無い・publishedIndex.ts）。
+        // 残っていれば課金が続くので、成功時の文にその旨を添える（共通の後段では『破棄しました。』だけ）。
+        if (r.ok) {
+          try { await clearPublishRecord(e.dir, e.target) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ }
+          setResult({
+            ok: true,
+            text: `${e.projectName}（${e.label}）を破棄しました。\n`
+              + 'クラスタ・ロードバランサと、コンテナレジストリのイメージは残っています（消すまで課金が続きます）。'
+              + 'クラスタごと不要なら、「プロジェクトを開く」→ 専有型タブの⑥で破棄してください。',
+          })
+          await reload()
+          return
         }
       } else if (e.target === 'hanamii') {
         if (!e.hanamiiProjectId) {
@@ -291,13 +333,13 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
             <div key={g.target} className="rounded-xl border border-line bg-surface p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs font-semibold text-ink">{g.label}<span className="ml-1.5 text-ink-muted font-normal">{g.entries.length}件</span></div>
-                {CONSOLE_LINKS[g.target] && (
+                {CONSOLE_LABEL[g.target] && (
                   // 外部リンクは <a href>（main の will-navigate が既定ブラウザへ流す。AppRunPanel と同じ作法）
                   <a
-                    href={CONSOLE_LINKS[g.target].url}
+                    href={PUBLISH_TARGET_CONSOLE[g.target]}
                     className="text-[11px] text-ink-muted hover:text-sakura underline"
-                    title={CONSOLE_LINKS[g.target].url}
-                  >{CONSOLE_LINKS[g.target].label}を開く ↗</a>
+                    title={PUBLISH_TARGET_CONSOLE[g.target]}
+                  >{CONSOLE_LABEL[g.target]}を開く ↗</a>
                 )}
               </div>
               {/* この公開先は Koto から止められない、と先に伝える（消す場所も添える）。
@@ -399,7 +441,9 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
 
               {/* AppRun はコンテナレジストリの月額課金が絡むので、③公開の破棄画面と同じ情報を出す。
                   **名前を見せることが安全装置**（v0.2.94: 心当たりのない名前ならやめられる）なので、
-                  置き場所が変わっても同じ判断ができるようにする。記録が無ければ削除できない。 */}
+                  置き場所が変わっても同じ判断ができるようにする。記録が無ければ削除できない。
+                  専有型（'sakura-apprun-dedicated'）は**意図して対象外**（共用型のみ）: 専有型の記録に
+                  レジストリがあるかは未確認のため、D-4 で実物（publishedIndex の記録）を見てから決める。 */}
               {confirm.target === 'sakura-apprun' && (
                 confirm.registryName ? (
                   <div className="rounded-lg border border-line bg-surface p-2.5 space-y-1">

@@ -51,8 +51,10 @@ describe('どのタグを使うか', () => {
 })
 
 // 掟10「一元化したことと、全経路が実際にそこを通っていることは別」。
+// D-2a でこの段は cloud/imagePublish.ts の prepareAppImage へ切り出した
+// （ipc/cloud.ts はそれを呼ぶだけになった。文言・順序は変えていない）。
 describe('公開の経路が、実際にこれを通っている', () => {
-  const cloud = readFileSync(join(__dirname, '..', 'src/main/ipc/cloud.ts'), 'utf-8')
+  const cloud = readFileSync(join(__dirname, '..', 'src/main/cloud/imagePublish.ts'), 'utf-8')
 
   it('★★ 参照はここで決めたタグで組み立てる', () => {
     expect(cloud).toContain('const publishRefTag = tagForPublish(source.tag, new Date())')

@@ -11,6 +11,9 @@ import { isClaudeModeEnabled, getClaudeModel, setClaudeMode, setClaudeModel } fr
 import { defaultCreationBrain, pickSavedModel, type CreationBrain } from '../newProjectAgent'
 import { buildNewProjectRequest, stashNewProjectRequest, SITE_TYPES } from '../newProjectRequest'
 import { skipMigrationForTarget } from '../../shared/migratePlan'
+// 雛形に書き出す除外（deploy.sh / .dockerignore / .gitignore）は、
+// **文字列を手で並べず**公開の一元定義から組み立てる（掟10・2026-09-23 検分）。
+import { rsyncExcludeArgs, dockerignoreLines, kotoIgnoreLines } from '../../shared/publishExclude'
 import ImportFromPublishedPanel from './ImportFromPublishedPanel'
 
 const WORKSPACE_KEY = 'sakura_workspace'
@@ -288,9 +291,13 @@ WWW="/home/\${ACCOUNT}/www"              # 公開ディレクトリ
 APPDIR="/home/\${ACCOUNT}/app"           # 非公開（DB設定など）
 
 echo "==> public/ を \${WWW} へ同期"
-rsync -avz --exclude='.DS_Store' public/ "\${ACCOUNT}@\${SSH_HOST}:\${WWW}/"
+# 除外は Koto の一元定義（src/shared/publishExclude.ts）から書き出しています。
+# 消すと、手元のデータ（.koto-data）やチャット履歴が公開Webルートへ上がります。
+rsync -avz${rsyncExcludeArgs()} public/ "\${ACCOUNT}@\${SSH_HOST}:\${WWW}/"
 
 echo "==> app/ を \${APPDIR} へ同期（雛形 config.sample.php は除外）"
+# app/ は公開Webルートの外（HTTPでは読めない）。config.php など「秘密だが動くのに要るもの」を
+# 置く場所なので、上の公開用の除外はあえて掛けません。
 rsync -avz --exclude='config.sample.php' --exclude='.DS_Store' app/ "\${ACCOUNT}@\${SSH_HOST}:\${APPDIR}/"
 
 echo "==> 公開完了: https://\${SSH_HOST}/"
@@ -302,6 +309,9 @@ app/config.php
 
 # OS
 .DS_Store
+
+# Koto が使う場所（手元のデータ・履歴。リポジトリには入れません）
+${kotoIgnoreLines().join('\n')}
 `
 
   const readme =
@@ -429,13 +439,14 @@ EXPOSE 8080
 CMD ["node", "server.js"]
 `
 
+  // 除外は Koto の一元定義から組み立てる。**手で並べない**（掟10）。
+  // エキスパート（Docker）で公開すると `docker build` がここを丸ごと読むので、
+  // この1ファイルだけが「手元のデータ（.koto-data）を像に焼き込まない」唯一の歯止めになる。
   const dockerignore =
-`node_modules
-npm-debug.log
-.git
+`npm-debug.log
 .gitignore
-.DS_Store
 README.md
+${dockerignoreLines().join('\n')}
 `
 
   const gitignore =
@@ -443,6 +454,9 @@ README.md
 npm-debug.log
 .DS_Store
 .env
+
+# Koto が使う場所（手元のデータ・履歴。リポジトリには入れません）
+${kotoIgnoreLines().join('\n')}
 `
 
   const readme =

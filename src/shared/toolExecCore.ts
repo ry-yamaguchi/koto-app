@@ -25,6 +25,23 @@ export interface SearchConfig { provider: SearchProvider; key: string }
 
 const READ_MAX_CHARS = 16000 // AIに渡すファイル内容の上限（トークン費用の暴走防止）
 
+/** ツール実行の結果文字列が「失敗」かどうか（唯一の定義・掟10）。
+ *
+ * ── なぜ要るか（2026-09-23 検分の指摘3・6）────────────────────────────
+ * executeToolCore は失敗を**例外にせず文字列で返す**作り（`エラー: 保存できませんでした（…）`）。
+ * 呼び出し側（shared/chatTurn.ts）はこれまで「executeTool が戻ってきた＝実行できた」と
+ * 記録していたため、保存に失敗しても「✏️ ファイルを保存しています…」の見出しが画面に残り、
+ * さらに wroteFiles まで立って「ファイルは変更されていません」の警告が抑止されていた。
+ * 判定を1か所に置き、成否を見て記録できるようにする。
+ *
+ * このファイルの失敗はすべて `エラー: ` で始まる（resolveForWrite の error も同じ形）。
+ * 新しい失敗文言を足すときも、必ずこの接頭辞から書き始めること。
+ */
+export const TOOL_ERROR_PREFIX = 'エラー: '
+export function isToolError(result: string): boolean {
+  return (result ?? '').startsWith(TOOL_ERROR_PREFIX)
+}
+
 /** プロジェクトルート配下の安全な絶対パスに解決する。絶対パス・脱出を試みるパスは null。 */
 export function resolveInProject(projectDir: string, relPath: string): string | null {
   if (relPath.startsWith('/') || relPath.includes('..')) return null

@@ -376,8 +376,128 @@ export function containsSecretEnv(vars: { name: string; value: string }[]): bool
 
 // ── データ層（koto-data.js）の検出 ────────────────────────────────────
 
-/** データ層のファイル名。**変えると既存プロジェクトの import が壊れる。** */
+/** データ層のファイル名（import を使うアプリ向け）。**変えると既存プロジェクトの import が壊れる。** */
 export const DATA_LAYER_FILE = 'koto-data.js'
+
+/**
+ * 手元で試すときに、アプリのデータが実際に置かれるフォルダの名前（**名前の正はここだけ**）。
+ *
+ * ── なぜ定数にしたか（2026-09-23 実機・ScheduleAPP）──────────────────────
+ * `templates/koto-data.js` / `templates/koto-data.cjs` は、クラウドの保存先が
+ * 設定されていないとき（手元で試すとき）、このフォルダへ1件1ファイルで書く。
+ * **中身は利用者が入力した実データ**（予定・連絡先など）である。
+ *
+ * ところが名前がどこにも定義されていなかったため、公開の除外リスト
+ * （`shared/publishExclude.ts`）に入っておらず、次の2つが同時に起きていた:
+ *   ① 手元のデータが公開先へアップロードされる（公開先はオブジェクトストレージを
+ *      使うので、このフォルダは公開先では一切読まれない。出す意味が無い）
+ *   ② 中身は実行時にしか読み書きされず、**どのコードからも名前で参照されない**ので
+ *      「🧹 使われていないファイルの確認」に必ず出る。利用者が「素材置き場へ移動」を
+ *      押すと、**アプリがデータを失う**
+ *
+ * **`templates/koto-data.js` / `.cjs` の `LOCAL_DIR` と必ず一致させること。**
+ * 一致を固定しているのは `tests/publishExclude.test.ts` の
+ * 「★ 手元のデータ置き場は、アプリが実際に書く場所と同じ名前である」
+ * （templates の中身をこの定数で検索する）。ここがずれると、除外しているつもりの場所と
+ * 実際にデータがある場所が食い違い、**公開される・片づけの対象に出る**。
+ * 名前は互換性のため変更しない（掟8。変えると、既に手元に貯まったデータが行方不明になる）。
+ */
+export const DATA_LAYER_LOCAL_DIR = '.koto-data'
+
+/**
+ * データ層のファイル名（require を使うアプリ向け・2026-09-23）。
+ *
+ * ── なぜ2つ要るのか（実機で起きたこと）────────────────────────────────
+ * `koto-data.js` は import だけを使う形で書かれている。require を使うアプリ
+ * （package.json に `"type": "module"` が無いもの）は、**置いてあっても読み込めない**。
+ * このとき AI は「読み込める形にしよう」として package.json に `"type": "module"` を
+ * 足し、**アプリ全体が require を使えなくなって起動しなくなった**
+ * （`ReferenceError: require is not defined in ES module scope`）。
+ *
+ * アプリの形を作り変えるのは、途中で止まれば起動しなくなる大きな工事であり、
+ * コードを書かない利用者に背負わせるものではない。**アプリの形に合う方を置く。**
+ */
+export const DATA_LAYER_FILE_CJS = 'koto-data.cjs'
+
+/** アプリの形。`import` を使うか、`require` を使うか。 */
+export type ModuleKind = 'esm' | 'cjs'
+
+/**
+ * アプリが import と require のどちらを使う形か（純関数・**判定の正はここだけ**）。
+ *
+ * 見分けるのは package.json の `type` ひとつ。Node と同じ決まりにする:
+ * `"type": "module"` なら import、**それ以外はすべて** require。
+ * package.json が無い・読めない・壊れている場合も require 側に倒す
+ * （Node が既定でそう扱うため。**推測で import 側に倒すと起動しなくなる**）。
+ *
+ * @param packageJsonText package.json の中身。無ければ null。
+ */
+export function moduleKindOf(packageJsonText: string | null | undefined): ModuleKind {
+  const t = String(packageJsonText ?? '')
+  if (t.trim().length === 0) return 'cjs'
+  try {
+    const parsed = JSON.parse(t) as unknown
+    if (!parsed || typeof parsed !== 'object') return 'cjs'
+    return (parsed as { type?: unknown }).type === 'module' ? 'esm' : 'cjs'
+  } catch {
+    return 'cjs' // 壊れた JSON を「import が使える」と読まない
+  }
+}
+
+/** その形のアプリが読み込めるデータ層のファイル名（純関数）。 */
+export function dataLayerFileFor(kind: ModuleKind): string {
+  return kind === 'esm' ? DATA_LAYER_FILE : DATA_LAYER_FILE_CJS
+}
+
+/** データ層のファイル名（両方）。走査で「層そのもの」を除くときに使う。 */
+export const DATA_LAYER_FILES: readonly string[] = [DATA_LAYER_FILE, DATA_LAYER_FILE_CJS]
+
+/**
+ * 拡張子だけで決まるアプリの形（純関数）。決まらなければ null。
+ *
+ * Node の決まりでは **`.mjs` は常に import・`.cjs` は常に require** で、
+ * package.json の `type` より**強い**。`.js` のときだけ `type` を見る。
+ * ここを見ないと、`server.mjs` を持つ（`type` の無い）プロジェクトに
+ * `koto-data.cjs` を置いて `require` を勧めてしまい、
+ * `ReferenceError: require is not defined` で起動しなくなる（2026-09-23 検分）。
+ */
+export function moduleKindOfExtension(filePath: string): ModuleKind | null {
+  const p = String(filePath ?? '').toLowerCase()
+  if (p.endsWith('.mjs')) return 'esm'
+  if (p.endsWith('.cjs')) return 'cjs'
+  return null
+}
+
+/**
+ * データ層を読み込む側に合わせたアプリの形（純関数・**判定の正はここ**）。
+ *
+ * 材料は2つ。どちらも**探して読む側（main/dataLayer.ts）が渡す**（掟10）。
+ *
+ * @param input.targets          koto-data を読み込むことになるファイル（相対パス）。
+ *   `.mjs` / `.cjs` は拡張子だけで形が決まるので**最優先**する。
+ *   複数あって形が割れるときは決め手にせず、package.json へ落とす
+ *   （どちらに倒しても片方が壊れるため、**推測しない**）。
+ * @param input.packageJsonTexts package.json の中身を**近い順**に並べたもの。
+ *   無い階層は null。Node は「そのファイルにいちばん近い package.json」を
+ *   上へたどって探すので、**最初に見つかったもの**（`type` が無くても、それ）で決まる。
+ *   1つも無ければ require 側に倒す（Node の既定と同じ）。
+ */
+export function moduleKindForDataLayer(input: {
+  targets?: readonly string[]
+  packageJsonTexts?: readonly (string | null | undefined)[]
+}): ModuleKind {
+  const byExt = new Set<ModuleKind>()
+  for (const t of input.targets ?? []) {
+    const k = moduleKindOfExtension(t)
+    if (k) byExt.add(k)
+  }
+  if (byExt.size === 1) return byExt.has('esm') ? 'esm' : 'cjs'
+  for (const text of input.packageJsonTexts ?? []) {
+    if (text == null) continue
+    return moduleKindOf(text)
+  }
+  return 'cjs'
+}
 
 /**
  * ソースがデータ層を使っているか（純関数）。
@@ -386,12 +506,70 @@ export const DATA_LAYER_FILE = 'koto-data.js'
  * 環境変数（`KOTO_STORAGE_*`）を探すより**強い信号**である。環境変数は
  * データ層の中にしか出てこないので、アプリのコードを見ても分からない。
  * 「koto-data を使っているか」はアプリのコードにそのまま書いてある。
+ *
+ * **`.cjs` も拾う**（2026-09-23）。require を使うアプリには `koto-data.cjs` を
+ * 置くので、これを拾えないと「使っているのに使っていない」と判定してしまい、
+ * 画面が「保存が見つかりません」と嘘をつく。
  */
 export function usesDataLayer(sourceText: string): boolean {
   const t = String(sourceText ?? '')
-  return /\bfrom\s+['"][^'"]*koto-data(\.js)?['"]/.test(t)
-    || /\brequire\(\s*['"][^'"]*koto-data(\.js)?['"]\s*\)/.test(t)
-    || /\bimport\(\s*['"][^'"]*koto-data(\.js)?['"]\s*\)/.test(t)
+  return /\bfrom\s+['"][^'"]*koto-data(\.js|\.cjs|\.mjs)?['"]/.test(t)
+    || /\brequire\(\s*['"][^'"]*koto-data(\.js|\.cjs|\.mjs)?['"]\s*\)/.test(t)
+    || /\bimport\(\s*['"][^'"]*koto-data(\.js|\.cjs|\.mjs)?['"]\s*\)/.test(t)
+}
+
+/**
+ * 「ファイルへの書き込み」と見なす形。**判定の正はここ1か所だけ**（掟10）。
+ *
+ * `writesFilesDirectly`（あるか／無いか）も `fileWriteLines`（何行目か）も、
+ * 同じこの条件を使う。**条件を書き写さないこと。** 片方だけ直せば、画面が
+ * 「危ない」と言いながら場所を1つも示せない、という食い違いが生まれる。
+ */
+const FILE_WRITE_PATTERNS: readonly RegExp[] = [
+  /\bfs\s*\.\s*(promises\s*\.\s*)?(writeFile|writeFileSync|appendFile|appendFileSync)\s*\(/,
+  /\bopen\s*\(\s*[^)]*['"][wa]\+?['"]\s*\)/, // Python の open(..., 'w')。**改行をまたぐ形も拾う**
+]
+
+/** `fs` を読み込んでいるときだけ書き込みと見なす形（素の `writeFile(...)`）。 */
+const FILE_WRITE_NEEDS_FS_IMPORT = /\bwriteFile(Sync)?\s*\(/
+const FS_IMPORT = /\bfrom\s+['"](node:)?fs/
+
+/**
+ * ファイルへの書き込みがある行の番号（**1始まり**）を返す（純関数）。無ければ空配列。
+ *
+ * ── なぜ行番号が要るか（2026-09-23 実機）──────────────────────────────
+ * 「データが消えます。AI に書き直してもらってください」と出したあと、AI が
+ * **ファイルを読まずに「書き直しは完了しています」と答えた**。実際には1文字も
+ * 変わっていなかった。Koto は場所を知っているのに、それを AI へ渡していなかった。
+ * **どのファイルの何行目か**を渡せば、AI は自分の記憶ではなく現物を見に行ける。
+ *
+ * ── なぜ本文全体に当てるのか（2026-09-23 検分）────────────────────────
+ * 行ごとに当てると、**改行をまたいだ書き込みを取りこぼす**。
+ * `with open(⏎ "d.json", "w" ⏎) as f:` や、`fs` ⏎ `.writeFileSync(...)` は
+ * 整形の結果としてごく普通に現れる形なのに、行ごとの判定では1つも当たらない
+ * （実測で確認した）。見つからなければ警告も「確かめる」も出ないので、
+ * **守りが黙って弱くなる**（掟10）。条件は1か所のまま（`FILE_WRITE_PATTERNS`）、
+ * **本文全体に当てた結果を行番号へ直す**。一致の開始位置の行を返す。
+ */
+export function fileWriteLines(sourceText: string): number[] {
+  const t = String(sourceText ?? '')
+  if (t.length === 0) return []
+  const patterns = [...FILE_WRITE_PATTERNS]
+  if (FS_IMPORT.test(t)) patterns.push(FILE_WRITE_NEEDS_FS_IMPORT)
+  const found = new Set<number>()
+  for (const re of patterns) {
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`)
+    let m: RegExpExecArray | null
+    while ((m = g.exec(t)) !== null) {
+      // 一致の**開始位置**までの改行の数 + 1 が行番号（**1始まり**）。
+      // 画面にも AI への依頼文にもこのまま出る
+      let line = 1
+      for (let i = 0; i < m.index; i++) if (t.charCodeAt(i) === 10) line++
+      found.add(line)
+      if (m.index === g.lastIndex) g.lastIndex++ // 空一致で止まらないように
+    }
+  }
+  return [...found].sort((a, b) => a - b)
 }
 
 /**
@@ -403,8 +581,13 @@ export function usesDataLayer(sourceText: string): boolean {
  * 読み取りだけ（`readFile`）は除く。設定ファイルを読むのは普通のこと。
  */
 export function writesFilesDirectly(sourceText: string): boolean {
-  const t = String(sourceText ?? '')
-  return /\bfs\s*\.\s*(promises\s*\.\s*)?(writeFile|writeFileSync|appendFile|appendFileSync)\s*\(/.test(t)
-    || /\bwriteFile(Sync)?\s*\(/.test(t) && /\bfrom\s+['"](node:)?fs/.test(t)
-    || /\bopen\s*\(\s*[^)]*['"][wa]\+?['"]\s*\)/.test(t) // Python の open(..., 'w')
+  return fileWriteLines(sourceText).length > 0
+}
+
+/** ファイルへの書き込みが見つかった場所（どのファイルの何行目か）。 */
+export type FileWriteSite = {
+  /** プロジェクトからの相対パス。 */
+  file: string
+  /** 書き込みのある行番号（1始まり）。 */
+  lines: number[]
 }

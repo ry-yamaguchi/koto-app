@@ -10,7 +10,9 @@ import {
 
 // 委譲仕様 UX-D・判断7: 専有型 AppRunDedicatedPanel.tsx を初心者向けに畳む。
 // ②サービスプリンシパルの手順を「詳しい手順を見る」に畳み、⑤の詳細設定
-// （ポート・ノード数・Let's Encrypt メール）を「詳細設定（ふつうは変えなくてよい）」に畳む。
+// （ポート・ノード数）を「詳細設定（ふつうは変えなくてよい）」に畳む。
+// F-1（2026-09-16）: ⑤にあった Let's Encrypt メール欄は⑧に一本化して削除したため、
+// ここでの「畳む対象」からも外した。
 // formError（1本の早期return文字列。初期状態からいきなり出る・欄側の警告と二重に出る）を
 // computeDedicatedFormErrors（欄ごとの判定）＋ visibleFormErrors（touched/submitted による
 // 表示可否）に分けた。
@@ -69,6 +71,58 @@ describe('computeDedicatedFormErrors: 欄ごとに独立して判定する', () 
     const errors = computeDedicatedFormErrors({ ...VALID_INPUT, clusterName: '', zone: '' })
     expect(errors.clusterName).toBeTruthy()
     expect(errors.zone).toBeTruthy()
+  })
+})
+
+// ── G-1（2026-09-16）: 詳細設定で 80/http・443/https を消せてしまい、消えていても何も
+// 言わずに「クラスタを作成する」が通っていた穴の修理。専有型は必ず Let's Encrypt を使う作り
+// なので、80/http が無ければ証明書は永久に出ず、443/https が無ければアプリを載せる先が無い。
+// どちらも欠けたクラスタは使えないのに、月額およそ2万2千円の固定費だけがかかる——
+// だから「警告」ではなく作成そのものを止める（errors.ports を立てる）。
+describe('computeDedicatedFormErrors: 必須ポート（80/http・443/https）が欠けていればクラスタの作成を止める（G-1）', () => {
+  it('★ 80/http を消すとクラスタを作れない（errors.ports が立つ）', () => {
+    const errors = computeDedicatedFormErrors({ ...VALID_INPUT, ports: [{ port: 443, protocol: 'https' }] })
+    expect(errors.ports).toBeTruthy()
+  })
+
+  it('80/http が無いときのエラー文に「80」と「詳細設定」が含まれる（次の一手が書かれている）', () => {
+    const msg = computeDedicatedFormErrors({ ...VALID_INPUT, ports: [{ port: 443, protocol: 'https' }] }).ports
+    expect(msg).toContain('80')
+    expect(msg).toContain('詳細設定')
+  })
+
+  it('443/https を消すとクラスタを作れない。エラー文に「443」と「詳細設定」が含まれる', () => {
+    const msg = computeDedicatedFormErrors({ ...VALID_INPUT, ports: [{ port: 80, protocol: 'http' }] }).ports
+    expect(msg).toBeTruthy()
+    expect(msg).toContain('443')
+    expect(msg).toContain('詳細設定')
+  })
+
+  it('両方消すと、80と443の両方を名指しする（「不正な設定です」で終わらせない）', () => {
+    const msg = computeDedicatedFormErrors({ ...VALID_INPUT, ports: [{ port: 8080, protocol: 'http' }] }).ports
+    expect(msg).toContain('80')
+    expect(msg).toContain('443')
+    expect(msg).not.toBe('不正な設定です')
+  })
+
+  it('★ 80/https は 80/http の代わりにならない（プロトコルまで見る）', () => {
+    const msg = computeDedicatedFormErrors({
+      ...VALID_INPUT,
+      ports: [{ port: 80, protocol: 'https' }, { port: 443, protocol: 'https' }],
+    }).ports
+    expect(msg).toContain('80')
+  })
+
+  it('既定値（80/http と 443/https）ではエラーにならない', () => {
+    expect(computeDedicatedFormErrors(VALID_INPUT).ports).toBeUndefined()
+  })
+
+  it('余分なポートがあっても、必要な2つが揃っていればエラーにならない', () => {
+    const errors = computeDedicatedFormErrors({
+      ...VALID_INPUT,
+      ports: [...VALID_INPUT.ports, { port: 8080, protocol: 'http' as const }],
+    })
+    expect(errors.ports).toBeUndefined()
   })
 })
 
@@ -136,7 +190,7 @@ describe('②: サービスプリンシパルの手順を「詳しい手順を�
   })
 })
 
-describe('⑤: 詳細設定（ポート・ノード数・Let\'s Encrypt メール）を <details> に畳む', () => {
+describe('⑤: 詳細設定（ポート・ノード数）を <details> に畳む', () => {
   it('既定で見えるのはクラスタ名・ゾーン・ワーカプラン・ロードバランサプラン・構成図・作成ボタン', () => {
     const at = panel.indexOf('{/* ⑤ クラスタを作る */}')
     expect(at).toBeGreaterThan(0)
@@ -150,8 +204,7 @@ describe('⑤: 詳細設定（ポート・ノード数・Let\'s Encrypt メー�
     const summaryAt = block.indexOf('詳細設定（ふつうは変えなくてよい）', detailsAt)
     const portAt = block.indexOf('<label className="text-[11px] font-medium text-ink-secondary">公開ポート</label>', summaryAt)
     const nodesAt = block.indexOf('ノード数 min', summaryAt)
-    const letsEncryptAt = block.indexOf('Let&apos;s Encrypt 用メール', summaryAt)
-    const detailsCloseAt = block.indexOf('</details>', letsEncryptAt)
+    const detailsCloseAt = block.indexOf('</details>', nodesAt)
     const zoneAt = block.indexOf('>ゾーン<', detailsCloseAt)
     const workerAt = block.indexOf('ワーカプラン', zoneAt)
     const lbAt = block.indexOf('ロードバランサプラン', workerAt)
@@ -161,12 +214,11 @@ describe('⑤: 詳細設定（ポート・ノード数・Let\'s Encrypt メー�
     expect(clusterNameAt).toBeGreaterThan(-1)
     expect(detailsAt).toBeGreaterThan(clusterNameAt)
     expect(summaryAt).toBeGreaterThan(detailsAt)
-    // ポート・ノード数・Let's Encrypt メールは <details> の中（summary より後）にある。
+    // ポート・ノード数は <details> の中（summary より後）にある。
     expect(portAt).toBeGreaterThan(summaryAt)
     expect(nodesAt).toBeGreaterThan(summaryAt)
-    expect(letsEncryptAt).toBeGreaterThan(summaryAt)
     // ゾーン・ワーカプラン・ロードバランサプラン・構成図・作成ボタンは、それらより後（常時表示側）にある。
-    expect(zoneAt).toBeGreaterThan(letsEncryptAt)
+    expect(zoneAt).toBeGreaterThan(nodesAt)
     expect(workerAt).toBeGreaterThan(zoneAt)
     expect(lbAt).toBeGreaterThan(workerAt)
     expect(diagramAt).toBeGreaterThan(lbAt)
@@ -176,14 +228,25 @@ describe('⑤: 詳細設定（ポート・ノード数・Let\'s Encrypt メー�
     expect(block).toContain('既定のままで作れます。ポートは 80/443、ノード数は最小1・最大1。')
   })
 
-  it('Let\'s Encrypt メール欄に「将来の独自ドメイン公開用。いまは空欄でよい」の一言がある', () => {
-    expect(panel).toContain('将来の独自ドメイン公開用。いまは空欄でよい。')
+  // F-1（2026-09-16）: ⑤の Let's Encrypt メール欄は削除した（⑧に一本化）。
+  it('⑤に Let\'s Encrypt メール欄は無い（⑧に一本化。F-1）', () => {
+    expect(panel).not.toContain('Let&apos;s Encrypt 用メール')
   })
 
-  it('ポート・ノード数・Let\'s Encrypt メールの入力欄は1か所ずつだけ（旧: ワーカプラン欄の下にも重複していた）', () => {
+  it('ポート・ノード数の入力欄は1か所ずつだけ（旧: ワーカプラン欄の下にも重複していた）', () => {
     expect((panel.match(/<label className="text-\[11px\] font-medium text-ink-secondary">公開ポート<\/label>/g) ?? []).length).toBe(1)
     expect((panel.match(/ノード数 min/g) ?? []).length).toBe(1)
-    expect((panel.match(/Let&apos;s Encrypt 用メール/g) ?? []).length).toBe(1)
+  })
+
+  // G-1-c（2026-09-16）: 公開ポートの一覧のすぐ下に、80/443 を消してはいけない理由を1行添える。
+  it('★ 公開ポートの一覧の下に、80/443 を消してはいけない理由が1行ある（G-1-c）', () => {
+    const portAt = panel.indexOf('<label className="text-[11px] font-medium text-ink-secondary">公開ポート</label>')
+    const nodesAt = panel.indexOf('ノード数 min', portAt)
+    const noteAt = panel.indexOf('は消さないでください', portAt)
+    expect(portAt).toBeGreaterThan(-1)
+    // ポート一覧の下（+ ポートを追加 ボタンより後）・ノード数欄より前にある。
+    expect(noteAt).toBeGreaterThan(portAt)
+    expect(noteAt).toBeLessThan(nodesAt)
   })
 })
 
@@ -200,7 +263,7 @@ describe('④formErrorの二重表示: ワーカ/ロードバランサプラン�
 })
 
 describe('パネル冒頭の注意文（UX-C で一本化したもの）は残っている', () => {
-  it('cheapestMonthlyText と「常時課金です」が引き続き冒頭にある', () => {
+  it('alwaysOnChargeText（常時課金の1文）が引き続き冒頭にある', () => {
     const at = panel.indexOf('📦 さくらのAppRun 専有型')
     expect(at).toBeGreaterThan(0)
     // UX-E（判断8）: ①は AccessKeySection.tsx に一元化され、'① APIキー' という
@@ -209,7 +272,7 @@ describe('パネル冒頭の注意文（UX-C で一本化したもの）は残�
     const end = panel.indexOf('<AccessKeySection', at)
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
-    expect(block).toContain('cheapestMonthlyText({ workerPlans, lbPlans })')
-    expect(block).toContain('常時課金です')
+    // D-13 K: 文言（「常時課金です…」）は純関数 alwaysOnChargeText の側にある（画面は描くだけ）。
+    expect(block).toContain('{alwaysOnChargeText({ workerPlans, lbPlans })}')
   })
 })

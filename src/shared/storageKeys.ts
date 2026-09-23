@@ -22,14 +22,40 @@ export type StoragePermission = {
   displayName: string
 }
 
-/** このプロジェクトの鍵に付ける名前。**他のプロジェクトのものを消さないための目印。** */
-export type StorageTarget = 'apprun' | 'hanamii'
+/**
+ * このプロジェクトの鍵に付ける名前。**他のプロジェクトのものを消さないための目印。**
+ *
+ * **公開先ごとに別の値にすること**（2026-09-23 に `apprun-dedicated` を追加）。
+ * 専有型は AppRun の共用型とは別のアプリなので、同じ値を使い回すと
+ * `permissionNameFor` が同じ名前を返し、**専有型の公開が共用型の鍵を消して、
+ * 動いているアプリが 403 で落ちる**（逆も同じ）。名前は完全一致で見分けている。
+ */
+export type StorageTarget = 'apprun' | 'apprun-dedicated' | 'hanamii'
+
+/**
+ * 公開先を継ぎ足すときの区切り（2026-09-23 検分の指摘9）。
+ *
+ * **ハイフンで継ぎ足すと、名前がぶつかる。** プロジェクト名は小文字英数字とハイフン
+ * （spec.ts の NAME_PATTERN）なので、`myapp-apprun-dedicated` という名前のプロジェクトを
+ * 作れてしまう。その人が**共用型**へ公開すると鍵の名前は `koto-myapp-apprun-dedicated` になり、
+ * 別プロジェクト `myapp` を**専有型**へ公開したときの名前と完全一致する。片づけは
+ * 表示名の完全一致だけで選ぶので、`myapp` の専有型公開が、無関係な現役の鍵を消して
+ * **動いているアプリが 403 で落ちる**（掟11「環境の独立」が破れる）。
+ *
+ * アンダースコアはプロジェクト名に**絶対に現れない**ので、`koto-<名前>_apprun-dedicated` は
+ * どの `koto-<名前2>`（共用型）とも一致しない。
+ */
+const TARGET_SEP = '_'
 
 export function permissionNameFor(projectName: string, target: StorageTarget = 'apprun'): string {
   // **apprun の名前は変えない。** すでに発行済みの鍵は `koto-<名前>` で、
   // 片づけは名前の一致だけを見ている。変えると**現役の鍵が孤児になる**
   // （誰も片づけられないまま残り、次の鍵と二重に生き続ける）。
-  return target === 'apprun' ? `koto-${projectName}` : `koto-${projectName}-${target}`
+  if (target === 'apprun') return `koto-${projectName}`
+  // **hanamii の名前も変えない**（同じ理由。すでに `koto-<名前>-hanamii` で発行済みの鍵がある）。
+  // 新しく足す公開先だけ、ぶつからない区切りにする。
+  if (target === 'hanamii') return `koto-${projectName}-hanamii`
+  return `koto-${projectName}${TARGET_SEP}${target}`
 }
 
 /**
