@@ -19,7 +19,7 @@ import {
   getLimits, listClusters, createCluster, getCluster, deleteCluster,
   createAsg, getAsg, deleteAsg, createLoadBalancer, deleteLoadBalancer,
   listAsg, listLoadBalancers, listApplications, deleteApplication,
-  getApplication, updateApplication, listApplicationContainers, type ApprunDedicatedResult,
+  getApplication, updateApplication, listApplicationContainers, lbDeleteEstimateNote, type ApprunDedicatedResult,
 } from './apprunDedicated'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import type { ApprunDedicatedRecord } from '../../shared/publishMeta'
@@ -29,7 +29,7 @@ import {
   readApplicationRows, readApplicationIDs, readApplication, readApiErrorTitle,
   readContainerStates,
 } from '../../shared/apprunDedicatedShapes'
-import { buildActiveVersionBody, appDeleteRetryable, appDeleteExhaustedMessage } from '../../shared/apprunDedicatedApp'
+import { buildActiveVersionBody, appDeleteRetryable, appDeleteNeedsReDeactivation, appDeleteExhaustedMessage } from '../../shared/apprunDedicatedApp'
 
 // ── 入力の形 ──────────────────────────────────────────────────────────
 
@@ -492,29 +492,86 @@ export type TeardownFlowResult = {
   /** 起きたことの説明（画面向け。削除の完了だけでなく、記録への書き戻し等も含む）。 */
   executed: string[]
   message: string
-  /** 消せずに残ったID（無ければキー自体が無い＝最初から記録に無かった/消せた）。 */
-  remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+  /**
+   * 消せずに残ったID（無ければキー自体が無い＝最初から記録に無かった/消せた）。
+   *
+   * `storageBucket` は保存場所（オブジェクトストレージ）だけ毛色が違う——IDではなくバケット名で、
+   * 立てるのは `ipc/apprunDedicated.ts` の保存場所の片づけ（2026-09-24 検分の指摘5）。
+   * **ここが空のまま ok:false を返すと、画面の「残っています＝課金が続きます」の下に
+   * 1件も出ない**＝何が残っているのか分からないまま放置させることになる。
+   */
+  remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string; storageBucket?: string }
+  /**
+   * **計算資源（アプリ・LB・ASG・クラスタ）は消し切れたか**（2026-09-24 検分の指摘4・9・13）。
+   *
+   * `ok` は保存場所の片づけまで含めた総合判定なので、「アプリは消えたが保存場所だけ失敗」で
+   * false になる。画面はそのとき公開記録（publish.targets）を消さず、📡 公開したもの一覧に
+   * **存在しないアプリの幽霊**が残る。公開記録を消すかどうかは `ok` ではなくこちらで判断する。
+   * 立てるのは保存場所の片づけ（teardownFlow 自身は `ok` と同じ意味なので触らない）。
+   */
+  appDeleted?: boolean
   /**
    * 削除は受け付けられた（204、または404+`deleting:true`）が、**待ち切れず（timeout）に
    * 止まった**ときだけ立つ（#39）。画面はこれを見て「削除中です。しばらくして⑥をもう一度
    * 押してください」の黄色い注意を出す（残っています＝失敗、の赤い表示とは区別する）。
    */
   inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+  /**
+   * **片づけたのに、バケットごとは消さなかった**保存場所（利用者が自分で置いたファイルがある・ほかのプロジェクトが
+   * 使っている）の名前。先頭の1件。**残れば月額も続く**（共用型の `cloud:teardown` の `keptBucketName` と同じ事実）。
+   * `remaining.storageBucket`（**片づけに失敗して**残ったもの）とは別。立てるのは `ipc/apprunDedicated.ts` の保存場所の片づけ。
+   * これが無いと、この回は ok:true のまま executed に「残します（月額の課金は続きます）」の1行が入るだけで、警告にならなかった。
+   */
+  keptBucketName?: string
+  /** 同じ事実の全件（複数の保存場所を片づけたとき、名前が出なかった分の月額が黙って続かないように）。 */
+  keptBucketNames?: string[]
+}
+
+/**
+ * ⑥の破棄のあと、公開記録（publish.targets['sakura-apprun-dedicated']）を片づけるか（純関数）。
+ *
+ * **判断の基準は「破棄全体が成功したか」ではなく「アプリが実際に消えたか」**（`appDeleted`。無ければ `ok`）。
+ * 保存場所の片づけだけが失敗した回は `ok:false` だがアプリは消えている——記録を残すと 📡 公開したもの一覧に
+ * 存在しないアプリが出続ける。破棄前の記録に applicationID が無かった（⑧で公開していない）なら、消す
+ * 公開記録も無い。
+ *
+ * **画面（src/renderer/apprunDedicatedActions.ts の `shouldClearPublishRecord`）と同じ規則**。以前は画面だけが
+ * 破棄の後始末として公開記録を消していたが、⑥のダイアログを閉じると窓が持つ後始末は走らず、破棄は最後まで進むのに
+ * 存在しないアプリの公開記録が残った（2026-09-29 に main へ移した）。二つの規則が食い違わないことは
+ * tests/ops-dedicated-teardown.test.ts が真理値表で固定する。
+ */
+export function shouldForgetPublishRecord(s: {
+  hadApplicationID: boolean
+  result: { ok: boolean; appDeleted?: boolean } | null | undefined
+}): boolean {
+  if (!s.hadApplicationID || !s.result) return false
+  return s.result.appDeleted ?? s.result.ok
 }
 
 export type TeardownFlowOpts = {
   confirmed: boolean
   /**
-   * 進捗メッセージ（「〜の削除を待っています（N分経過）…」を30秒ごとに1回）。画面へ流すのに使う
+   * 進捗メッセージ（「〜の削除を待っています（N分経過）…」を30秒ごとに1回。ただしアプリの削除を400で断られて
+   * 待ち直すときだけは、待つたびに＝`deleteRetryIntervalMs`（既定15秒）おきに出る）。画面へ流すのに使う
    * （IPCハンドラが `apprunDedicated:teardown-progress` で event.sender.send する）。省略可。
    */
   progress?: (msg: string) => void
   /** waitUntilGone のポーリング間隔（既定5秒）。テストで短縮せず、代わりに `sleep` を偽物にする。 */
   intervalMs?: number
-  /** waitUntilGone の最長待ち時間（既定10分）。 */
+  /**
+   * waitUntilGone の最長待ち時間（既定10分）。アプリの削除を400で断られたときのやり直しの合計の上限も、これと同じ値で数える
+   * （その合計には、やり直しの中の無効化の確認の待ち・コンテナの待ちも入る。それぞれの待ちは「合計の残り」までしか待たない）。
+   */
   timeoutMs?: number
   /**
-   * waitUntilGone がポーリングの合間に待つのに使う関数（既定は実際の setTimeout）。
+   * アプリの削除（DELETE）が「まだコンテナが止まっていない」などの400で断られたとき、**やり直す前に待つ間隔**（既定15秒）。
+   * 下限は1秒（0以下・数でない値を渡しても、休みなく DELETE を打ち続けない）。
+   * テストでは短縮せず、代わりに `sleep` を偽物にする（waitUntilGone と同じ作法）。
+   */
+  deleteRetryIntervalMs?: number
+  /**
+   * waitUntilGone がポーリングの合間に待つのに使う関数（既定は実際の setTimeout）。アプリの削除を400で断られたときの
+   * 待ち直し（`deleteRetryIntervalMs`）と、その中の無効化の確認・コンテナの待ちにも、同じ関数を使う。
    * **テストではここへ即時に解決する偽物を渡し、実際には待たずにループを回す**（#39のテスト方針）。
    */
   sleep?: (ms: number) => Promise<void>
@@ -531,6 +588,16 @@ export type WaitUntilGoneResult = { ok: true } | { ok: false; reason: 'timeout' 
 const WAIT_UNTIL_GONE_DEFAULT_INTERVAL_MS = 5000
 const WAIT_UNTIL_GONE_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000 // 10分
 const PROGRESS_INTERVAL_MS = 30 * 1000 // 30秒ごとに進捗を出す
+/** アプリの削除が400（コンテナがまだ止まっていない等）で断られたとき、やり直すまで待つ既定の間隔。 */
+const APP_DELETE_RETRY_DEFAULT_INTERVAL_MS = 15 * 1000
+/**
+ * 待ち直しの間隔の下限。0以下・NaN を渡されても、合計の待ち時間が増えずに上限へ届かないまま DELETE を休みなく打ち続ける
+ * （お金・破壊に関わる処理が無制限になる）ことのないようにする。
+ */
+const APP_DELETE_RETRY_MIN_INTERVAL_MS = 1000
+
+/** 実際に待つ関数（`opts.sleep` が無いときの既定）。 */
+const realSleep = (ms: number): Promise<void> => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 /**
  * 一覧から ID が消える（`isPresent` が false を返す）のを待つ、純粋なループ（#39）。
@@ -559,7 +626,7 @@ export async function waitUntilGone(
 ): Promise<WaitUntilGoneResult> {
   const intervalMs = opts.intervalMs ?? WAIT_UNTIL_GONE_DEFAULT_INTERVAL_MS
   const timeoutMs = opts.timeoutMs ?? WAIT_UNTIL_GONE_DEFAULT_TIMEOUT_MS
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const sleep = opts.sleep ?? realSleep
   let elapsedMs = 0
   let lastProgressMs = 0
   for (;;) {
@@ -579,6 +646,33 @@ export async function waitUntilGone(
 /** 経過時間(ms)を「N分経過」に丸める（画面向けの進捗文言・#39）。30秒→「1分経過」に丸まる。 */
 function formatElapsedMinutes(ms: number): string {
   return `${Math.max(1, Math.round(ms / 60000))}分経過`
+}
+
+/** ロードバランサを待つときの資源名。目安（実測でおよそ9分）を添える相手を見分けるのに使う。 */
+const LB_WAIT_LABEL = 'ロードバランサ'
+
+/**
+ * 削除待ちの進み具合の一文（純関数）。`elapsedMs` が 0 なら経過は書かない（待ち始めの一文）。
+ *
+ * **目安を添えるのはロードバランサだけ**（2026-09-29 作者の決定）。実測（docs/apprun-dedicated-plan.md
+ * 5-11）があるのは LB の削除（およそ9分）だけで、ASG・クラスタ・アプリの削除は個別に測っていない
+ * ——測っていない資源に目安を付けると、確かめていないことを画面で断定することになる。
+ * 数字と言い回しは `lbDeleteEstimateNote`（apprunDedicated.ts・1か所）から引く。
+ */
+export function deleteWaitProgressMessage(label: string, elapsedMs: number): string {
+  const elapsed = elapsedMs > 0 ? `（${formatElapsedMinutes(elapsedMs)}）` : ''
+  if (label === LB_WAIT_LABEL) return `${label}の削除を待っています${elapsed}。${lbDeleteEstimateNote()}。`
+  return `${label}の削除を待っています${elapsed}…`
+}
+
+/**
+ * アプリの削除を400で断られて、コンテナが止まるのを待つときの進み具合の一文（純関数）。
+ * 言い方は `deleteWaitProgressMessage`（ロードバランサの待ち）に揃える。`elapsedMs` が30秒に満たないうちは
+ * 経過を書かない（15秒おきに「1分経過」と出すと、実際より長く待ったように見えるため）。
+ */
+export function appStopWaitProgressMessage(elapsedMs: number): string {
+  const elapsed = elapsedMs >= PROGRESS_INTERVAL_MS ? `（${formatElapsedMinutes(elapsedMs)}）` : ''
+  return `アプリのコンテナが止まるのを待っています${elapsed}…`
 }
 
 /** JSON文字列を安全にパースする（失敗すれば null）。ApprunDedicatedResult.detail は生の応答本文（JSON文字列）。 */
@@ -601,11 +695,13 @@ async function waitOrStop(
   remaining: TeardownFlowResult['remaining'],
   inProgress: TeardownFlowResult['inProgress'],
 ): Promise<TeardownFlowResult | null> {
+  // ロードバランサは待ち始めにも一文を出す（30秒後の最初の進捗まで、目安が見えない時間を作らない）。
+  if (label === LB_WAIT_LABEL) opts.progress?.(deleteWaitProgressMessage(label, 0))
   const wait = await waitUntilGone(listFn, isPresent, {
     intervalMs: opts.intervalMs,
     timeoutMs: opts.timeoutMs,
     sleep: opts.sleep,
-    onProgress: ms => opts.progress?.(`${label}の削除を待っています（${formatElapsedMinutes(ms)}）…`),
+    onProgress: ms => opts.progress?.(deleteWaitProgressMessage(label, ms)),
   })
   if (wait.ok) return null
   return {
@@ -638,6 +734,11 @@ async function ensureApplicationDeactivated(
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   // 1. いまの activeVersion を見る。取れない・形が読めないときは undefined（＝分からない）。
   const getRes = await getApplication(auth, applicationID, baseUrl)
+  // さくら側でアプリがすでに無い（GET が 404）なら、無効化はできないし要らない。DELETE へ進め、
+  // **DELETE の 404 の枝（一覧で確かめてから記録を外す）に最終の判断を任せる**——「分からない」を
+  // 成功に倒すのではない（一覧にまだあれば、そこで止まる）。ここで止めると、押し直しても先へ進めず、
+  // クラスタなどを Koto から消せなくなる（課金を止められない・2026-10-07 検分）。
+  if (!getRes.ok && getRes.status === 404) return { ok: true }
   const app = getRes.ok ? readApplication(getRes.data) : null
   const activeVersion: number | null | undefined = app ? app.activeVersion : undefined
 
@@ -647,6 +748,8 @@ async function ensureApplicationDeactivated(
   // 2. 無効化する（分からない場合も含めて試みる）。
   const updateRes = await updateApplication(auth, applicationID, buildActiveVersionBody(null), baseUrl)
   if (!updateRes.ok) {
+    // GET と PUT のあいだに消えた（404）ときも同じ。判断は DELETE の 404 の枝（一覧で確かめる）に任せる
+    if (updateRes.status === 404) return { ok: true }
     return {
       ok: false,
       message: `アプリケーションのバージョンを無効化できませんでした: ${updateRes.message}`,
@@ -687,10 +790,31 @@ async function ensureApplicationDeactivated(
  * `listApplicationContainers` でコンテナが0件になるまで待つ**（2026-09-16 実機実測:
  * 有効なバージョンを持ったままでは 400「active version」、無効化直後はコンテナがまだ
  * 止まりきっていなくて 400「currently running」になる——どちらも「受け付けられた≠完了した」
- * という同じ形）。それでも DELETE が 400（上記いずれかの文言）で失敗したら、無効化からやり直す
- * （`attemptDeleteAsg` が 409 でLBの残存を回復するのと同じ形。最大3回。3回で駄目なら、
- * どちらの理由で止まったか分かる文面にして、生の応答を載せて止める）。文言の判定は
- * `appDeleteRetryable`（`src/shared/apprunDedicatedApp.ts`）1か所に集約する。
+ * という同じ形）。
+ *
+ * ── DELETE が 400 で断られたとき（2026-10-07 実機実測・0.6.20-rc.6）──────────────────────
+ * 文言が `appDeleteRetryable`（`src/shared/apprunDedicatedApp.ts`・1か所）に当たる400なら、
+ * **待ってからやり直す**。以前は「間を置かずに無効化からやり直し・最大3回」だったため、
+ * コンテナの停止が終わっていないと**1〜2秒のうちに3回とも400になり、すぐ失敗した**
+ * （📡 の🗑 を押してすぐ「コンテナの停止が終わりません」になった）。
+ *   ・待ち間隔は `opts.deleteRetryIntervalMs`（既定15秒・下限1秒）。
+ *   ・合計の上限は `opts.timeoutMs`（既定は waitUntilGone と同じ10分。数でない値は既定に戻す）。回数の上限は設けない
+ *     （「3回で即失敗」の形を残さない）。経過は実時間ではなく**待った回数 × 間隔**で数える
+ *     （waitUntilGone と同じ。テストで sleep を偽物にすれば、実際には待たずに動きを確かめられる）。
+ *     コンテナの待ち・無効化の確認の待ちも同じ数え方で合算し、それぞれの待ちの上限は「合計の残り」にする
+ *     （やり直しのたびに10分をまるごと使わせない）。
+ *   ・待つたびに進み具合を出す（`appStopWaitProgressMessage`）。
+ *   ・「active version」で断られたら、**無効化からやり直す**（無効化がまだ効いていないことがあるため）。
+ *     「currently running」のときは無効化を打ち直さず、待ってDELETEだけをやり直す
+ *     （原本の updateApplication の説明は「activeVersion を null にすると非アクティブ状態になる」までで、
+ *     すでに null のものへ繰り返し送って安全かは書かれていない。確かめられないものは打ち直さない）。
+ *   ・上限に達したら止まる。**記録（applicationID）は消さない**＝もう一度押せば続きから進む。
+ *     `inProgress` は立てない（`inProgress` は「削除を**受け付けられた**が待ち切れなかった」の意味で、
+ *     📡 一覧はそれを見ると固定の文に差し替えて生の応答を捨てる。ここは受け付けられていない）。
+ *
+ * **コンテナの一覧が読めないとき（取得の失敗・形が読めない）は、待たずにそのまま DELETE する**
+ * （読めないことを理由に破棄を止めると、課金が止まらないほうへ倒れる）。上の待ち直しは、
+ * 一覧が読めるかどうかに関わらず効く（DELETE の400そのものを見て待つため）。
  */
 async function attemptDeleteApplication(
   auth: CloudCredentials, projectDir: string, clusterID: string, applicationID: string,
@@ -704,11 +828,34 @@ async function attemptDeleteApplication(
     appPort: null, appCpu: null, appMemory: null, appFixedScale: null,
   })
 
-  for (let attempt = 0; ; attempt++) {
-    // 無効化を試みる（既に null なら何もしない）。
-    const deactivated = await ensureApplicationDeactivated(auth, applicationID, opts, baseUrl, executed)
-    if (!deactivated.ok) {
-      return { ok: false, executed, message: deactivated.message, remaining }
+  // ── 待ちの数え方 ─────────────────────────────────────────────────────────────
+  // この段で待った合計（ms）。sleep を1か所で包み、無効化の確認・コンテナの待ち・DELETE のやり直しの待ちを
+  // すべて合算する（経過は回数 × 間隔。実時間は使わない）。
+  // 間隔・合計の上限が 0以下／NaN／Infinity でも、このループが終わらなくならないようにする（回数の上限を置かない作りの安全弁）。
+  const requestedRetryMs = opts.deleteRetryIntervalMs
+  const retryIntervalMs = typeof requestedRetryMs === 'number' && Number.isFinite(requestedRetryMs)
+    ? Math.max(APP_DELETE_RETRY_MIN_INTERVAL_MS, requestedRetryMs)
+    : APP_DELETE_RETRY_DEFAULT_INTERVAL_MS
+  const totalTimeoutMs = typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs)
+    ? Math.max(0, opts.timeoutMs)
+    : WAIT_UNTIL_GONE_DEFAULT_TIMEOUT_MS
+  const baseSleep = opts.sleep ?? realSleep
+  let waitedMs = 0
+  const countedSleep = async (ms: number): Promise<void> => { await baseSleep(ms); waitedMs += ms }
+  // 無効化の確認の待ちの上限も「合計の残り」（呼び出しのたびに引き直す）。
+  const countedOptsNow = (): TeardownFlowOpts => ({ ...opts, sleep: countedSleep, timeoutMs: Math.max(0, totalTimeoutMs - waitedMs) })
+
+  // 無効化から始める。やり直しで「無効化し直す」のは、400の理由が「active version」のときだけ。
+  let deactivateFirst = true
+
+  for (;;) {
+    if (deactivateFirst) {
+      // 無効化を試みる（既に null なら何もしない）。
+      const deactivated = await ensureApplicationDeactivated(auth, applicationID, countedOptsNow(), baseUrl, executed)
+      if (!deactivated.ok) {
+        return { ok: false, executed, message: deactivated.message, remaining }
+      }
+      deactivateFirst = false
     }
 
     // ── D-10（2026-09-16 実機実測）: 無効化しても、動いているコンテナは即座には消えない ──────
@@ -729,7 +876,8 @@ async function attemptDeleteApplication(
           // ここでも同じ理由でnullを0件と読み替えない——読めない間は「まだ残っている」扱いで待つ。
           return states === null ? true : states.length > 0
         },
-        { intervalMs: opts.intervalMs, timeoutMs: opts.timeoutMs, sleep: opts.sleep },
+        // 上限は「この段の合計」から、すでに待った分を引いた残り。
+        { intervalMs: opts.intervalMs, timeoutMs: Math.max(0, totalTimeoutMs - waitedMs), sleep: countedSleep },
       )
       if (!containersWait.ok) {
         // 時間切れでも関門にはしない。待ちは成功率を上げるためのものなので、そのままDELETEを試す。
@@ -778,16 +926,20 @@ async function attemptDeleteApplication(
     if (res.status === 400) {
       const title = readApiErrorTitle(safeParseJson(res.detail))
       if (appDeleteRetryable(title)) {
-        if (attempt >= 2) {
-          // 3回目（attempt: 0,1,2）でも 400。無効化・待ちをやり直しても解消しない。
-          // どちらの理由で止まったかによってmessageを変える（嘘にならないように）。
+        // 合計の上限に達したら止まる。記録（remaining.applicationID・ディスク上の applicationID）は消さない
+        // ＝もう一度押せば、ここから続きを進める。どちらの理由で止まったかによって文面を変える（嘘にならないように）。
+        if (waitedMs >= totalTimeoutMs) {
           return {
             ok: false, executed,
             message: appDeleteExhaustedMessage(title, res.message),
             remaining,
           }
         }
-        continue // 無効化からやり直す。
+        // 待ってからやり直す（以前は間を置かずに3回打ち、1〜2秒で失敗していた）。
+        opts.progress?.(appStopWaitProgressMessage(waitedMs))
+        await countedSleep(retryIntervalMs)
+        deactivateFirst = appDeleteNeedsReDeactivation(title)
+        continue
       }
     }
     return {
@@ -807,7 +959,7 @@ async function attemptDeleteLoadBalancer(
   const res = await deleteLoadBalancer(auth, clusterID, asgID, loadBalancerID, baseUrl)
   if (res.ok) {
     const stop = await waitOrStop(
-      'ロードバランサ',
+      LB_WAIT_LABEL,
       () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
       // M-1（2026-09-17）: 在否の判定に名前は要らない。name の無い行も拾う readLoadBalancerIDs
       // を使う（readLoadBalancerRows は名前探し用で、name の無い行を捨てるため「消えた」誤判定を招く）。
@@ -841,7 +993,7 @@ async function attemptDeleteLoadBalancer(
     const row = readLoadBalancerRows(listRes.data).find(r => r.loadBalancerID === loadBalancerID)
     if (row?.deleting === true) {
       const stop = await waitOrStop(
-        'ロードバランサ',
+        LB_WAIT_LABEL,
         () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
         // M-1（2026-09-17）: 同上。name の無い行も在否判定に含める。
         data => readLoadBalancerIDs(data).includes(loadBalancerID),
@@ -952,7 +1104,7 @@ async function attemptDeleteAsg(
         executed.push(`ロードバランサ『${found.loadBalancerID}』がまだ残っていたため、記録に戻しました`)
         if (found.deleting === true) {
           const stop = await waitOrStop(
-            'ロードバランサ',
+            LB_WAIT_LABEL,
             () => listLoadBalancers(auth, clusterID, asgID, undefined, baseUrl),
             // M-1（2026-09-17）: 同上。name の無い行も在否判定に含める。
             data => readLoadBalancerIDs(data).includes(found.loadBalancerID),

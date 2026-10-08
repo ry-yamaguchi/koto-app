@@ -485,7 +485,33 @@ export async function runSecurityCheck(
   apiKey: string,
   /** 実況（何をしているか）。時間がかかるので、待つ側に見せる（2026-08-21 Ryosuke 指摘）。 */
   onProgress?: (msg: string) => void,
+  /**
+   * 「中止」用の関数を受け取る（sakura.chat の onStart と同じ形・2026-09-25 検分の指摘6）。
+   *
+   * ⚠️ **この受け口は、止め方を画面に出すときに必ず繋ぐこと。**
+   * 繋がないと、この検査は最悪で「NON_STREAM_TIMEOUT_MS × 再試行 × かたまりの数」
+   * （既定でおよそ600秒 × 最大6回）のあいだ、利用者にはどうやっても止められない。
+   * ipc/sakura.ts の activeChats に書いた戒めと同じ型の事故（＝口が2つあるのに
+   * 片方しか配線しない）を、ここで繰り返さないための口である。
+   *
+   * 渡された関数は**いつ呼んでもよい**（要求を送る前でも、待っている最中でも）。
+   * 呼ぶと、いま待っている問い合わせを切り、**残りのかたまりへ進まずに**戻る。
+   *
+   * 本番の呼び出し元（2026-09-25 に繋いだ・増えたら数え直す:
+   * `grep -rn 'runSecurityCheck(' src`）:
+   *   ① src/renderer/components/SecurityCheckSection.tsx の run()
+   *      → 確認中に出る「⏹ 中止する」が、ここで受けた関数を呼ぶ
+   */
+  onAbortReady?: (abort: () => void) => void,
 ): Promise<SecurityCheckResult> {
+  // ── 中止の置き場（この検査ぜんぶで1つ・掟10）──────────────────────────
+  // ここで作って**最初の await より前に**渡す。あとから渡すと、いちばん止めたい
+  // 「返ってこない」場面（要求は出たが返事が来ない）で空振りする
+  // （engine.ts / preload.ts の「先に中断関数を渡す」と同じ理由）。
+  let stopped = false
+  let abortCurrent: (() => void) | null = null
+  onAbortReady?.(() => { stopped = true; abortCurrent?.() })
+
   // 見るのは**実際に公開されるもの**（`public/`。無ければプロジェクト直下）。
   // ここがずれると「チェックは通ったのに、公開すると別の中身」になる。
   projectDir = (await resolvePublishRoot(projectDir)) || projectDir
@@ -547,6 +573,9 @@ export async function runSecurityCheck(
   // （2026-08-21 Ryosuke 指定）。この機能だけが回ごとに独自の判断を持つと、
   // 「どこで止まるのか」が場所ごとに違ってしまう。開始時に1度見れば足りる。
   for (let i = 0; i < batches.length; i++) {
+    // 中止されたら、残りのかたまりへは進まない（1回あたり最悪およそ600秒あるので、
+    // ここで抜けないと「中止したのに何分も終わらない」になる）。
+    if (stopped) break
     // 実測で1分を超えることもある（2026-08-21 Ryosuke）。**短く言い切らない**
     const nth = batches.length > 1 ? `（${i + 1}/${batches.length}回目・少々時間がかかります）` : '（少々時間がかかります）'
     onProgress?.(mode === 'node'
@@ -560,6 +589,10 @@ export async function runSecurityCheck(
       parts: batches[i].map(p => `${pieceHeader(p)}\n${p.text}`),
     })
     try {
+      // ★ 第2引数（onStart）を**必ず渡す**（2026-09-25 検分の指摘6）。
+      //   preload の chat は invoke より先にこれを呼ぶので、返事が一度も返ってこない
+      //   相手でも中断が届く。ここは sakura.chat の呼び出し元2つのうちの片方で、
+      //   直前まで渡していなかった（もう片方は useAiChat.ts の chatOnce）。
       const res = await window.electronAPI.sakura.chat({
         apiKey,
         model,
@@ -572,7 +605,7 @@ export async function runSecurityCheck(
         // 🗂 まとめ（v0.3.37）と同じく 4096 まで確保する。
         maxTokens: 4096,
         temperature: 0.2,
-      })
+      }, (abort) => { abortCurrent = abort })
       const raw = (res.content ?? '').trim()
       recordUsage(apiKey, model, res.usage?.prompt_tokens ?? estimateTokens(userPrompt), res.usage?.completion_tokens ?? estimateTokens(raw))
       // 目印方式: 「判定:」の最後の出現以降だけを受理。推論の文章を利用者に見せない
@@ -581,9 +614,20 @@ export async function runSecurityCheck(
         ? { verdict: judgeVerdict(report), report }
         : { verdict: 'skip', report: 'AIの応答から判定を読み取れませんでした（考える量が多すぎた可能性があります）。もう一度お試しください。' })
     } catch (e: any) {
+      // 中止で切れた通信は「失敗」として数えない（押した本人に失敗を報告しない）。
+      if (stopped) break
       // チェック失敗で公開を止めない（skip扱い。ユーザーには表示する）
       results.push({ verdict: 'skip', report: `チェックに失敗しました（${e?.message ?? e}）。` })
+    } finally {
+      abortCurrent = null
     }
+  }
+
+  // 中止されたときは、途中までの結果を「確認できた」ことにしない（部分検査が
+  // 完全検査の顔をしない・truncated と同じ考え方）。
+  if (stopped) {
+    // W-12: 画面の呼び名「🛡 簡易セキュリティチェック」に揃える（「公開前チェック」との揺れを解消）。
+    return { verdict: 'skip', report: '簡易セキュリティチェックを中止しました。最後まで確認していません。', mode }
   }
 
   const merged = mergeCheckResults(results, {

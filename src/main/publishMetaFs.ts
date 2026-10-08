@@ -15,8 +15,10 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   withPendingPublish, withoutPendingPublish, withPublishRecord, withHanamiiProjectId,
-  withApprunDedicatedRecord, type PublishTargetKind, type ApprunDedicatedRecord,
+  withApprunDedicatedRecord, withMetaPatch, withoutPublishTargetInMeta,
+  type PublishTargetKind, type ApprunDedicatedRecord,
 } from '../shared/publishMeta'
+import { runningOp } from './projectLock'
 
 function metaFilePath(projectDir: string): string {
   return path.join(projectDir, '.sakuraide.json')
@@ -98,6 +100,31 @@ export function writeHanamiiProjectIdFs(projectDir: string, projectId: string | 
 }
 
 /**
+ * HANAMII 固有: ディスクの `publish.hanamii.projectId` を**この場で**読む（無い・壊れている・空なら null）。
+ *
+ * ここが「この公開先のプロジェクトを Koto が作ったか」の正。`hanamii:publish` は、画面（renderer）が
+ * 渡した projectId が無いとき（公開ダイアログを開き直した直後は、画面はまだ読んでいない）にこれで補う。
+ * 補わないと、初回の公開が終わったあとに古い画面から押した「公開」が**もう一度プロジェクトを作る**
+ * （2026-09-29 検分。掟10「画面が持っている写しは、いつでも古い」）。
+ */
+export function readHanamiiProjectIdFs(projectDir: string): string | null {
+  const m = readMetaRaw(projectDir) as any
+  const id = m?.publish?.hanamii?.projectId
+  return typeof id === 'string' && id ? id : null
+}
+
+/**
+ * `publish.targets[target].publishedAt` を**この場で**読む（無い・壊れている・文字列でないなら null）。
+ * HANAMII の公開の後段（動いたと確かめて url を書き足すとき）が、依頼を受け付けたときに書いた時刻を
+ * 保つのに使う（書き足しで公開日時を「動いた時刻」へずらさない）。
+ */
+export function readPublishedAtFs(projectDir: string, target: PublishTargetKind): string | null {
+  const m = readMetaRaw(projectDir) as any
+  const at = m?.publish?.targets?.[target]?.publishedAt
+  return typeof at === 'string' && at ? at : null
+}
+
+/**
  * さくらのAppRun 専有型（roadmap #23）: `publish.apprunDedicated` を読む。
  * 無い/壊れている場合は空オブジェクト（＝何も作られていない・同意していない扱い）。
  */
@@ -128,4 +155,119 @@ export function writeApprunDedicatedRecordFs(projectDir: string, patch: Partial<
     console.warn('[publishMetaFs] AppRun専有型の記録の書き込みに失敗しました（処理そのものは続行）:', e)
     return false
   }
+}
+
+// ── renderer からの書き込みの唯一の入口（2026-09-29・掟10の一元化）──────────────────────
+//
+// 以前は renderer の各画面が .sakuraide.json を**自分で読んで・マージして・全体を書き戻して**いた
+// （PublishModal・HANAMII・Vercel・VPS・専有型・GitHub保存・資料設定・公開先の変更・記録の片づけ）。
+// とくに PublishModal.saveMeta は、**画面を開いたときに一度だけ読んだ写し**を材料に全体を書き戻すので、
+// ダイアログを開いている間に main が書いた記録（専有型の資源ID publish.apprunDedicated・
+// publish.targets・HANAMII の projectId）を**消した**。専有型のクラスタの記録が消えると⑥で
+// 破棄できず、月額22,000円が止められなくなる（掟10「画面が持っている写しは、いつでも古い」）。
+//
+// 読み直して当てて書く処理を**ここ1か所**に置き、renderer は差分（patch）だけを渡す
+// （全体を渡す口が無いので、古い写しで書き戻すことがそもそもできない）。
+// 読む→当てる→書くを**1回の同期処理**で行うので、ほかの main の書き込み
+// （markPendingFs・writePublishRecordFs など＝どれも同期）とも交錯しない。
+
+export type MetaUpdateResult =
+  | { ok: true; meta: Record<string, unknown> }
+  | { ok: false; message: string }
+
+const WRITE_FAILED = '公開の記録を書き込めませんでした。フォルダの権限を確認してください。'
+
+/**
+ * ディスクの .sakuraide.json を**この場で読み直し**、`update` を当てて書き戻す。
+ * 変わらなかったときは書かない（ファイルを作り直さない）。書けなければ `ok:false`
+ * （renderer は例外として扱う。ほかの公開の記録の書き込みと違い、ここは利用者の操作の結果なので黙らない）。
+ */
+function updateMetaFs(
+  projectDir: string,
+  update: (disk: unknown) => Record<string, unknown>,
+  what: string,
+): MetaUpdateResult {
+  try {
+    const before = readMetaRaw(projectDir)
+    const next = update(before)
+    if (JSON.stringify(next) === JSON.stringify(before)) return { ok: true, meta: next }
+    if (!writeMetaRaw(projectDir, next, what)) return { ok: false, message: WRITE_FAILED }
+    return { ok: true, meta: next }
+  } catch (e) {
+    console.warn(`[publishMetaFs] ${what}に失敗しました:`, e)
+    return { ok: false, message: WRITE_FAILED }
+  }
+}
+
+/**
+ * 差分（patch）を**書く直前にディスクから読み直した .sakuraide.json** へ当てて書く。
+ * 当て方は `withMetaPatch`（shared/publishMeta.ts）。patch に無いキーはディスクのまま残る。
+ */
+export function mergeMetaPatchFs(projectDir: string, patch: unknown): MetaUpdateResult {
+  return updateMetaFs(projectDir, disk => withMetaPatch(disk, patch), '公開の記録の更新')
+}
+
+/**
+ * 「記録を片づける」: 1つの公開先の記録**だけ**を、書く直前にディスクから読み直したものから取り除く。
+ * publish.apprunDedicated（専有型の資源ID）・publish.pending・ほかの公開先の記録は残る。
+ */
+export function forgetPublishTargetFs(projectDir: string, target: PublishTargetKind): MetaUpdateResult {
+  // 記録が無い・読めない・壊れている＝消すものが無い。**ファイルを作らず、壊れたものを上書きもしない**
+  // （renderer の clearPublishRecord が「ファイルが無い・壊れている場合は何もしない」としていた約束）。
+  let existing: unknown
+  try { existing = JSON.parse(fs.readFileSync(metaFilePath(projectDir), 'utf-8')) } catch { return { ok: true, meta: {} } }
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return { ok: true, meta: {} }
+  return updateMetaFs(projectDir, disk => withoutPublishTargetInMeta(disk, target), '公開記録の片づけ')
+}
+
+/**
+ * HANAMII の破棄が**成功したあと**の記録の片づけ（2026-09-30。破棄の後始末を main の1か所へ移した）。
+ *
+ * ── なぜ main か ────────────────────────────────────────────────────────
+ * 以前は、この片づけ（設定の projectId を空に・公開記録を消す）を画面（HanamiiPanel）が
+ * 「破棄の結果を初めて見たとき」に行っていた。画面は**記録を再生する**（閉じて開き直すと、
+ * まだ見られていない古い結果をもう一度「初めて見た」として扱う）ので、次の流れで**新しい公開の記録を消した**:
+ *   ①別の公開先の結果が、まだ見られていない → ②HANAMII の破棄 R1 が終わる（①より新しいので見たことにされない）
+ *   → ③同じ画面で HANAMII にもう一度公開する（R2・新しい projectId）→ ④閉じて開き直す
+ *   → R1 がもう一度「初めて見た」扱いになり、片づけが再び走って R2 の projectId と公開記録を消す
+ *   → 次の公開で HANAMII のプロジェクトが二重に作られ、動いているほうは Koto から辿れなくなる。
+ * 専有型の⑥は最初から main が記録を片づけており、この問題が起きない。HANAMII も同じ形にする。
+ * main はロックの中で、**消したそのとき**に1回だけ行う（再生されない）。
+ *
+ * ── 何を消すか ─────────────────────────────────────────────────────────
+ * 消してよいのは、**いま記録が指しているプロジェクトを消したとき**だけ。記録の projectId が
+ * 消したものと違う（別のプロジェクトを指している）ときは何もしない——それは別の公開の記録である。
+ * 記録に projectId が無い（空・未設定）ときは、片づけ残りの公開記録だけを消す
+ * （`withoutPublishTarget` が projectId の空化と公開記録の削除を一緒に行う）。
+ * 記録ファイルが無い・壊れているときは、**ファイルを作らず、壊れたものを上書きもしない**（何もしない）。
+ *
+ * 呼ぶのは**破棄が成功したとき**（保存場所まで片づいたとき）だけ。保存場所だけ残った回は、
+ * 押し直せる入口（🗑）と記録を残す。
+ */
+export function settleHanamiiTeardownFs(
+  projectDir: string, deletedProjectId: string,
+): { ok: true; cleared: boolean } | { ok: false; message: string } {
+  let existing: unknown
+  try { existing = JSON.parse(fs.readFileSync(metaFilePath(projectDir), 'utf-8')) } catch { return { ok: true, cleared: false } }
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return { ok: true, cleared: false }
+  const onDisk = (existing as any)?.publish?.hanamii?.projectId
+  if (typeof onDisk === 'string' && onDisk !== '' && onDisk !== deletedProjectId) return { ok: true, cleared: false }
+  const r = updateMetaFs(projectDir, disk => withoutPublishTargetInMeta(disk, 'hanamii'), 'HANAMII の破棄後の記録の片づけ')
+  return r.ok ? { ok: true, cleared: true } : { ok: false, message: r.message }
+}
+
+/**
+ * 「確認しました（この通知を消す）」: 中断の可能性の印（publish.pending）を消す。
+ *
+ * **いま公開が走っているプロジェクトでは消さない**（走っている公開自身が書いた印を消すと、
+ * そのあと落ちたときに「中断された可能性」が出なくなる）。走っているかは main の鍵
+ * （projectLock.ts）が知っている。
+ */
+export function dismissInterruptedPublishFs(
+  projectDir: string,
+): MetaUpdateResult | { ok: false; running: true; message: string } {
+  if (runningOp(projectDir) === '公開') {
+    return { ok: false, running: true, message: '公開が進んでいます。終わってからもう一度お試しください。' }
+  }
+  return updateMetaFs(projectDir, withoutPendingPublish, '公開開始マーカーの後片づけ')
 }

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { TurnStartPayload, TurnAsk, TurnEvent, TurnAnswer } from '../shared/chatTurnRpc'
 import type { ApprunDedicatedClusterSpec } from './cloud/apprunDedicatedApply'
 import type { AppPublishInput } from './ipc/apprunDedicated'
+import type { ProjectOpsSnapshot } from './projectOps'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   fs: {
@@ -147,6 +148,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scan: (projectDir: string) => ipcRenderer.invoke('storage:scan', projectDir),
     /** koto-data（.js / .cjs）が要るなら置く（既にあれば触らない）。 */
     ensureLayer: (projectDir: string) => ipcRenderer.invoke('storage:ensureLayer', projectDir),
+    /**
+     * 書き直したあとに残った「中身のある古いデータ」を探す。**何も変えない・何も消さない。**
+     * 「🔎 書き直せたか確かめる」が ✅ のときだけ呼ぶ。
+     */
+    leftoverData: (projectDir: string) => ipcRenderer.invoke('storage:leftoverData', projectDir),
     /** 保存場所の状況（設定画面用）。費用の判断材料をまとめて返す。 */
     status: () => ipcRenderer.invoke('storage:status'),
     /** 保存場所を新しく作る。**呼ぶ前に費用の同意を得ること。** */
@@ -177,8 +183,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   sakura: {
     models: (apiKey: string) => ipcRenderer.invoke('sakura:models', apiKey),
-    chat: (args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; temperature?: number }) =>
-      ipcRenderer.invoke('sakura:chat', args),
+    // 非ストリーミング（🗂 まとめ作り・公開前セキュリティチェック）。
+    // onStart には「停止」用の関数を渡す（chatStream と同じ形）。**invoke より先に**呼ぶので、
+    // 返事が一度も返ってこない相手でも ⏹ が届く（engine.ts の「先に中断関数を渡す」と同じ理由。
+    // ここが抜けていたため、手動の【🗂 まとめる】は画面が「⏹ で停止できます」と出しているのに
+    // 止まらなかった・2026-09-25 検分の指摘4）。
+    chat: (
+      args: { apiKey: string; model: string; messages: any[]; maxTokens?: number; temperature?: number },
+      onStart?: (abort: () => void) => void,
+    ) => {
+      const id = Math.random().toString(36).slice(2)
+      onStart?.(() => { ipcRenderer.invoke('sakura:chat-abort', id) })
+      return ipcRenderer.invoke('sakura:chat', { id, ...args })
+    },
     // ストリーミング: onChunk で逐次受け取り、完了時に { usage, aborted?, toolCalls? } を resolve。
     // onStart には「停止」用の関数を渡す（呼ぶと進行中の応答を中断）。
     chatStream: (
@@ -296,7 +313,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // A-5: env/ヘルスチェックの変更を再公開（ビルドし直し）なしで反映する高速経路。
     restart: (projectId: string, opts: { token: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }) =>
       ipcRenderer.invoke('hanamii:restart', projectId, opts),
-    teardown: (projectId: string, token: string) => ipcRenderer.invoke('hanamii:teardown', projectId, token),
+    // 破棄（HANAMII のプロジェクト＋保存場所）。**projectDir を渡した呼び出しだけが保存場所まで片づける**
+    // （2026-09-25 検分。`.sakura-cloud/env.json` を読まないと、どのバケットかが分からない）。
+    teardown: (projectId: string, token: string, projectDir?: string) =>
+      ipcRenderer.invoke('hanamii:teardown', projectId, token, projectDir),
     detectEnvKeys: (projectDir: string) => ipcRenderer.invoke('hanamii:detectEnvKeys', projectDir),
     logs: (token: string, projectId: string, opts?: { limit?: number; since?: string }) =>
       ipcRenderer.invoke('hanamii:logs', token, projectId, opts),
@@ -317,6 +337,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const h = (_: unknown, p: { message: string }) => cb(p?.message ?? '')
       ipcRenderer.on('import:progress', h)
       return () => ipcRenderer.removeListener('import:progress', h)
+    },
+  },
+
+  // 公開の記録（<projectDir>/.sakuraide.json）の更新。**差分だけ**を渡す——main が書く直前に
+  // ディスクから読み直して当てて書く（画面の古い写しで全体を書き戻さない・2026-09-29）。
+  // 入口は src/renderer/projectMeta.ts（renderer は直接ここを呼ばない）。
+  publishMeta: {
+    merge: (projectDir: string, patch: Record<string, unknown>) => ipcRenderer.invoke('publishMeta:merge', projectDir, patch),
+    forgetTarget: (projectDir: string, target: string) => ipcRenderer.invoke('publishMeta:forgetTarget', projectDir, target),
+    dismissInterrupted: (projectDir: string) => ipcRenderer.invoke('publishMeta:dismissInterrupted', projectDir),
+    runningOp: (projectDir: string) => ipcRenderer.invoke('publishMeta:runningOp', projectDir),
+  },
+
+  // プロジェクトごとの「いま走っている操作」と「終わった操作」の記録（main のメモリ上・
+  // src/main/projectOps.ts）。公開・破棄・作成のダイアログを閉じて開き直しても、進み具合と結果（警告を含む）
+  // を続きから出すための入口。get は開いたとき、onChanged は開いている間の最新化、ack は見せたあと。
+  projectOps: {
+    get: (projectDir: string) => ipcRenderer.invoke('projectOps:get', projectDir),
+    ack: (projectDir: string, upToStartedAt?: number) => ipcRenderer.invoke('projectOps:ack', projectDir, upToStartedAt),
+    /** 記録が変わるたび届く押し出し（appSessions.onChanged と同じ作法・購読解除関数を返す）。 */
+    onChanged: (cb: (p: { projectDir: string } & ProjectOpsSnapshot) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, p: { projectDir: string } & ProjectOpsSnapshot) => cb(p)
+      ipcRenderer.on('projectOps:changed', handler)
+      return () => ipcRenderer.removeListener('projectOps:changed', handler)
     },
   },
 
@@ -355,8 +399,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // aiEngineKey は search_docs ツール用（C2b・方式B: renderer が使う瞬間に読んで渡す）。
     // model は C2c（Claudeモデル選択）: renderer が claudeMode.ts の getClaudeModel() を読んで渡す。
     // images は C2d（画像添付ターンをClaude自身に直接処理させる。data URL配列・空配列可）。
-    chatStart: (projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string) =>
-      ipcRenderer.invoke('claude:chatStart', projectDir, apiKey, prompt, images, snapshotId, resumeSessionId, aiEngineKey, model),
+    // writeMode は W-18: 「✋ 毎回確認」（'confirm'）／「🪄 おまかせ」（'auto'）。ChatPanel.tsx の
+    // getWriteMode() を送信時点で読んで渡す（さくらのAI Engine 経路の turnOpts.writeMode と同じ形）。
+    chatStart: (projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string) =>
+      ipcRenderer.invoke('claude:chatStart', projectDir, apiKey, prompt, images, snapshotId, resumeSessionId, aiEngineKey, model, writeMode),
     // 進行中の Claude セッションを中断する。
     chatCancel: () => ipcRenderer.invoke('claude:chatCancel'),
     // ストリームイベント購読。戻り値の関数を呼ぶと購読解除（term.onData と同じパターン）。

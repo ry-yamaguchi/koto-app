@@ -24,6 +24,7 @@ import { cleanAiRelPath } from '../shared/publishRoot'
 import { primeLearningMirror } from './learningMirror'
 import { primeUsageMirror } from './usageMirror'
 import { primeZonesCache } from './zonesCache'
+import { mergeProjectMeta } from './projectMeta'
 
 const EditorPanel = lazy(() => import('./components/EditorPanel'))
 
@@ -153,17 +154,11 @@ export default function App() {
   }, [currentDir, reloadMeta])
 
   // 公開先（target）を後から変更する。.sakuraide.json の target だけ上書きし、
-  // 既存フィールド（name/description/publish 等）はマージで保持する。
+  // 既存フィールド（name/description/publish 等）は書く直前にディスクから読み直したものを保つ
+  // （差分だけを main へ渡す・src/renderer/projectMeta.ts。メタ無し＝既存フォルダは新規に作る）。
   const changeTarget = useCallback(async (newTarget: string) => {
     if (!currentDir) return
-    const path = `${currentDir}/.sakuraide.json`
-    let meta: any = {}
-    try {
-      const raw = await window.electronAPI.fs.readFile(path)
-      meta = JSON.parse(raw)
-    } catch { /* メタ無し（既存フォルダ等）→ 新規に作る */ }
-    meta.target = newTarget
-    await window.electronAPI.fs.writeFile(path, JSON.stringify(meta, null, 2))
+    await mergeProjectMeta(currentDir, { target: newTarget })
     // メタ再読込 → 公開先変更をAIへ促す通知
     window.dispatchEvent(new Event('sakura-meta-changed'))
     window.dispatchEvent(new CustomEvent('sakura-target-changed', { detail: { target: newTarget } }))

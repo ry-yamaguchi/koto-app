@@ -53,6 +53,10 @@ import { projectFilesInfoFs, readFileInProjectFs } from './fs'
 import { detectRuntime } from '../../shared/runtimeDetect'
 import { findUnusedFiles, nextFreeMaterialName, NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE } from '../../shared/unusedFiles'
 import type { UnusedRuntime } from '../../shared/unusedFiles'
+import {
+  describeLeftoverData, isLeftoverDataFile, isLeftoverTextFile, LEFTOVER_MAX_READ_BYTES,
+} from '../../shared/leftoverData'
+import type { LeftoverDataFile } from '../../shared/leftoverData'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
 import { PUBLISH_DIR, backupRelPath } from '../../shared/publishRoot'
 import { isProtectedWritePath } from '../../shared/protectedPaths'
@@ -73,6 +77,39 @@ function confineToProject(projectDir: string, rel: string): string {
 }
 
 /**
+ * 「説明のための文字」を抜いた中身を返す（参照コーパスの2度目用・純粋な文字列加工）。
+ *
+ * ── なぜ要るか（2026-09-25 検分・指摘V8）───────────────────────────────
+ * findUnusedFiles の使用判定は「テキスト系ファイルのどこかに一度でも名前が出れば使用中」。
+ * だから **`// 旧: data/schedule.json は使わなくなりました` という移行メモ1行**でも、
+ * その古い保存は未使用に出ずに隠れる。隠れたものだけを数えるために、
+ * **コメントと説明文書を抜いた版でもう一度同じ判定を流す**（判定自体は作り直さない）。
+ *
+ * ・`.md` / `.txt` … ファイルまるごと説明なので空にする
+ * ・`.js` / `.mjs` / `.cjs` … ブロックコメントと行コメント
+ * ・`.css` … ブロックコメント
+ * ・`.html` / `.htm` / `.svg` / `.xml` … HTML コメント
+ * ・`.json` / `.webmanifest` … コメントを持てないのでそのまま
+ *
+ * 行コメントは `https://…` を巻き込まないよう、直前が `:` のときは外さない。
+ */
+export function textWithoutNotes(rel: string, text: string): string {
+  const ext = path.extname(String(rel ?? '')).replace(/^\./, '').toLowerCase()
+  if (ext === 'md' || ext === 'txt') return ''
+  let out = String(text ?? '')
+  if (ext === 'html' || ext === 'htm' || ext === 'svg' || ext === 'xml') {
+    out = out.replace(/<!--[\s\S]*?-->/g, ' ')
+  }
+  if (ext === 'js' || ext === 'mjs' || ext === 'cjs' || ext === 'css') {
+    out = out.replace(/\/\*[\s\S]*?\*\//g, ' ')
+  }
+  if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {
+    out = out.replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+  }
+  return out
+}
+
+/**
  * 未使用ファイルを調べる（**何も変えない**）。project:unusedCheck の実体。
  *
  * 見るのは**実際に公開されるもの**（`public/`。無ければプロジェクト直下）。
@@ -88,14 +125,27 @@ function confineToProject(projectDir: string, rel: string): string {
  * 返す `unused` はここで見た根（`public/` があればその中）からの相対パス。
  * project:moveToMaterials へそのまま渡せる。
  */
-export function checkUnusedFiles(projectDir: string): { supported: boolean; unused: string[]; runtime: UnusedRuntime } {
-  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) return { supported: false, unused: [], runtime: 'static' }
+export function checkUnusedFiles(projectDir: string): {
+  supported: boolean
+  unused: string[]
+  runtime: UnusedRuntime
+  /** 走査を打ち切ったか（5000件・深さ6）。**「見ていない範囲がある」ことを捨てない**（2026-09-24 検分）。 */
+  truncated: boolean
+  /**
+   * データらしきファイルのうち、**メモや説明にだけ名前が残っていたせいで**未使用に出なかった件数。
+   * 動くコードから読まれているものは含めない（含めると毎回 1 以上になる・指摘V8）。
+   */
+  dataFilesReferenced: number
+} {
+  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
+    return { supported: false, unused: [], runtime: 'static', truncated: false, dataFilesReferenced: 0 }
+  }
   const root = resolvePublishRoot(projectDir) || projectDir
 
   let packageJson: unknown | null = null
   try { packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf-8')) } catch { /* 無ければ静的 */ }
 
-  const { files } = projectFilesInfoFs(root, { maxFiles: UNUSED_CHECK_MAX_FILES, publishView: true })
+  const { files, truncated } = projectFilesInfoFs(root, { maxFiles: UNUSED_CHECK_MAX_FILES, publishView: true })
   const choice = detectRuntime({ packageJson, fileNames: files.filter(f => !f.includes('/')) })
 
   // ランタイム判定: detectRuntime が static 以外なら Node、.php が1つでもあれば PHP。
@@ -110,10 +160,118 @@ export function checkUnusedFiles(projectDir: string): { supported: boolean; unus
     : isPhp ? PHP_ALWAYS_USED_RE
     : undefined
 
+  // 中身の読み込みは**1ファイル1回**（下の2度の判定で同じ文字列を使い回す）。
+  const textCache = new Map<string, string | null>()
+  const readOnce = (rel: string): string | null => {
+    if (!textCache.has(rel)) {
+      try { textCache.set(rel, readFileInProjectFs(root, rel)) } catch { textCache.set(rel, null) }
+    }
+    return textCache.get(rel) ?? null
+  }
+
   const unused = findUnusedFiles(files, (rel) => {
-    try { return readFileInProjectFs(root, rel) } catch { return null }
+    return readOnce(rel)
   }, extraAlwaysUsed ? { extraAlwaysUsed } : undefined)
-  return { supported: true, unused, runtime }
+
+  // ── 取りこぼしうる件数（dataFilesReferenced）の数え方（2026-09-25 検分・指摘V8）──────
+  // 前は `データらしき拡張子の総数 − 未使用に出たデータらしき件数` だった。つまり
+  // **アプリが正規に読んでいる .json / .csv が1つでもあれば必ず 1 以上**になり、
+  // 古いデータが1件も無いプロジェクトでも③公開を開くたびに注意書きが出た。
+  // 毎回出る注意書きは読み飛ばされ、本当に取りこぼしたときに効かなくなる。
+  //
+  // 数えたいのは**それではない**。下の ⚠️（leftoverDataFilesFs）が言っている
+  // 「書き直しを頼まれた AI が『// 旧: data/schedule.json は使わなくなりました』の
+  // ような移行メモや README への追記を1行残しただけで、使用中に倒れて隠れたもの」だけ。
+  //
+  // そこで **同じ findUnusedFiles をもう一度流す**（判定の二重定義は作らない・掟10）。
+  //   1度目: そのまま＝画面に出す未使用の一覧
+  //   2度目: 参照コーパスから「説明のための文字」を抜いたもの
+  //          （.md / .txt はまるごと・コード系はコメントだけ。textWithoutNotes）
+  // **2度目でだけ未使用に出たデータらしきファイル**＝「動くコードからは読まれていないのに、
+  // メモや説明に名前が残っているせいで隠れたもの」＝取りこぼしうるもの。
+  // 正規に読んでいる .json はどちらでも使用中のままなので、数に入らない。
+  //
+  // 走査は重い（ファイル数×テキスト数）ので、**隠れうるものが1つも無ければ2度目は流さない**。
+  // 一覧に出なかったデータらしきファイルが候補のすべてで、それが空なら答えは必ず 0 になる。
+  const alreadyListed = new Set(unused)
+  const hiddenDataFiles = files.filter(rel => isLeftoverDataFile(rel) && !alreadyListed.has(rel))
+  let dataFilesReferenced = 0
+  if (hiddenDataFiles.length > 0) {
+    const unusedIgnoringNotes = new Set(findUnusedFiles(files, (rel) => {
+      const text = readOnce(rel)
+      return text === null ? null : textWithoutNotes(rel, text)
+    }, extraAlwaysUsed ? { extraAlwaysUsed } : undefined))
+    dataFilesReferenced = hiddenDataFiles.filter(rel => unusedIgnoringNotes.has(rel)).length
+  }
+  return { supported: true, unused, runtime, truncated: truncated === true, dataFilesReferenced }
+}
+
+/**
+ * 書き直したあとに残った「中身のある古いデータ」を探す（**何も変えない**）。
+ * storage:leftoverData の実体。
+ *
+ * ── なぜ新しい走査を書かないか（掟10）────────────────────────────────
+ * 書き直しが終わった古い保存は、**どのコードからも参照されない**状態になる。
+ * それを見つけるのは checkUnusedFiles（shared/unusedFiles.ts の findUnusedFiles）が
+ * 既にやっていることで、2026-09-23 夜の実機でも data/schedule.json と
+ * data/schedule.db を正しく拾っていた。**ここは絞り込みと読み取りだけ**を足す。
+ *
+ * 「中身があるか」の判定は shared/leftoverData.ts の純関数に任せる
+ * （★ 件数だけで判断しない。合言葉だけでも中身がある）。
+ *
+ * ── ⚠️ この探し方は取りこぼす（2026-09-24 検分・承知のうえで採る）───────────
+ * findUnusedFiles の使用判定は「**テキスト系ファイルのどこかに一度でもその名前が
+ * 出れば使用中**」である（shared/unusedFiles.ts）。片づけの用途では、未使用と
+ * 言いすぎないこちら側が安全だった。**この用途では向きが逆で、見落とすほうが危険**
+ * ——書き直しを頼まれた AI が「// 旧: data/schedule.json は使わなくなりました」の
+ * ような移行メモや README への追記を1行残すだけで、その古い保存は未使用に出ず、
+ * ここは黙って `files: []` を返す。利用者から見ると「Koto が何も言わなかったので
+ * 大丈夫だと思った」→合言葉が消える、という 2026-09-23 とまったく同じ結末になる。
+ *
+ * **判定そのものは共有の findUnusedFiles を使い続ける**（二重定義を作らない・掟10）。
+ * 代わりに、取りこぼしうる件数（`referenced`）と走査の打ち切り（`truncated`）を
+ * **返り値に載せて隠さない**。0件を「見つかりませんでした」と断定しないのは
+ * 呼ぶ側（shared/leftoverData.ts の leftoverScanLine）の責務。
+ *
+ * `referenced` は checkUnusedFiles で「**メモや説明にだけ名前が残っていたもの**」に
+ * 絞って数える（同じ findUnusedFiles を、コメントと .md / .txt を抜いた参照コーパスで
+ * もう一度流す。textWithoutNotes）。正規に読んでいる .json は数に入らないので、
+ * **この件数が 1 以上なら一覧の有無によらず知らせてよい**（2026-09-25 検分・指摘V8）。
+ */
+export function leftoverDataFilesFs(projectDir: string): {
+  ok: boolean
+  files: LeftoverDataFile[]
+  /** 走査を打ち切ったか（見ていない範囲がある）。 */
+  truncated?: boolean
+  /** データらしきファイルのうち、メモや説明にだけ名前が残っていたので未使用に出なかった件数（上の ⚠️）。 */
+  referenced?: number
+  message?: string
+} {
+  if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
+    return { ok: false, files: [], message: 'プロジェクトフォルダのパスが不正です' }
+  }
+  try {
+    const { supported, unused, truncated, dataFilesReferenced } = checkUnusedFiles(projectDir)
+    if (!supported) return { ok: false, files: [], message: '調べられませんでした' }
+    // checkUnusedFiles が返すのは「公開の根からの相対パス」。読むときも同じ根から見る
+    const root = resolvePublishRoot(projectDir) || projectDir
+    const files: LeftoverDataFile[] = []
+    for (const rel of unused) {
+      if (!isLeftoverDataFile(rel)) continue
+      let size = 0
+      try { size = fs.statSync(confineToProject(root, rel)).size } catch { continue }
+      // 保存の実体（.db 等）と大きすぎるものは読まない。**大きさだけで中身の有無は分かる**
+      let text: string | null = null
+      if (isLeftoverTextFile(rel) && size <= LEFTOVER_MAX_READ_BYTES) {
+        try { text = readFileInProjectFs(root, rel) } catch { text = null }
+      }
+      const found = describeLeftoverData({ file: rel, text, size })
+      if (found) files.push(found)
+    }
+    return { ok: true, files, truncated, referenced: dataFilesReferenced }
+  } catch (e: any) {
+    return { ok: false, files: [], message: e?.message ?? String(e) }
+  }
 }
 
 export type MoveToMaterialsResult = {
@@ -155,7 +313,15 @@ type MoveTarget = {
  *
  * スナップショットIDはここで発行する（呼び出し側に生成させない＝渡し忘れの余地を無くす）。
  */
-export function moveFilesToFs(projectDir: string, files: readonly string[], dest: MoveDestKind): MoveToMaterialsResult {
+export function moveFilesToFs(
+  projectDir: string, files: readonly string[], dest: MoveDestKind,
+  // 🕘 履歴の見出し（label）の出し分け（W-66・2026-09-27 決定）。既定の 'manual' は
+  // project:moveFiles＝Sidebar.tsx の右クリックでの手動移動。moveToMaterialsFs だけが
+  // 'unused-cleanup' を明示して渡す（🧹 使われていないファイルの確認からの一括移動）。
+  // 呼び出し元を区別せず移動先だけで見出しを決めていたため、手で移したのに履歴には
+  // 身に覚えのない「未使用ファイルの整理」と出ていた問題を直す。
+  reason: 'manual' | 'unused-cleanup' = 'manual',
+): MoveToMaterialsResult {
   if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
     return { ok: false, moved: [], snapshotOk: false, message: 'プロジェクトフォルダのパスが不正です' }
   }
@@ -163,7 +329,9 @@ export function moveFilesToFs(projectDir: string, files: readonly string[], dest
   if (!list.length) return { ok: true, moved: [], snapshotOk: true }
 
   const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
-  const label = dest === 'publish' ? `ファイルの移動（${PUBLISH_DIR}）` : `未使用ファイルの整理（${MATERIALS_DIR}）`
+  const label = reason === 'unused-cleanup'
+    ? `未使用ファイルの整理（${MATERIALS_DIR}）`
+    : (dest === 'publish' ? `ファイルを移動（公開されるもの（${PUBLISH_DIR}）へ）` : `ファイルを移動（${MATERIALS_DIR}へ）`)
 
   // ① 検証（何も変えない）。保護パス等、名前を変えても解決しないものだけ弾く
   // （1件でも弾ければ全体を中止する・中途半端に動かさない）。
@@ -277,7 +445,7 @@ export function moveToMaterialsFs(projectDir: string, files: readonly string[]):
   const root = resolvePublishRoot(projectDir) || projectDir
   const list = Array.from(new Set((files ?? []).filter((f): f is string => typeof f === 'string' && !!f)))
   const projectRelFiles = list.map(rel => backupRelPath(projectDir, root, rel))
-  return moveFilesToFs(projectDir, projectRelFiles, 'materials')
+  return moveFilesToFs(projectDir, projectRelFiles, 'materials', 'unused-cleanup')
 }
 
 export function registerUnusedHandlers(): void {

@@ -110,7 +110,7 @@ describe('main: publishApp の歯止め（掟10）', () => {
   })
 
   it('env.json が無ければ stage:invalid で案内する（仕様書 D-4 1-3 の文言）', () => {
-    expect(block).toContain("if (!spec) return { ok: false, stage: 'invalid', message: '公開の設定（env.json）がありません。⑧の「公開の設定を作る」を押してから、もう一度お試しください' }")
+    expect(block).toContain("if (!spec) return { ok: false, stage: 'invalid', message: '公開の設定がありません。⑧の「公開の設定を作る」を押してから、もう一度お試しください' }")
   })
 
   it('形の検査 isAppPublishInput は host: string／cpu・memory・fixedScale: 整数／任意の2項目は undefined か string', () => {
@@ -128,8 +128,13 @@ describe('main: teardownApp は teardownFlow の appOnly を confirmed 付きで
     // H-1（2026-09-17）: 破棄と公開を同時に走らせないため、本体は withProjectLock に包まれた。
     expect(block).toContain("withProjectLock(projectDir, '削除', () =>")
     expect(block).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, appOnly: true })')
-    // 既存の⑥（全部破棄）の呼び出しはそのまま（appOnly が付いていない）
-    expect(ipc).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress }))')
+    // 📡 一覧の「アプリだけ破棄」は、保存場所に一切触らない（2026-09-24・案2）。
+    // 実際に要求が1件も出ないことは tests/apprunDedicatedStorageTeardown.test.ts が偽 client で固定する。
+    expect(block).not.toContain('teardownProjectStorage')
+    // ⑥（全部破棄）の呼び出しは appOnly を付けない（付くと、クラスタが消えずに課金が続く）
+    const full = handlerBlock('apprunDedicated:teardown')
+    expect(full).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress })')
+    expect(full).not.toContain('appOnly')
   })
 })
 

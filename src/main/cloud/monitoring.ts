@@ -282,17 +282,18 @@ export async function enableTelemetry(
   }
 
   let storageId = decision.do === 'route' ? decision.storageId : null
+  const kindLabel = kind === 'logs' ? 'ログ' : 'メトリクス'
 
   if (decision.do === 'initialize-then-route') {
     const init = await mon.initializeProvisioning(kind)
-    if (!init.ok) return { ok: false, message: `保存場所の用意に失敗しました（HTTP ${init.status}）`, detail: init.text }
+    if (!init.ok) return { ok: false, message: `${kindLabel}の保存場所の用意に失敗しました（HTTP ${init.status}）`, detail: init.text }
 
     const storages = await mon.listTelemetryStorages(kind)
-    if (!storages.ok) return { ok: false, message: '保存場所の取得に失敗しました', detail: storages.text }
+    if (!storages.ok) return { ok: false, message: `${kindLabel}の保存場所の取得に失敗しました`, detail: storages.text }
     storageId = pickStorageId(storages.data)
   }
 
-  if (!storageId) return { ok: false, message: '保存場所を用意しましたが、見つかりませんでした（時間をおいて再度お試しください）' }
+  if (!storageId) return { ok: false, message: `${kindLabel}の保存場所を用意しましたが、見つかりませんでした（時間をおいて再度お試しください）` }
 
   const routed = await mon.createTelemetryRouting(kind, {
     resourceId, publisherCode: APPRUN_PUBLISHER, variant: APPRUN_VARIANT[kind], storageId,
@@ -394,17 +395,18 @@ export async function enableDedicatedTelemetry(
   }
 
   let storageId = decision.do === 'route' ? decision.storageId : null
+  const kindLabel = kind === 'logs' ? 'ログ' : 'メトリクス'
 
   if (decision.do === 'initialize-then-route') {
     const init = await mon.initializeProvisioning(kind)
-    if (!init.ok) return { ok: false, message: `保存場所の用意に失敗しました（HTTP ${init.status}）`, detail: init.text }
+    if (!init.ok) return { ok: false, message: `${kindLabel}の保存場所の用意に失敗しました（HTTP ${init.status}）`, detail: init.text }
 
     const storages = await mon.listTelemetryStorages(kind)
-    if (!storages.ok) return { ok: false, message: '保存場所の取得に失敗しました', detail: storages.text }
+    if (!storages.ok) return { ok: false, message: `${kindLabel}の保存場所の取得に失敗しました`, detail: storages.text }
     storageId = pickStorageId(storages.data)
   }
 
-  if (!storageId) return { ok: false, message: '保存場所を用意しましたが、見つかりませんでした（時間をおいて再度お試しください）' }
+  if (!storageId) return { ok: false, message: `${kindLabel}の保存場所を用意しましたが、見つかりませんでした（時間をおいて再度お試しください）` }
 
   // **`resourceId` は渡さない**（5-12実測: プロジェクト単位。resource_id: null）。
   for (const variant of pending) {

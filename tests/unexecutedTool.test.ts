@@ -80,7 +80,9 @@ describe('画像ターンでも、ツールを使えるモデルへ切り替え�
   it('★★ 実行したかどうかを、ターン全体で見ている', () => {
     expect(chat).toContain('let usedTools = false')
     expect(chat).toContain('usedTools = true')
-    expect(chat).toContain('unexecutedToolWarning(sawToolMarkup, usedTools)')
+    // W-47（2026-09-27 決定・案2）: 既定モデル（Kimi K2.7 Code）を使っている最中は、
+    // 「切り替えて」の案内にその名前を出さない。判定にいまのモデル（useModel）を渡す。
+    expect(chat).toContain('unexecutedToolWarning(sawToolMarkup, usedTools, useModel)')
   })
 })
 
@@ -181,7 +183,8 @@ describe('まず実際にやらせる（言うだけで終わらせない）', (
 
   it('★★ 促しに書かず終えたら、事実（変更なし）だけを短く添える（嘘の「更新済みです」を利用者が見抜ける）', () => {
     expect(chat).toContain("} else if (askedToActuallyWrite && !wroteFiles) {")
-    expect(chat).toContain('ℹ️ このターンでは、ファイルは変更されていません。')
+    // W-50（2026-09-27 決定）: 「このターン」は通じないため「今回の依頼では」に言い換えた
+    expect(chat).toContain('ℹ️ 今回の依頼では、ファイルは変わっていません。')
   })
 
   it('★★ 誤検知でも本物の答えを消さない（2026-08-30・v0.4.5 で非破壊化）', () => {
@@ -193,7 +196,9 @@ describe('まず実際にやらせる（言うだけで終わらせない）', (
     expect(chat.slice(at, at + 400)).toContain('実際に変更が必要か確かめています…')
   })
 
+  // W-47（2026-09-27 決定・案2）: 既定モデル（Kimi K2.7 Code）を使っている最中は名前を出さない
+  // ため、判定にいまのモデル（useModel）も渡すようになった。
   it('★ 促してもやらなければ、警告を付ける', () => {
-    expect(chat).toContain('ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles)')
+    expect(chat).toContain('ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles, useModel)')
   })
 })

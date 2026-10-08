@@ -14,6 +14,8 @@ import { registerApprunDedicatedHandlers } from './apprunDedicated'
 import { registerHanamiiHandlers } from './hanamii'
 import { registerVercelHandlers } from './vercel'
 import { registerPublishImportHandlers } from './publishImport'
+import { registerPublishMetaHandlers } from './publishMeta'
+import { registerProjectOpsHandlers } from './projectOps'
 import { registerVpsHandlers } from './vps'
 import { registerRagHandlers } from './rag'
 import { registerTermHandlers } from './term'
@@ -48,6 +50,8 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerHanamiiHandlers(deps)
   registerVercelHandlers(deps)
   registerPublishImportHandlers(deps)
+  registerPublishMetaHandlers()
+  registerProjectOpsHandlers(deps)
   registerVpsHandlers(deps)
   registerRagHandlers(deps)
   registerTermHandlers(deps)

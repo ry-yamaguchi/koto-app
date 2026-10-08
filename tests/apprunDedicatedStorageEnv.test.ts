@@ -107,7 +107,7 @@ vi.mock('../src/main/cloud/apprunDedicatedAppApply', async (importOriginal) => {
 
 import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
-import { writeApprunDedicatedRecordFs } from '../src/main/publishMetaFs'
+import { writeApprunDedicatedRecordFs, readApprunDedicatedFs } from '../src/main/publishMetaFs'
 import { permissionsToCleanUp } from '../src/shared/storageKeys'
 import { STORAGE_ENV } from '../src/shared/objectStorage'
 
@@ -363,7 +363,7 @@ describe('AppRun 専有型: 保存場所が無いとき・鍵を渡せないと�
     expect(calls).toEqual([])
     expect(result.message).toBe(
       '環境変数が多すぎます。51件あり、この公開先で指定できる上限（50件）を超えます。'
-      + '公開の設定（env.json）の環境変数を1件減らしてから、もう一度お試しください',
+      + '公開の設定の環境変数を1件減らしてから、もう一度お試しください',
     )
     expect(result.message).not.toContain('データの保存に使う設定')
   })
@@ -531,10 +531,10 @@ describe('AppRun 専有型: 鍵の用意と片づけを画面に伝える', () =
     await runPublish()
 
     expect(progressMsgs).toContain('🔑 保存場所の鍵を用意しています…')
-    expect(progressMsgs).toContain('🧹 古い鍵を片づけています…')
+    expect(progressMsgs).toContain('🧹 保存場所の古い鍵を片づけています…')
     // 鍵の用意は「イメージの組み立て」より前（渡せないと分かったら push の前に止める）
     expect(progressMsgs.indexOf('🔑 保存場所の鍵を用意しています…'))
-      .toBeLessThan(progressMsgs.indexOf('🧹 古い鍵を片づけています…'))
+      .toBeLessThan(progressMsgs.indexOf('🧹 保存場所の古い鍵を片づけています…'))
   })
 
   it('保存場所を使っていないときは、鍵の話を出さない', async () => {
@@ -542,7 +542,7 @@ describe('AppRun 専有型: 鍵の用意と片づけを画面に伝える', () =
     await runPublish()
 
     expect(progressMsgs).not.toContain('🔑 保存場所の鍵を用意しています…')
-    expect(progressMsgs).not.toContain('🧹 古い鍵を片づけています…')
+    expect(progressMsgs).not.toContain('🧹 保存場所の古い鍵を片づけています…')
   })
 
   it('アプリが応答していないときは、片づけの進捗も出ない（そもそも片づけない）', async () => {
@@ -551,7 +551,7 @@ describe('AppRun 専有型: 鍵の用意と片づけを画面に伝える', () =
     await runPublish()
 
     expect(progressMsgs).toContain('🔑 保存場所の鍵を用意しています…')
-    expect(progressMsgs).not.toContain('🧹 古い鍵を片づけています…')
+    expect(progressMsgs).not.toContain('🧹 保存場所の古い鍵を片づけています…')
   })
 })
 
@@ -572,5 +572,50 @@ describe('AppRun 専有型: 発行した秘密をディスクに残さない', (
     for (const file of walk(projectDir)) {
       expect(fs.readFileSync(file, 'utf-8')).not.toContain(ISSUED.secretKey)
     }
+  })
+})
+
+// ── 5. ⑥の破棄で鍵を無効にできるよう、IDだけを記録する（2026-09-24・案2） ──────────────
+//
+// 専有型は permissionId をどこにも記録していなかったため、⑥で破棄しても
+// **消えたはずの保存場所へ届く鍵が生き続けた**（共用型は state.meta.storagePermissionId を持つ）。
+// 記録するのは **id だけ**。secretKey を書いたら掟4 に反する（発行の応答でしか読めない秘密）。
+
+describe('AppRun 専有型: 保存場所の鍵の ID を記録する（⑥の破棄で無効にするため）', () => {
+  it('★★ 公開が成立したら、記録（publish.apprunDedicated）に permissionId が入る', async () => {
+    setupProject()
+    const { result } = await runPublish()
+    expect(result.ok).toBe(true)
+
+    expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBe(ISSUED.permissionId)
+  })
+
+  it('★★ 記録に secretKey（秘密）は入らない。入るのは id だけ', async () => {
+    setupProject()
+    await runPublish()
+
+    const record = readApprunDedicatedFs(projectDir) as Record<string, unknown>
+    expect(JSON.stringify(record)).not.toContain(ISSUED.secretKey)
+    expect(JSON.stringify(record)).not.toContain(ISSUED.accessKey)
+    expect(record.storagePermissionId).toBe(ISSUED.permissionId)
+  })
+
+  it('★ 保存場所を使っていないプロジェクトでは、鍵のIDを記録しない', async () => {
+    setupProject({ storage: false })
+    const { result } = await runPublish()
+    expect(result.ok).toBe(true)
+
+    expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBeFalsy()
+  })
+
+  it('★ 公開が途中で止まって鍵を取り消したときは、記録を書き換えない（動いているアプリの鍵を見失わない）', async () => {
+    setupProject()
+    writeApprunDedicatedRecordFs(projectDir, { storagePermissionId: 'perm-live-before' })
+    h.imageFails = true
+    const { result } = await runPublish()
+
+    expect(result.ok).toBe(false)
+    expect(h.deletedPermissions).toContain(ISSUED.permissionId) // いま発行した分は取り消した
+    expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBe('perm-live-before')
   })
 })

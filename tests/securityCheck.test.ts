@@ -355,7 +355,9 @@ describe('セキュリティチェックの配線', () => {
 
   it('🛡 節（SecurityCheckSection）は共通実装 runSecurityCheck を呼び、修正は fix-with-ai へ送る', () => {
     const s = read('src/renderer/components/SecurityCheckSection.tsx')
-    expect(s).toContain('await runSecurityCheck(projectDir, apiKey, setProgress)')
+    expect(s).toContain('await runSecurityCheck(projectDir, apiKey, setProgress, (abort) => { abortRef.current = abort })')
+    // 直す前の3引数の形（＝中断の受け口を渡していない形）が戻ってきたら落ちる
+    expect(s).not.toContain('await runSecurityCheck(projectDir, apiKey, setProgress)')
     expect(s).toContain("new CustomEvent('sakura:fix-with-ai'")
     // 依頼文は「実際に修正しろ」と明言する（rc.1 は指示が弱く、AIが翻訳・再レビューだけで終わった）
     expect(s).toContain('実際に修正して解消してください')
@@ -398,6 +400,46 @@ describe('セキュリティチェックの配線', () => {
     expect(disclaimer).toBeLessThan(resultBlock)
   })
 
+  // ── 中止の導線（2026-09-25 検分の指摘6 の残り・S6）────────────────────────
+  // 受け口（onAbortReady）と、押されたときに本当に止まる振る舞いは
+  // tests/securityCheckStop.test.ts が偽 client で固定してある（出た要求の一覧と順序）。
+  // ここで守るのは**その手前**——画面に押すところが実在すること。
+  // 押せない中断は無いのと同じで、直す前は onAbortReady の本番の呼び出し元が0件だった。
+  // .tsx は DOM 無しでは描けないので、当て先を**呼び出しの形ごと一意に**指す（掟10）。
+  it('★ 確認中は「中止する」を画面に出し、受け取った中断関数を呼ぶ', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+
+    // ① 押したときの動きが、受け取った中断関数を実際に呼ぶ形であること
+    expect(s).toContain('function stop() {')
+    expect(s).toContain('abortRef.current?.()')
+
+    // ② ボタンが stop に繋がっていること（別の関数へ繋ぎ替わったら落ちる）
+    const btn = s.indexOf('onClick={stop}')
+    expect(btn).toBeGreaterThan(-1)
+    // ③ そのボタンは「確認中のときだけ」出す条件の中に居る（押せない時に出さない）
+    const guard = s.lastIndexOf('{checking && (', btn)
+    expect(guard).toBeGreaterThan(-1)
+    expect(s.slice(guard, btn)).not.toContain('</button>') // 別のボタンを挟んでいない
+    // ④ 文言は素のテキスト・日本語（掟5）。利用者が「中止」と読める語であること
+    const label = s.slice(btn, s.indexOf('</button>', btn))
+    expect(label).toContain('中止する')
+    expect(label).toContain('中止しています…')
+
+    // ⑤ 中断関数を useState で持たない。useState は関数を「更新関数」と解釈して
+    //    **その場で呼ぶ**ので、押していないのに中止が走る（いちばん見つけにくい形）
+    expect(s).toContain('const abortRef = useRef<(() => void) | null>(null)')
+    expect(s).not.toContain('setAbort(abort)')
+  })
+
+  it('★ 中止した本人に「失敗しました」と読めるものを見せない', () => {
+    const s = read('src/renderer/components/SecurityCheckSection.tsx')
+    // 押したことを覚えておき、結果の見出しを中止用に切り替えている
+    expect(s).toContain("{result.verdict === 'warn' ? '⚠️ 要確認' : aborted ? '⏹ 中止しました' : '⏭ 実施できませんでした'}")
+    expect(s).not.toContain('チェックに失敗しました')
+    // 途中までを「確認した」ことにしない、と画面にも書いてある
+    expect(s).toContain('途中までの結果は「確認した」ことにはしません')
+  })
+
   it('ビルド設定の除外は一元定義（BUILD_CONFIG_FILES）を呼び出しの形ごと使う', () => {
     const s = read('src/renderer/securityCheck.ts')
     // 名簿の丸ごと利用を、式の形ごと一意に指す（手書きの配列に替わったら落ちる）
@@ -407,7 +449,8 @@ describe('セキュリティチェックの配線', () => {
   it('PublishModal は各パネルへAPIキーを渡している', () => {
     const s = read('src/renderer/components/PublishModal.tsx')
     for (const name of ['AppRunPanel', 'VercelPanel', 'HanamiiPanel']) {
-      expect(s).toContain(`<${name} projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />`)
+      // AppRunPanel には、そのタブが目の前に出ているか（visible）も渡す（2026-09-30）ので、閉じ括弧までは見ない
+      expect(s).toContain(`<${name} projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials}`)
     }
   })
 

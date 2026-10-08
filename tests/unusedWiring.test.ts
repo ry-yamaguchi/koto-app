@@ -36,7 +36,7 @@ describe('3点セット: project:unusedCheck / project:moveToMaterials（main / 
 
   it('global.d.ts に unusedCheck / moveToMaterials の型がある（unusedCheck は runtime を含む・roadmap #22）', () => {
     const src = stripped('src/renderer/global.d.ts')
-    expect(src).toContain("unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[]; runtime: 'static' | 'dynamic' }>")
+    expect(src).toContain("unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[]; runtime: 'static' | 'dynamic'; truncated?: boolean; dataFilesReferenced?: number }>")
     expect(src).toContain('moveToMaterials(projectDir: string, files: string[]): Promise<{')
   })
 })
@@ -83,17 +83,20 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
 
   it('居る側で出す項目を出し分けている（公開される側→📦、それ以外→🌐）', () => {
     const s = sidebarSrc()
-    expect(s).toContain("label: isPublishedSide ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',")
+    expect(s).toContain("label: published ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',")
   })
 
-  it('moveEntry の dest はいま居る側（isInPublishDir）から決まる（固定値にしていない）', () => {
+  // W-23（2026-09-27 決定・別案）: dest はメニューを開いた瞬間に isMoveTargetPublished が
+  // 決めた向き（published）の逆で決まる。isInPublishDir 単体では「public/ が無いプロジェクト」の
+  // 直下ファイルを判定し損ねるため、moveEntry 内で isInPublishDir を再計算する形はやめた。
+  it('moveEntry の dest はいま居る側（isMoveTargetPublished が決めた published）から決まる（固定値にしていない）', () => {
     const s = sidebarSrc()
-    expect(s).toContain("const dest: 'materials' | 'publish' = isInPublishDir(currentDir, entry.path) ? 'materials' : 'publish'")
+    expect(s).toContain("const dest: 'materials' | 'publish' = published ? 'materials' : 'publish'")
   })
 
   it('ディレクトリには移動項目を出さない（show: !entry.isDir）', () => {
     const s = sidebarSrc()
-    const at = s.indexOf("label: isPublishedSide ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',")
+    const at = s.indexOf("label: published ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',")
     expect(at).toBeGreaterThan(-1)
     expect(s.slice(at, at + 120)).toContain('show: !entry.isDir,')
   })
@@ -101,7 +104,7 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
   // 2026-09-11（判断9）: window.confirm → ConfirmModal（useConfirm）。CLAUDE.md 掟5改定。
   it('moveEntry は ConfirmModal（useConfirm の confirm）で確認してから electronAPI.fs.moveFiles を呼ぶ', () => {
     const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
     expect(at).toBeGreaterThan(-1)
     const body = s.slice(at, at + 1200)
     expect(body).toContain('const ok = await confirm({')
@@ -114,7 +117,7 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
 
   it('moveEntry は window.confirm へ退行していない（2026-09-11 CLAUDE.md 掟5改定: 確認は ConfirmModal で出す）', () => {
     const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
     expect(at).toBeGreaterThan(-1)
     const body = s.slice(at, at + 1200)
     expect(body).not.toContain('window.confirm(')
@@ -129,13 +132,13 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
 
   it('moveEntry はディレクトリを弾く（多層防御。ContextMenu 側のフィルタだけに頼らない）', () => {
     const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
     expect(s.slice(at, at + 200)).toContain('if (!currentDir || entry.isDir) return')
   })
 
   it('成功後にファイルツリーを更新している（既存の autoRefresh の仕組みを使う）', () => {
     const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
     const body = s.slice(at, at + 1500)
     expect(body).toContain('setAutoRefresh(n => n + 1)')
   })
@@ -159,7 +162,7 @@ describe('未使用ファイルの判定は shared/unusedFiles.ts の一元定�
     // findUnusedFiles の呼び出しは3引数目に extraAlwaysUsed を渡す形（呼び出しの形ごと見る）
     expect(src).toContain('}, extraAlwaysUsed ? { extraAlwaysUsed } : undefined)')
     // 戻り値は runtime を含む
-    expect(src).toContain('return { supported: true, unused, runtime }')
+    expect(src).toContain('return { supported: true, unused, runtime, truncated: truncated === true, dataFilesReferenced }')
   })
 
   it('公開の根（resolvePublishRoot）を通している。securityCheck.ts / migrate.ts と同じ窓口', () => {
@@ -180,7 +183,8 @@ describe('未使用ファイルの判定は shared/unusedFiles.ts の一元定�
     // 旧形（ランタイムで丸ごと対象外にする）へ戻していない
     expect(src).not.toContain("if (choice.kind !== 'static') return { supported: false, unused: [] }")
     // supported は projectDir が不正なときだけ false（ランタイムでは落とさない）
-    expect(src).toContain("if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) return { supported: false, unused: [], runtime: 'static' }")
+    expect(src).toContain("if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {")
+    expect(src).toContain("return { supported: false, unused: [], runtime: 'static', truncated: false, dataFilesReferenced: 0 }")
   })
 })
 
@@ -346,7 +350,9 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     // 0件のときの表示: ③事前チェック（AppRunPanel.tsx）・④セキュリティチェックと同じ
     // 「全部✅→1行に畳む」表記に揃えた（判断6・2026-09-11、foldUnused）。
     expect(s).toContain('✅ 問題なし（内訳を見る）')
-    expect(s).toContain('すべてのファイルが、どこかのページ・コードから使われています。')
+    // W-112（2026-09-27 決定・案1）: 「全部使われています」の断言ではなく、控えめな言い方にする
+    expect(s).toContain('使われていないように見えるファイルは見つかりませんでした（ファイル名がどこかに書かれているかで判断しています）。')
+    expect(s).not.toContain('すべてのファイルが、どこかのページ・コードから使われています。') // 直す前の形
     expect(s).toContain('🧹 使われていないファイルの確認')
     // 対象外のときは移動ボタンを出さない（対象が無いので押せる必要が無い）。
     // ボタンの描画条件が supported を含むことで固定する（対象外では出ない）。

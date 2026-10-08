@@ -27,7 +27,8 @@ import { shouldSendTools, isKnownToolCapable, recordToolSupport } from '../toolS
 import { planSend, planCompact, planManualCompact, compactPrompt, acceptSummary, compactSource, type CompactMark } from '../historyCompact'
 import { searchStatusContext } from '../aiContext'
 import { getAnthropicToken } from '../components/CredentialsModal'
-import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode } from '../claudeMode'
+import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode, getClaudeCostThisMonth, getClaudeWarnUsd } from '../claudeMode'
+import { claudeChatWarningText } from '../../shared/usageBudget'
 import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
 import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
@@ -325,7 +326,11 @@ export function useAiChat(args: UseAiChatArgs) {
     emit,
     chatStream: (req, onDelta, onAbortReady, onThinking) =>
       window.electronAPI.sakura.chatStream(req, onDelta, onAbortReady, onThinking),
-    chatOnce: (req) => window.electronAPI.sakura.chat(req),
+    // 🗂 まとめ作り（非ストリーミング）の ⏹ もここで配線する（2026-09-25 検分の指摘4）。
+    // preload の chat は **invoke より先に**この関数を呼ぶので、返事を待ち始める前に登録が終わる
+    // （engine.ts の「先に中断関数を渡す」と同じ形。あとから渡すと、いちばん止めたい
+    //  「返ってこない」場面で空振りする）。書き先は setAbort と同じ鍵。
+    chatOnce: (req) => window.electronAPI.sakura.chat(req, (fn) => { updateTurn(key, { abort: fn }) }),
     getHistory,
     buildSystemPrompt,
     onUserMessage,
@@ -404,10 +409,10 @@ export function useAiChat(args: UseAiChatArgs) {
     emit({ kind: 'loading', value: true })
     try {
       const r = await runCompact({ apiKey, model }, buildPorts(key), history, plan)
-      // ⏹ 停止（{ aborted: true }）: renderer の chatOnce（window.electronAPI.sakura.chat）には
-      // 停止の配線が無い（main の 🗂 まとめ作りだけに足した・0.3.50）ので、この手動まとめの経路で
-      // 実際に aborted が返ることは今は無い。型を網羅するためだけの分岐（将来ここにも停止を
-      // 配線したとき、この分岐だけ差し替えれば済むように残す）。
+      // ⏹ 停止（{ aborted: true }）: buildPorts の chatOnce が中断関数を registry へ登録するので
+      // （2026-09-25 検分の指摘4。0.3.50 では main のターン経路にしか配線が無く、この手動まとめは
+      //  画面が「⏹ で停止できます」と出しているのに押しても何も起きなかった）、
+      // まとめ作りの途中で ⏹ を押すと、ここに { aborted: true } が返る。
       if ('msg' in r) appendBubble(r.msg)
       else if ('aborted' in r) appendBubble({ role: 'assistant', content: '（⏹ 停止しました）', toolNote: true })
       // 時間切れ（2026-09-23 検分の指摘1）: SDK の 'Request timed out.' をそのまま出さない。
@@ -424,7 +429,7 @@ export function useAiChat(args: UseAiChatArgs) {
   // aiEngineKey は search_docs ツール用（C2b・方式B: 使う瞬間に読んで main へ引数で渡す。無ければ null）。
   // images は C2d: このターンでユーザーが添付した画像（data URL配列・空配列可）。main側 agent.ts が
   // 1枚以上ならストリーミング入力モードへ切り替え、Claude自身に直接読ませる（2段階visionを経由しない）。
-  const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null) => {
+  const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null, writeMode: string) => {
     // 呼び出し時点の projectDir（send() から渡された、送信した瞬間のプロジェクト）の鍵。
     // このターンの ⏹ 登録・活動通知はここへ書く（emit の scalar も、この呼び出しの間は
     // 同じ値の toolsProjectDir を指しているので一致する。詳しくは send() 冒頭のコメント参照）。
@@ -486,7 +491,18 @@ export function useAiChat(args: UseAiChatArgs) {
             case 'result':
               assistantOpen = false
               recordClaudeCost(ev.costUsd)
-              appendBubble({ role: 'assistant', content: claudeCostFooter(ev.costUsd, claudeModel), toolNote: true })
+              // W-102: エラーで終わり、かつ実際にはかかっていない（costUsd<=0）ときは
+              // claudeCostFooter が空文字を返す。その場合は吹き出しを出さない。
+              {
+                const footer = claudeCostFooter(ev.costUsd, claudeModel, ev.isError)
+                if (footer) appendBubble({ role: 'assistant', content: footer, toolNote: true })
+              }
+              // W-53（2026-09-27決定・別案）: 今月のClaude利用額が目安額を超えたら、設定画面だけでなく
+              // チャット欄にも⚠️を出す（送信は止めない）。判定・文面は shared/usageBudget.ts に一元化。
+              {
+                const claudeWarning = claudeChatWarningText(getClaudeCostThisMonth(), getClaudeWarnUsd())
+                if (claudeWarning) appendBubble({ role: 'assistant', content: claudeWarning, toolNote: true })
+              }
               finish()
               break
             case 'error':
@@ -524,7 +540,7 @@ export function useAiChat(args: UseAiChatArgs) {
           },
         })
 
-        window.electronAPI.claude.chatStart(projectDir, claudeKey, text, images, snapshotId, claudeSessionRef.current, aiEngineKey, claudeModel)
+        window.electronAPI.claude.chatStart(projectDir, claudeKey, text, images, snapshotId, claudeSessionRef.current, aiEngineKey, claudeModel, writeMode)
           .catch((e: any) => {
             showClaudeError(e?.message ?? String(e))
             finish()
@@ -628,14 +644,26 @@ export function useAiChat(args: UseAiChatArgs) {
           // このターンは委譲ツール自体が無効化され、上限超過後も委譲経由でAI Engine課金が
           // 続いてしまうのを確実に止める（AI Engine直接経路の送信前チェックと同じ判定を使う）。
           let delegateKey: string | null = apiKey || null
-          if (delegateKey && !checkBeforeRequest(delegateKey).allowed) {
-            delegateKey = null
-            appendBubble({
-              role: 'assistant', toolNote: true,
-              content: 'ℹ️ 今月のさくらのAI Engine利用額が上限に達しているため、このターンは作業の委譲をせず Claude のみで進めます（上限は ⚙️ 設定で変更できます）。',
-            })
+          if (delegateKey) {
+            const delegateBudget = checkBeforeRequest(delegateKey)
+            if (!delegateBudget.allowed) {
+              delegateKey = null
+              appendBubble({
+                role: 'assistant', toolNote: true,
+                // W-50: 「委譲」「このターン」は非エンジニアに通じない → 「任せず」「今回」に言い換える。
+                // W-6: 止まる基準はキーごとの上限なので、案内先も ⚙️ 設定ではなく 認証情報 にそろえる。
+                content: 'ℹ️ 今月のさくらのAI Engineの利用額が上限に達しているため、今回は作業をさくらのAI Engineに任せず、Claude だけで進めます（上限は 認証情報（⇧⌘,）で、キーごとに変えられます）。',
+              })
+            } else if (delegateBudget.warning) {
+              // W-21（2026-09-27決定・別案）: 「上限に達したら停止」がオフでも、実効上限を超えていれば
+              // 止めずに続ける代わり、作業中にも知らせる（設定画面を開いたときだけ分かる、をやめる）。
+              // 文面は shared/usageBudget.ts の checkBeforeRequestOf が作る（ここでは言い換えない）。
+              appendBubble({ role: 'assistant', toolNote: true, content: delegateBudget.warning })
+            }
           }
-          await sendViaClaude(text + assetBlock, images, claudeKey as string, snapshotId, toolsProjectDir, delegateKey)
+          // W-18: 送信時点の writeMode（turnOpts のスナップショット）を Claude 経路にもそのまま渡す
+          // （さくらのAI Engine 経路の decideApproval と同じ「送信時点で固定」・掟10）。
+          await sendViaClaude(text + assetBlock, images, claudeKey as string, snapshotId, toolsProjectDir, delegateKey, (turnOpts as { writeMode?: string }).writeMode ?? 'auto')
           return
         }
         // 同意ダイアログをキャンセルした場合：AI Engineキーがあれば（モードA）従来どおり黙ってAI Engine経路へ

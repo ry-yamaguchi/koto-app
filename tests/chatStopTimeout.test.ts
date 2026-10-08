@@ -315,11 +315,14 @@ describe('runSakuraStream: 返ってこない通信', () => {
     expect(deltas.join('')).toBe('こんにち') // 届いたぶんは呼び出し側へ流れている
   }, 20_000)
 
-  it('★ ヘッダだけ返して1件も書かないサーバは「返事が始まらなかった」側（検分の指摘11）', async () => {
+  it('★ ヘッダだけ返して1件も書かないサーバは「つながったが無音」側（検分の指摘11・27）', async () => {
     // SDK の timeout は**応答ヘッダが返った時点で**解除される（core.js の fetchWithTimeout の
     // `.finally`）。実機の症状はこれ——STREAM_FIRST_CHUNK_TIMEOUT_MS は一度も発火せず、
     // 必ず無音側で打ち切られる。件数を見ずに 'idle' と決めていたため、1文字も届いていないのに
     // 「途中までの内容はそのまま残しています」と表示されていた（残っているものが無い）。
+    // その後 'first' へ寄せたので、こんどは 90秒しか待っていない人に「120秒×2回（合計およそ
+    // 240秒）」と出た（指摘27）。いまは**どちらの時計で切れたか**を 'first-silent' で区別する
+    // （待った時間が違う＝出す文も違う。秒数の食い違いは tests/streamTimeoutWording.test.ts）。
     const port = await listen((_req, res) => {
       sseHead(res)
       res.flushHeaders() // ヘッダだけを実際に送り出す。チャンクは1件も書かない
@@ -335,7 +338,7 @@ describe('runSakuraStream: 返ってこない通信', () => {
       { onDelta: d => deltas.push(d), onReasoning: () => {}, onAbortReady: () => {} },
     )
     expect(deltas).toEqual([]) // 本当に1件も届いていない（この前提が崩れたら試験が無意味）
-    expect(r).toEqual({ usage: null, timedOut: 'first' })
+    expect(r).toEqual({ usage: null, timedOut: 'first-silent' })
     // 画面に出る文が、実機の症状と食い違わない
     expect(streamTimeoutMessage(r.timedOut!)).not.toContain('途中までの内容はそのまま残しています')
   }, 20_000)
@@ -673,7 +676,7 @@ describe('runEngineTurn: ツールが失敗したとき', () => {
     })
     await runEngineTurn(spec(), ports)
     const text = shown(log).map(m => m.content ?? '').join('\n')
-    expect(text).toContain('ファイルは変更されていません')
+    expect(text).toContain('ℹ️ 今回の依頼では、ファイルは変わっていません。')
   })
 })
 
@@ -731,8 +734,15 @@ describe('runEngineTurn: 時間切れ', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf8')
     expect(src).toContain('const { usage, timedOut } = await window.electronAPI.sakura.chatStream(')
     expect(src).not.toContain('const { usage } = await window.electronAPI.sakura.chatStream(') // 直す前の形
-    expect(src).toContain("import { streamTimeoutMessage } from '../../shared/chatTimeouts'")
-    expect(src).toContain('streamTimeoutMessage(timedOut)')
+    // W-103（2026-09-27 決定）: streamTimeoutMessage（「もう一度お試しください」の定型文）は
+    // 「つくりたいものを教えてください」と並ぶと迷わせるため使わず、あいさつ専用の短い1文にする。
+    const timedOutAt = src.indexOf('if (timedOut) {')
+    expect(timedOutAt).toBeGreaterThan(0)
+    const applyOpAt = src.indexOf('applyOp(', timedOutAt)
+    expect(applyOpAt).toBeGreaterThan(timedOutAt)
+    const timedOutBlock = src.slice(timedOutAt, src.indexOf('}', applyOpAt) + 1)
+    expect(timedOutBlock).toContain('⏱ AIからの返事が届かなかったので、あいさつは省きました。つくりたいものを、そのまま送ってください。')
+    expect(timedOutBlock).not.toContain('streamTimeoutMessage(timedOut)') // 直す前の形
     // 秒数・文言をこの画面に書き写していない（一元定義・掟10）
     expect(src).not.toContain('120秒')
   })
@@ -858,7 +868,9 @@ describe('toolActionName / unexecutedToolsNote（画面に出る文の一元定�
     expect(toolStatusLabel('search_docs', JSON.stringify({ query: 'あ' }))).toBe('📚 資料を検索しています… 「あ」')
     expect(toolStatusLabel('search_in_files', JSON.stringify({ query: 'あ' }))).toBe('🔍 内容を検索しています… 「あ」')
     expect(toolStatusLabel('fetch_url', JSON.stringify({ url: 'https://example.com' }))).toBe('🌐 ページを取得しています… https://example.com')
-    expect(toolStatusLabel('unknown_tool', '{}')).toBe('🔧 unknown_tool を実行しています…')
-    expect(toolStatusLabel('read_file', '{壊れた')).toBe('🔧 read_file を実行しています…') // 従来どおり
+    // W-101（2026-09-27 決定）: 表に無い道具・引数が壊れているときの英語の内部名は出さず、
+    // Claude 側と同じ「🔧 作業しています…」に揃える。
+    expect(toolStatusLabel('unknown_tool', '{}')).toBe('🔧 作業しています…')
+    expect(toolStatusLabel('read_file', '{壊れた')).toBe('🔧 作業しています…')
   })
 })

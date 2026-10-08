@@ -74,8 +74,10 @@ export function storagePreparedText(
   return `保存場所『${bucket}』を用意しました。${layer}次に公開すると、アプリから読み書きできるようになります。`
 }
 
-/** 依頼文で必ず添える「アプリの形を変えない」お願い。**ここを削らないこと。** */
-const KEEP_SHAPE =
+/** 依頼文で必ず添える「アプリの形を変えない」お願い。**ここを削らないこと。**
+ *  移行の依頼文（shared/leftoverData.ts の askAiMoveDataText）も**同じものを使う**
+ *  ——文字列を2か所に書かない（掟10）。 */
+export const KEEP_SHAPE =
   'package.json の "type" は変更しないでください（変更するとアプリが起動しなくなります）。'
 
 /** 使える場所だけを残す（壊れた入力でも落ちない）。 */
@@ -111,18 +113,49 @@ function describeWriteSites(sites: readonly FileWriteSite[]): string {
  * - **書き直したあとに読み直して確かめてから完了と答えること**。
  *   2026-09-23 の事故は、これが無かったために起きた
  */
-export function askAiRewriteText(writes: readonly FileWriteSite[], kind: ModuleKind = 'esm'): string {
+export function askAiRewriteText(
+  writes: readonly FileWriteSite[],
+  kind: ModuleKind = 'esm',
+  /**
+   * 入力されたデータを**メモリ（変数・配列）だけに持っている**場所（2026-10-01 rc.5 の実機）。
+   * 無ければ（空・省略）、依頼文はこれまでとまったく同じ。**Koto が見つけた場所をそのまま入れる**
+   * ——渡さないと AI は自分の記憶で「完了しました」と答える（このファイル冒頭の事故と同じ形）。
+   */
+  memory: readonly FileWriteSite[] = [],
+): string {
   const sites = validSites(writes)
-  const where = sites.length > 0
-    ? `ファイルに直接書き込んでいるのは ${describeWriteSites(sites)} です。そこを `
-    : 'いまファイルに直接書き込んでいる箇所を、'
-  return 'データの保存を koto-data に切り替えてください。'
-    + where
-    + `${dataLayerUsageLine(kind)} を使う形に書き直してください。`
+  const inMemory = validSites(memory)
+  const usage = dataLayerUsageLine(kind)
+  // ここから先（置いてあるファイル・アプリの形を変えさせない・読み直して確かめる）は
+  // ファイルへの書き込みでもメモリでも変わらない
+  const keepShape =
     // **アプリの形を変えさせない**（2026-09-23 実機。ここを言わなかったために
     // package.json に "type": "module" が足され、アプリが起動しなくなった）
-    + `このファイルはもう置いてあります。読み込み方は上の1行のとおりにして、${KEEP_SHAPE}`
-    + '書き直したあと、実際にファイルを読み直して、ファイルへの書き込みが残っていないことを確かめてから、完了と答えてください。'
+    `このファイルはもう置いてあります。読み込み方は上の1行のとおりにして、${KEEP_SHAPE}`
+  if (inMemory.length === 0) {
+    const where = sites.length > 0
+      ? `ファイルに直接書き込んでいるのは ${describeWriteSites(sites)} です。そこを `
+      : 'いまファイルに直接書き込んでいる箇所を、'
+    return 'データの保存を koto-data に切り替えてください。'
+      + where
+      + `${usage} を使う形に書き直してください。`
+      + keepShape
+      + '書き直したあと、実際にファイルを読み直して、ファイルへの書き込みが残っていないことを確かめてから、完了と答えてください。'
+  }
+  // メモリだけに持っている形。書き直し先は koto-data の list / get / save / remove
+  const memoryWhere = `入力されたデータをプログラムの中（変数や配列）だけに持っているのは ${describeWriteSites(inMemory)} です。`
+  const fileWhere = sites.length > 0
+    ? `ファイルに直接書き込んでいるのは ${describeWriteSites(sites)} です。`
+    : ''
+  return 'データの保存を koto-data に切り替えてください。'
+    + fileWhere
+    + memoryWhere
+    + `そこで持っているデータを、${usage} の list / get / save / remove で保存する形に書き直してください。`
+    + 'サーバーが再起動したり公開し直したりすると、変数や配列の中のデータは消えてしまうためです。'
+    + keepShape
+    + '書き直したあと、実際にファイルを読み直して、'
+    + (sites.length > 0 ? 'ファイルへの書き込みと、' : '')
+    + '変数や配列だけにデータを持っている箇所が残っていないことを確かめてから、完了と答えてください。'
 }
 
 /**
@@ -136,6 +169,8 @@ export function askAiRewriteText(writes: readonly FileWriteSite[], kind: ModuleK
 export function askAiRewritePlan(
   writes: readonly FileWriteSite[],
   layer: { ok?: boolean; ready?: boolean; moduleKind?: ModuleKind; message?: string } | null | undefined,
+  /** メモリだけに持っている場所（2026-10-01）。省略は無し。 */
+  memory: readonly FileWriteSite[] = [],
 ): { send: true; text: string } | { send: false; error: string } {
   if (!layer || layer.ok !== true || layer.ready !== true) {
     const detail = typeof layer?.message === 'string' && layer.message.length > 0 ? `（${layer.message}）` : ''
@@ -146,7 +181,35 @@ export function askAiRewritePlan(
         + '少し待ってから、もう一度お試しください。',
     }
   }
-  return { send: true, text: askAiRewriteText(writes, layer.moduleKind === 'esm' ? 'esm' : 'cjs') }
+  return { send: true, text: askAiRewriteText(writes, layer.moduleKind === 'esm' ? 'esm' : 'cjs', memory) }
+}
+
+/**
+ * koto-data の版について、画面に出す1行（純関数）。出すものが無ければ空文字。
+ *
+ * ── なぜ要るのか（2026-09-24 検分）──────────────────────────────────
+ * 直しの出発点は「**いま公開中のアプリ**が混雑で真っ白になる／後勝ちで消える」
+ * ことだった。その対象は**すべて既に koto-data を持っている**ので、
+ * 差し替えられたのか・触れなかったのかを**利用者に見える形**にしておかないと、
+ * 「直したのに直っていない」が起きる。
+ *
+ * **触れなかったときに、勝手に上書きしない**のは決まりどおり（dataLayer.ts）。
+ * ここでは「Koto は触っていない」ことと、次に何をすればよいかだけを伝える。
+ */
+export function dataLayerUpdateLine(
+  layer: { ok?: boolean; file?: string | null; replaced?: boolean; needsUpdate?: boolean } | null | undefined,
+): string {
+  if (!layer || layer.ok !== true) return ''
+  const name = typeof layer.file === 'string' && layer.file.length > 0 ? layer.file : 'koto-data'
+  if (layer.replaced === true) return `🔄 ${name} を新しい版に差し替えました（混み合ったときのやり直し・同時更新の検知が入ります）。`
+  if (layer.needsUpdate === true) {
+    // 画面には素のテキストとして出る（StorageNotice.tsx の <p>{checkLine}</p>）。
+    // **Markdown 記法を使わない**——アスタリスクがそのまま見える（このファイル冒頭の決まり）。
+    return `ℹ️ ${name} は Koto が置いた版か分からなかったので、そのままにしました。`
+      + '新しい版には、混み合ったときのやり直しと、同時更新の検知が入っています。'
+      + '入れ替えてよいか分からないときは、Koto に相談してください。'
+  }
+  return ''
 }
 
 /**
@@ -155,18 +218,65 @@ export function askAiRewritePlan(
  * **確かめていないことを断定しない。** 調べられなかったときは、
  * 「済んだ」にも「まだ」にも倒さない。
  */
-export function rewriteCheckLine(scan: {
+export type RewriteScan = {
   usesDataLayer: boolean
   writesFiles: readonly FileWriteSite[]
+  /**
+   * メモリだけに持っている場所（2026-10-01）。**警告の理由に数えるものだけ**を渡す
+   * （koto-data を使っているとき・レンタルサーバでは空。storageNeed.ts の `memorySitesFor`）。
+   * 残っていれば「まだ」（❌）で、`rewriteCheckDone` も偽——**文と判断は同じ入力で一致させる**
+   * （画面は空のときしか渡さないが、呼び出し側の作法に頼らない・2026-10-01 検分）。
+   */
+  keepsInMemory?: readonly FileWriteSite[]
+  /**
+   * **警告の理由にはしない**が、まだ残っているメモリの場所（storageNeed.ts の `memorySitesNotWarned`）。
+   * koto-data を使っているときのもの。✅ の文に「ただし、ここに残っています」と**名指しで添える**
+   * ——AI が koto-data の読み込みを1行足しただけでも ✅ になり、メモリのデータが消える形を
+   * 見過ごさないため。✅ かどうか（`rewriteCheckDone`）は変えない（キャッシュのこともある）。
+   */
+  memoryNotWarned?: readonly FileWriteSite[]
   /** 走査が打ち切られた（全部は見られなかった）か。 */
   truncated?: boolean
-} | null | undefined): string {
+}
+
+/**
+ * 「書き直せた（✅）」と言い切れるか（純関数）。
+ *
+ * ── なぜ1行の文とは別に要るのか（2026-09-24）──────────────────────────
+ * 「💾 いま入っているデータをどうしますか」は、**書き直せているときだけ**出す。
+ * その判断を画面が `rewriteCheckLine` の文字列から拾う（先頭が ✅ か見る等）と、
+ * 文言を1文字直した瞬間に問いが出なくなる。**判断は判断として持つ**（掟10）。
+ *
+ * rewriteCheckLine が ✅ を返す条件と**同じ**であることは
+ * tests/leftoverData.test.ts で固定してある。
+ */
+export function rewriteCheckDone(scan: RewriteScan | null | undefined): boolean {
+  if (!scan || !Array.isArray(scan.writesFiles)) return false
+  if (validSites(scan.writesFiles).length > 0) return false
+  // メモリだけに持つ形が残っていれば、rewriteCheckLine は ❌ を返す。判断も同じにする
+  if (validSites(scan.keepsInMemory).length > 0) return false
+  if (scan.truncated === true) return false
+  return scan.usesDataLayer === true
+}
+
+export function rewriteCheckLine(scan: RewriteScan | null | undefined): string {
   if (!scan || !Array.isArray(scan.writesFiles)) {
     return 'ℹ️ 確かめられませんでした。少し待ってから、もう一度お試しください。'
   }
   const sites = validSites(scan.writesFiles)
+  // メモリだけに持つ形が残っていれば、同じく「まだ」と名指しする（2026-10-01）。
+  // 言わないと、AI が「完了しました」と答えたのに何も変わっていないとき、下の
+  // 「書き込みは見つかりませんでしたが…」に落ちて、場所を示せない
+  const inMemory = validSites(scan.keepsInMemory)
+  if (sites.length > 0 && inMemory.length > 0) {
+    return `❌ まだ書き直されていません（${describeWriteSites(sites)} にファイルへの書き込みが、`
+      + `${describeWriteSites(inMemory)} にメモリだけにデータを持っている箇所が残っています）。AI にもう一度お願いしてください。`
+  }
   if (sites.length > 0) {
     return `❌ まだ書き直されていません（${describeWriteSites(sites)} に残っています）。AI にもう一度お願いしてください。`
+  }
+  if (inMemory.length > 0) {
+    return `❌ まだ書き直されていません（${describeWriteSites(inMemory)} に、メモリだけにデータを持っている箇所が残っています）。AI にもう一度お願いしてください。`
   }
   // **見られなかった範囲があるなら、断定しない**（2026-09-23 検分）。
   // 大きすぎるファイル・深いフォルダは走査を打ち切っている。それを
@@ -181,6 +291,17 @@ export function rewriteCheckLine(scan: {
     return 'ℹ️ ファイルへの書き込みは見つかりませんでしたが、データの保存を使っている箇所も見つかりません。'
       + '保存が必要なら、AI にもう一度お願いしてください。'
   }
+  // koto-data を使っていて、書き込みも消えている。ただし**メモリだけに持つ箇所が残っている**ときは、
+  // それを黙らない（警告にはしない＝キャッシュのこともあるので、場所を名指しして確かめてもらう）。
+  // 先頭は ✅ のまま——✅ かどうかの判断は rewriteCheckDone が持つ（掟10）
+  const beside = validSites(scan.memoryNotWarned)
+  if (beside.length > 0) {
+    return '✅ ファイルへの書き込みは見つかりませんでした。'
+      + `ただし ${describeWriteSites(beside)} に、メモリ（変数や配列）だけにデータを持っている箇所が残っています。`
+      + 'キャッシュなど、消えてもよい一時的な置き場なら、そのままで問題ありません。'
+      + '入力されたデータを持っているなら、まだ消える形です。'
+      + `チャットで AI に「${describeWriteSites(beside)} のデータを、データの保存（koto-data）で保存する形に書き直して」と頼んでください。`
+  }
   return '✅ 書き直せています。ファイルへの書き込みは見つかりませんでした。'
 }
 
@@ -190,15 +311,30 @@ export function rewriteCheckLine(scan: {
  * **「用意済み」と「まだ危ない」を同じ見出しに同居させない**（2026-09-23）。
  * 保存場所ができていても、コードの書き直しが残っていればデータは消える。
  */
-export function storageNoticeHeadline(opts: { hasPlacement: boolean; warn: boolean }): string {
+export function storageNoticeHeadline(opts: { hasPlacement: boolean; warn: boolean; guess?: boolean }): string {
   const hasPlacement = opts?.hasPlacement === true
   const warn = opts?.warn === true
-  if (hasPlacement && warn) return '⚠️ 保存場所は用意済み・コードの書き直しが残っています'
+  // 警告の理由が「メモリだけに持っていそう」という**推定だけ**のとき（StorageNeed の `memoryOnly`）は、
+  // 見出しも断定しない。回数制限・キャッシュ・接続の一覧を当ててしまうことがあるのに、
+  // 見出しだけ「消えてしまいます」と言い切ると、本文の「ようです」と食い違う（2026-10-01 検分）
+  const guess = opts?.guess === true
+  if (hasPlacement && warn) {
+    return guess
+      ? '⚠️ 保存場所は用意済み・コードの書き直しが残っているかもしれません'
+      : '⚠️ 保存場所は用意済み・コードの書き直しが残っています'
+  }
   if (hasPlacement) return '💾 データの保存（用意済み）'
-  if (warn) return '⚠️ データが消えてしまいます'
+  if (warn) return guess ? '⚠️ データが消えるかもしれません' : '⚠️ データが消えてしまいます'
   return '💾 データの保存について'
 }
 
 /** 保存場所はあるが書き直しが残っているときに、残りの作業を1行で伝える文。 */
 export const STORAGE_REWRITE_REMAINING =
   '保存場所は用意できています。あとは、コードの書き直しだけです。'
+
+/**
+ * 上の文の**推定版**（警告の理由が「メモリだけに持っていそう」だけのとき）。
+ * 見出しが「〜かもしれません」と言った直後に「あとは書き直しだけ」と言い切らない（2026-10-01 検分2巡目）。
+ */
+export const STORAGE_REWRITE_MAYBE_REMAINING =
+  '保存場所は用意できています。メモリだけにデータを持っている箇所が残っていないか、下の案内で確かめてください。'

@@ -36,17 +36,25 @@ describe('HANAMII への配線', () => {
     expect(read('src/renderer/global.d.ts')).toContain('withStorage')
   })
 
-  it('★ 片づけは「動いたと確かめてから」（先に消すと動いているアプリが落ちる）', () => {
+  it('★ 片づけは「動いたと確かめてから」＝main がやる。画面は READY を待たず、鍵を片づけない', () => {
+    // 2026-09-29: 以前は HanamiiPanel の setInterval（startPolling）が READY を見て cleanUpKeys を呼んでいたが、
+    // ダイアログを閉じると止まって古い鍵が残った。いまは main の hanamii:publish が新しい版の READY を
+    // 確かめるまで返らず、確かめてから片づける（tests/hanamiiAftercare.test.ts が main の振る舞いで固定）。
+    // 画面がやると二重に片づける。画面がやっていないことは、画面を動かして
+    // tests/ops-hanamiiVercel-hanamii.test.ts が固定している（setInterval・cleanUpKeys を呼ばない）。
     const panel = read('src/renderer/components/HanamiiPanel.tsx')
-    // READY を見てから cleanUpKeys を呼ぶ
-    expect(panel).toMatch(/readyState === 'READY'[\s\S]{0,300}cleanUpKeys/)
-    // 公開の直後には呼ばない
-    expect(panel).not.toMatch(/hanamii\.publish\([\s\S]{0,200}cleanUpKeys/)
+    expect(panel).not.toContain('cleanUpKeys')
+    expect(panel).not.toContain('startPolling')
+    expect(panel).not.toContain('pendingKeyCleanup')
+    // 口そのもの（main／preload／型）は互換のために残してある（上の it が固定）
   })
 
   it('何が持っていかれるかを画面に出す（黙って鍵を配らない）', () => {
     const panel = read('src/renderer/components/HanamiiPanel.tsx')
     expect(panel).toContain('データの保存を持っていく')
-    expect(panel).toContain('もう片方からも消えます')  // 同じデータを見ることを隠さない
+    // W-34（2026-09-27 決定・案1）: 「AppRun と同じデータを見る」を
+    // 「このプロジェクトのほかの公開先と同じデータを使います」に言い換えた
+    expect(panel).toContain('このプロジェクトのほかの公開先（AppRun など）')
+    expect(panel).toContain('もう一方からも消えます')  // 同じデータを見ることを隠さない
   })
 })

@@ -9,11 +9,19 @@
 // DATA_RULE）。だが**ファイルが無ければ import が失敗し、「② 試す」で落ちる**。
 // 非エンジニアにとって「試すと壊れる」は致命的なので、**参照された時点で置く**。
 //
-// ── 上書きしないこと（重要）──────────────────────────────────────────
-// 既にあるものは**絶対に上書きしない**。この層は「あとでデータベース版に
-// 差し替える」ことを想定して作ってある（roadmap S-1）。差し替えたものを
-// Koto が黙って元に戻すと、**利用者のデータの読み書きが突然オブジェクト
-// ストレージへ戻る**。直したくなったら利用者に知らせて選ばせる。
+// ── 上書きの決まり（重要・2026-09-24 に改めた）────────────────────────
+// この層は「あとでデータベース版に差し替える」ことを想定して作ってある
+// （roadmap S-1）。差し替えたものを Koto が黙って元に戻すと、**利用者のデータの
+// 読み書きが突然オブジェクトストレージへ戻る**。だから何でも上書きはしない。
+//
+// 一方で、直しの出発点は「**いま公開中のアプリ**が壊れている」ことであり、
+// そのアプリは**すべて既にファイルを持っている**。「既にあれば触らない」だけでは、
+// いちばん効く直しがいちばん必要なところに届かない。
+//
+// そこでテンプレートに**版の印**（`// koto-data-template: …`）を入れ、
+// **印があって版が古いものだけ**を差し替える。印が無いもの・作り替えられたものは
+// 触らず、`needsUpdate` で画面に知らせて利用者に選ばせる。
+// 判断は純関数 `dataLayerPlacement` の1か所（掟10）。
 
 import fs from 'fs'
 import path from 'path'
@@ -22,6 +30,7 @@ import {
   usesDataLayer, fileWriteLines, moduleKindForDataLayer, dataLayerFileFor,
   DATA_LAYER_FILES, DATA_LAYER_LOCAL_DIR, type FileWriteSite, type ModuleKind,
 } from '../shared/objectStorage'
+import { memoryKeepLines, looksLikeServerCode, localImportSpecs, serverReachableFiles, type ScannedSource } from '../shared/memoryKeep'
 import { serverListens } from '../shared/vercelFit'
 
 /** 走査を打ち切る条件（envDetect.ts と同じ考え方）。 */
@@ -112,6 +121,16 @@ export type DataLayerScan = {
    */
   writesFiles: FileWriteSite[]
   /**
+   * 入力されたデータを、**メモリ（変数・配列）だけに持っている**と思われる場所（相対パスと行番号・
+   * 2026-10-01 rc.5 の実機）。`writesFiles` と同じ形で、行番号は**書き換えている行**。
+   *
+   * ファイルにも koto-data にも書かないので、`writesFiles` にも `usedBy` にも載らず、
+   * これまでは何の案内も出なかった（再起動・公開し直しで消える）。
+   * 判定の正は `memoryKeepLines`（src/shared/memoryKeep.ts）。**サーバー側のコードらしい
+   * ファイルだけ**が対象で、ブラウザ側の JS は載らない。推定である点は画面でも断定しない。
+   */
+  keepsInMemory: FileWriteSite[]
+  /**
    * 自分でポートを待ち受けているファイル（相対パス）。
    *
    * Vercel の確認で使う（2026-08-15）。**歩き回る処理を二つ持たない**ため、
@@ -138,6 +157,11 @@ export type DataLayerScan = {
 export function scanDataUsage(projectDir: string): DataLayerScan {
   const usedBy: string[] = []
   const writesFiles: FileWriteSite[] = []
+  const keepsInMemory: FileWriteSite[] = []
+  // メモリの判定は、**歩き終わってから**（サーバーの印の無いファイルは、印のあるファイルから
+  // 読み込まれているときだけ数える・memoryKeep.ts の `serverReachableFiles`）。歩く処理は1つのまま
+  const sources: ScannedSource[] = []
+  const memoryCandidates = new Map<string, number[]>()
   const listens: string[] = []
   let scanned = 0
   let skipped = 0
@@ -171,12 +195,28 @@ export function scanDataUsage(projectDir: string): DataLayerScan {
       if (usesDataLayer(text)) usedBy.push(rel)
       const lines = fileWriteLines(text)
       if (lines.length > 0) writesFiles.push({ file: rel, lines })
+      // **メモリだけに持つ形も、同じ歩きの中で拾う**（2026-10-01）。除外（SKIP_DIRS・
+      // koto-data.js/.cjs など Koto が置くもの）は、ここへ来る前の上の段で既に効いており、
+      // `writesFiles` と**同じ名簿・同じ場所**になる（歩く処理を二つ持たない・掟10）。
+      // これも koto-data を使っているかとは別の観点なので else にしない。
+      // **サーバーの印を問わず、まず候補を集める**（`lib/store.ts` のように、入れ物だけを
+      // 別のファイルに分けた形は、そのファイル自身にはサーバーの印が無い・2026-10-01 検分）
+      sources.push({ file: rel, server: looksLikeServerCode(text), imports: localImportSpecs(text) })
+      const memoryLines = memoryKeepLines(text, { assumeServer: true })
+      if (memoryLines.length > 0) memoryCandidates.set(rel, memoryLines)
       // **これは別の観点**（データの扱いではなく起動の形）なので else にしない
       if (serverListens(text)) listens.push(rel)
     }
   }
   walk(projectDir, 0)
-  return { usedBy, writesFiles, listens, truncated: skipped > 0, skipped }
+  // 候補のうち、**サーバー側のファイル**（印がある、または印のあるファイルから読み込まれている）だけ
+  if (memoryCandidates.size > 0) {
+    const serverSide = serverReachableFiles(sources)
+    for (const [file, lines] of memoryCandidates) {
+      if (serverSide.has(file)) keepsInMemory.push({ file, lines })
+    }
+  }
+  return { usedBy, writesFiles, keepsInMemory, listens, truncated: skipped > 0, skipped }
 }
 
 /** `ensureDataLayer` の結果。**「置いたか」と「使える状態か」は別。** */
@@ -194,10 +234,85 @@ export type EnsureDataLayerResult = {
   file: string | null
   /** このアプリの形（import か require か）。 */
   moduleKind: ModuleKind
+  /** 既にあったものを、新しい版へ**差し替えた**か（印が一致したときだけ）。 */
+  replaced: boolean
+  /**
+   * **既にあるものが古いのに、Koto が差し替えられなかったか。**
+   *
+   * 印（`koto-data-template:`）が無い＝Koto が置いたままだと確かめられないもの。
+   * 黙って上書きすると、データベース版に差し替えた利用者の仕事を消してしまう。
+   * **触らずに画面へ知らせる**ための印。
+   */
+  needsUpdate: boolean
+}
+
+/** テンプレートに入れてある「Koto が置いた版」の印。 */
+const TEMPLATE_STAMP_RE = /^\/\/ koto-data-template: ([0-9A-Za-z._-]+)[ \t]*$/m
+
+/** 印を読む（無ければ null）。**純関数**。 */
+export function dataLayerStamp(text: string | null | undefined): string | null {
+  const m = TEMPLATE_STAMP_RE.exec(String(text ?? ''))
+  return m ? m[1] : null
 }
 
 /**
- * データ層のファイルが要るなら置く。**既にあれば触らない。**
+ * 版の印を**数として**比べる（純関数）。`a` が新しければ正、古ければ負、同じなら 0。
+ *
+ * ── なぜ文字列比較ではいけないか（2026-09-25 検分の指摘27）──────────────
+ * 印は `2026-09-24.2` のように「日付.連番」で、以前はこれを文字列のまま
+ * `next > now` で比べていた。文字列では桁数を見ないので
+ * `'2026-09-24.9' > '2026-09-24.10'` が **true** になる——つまり同じ日の
+ * 10版目以降を配ると、利用者の手元にある `.9` のファイルが「もう新しい」と
+ * 判定され、**差し替えが黙って止まる**。画面にも何も出ない（needsUpdate も立たない）。
+ * 混み合ったときのやり直しも同時更新の検知も入らないまま、公開中のアプリが動き続ける。
+ *
+ * 数字のかたまりごとに数として比べる（`2026-09-24.10` → 2026, 9, 24, 10）。
+ * 数字が1つも無い印どうしは「同じ」＝**差し替えない**（分からないときは触らない側へ倒す）。
+ */
+export function compareDataLayerStamp(a: string, b: string): number {
+  const parts = (s: string): number[] =>
+    String(s ?? '').split(/[^0-9]+/).filter(x => x.length > 0).map(x => Number(x))
+  const pa = parts(a)
+  const pb = parts(b)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return 0 // 読めない印では動かさない
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * **既にあるファイルをどうするか**（純関数・掟10で1か所にまとめてある）。
+ *
+ * ── なぜ要るのか（2026-09-24 検分）──────────────────────────────────
+ * 直すきっかけは「**いま公開中のアプリ**が 429 で真っ白になる／後勝ちで消える」
+ * ことだった。ところがその対象は**すべて既に koto-data を持っている**ので、
+ * 「既にあれば触らない」だけでは、いちばん効く直しがいちばん必要なアプリに届かない。
+ *
+ * かといって黙って上書きはできない。この層は「あとでデータベース版に差し替える」
+ * ことを想定しているので（roadmap S-1）、**差し替えたものを元に戻したら事故**である。
+ *
+ * そこでテンプレートに**版の印**を入れ、**印があって版が古いものだけ**差し替える。
+ * 印が無いもの（印を入れる前に置かれたもの・作り替えられたもの）は**触らない**。
+ */
+export type DataLayerPlacement = 'place' | 'up-to-date' | 'replace' | 'leave-alone'
+
+export function dataLayerPlacement(existing: string | null, template: string): DataLayerPlacement {
+  if (existing === null) return 'place'
+  const now = dataLayerStamp(existing)
+  const next = dataLayerStamp(template)
+  if (now === null || next === null) return 'leave-alone' // Koto が置いたままだと確かめられない
+  if (now === next) return 'up-to-date'
+  // 新しい版のときだけ差し替える（古い版を配って、直したものを巻き戻さない）。
+  // **文字列で比べないこと**（`'2026-09-24.9' > '2026-09-24.10'` は true になる）
+  return compareDataLayerStamp(next, now) > 0 ? 'replace' : 'up-to-date'
+}
+
+/**
+ * データ層のファイルが要るなら置く。**既にあるものは、Koto が置いた印が付いていて
+ * 版が古いときだけ差し替える**（印が無ければ触らず `needsUpdate` で知らせる）。
  *
  * ── 置く条件（2026-09-23 に直した。実機でアプリが起動しなくなった件）──────
  * 以前は「**すでに** koto-data を使っているファイルがあるか」だけを見ていた。
@@ -209,37 +324,70 @@ export type EnsureDataLayerResult = {
  * だから条件を「**もう使っている（usedBy）か、これから要る（writesFiles）か**」
  * に変える。自分でファイルに書き込んでいるアプリは、書き直し先がこれである。
  *
+ * **メモリだけに持つアプリ（keepsInMemory）も「これから要る」側に数える**（2026-10-01）。
+ * ③公開の「AIに書き直してもらう」は、ここが `ready` を返さないと依頼文を送らない
+ * （askAiRewritePlan）。数えないと、メモリの警告は出るのに、直す導線のボタンだけが
+ * 「保存の部品を用意できませんでした」で必ず失敗する。
+ *
  * @param publishRootDir 公開の根（`public/` があればその中）。ここへ置く。
  * @param projectDir プロジェクト直下。**渡すと package.json をここまで上へ探す**
  *   （`public/` に package.json が無い構成で形を誤らないため・2026-09-23 検分）。
  */
 export function ensureDataLayer(publishRootDir: string, projectDir?: string): EnsureDataLayerResult {
-  const none = (kind: ModuleKind): EnsureDataLayerResult => ({ placed: false, ready: false, file: null, moduleKind: kind })
+  const none = (kind: ModuleKind): EnsureDataLayerResult =>
+    ({ placed: false, ready: false, file: null, moduleKind: kind, replaced: false, needsUpdate: false })
   if (!publishRootDir) return none('cjs')
   // **形を決める前に走査する。** 読み込む側のファイル（`server.mjs` 等）の
   // 拡張子が決め手になることがあり、それを知らずに置くと読み込めない（2026-09-23 検分）
   const scan = scanDataUsage(publishRootDir)
-  const targets = [...scan.usedBy, ...scan.writesFiles.map(w => w.file)]
+  const targets = [...scan.usedBy, ...scan.writesFiles.map(w => w.file), ...scan.keepsInMemory.map(w => w.file)]
   // **アプリの形に合う方を置く。** require のアプリに import 版を置いても
   // 読み込めず、AI が package.json を書き換えて起動しなくなる（2026-09-23 実機）
   const moduleKind = projectModuleKind(publishRootDir, { projectDir, targets })
   const file = dataLayerFileFor(moduleKind)
   const dest = path.join(publishRootDir, file)
-  // **上書きしない**（差し替えられている可能性がある）。ただし「もうある」は
-  // 頼んでよい状態なので ready にする
-  if (fs.existsSync(dest)) return { placed: false, ready: true, file, moduleKind }
+  const source = templatePath(file)
+  // **勝手には上書きしない**（差し替えられている可能性がある）。印が一致する＝
+  // Koto が置いたままのものだけ、新しい版へ差し替える（判断は dataLayerPlacement）
+  if (fs.existsSync(dest)) {
+    const decision = dataLayerPlacement(readTextOrNull(dest), readTextOrNull(source) ?? '')
+    if (decision !== 'replace') {
+      return { placed: false, ready: true, file, moduleKind, replaced: false, needsUpdate: decision === 'leave-alone' }
+    }
+    // 置いたファイルには書き込み権限が無いことがある（下で読み取りだけを足しているため）
+    try { fs.chmodSync(dest, (fs.statSync(dest).mode & 0o7777) | 0o200) } catch { /* 変えられなくても試す */ }
+    try {
+      copyTemplate(source, dest)
+    } catch {
+      // 差し替えられなくても、読み込み先はある。**画面に知らせて利用者に選ばせる**
+      return { placed: false, ready: true, file, moduleKind, replaced: false, needsUpdate: true }
+    }
+    return { placed: true, ready: true, file, moduleKind, replaced: true, needsUpdate: false }
+  }
   if (targets.length === 0) return none(moduleKind)
-  fs.copyFileSync(templatePath(file), dest)
-  // **読み取りだけを足す。** copyFileSync は元の権限を引き継ぐため、アプリの中の
-  // （asar 内の）テンプレートによっては 0600 で置かれる。それがそのままコンテナへ
-  // 入ると、Node が自分のファイルを読めず
-  // `EACCES: permission denied, open '/app/koto-data.js'` で起動に失敗する
-  // （2026-08-14 実機。原因が容器の中にあるので、症状から辿るのが非常に難しい）。
-  // 書き込み権限は与えない。ここは利用者のプロジェクト内のファイルなので、
-  // **必要な分だけ**にする（Ryosuke の点検・2026-08-14）。
+  copyTemplate(source, dest)
+  return { placed: true, ready: true, file, moduleKind, replaced: false, needsUpdate: false }
+}
+
+/** 読めなければ null（**「無い」と「読めない」を同じに扱う**）。 */
+function readTextOrNull(file: string): string | null {
+  try { return fs.readFileSync(file, 'utf-8') } catch { return null }
+}
+
+/**
+ * テンプレートを複製して、**読み取りだけを足す。**
+ *
+ * copyFileSync は元の権限を引き継ぐため、アプリの中の（asar 内の）テンプレートに
+ * よっては 0600 で置かれる。それがそのままコンテナへ入ると、Node が自分のファイルを
+ * 読めず `EACCES: permission denied, open '/app/koto-data.js'` で起動に失敗する
+ * （2026-08-14 実機。原因が容器の中にあるので、症状から辿るのが非常に難しい）。
+ * 書き込み権限は与えない。ここは利用者のプロジェクト内のファイルなので、
+ * **必要な分だけ**にする（Ryosuke の点検・2026-08-14）。
+ */
+function copyTemplate(source: string, dest: string): void {
+  fs.copyFileSync(source, dest)
   try {
     const mode = fs.statSync(dest).mode & 0o7777
     if ((mode & 0o444) !== 0o444) fs.chmodSync(dest, mode | 0o444)
   } catch { /* 権限を変えられなくても置けてはいる */ }
-  return { placed: true, ready: true, file, moduleKind }
 }

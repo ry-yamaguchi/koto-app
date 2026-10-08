@@ -547,7 +547,7 @@ describe('runEngineTurn', () => {
     expect(log.some((e) => e.tag === 'executeTool')).toBe(false)
     // 2回目の返事はそのまま（警告は付かない）で、ℹ️ の事実が別の吹き出しで続く
     expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast' && e.ev.msg.content === '変更は不要です')).toBe(true)
-    const info = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg?.content === 'ℹ️ このターンでは、ファイルは変更されていません。')
+    const info = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg?.content === 'ℹ️ 今回の依頼では、ファイルは変わっていません。')
     expect(info).toBeTruthy()
     expect(info.ev.msg.toolNote).toBe(true)
   })

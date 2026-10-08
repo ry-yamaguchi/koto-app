@@ -110,7 +110,7 @@ function createDescription(kind: ResourceKind, name: string, recordedRegistry?: 
     case 'apprun-app':
       return `AppRunアプリ『${name}』を作成`
     case 'bucket':
-      return `バケット『${name}』を作成`
+      return `保存場所『${name}』を用意`
   }
 }
 
@@ -121,15 +121,15 @@ function updateDescription(kind: ResourceKind, name: string): string {
     case 'image':
       return `コンテナイメージ『${name}』を再ビルド・更新`
     case 'apprun-app':
-      return `AppRunアプリ『${name}』を再デプロイ（最新の内容を反映・公開URLは維持）`
+      return `AppRunアプリ『${name}』を更新（公開し直し・最新の内容を反映・公開URLは維持）`
     case 'bucket':
-      return `バケット『${name}』を再構成（データは保持）`
+      return `保存場所『${name}』を再構成（データは保持）`
   }
 }
 
 function deleteDescription(kind: ResourceKind, name: string, stateful: boolean): string {
   if (stateful) {
-    return `バケット『${name}』を削除（データが消えます）`
+    return `保存場所『${name}』にある、このプロジェクトのデータを削除（データが消えます）`
   }
   switch (kind) {
     case 'registry':
@@ -139,7 +139,7 @@ function deleteDescription(kind: ResourceKind, name: string, stateful: boolean):
     case 'apprun-app':
       return `AppRunアプリ『${name}』を削除`
     case 'bucket':
-      return `バケット『${name}』を削除（データが消えます）`
+      return `保存場所『${name}』にある、このプロジェクトのデータを削除（データが消えます）`
   }
 }
 

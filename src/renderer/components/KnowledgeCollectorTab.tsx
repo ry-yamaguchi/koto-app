@@ -186,7 +186,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
         ) : searchConfig === null ? (
           <div className="space-y-3">
             <p className="text-sm text-ink leading-relaxed">
-              Web検索のAPIキーが未登録です。認証情報（⌘ ,）の「Web検索」で Tavily または Brave の無料APIキーを登録してください。
+              Web検索のAPIキーが未登録です。メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）の「Web検索」で Tavily または Brave の無料APIキーを登録してください。
             </p>
             <button
               onClick={onOpenCredentials}
@@ -312,7 +312,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
 
       {/* 注記 */}
       <p className="text-[11px] text-ink-muted leading-relaxed">
-        取得したページは私的利用の範囲でご利用ください。資料には出典URLが記録されます。アップロードした資料はさくらのクラウド（AI Engine）に保存されます。
+        取得したページは私的利用の範囲でご利用ください。資料には出典URLが記録されます。取り込んだ資料は、さくらのAI Engine（さくらインターネットのサーバー）に保存されます。
       </p>
     </div>
   )

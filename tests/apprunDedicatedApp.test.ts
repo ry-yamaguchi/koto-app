@@ -15,6 +15,7 @@ import {
   bareIp,
   collectBareLbAddresses,
   appDeleteRetryable,
+  appDeleteNeedsReDeactivation,
   appDeleteExhaustedMessage,
   letsEncryptEmailFieldState,
   isLikelyEmail,
@@ -375,19 +376,43 @@ describe('appDeleteRetryable: アプリ削除の400が、やり直す価値が�
   })
 })
 
-describe('appDeleteExhaustedMessage: 3回やり直しても消えないときの文面は、理由ごとに変え、嘘にならないようにする', () => {
-  it('active version → 「有効なバージョンが解消しません」＋課金が続きます＋生のmessageを含む', () => {
+describe('appDeleteNeedsReDeactivation: 待ってやり直すとき、無効化から打ち直すのは「active version」のときだけ（2026-10-07）', () => {
+  it('"active version" → true（無効化がまだ効いていないことがある）', () => {
+    expect(appDeleteNeedsReDeactivation('Cannot delete application because it has active version')).toBe(true)
+    expect(appDeleteNeedsReDeactivation('ACTIVE VERSION')).toBe(true)
+  })
+  it('★ "currently running" → false（無効化は済んでいる。打ち直さず、待って DELETE だけやり直す）', () => {
+    expect(appDeleteNeedsReDeactivation('Cannot delete application because it is currently running')).toBe(false)
+  })
+  it('その他・null・空文字 → false', () => {
+    expect(appDeleteNeedsReDeactivation('Some other reason entirely')).toBe(false)
+    expect(appDeleteNeedsReDeactivation(null)).toBe(false)
+    expect(appDeleteNeedsReDeactivation(undefined)).toBe(false)
+    expect(appDeleteNeedsReDeactivation('')).toBe(false)
+  })
+})
+
+describe('appDeleteExhaustedMessage: 待っても消えないときの文面は、理由ごとに変え、嘘にならないようにする。次にすることと生の応答を載せる', () => {
+  it('active version → 「有効なバージョンが解消しません」＋次にすること＋課金は続いている（終わりの条件は言わない）＋生のmessageを含む', () => {
     const msg = appDeleteExhaustedMessage('Cannot delete application because it has active version', 'raw-detail')
     expect(msg).toContain('有効なバージョンが解消しません')
-    expect(msg).toContain('課金が続きます')
+    expect(msg).toContain('しばらくしてから、もう一度押してください')
+    expect(msg).toContain('クラスタなどの課金は続いています')
+    expect(msg).not.toContain('アプリが消えるまで') // アプリを消せば課金が止まるように読めてしまう（確かめていない断定）
     expect(msg).toContain('raw-detail')
+    expect(msg).not.toContain('＝') // 新しい文では「＝」のメモ書きを使わない
   })
 
-  it('currently running → 「有効なバージョン」とは書かない（決め打ちの文面は嘘になる）', () => {
+  it('currently running → 「有効なバージョン」とは書かない（決め打ちの文面は嘘になる）。次にすることと、アプリは無効化済みであることが分かる', () => {
     const msg = appDeleteExhaustedMessage('Cannot delete application because it is currently running', 'raw-detail')
     expect(msg).not.toContain('有効なバージョン')
-    expect(msg).toContain('課金が続きます')
+    expect(msg).toContain('まだコンテナが止まっていません')
+    expect(msg).toContain('しばらくしてから、もう一度押してください')
+    expect(msg).toContain('無効化済み')
+    expect(msg).toContain('クラスタなどの課金は続いています')
+    expect(msg).not.toContain('アプリが消えるまで')
     expect(msg).toContain('raw-detail')
+    expect(msg).not.toContain('＝') // 新しい文では「＝」のメモ書きを使わない
   })
 
   it('該当しない理由・null → 汎用の文面（「有効なバージョン」を名乗らない）', () => {

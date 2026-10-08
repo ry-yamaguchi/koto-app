@@ -1,6 +1,6 @@
 {
   "name": "koto",
-  "version": "0.6.19",
+  "version": "0.6.20",
   "description": "AIと対話してアプリを作り、公開できるmacOS向けIDE",
   "main": "dist/main/main.js",
   "license": "Apache-2.0",
@@ -20,6 +20,7 @@
     "dist": "npm run check:build && npm run fetch:crane && npm run gen:licenses && npm run build && electron-builder --mac --config electron-builder.config.js && node scripts/dmg-notarize.mjs --auto",
     "smoke": "node scripts/smoke-test.mjs",
     "check:models": "node scripts/check-models.mjs",
+    "check:pricing": "node scripts/check-pricing.mjs",
     "check:links": "node scripts/check-links.mjs",
     "probe:models": "node scripts/probe-models.mjs",
     "release": "npm version patch --no-git-tag-version && npm run dist && npm run smoke",

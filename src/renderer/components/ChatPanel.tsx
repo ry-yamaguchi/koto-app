@@ -36,7 +36,7 @@ import { turnKey, updateTurn } from '../chatTurnRegistry'
 import { useConfirm } from '../useConfirm'
 import { runClearConversation } from '../confirmedActions'
 import { chatStatusLine } from '../../shared/chatStatusLine'
-import { streamTimeoutMessage } from '../../shared/chatTimeouts'
+import { decideRagToggleAction } from '../../shared/aiToolsCore'
 
 type Message = ChatMessage
 
@@ -414,10 +414,20 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
    */
   const toggleRag = useCallback(async () => {
     if (!projectDir || ragBusy) return
-    const next = !ragSettings?.enabled
     setRagBusy(true)
     try {
-      if (next && apiKey) {
+      // W-44: 判定は decideRagToggleAction（shared/aiToolsCore.ts）の純関数に一元化。
+      // キーの有無を、保存済みの ragSettings.enabled より先に見る（検分の指摘8・2026-09-27）。
+      const decision = decideRagToggleAction(!!apiKey, !!ragSettings?.enabled)
+      if (decision.kind === 'needsKey') {
+        applyOp({
+          kind: 'append',
+          msg: { role: 'assistant', content: '📚 資料は、さくらのAI Engine のキーを登録すると使えます。' },
+        })
+        return
+      }
+      const next = decision.next
+      if (next) {
         const r = await window.electronAPI.rag.list(apiKey, { pageSize: 1 })
         if (r.ok && (r.documents?.length ?? 0) === 0) {
           applyOp({
@@ -774,7 +784,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           kind: 'append',
           msg: {
             role: 'assistant',
-            content: `ℹ️ システムからのお知らせ：公開先を「${label}」に変更しました。今のコードがこの環境で動くか、次のメッセージでAIに確認してもらえます。環境によっては作り直しが必要な場合があります。`,
+            content: `ℹ️ 公開先を「${label}」に変えました。いまの作りのまま動くか心配なときは、「この公開先で動くか確認して」と送ってください（公開先によっては作り直しが要ることがあります）。`,
           },
         })
         return
@@ -819,13 +829,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           return
         }
       }
+      // W-49: 自分の発言として並ぶ吹き出しなので、list_files/read_file のような内部名や
+      // 「公開先プロファイルの推奨事項」のような専門語を出さず、短い言葉で同じ依頼を伝える
+      // （決定: 案2＝隠さず短く書き直す。全文表示という作者の透明性方針は変えない）。
       const prompt =
-        `公開先を「${label}」に変更しました。いま開いているプロジェクトのコードがこの公開先でそのまま動くか確認してください。` +
-        'まず list_files で構成を見て、必要なファイルだけ read_file で読み、結論を先に一言で述べてください: ' +
+        `公開先を「${label}」に変更しました。今のコードがこの公開先でそのまま動くか確認してください。` +
+        '結論を先に一言で述べてください: ' +
         '「✅ そのまま動きます」／「✅ そのまま動きます（任意の改善あり）」／「⚠️ このままでは動きません」。' +
         '⚠️ は動かない確実な根拠（必須ファイルの欠落・この環境が対応しない言語など）がある場合だけにし、' +
         '動くけれど理想形でない点は「任意の改善」として1〜2行で簡潔に添えるだけにしてください。' +
-        '公開先プロファイルの「推奨」事項（ポートの受け方・ヘルスチェックの有無など）や、公開時の設定で吸収できる事柄は「動かない根拠」にしないでください。' +
+        '公開先の設定で吸収できる事柄は「動かない根拠」にしないでください。' +
         '対応が必要な場合は、既存ファイルの書き換えではなく不足ファイルの追加を優先した最小の提案をし、私の承認を待ってから実行してください。'
       void chat.send(prompt, [])
     }
@@ -844,6 +857,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     }
     const budget = checkBeforeRequest(apiKey)
     if (!budget.allowed) return // 上限超過時はあいさつをスキップ
+    // W-21（2026-09-27決定・別案）: allowed:true のまま warning が付くことがある（上限は超えたが
+    // 「止める」設定がオフ）。あいさつの間は下の replaceAll が吹き出しを丸ごと差し替えるため、
+    // ここでは控えておき、すべて出し終えた finally で末尾に付け足す（止めない・知らせるだけ）。
+    const budgetWarning = budget.warning
     setGreetLoading(true)
     const kickoff =
       'これからこのプロジェクトの開発を始めます。まず、把握した内容（プロジェクトの目的と構成）を1〜2文で要約し、' +
@@ -876,9 +893,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         (abort) => { greetAbortRef.current = abort },
       )
       if (timedOut) {
-        // 黙って終わらせない。文言は shared/chatTimeouts.ts の一元定義（秒数は定数から作られる）に、
-        // あいさつ用の案内（catch と同じ固定文）を添える。
-        applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: `${streamTimeoutMessage(timedOut)}\n\n（あいさつを準備できませんでした。つくりたいものを教えてください。）` }] })
+        // 黙って終わらせない。W-103: 時間切れの定型文（streamTimeoutMessage）は「もう一度お試し
+        // ください」で終わり、その直後に続けていた「つくりたいものを教えてください」と並ぶと
+        // 「もう一度」に対応する操作が無いあいさつでは何を試せばいいか迷う。あいさつ用の短い1文だけにする。
+        applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: '⏱ AIからの返事が届かなかったので、あいさつは省きました。つくりたいものを、そのまま送ってください。' }] })
       }
       recordUsage(apiKey, model, usage?.prompt_tokens ?? estimateTokens(sys + kickoff), usage?.completion_tokens ?? estimateTokens(text))
     } catch (e: any) {
@@ -889,6 +907,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     } finally {
       greetAbortRef.current = null
       setGreetLoading(false)
+      if (budgetWarning) applyOp({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: budgetWarning } })
     }
   }
 
@@ -1157,7 +1176,20 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         {pendingApproval && (
           <div className="flex justify-start">
             <div className="bg-elevated border border-sakura/60 rounded-2xl rounded-tl-md px-3 py-2.5 max-w-[90%]">
-              <p className="text-sm text-ink mb-2">✋ AIが次の操作の許可を求めています: <span className="font-mono text-sakura">{pendingApproval.label}</span></p>
+              {/* W-42: コマンド実行では label に「\n理由:」「\n⚠️ 通常と異なる場所…」が続くことがある。
+                  <p> は改行を保たないので、そのままだと1行の等幅・さくら色に埋もれて読めない
+                  （approvalPlan.ts・tests/planApproval.test.ts は変えず、表示側だけで分ける）。 */}
+              {(() => {
+                const [first, ...rest] = pendingApproval.label.split('\n')
+                return (
+                  <div className="mb-2">
+                    <p className="text-sm text-ink">✋ AIが次の操作の許可を求めています: <span className="font-mono text-sakura">{first}</span></p>
+                    {rest.length > 0 && (
+                      <p className="text-sm text-ink-secondary mt-1 whitespace-pre-wrap">{rest.join('\n')}</p>
+                    )}
+                  </div>
+                )
+              })()}
               <div className="flex gap-2">
                 <button
                   onClick={() => answerApproval(pendingApproval.id, true)}
@@ -1214,8 +1246,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           onClick={toggleWriteMode}
           className="text-[11px] text-ink-muted hover:text-ink border border-line rounded-md px-1.5 py-0.5 whitespace-nowrap"
           title={writeMode === 'auto'
-            ? 'AIのファイル保存：おまかせ（自動保存）。クリックで「毎回確認」に切替'
-            : 'AIのファイル保存：毎回確認（保存前に許可を求める）。クリックで「おまかせ」に切替'}
+            ? 'AIの作業：おまかせ（自動で進めます。危険なコマンドは確認します）。クリックで「毎回確認」に切替'
+            : 'AIの作業：毎回確認（ファイルの保存・コマンドの実行の前に確認）。クリックで「おまかせ」に切替'}
         >{writeMode === 'auto' ? '🪄 おまかせ' : '✋ 毎回確認'}</button>
         {/* 📚 資料を使うか（2026-08-25 Ryosuke と設計）。
             **設定はプロジェクトごとなのに、使う場所に一度も出ていなかった。**

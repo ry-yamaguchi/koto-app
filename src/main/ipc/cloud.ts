@@ -31,6 +31,9 @@ import { collectAppRunApps, collectDedicatedClusters } from '../cloud/inventoryC
 import { listClusters } from '../cloud/apprunDedicated'
 import { planDependencies, installTimeNote } from '../../shared/deps'
 import { markPendingFs, clearPendingFs, writePublishRecordFs, readApprunDedicatedFs } from '../publishMetaFs'
+import { withProjectLock, projectBusyMessage } from '../projectLock'
+// 進捗の送り口は1つ（記録の更新と renderer への通知を兼ねる）。2026-09-29・projectOps.ts
+import { progressReporter } from '../projectOps'
 import type { IpcDeps } from './types'
 
 // ── さくらのクラウド連携（段階1＝基盤）。cloud: 名前空間 ──
@@ -208,7 +211,7 @@ async function cleanUpOldKeys(
   const all = await storage.listPermissions()
   const targets = permissionsToCleanUp({ all, projectName, keepId })
   if (targets.length === 0) return
-  progress('🧹 古い鍵を片づけています…')
+  progress('🧹 保存場所の古い鍵を片づけています…')
   for (const id of targets) {
     try { await storage.deletePermission(id) } catch { /* 1つ失敗しても続ける */ }
   }
@@ -286,6 +289,9 @@ export async function teardownRegistry(
 }
 
 import { scanDataUsage, ensureDataLayer } from '../dataLayer'
+// 差し替えを知らせる1行は StorageNotice・Vercel・専有型と**同じ純関数**を使う（掟10。文言を二重に書かない）。
+import { dataLayerUpdateLine } from '../../shared/storageNoticeText'
+import { leftoverDataFilesFs } from './unused'
 import { ObjectStorageClient } from '../cloud/objectStorage'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
 import { parseAppStatus, judgeAppHealth, judgeRecheck, appLogUrl, askAiAboutFailure, type AppHealth } from '../../shared/appHealth'
@@ -300,12 +306,39 @@ import {
   siteIssueNote, siteCheckSummary, fixInstruction, type SiteIssue, type SiteIssueKind,
 } from '../../shared/siteCheck'
 import { publishExcludedDirNames } from '../../shared/publishExclude'
-import { sharedBucketName, isValidBucketName, consentedBuckets, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, KOTO_ROOT, type BucketMode } from '../../shared/objectStorage'
+import { sharedBucketName, isValidBucketName, consentedBuckets, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, keepMarkerKey, KOTO_ROOT, type BucketMode } from '../../shared/objectStorage'
 import { planTagCleanup, digestsToDelete, normalizeKeep, DEFAULT_KEEP } from '../../shared/imageRetention'
 import { listTags, resolveDigests, deleteDigests } from '../cloud/imageCleanup'
 import { markerUrl, matchesMarker, verifyDelaysMs, verifyMessage, canVerify, judgeVerifyProbe, type VerifyOutcome, type DedicatedProbe } from '../../shared/publishVerify'
 import { resolvePublishRoot } from '../publishRootFs'
 import { readTraffics, readVersions, trafficState } from '../../shared/apprunTraffic'
+
+/** 画面へ返す保存場所1件分（`storage:placement` の戻りの形）。 */
+export type ConsentedPlacement = { bucket: string; prefix: string; shared: boolean; consentedAt: string }
+
+/**
+ * このプロジェクトの同意済みの保存場所を**全件**読む（2026-09-25 検分の指摘23）。
+ *
+ * ── なぜ全件なのか ────────────────────────────────────────────────
+ * 破棄（⑥「すべて削除する」）は `storagePlacementsOf`（src/main/cloud/storageForTarget.ts）で
+ * **全件**を片づける。ところが確認ダイアログの材料になるこの口は**先頭の1件しか返して
+ * いなかった**ので、env.json に保存場所が2件ある状態（手で編集した・過去の記録が残っている）では
+ * 「保存場所『A』（中のデータも消えます）」としか出ないまま、**名前が一度も出なかった『B』と
+ * その中のデータまで消える**。元に戻せない削除を、名指ししないまま実行させてはいけない
+ * （掟10「お金・破壊の歯止め」）。**確認で見せるものと、実際に消すものを一致させる。**
+ *
+ * 判断（同意済みかどうか）は `consentedBuckets`（shared の一元定義）に任せ、ここでは書かない。
+ */
+export function consentedPlacements(projectDir: string): ConsentedPlacement[] {
+  const spec = loadCloudSpec(String(projectDir || ''))
+  if (!spec) return []
+  return consentedBuckets(spec.persistence?.objectStorage).map(b => ({
+    bucket: b.bucket,
+    prefix: b.prefix ?? '',
+    shared: b.shared !== false,
+    consentedAt: b.consentedAt ?? '',
+  }))
+}
 
 export function registerCloudHandlers(_deps: IpcDeps) {
   // 接続テスト＝APIキーの権限を 3 点で非破壊チェックする。
@@ -473,7 +506,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         created = true
         registryMetaOutcome = res.metaSupported
       }
-      if (!registryId) return { ok: false, message: 'レジストリのIDを取得できませんでした（レスポンス形を要確認）' }
+      if (!registryId) return { ok: false, message: 'レジストリのIDを取得できませんでした。さくらのクラウドのコントロールパネルでご確認のうえ、もう一度お試しください。' }
 
       // push 用ユーザーを作成（POST、権限 readwrite）。既に存在する場合は PUT でパスワード更新（冪等）。
       const add = await client.addRegistryUser(region, registryId, { username, password, permission: 'readwrite' })
@@ -562,7 +595,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         return { ok: false, message: `アカウント情報の取得に失敗しました（HTTP ${st.status}）${apiErrorMessage(st.data) ? ' — ' + apiErrorMessage(st.data) : ''}` }
       }
       const accountId = st.dryRun === false ? extractAccountId(st.data) : null
-      if (!accountId) return { ok: false, message: 'アカウントIDを取得できませんでした（auth/status のレスポンス形を要確認）' }
+      if (!accountId) return { ok: false, message: 'アカウントIDを取得できませんでした。さくらのクラウドのコントロールパネルでご確認のうえ、もう一度お試しください。' }
 
       // 2. 契約の請求一覧から直近の確定請求額を取得。
       const r = await client.getBillByContract(zone, accountId)
@@ -577,7 +610,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           }
           return { ok: true, amountYen: bill.amountYen, asOf }
         }
-        return { ok: false, message: '請求レスポンスから金額を読み取れませんでした（レスポンス形を要確認）' }
+        return { ok: false, message: '請求額を読み取れませんでした。さくらのクラウドのコントロールパネルでご確認ください。' }
       }
       return { ok: false, message: r.dryRun === false ? `コスト取得に失敗しました（HTTP ${r.status}）${apiErrorMessage(r.data) ? ' — ' + apiErrorMessage(r.data) : ''}` : '予期しない応答' }
     } catch (e: any) {
@@ -701,7 +734,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (r.dryRun === false && (r.status === 401 || r.status === 403)) {
         return { ok: false, message: '認証に失敗しました（クラウドのAPIキーを確認してください）' }
       }
-      return { ok: false, message: r.dryRun === false ? `配分の取得に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
+      return { ok: false, message: r.dryRun === false ? `いま見えているものを取得できませんでした（HTTP ${r.status}）` : '予期しない応答' }
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
     }
@@ -898,31 +931,61 @@ export function registerCloudHandlers(_deps: IpcDeps) {
   //      → 実クライアント（dryRun=false）→ applyPlan → 成功なら state 保存
   // 進捗は event.sender へ 'cloud:apply-progress' で逐次通知する。
   ipcMain.handle('cloud:apply', async (event, projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }) => {
-    const progress = (msg: string) => {
-      try { event.sender.send('cloud:apply-progress', msg) } catch { /* ウィンドウ破棄時は無視 */ }
-    }
+    // 進捗は projectOps.ts の1つの送り口（progressReporter）を通す: 処理の記録を更新し、これまでどおり
+    // renderer へも送る（窓が閉じていても落ちない）。閉じて開き直した画面は、記録から続きを読む。
+    const progress = progressReporter(projectDir, msg => event.sender.send('cloud:apply-progress', msg))
     // 値の形は main で検証する。'koto'/'sakura' 以外（renderer からの取り違え等）は
     // 未指定として扱う——applyPlan は decision 未指定を「食い違えば止めて聞く」に倒す
     // ので、不正値を勝手にどちらかへ倒すより安全（scaleDecision.ts の judgeScale と同じ方針）。
     const scaleDecision = opts?.scaleDecision === 'koto' || opts?.scaleDecision === 'sakura' ? opts.scaleDecision : undefined
+    // 同じプロジェクトの公開・破棄を二重に走らせない（2026-09-29・src/main/projectLock.ts）。
+    // 公開の本体は main の1回の IPC で最後まで進むので、**画面を閉じて開き直して、もう一度「公開」を
+    // 押すと二重に走る**。断ったときは**外部の API を1件も呼ばない**（下の本体に入らない）。
+    // **開始マーカー（markPendingFs）より外側で鍵を取る**——断られた側が、走っている公開の印を
+    // 書き換えたり（後始末の finally で）消したりしないため。
+    const locked = await withProjectLock(projectDir, '公開', async () => {
     // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。main の1 invoke は
     // 完走するが、記録（下の成功時の書き込み）が起きるのは最後なので、開始時点でも分かるように
     // 残す。API呼び出しが成功/失敗いずれで終わっても、最下部の finally で必ず消す（roadmap #20）。
     markPendingFs(projectDir, 'sakura-apprun')
+    // koto-data を新しい版へ差し替えたときの1行（下の ensureDataLayer で入る。何もしていなければ空）。
+    let dataLayerLine = ''
+    /**
+     * 公開の結果に「koto-data を差し替えた」の1行を**必ず**載せる（2026-09-25 検分の指摘13）。
+     *
+     * `ensureDataLayer` は 2026-09-24 から「印があって版が古いもの」を**上書き**する。
+     * ここは戻り値を捨てていたので、公開ボタンを押しただけで利用者のファイルが書き換わるのに
+     * 画面にも 🕘 履歴にも何も出なかった（退避も通らないので戻せない）。
+     * 成功したときは `executed`（画面が「実行（executed）」として並べる）、
+     * 失敗したときはメッセージの末尾に足す（失敗の画面は message しか出さないため）。
+     * Vercel（notice）・専有型（warnings）の同じ守りと形を揃えてある。
+     */
+    const withDataLayerNote = <T extends { ok: boolean; message?: string; executed?: string[] }>(r: T): T => {
+      if (!dataLayerLine) return r
+      return r.ok
+        ? { ...r, executed: [...(r.executed ?? []), dataLayerLine] }
+        : { ...r, message: [r.message, dataLayerLine].filter(Boolean).join('\n') }
+    }
     try {
       // **公開物を組み立てる前に、koto-data を置く**（2026-09-23 検分）。
       // AI への指示（aiContext.ts の DATA_RULE）は「Koto が用意します」と約束しているが、
       // 以前の入口は「保存場所を用意する」と「AIに書き直してもらう」の2つだけだった。
       // どちらも通らずに公開すると、`require('./koto-data.cjs')` の読み込み先が
       // イメージに入らず、コンテナが `Cannot find module` で起動できない。
-      // **既にあれば触らないので、何度呼んでも安全。**
-      try { ensureDataLayer(resolvePublishRoot(projectDir), projectDir) } catch { /* 置けなくても公開は続ける */ }
+      //
+      // **「既にあれば触らない」ではない**（2026-09-24 以降）。印が付いていて版が古いものは
+      // **上書きされる**ので、ここに「何度呼んでも安全」と書くのは嘘になる。
+      // 書き換えたことは withDataLayerNote で公開の結果に必ず載せる（指摘13）。
+      try {
+        const layer = ensureDataLayer(resolvePublishRoot(projectDir), projectDir)
+        if (layer.replaced) dataLayerLine = dataLayerUpdateLine({ ok: true, file: layer.file, replaced: true })
+      } catch { /* 置けなくても公開は続ける */ }
 
       const creds = loadCredentials()
-      if (!creds) return { ok: false, message: 'APIキー未登録（先にアクセストークン/シークレットを登録してください）' }
+      if (!creds) return withDataLayerNote({ ok: false, message: 'APIキー未登録（先にアクセストークン/シークレットを登録してください）' })
 
       const spec = loadCloudSpec(projectDir)
-      if (!spec) return { ok: false, message: 'env.json がありません（先に環境スペックを作成してください）' }
+      if (!spec) return withDataLayerNote({ ok: false, message: 'env.json がありません（先に環境スペックを作成してください）' })
 
       const state = loadCloudState(projectDir, spec)
       let plan = computePlan(spec, state)
@@ -949,7 +1012,12 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       //    （Docker デーモン不要。Dockerfile も不要。実体は cloud/imagePublish.ts の
       //    prepareAppImage に集約——専有型の「⑧ アプリを公開する」からも同じ関数を呼ぶ・掟10）。
       if (spec.service.source.type !== 'image' && planTouchesApp(plan)) {
-        const prepared = await prepareAppImage({ projectDir, spec, state, creds, progress })
+        // 差し替えの1行は**受け取った時点で**載せる（2026-09-25 検分の指摘13）。ここで止まると
+        // 画面は message しか出さないので、withDataLayerNote を通さないと
+        // 「公開ボタンを押しただけで koto-data が書き換わった」ことが誰にも届かない。
+        // **`if (!prepared.ok) return prepared` の形は変えない**——この1行そのものを
+        // tests/imagePublishWiring.test.ts が固定している（失敗を無視して先へ進まないこと）。
+        const prepared = withDataLayerNote(await prepareAppImage({ projectDir, spec, state, creds, progress }))
         if (!prepared.ok) return prepared
         publishedTag = prepared.tag
         publishedImage = prepared.image
@@ -978,7 +1046,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         } catch (e: any) {
           // 保存場所を使うと決めたアプリなので、**黙って進めない**。
           // ここで進めると、データの消えるアプリが公開される
-          return { ok: false, message: `保存場所に接続できませんでした: ${e?.message ?? e}` }
+          return withDataLayerNote({ ok: false, message: `保存場所に接続できませんでした: ${e?.message ?? e}` })
         }
       }
 
@@ -1134,7 +1202,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       progress(finallyOk ? '✅ 完了' : health?.pending ? '⏳ 起動を確認できていません' : '⚠️ 失敗しました')
       // 確認できたときだけ一言添える（確認できない公開もあるので、無言を失敗と混ぜない）
       const verifyNote = verified ? verifyMessage(verified, verifiedStatus) : (runtimeSkipNote ?? '')
-      return {
+      return withDataLayerNote({
         ok: finallyOk,
         executed: result.executed,
         skipped: result.skipped,
@@ -1150,13 +1218,15 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         // 起動のしかたがさくら側と食い違い、止めて聞いているときだけ載る（画面が選択カードを出す）
         ...(result.needsScaleDecision ? { needsScaleDecision: result.needsScaleDecision } : {}),
         ...(result.adoptedScaleMin !== undefined ? { adoptedScaleMin: result.adoptedScaleMin } : {}),
-      }
+      })
     } catch (e: any) {
       progress('⚠️ 失敗しました')
-      return { ok: false, message: e?.message ?? String(e) }
+      return withDataLayerNote({ ok: false, message: e?.message ?? String(e) })
     } finally {
       clearPendingFs(projectDir)
     }
+    }, { target: 'sakura-apprun', handler: 'cloud:apply' })
+    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
   })
 
   // ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）────────────────────────
@@ -1460,6 +1530,12 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
   // 破棄: 現在の state の全リソースを削除するプラン（空spec相当）を作って applyPlan（confirmed 必須）
   ipcMain.handle('cloud:teardown', async (_, projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }) => {
+    // 進み具合は処理の記録だけへ通す（この IPC は renderer へ進捗を送っていない。閉じて開き直した画面が
+    // 「いま何をしているか」を続きから読めるように、段の変わり目を記録する）。2026-09-29・projectOps.ts
+    const progress = progressReporter(projectDir)
+    // 公開・ほかの破棄と同時に走らせない（2026-09-29・src/main/projectLock.ts）。
+    // 断ったときは**外部の API を1件も呼ばない**（下の本体に入らない）。
+    const locked = await withProjectLock(projectDir, '削除', async () => {
     try {
       const creds = loadCredentials()
       if (!creds) return { ok: false, message: 'APIキー未登録（先にアクセストークン/シークレットを登録してください）' }
@@ -1482,7 +1558,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           stateful: r.stateful,
           destructive: true,
           description: r.stateful
-            ? `バケット『${nameFromRef(r)}』を削除（データが消えます）`
+            ? `保存場所『${nameFromRef(r)}』にある、このプロジェクトのデータを削除（データが消えます）`
             : `${r.kind}『${nameFromRef(r)}』を削除`,
         })),
         hasDestructive: state.resources.length > 0,
@@ -1503,6 +1579,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
       const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
       let result: Awaited<ReturnType<typeof applyPlan>>
+      progress('🗑 公開したものを削除しています…')
       try {
         result = await applyPlan({ plan, spec, state, client, confirmed: opts?.confirmed === true, ...(storage ? { storage } : {}) })
       } finally {
@@ -1537,6 +1614,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           const regCreds = registryName ? { name: registryName } : null
           if (regCreds?.name && opts?.confirmed === true && opts?.deleteRegistry !== false) {
             const region = (typeof spec.region === 'string' && spec.region) ? spec.region : 'is1a'
+            progress('🗑 コンテナレジストリを削除しています…')
             // B（2026-09-16 の検分）: 一覧の取得が失敗しても・例外が起きても黙らない（すぐ隣の
             // 削除失敗の行と同じ語り口で伝える）。判断は teardownRegistry に集約（掟10）。
             const outcome = await teardownRegistry(client, region, regCreds.name)
@@ -1551,6 +1629,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
         // 資源を空にした state を保存する。**レジストリを残したときは registryName を残す**
         // （消すと、残したレジストリを Koto が二度と見つけられず・消せなくなる）。
+        progress('📝 記録を更新しています…')
         saveCloudState(projectDir, stateToSave({ ok: true, state: result.state, kind: 'teardown', registryDeleted }))
       } else {
         // **失敗しても記録する。** 2026-08-14、保存場所の削除が 403 で落ちたとき、
@@ -1565,19 +1644,38 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         ? (result.state.resources.find(r => r.kind === 'bucket')?.id ?? null)
         : null
 
+      // 利用者が「レジストリは残す」と選んだとき、**残ったレジストリ**（残れば月額も続く）の事実。
+      // 警告は**選択ではなく、この事実から**作る（画面の破棄の結果も、閉じて開き直したあとの処理の記録も、
+      // 同じこの返り値から同じ関数で作る＝その場と開き直しで食い違わない・2026-09-30 検分の指摘6）。
+      //
+      // **破棄の成否に関わらず、残す選択のレジストリは残っている**: レジストリを消すのは、破棄が成功したときの
+      // 上の `deleteRegistry !== false` の分岐だけ。以前は `result.ok` のときしか返しておらず、破棄が途中で失敗した
+      // （保存場所を消せなかった等）回は、その場の画面は月額が続くと言うのに、開き直した画面からは警告が消えた。
+      //   ・keptRegistryName … 記録にレジストリ名がある
+      //   ・keptRegistryUnnamed … 記録に名前が無い（v0.2.94 以前に公開した等）。消せないので、残っているかもしれない
+      //     （画面はこの場合も「残る」と念を押していた）。名前が無いので、文は名前なしで作る
+      const registryOnRecord = typeof state.meta?.registryName === 'string' && state.meta.registryName ? state.meta.registryName : null
+      const keepsRegistry = opts?.deleteRegistry === false
+      const keptRegistryName = keepsRegistry ? registryOnRecord : null
+      const keptRegistryUnnamed = keepsRegistry && !registryOnRecord
+
       return {
         ok: result.ok,
         executed: [...result.executed, ...extraExecuted],
         skipped: result.skipped,
         keptBucketName,
+        ...(keptRegistryName ? { keptRegistryName } : {}),
+        ...(keptRegistryUnnamed ? { keptRegistryUnnamed: true } : {}),
         // ステートフル（bucket）削除を含む場合は明示する。
         message:
           result.message ??
-          (plan.hasStatefulDelete ? 'ステートフル資源（バケット）の削除を含みます。データは失われます。' : undefined),
+          (plan.hasStatefulDelete ? '保存場所にあった、このプロジェクトのデータを削除しました。' : undefined),
       }
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
     }
+    }, { target: 'sakura-apprun', handler: 'cloud:teardown' })
+    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
   })
 
   // 破棄画面で「どのレジストリを消すか」を名前で見せるために使う（保存済み資格情報の名前だけを返す）。
@@ -1660,10 +1758,27 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         usesDataLayer: scan.usedBy.length > 0,
         usedBy: scan.usedBy,
         writesFiles: scan.writesFiles,
+        // メモリだけに持つ形の場所（2026-10-01）。**運ばないと画面は「何も無い」と読む**
+        keepsInMemory: scan.keepsInMemory,
         truncated: scan.truncated,
       }
     } catch (e: any) {
-      return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], truncated: true, message: e?.message ?? String(e) }
+      return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], keepsInMemory: [], truncated: true, message: e?.message ?? String(e) }
+    }
+  })
+
+  /**
+   * 書き直したあとに残った「中身のある古いデータ」を探す（**何も変えない・何も消さない**）。
+   *
+   * 「🔎 書き直せたか確かめる」が ✅ を返したときだけ呼ばれ、結果があれば画面に
+   * 「💾 いま入っているデータをどうしますか」を出す（2026-09-24 決定）。
+   * 探すのは既にある未使用ファイルの仕組み（ipc/unused.ts）。**新しい走査は作らない。**
+   */
+  ipcMain.handle('storage:leftoverData', (_e, projectDir: string) => {
+    try {
+      return leftoverDataFilesFs(String(projectDir || ''))
+    } catch (e: any) {
+      return { ok: false, files: [], message: e?.message ?? String(e) }
     }
   })
 
@@ -1678,7 +1793,9 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     try {
       const dir = String(projectDir || '')
       const r = ensureDataLayer(resolvePublishRoot(dir), dir)
-      return { ok: true, placed: r.placed, ready: r.ready, file: r.file, moduleKind: r.moduleKind }
+      // replaced / needsUpdate は「古い koto-data を差し替えたか・差し替えられなかったか」
+      // （2026-09-24。公開中のアプリには直しが1つも届いていなかった）
+      return { ok: true, placed: r.placed, ready: r.ready, file: r.file, moduleKind: r.moduleKind, replaced: r.replaced, needsUpdate: r.needsUpdate }
     } catch (e: any) {
       return { ok: false, placed: false, ready: false, file: null, message: e?.message ?? String(e) }
     }
@@ -1726,8 +1843,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         for (const g of pickContainerRegistries(r.data)) {
           if (g.subdomainLabel) actual.push({ kind: 'registry', id: g.subdomainLabel, name: g.subdomainLabel })
         }
-      } else failed.push('イメージの置き場')
-    } catch { failed.push('イメージの置き場') }
+      } else failed.push('イメージの置き場（コンテナレジストリ）')
+    } catch { failed.push('イメージの置き場（コンテナレジストリ）') }
 
     // ③ データの保存場所（バケット）。**利用開始前は問い合わせない**（無いので）
     try {
@@ -1972,14 +2089,14 @@ function findSiteIssues(root: string): SiteIssue[] {
         if (listed.dryRun === false && listed.ok) {
           const names = pickContainerRegistries(listed.data).map(r => r.subdomainLabel)
           const recorded = state.meta?.registryName
-          if (!recorded) add('registry', 'イメージの置き場', 'ok', '公開のときに用意します。')
-          else if (names.includes(recorded)) add('registry', 'イメージの置き場', 'ok', `『${recorded}』が使えます。`)
+          if (!recorded) add('registry', 'イメージの置き場（コンテナレジストリ）', 'ok', '公開のときに用意します。')
+          else if (names.includes(recorded)) add('registry', 'イメージの置き場（コンテナレジストリ）', 'ok', `『${recorded}』が使えます。`)
           // **直し方が分かっているなら、その場で押せるようにする**（2026-08-14 Ryosuke 指摘）
-          else add('registry', 'イメージの置き場', 'ng', `『${recorded}』が見つかりません（削除された可能性があります）。下のボタンで作り直せます。`, 'reset-registry')
+          else add('registry', 'イメージの置き場（コンテナレジストリ）', 'ng', `『${recorded}』が見つかりません（削除された可能性があります）。下のボタンで作り直せます。`, 'reset-registry')
         } else {
-          add('registry', 'イメージの置き場', 'warn', '確認できませんでした（公開はできます）。')
+          add('registry', 'イメージの置き場（コンテナレジストリ）', 'warn', '確認できませんでした（公開はできます）。')
         }
-      } catch { add('registry', 'イメージの置き場', 'warn', '確認できませんでした（公開はできます）。') }
+      } catch { add('registry', 'イメージの置き場（コンテナレジストリ）', 'warn', '確認できませんでした（公開はできます）。') }
 
       // 公開名が空いているか（**自分のアプリなら衝突ではない**）
       try {
@@ -2043,15 +2160,17 @@ function findSiteIssues(root: string): SiteIssue[] {
   /**
    * このプロジェクトの保存場所の設定を読む（③公開の案内が「用意済みか」を出すため）。
    * env.json の persistence から、**同意済みのもの**だけを返す。
+   *
+   * **`placements` は全件。`placement` は先頭の1件**（用意済みかの表示に使う古い口）。
+   * 破棄の確認のように「**何が消えるか**」を見せる画面は、必ず `placements` を使うこと
+   * —— 理由は `consentedPlacements` のコメント（2026-09-25 検分の指摘23）。
    */
   ipcMain.handle('storage:placement', (_e, projectDir: string) => {
     try {
-      const spec = loadCloudSpec(String(projectDir || ''))
-      const b = spec ? consentedBuckets(spec.persistence?.objectStorage)[0] : undefined
-      if (!b) return { ok: true, placement: null }
-      return { ok: true, placement: { bucket: b.bucket, prefix: b.prefix ?? '', shared: b.shared !== false, consentedAt: b.consentedAt ?? '' } }
+      const all = consentedPlacements(String(projectDir || ''))
+      return { ok: true, placement: all[0] ?? null, placements: all }
     } catch (e: any) {
-      return { ok: false, placement: null, message: e?.message ?? String(e) }
+      return { ok: false, placement: null, placements: [], message: e?.message ?? String(e) }
     }
   })
 
@@ -2128,6 +2247,33 @@ function findSiteIssues(root: string): SiteIssue[] {
         }
       }
 
+      // 4-b. **目印を1つ置く**（2026-09-24）。
+      //
+      // ── なぜ要るか（objectStorage.ts の keepMarkerKey のコメントが正）─────────
+      // バケットの一覧に現れるのは**オブジェクトが1つ以上あるプレフィックスだけ**。
+      // 「用意したが、まだ何も保存していない」プロジェクトは一覧に出てこないので、
+      // 同じバケットを共有する別のプロジェクトを⑥で破棄すると、teardownPlanFor が
+      // 「ほかに使っている人はいない」と判断して**バケットごと消してしまう**。
+      //
+      // 設計は前からあったのに、`putMarker` を呼ぶのは共用型 AppRun の apply
+      // （cloud/apply.ts）**1か所だけ**で、**この「用意する」ボタンの経路では
+      // 書かれていなかった**。共用型がやっているのと同じことをここでもやる
+      // （新しい判定は作らない・掟10。「正しい直し方が隣にある」形・2026-09-23 の教訓）。
+      //
+      // 置けなくても用意そのものは成立している（バケットはでき、課金も始まっている）ので、
+      // ここで失敗しても中止しない。**ただし黙らない** —— 次に同じ保存場所を共有する
+      // プロジェクトを破棄すると巻き込まれうるので、利用者に伝える。
+      let markerNote: string | null = null
+      try {
+        const marker = await createStorageAdapter(creds)
+        try { await marker.putMarker(placement.bucket, keepMarkerKey(placement.prefix ?? '')) }
+        finally { await marker.dispose() }
+      } catch (e: any) {
+        markerNote = `保存場所は用意できましたが、目印を置けませんでした（${e?.message ?? e}）。`
+          + 'このままでも保存は使えますが、同じ保存場所を共有するほかのプロジェクトを破棄したときに、'
+          + 'この保存場所が巻き込まれることがあります。一度データを保存すれば解消します。'
+      }
+
       // 5. env.json に記録する。**consentedAt がここで付く**（これが無いと
       //    planner が要求せず、公開しても用意されない）
       const file = cloudFilePath(dir, CLOUD_ENV_FILE)
@@ -2154,6 +2300,8 @@ function findSiteIssues(root: string): SiteIssue[] {
         dataLayerPlaced: placed,
         dataLayerFile,
         note: storageCostNote(mode, BUCKET_MONTHLY_YEN),
+        // 目印を置けなかったときだけ入る（置けたときは null）。画面はこれを出す
+        ...(markerNote ? { markerNote } : {}),
       }
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }

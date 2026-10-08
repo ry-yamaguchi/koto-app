@@ -15,24 +15,26 @@ describe('planApproval: write_file / edit_file', () => {
     expect(planApproval('edit_file', '{"path":"src/a.js"}', { writeMode: 'auto' })).toBeNull()
   })
 
-  it('止めるべき例: confirm モードの write_file は承認が要り、label がパスそのもの', () => {
+  // W-41（2026-09-27 決定）: パスだけでは「読む・消す・保存する」のどれか分からない。
+  // 進行中の見出しと同じ「✏️ ファイルの保存／編集（パス）」の形にそろえる。
+  it('止めるべき例: confirm モードの write_file は承認が要り、label が「✏️ ファイルの保存（パス）」', () => {
     const r = planApproval('write_file', '{"path":"src/a.js","content":"x"}', { writeMode: 'confirm' })
-    expect(r).toEqual({ label: 'src/a.js' })
+    expect(r).toEqual({ label: '✏️ ファイルの保存（src/a.js）' })
   })
 
-  it('止めるべき例: confirm モードの edit_file は「（部分編集）」が付く', () => {
+  it('止めるべき例: confirm モードの edit_file は「✏️ ファイルの編集（パス）」', () => {
     const r = planApproval('edit_file', '{"path":"src/a.js"}', { writeMode: 'confirm' })
-    expect(r).toEqual({ label: 'src/a.js（部分編集）' })
+    expect(r).toEqual({ label: '✏️ ファイルの編集（src/a.js）' })
   })
 
   it('パスが読めない（壊れたJSON）ときは「(不明なファイル)」で確認を出す（黙って通さない）', () => {
     const r = planApproval('write_file', 'not json', { writeMode: 'confirm' })
-    expect(r).toEqual({ label: '(不明なファイル)' })
+    expect(r).toEqual({ label: '✏️ ファイルの保存（(不明なファイル)）' })
   })
 
   it('path が空文字のときも「(不明なファイル)」', () => {
     const r = planApproval('write_file', '{"path":""}', { writeMode: 'confirm' })
-    expect(r).toEqual({ label: '(不明なファイル)' })
+    expect(r).toEqual({ label: '✏️ ファイルの保存（(不明なファイル)）' })
   })
 })
 

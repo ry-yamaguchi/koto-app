@@ -73,6 +73,14 @@ type CloudResourceKind = 'registry' | 'image' | 'apprun-app' | 'bucket'
 // apprunDedicated.state() と appStatus().record の両方がこの形を返す（D-4 で二重定義を避けるためここに1つ）。
 type ApprunDedicatedRecordShape = import('../shared/publishMeta').ApprunDedicatedRecord
 
+// ── プロジェクトごとの処理の記録（main のメモリ上・src/main/projectOps.ts）──────────────
+// 型は main の定義をそのまま使う（複製しない・掟10。上と同じくインライン import）。
+// `window.electronAPI.projectOps` が返す・押し出す形。
+/** 1件の記録: { op, target, handler, startedAt, running, progress, finishedAt?, result?, seen }。 */
+type ProjectOpRecordShape = import('../main/projectOps').ProjectOpRecord
+/** { running, last, earlier }。 */
+type ProjectOpsSnapshotShape = import('../main/projectOps').ProjectOpsSnapshot
+
 /** 引き取りの候補（shared/publishImport.ts の ImportCandidate と同じ形）。 */
 type ImportCandidate = {
   target: 'vercel' | 'sakura-apprun'
@@ -252,7 +260,7 @@ interface Window {
        * `runtime` は 'static'（静的サイト）か 'dynamic'（Node/PHP 等・プログラムが動く）。
        * `supported: false` は projectDir が不正なときだけ（ランタイムでは落とさない）。
        */
-      unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[]; runtime: 'static' | 'dynamic' }>
+      unusedCheck(projectDir: string): Promise<{ supported: boolean; unused: string[]; runtime: 'static' | 'dynamic'; truncated?: boolean; dataFilesReferenced?: number }>
       /**
        * 未使用ファイルを「素材（公開しません）」へ移す。移動先の同名衝突（既に同名がある／
        * 一括内で basename が重複）は全体を中止せず、shared/unusedFiles.ts の
@@ -328,8 +336,11 @@ interface Window {
        * `writesFiles` は**どのファイルの何行目か**まで返す（2026-09-23）。
        * 場所を名指しできないと、AI の「完了しました」と画面の「まだです」の
        * 間で利用者が立ち往生する。
+       *
+       * `keepsInMemory` は、入力されたデータを**メモリ（変数・配列）だけに持っている**と
+       * 思われる場所（2026-10-01）。同じ形（ファイルと、書き換えている行）で、推定である。
        */
-      scan(projectDir: string): Promise<{ ok: boolean; usesDataLayer: boolean; usedBy: string[]; writesFiles: { file: string; lines: number[] }[]; truncated?: boolean; message?: string }>
+      scan(projectDir: string): Promise<{ ok: boolean; usesDataLayer: boolean; usedBy: string[]; writesFiles: { file: string; lines: number[] }[]; keepsInMemory: { file: string; lines: number[] }[]; truncated?: boolean; message?: string }>
       /**
        * koto-data（.js / .cjs）を用意する。**既にあれば触らない。**
        *
@@ -344,11 +355,42 @@ interface Window {
         ready?: boolean
         file?: string | null
         moduleKind?: 'esm' | 'cjs'
+        /** 既にあった koto-data を、新しい版へ差し替えたか（印が一致したときだけ）。 */
+        replaced?: boolean
+        /** 古いままだが、Koto が置いた印が無いので差し替えなかった（触っていない）。 */
+        needsUpdate?: boolean
+        message?: string
+      }>
+      /**
+       * 書き直したあとに残った「中身のある古いデータ」。**何も変えない・何も消さない。**
+       *
+       * `files[].file` は**AI への依頼文にだけ**使う（画面にファイル名を出さない・
+       * 2026-09-23 作者の指摘）。`detail` は「joinCode あり、dates 0件」のような
+       * 中身の手がかりで、これも依頼文に入れる（渡さないと AI は記憶で答える）。
+       */
+      leftoverData(projectDir: string): Promise<{
+        ok: boolean
+        files: { file: string; detail: string }[]
+        /** 走査を打ち切ったか（見ていない範囲がある）。**0件を「無かった」と断定しない**ために使う。 */
+        truncated?: boolean
+        /** 名前がどこかに出ていたので未使用に出なかった、データらしきファイルの件数。 */
+        referenced?: number
         message?: string
       }>
       status(): Promise<{ ok: boolean; siteId?: string; siteName?: string; s3Endpoint?: string; siteReady: boolean; buckets: { name: string }[]; suggested?: string; message?: string }>
       createBucket(name: string): Promise<{ ok: boolean; bucket?: string; message?: string }>
-      placement(projectDir: string): Promise<{ ok: boolean; placement: { bucket: string; prefix: string; shared: boolean; consentedAt: string } | null; message?: string }>
+      /**
+       * `placement` は先頭の1件（「用意済みか」の表示に使う）。
+       * **「何が消えるか」を見せる画面は `placements`（全件）を使うこと**——破棄は全件を
+       * 片づけるので、1件だけ名指しすると、名前が出なかった保存場所とデータまで消える
+       * （2026-09-25 検分の指摘23・掟10）。
+       */
+      placement(projectDir: string): Promise<{
+        ok: boolean
+        placement: { bucket: string; prefix: string; shared: boolean; consentedAt: string } | null
+        placements?: { bucket: string; prefix: string; shared: boolean; consentedAt: string }[]
+        message?: string
+      }>
       /** **課金に直結する。** 呼ぶ前に金額を見せて同意を得ること。 */
       prepare(projectDir: string, opts?: { mode?: 'shared' | 'dedicated'; bucket?: string }): Promise<{
         ok: boolean
@@ -363,6 +405,13 @@ interface Window {
          */
         dataLayerFile?: string | null
         note?: string
+        /**
+         * 保存場所は用意できたが、**目印（.koto-keep）を置けなかった**ときの知らせ。
+         * 置けたときは入らない。**画面は必ずこれを出すこと**——目印が無いと、まだ何も
+         * 保存していないプロジェクトはバケットの一覧に現れず、同じ保存場所を共有する別の
+         * プロジェクトを⑥で破棄したときに**巻き込まれて消える**（2026-09-25 検分の指摘9・14）。
+         */
+        markerNote?: string
         message?: string
       }>
     }
@@ -381,7 +430,12 @@ interface Window {
     }
     sakura: {
       models(apiKey: string): Promise<string[]>
-      chat(args: { apiKey: string; model: string; messages: { role: string; content: any }[]; maxTokens?: number; temperature?: number }): Promise<{ content: string; usage: { prompt_tokens?: number; completion_tokens?: number } | null }>
+      chat(
+        args: { apiKey: string; model: string; messages: { role: string; content: any }[]; maxTokens?: number; temperature?: number },
+        /** 「⏹ 停止」用の中断関数を受け取る（chatStream の onStart と同じ形）。
+         *  **要求を送る前に**呼ばれるので、返事が一度も返ってこない相手でも止められる。 */
+        onStart?: (abort: () => void) => void,
+      ): Promise<{ content: string; usage: { prompt_tokens?: number; completion_tokens?: number } | null }>
       chatStream(
         args: { apiKey: string; model: string; messages: { role: string; content: any; tool_calls?: any[]; tool_call_id?: string }[]; maxTokens?: number; tools?: any[] },
         onChunk: (delta: string) => void,
@@ -419,7 +473,10 @@ interface Window {
       /** `verifyNote`: 公開先の中身が本当に新しくなったかの確認結果（確認できたときだけ入る）。 */
       apply(projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string; verifyNote?: string; staleImages?: { total: number; removable: number; keep: number }; needsScaleDecision?: { appId: string; recorded: number; actual: number }; adoptedScaleMin?: number }>
       /** deleteRegistry: false でコンテナレジストリを残す（月額課金は続く）。未指定は削除する。 */
-      /** `keptBucketName` は「破棄したのに残った保存場所」。残っていれば月額も続く。 */
+      /** `keptBucketName` は「破棄したのに残った保存場所」。残っていれば月額も続く。`keptRegistryName` は利用者が「残す」と選んだ
+       *  コンテナレジストリの名前（月額が続く）。`keptRegistryUnnamed` は「残す」と選んだが、記録に名前が無い（残っているかもしれない）。
+       *  警告は**この事実から**作る（画面の破棄の結果も、開き直したあとの記録も、同じ返り値から同じ関数で作る）。
+       *  破棄の成否に関わらず、残す選択のレジストリは残るので、失敗した回にも付く。 */
       /**
        * 公開する前の確認（改善案 1-2）。**何も作らず、何も変えない。**
        * `canPublish` が false なら、押しても失敗すると分かっている。
@@ -432,7 +489,7 @@ interface Window {
         checks: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' | 'ai-fix'; fixPrompt?: string; unusedFiles?: string[] }[]
         message?: string
       }>
-      teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; keptBucketName?: string | null; message?: string }>
+      teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; keptBucketName?: string | null; keptRegistryName?: string; keptRegistryUnnamed?: boolean; message?: string }>
       /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
       registryName(projectDir: string): Promise<{
         ok: boolean; name: string | null
@@ -557,17 +614,46 @@ interface Window {
       testConnection(token: string): Promise<{ ok: boolean; status?: number; message?: string }>
       listWorkspaces(token: string): Promise<{ ok: boolean; workspaces?: Array<{ id: string; name: string; role: string }>; message?: string }>
       // detail は失敗時の生API応答（JSON短縮・診断用。renderer側で折りたたみ表示する・所見11）。
-      publish(projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null }; withStorage?: boolean }): Promise<{ ok: boolean; projectId?: string | null; deploymentId?: string | null; storagePermissionId?: string; storageProjectName?: string; message?: string; detail?: string }>
+      //
+      // 2026-09-29: **公開のあとの後始末は main が画面に依らずに行う**。この IPC は、HANAMII が公開の依頼を
+      // 受け付けたあと、**新しい版が動いた（READY）と確かめるまで（最長およそ5分）返らない**。確かめたら
+      // 公開記録の url を書き、**そのあとで**古い保存場所の鍵を片づける。画面はもう READY を待つ
+      // setInterval も cleanUpKeys の呼び出しも持たない。結果は次で読む:
+      //   ・ok … 依頼が受け付けられたか（設定を保存する条件。動いたかではない）
+      //   ・deployState … 'ready'（動いたと確かめた）／'error'（新しい版が起動に失敗）／'pending'（待つ時間のうちに
+      //     動かなかった）／'unknown'（確かめられなかった）。'ready' 以外では古い保存場所の鍵を消していない
+      //   ・url / readyState / errorCode … 確かめた結果
+      //   ・warnings … 見逃してはいけない知らせ（まだ動いていない・確かめられなかった・鍵を片づけられなかった）
+      //   ・message … deployState:'error' のときの本文（ok は true のまま）
+      //   ・storagePermissionId / storageProjectName … **使わない**（旧い画面の片づけ用の互換。main が古い鍵を
+      //     片づけ切れなかったときだけ入る。次に動いたと確かめられた公開で片づく）
+      // 待っている間の進み具合・閉じて開き直したあとの結果は projectOps（上）から読む。
+      publish(projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null }; withStorage?: boolean }): Promise<{ ok: boolean; projectId?: string | null; deploymentId?: string | null; storagePermissionId?: string; storageProjectName?: string; executed?: string[]; message?: string; detail?: string; deployState?: 'ready' | 'error' | 'pending' | 'unknown'; readyState?: string; errorCode?: string; url?: string; warnings?: string[] }>
       /**
        * この公開先の古い鍵を片づける（**動いたと確かめてから呼ぶこと**）。
        * ほかの公開先（AppRun）の鍵には触れない。
+       * 2026-09-29: 公開のあとの片づけは main（`publish`）が行うので、**画面はもう呼ばない**。口は互換のために残してある。
        */
       cleanUpKeys(opts: { projectName: string; keepId: string }): Promise<{ ok: boolean; deleted?: number; message?: string }>
       status(projectId: string, token: string): Promise<{ ok: boolean; url?: string | null; readyState?: string | null; errorCode?: string | null; runtime?: { status: string | null; detail: string | null; syncedAt: string | null }; message?: string }>
       // A-5: env/ヘルスチェックの変更を再公開（ビルドし直し）なしで反映する高速経路（PATCH /env・PUT /health-check → POST /restart）。
       // detail は失敗時の生API応答（診断用）。noop=true は HANAMII 側で変更がなく再起動が不要だった場合。
       restart(projectId: string, opts: { token: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }): Promise<{ ok: boolean; noop?: boolean; message?: string; detail?: string }>
-      teardown(projectId: string, token: string): Promise<{ ok: boolean; message?: string }>
+      /**
+       * HANAMII のプロジェクトを削除し、**`projectDir` を渡したときは保存場所も片づける**
+       * （2026-09-25 検分。バケット・このプロジェクトのデータ・`koto-<名前>-hanamii` の鍵）。
+       *
+       * - `appDeleted` … HANAMII のプロジェクトは消えた。**保存場所だけ失敗しても true**
+       *   （`ok:false` だけを見て記録を残すと、存在しない公開が 📡 一覧に並び続ける）
+       * - `executed` … 片づけたこと・片づけ切れなかったことの一覧（画面にそのまま出す）
+       * - `remainingBucket` … まだ残っている保存場所（**消すまで月額が続く**）
+       * - `keptBucketName`／`keptBucketNames` … 片づけたが、**バケットごとは消さなかった**保存場所
+       *   （利用者が自分で置いたファイルがある・ほかのプロジェクトが使っている）。**残れば月額も続く**
+       */
+      teardown(projectId: string, token: string, projectDir?: string): Promise<{
+        ok: boolean; appDeleted?: boolean; executed?: string[]; remainingBucket?: string
+        keptBucketName?: string; keptBucketNames?: string[]; message?: string
+      }>
       detectEnvKeys(projectDir: string): Promise<{ ok: boolean; keys: string[]; message?: string }>
       // デプロイログ取得（JSON形式）。limit 既定100・最大500。
       logs(token: string, projectId: string, opts?: { limit?: number; since?: string }): Promise<{ ok: boolean; logs?: Array<{ timestamp: string; message: string }>; message?: string }>
@@ -610,6 +696,47 @@ interface Window {
       onProgress(cb: (message: string) => void): () => void
     }
 
+    /**
+     * 公開の記録（`<projectDir>/.sakuraide.json`）の更新（2026-09-29）。**差分だけ**を渡す——
+     * main が書く直前にディスクから読み直して当てて書くので、画面が持っている古い写しで
+     * main が書いた記録（専有型の資源ID など）を消すことがない。
+     * renderer は直接呼ばず、`src/renderer/projectMeta.ts` を通す。
+     */
+    publishMeta: {
+      /** 差分を当てる。プレーンオブジェクトは再帰でマージ・それ以外は置き換え・`undefined` は取り除く。戻り値の meta は書いた結果の全体。 */
+      merge(projectDir: string, patch: Record<string, unknown>): Promise<{ ok: true; meta: Record<string, unknown> } | { ok: false; message: string }>
+      /** 「記録を片づける」: その公開先の記録だけを消す（専有型の資源ID・ほかの公開先・pending は残る）。 */
+      forgetTarget(projectDir: string, target: string): Promise<{ ok: true; meta: Record<string, unknown> } | { ok: false; message: string }>
+      /** 「確認しました」: 中断の可能性の印（publish.pending）を消す。公開が走っているあいだは `running: true` で断る。 */
+      dismissInterrupted(projectDir: string): Promise<{ ok: true; meta: Record<string, unknown> } | { ok: false; message: string; running?: true }>
+      /**
+       * いま main が走らせている操作（'作成' | '削除' | '公開'）。走っていなければ null。
+       * `projectOps.get(projectDir).running?.op` と**同じ記録から答える**（2026-09-29）。画面が projectOps へ
+       * 移り終えたら、この口は3点セットごと消してよい。
+       */
+      runningOp(projectDir: string): Promise<'作成' | '削除' | '公開' | null>
+    }
+
+    /**
+     * プロジェクトごとの「いま走っている操作」と「終わった操作」の記録（main のメモリ上・
+     * src/main/projectOps.ts）。公開・破棄・作成の9本（共用型 apply／teardown・HANAMII publish／teardown・
+     * Vercel publish・専有型 create／teardown／publishApp／teardownApp）が**自動で**記録される。
+     * **Koto を終了すると消える**（処理も止まるため）。
+     *
+     * 画面の使い方: 開いたとき `get`。`running` があれば進み具合を出す。`last`（と `earlier`）があれば
+     * 結果と警告を出し、出したら `ack(projectDir, last.startedAt)`。開いている間は `onChanged`。
+     * `onChanged` の `projectDir` は正規化した形（末尾の / なし）なので、**比べる前に自分の projectDir も
+     * 末尾の / を取ってから**比べ、**別のプロジェクトの知らせは無視する**（掟11）。
+     */
+    projectOps: {
+      /** { running: 走っている記録|null, last: 終わった直近1件（まだ見られていないもの）|null, earlier: それより前の見られていないもの（古い順） }。 */
+      get(projectDir: string): Promise<ProjectOpsSnapshotShape>
+      /** 結果を見せたと伝える。`upToStartedAt`（見せた記録の startedAt）を渡すと、その記録までだけ見たことにする（省略で全部）。 */
+      ack(projectDir: string, upToStartedAt?: number): Promise<{ ok: true; acked: number } | { ok: false; message: string }>
+      /** 記録が変わるたび（始まった・進んだ・終わった・見たことにした）届く。購読解除関数を返す。 */
+      onChanged(cb: (p: { projectDir: string } & ProjectOpsSnapshotShape) => void): () => void
+    }
+
     vercel: {
       /** 疎通テスト。`warn: true` は「トークンは有効だが、公開する範囲が見えていない」。 */
       testConnection(token: string, teamId?: string): Promise<{ ok: boolean; warn?: boolean; status?: number; message?: string }>
@@ -626,7 +753,9 @@ interface Window {
       }>
       // ファイルアップロード→デプロイ作成→READYまでのポーリングを main 側で一括して行い、完了後に結果を返す
       // （MVP: 途中経過は返さない。detail は失敗時の生API応答＝JSON短縮・診断用）。
-      publish(projectDir: string, opts: { token: string; teamId?: string; name: string }): Promise<{ ok: boolean; deploymentId?: string | null; url?: string | null; readyState?: string | null; message?: string; detail?: string }>
+      // `notice` は「公開はできたが、利用者に伝えるべきことが残っている」ときの一言
+      // （初回の公開では、Vercel 側にプロジェクトが無いため保存場所の設定が次の公開から効く）。
+      publish(projectDir: string, opts: { token: string; teamId?: string; name: string }): Promise<{ ok: boolean; deploymentId?: string | null; url?: string | null; readyState?: string | null; message?: string; detail?: string; notice?: string }>
       // 公開中の進捗メッセージを購読する。戻り値の関数で購読解除。
       onProgress(cb: (msg: string) => void): () => void
     }
@@ -657,7 +786,9 @@ interface Window {
       // model は C2c（Claudeモデル選択）: claudeMode.ts の getClaudeModel() で選んだモデルID。
       // images は C2d: ユーザーが添付した画像（data URL配列・空配列可）。1枚以上あればClaude自身が
       // 直接画像を読む（main側 agent.ts がストリーミング入力モードへ切り替える）。
-      chatStart(projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string): Promise<{ ok: boolean }>
+      // writeMode は W-18: 「✋ 毎回確認」なら、Write/Edit/Bash の前に承認ダイアログを出す
+      // （さくらのAI Engine 経路と同じ approval:* の仕組みを使い回す）。'auto' | 'confirm'。
+      chatStart(projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string): Promise<{ ok: boolean }>
       // 進行中の Claude セッションを中断する。
       chatCancel(): Promise<{ ok: boolean }>
       // ストリームイベント購読。戻り値の関数を呼ぶと購読解除。
@@ -691,12 +822,14 @@ interface Window {
     // auth は cloud.loadKey() 等で読んだ token/secret をそのまま渡す（方式B・main には保存しない）。
     apprunDedicated: {
       // 接続テスト（roadmap #35）＝共用型 cloud.testConnection と同じ「チェックリスト」の形。
-      // (1) 専有型API 参照（制限・プラン） (2) 請求（コスト）参照。レジストリはまだ確認しない
-      // （専有型からのアプリ公開に未対応のため。画面側の注記で案内する）。
+      // (1) 専有型API 参照（制限・プラン） (2) コンテナレジストリ 一覧 (3) 請求（コスト）参照。
+      // W-38（2026-09-27 決定）: 専有型はすでに⑧でアプリを公開でき、公開にレジストリの権限が要るため、
+      // 共用型と同じくここでも確かめる（以前の「まだ確認しない」注記は消した）。
       testConnection(auth: { token: string; secret: string }): Promise<{
         ok: boolean
         checks: {
           api: { ok: boolean; status?: number; message?: string }
+          registry: { ok: boolean; status?: number; message?: string }
           billing: { ok: boolean; status?: number; message?: string }
         }
       }>
@@ -741,8 +874,17 @@ interface Window {
         ok: boolean
         executed: string[]
         message: string
-        remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+        // 2026-09-24 検分の指摘5: storageBucket は**保存場所だけ**毛色が違う（IDではなくバケット名）。
+        // 片づけに失敗した回、ここが空のままだと画面の「残っています＝課金が続きます」に1件も出ない。
+        remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string; storageBucket?: string }
         inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+        // 2026-09-24 検分の指摘4・9・13: 計算資源（アプリ・LB・ASG・クラスタ）は消し切れたか。
+        // 保存場所だけが失敗すると ok は false だが、アプリは消えている。公開記録を片づけるかは
+        // ok ではなくこちらで判断する（shouldClearPublishRecord）。
+        appDeleted?: boolean
+        // 片づけたが、バケットごとは消さなかった保存場所（残れば月額も続く）。共用型 cloud.teardown の keptBucketName と同じ事実。
+        keptBucketName?: string
+        keptBucketNames?: string[]
       }>
       // #39: 破棄の進捗メッセージ購読（「〜の削除を待っています（N分経過）…」を30秒ごとに1回）。
       // 戻り値の関数を呼ぶと購読解除。

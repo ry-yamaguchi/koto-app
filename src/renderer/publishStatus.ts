@@ -52,9 +52,9 @@ export interface PublishTargetRecord {
   url?: string | null
 }
 
-// 公開開始マーカー（publish.pending）。公開処理の開始時に書き、終了時（成功/失敗どちらでも）に消す
-// （src/renderer/publishPending.ts）。これが残っている＝前回の公開が完了前に中断・失敗した可能性がある
-// （detectInterruptedPublish の対象）。
+// 公開開始マーカー（publish.pending）。公開処理の開始時に main が書き、終了時（成功/失敗どちらでも）に
+// 消す（src/main/publishMetaFs.ts の markPendingFs / clearPendingFs）。**走っていないのに残っている**＝
+// 前回の公開が完了前に中断・失敗した可能性がある（detectInterruptedPublish・judgePendingPublish の対象）。
 export interface PendingPublish { target: PublishTargetKind; startedAt: string }
 
 // .sakuraide.json の publish 部分（このモジュールが読む範囲のみ・実際の型はより広い）。
@@ -184,6 +184,61 @@ export function detectInterruptedPublish(meta: PublishMeta, nowMs: number): Pend
   return pending
 }
 
+// ── 公開開始マーカーの見せ方（2026-09-29）────────────────────────────────────
+// 公開の本体は main の1回の IPC で最後まで進む。**画面（公開ダイアログ）を閉じて開き直しても、公開は
+// 走り続けている**。ところが以前は、pending が5秒より古ければ何でも「中断された可能性があります」と
+// 出していたので、**中断していないのに**、公開の最中に開き直すとその警告が出た。
+// 「いま走っているか」を知っているのは main の鍵（src/main/projectLock.ts）だけなので、
+// それを聞いて（`publishMeta:runningOp`）3通りに出し分ける。
+export type PendingPublishView =
+  /** マーカーが無い（または公開先が読めない）。何も出さない。 */
+  | { kind: 'none' }
+  /** マーカーがあり、いま main が公開を走らせている。中断ではない。 */
+  | { kind: 'running'; pending: PendingPublish }
+  /** マーカーがあり、いま走っていない。前回の公開が完了前に止まった可能性がある。 */
+  | { kind: 'interrupted'; pending: PendingPublish }
+
+/**
+ * publish.pending を、いま走っているか（main の鍵）と合わせて3通りに分ける（純粋関数）。
+ *
+ * ・pending が無い／公開先が既知でない → none
+ * ・pending があり、main が**公開**を走らせている → running（中断ではない）
+ * ・pending があり、走っていない → 従来どおり detectInterruptedPublish（5秒以内の直近は none）
+ *
+ * `runningOp` は main の鍵が返す操作名（'作成' | '削除' | '公開'）。**'公開' のときだけ**走っている扱い
+ * （破棄や作成が走っているあいだに残っている pending は、前の公開の名残であって、いまの公開ではない）。
+ * 聞けなかったとき（null）は「走っていない」と同じに扱う＝従来の判定に戻る。
+ */
+export function judgePendingPublish(
+  meta: PublishMeta | null | undefined, runningOp: string | null | undefined, nowMs: number,
+): PendingPublishView {
+  const pending = meta?.pending
+  if (!pending || !isKnownPublishTarget(pending.target)) return { kind: 'none' }
+  if (runningOp === '公開') return { kind: 'running', pending }
+  const interrupted = detectInterruptedPublish(meta ?? {}, nowMs)
+  return interrupted ? { kind: 'interrupted', pending: interrupted } : { kind: 'none' }
+}
+
+/**
+ * 公開ダイアログの上部に出す1文（純粋関数・掟5: 素のテキスト）。何も出さないなら null。
+ * running の文は「閉じても最後まで進む」ことと、**Koto を終了したら止まる**ことの両方を言う
+ * （窓を閉じただけなら main の処理は続く。終了すると途中で止まる・src/renderer/activity.ts の
+ * PUBLISH_CLOSE_WARNING と同じ事実）。
+ *
+ * 「公開状況に記録される」は**成功したときだけ**（main は成功の最後に publish.targets を書く。
+ * 失敗すると書かれず、pending も finally で消えるので、公開状況にも「中断」の通知にも何も出ない）。
+ * 「終わると出ます」と言い切ると、失敗したときに嘘になる（2026-09-29 検分）。
+ */
+export function pendingPublishMessage(view: PendingPublishView): string | null {
+  if (view.kind === 'running') {
+    return `⏳ ${PUBLISH_TARGET_LABEL[view.pending.target]}への公開が進んでいます。この画面を閉じても、公開は最後まで進みます（Koto を終了すると途中で止まります）。公開に成功すると、公開状況に記録されます（失敗したときは記録されません）。`
+  }
+  if (view.kind === 'interrupted') {
+    return `⚠️ 前回、${PUBLISH_TARGET_LABEL[view.pending.target]}への公開が完了前に中断された可能性があります。実際に公開されたか、下の公開状況や公開先の管理画面でご確認ください。`
+  }
+  return null
+}
+
 /**
  * 「最後に公開した公開先」を publish.targets の publishedAt から求める（純粋関数・2026-07-31 ユーザー要望）。
  * ③公開を開いたときに、最後に使った公開先の画面を最初に出すために使う。
@@ -223,39 +278,9 @@ export function parseApprunLegacy(stateJson: unknown): { createdAt: string | nul
   return { createdAt }
 }
 
-/**
- * 公開記録から1つの公開先を取り除く（破棄・削除に成功したとき用の純関数）。
- *
- * ── なぜ必要か（2026-08-06 の点検で判明） ──────────────────────────────────
- * 公開したときは publish.targets へ記録するのに、**Koto 自身で破棄しても記録が残っていた**。
- * その結果「📡 公開したもの一覧」に、もう存在しない公開が出続ける。
- * 外部（コントロールパネル）で消された分は Koto には分からないが、**自分で消したものは分かる**。
- * 分かることは記録に反映する。
- *
- * publish.lastPublishedAt / url は「最後に公開したときの情報」として残す（履歴としての意味がある）。
- * 消すのは targets の該当エントリだけ。
- */
-export function withoutPublishTarget(
-  publish: PublishMeta | null | undefined, target: PublishTargetKind
-): PublishMeta {
-  const base = publish ?? {}
-  const targets = { ...(base.targets ?? {}) }
-  delete targets[target]
-  const next: PublishMeta = { ...base, targets }
-  // ── 行を復活させる手がかりも一緒に消す（2026-08-15）──────────────────
-  // buildPublishStatusRows は、targets に無くても
-  //   ・hanamii.projectId があれば hanamii の行
-  //   ・lastPublishedAt + host があればレンタルサーバの行
-  // を**作り直す**（古いプロジェクトの救済）。消し残すと、片づけたのに一覧へ
-  // 戻ってきて「効いていない」ように見える。
-  // 破棄の導線（📡 公開したもの一覧）はここしか通らないので、ここで消す。
-  if (target === 'hanamii') next.hanamii = { ...(base.hanamii ?? {}), projectId: null }
-  if (target === 'sakura-rental') {
-    next.lastPublishedAt = undefined
-    next.host = undefined
-  }
-  return next
-}
+// 公開記録から1つの公開先を取り除く純関数は src/shared/publishMeta.ts が唯一の定義
+// （2026-09-29: 書き戻しを main の1か所へ集めたため移した。呼び出し側は変わらない）。
+export { withoutPublishTarget } from '../shared/publishMeta'
 
 /**
  * その行を「片づける」ことができるか（純関数）。

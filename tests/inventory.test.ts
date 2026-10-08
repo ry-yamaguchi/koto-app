@@ -110,7 +110,7 @@ describe('費用', () => {
   })
 
   it('画面に出す名前は日本語', () => {
-    expect(kindLabel('registry')).toBe('イメージの置き場')
+    expect(kindLabel('registry')).toBe('イメージの置き場（コンテナレジストリ）')
     expect(kindLabel('bucket')).toBe('データの保存場所')
   })
 })
@@ -239,7 +239,7 @@ describe('棚卸しが画面まで届いている', () => {
     // 4種類（アプリ・イメージの置き場・データの保存場所・専有型のクラスタ）それぞれの
     // 失敗が、それぞれ名指しで failed に積まれること（1つに丸めない）。
     expect(body).toContain("failed.push('公開したアプリ')")
-    expect(body).toContain("failed.push('イメージの置き場')")
+    expect(body).toContain("failed.push('イメージの置き場（コンテナレジストリ）')")
     expect(body).toContain("failed.push('データの保存場所')")
     expect(body).toContain("failed.push('専有型のクラスタ')")
     expect(read('src/renderer/components/PublishedListModal.tsx')).toContain('この一覧に出ていない')

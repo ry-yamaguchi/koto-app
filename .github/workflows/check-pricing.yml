@@ -1,0 +1,21 @@
+name: Check Pricing
+
+# さくらのAI Engine の公式料金表と、Koto の料金表（src/shared/usageBudget.ts の PRICING）を週次で突き合わせる。
+# 2026-09-30 Ryosuke 決定（進め方の見直し 11）。新しいモデルの追加・料金の変更に、翌週には気づけるようにする。
+# キー不要（製品ページの公開の料金表を読むだけ）。食い違い・新顔・読めない行があると終了コード 1、
+# ページの形が変わって読めないと 2 で、どちらもこの実行が失敗になり GitHub から通知が届く。
+# 外部サイトの都合で通常の CI（ci.yml）を止めないよう、link-check.yml と同じく独立させる。
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check-pricing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/check-pricing.mjs

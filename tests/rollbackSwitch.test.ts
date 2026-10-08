@@ -19,11 +19,12 @@ describe('buildSwitchConfirmMessage: 確認文言', () => {
     expect(msg).toContain('最新のバージョンに自動で追従する状態へ戻します')
   })
 
-  // 3【中】: split のときは「いまの配分（複数バージョンへの分散）は失われます」を確認文に含める
-  // （★変異試験④はこの文言をソースから削る形で当てる）。
-  it('isSplit:true のときは「配分は失われます」を含む', () => {
+  // 3【中】: split のときは「いま複数のバージョンに分けて見せている状態は失われます」を
+  // 確認文に含める（★変異試験④はこの文言をソースから削る形で当てる）。
+  // W-98（2026-09-27 決定・案1）: 「配分」は通じないため言い換えた。
+  it('isSplit:true のときは「分けて見せている状態は失われます」を含む', () => {
     const msg = buildSwitchConfirmMessage({ versionName: 'v2', label: 'v2', isSplit: true })
-    expect(msg).toContain('いまの配分（複数バージョンへの分散）は失われます')
+    expect(msg).toContain('いま複数のバージョンに分けて見せている状態は失われます')
   })
 
   it('isSplit:false のときは含まない（latest/pinned から切り替えるだけなら、この注記は不要）', () => {

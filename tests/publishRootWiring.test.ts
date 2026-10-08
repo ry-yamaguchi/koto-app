@@ -207,7 +207,9 @@ describe('Claude頭脳モード: 作業フォルダと退避先を取り違え�
     expect(agent).toContain("hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)]")
     expect(agent).toContain("hooks: [makePostToolUseHook(projectDir, onFileWritten)]")
     expect(agent).toContain('cwd: writeRoot')
-    expect(agent).toContain('canUseTool: makeCanUseTool(writeRoot)')
+    // W-18（2026-09-27 決定・案3）: 「✋ 毎回確認」は Claude でも効かせる。
+    // writeMode・turnId を渡すようになった（AI Engine と同じ承認の仕組みを使い回す）。
+    expect(agent).toContain('canUseTool: makeCanUseTool(projectDir, writeRoot, writeMode, turnId)')
   })
 
   it('委譲の書き込みも、書き込みは作業フォルダ・退避はプロジェクト直下', () => {

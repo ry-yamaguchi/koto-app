@@ -870,7 +870,8 @@ describe('publishAppFlow: 12. lb-address 段は空なら待って取り直し、
     expect(r.warnings ?? []).toEqual([])
     expect(r.verify).toBe('responding')
     // 待っている間の進捗（画面向け）
-    expect(progress).toContain('ロードバランサの IP が付くのを待っています（10秒経過）…')
+    // 2026-09-29: 実測（5-13）にもとづく目安を添える。断定しない言い方（「ふつう」）。
+    expect(progress).toContain('ロードバランサの IP が付くのを待っています（10秒経過）。実測では、クラスタを作った約2分後はまだ空で、数分後に付いていました（目安です）。')
   })
 
   it('★(b) 最後まで空 → 3分（10秒×18回）待ってから諦め、従来の warning。記録の lbAddresses は残さない', async () => {
@@ -889,7 +890,7 @@ describe('publishAppFlow: 12. lb-address 段は空なら待って取り直し、
     expect(r.message).toContain('IP を取り直す')
     // B（D-19）: 確認できなかったので記録に IP は残らない（前の値が無い場合は null が書かれる）。
     expect(readApprunDedicatedFs(projectDir).lbAddresses ?? null).toBeNull()
-    expect(progress[progress.length - 2]).toBe('ロードバランサの IP が付くのを待っています（3分経過）…') // 最後は「完了しました」
+    expect(progress[progress.length - 2]).toBe('ロードバランサの IP が付くのを待っています（3分経過）。実測では、クラスタを作った約2分後はまだ空で、数分後に付いていました（目安です）。') // 最後は「完了しました」
   })
 
   it('★(c) 取れた IP に `/` が含まれない（`IP/24` を `/` ごと A レコードに案内しない）', async () => {

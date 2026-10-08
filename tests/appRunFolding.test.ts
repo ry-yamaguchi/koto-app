@@ -145,7 +145,7 @@ describe('配線: 各コンポーネントは appRunFolding.ts の純関数を�
     expect(p.slice(urlSectionAt, urlAt)).toContain('border-line-soft')
     expect(p.slice(urlAt - 80, urlAt + 20)).toContain('text-ink-secondary')
 
-    const costAt = p.lastIndexOf('💰 コスト')
+    const costAt = p.lastIndexOf('💰 さくらのクラウドの請求額（アカウント全体）')
     expect(costAt).toBeGreaterThan(0)
     const costSectionAt = p.lastIndexOf('<section', costAt)
     expect(p.slice(costSectionAt, costAt)).toContain('border-line-soft')

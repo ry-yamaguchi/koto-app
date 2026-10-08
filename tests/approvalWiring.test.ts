@@ -269,7 +269,7 @@ describe('実駆動: decideApproval', () => {
     const p = decideApproval('write_file', JSON.stringify({ path: 'a.txt' }), { writeRoot: null }, payloadWith('confirm'), 't-test')
     // 駐機が実際に積まれている（label は planApproval の文面）
     expect(listPending().length).toBe(1)
-    expect(listPending()[0].label).toBe('a.txt')
+    expect(listPending()[0].label).toBe('✏️ ファイルの保存（a.txt）')
     expect(answerApproval(listPending()[0].id, true)).toBe(true)
     expect(await p).toBeNull()
   })

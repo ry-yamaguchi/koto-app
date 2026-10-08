@@ -6,8 +6,8 @@ import { kindLabel, costNote } from '../../shared/inventory'
 import { listCloudKeys, getActiveCloudKeyId } from './CredentialsModal'
 import { clearPublishRecord } from '../publishRecord'
 import { buildPublishedIndex, groupPublishedByTarget, type PublishedEntry, type PublishedGroup } from '../publishedIndex'
-import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNote } from '../../shared/teardownSupport'
-import { registryDeleteHelp, registryDeleteLabel, registryDeleteDefault, adoptedRegistryNote, registryUnknownNotice, remainingCostWarning, urlChangesOnTeardownNotice } from '../../shared/cloudCost'
+import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNoteForAll } from '../../shared/teardownSupport'
+import { registryDeleteHelp, registryDeleteLabel, registryDeleteDefault, adoptedRegistryNote, registryUnknownNotice, teardownRemainingWarnings, urlChangesOnTeardownNotice } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 
 // 「📡 公開したもの一覧」モーダル（表示メニューから開く・2026-07-31 ユーザー要望）。
@@ -48,20 +48,31 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
   /** AppRun の破棄でコンテナレジストリも消すか（既定 true＝月額課金を止める側）。 */
   const [deleteRegistry, setDeleteRegistry] = useState(true)
   /**
-   * 確認中の行の保存場所（あれば）。**データが消えることを言わずに押させない**ため、
-   * 確認画面を出すときに読む（2026-08-14）。
+   * 確認中の行の保存場所（**同意済みの全件**）。**データが消えることを言わずに押させない**ため、
+   * 確認画面を出すときに読む（2026-08-14 ／ 全件にしたのは 2026-09-25 検分の指摘5）。
+   *
+   * ── なぜ全件なのか ────────────────────────────────────────────
+   * 破棄は `teardownStorageForProject` が同意済みの保存場所を**全件**片づける
+   * （tests/hanamiiStorageTeardown.test.ts の「2つあれば2つとも片づける」が固定している）。
+   * ところがここは `storage:placement` の `placement`（**先頭1件**）だけで文を組み立てていたので、
+   * env.json に2件あると「保存場所『A』のデータも削除します」としか出ないまま、
+   * **名前が一度も出なかった『B』とその中のデータまで消えた**。
+   * 元に戻せない削除を、名指ししないまま実行させてはいけない（掟10）。
    */
-  const [confirmPlacement, setConfirmPlacement] = useState<{ bucket: string; prefix: string; shared: boolean } | null>(null)
+  const [confirmPlacements, setConfirmPlacements] = useState<Array<{ bucket: string; prefix: string; shared: boolean }>>([])
 
   /** 破棄の確認を出す（保存場所も調べてから）。 */
   const askConfirm = async (e: PublishedEntry) => {
     // **借り物の置き場は、最初から外しておく**（判断は shared/cloudCost.ts に一元化）。
     setDeleteRegistry(registryDeleteDefault({ registryName: e.registryName, adopted: e.registryAdopted }))
-    setConfirmPlacement(null)
+    setConfirmPlacements([])
     setConfirm(e)
     try {
       const r = await window.electronAPI.storage.placement(e.dir)
-      if (r.ok) setConfirmPlacement(r.placement)
+      if (!r.ok) return
+      // placements（全件）が無い版の応答でも、先頭1件だけは必ず拾う（黙って空にしない）。
+      const all = r.placements ?? (r.placement ? [r.placement] : [])
+      setConfirmPlacements(all.map(p => ({ bucket: p.bucket, prefix: p.prefix, shared: p.shared })))
     } catch { /* 読めなくても破棄はできる（消えるものが増えるわけではない） */ }
   }
 
@@ -127,7 +138,15 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
     const key = `${e.dir}-${e.target}`
     setConfirm(null); setBusyKey(key); setResult(null)
     try {
-      let r: { ok: boolean; message?: string; keptBucketName?: string | null }
+      let r: {
+        ok: boolean; message?: string; keptBucketName?: string | null
+        /** 共用型: 「残す」と選んだレジストリの事実（名前あり／記録に名前が無い）。警告はこの事実から作る。 */
+        keptRegistryName?: string; keptRegistryUnnamed?: boolean
+        /** HANAMII: プロジェクトは消えたか（保存場所だけ失敗しても true）。 */
+        appDeleted?: boolean
+        /** HANAMII: 保存場所について片づけたこと・片づけ切れなかったこと。 */
+        executed?: string[]
+      }
       if (e.target === 'sakura-apprun') {
         // AppRun はクラウドのAPIキーを main 側が持っているので projectDir だけで足りる。
         // 記録が無いレジストリは削除できないので「削除しない」を渡す（確認画面と同じ判断）。
@@ -136,7 +155,8 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
         if (r.ok) {
           // レジストリを残したなら、結果でも「課金は続く」と念を押す（③公開の破棄と同じ扱い）。
           // 保存場所は破棄しても残ることがある（3段構え）。残ったなら課金も続く
-          const warn = remainingCostWarning({ deleteRegistry: effectiveDeleteRegistry, registryName: e.registryName, keptBucketName: r.keptBucketName ?? null })
+          // 警告は、選択ではなく main が返した事実から作る（③公開の破棄の結果・処理の記録と同じ関数・2026-09-30 検分の指摘6）
+          const warn = teardownRemainingWarnings(r).join('\n')
           if (warn) {
             try { await clearPublishRecord(e.dir, e.target) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ }
             setResult({ ok: true, text: `${e.projectName}（${e.label}）を破棄しました。\n${warn}` })
@@ -190,7 +210,43 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
           setResult({ ok: false, text: 'HANAMII のトークンが未登録です。「認証情報」で登録してから、もう一度お試しください。' })
           return
         }
-        r = await window.electronAPI.hanamii.teardown(e.hanamiiProjectId, token)
+        // ── 保存場所まで片づける（2026-09-25 検分）──────────────────────────
+        // すぐ上の確認オーバーレイは HANAMII でも「保存場所『X』にある、このプロジェクトの
+        // データも削除します…保存場所そのものも削除して月額を止めます」と言い切る
+        // （teardownDataNoteFor）。**e.dir を渡さないと、main は保存場所へ1件も要求を出せない**
+        // ＝画面の約束が嘘になる（月額495円が止まらず、消したはずのアプリの鍵が生き残る）。
+        r = await window.electronAPI.hanamii.teardown(e.hanamiiProjectId, token, e.dir)
+        // ── HANAMII のプロジェクトは消えたが、保存場所だけ片づかなかったとき ────────
+        // **記録は残す**（2026-09-25 検分の指摘3）。main は「『認証情報』でAPIキーを登録してから、
+        // もう一度 🗑 を押してください」と案内するのに、ここで記録を片づけて reload すると
+        // **一覧から行ごと消えて、押し直す 🗑 がどこにも無くなっていた**（🗑 は公開の記録からしか
+        // 作られない）。専有型の「まだ削除中」の枝（すぐ上）と同じ作法に揃える——
+        // **消えたのを確かめるまで記録は残す。** main 側も、2度目の破棄で HANAMII が 404
+        //（もう無い）を返したら保存場所の片づけだけを続けるようにしてある。
+        // 片づけを諦めたときは、この行の「記録を片づける」で一覧から消せる。
+        if (!r.ok && r.appDeleted) {
+          setResult({
+            ok: false,
+            text: `${e.projectName}（${e.label}）の HANAMII のプロジェクトは削除しました。\n`
+              + `ただし、保存場所は片づけられませんでした（消すまで月額が続きます）: ${r.message ?? '原因不明'}`
+              + ((r.executed ?? []).length > 0 ? `\n${(r.executed ?? []).join('\n')}` : '')
+              + '\n片づけ残りがあるので、この一覧には記録を残しています（🗑 を押し直すと、保存場所の片づけだけをやり直します）。',
+          })
+          await reload()
+          return
+        }
+        // 片づけた内容（バケットを消したか、ほかのプロジェクトが使っていて残したか）を必ず出す。
+        // 「破棄しました。」だけだと、残ったバケットの月額に気づけない。
+        if (r.ok) {
+          try { await clearPublishRecord(e.dir, e.target) } catch { /* 同上 */ }
+          const notes = r.executed ?? []
+          setResult({
+            ok: true,
+            text: `${e.projectName}（${e.label}）を破棄しました。` + (notes.length > 0 ? `\n${notes.join('\n')}` : ''),
+          })
+          await reload()
+          return
+        }
       } else {
         setResult({ ok: false, text: manualTeardownGuide(e.target) })
         return
@@ -229,8 +285,8 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
           <div className="rounded-xl border border-line bg-surface p-4 text-xs text-ink-secondary leading-relaxed">
             Koto から公開したときの<b className="text-ink">記録</b>です。サービス側で削除したものも記録には残るため、
             <b className="text-ink">いま実際に公開中かどうかは各サービスの管理画面でご確認ください</b>。
-            この画面はAPIキーもネットワークも使わないので、サービスに障害が出ているときでも開けます。
-            <div className="mt-1 text-ink-muted">対象: {workspace || '（ワークスペース取得中）'}</div>
+            この一覧を開くだけなら、APIキーも通信も使いません。サービスに障害が出ているときでも開けます。
+            <div className="mt-1 text-ink-muted">対象: {workspace || '（プロジェクトを置くフォルダを取得中）'}</div>
           </div>
 
           {/* ── さくら側にあるもの（改善案 1-3 / 1-4）──────────────────────
@@ -272,7 +328,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 <p className="text-[11px] text-ink-secondary leading-relaxed select-text">{inventory.notice}</p>
                 {inventory.partial && inventory.partial.length > 0 && (
                   <p className="text-[11px] text-brand-yellow leading-relaxed">
-                    ⚠️ {inventory.partial.join('・')} は確認できませんでした。**この一覧に出ていない**ものがあるかもしれません。
+                    ⚠️ {inventory.partial.join('・')} は確認できませんでした。<b className="text-ink">この一覧に出ていない</b>ものがあるかもしれません。
                   </p>
                 )}
                 {(inventory.rows ?? []).length === 0 ? (
@@ -396,7 +452,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                             }}
                             className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 whitespace-nowrap"
                             title="この一覧から消すだけです。公開したもの自体は消えません"
-                          >記録だけ消す（実体は残ります）</button>
+                          >記録を片づける（公開したものは残ります）</button>
                           <button
                             onClick={() => setForgetting(null)}
                             className="text-[11px] text-ink-muted hover:text-ink whitespace-nowrap"
@@ -430,9 +486,16 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 <b className="text-ink">{confirm.projectName}</b>（{confirm.label}）<br />
                 {teardownScopeNote(confirm.target)}この操作は元に戻せません。
               </p>
-              {confirmPlacement && (
+              {/* 2026-09-24 検分の指摘7: 専有型の「🗑 破棄」は apprunDedicated:teardownApp（appOnly）＝
+                  **アプリだけ**を消し、保存場所へは1件も要求を出さない。それなのに
+                  「保存場所のデータも削除します…月額を止めます」と出していた（すぐ上の
+                  teardownScopeNote は『アプリだけ』と言っており、同じダイアログの中で矛盾していた）。
+                  出し分けの判断は shared/teardownSupport.ts の純関数に置き、⑥の確認も同じ関数を通す。 */}
+              {/* 2026-09-25 検分の指摘5: **全件（placements）で組み立てる。** 先頭1件だけで
+                  組み立てると、名前が一度も出なかった保存場所とデータまで消える。 */}
+              {teardownDataNoteForAll({ target: confirm.target, scope: 'list', placements: confirmPlacements }) && (
                 <p className="text-xs text-brand-red leading-relaxed select-text">
-                  💾 {teardownDataNote(confirmPlacement)}
+                  💾 {teardownDataNoteForAll({ target: confirm.target, scope: 'list', placements: confirmPlacements })}
                 </p>
               )}
               <p className="text-xs text-brand-red leading-relaxed">

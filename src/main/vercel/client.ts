@@ -42,6 +42,14 @@ export function vercelDeploymentFilesPath(id: string): string {
 export function vercelDeploymentFilePath(id: string, fileId: string): string {
   return `/v8/deployments/${encodeURIComponent(id)}/files/${encodeURIComponent(fileId)}`
 }
+// ── 環境変数（2026-09-24 に原本で確認。推測で足さないこと）───────────────
+// https://vercel.com/docs/rest-api/reference/endpoints/projects/create-one-or-more-environment-variables
+//   POST /v10/projects/{idOrName}/env ／ 必須は key・value・type
+//   type は system / encrypted / plain / sensitive ／ target は production / preview / development
+//   本文に**配列**を渡せば複数件を1回で作れる ／ 既存があるときは **upsert=true** が要る（無いと 403）
+export function vercelProjectEnvPath(idOrName: string): string {
+  return `/v10/projects/${encodeURIComponent(idOrName)}/env`
+}
 
 // ── ファイル収集の除外ルール ─────────────────────────────────────
 // HANAMII の zipProjectToBuffer（src/main/ipc/hanamii.ts）の除外リストと揃える。
@@ -129,6 +137,64 @@ export function buildDeploymentBody(
     projectSettings: { framework: null },
     target: opts?.target ?? 'production',
   }
+}
+
+/**
+ * Vercel の環境変数1件（POST /v10/projects/{idOrName}/env の本文）。
+ *
+ * `type` は原本の4種（system / encrypted / plain / sensitive）のうち2つだけを使う——
+ * **秘密は `sensitive`、それ以外は `plain`**（掟4: 秘密はディスクにもログにも残さない）。
+ */
+export type VercelEnvVar = {
+  key: string
+  value: string
+  type: 'plain' | 'sensitive'
+  target: string[]
+}
+
+/**
+ * 環境変数の本文を組み立てる（純関数）。
+ *
+ * `target` は **`production` だけ**にする（2026-09-24 の判断）。Koto が作るデプロイは
+ * `buildDeploymentBody` が `target: 'production'` 固定で、preview は Koto からは作らない。
+ * にもかかわらず preview を足すと、**Koto が関与していない preview デプロイ**
+ * （利用者が Vercel 側で Git を繋いだ場合など）にまで、保存場所へ読み書きできる本物の鍵が
+ * 配られる。渡す先は少ないほうが安全なので、いま作る production にだけ渡す。
+ */
+export function buildEnvVarsBody(
+  envs: readonly { key: string; value: string; secret: boolean }[],
+): VercelEnvVar[] {
+  return (envs ?? []).map(e => ({
+    key: e.key,
+    value: e.value,
+    type: e.secret ? 'sensitive' : 'plain',
+    target: ['production'],
+  }))
+}
+
+/**
+ * 環境変数を渡せなかったときの、**利用者に分かる日本語**（純関数）。
+ *
+ * **Vercel の生のエラーを出さない。** 応答の本文には作ろうとした環境変数が載りうるので、
+ * そのまま画面やログへ流すと秘密が漏れる（掟4）。ここは HTTP の状態だけを見て文を決める。
+ */
+export function vercelEnvErrorMessage(status: number, opts: { alreadyPublished?: boolean } = {}): string {
+  const head = 'データの保存に使う設定を Vercel へ渡せませんでした'
+  // **初回の公開では「中止しました」が嘘になる**（2026-09-24 検分の指摘14）。
+  // 初回は Vercel 側にプロジェクトが無く、公開のあとに置き直す。その置き直しが失敗しても
+  // 公開そのものは済んでいるので、末尾だけを差し替える（理由と直し方は共通で出す）。
+  const tail = opts.alreadyPublished
+    ? 'いまの公開ではデータを読み書きできません。上のとおり直してから、もう一度「公開する」を押してください。'
+    : 'このまま公開すると、アプリに入力されたデータを読み書きできないため、公開を中止しました。'
+  if (status === 401 || status === 403) {
+    return `${head}——このトークンでは、公開先の設定を変更できないようです（HTTP ${status}）。`
+      + '「認証情報」で、公開先が含まれるトークンか、チームIDが正しいかをご確認ください。\n' + tail
+  }
+  if (status === 429) {
+    return `${head}——Vercel が混み合っています（HTTP ${status}）。少し時間をおいてから、もう一度お試しください。\n${tail}`
+  }
+  return `${head}（HTTP ${status}）。少し時間をおいてから、もう一度お試しください。`
+    + '何度も続くときは、Vercel の管理画面で同じ名前の設定が編集できるかをご確認ください。\n' + tail
 }
 
 /** デプロイ作成/取得応答から抽出した情報。 */
@@ -248,6 +314,23 @@ export class VercelClient {
     return this.send('POST', VERCEL_API_BASE + VERCEL_DEPLOYMENTS_PATH + '?skipAutoDetectionConfirmation=1' + this.teamQuery('&'), {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      timeoutMs: 30000,
+    })
+  }
+
+  /**
+   * 環境変数を作る（POST /v10/projects/{idOrName}/env・**6件を1回で**）。
+   *
+   * **`upsert=true` を必ず付ける**（原本の記載）。付けないと、2回目の公開で
+   * 「同じ名前が既にある」として **403** になり、再公開が通らなくなる。
+   *
+   * 秘密（`secret: true`）は `type: 'sensitive'` で送る。**応答は呼び出し側で
+   * detail へ載せないこと**——作った環境変数が載りうる（掟4）。
+   */
+  async createEnvVars(idOrName: string, envs: readonly { key: string; value: string; secret: boolean }[]): Promise<VercelResult> {
+    return this.send('POST', VERCEL_API_BASE + vercelProjectEnvPath(idOrName) + '?upsert=true' + this.teamQuery('&'), {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildEnvVarsBody(envs)),
       timeoutMs: 30000,
     })
   }

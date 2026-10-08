@@ -96,9 +96,8 @@ function ImagePreview({ file }: { file: OpenFile }) {
             {isEmpty ? 'この画像ファイルは空です（0バイト）' : 'この画像は表示できません（画像データが壊れています）'}
           </p>
           <p className="text-xs text-ink-muted leading-relaxed">
-            AIはテキストのみ生成でき、画像（バイナリ）は作れません。<br />
-            AIが作成した画像ファイルは中身が空になるため、実際の画像を使う場合は
-            Finderからプロジェクトフォルダにコピーして置き換えてください。
+            AIは画像そのものは作れません。使いたい画像を、左のファイル一覧へドラッグして入れてください。<br />
+            入れたら、チャットで「この画像を使って」と頼むとAIがページに組み込めます。
           </p>
         </div>
       </div>
@@ -204,7 +203,7 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
                     file.path,
                     `「${file.name}」には保存していない変更があります。保存せずに閉じますか？`,
                     {
-                      confirm: (body) => confirm({ title: '未保存の変更を破棄しますか', body, confirmLabel: '保存せずに閉じる', danger: true }),
+                      confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
                       close: (path) => onClose(path),
                     },
                   )

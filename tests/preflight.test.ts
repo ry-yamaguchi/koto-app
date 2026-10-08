@@ -91,7 +91,7 @@ describe('公開前の確認が、実物と繋がっている', () => {
 
   // ★ 今日の失敗のうち、押す前に分かったはずの4件
   it('実機で詰まった4点を、すべて見ている', () => {
-    expect(ipc).toContain("'registry', 'イメージの置き場'")   // 消えたレジストリ
+    expect(ipc).toContain("'registry', 'イメージの置き場（コンテナレジストリ）'")   // 消えたレジストリ
     expect(ipc).toContain("'storage', 'データの保存場所'")     // 作られていない保存場所
     expect(ipc).toContain("'name', '公開名'")                  // 孤児との衝突
     expect(ipc).toContain("'runtime', 'アプリの作り'")         // 動かせない作り

@@ -17,7 +17,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 // tools 非対応(400) = Phi-4-mini-instruct-cpu / Qwen3-0.6B-cpu。
 
 describe('MODELS / VISION_MODELS / DEFAULT_MODEL（2026-09-04 世代交代）', () => {
-  it('MODELS は8件、Qwen3-Coder系（旧世代）は含まれない', () => {
+  it('MODELS は9件、Qwen3-Coder系（旧世代）は含まれない', () => {
     expect(MODELS).toEqual([
       { id: 'preview/Kimi-K2.7-Code', label: 'Kimi K2.7 Code（プレビュー）' },
       { id: 'preview/Qwen3.6-35B-A3B', label: 'Qwen3.6 35B（プレビュー）' },
@@ -27,6 +27,8 @@ describe('MODELS / VISION_MODELS / DEFAULT_MODEL（2026-09-04 世代交代）', 
       { id: 'preview/Kimi-K2.6', label: 'Kimi K2.6（プレビュー）' },
       { id: 'preview/Qwen3-0.6B-cpu', label: 'Qwen3 0.6B（CPU・プレビュー）' },
       { id: 'preview/Phi-4-mini-instruct-cpu', label: 'Phi-4 mini（CPU・プレビュー）' },
+      // 2026-09-24 提供開始（tests/modelPricingMedLLM.test.ts）
+      { id: 'preview/Weblab-MedLLM-gpt-oss-120b', label: 'Weblab-MedLLM 120B（医療・プレビュー）' },
     ])
   })
 
@@ -365,11 +367,13 @@ describe('配線: モデル選択UI3か所（チャット欄ヘッダー／新�
     expect(newProjectSrc).toContain("defaultId={brain === 'claude' ? undefined : DEFAULT_MODEL}")
   })
 
-  it('③ 設定（SettingsModal.tsx）の「IDEで使うモデル」「チャットで使うモデル」の2つの select: option の見える文字が modelPickerText(id).name（＋単価）', () => {
+  it('③ 設定（SettingsModal.tsx）の「IDEで使うモデル」「チャットで使うモデル」の2つの select: option の見える文字が modelPickerText(id).name（＋priceLabel）', () => {
     expect(settingsSrc).toContain('IDEで使うモデル')
     expect(settingsSrc).toContain('チャットで使うモデル')
-    // option の本文の形ごと（名前＋単価）。2つの select で2回
-    const count = settingsSrc.split('{modelPickerText(id).name}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）').length - 1
+    // option の本文の形ごと（名前＋priceLabel）。2つの select で2回。
+    // 2026-09-25: 単価の書式は shared の priceLabel に一本化した（料金表に無いモデルに
+    // 実在しない料金を出さないため。書式そのものは tests/unknownModelPrice.test.ts が1文字単位で固定）
+    const count = settingsSrc.split('{modelPickerText(id).name}{priceLabel(id)}').length - 1
     expect(count).toBe(2)
     // ★ 変異(a)の砦: 直す前の形（purposeLabel を見える文字に）へ戻っていない
     expect(settingsSrc).not.toContain('purposeLabel(')

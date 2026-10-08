@@ -4,6 +4,10 @@
  * （src/shared/modelInfo.ts の MODELS / VISION_MODELS / DEFAULT_MODEL と、
  *   src/shared/usageBudget.ts の PRICING）を突き合わせ、更新が必要な差分を一覧表示する。
  *
+ * 役割分担: こちらはキーが要り、API の提供モデル一覧（/v1/models）を見る。料金の値は
+ * npm run check:pricing（キー不要・製品ページの公式料金表 × PRICING）が見る。
+ * 固定設定の読み取りと NON_CHAT は scripts/lib/appConfig.mjs を両方で共用する（複製しない）。
+ *
  * ⚠️ 2026-09-04: 読み先を usage.ts → shared へ修正した。B'-3d-1a（2026-08-29 ごろ）で
  * 一覧の実体が shared へ移った際、このスクリプトが追従しておらず「アプリ既知: 0件」と
  * 全モデルを新規扱いする誤診をしていた（Ryosuke の実行で発覚）。再発防止として、
@@ -17,52 +21,16 @@
  * ※ 価格(PRICING)はAPIから取れないため自動更新はできない。本スクリプトは
  *   「何を見直すべきか」を示すだけ。実際の単価はさくらの公開情報で確認して反映する。
  */
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+// 固定設定の読み取り（抽出0件なら例外＝沈黙の誤診をしない）と NON_CHAT（renderer/usage.ts と一致・
+// チャット用途でないモデルを除外）は lib に置き、check-pricing.mjs と共用する。
+import { readAppConfig, NON_CHAT } from './lib/appConfig.mjs'
 
 const MODELS_URL = 'https://api.ai.sakura.ad.jp/v1/models'
-// renderer/usage.ts の NON_CHAT と一致させること（チャット用途でないモデルを除外）
-const NON_CHAT = /whisper|embed|e5-|voicevox|tts|speech|rerank|transcrib/i
-
-const here = dirname(fileURLToPath(import.meta.url))
-const MODEL_INFO_PATH = resolve(here, '../src/shared/modelInfo.ts')   // MODELS / VISION_MODELS / DEFAULT_MODEL
-const USAGE_BUDGET_PATH = resolve(here, '../src/shared/usageBudget.ts') // PRICING
 
 const key = process.env.SAKURA_API_KEY || process.argv[2]
 if (!key) {
   console.error('APIキーが必要です。  SAKURA_API_KEY=<キー> npm run check:models  または  node scripts/check-models.mjs <キー>')
   process.exit(2)
-}
-
-// ── shared から固定設定を抽出（データファイル化していないため正規表現で読む） ──
-function readAppConfig() {
-  const modelInfo = readFileSync(MODEL_INFO_PATH, 'utf-8')
-  const usageBudget = readFileSync(USAGE_BUDGET_PATH, 'utf-8')
-  const idsIn = (name) => {
-    const block = modelInfo.match(new RegExp(`export const ${name}[^=]*=\\s*\\[([\\s\\S]*?)\\]`))
-    return block ? [...block[1].matchAll(/id:\s*'([^']+)'/g)].map((m) => m[1]) : []
-  }
-  const pricingKeys = (() => {
-    const block = usageBudget.match(/export const PRICING[^=]*=\s*\{([\s\S]*?)\n\}/)
-    return block ? [...block[1].matchAll(/^\s*'([^']+)'\s*:/gm)].map((m) => m[1]) : []
-  })()
-  const def = modelInfo.match(/const DEFAULT_MODEL\s*=\s*'([^']+)'/)
-  const cfg = {
-    models: idsIn('MODELS'),
-    visionModels: idsIn('VISION_MODELS'),
-    pricing: pricingKeys,
-    defaultModel: def ? def[1] : null,
-  }
-  // 沈黙の誤診をしない: 抽出0件は「モデルが無い」ではなく「読み先がずれた」。
-  // （2026-09-04 実発: 一覧の移設にこのスクリプトが追従せず、全モデルを新規扱いした）
-  if (!cfg.models.length || !cfg.pricing.length || !cfg.defaultModel) {
-    throw new Error(
-      '固定設定を読み取れませんでした。定義が移動していないか確認してください: '
-      + `MODELS=${cfg.models.length}件(${MODEL_INFO_PATH}) / PRICING=${cfg.pricing.length}件(${USAGE_BUDGET_PATH}) / DEFAULT_MODEL=${cfg.defaultModel ?? '無し'}`
-    )
-  }
-  return cfg
 }
 
 async function fetchLiveModels() {
@@ -78,7 +46,7 @@ const diff = (a, b) => a.filter((x) => !b.includes(x))
 const section = (title, items, note) => {
   if (!items.length) return false
   console.log(`\n● ${title}（${items.length}件）`)
-  if (note) console.log(`  ${note}`)
+  for (const line of [].concat(note ?? [])) console.log(`  ${line}`)
   for (const it of items) console.log(`    - ${it}`)
   return true
 }
@@ -88,6 +56,7 @@ try {
   const liveAll = await fetchLiveModels()
   const liveChat = liveAll.filter((id) => !NON_CHAT.test(id))
   const known = [...new Set([...cfg.models, ...cfg.visionModels])]
+  const pricingIds = Object.keys(cfg.pricing) // PRICING のキー（値は check:pricing が照合する）
 
   console.log('=== さくらのAI Engine 提供モデル × アプリ設定 の差分 ===')
   console.log(`提供モデル: ${liveAll.length}件（うちチャット候補 ${liveChat.length}件） / アプリ既知: ${known.length}件`)
@@ -105,16 +74,19 @@ try {
     diff(known, liveAll),
     '提供一覧に無い。MODELS/VISION_MODELS/PRICING から削除してよい（既定モデルなら DEFAULT_MODEL も見直し）。',
   ) || needsUpdate
-  // 3) 価格未設定（提供中のチャットモデルだが PRICING に無い）→ 既定単価で概算＝コストがズレる
+  // 3) 価格未設定（提供中のチャットモデルだが PRICING に無い）→ 料金表でいちばん高い単価で見積もる＝実際の額とズレる
   needsUpdate = section(
     '価格未設定モデル（PRICING に追記推奨）',
-    diff(liveChat, cfg.pricing),
-    '既定単価で概算されるため、利用額表示がズレる可能性あり。公開単価を PRICING に追記すること。',
+    diff(liveChat, pricingIds),
+    [
+      '料金表でいちばん高い単価（src/shared/usageBudget.ts の DEFAULT_PRICE）で見積もるため、利用額表示が実際の料金と合わない（料金表のどれより高いモデルだと少なく数える）。公開単価を PRICING に追記すること。',
+      '公開単価との照合と登録案は npm run check:pricing（キー不要・製品ページの公式料金表 × PRICING）で出せる。',
+    ],
   ) || needsUpdate
   // 4) 価格表に残る提供終了エントリ
   needsUpdate = section(
     '不要な価格エントリ（PRICING から削除検討）',
-    diff(cfg.pricing, liveAll),
+    diff(pricingIds, liveAll),
     '提供されていないモデルの価格が残っている。',
   ) || needsUpdate
   // 5) 既定モデルの健全性

@@ -32,7 +32,7 @@ import type { CloudCredentials } from './auth'
 import {
   getCluster, patchClusterLoadBalancer, listApplications, createApplication, getApplication,
   updateApplication, listApplicationVersions, createApplicationVersion, deleteApplicationVersion,
-  listLoadBalancerNodes, listApplicationContainers,
+  listLoadBalancerNodes, listApplicationContainers, lbAddressEstimateNote,
 } from './apprunDedicated'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import {
@@ -540,7 +540,8 @@ export async function publishAppFlow(
     }
     await sleep(intervalMs)
     lbElapsedMs += intervalMs
-    progress(`ロードバランサの IP が付くのを待っています（${formatLbWaitElapsed(lbElapsedMs)}）…`)
+    // 目安は lbAddressEstimateNote（apprunDedicated.ts・実測 5-13）から引く。「実測では〜でした」と起きたことを言い、断定しない。
+    progress(`ロードバランサの IP が付くのを待っています（${formatLbWaitElapsed(lbElapsedMs)}）。${lbAddressEstimateNote()}。`)
   }
 
   // 12. verify: **「公開しました」と言う前に、アプリが本当に応答しているかを確かめる**（D-7）。

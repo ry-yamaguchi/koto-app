@@ -97,7 +97,7 @@ describe('プロジェクトの走査（データの扱い）', () => {
 // だから条件を「もう使っている、**または これから要る**」に変える。
 // そして **require のアプリには require 版を置く**（アプリの形は変えさせない）。
 
-import { ensureDataLayer, projectModuleKind } from '../src/main/dataLayer'
+import { ensureDataLayer, projectModuleKind, dataLayerPlacement, dataLayerStamp } from '../src/main/dataLayer'
 
 const exists = (rel: string) => fs.existsSync(path.join(dir, rel))
 
@@ -299,5 +299,111 @@ describe('アプリの形の見分け（拡張子と、親の package.json）', 
     write('package.json', '{"name":"app","type":"module"}')
     write('public/server.js', "console.log('hi')")
     expect(projectModuleKind(path.join(dir, 'public'))).toBe('cjs')
+  })
+})
+
+// ── 古い koto-data を、どこまで差し替えてよいか（2026-09-24 検分）─────────
+//
+// 直しの出発点は「**いま公開中のアプリ**が混雑で真っ白になる／後勝ちで消える」で、
+// その対象は**すべて既にファイルを持っている**。「既にあれば触らない」だけでは、
+// いちばん効く直しがいちばん必要なところに届かない。
+// 一方で、データベース版に差し替えたものを元に戻したら事故になる（roadmap S-1）。
+// 判断は純関数 `dataLayerPlacement` の1か所に置き、ここで振る舞いを固定する（掟10）。
+describe('既にある koto-data を差し替えてよいかの判断（純関数）', () => {
+  const stamped = (v: string) => `// koto-data.js\n//\n// koto-data-template: ${v}\nconst BUCKET = ''\n`
+
+  it('無ければ置く', () => {
+    expect(dataLayerPlacement(null, stamped('2026-09-24.2'))).toBe('place')
+  })
+
+  it('印が同じなら、そのまま（触らない）', () => {
+    expect(dataLayerPlacement(stamped('2026-09-24.2'), stamped('2026-09-24.2'))).toBe('up-to-date')
+  })
+
+  it('★ 印が古いときだけ差し替える', () => {
+    expect(dataLayerPlacement(stamped('2026-09-24.1'), stamped('2026-09-24.2'))).toBe('replace')
+  })
+
+  // ★ 古い版を配って、直したものを巻き戻さない
+  it('印が新しいものは差し替えない', () => {
+    expect(dataLayerPlacement(stamped('2026-09-25.1'), stamped('2026-09-24.2'))).toBe('up-to-date')
+  })
+
+  // ★ ここが守られないと、利用者がデータベース版に差し替えた仕事を消してしまう
+  it('★ 印が無いものには触らない（作り替えられている可能性がある）', () => {
+    expect(dataLayerPlacement('// データベース版に差し替え済み', stamped('2026-09-24.2'))).toBe('leave-alone')
+    expect(dataLayerPlacement('', stamped('2026-09-24.2'))).toBe('leave-alone')
+  })
+
+  it('印を読む（無ければ null）', () => {
+    expect(dataLayerStamp(stamped('2026-09-24.2'))).toBe('2026-09-24.2')
+    expect(dataLayerStamp('// koto-data.js')).toBeNull()
+    expect(dataLayerStamp(null)).toBeNull()
+  })
+
+  // ★ いま同梱しているテンプレートに、実際に印が入っていること
+  //   （入っていないと、この先どの版も差し替えられない）
+  it('★ 同梱の2つのテンプレートに、同じ印が入っている', () => {
+    const js = fs.readFileSync(path.join(process.cwd(), 'templates/koto-data.js'), 'utf8')
+    const cjs = fs.readFileSync(path.join(process.cwd(), 'templates/koto-data.cjs'), 'utf8')
+    expect(dataLayerStamp(js)).not.toBeNull()
+    expect(dataLayerStamp(cjs)).toBe(dataLayerStamp(js))
+  })
+})
+
+describe('古い koto-data の差し替え（実際のファイルで）', () => {
+  const template = (file: string) => fs.readFileSync(path.join(process.cwd(), 'templates', file), 'utf8')
+
+  // ★ 今回の直しが「いちばん必要なアプリ」に届くこと
+  it('★ Koto が置いた古い版は、新しい版へ差し替える', () => {
+    write('package.json', '{"name":"app"}')
+    write('server.js', "const { save } = require('./koto-data.cjs')\nsave('a', {})")
+    // 印はあるが版が古い（Koto が置いたまま）
+    write('koto-data.cjs', template('koto-data.cjs').replace(/koto-data-template: .*/, 'koto-data-template: 2026-09-01.0'))
+
+    const r = ensureDataLayer(dir)
+    expect(r.replaced).toBe(true)
+    expect(r.needsUpdate).toBe(false)
+    expect(r.ready).toBe(true)
+    expect(fs.readFileSync(path.join(dir, 'koto-data.cjs'), 'utf8')).toBe(template('koto-data.cjs'))
+  })
+
+  it('同じ版なら、書き換えない', () => {
+    write('package.json', '{"name":"app"}')
+    write('server.js', "const { save } = require('./koto-data.cjs')\nsave('a', {})")
+    write('koto-data.cjs', template('koto-data.cjs'))
+    const before = fs.statSync(path.join(dir, 'koto-data.cjs')).mtimeMs
+
+    const r = ensureDataLayer(dir)
+    expect(r.replaced).toBe(false)
+    expect(r.needsUpdate).toBe(false)
+    expect(fs.statSync(path.join(dir, 'koto-data.cjs')).mtimeMs).toBe(before)
+  })
+
+  // ★ 利用者が作り替えたものを、黙って元に戻さない
+  it('★ 印が無いものは触らず、画面に知らせる印（needsUpdate）を返す', () => {
+    write('package.json', '{"name":"app","type":"module"}')
+    write('server.js', "import { save } from './koto-data.js'\nsave('a', {})")
+    write('koto-data.js', '// データベース版に差し替え済み')
+
+    const r = ensureDataLayer(dir)
+    expect(r.replaced).toBe(false)
+    expect(r.needsUpdate).toBe(true)
+    expect(r.ready).toBe(true)
+    expect(fs.readFileSync(path.join(dir, 'koto-data.js'), 'utf8')).toBe('// データベース版に差し替え済み')
+  })
+
+  // ★ 置いたファイルには書き込み権限が無いことがある（読み取りだけを足しているため）
+  it('★ 読み取り専用で置かれていても、差し替えられる', () => {
+    write('package.json', '{"name":"app"}')
+    write('server.js', "const { save } = require('./koto-data.cjs')\nsave('a', {})")
+    const dest = path.join(dir, 'koto-data.cjs')
+    write('koto-data.cjs', template('koto-data.cjs').replace(/koto-data-template: .*/, 'koto-data-template: 2026-09-01.0'))
+    fs.chmodSync(dest, 0o444)
+
+    const r = ensureDataLayer(dir)
+    expect(r.replaced).toBe(true)
+    expect(fs.readFileSync(dest, 'utf8')).toBe(template('koto-data.cjs'))
+    expect(fs.statSync(dest).mode & 0o444).toBe(0o444)
   })
 })

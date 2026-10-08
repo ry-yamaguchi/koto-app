@@ -4,7 +4,11 @@ import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
 import { canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
-import { MODELS, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel, DEFAULT_CHAT_MODEL } from '../usage'
+import { MODELS, getDefaultModel, setDefaultModel, getDefaultVisionModel, modelLabel, pickBestModel, DEFAULT_CHAT_MODEL } from '../usage'
+// W-45: 「画像対応モデルで処理します」を出す条件は、ChatPanel.tsx（IDE側）と同じ
+// shouldTryImagesDirectly にそろえる（未確認のモデルはまず直接渡して試す。isVisionModel の
+// 名前の一覧だけで決め打ちしない）。文面はそのまま・条件だけを揃える（決定: やること）。
+import { shouldTryImagesDirectly } from '../visionSupport'
 import { useModels } from '../hooks/useModels'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { CHAT_CONTEXT } from '../aiContext'
@@ -464,7 +468,9 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
       {/* チャットモードでも右下で頭脳（Claude / さくらのAI Engine）を確認・切替できるチップ
           （IDEモードの StatusBar と同じ BrainToggle・2026-07-13 ユーザー要望）。 */}
       <div className="absolute bottom-2 right-3 z-20 bg-elevated/95 border border-line rounded-full px-2.5 py-1 shadow-sm text-[11px]">
-        <BrainToggle apiKey={apiKey} />
+        {/* W-19: チャットモードの会話は必ず さくらのAI Engine が答える。切り替えられるときは
+            チップの表示もそれに揃える（chatMode）。 */}
+        <BrainToggle apiKey={apiKey} chatMode />
       </div>
       {/* Session sidebar */}
       <div className="w-[260px] flex-none bg-surface border-r border-line flex flex-col">
@@ -530,7 +536,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
               defaultId={DEFAULT_CHAT_MODEL}
             />
             {/* 頭脳の切替（2026-07-29 ユーザー要望）。右下の BrainToggle と同じもの・同じ書き込み口。 */}
-            <BrainToggle apiKey={apiKey} compact />
+            <BrainToggle apiKey={apiKey} compact chatMode />
             {/* 🗂 手動で区切る（2026-08-20 Ryosuke 要望）。押しても意味が無いうちは出さない（掟5）。 */}
             {canCompactNow(activeSession?.messages ?? []) && (
               <button
@@ -573,7 +579,9 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                   {apiKey ? 'さくらのAI Engineに何でも聞いてください' : 'Claudeモードは、プロジェクトを開いた画面（IDEモード）でご利用ください'}
                 </p>
                 <div className="grid grid-cols-2 gap-2.5 mt-4 w-full">
-                  {['コードのレビューをお願いします', 'Pythonでスクレイピングを書いて', 'このエラーの原因は何ですか？', 'TypeScriptの型定義を教えて'].map(s => (
+                  {/* W-46: 最初の画面の例がエンジニア向けの言葉だけだと「自分向けではない」と
+                      離れてしまう。生活・仕事で使う例に差し替える（決定: 案1）。 */}
+                  {['お店の紹介文を考えて', 'このエラーの意味をやさしく教えて', '旅行の計画を一緒に立てて', 'ホームページに載せる文章を直して'].map(s => (
                     <button
                       key={s}
                       onClick={() => { setInput(s); textareaRef.current?.focus() }}
@@ -634,7 +642,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                             {msg.role === 'assistant' && msg.thinking && (
                               <ThinkingBlock text={msg.thinking} live={isLoading && i === activeSession.messages.length - 1} />
                             )}
-                            {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={handleApplyFile} applyHint="この会話専用のプロジェクト（ワークスペース内）に保存します。編集・実行・公開は、画面上部の切替で IDE モードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
+                            {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={handleApplyFile} applyHint="この会話専用のプロジェクト（プロジェクトを置くフォルダの中）に保存します。編集・実行・公開は、画面上部の切替で IDE モードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
                             {/* #31: Claudeが使えないときの「さくらのAI Engineに切り替えて続ける」提案ボタン。 */}
                             {msg.offerAiEngineFallback && (
                               <button
@@ -706,7 +714,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                 ))}
                 {/* AI Engineキーが無い（モードB）場合、単独チャットの送信はIDEモードへの案内になるため
                     視覚モデルへの委譲は発生しない（案内を出さない）。 */}
-                {apiKey && activeSession && !isVisionModel(activeSession.model) && (
+                {apiKey && activeSession && !shouldTryImagesDirectly(activeSession.model) && (
                   <span className="text-[11px] text-ink-muted">
                     送信時に画像対応モデル（{modelLabel(getDefaultVisionModel())}）で処理します
                   </span>

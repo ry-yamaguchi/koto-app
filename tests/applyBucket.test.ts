@@ -151,6 +151,31 @@ describe('保存場所を破棄する（★実際にデータが消える経路�
     await applyPlan({ plan: planOf('delete'), spec: specWith(false), state: emptyState('myapp', 'sakura-apprun'), client: noCloud, storage: client, confirmed: true })
     expect(calls.deletedBuckets).toEqual([BUCKET])
   })
+
+  // ── 2026-09-24 検分の指摘11 ────────────────────────────────────────
+  // 鍵を無効にできなくても記録から鍵のIDを消していた。deletePermission が失敗すると、
+  // **消したはずの保存場所へ読み書きできる鍵が生き残る**のに、その ID はもうどこにも
+  // 記録されておらず、Koto からは二度と無効にできない（objectStorage.ts 冒頭が
+  // 「実機で起きた」と書いている形そのもの）。専有型（ipc/apprunDedicated.ts）は
+  // 「無効にできたときだけ外す」にしてあり、同じ1つの手順を共有しているのに逆の判断が並んでいた。
+  it('★★ 鍵を無効にできたら、state.meta から鍵のIDを外す', async () => {
+    const { client } = fakeStorage(MINE)
+    const state: EnvState = { ...emptyState('myapp', 'sakura-apprun'), meta: { storagePermissionId: 'perm-old' } }
+    const r = await applyPlan({ plan: planOf('delete'), spec: specWith(false), state, client: noCloud, storage: client, confirmed: true })
+    expect(r.ok).toBe(true)
+    expect(r.state.meta?.storagePermissionId).toBeUndefined()
+  })
+
+  it('★★ 鍵を無効にできなかったら、state.meta に ID を残す（辿れない鍵を作らない）', async () => {
+    const { client, calls } = fakeStorage(MINE)
+    client.deletePermission = async () => { throw new Error('鍵を無効にできません') }
+    const state: EnvState = { ...emptyState('myapp', 'sakura-apprun'), meta: { storagePermissionId: 'perm-old' } }
+    const r = await applyPlan({ plan: planOf('delete'), spec: specWith(false), state, client: noCloud, storage: client, confirmed: true })
+    expect(r.ok).toBe(true) // 保存場所そのものは片づいている
+    expect(calls.deletedPermissions).toEqual([])   // 消えていない
+    expect(r.state.meta?.storagePermissionId).toBe('perm-old') // だから記録は残す
+    expect(r.skipped.join()).toContain('鍵を無効にできませんでした')
+  })
 })
 
 describe('公開のたびに鍵を発行して渡す', () => {
@@ -207,13 +232,16 @@ describe('公開のたびに鍵を発行して渡す', () => {
     expect(r.state.meta?.storagePermissionId).toBe('perm-new')
   })
 
-  it('公開に失敗したら、古い鍵は消さない', async () => {
+  // 2026-09-25 検分: **いま発行した鍵は取り消す**（誰にも渡っていないので、取り消しても
+  // 動いているアプリは落ちない）。古い鍵は**動いている版が使っている**ので触らない。
+  it('公開に失敗したら、古い鍵は消さない（取り消すのは、いま発行した1件だけ）', async () => {
     const { client, calls } = fakeStorage([])
     const state: EnvState = { ...emptyState('myapp', 'sakura-apprun'), meta: { storagePermissionId: 'perm-old' } }
     const cloud: CloudClientLike = { ...noCloud, async createApp() { return { ok: false, dryRun: false, status: 500 } } }
     const r = await applyPlan({ plan: deployPlan(), spec: imageSpec(), state, client: cloud, storage: client, confirmed: true })
     expect(r.ok).toBe(false)
-    expect(calls.deletedPermissions).toEqual([])
+    expect(calls.deletedPermissions).toEqual(['perm-new'])
+    expect(calls.deletedPermissions).not.toContain('perm-old')
   })
 
   // 鍵の発行は権限を1つ作る操作。アプリを配らない計画で発行しても、
@@ -350,7 +378,17 @@ describe('保存場所を先に作ってから、アプリを公開する', () =
     } as Plan
     const r = await applyPlan({ plan, spec: specWith(true), state: emptyState('myapp', 'sakura-apprun'), client: noCloud, storage: spy, confirmed: true })
     expect(r.ok).toBe(true)
-    expect(order.indexOf('ensureBucket')).toBeLessThan(order.indexOf('issueKey'))
+    // ⚠️ ここは `order.indexOf('ensureBucket')` を **-1 で守らずに** `toBeLessThan` へ渡していた
+    // （2026-09-25 検分）。`calls.issued` が1なので `issueKey` の位置は必ず0以上、したがって
+    // **ensureBucket を一度も呼ばなくなると `-1 < n` で常に真**になり、素通りしていた。
+    // 同ファイルに「ensureBucket を呼んだ」を見る検査は他に無かった。
+    // 守っている実物は 2026-08-14 の実機事故（バケットより先に鍵を発行して 403 AccessDenied）。
+    expect(calls.ensured, 'バケットを作っていない（鍵だけ発行すると 403 AccessDenied）').toEqual([BUCKET])
+    const eb = order.indexOf('ensureBucket')
+    const ik = order.indexOf('issueKey')
+    expect(eb, 'ensureBucket を呼んでいない').toBeGreaterThan(-1)
+    expect(ik, 'issueKey を呼んでいない').toBeGreaterThan(-1)
+    expect(eb, 'バケットを作る前に鍵を発行している').toBeLessThan(ik)
     expect(calls.issued).toBe(1)
   })
 })

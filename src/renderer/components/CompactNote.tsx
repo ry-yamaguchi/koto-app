@@ -75,7 +75,7 @@ export default function CompactNote({ text, projectDir }: {
                   onClick={() => void saveToProject()}
                   className="text-[11px] text-ink-secondary hover:text-sakura border border-line rounded-md px-1.5 py-0.5 whitespace-nowrap"
                   title="まとめをプロジェクトの「素材（公開しません）」に文書として残します（アプリには使われません）"
-                >📄 資料として残す</button>
+                >📄 素材に残す</button>
                 {/* 色で伝えない（brand-green はライトモードで 1.67:1 しか出ず、白地では読めない。
                     掟5「ライトモードでも読めるか必ず確認する」）。印と太字で伝える。 */}
                 {savedTo && <span className="text-[11px] text-ink font-semibold select-text">✓ {savedTo} に残しました</span>}

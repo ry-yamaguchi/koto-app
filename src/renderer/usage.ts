@@ -29,7 +29,7 @@ import { isVisionModel, DEFAULT_VISION_MODEL } from '../shared/modelInfo'
 import {
   hashKey, priceFor, DEFAULT_SETTINGS, thisMonth,
   computeUsage, computeUsageByModel, computeUsageForKey,
-  budgetStatusOf, budgetStatusForKeyOf, checkBeforeRequestOf,
+  budgetStatusOf, budgetStatusForKeyOf, checkBeforeRequestOf, isKeyOverLimitOf,
   type BudgetSettings, type MonthUsage, type ModelUsageRow, type BudgetStatus,
 } from '../shared/usageBudget'
 export { hashKey, PRICING, priceFor, DEFAULT_SETTINGS } from '../shared/usageBudget'
@@ -173,8 +173,22 @@ export function budgetStatusForKey(apiKey: string): BudgetStatus {
 }
 
 /** リクエスト前のチェック（使用中キーの上限で判定）。ミラーに対して同期で判定できる
- *  （main のターン側は usageStore.ts の checkBeforeRequest を直接呼ぶ・こちらは IPC を経由しない）。 */
-export function checkBeforeRequest(apiKey: string): { allowed: boolean; message?: string } {
+ *  （main のターン側は usageStore.ts の checkBeforeRequest を直接呼ぶ・こちらは IPC を経由しない）。
+ *  W-21（2026-09-27決定）: `allowed:true` でも、上限に達していて「止める」がオフのときは
+ *  `warning` が付く（作業中にも知らせる）。
+ *  ⚠️ この関数（renderer/usage.ts）を呼ぶのは ChatPanel.tsx:858 の「最初のあいさつ」専用と、
+ *  useAiChat.ts:640 の Claude モードからの委譲チェックだけ（検分で確認済み）。**通常の
+ *  AI Engine チャットのターンはこの関数を経由しない**（main/chat/turnRunner.ts が
+ *  main/usageStore.ts の同名関数を直接呼ぶ。そちらには現時点で `warning` が無い。handoff 参照）。
+ *  `warning` をチャットに表示する配線は、まず main 側（usageStore.ts・chatTurn.ts）を直す。 */
+export function checkBeforeRequest(apiKey: string): { allowed: boolean; message?: string; warning?: string } {
   const m = getUsageMirror()
   return checkBeforeRequestOf(m.settings, m.months, thisMonth(), hashKey(apiKey))
+}
+
+/** 指定キーが、今月の実効上限に達しているか（W-20: 設定画面のキー別表示に使う。
+ *  checkBeforeRequestOf が実際に止める基準と同じ・budgetStatus の「既定上限との比較」とは別）。 */
+export function isKeyOverLimit(apiKey: string): boolean {
+  const m = getUsageMirror()
+  return isKeyOverLimitOf(m.settings, m.months, thisMonth(), hashKey(apiKey))
 }

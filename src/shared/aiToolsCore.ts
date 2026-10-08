@@ -11,6 +11,9 @@
 // renderer（aiTools.ts が re-export・互換維持）の両方から同じ実装を呼べるようにする。
 import { isDangerousCommand, leavesWorkingDir } from './commandGuard'
 import { PUBLISH_DIR_LABEL } from './publishRoot'
+// W-47: 「別のモデル（Kimi K2.7 Code など）に切り替えて」は、既定モデルと同じ名前なので
+// 既にそれを使っている人には「もう選んでいるのに」と読める。既定モデルのIDと一元定義から比べる。
+import { DEFAULT_MODEL } from './modelInfo'
 
 const FETCH_URL_TOOL = {
   type: 'function',
@@ -269,14 +272,14 @@ export function formatChatError(message: string, engine: 'sakura' | 'claude' = '
     if (engine === 'claude') {
       return (
         'Claude のAPIキーが認証されませんでした（401）。キーが期限切れ・失効した可能性があります。\n\n' +
-        '🔑 右上の ⚙️（設定）→「認証情報（APIキー）」で「Claude」のキーを確認し、\n' +
-        'うまくいかない場合は Anthropic のコンソールでキーを再発行して入れ直してください。\n' +
+        '🔑 メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）で「Claude」のキーを確認し、\n' +
+        'うまくいかない場合は Claude Console（platform.claude.com）でキーを再発行して入れ直してください。\n' +
         '（「🔌 接続テスト」で有効かどうか確認できます）'
       )
     }
     return (
       'APIキーが認証されませんでした（401）。キーが期限切れ・失効した可能性があります。\n\n' +
-      '🔑 右上の ⚙️（設定）→「認証情報（APIキー）」で「さくらのAI Engine」のキーを確認し、\n' +
+      '🔑 メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）で「さくらのAI Engine」のキーを確認し、\n' +
       'うまくいかない場合は さくらのAI Engine でキーを再発行して入れ直してください。\n' +
       '（「🔌 接続テスト」で有効かどうか確認できます）'
     )
@@ -285,7 +288,7 @@ export function formatChatError(message: string, engine: 'sakura' | 'claude' = '
   if (engine === 'claude' && /\b402\b|billing|credit balance|insufficient|payment|quota/.test(m)) {
     return (
       'Claude を利用できませんでした。Anthropic アカウントのクレジット残高・請求設定に問題がある可能性があります。\n\n' +
-      '💳 Anthropic Console（console.anthropic.com）で請求設定を確認してください。\n' +
+      '💳 Claude Console（platform.claude.com）で請求設定を確認してください。\n' +
       '（さくらのAI Engine のキーも登録していれば、そちらに切り替えて続けることもできます）'
     )
   }
@@ -298,7 +301,7 @@ export function formatChatError(message: string, engine: 'sakura' | 'claude' = '
     return '会話が長くなりすぎました。チャット上部の 🗑（クリア）で会話をリセットしてから、続きを依頼してください。'
   }
   const keyHint = engine === 'claude' ? 'Claude のAPIキー' : 'APIキーと利用上限'
-  return `エラー: ${message}\n\n💡 うまくいかないときは: もう一度送信するか、設定（🔑）で${keyHint}を確認してください。`
+  return `エラー: ${message}\n\n💡 うまくいかないときは: もう一度送信するか、認証情報（🔑）で${keyHint}を確認してください。`
 }
 
 /**
@@ -343,7 +346,9 @@ export function toolStatusLabel(name: string, argsJson: string): string {
     const p = TOOL_PHRASES.get(name)
     if (p) return `${p.icon} ${p.doing}…${p.detail ? ` ${p.detail(args)}` : ''}`
   } catch { /* 引数が壊れていてもラベルは出す */ }
-  return `🔧 ${name} を実行しています…`
+  // W-101: 表に無い道具（例: create_directory）を AI が呼ぶと、英語の内部名がそのまま出ていた。
+  // Claude 側（claudeMode.ts の claudeToolLabel 既定枝）と同じ「🔧 作業しています…」に揃える。
+  return '🔧 作業しています…'
 }
 
 /** 操作の対象（ファイル名・コマンド等）をこの長さで切る。長いコマンドで画面が流れないように。 */
@@ -487,16 +492,26 @@ export function claimsFileChange(text: string | null | undefined): boolean {
  * 「変えたと言っているのに、書き込みが1度も走っていない」ときの注意書き（純関数）。
  *
  * **黙って成功に見せない。** 直し方（やり直す・モデルを変える）まで書く。
+ *
+ * @param currentModel このターンで実際に使ったモデルID（W-47）。既定モデル（Kimi K2.7 Code）を
+ *   使っている最中に「Kimi K2.7 Code に切り替えて」と出すと「もう選んでいるのに」と迷わせるので、
+ *   そのときは名前を出さず「ツールを使える別のモデル」とだけ言う。
  */
-export function unexecutedChangeWarning(claims: boolean, wrote: boolean): string | null {
+export function unexecutedChangeWarning(claims: boolean, wrote: boolean, currentModel?: string): string | null {
   if (!claims || wrote) return null
+  const alreadyDefault = currentModel === DEFAULT_MODEL
   // ── 矛盾に見えないように書く（2026-08-19 実機・Ryosuke 報告）──────────
   // AI が「✏️ style.css を保存しました」と書いた直後に「変更されていません」と
   // 出るため、**どちらが本当か分からない**という見え方になっていた。
   // Koto が確かめた事実である、と分かる書き方にする。
-  return '⚠️ AI は「保存しました」と書いていますが、**実際には書き込みが行われていません**'
+  // W-48: 強調したい文（実際には書き込みが行われていません）を「**」で囲んでいたが、
+  // 吹き出しはマークダウンを解釈しないため記号がそのまま出ていた。「**」は外し、
+  // 「保存しました」で既に使っている「」を重ねる代わりに、行を分けて強調する。
+  return '⚠️ AI は「保存しました」と書いていますが、\n'
+    + '実際には書き込みが行われていません'
     + '（Koto がこのやり取りを確認しました。AI の説明の方が誤りです）。\n'
-    + 'もう一度「実際に変更して」と伝えるか、上のモデル選択を「Kimi K2.7 Code」などに'
+    + 'もう一度「実際に変更して」と伝えるか、上のモデル選択を'
+    + (alreadyDefault ? 'ツールを使える別のモデルに' : '「Kimi K2.7 Code」などに')
     + '切り替えてからお試しください。'
 }
 
@@ -513,12 +528,18 @@ export function unexecutedChangeWarning(claims: boolean, wrote: boolean): string
  *
  * @param sawMarkup 本文にテキスト形式のツール呼び出しがあったか
  * @param usedTools このターンで実際にツールを実行したか
+ * @param currentModel このターンで実際に使ったモデルID（W-47。unexecutedChangeWarning と同じ理由）。
  */
-export function unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean): string | null {
+export function unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean, currentModel?: string): string | null {
   if (!sawMarkup || usedTools) return null
-  return '⚠️ このモデルはファイルの書き換えを実行できませんでした。'
-    + '**上の説明どおりには変わっていません。**'
-    + 'モデルを「Kimi K2.7 Code」などツールを使えるものに切り替えて、もう一度お試しください。'
+  const alreadyDefault = currentModel === DEFAULT_MODEL
+  // W-48: 強調したい文（上の説明どおりには変わっていません。）を「**」で囲んでいたが、
+  // 吹き出しはマークダウンを解釈しないため記号がそのまま出ていた。「**」を外し、行を分ける。
+  return '⚠️ このモデルはファイルの書き換えを実行できませんでした。\n'
+    + '上の説明どおりには変わっていません。\n'
+    + 'モデルを'
+    + (alreadyDefault ? 'ツールを使える別のもの' : '「Kimi K2.7 Code」などツールを使えるもの')
+    + 'に切り替えて、もう一度お試しください。'
 }
 
 /**
@@ -565,10 +586,32 @@ export function stripToolMarkup(text: string): string {
   return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+/**
+ * 📚 資料トグル（ChatPanel.tsx の toggleRag）が、押されたときに何をすべきかを決める（純関数・W-44）。
+ *
+ * ⚠️ 保存済みの設定（storedEnabled）から先に「オン→オフ」の next を決めてはいけない。
+ * さくらのAI Engine のキーが無いと、画面に出る状態（ragEnabled）は常に false（オフ）になる
+ * （ChatPanel.tsx: `!!ragSettings?.enabled && !!apiKey`）。そのため、キーが無いまま一度でも
+ * enabled:true が保存されたことがある人（このバグ自体が起こしうる状態）は storedEnabled===true
+ * のままであり、storedEnabled から先に next（=!storedEnabled）を決めると next=false になって
+ * しまう。next=false のときは「キーが無い」の案内を出さずに false を上書き保存するだけになり、
+ * 表示は変わらないまま＝「押しても何も起きない」に戻る（検分の指摘8・2026-09-27）。
+ * **画面に見えている状態は、キーが無い限り常にオフ**なので、押した人の意図は常に
+ * 「オンにしたい」である。保存状態を見る前に、まずキーの有無だけで判定する。
+ */
+export type RagToggleDecision =
+  | { kind: 'needsKey' }
+  | { kind: 'toggle'; next: boolean }
+
+export function decideRagToggleAction(hasApiKey: boolean, storedEnabled: boolean): RagToggleDecision {
+  if (!hasApiKey) return { kind: 'needsKey' }
+  return { kind: 'toggle', next: !storedEnabled }
+}
+
 // Web検索は IDE 主導（autoSearchBlock）で結果を注入する方式に変更したため、モデル非依存で機能する。
 // ここではキーの有無だけをモデルに伝える（捏造防止）。
 export function searchStatusContext(hasSearchKey: boolean): string {
   return hasSearchKey
     ? '\n【Web検索】検索が必要そうな質問では、IDEが自動でWeb検索を行い「検索結果」をこのプロンプトに添付します（どのモデルでも機能します）。検索結果が添付されていればそれを根拠に回答すること。添付が無い事実や最新情報を推測で創作せず、「検索しました」と偽らないこと。\n'
-    : '\n【Web検索】現在Web検索は利用できません（検索用APIキーが未登録）。最新情報やWeb上の事実を推測で創作したり「検索しました」と偽ったりせず、「Web検索は未設定です。認証情報（⌘ ,）の『Web検索』で Tavily または Brave の無料APIキーを登録すると、どのモデルでも検索できます」と案内すること。\n'
+    : '\n【Web検索】現在Web検索は利用できません（検索用APIキーが未登録）。最新情報やWeb上の事実を推測で創作したり「検索しました」と偽ったりせず、「Web検索は未設定です。認証情報（⇧⌘,）の『Web検索』で Tavily または Brave の無料APIキーを登録すると、どのモデルでも検索できます」と案内すること。\n'
 }

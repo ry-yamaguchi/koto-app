@@ -18,18 +18,27 @@
 //   さくらのAI Engine（コード系モデル・Kimi K2.7 Code）へ実装を依頼し、応答をこのツールが直接ファイルへ書き込む。
 //   Claudeへは summarizeDelegateResult の「要約のみ」を返す（設計方針: Claudeの文脈へ生成物本体を
 //   持ち込まない＝Opusトークンの二重消費を防ぐ）。
+//   ⚠️ W-18: この書き込みは SDK の canUseTool（agent.ts の makeCanUseTool）を**通らない**
+//   （`mcp__ide__delegate_implementation` は allowedTools に名前で入っており、SDK は canUseTool より先に
+//   自動許可する。しかもどのファイルを書くかは AI Engine の応答が返るまで分からない）。
+//   そのため「✋ 毎回確認」の承認は、書き込みの直前にここ（writeDelegatedFiles）で取る。仕組みは
+//   makeCanUseTool と同じもの（shared/approvalPlan.ts の planApproval → chat/approvalStore.ts の requestApproval・
+//   同じ turnId）を使い回し、新しく作らない。
 
 import * as fs from 'fs'
 import * as path from 'path'
 import { z } from 'zod'
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import { fetchUrlPage } from '../ipc/web'
-import { queryDocuments } from '../rag/client'
+import { queryDocuments, type RagBudgetCheck } from '../rag/client'
 import { sakuraClient, isContextLimitError, safeMaxTokens } from '../ipc/sakura'
 import {
   DELEGATE_TIMEOUT_MS, DELEGATE_MAX_RETRIES, delegateTimeoutMessage, isSdkTimeoutError,
 } from '../../shared/chatTimeouts'
 import { snapshotBeforeWrite } from '../backup/store'
+import { planApproval, writeDenialMessage, type WriteMode } from '../../shared/approvalPlan'
+import { isProtectedWritePath, protectedWriteMessage } from '../../shared/protectedPaths'
+import { requestApproval } from '../chat/approvalStore'
 import {
   IDE_MCP_SERVER_NAME,
   SEARCH_DOCS_NO_KEY_MESSAGE,
@@ -44,7 +53,10 @@ import {
   parseDelegateOutput,
   validateDelegatePath,
   summarizeDelegateResult,
+  summarizeDelegateDenied,
+  summarizeDelegateStopped,
   type DelegateContextFile,
+  type DelegateParsedFile,
 } from './toolText'
 
 /** agent.ts が動的 import したSDKモジュールのうち、本ファイルが使う関数（型はコンパイル後に消える）。 */
@@ -60,6 +72,12 @@ export type IdeToolsParams = {
   aiEngineKey: string | null
   /** open_preview の副作用（renderer への通知）。相対パスを受け取る。 */
   onOpenPreview: (relPath: string) => void
+  /** W-85: search_docs（📚 資料の検索）を通信の前に止めるための上限の確認。上限を超えていれば通信を行わずに止まる。
+   *  作り方は usageStore.ts の budgetCheckForKey（ipc/claude.ts が作って agent.ts 経由で渡す）。
+   *  ここで usageStore.ts を import しない: usageStore.ts は electron を読み込み、このファイルを使うテストの作りに響く。
+   *  ⚠️ 必須にしてある: 任意（?）にすると、渡し忘れても型検査を素通りし「上限を超えても資料検索が止まらない」挙動に黙って倒れる
+   *  （この案件で「一部だけ配線」を3度繰り返した）。 */
+  ragBudgetCheck: RagBudgetCheck
   /** このAIターンのスナップショットID（C3: delegate_implementation の書き込み前退避に使う。backup/plan.ts と共通の機構）。 */
   snapshotId: string
   /** 🕘 履歴の見出し（このターンのユーザーの指示文。agent.ts が prompt から作る）。 */
@@ -69,6 +87,20 @@ export type IdeToolsParams = {
   /** ファイル書き込み成功後に相対パスを通知（renderer がエディタの開きタブをディスクから読み直す。
    *  stale tab のオートセーブ上書きによるデータ喪失防止・2026-07-11。agent.ts の PostToolUse フックと同役割）。 */
   onFileWritten: (relPath: string) => void
+  /** W-18: AIのファイル保存の権限モード。'confirm'（✋ 毎回確認）なら、委譲の書き込みも1件ごとに
+   *  書き込みの前に承認を取る（makeCanUseTool の Write/Edit と同じ仕組み）。
+   *  ⚠️ 必須にしてある: 任意（?）にすると、渡し忘れても型検査を素通りし「おまかせ」の挙動に黙って倒れる。 */
+  writeMode: WriteMode
+  /** W-18: 承認の駐機を束ねる鍵（agent.ts の startClaudeChat が作る turnId と同じもの）。
+   *  ⏹（claude:chatCancel）の cancelApprovalsForTurn(turnId) がこの承認待ちも取り消す（＝拒否として解決する）。 */
+  turnId: string
+  /** W-18（検分の指摘）: ⏹ が押されたか（agent.ts が abortController.signal.aborted を返す）。
+   *  委譲は AI Engine の応答待ちが最長で約10〜20分あり、その最中に ⏹ を押すと claude:chatCancel の
+   *  cancelApprovalsForTurn は0件を取り消すだけ（まだ承認待ちが無い）。応答が返ったあとに承認待ちを
+   *  新しく立てると、⏹ ではもう消せない（activeChat は既に null）ので、止まっていれば聞かず・書かない。
+   *  「おまかせ」でも、⏹ のあとに黙って書かないための歯止めになる。
+   *  ⚠️ 必須にしてある: 任意（?）にすると、渡し忘れても型検査を素通りし「⏹ のあとに書く」挙動に黙って倒れる。 */
+  isStopped: () => boolean
 }
 
 // delegate_implementation の1回のリクエストで許可する最大出力トークン数。
@@ -114,13 +146,99 @@ function readDelegateContextFile(projectDir: string, rel: string): DelegateConte
   }
 }
 
+/** writeDelegatedFiles が使う値（IdeToolsParams のうち書き込みに関わるものだけ）。 */
+export type DelegateWriteContext = Pick<
+  IdeToolsParams,
+  'projectDir' | 'writeRoot' | 'snapshotId' | 'snapshotLabel' | 'onFileWritten' | 'writeMode' | 'turnId' | 'isStopped'
+>
+
+/** writeDelegatedFiles の結果。denied が null なら全件保存済み。 */
+export type DelegateWriteOutcome = {
+  /** 実際に書いたファイル（相対パスとバイト数）。 */
+  written: { path: string; bytes: number }[]
+  /** 書かなかった理由（ユーザーが許可しなかった／守るパス）。Claude へ返す文面つき。無ければ null。 */
+  denied: { path: string; message: string } | null
+  /** ⏹ で止められたので、聞きもせず書きもしなかった（denied とは別。denied は null のまま）。 */
+  stopped: boolean
+  /** denied／stopped のあと、聞きもせず書きもしなかった残りのファイル（両方なしなら空）。
+   *  stopped のときは、止まった時点で未着手だったファイルすべて（そのファイル自身を含む）。 */
+  notReached: string[]
+}
+
+/**
+ * delegate_implementation が AI Engine から受け取ったファイルを、作業フォルダへ書く（W-18）。
+ *
+ * ── 書く**前**に、Claude の Write/Edit（agent.ts の makeCanUseTool）と同じ関門を通す ──────────
+ * ① 守るパス（isProtectedWritePath）は、writeMode を問わず**聞かずに拒否**する（承認しても書けない領域）。
+ * ② 「✋ 毎回確認」（writeMode==='confirm'）のときは、1件ごとに planApproval → requestApproval で承認を取る
+ *    （同じ turnId・同じ dir（＝projectDir）・同じ文面「✏️ ファイルの保存（<相対パス>）」）。
+ *    拒否されたら**そのファイルは書かず、残りも聞かずに止める**（「いいえ」のあとに次々と確認を出さない）。
+ *    「🪄 おまかせ」（'auto'）なら planApproval が null を返し、聞かずに書く。
+ * 承認の前には**何もしない**（🕘 退避もフォルダ作成もしない。拒否したのに痕跡が残らないように）。
+ *
+ * 新しい承認の仕組みは作っていない。⏹ は claude:chatCancel が cancelApprovalsForTurn(turnId) で
+ * 承認待ちを「拒否」として解決するので、承認待ちが**既に立っている**間の ⏹ は、ここでも書き込みは走らない。
+ *
+ * ── ⏹ が「承認待ちが立つ前」に押されたとき（検分の指摘・実際に再現）──────────────────
+ * AI Engine の応答待ち（最長で約10〜20分）の最中に ⏹ を押すと、取り消される承認待ちは0件。
+ * 応答が返ったあとにここで承認待ちを新しく立てると、⏹ ではもう消せず（activeChat は既に null）、
+ * 止めたはずの依頼の保存ダイアログが次の会話の最中に出て、許可すると書かれてしまう。
+ * そこで isStopped を ①承認を求める前 ②許可された後の書く直前 ③次のファイルへ進む前 に見て、
+ * 止まっていれば聞かず・書かずに返す（「おまかせ」で ⏹ のあとに黙って書く道もこれで塞がる）。
+ */
+export async function writeDelegatedFiles(files: DelegateParsedFile[], ctx: DelegateWriteContext): Promise<DelegateWriteOutcome> {
+  const { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped } = ctx
+  const written: { path: string; bytes: number }[] = []
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]
+    const notReached = files.slice(i + 1).map(x => x.path)
+    // ⏹ 済みなら、聞かず・書かない（承認待ちを新しく立てない）。次のファイルへ進む前にも毎回ここを通る。
+    if (isStopped()) {
+      return { written, denied: null, stopped: true, notReached: files.slice(i).map(x => x.path) }
+    }
+    // ① 守るパス（呼び出し側の validateDelegatePath でも弾いているが、書く関数の側でも必ず通す）。
+    if (isProtectedWritePath(f.path)) {
+      return { written, denied: { path: f.path, message: protectedWriteMessage(f.path) }, stopped: false, notReached }
+    }
+    // ② 「✋ 毎回確認」。makeCanUseTool の Write と同じ mappedName（write_file）・同じ引数の形。
+    const argsJson = JSON.stringify({ path: f.path })
+    const plan = planApproval('write_file', argsJson, { writeMode })
+    if (plan) {
+      const approved = await requestApproval({ turnId, dir: projectDir, label: plan.label })
+      if (!approved) {
+        return { written, denied: { path: f.path, message: writeDenialMessage('write_file', argsJson) }, stopped: false, notReached }
+      }
+      // 許可の答えが届いたあとで ⏹ が押されていたら、書かない（書く直前にも見る）。
+      if (isStopped()) {
+        return { written, denied: null, stopped: true, notReached: files.slice(i).map(x => x.path) }
+      }
+    }
+    // 退避の道は**プロジェクト直下からの相対**にする（🕘 はそこを見る）。
+    // 書き込み先は作業フォルダ基準なので、2つを取り違えないこと。
+    const relForBackup = path.relative(projectDir, path.join(writeRoot, f.path))
+    try {
+      snapshotBeforeWrite(projectDir, snapshotId, relForBackup, f.content, snapshotLabel)
+    } catch {
+      // スナップショット失敗で委譲自体は止めない（P2-⑧履歴の欠落よりファイル反映を優先。agent.ts の
+      // makePreToolUseHook と同じ方針）
+    }
+    const full = path.join(writeRoot, f.path)
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    fs.writeFileSync(full, f.content, 'utf8')
+    written.push({ path: f.path, bytes: Buffer.byteLength(f.content, 'utf8') })
+    // エディタの開きタブへ反映を通知（stale tab のオートセーブ上書き防止）
+    try { onFileWritten(relForBackup) } catch { /* 通知失敗で委譲は止めない */ }
+  }
+  return { written, denied: null, stopped: false, notReached: [] }
+}
+
 /**
  * IDE固有ツール4種（うち delegate_implementation はモードA限定）を注入するインプロセスMCPサーバ構成を作る。
  * agent.ts が options.mcpServers = { [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, …) } で使う。
  * 実際のツール名は `mcp__ide__<tool名>` に修飾される（toolText.ts の IDE_MCP_TOOL_NAMES 参照）。
  */
 export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): McpSdkServerConfigWithInstance {
-  const { projectDir, writeRoot, aiEngineKey, onOpenPreview, snapshotId, snapshotLabel, onDelegated, onFileWritten } = params
+  const { projectDir, writeRoot, aiEngineKey, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, writeMode, turnId, isStopped } = params
 
   const fetchUrlTool = sdk.tool(
     'fetch_url',
@@ -148,7 +266,7 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
       try {
         // renderer 版（ChatPanel の ragSearch）と同じ条件: プロジェクト設定のタグフィルタ＋上位3件。
         const tags = readProjectRagTags(projectDir)
-        const hits = await queryDocuments(aiEngineKey, q, { tags: tags.length ? tags : undefined, topK: 3 })
+        const hits = await queryDocuments(aiEngineKey, q, { tags: tags.length ? tags : undefined, topK: 3, budgetCheck: ragBudgetCheck })
         return textResult(formatSearchDocsResult(hits))
       } catch (e: any) {
         return textResult(`エラー: ${e?.message ?? e}`)
@@ -238,29 +356,21 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
           return textResult(`エラー: 不正なファイルパスが含まれていたため書き込みを中止しました: ${invalid.map(f => f.path).join(', ')}`)
         }
 
-        const written: { path: string; bytes: number }[] = []
-        for (const f of parsed.files) {
-          // 退避の道は**プロジェクト直下からの相対**にする（🕘 はそこを見る）。
-          // 書き込み先は作業フォルダ基準なので、two つを取り違えないこと。
-          const relForBackup = path.relative(projectDir, path.join(writeRoot, f.path))
-          try {
-            snapshotBeforeWrite(projectDir, snapshotId, relForBackup, f.content, snapshotLabel)
-          } catch {
-            // スナップショット失敗で委譲自体は止めない（P2-⑧履歴の欠落よりファイル反映を優先。agent.ts の
-            // makePreToolUseHook と同じ方針）
-          }
-          const full = path.join(writeRoot, f.path)
-          fs.mkdirSync(path.dirname(full), { recursive: true })
-          fs.writeFileSync(full, f.content, 'utf8')
-          written.push({ path: f.path, bytes: Buffer.byteLength(f.content, 'utf8') })
-          // エディタの開きタブへ反映を通知（stale tab のオートセーブ上書き防止）
-          try { onFileWritten(relForBackup) } catch { /* 通知失敗で委譲は止めない */ }
-        }
+        // W-18: 書き込みは writeDelegatedFiles を通す（「✋ 毎回確認」なら書く前に承認・拒否なら書かない）。
+        // ⏹ が AI Engine の応答待ちの最中に押されていた場合も、ここで聞かず・書かずに返ってくる（outcome.stopped）。
+        const outcome = await writeDelegatedFiles(parsed.files, { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped })
 
         const promptTokens = res.usage?.prompt_tokens ?? 0
         const completionTokens = res.usage?.completion_tokens ?? 0
+        // 拒否されて書かなかった場合も、AI Engine には依頼して費用が出ているので記録する。
         onDelegated({ model: chosenModel, promptTokens, completionTokens }) // 副作用のみ（usage記録用）
-        return textResult(summarizeDelegateResult(written, parsed.notes, { promptTokens, completionTokens }))
+        if (outcome.stopped) {
+          return textResult(summarizeDelegateStopped(outcome.written, outcome.notReached, { promptTokens, completionTokens }))
+        }
+        if (outcome.denied) {
+          return textResult(summarizeDelegateDenied(outcome.denied.message, outcome.written, outcome.notReached, { promptTokens, completionTokens }))
+        }
+        return textResult(summarizeDelegateResult(outcome.written, parsed.notes, { promptTokens, completionTokens }))
       } catch (e: any) {
         // 縮めて再試行したほうが時間切れになる道もあるので、ここでも日本語に直す
         // （直す前は「エラー: 委譲に失敗しました（Request timed out.）」と英語が混ざっていた）。

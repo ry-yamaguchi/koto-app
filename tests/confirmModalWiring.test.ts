@@ -73,7 +73,7 @@ describe('RollbackSection.tsx: window.confirm → ConfirmModal', () => {
 
 describe('Sidebar.tsx: window.confirm → ConfirmModal（ファイル移動・ゴミ箱移動の両方。UX-B2 で対象化）', () => {
   it('moveEntry（ファイル移動）の window.confirm は無くなっている', () => {
-    const at = sidebar.indexOf('const moveEntry = async (entry: FileEntry) => {')
+    const at = sidebar.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
     expect(at).toBeGreaterThan(-1)
     const end = sidebar.indexOf('\n  }\n', at)
     expect(sidebar.slice(at, end)).not.toContain('window.confirm(')

@@ -21,8 +21,9 @@ export interface IpcDeps {
    * VPS操作・プロジェクト作成。AI応答は main でターンが完走するため対象外・終了確認ダイアログが見る）。
    *
    * closeBlockingDetail/closeBlockingConfirm は、その close ダイアログの文言差し替え（roadmap #14）。
-   * 公開処理は main の1 invoke で完走するため「中断されます」が実態と合わない——失われるのは
-   * 結果の表示と、renderer 側で書く公開の記録（activity.ts の PUBLISH_CLOSE_WARNING 参照）。
+   * 公開・作成・破棄は main の1 invoke で完走するため「中断されます」が実態と合わない——窓を閉じても
+   * 処理は続き、記録も main が書く。失われるのは結果の表示で、Koto 自体を終了すると途中で止まる
+   * （activity.ts の PUBLISH_CLOSE_WARNING 参照。2026-09-29 に事実を直した）。
    * 未指定（空文字）なら main 側の従来文言のまま。
    */
   setBusy: (busy: boolean, label: string, closeBlockingBusy: boolean, closeBlockingLabel: string, closeBlockingDetail: string, closeBlockingConfirm: string) => void

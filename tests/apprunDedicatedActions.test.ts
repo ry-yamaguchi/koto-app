@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { runCreate, runTeardown, runPublishApp, shouldShowCreateResult, shouldShowTeardownResult, shouldShowPublishSection } from '../src/renderer/apprunDedicatedActions'
 import { panelBusy, panelBusyReason } from '../src/renderer/apprunDedicatedActions'
+import { teardownConfirmMessage } from '../src/renderer/apprunDedicatedActions'
+import { shouldShowTeardownButton, storageLeftoverNote, shouldClearPublishRecord } from '../src/renderer/apprunDedicatedActions'
+import { teardownDataNote, teardownDataNoteForAll } from '../src/shared/teardownSupport'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -387,5 +390,254 @@ describe('画面の配線: ⑤⑥⑦⑧ の操作はすべて panelBusy で止�
 
   it('★ 押せないときに、理由の一言を出す', () => {
     expect(panel).toContain('panelBusyReason({ creating, tearingDown, publishing, lbRefreshing })')
+  })
+})
+
+// ── ⑥の確認ダイアログの文面（2026-09-24 Ryosuke 決定「①は案2・一貫性が重要」）────────────
+//
+// 案2 では⑥の破棄で**利用者のデータが実際に消える**。それを名指ししない確認は嘘になる。
+// 以前の文面は「次を削除します: アプリ…・クラスタ…／この操作は元に戻せません。
+// 消さない限り課金が続きます。」で、**保存場所が一覧に入っていなかった。**
+
+describe('⑥の確認ダイアログ: 保存場所を名指しする（案2）', () => {
+  const TARGETS = ['アプリ『myapp』', 'ロードバランサ『lb-z』', 'クラスタ『cluster-x』']
+  const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
+
+  // W-14（2026-09-27 決定）: 「（中のデータも消えます）」は保存場所そのものが丸ごと消えると
+  // 読めてしまうため「にある、このプロジェクトのデータ」に直した（wording-review.md W-14 の注意）。
+  it('★★ 保存場所があるとき、一覧に名前が入り「このプロジェクトのデータ」と言う', () => {
+    const msg = teardownConfirmMessage({
+      targets: TARGETS,
+      placements: [PLACEMENT],
+      dataNote: teardownDataNote(PLACEMENT),
+    })
+    expect(msg).toContain('保存場所『koto-data-x』')
+    expect(msg).toContain('にある、このプロジェクトのデータ')
+    expect(msg).not.toContain('中のデータも消えます')
+    // 削除するものの一覧の中に入っている（別の段落に添えるだけではない）
+    expect(msg.split('\n\n')[0]).toContain('保存場所『koto-data-x』')
+    for (const t of TARGETS) expect(msg).toContain(t)
+  })
+
+  it('★★ ほかのプロジェクトも使っている保存場所のことを伝える（何が残るかの約束）', () => {
+    const msg = teardownConfirmMessage({
+      targets: TARGETS,
+      placements: [PLACEMENT],
+      dataNote: teardownDataNote(PLACEMENT),
+    })
+    expect(msg).toContain('ほかのプロジェクトのデータ')
+    expect(msg).toContain('あなたが自分で置いたファイルは残します')
+    expect(msg).toContain('ほかに無ければ')
+  })
+
+  it('★★ 保存場所が無いときは、一覧にも本文にも保存場所が出ない', () => {
+    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [], dataNote: '' })
+    expect(msg).not.toContain('保存場所')
+    expect(msg).not.toContain('データも消えます')
+    for (const t of TARGETS) expect(msg).toContain(t)
+  })
+
+  // W-14（2026-09-27 決定）: 「ここに挙げたものの月額の課金は止まります」という固定の言い切りはやめ、
+  // targets から組み立てた「〜の課金は止まります」にした（固定文言ではなくなったので、
+  // 部分一致は語尾の「の課金は止まります」だけを見る）。
+  it('★ 「消さない限り課金が続きます」ではなく、止まる側の説明にする', () => {
+    for (const placement of [PLACEMENT, null]) {
+      const msg = teardownConfirmMessage({ targets: TARGETS, placements: placement ? [placement] : [], dataNote: teardownDataNote(placement) })
+      expect(msg).not.toContain('消さない限り課金が続きます')
+      expect(msg).toContain('の課金は止まります')
+      expect(msg).toContain('この操作は元に戻せません')
+    }
+  })
+
+  it('画面には素のテキストとして出る（Markdown 記法を使わない・v0.2.98 の教訓）', () => {
+    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [PLACEMENT], dataNote: teardownDataNote(PLACEMENT) })
+    expect(msg).not.toMatch(/\*\*|__|`/)
+  })
+})
+
+// ── ⑥の確認ダイアログ: 消える保存場所を**全件**名指しする（2026-09-25 検分の指摘15・V6）──
+//
+// ⑥の破棄は `teardownStorageForProject` が env.json の同意済みの保存場所を**全件**片づける。
+// ところが確認の本文は `storage:placement` の先頭1件だけで組み立てていたので、2件ある状態では
+// 『A』しか出ないまま、**名前が一度も出なかった『B』とその中のデータまで消えた**。
+// 元に戻せない削除を、名指ししないまま実行させてはいけない（掟10「お金・破壊の歯止め」）。
+
+describe('⑥の確認ダイアログ: 保存場所が2件あるとき、両方を名指しする（指摘15）', () => {
+  const TARGETS = ['クラスタ『cluster-x』']
+  const A = { bucket: 'koto-data-a', prefix: 'projects/myapp/', shared: true }
+  const B = { bucket: 'koto-data-b', prefix: 'projects/myapp/', shared: true }
+  const noteAll = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'full', placements: [A, B] })
+
+  it('★★ 削除するものの一覧に『A』と『B』が両方入る（先頭1件で終わらない）', () => {
+    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
+    const first = msg.split('\n\n')[0]
+    expect(first, '『A』が一覧に無い').toContain('『koto-data-a』')
+    expect(first, '『B』が一覧に無い＝名指ししないまま消す').toContain('『koto-data-b』')
+    // W-14（2026-09-27 決定）: 「（中のデータも消えます）」→「にある、このプロジェクトのデータ」
+    expect(first).toContain('にある、このプロジェクトのデータ')
+  })
+
+  it('★★ 「ほか1件」のように省かない（省いた名前は、利用者にとって存在しないのと同じ）', () => {
+    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
+    expect(msg).not.toMatch(/ほか\s*\d+\s*件/)
+    expect(msg).not.toContain('…')
+  })
+
+  it('★★ 💾 の行（何が残るかの約束）も全件の名前を出す', () => {
+    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
+    const dataLine = msg.split('\n\n').find(x => x.startsWith('💾 '))
+    expect(dataLine, '💾 の行が無い').toBeTruthy()
+    expect(dataLine!).toContain('『koto-data-a』')
+    expect(dataLine!).toContain('『koto-data-b』')
+  })
+
+  it('★★ ほかの公開先の巻き添えも、2件のときは「これらの保存場所」と言う', () => {
+    const msg = teardownConfirmMessage({
+      targets: TARGETS, placements: [A, B], dataNote: noteAll, otherTargets: ['HANAMII'],
+    })
+    expect(msg).toContain('これらの保存場所は HANAMII でも使っています。')
+    expect(msg).toContain('アプリ自体は消えません')
+  })
+
+  // W-14（2026-09-27 決定）でこの全文の固定文言を組み立て式に直したため、期待値も新しい文面に更新
+  // （テストの狙い＝1件と2件で組み立てが同じであることは変えていない）。
+  it('★★ 1件のときの文面は、直したあとの形で固定する（文言を二重管理しない）', () => {
+    const noteOne = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'full', placements: [A] })
+    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A], dataNote: noteOne })
+    expect(msg).toBe(
+      '次を削除します: クラスタ『cluster-x』・保存場所『koto-data-a』にある、このプロジェクトのデータ'
+      + '\n\n💾 ' + noteOne
+      // 2026-09-29（作者の決定）: 課金の文は種類だけ（ID は1つ上の一覧で一度出している）。
+      + '\n\nこの操作は元に戻せません。削除すると、クラスタの課金は止まります。保存場所は、ほかに使っているプロジェクトが無いときだけ止まります。よろしいですか？',
+    )
+    // 1件のときは「この保存場所」（従来どおり）
+    const withOther = teardownConfirmMessage({
+      targets: TARGETS, placements: [A], dataNote: noteOne, otherTargets: ['HANAMII'],
+    })
+    expect(withOther).toContain('この保存場所は HANAMII でも使っています。')
+    expect(withOther).not.toContain('これらの保存場所')
+  })
+
+  it('★ 名前の無いもの（bucket が空）は数えない（空の『』を出さない）', () => {
+    const msg = teardownConfirmMessage({
+      targets: TARGETS, placements: [{ bucket: '' }, null, undefined, A], dataNote: teardownDataNote(A),
+    })
+    expect(msg).not.toContain('『』')
+    expect(msg).toContain('『koto-data-a』')
+  })
+
+  it('★ 1件も無ければ、保存場所の話は一切出ない（消えるものが無い）', () => {
+    for (const placements of [[], null, undefined, [{ bucket: '' }]]) {
+      const msg = teardownConfirmMessage({ targets: TARGETS, placements, dataNote: noteAll, otherTargets: ['HANAMII'] })
+      expect(msg).not.toContain('保存場所')
+      expect(msg).not.toContain('HANAMII')
+      expect(msg).not.toContain('💾')
+    }
+  })
+})
+
+describe('⑥の確認ダイアログ: 画面が純関数を通している（組み立て直していない）', () => {
+  const panel = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf8'))
+
+  it('★ doTeardown は teardownConfirmMessage に placements（全件）と teardownDataNoteForAll を渡す', () => {
+    // 2026-09-24 検分の指摘7: 「保存場所まで片づけるか」の判断は shared の純関数に置き、
+    // 📡 一覧（scope:'list'）と⑥（scope:'full'）の両方がそこを通る。
+    // 2026-09-25 検分の指摘15: ⑥は保存場所を**全件**片づけるので、確認の本文も全件（placements）。
+    // **呼び出しの形ごと**見る（'placements,' だけを探すと、ほかの行にも当たって素通りする）。
+    expect(panel).toContain(`const confirmMessage = teardownConfirmMessage({
+      targets,
+      placements,
+      dataNote: teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'full', placements }),
+      otherTargets,
+    })`)
+    // 先頭1件だけを渡す形へ戻っていないこと（この行が戻ると『B』が名指しされないまま消える）
+    expect(panel).not.toContain("dataNote: teardownDataNoteFor({ target: 'sakura-apprun-dedicated', scope: 'full', placement }),")
+    expect(panel).not.toContain('const placement = placements[0]')
+    // 2026-09-24 検分の指摘2: 巻き添えになる公開先の名前は、公開記録を読むだけで足りる。
+    expect(panel).toContain('const otherTargets = (await readPublishTargets(projectDir).catch(() => []))')
+    expect(panel).toContain('otherTargets,')
+    // 直す前の文面が残っていない（画面の中で組み立て直すと、テストが効かなくなる）
+    expect(panel).not.toContain('この操作は元に戻せません。消さない限り課金が続きます。よろしいですか？')
+  })
+})
+
+// ── 2026-09-24 検分の指摘1・2・4: ⑥を押し直せるか／巻き添えを言うか／幽霊を残さないか ────────
+
+describe('⑥の確認ダイアログ: 保存場所を共有しているほかの公開先を名指しする（指摘2）', () => {
+  const TARGETS = ['クラスタ『cluster-x』']
+  const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
+
+  it('★★ ほかの公開先が生きているときは、その名前と「データも消えます」を出す', () => {
+    const msg = teardownConfirmMessage({
+      targets: TARGETS, placements: [PLACEMENT], dataNote: teardownDataNote(PLACEMENT),
+      otherTargets: ['HANAMII'],
+    })
+    expect(msg).toContain('HANAMII')
+    expect(msg).toContain('データも消えます')
+    // アプリそのものは消えない（消しすぎの誤解を生まない）
+    expect(msg).toContain('アプリ自体は消えません')
+  })
+
+  it('★★ ほかの公開先が無ければ、その段落自体を出さない', () => {
+    const msg = teardownConfirmMessage({
+      targets: TARGETS, placements: [PLACEMENT], dataNote: teardownDataNote(PLACEMENT), otherTargets: [],
+    })
+    expect(msg).not.toContain('でも使っています')
+  })
+
+  it('★ 保存場所を使っていなければ、ほかの公開先の名前も出さない（消えるものが無い）', () => {
+    const msg = teardownConfirmMessage({
+      targets: TARGETS, placements: [], dataNote: '', otherTargets: ['HANAMII'],
+    })
+    expect(msg).not.toContain('HANAMII')
+  })
+})
+
+describe('⑥「すべて削除する」を押し直せるか（指摘1）', () => {
+  it('★★ 計算資源が空でも、保存場所だけ残っていればボタンを出す', () => {
+    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: 'koto-data-x' })).toBe(true)
+  })
+
+  it('★★ 計算資源も保存場所も無ければ出さない（押しても何も起きないボタンを作らない）', () => {
+    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: null })).toBe(false)
+    expect(shouldShowTeardownButton({ hasAnyResource: false })).toBe(false)
+    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: '' })).toBe(false)
+  })
+
+  it('★ 計算資源があれば従来どおり出す', () => {
+    expect(shouldShowTeardownButton({ hasAnyResource: true, storageLeftoverBucket: null })).toBe(true)
+  })
+
+  it('★★ 残っているバケット名と「もう一度押すと片づく」ことを言う', () => {
+    const note = storageLeftoverNote('koto-data-x')
+    expect(note).toContain('koto-data-x')
+    expect(note).toContain('月額')
+    expect(note).toContain('もう一度押す')
+    expect(storageLeftoverNote(null)).toBe('')
+    expect(storageLeftoverNote('')).toBe('')
+  })
+})
+
+describe('破棄のあとに公開記録を片づけるか（指摘4・9・13）', () => {
+  it('★★ 保存場所だけ失敗しても、アプリが消えていれば公開記録を片づける（📡の幽霊を防ぐ）', () => {
+    expect(shouldClearPublishRecord({
+      hadApplicationID: true, result: { ok: false, appDeleted: true },
+    })).toBe(true)
+  })
+
+  it('★★ 計算資源の削除が途中で止まったら片づけない（アプリはまだ生きている）', () => {
+    expect(shouldClearPublishRecord({
+      hadApplicationID: true, result: { ok: false, appDeleted: false },
+    })).toBe(false)
+  })
+
+  it('★ そもそもアプリを公開していなければ呼ばない', () => {
+    expect(shouldClearPublishRecord({ hadApplicationID: false, result: { ok: true, appDeleted: true } })).toBe(false)
+    expect(shouldClearPublishRecord({ hadApplicationID: true, result: null })).toBe(false)
+  })
+
+  it('★ appDeleted を持たない古い応答では ok に倒す（従来どおりの振る舞い）', () => {
+    expect(shouldClearPublishRecord({ hadApplicationID: true, result: { ok: true } })).toBe(true)
+    expect(shouldClearPublishRecord({ hadApplicationID: true, result: { ok: false } })).toBe(false)
   })
 })

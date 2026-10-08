@@ -120,14 +120,17 @@ describe('共用型・専有型とも checkBilling を呼んでいる（掟10: �
     const block = dedicatedIpc.slice(at, end)
     expect(block).toContain('new SakuraCloudClient({ credentials: auth, dryRun: true })')
     expect(block).toContain('getLimits(auth)')
-    expect(block).toContain('ok: api.ok && billing.ok')
+    expect(block).toContain('ok: api.ok && registry.ok && billing.ok')
   })
 
-  it('専有型の接続テストは2項目（api・billing）を返す形になっている（roadmap #35: 共用型と同じチェックリストに揃える）', () => {
+  // W-38（2026-09-27 決定・案2）: 専有型①「公開に対応したときに確認」の注記は古く、
+  // 接続テストでレジストリの権限不足に、日額のかかるクラスタを作ったあとの⑧で初めて気づいていた。
+  // 共用型 cloud:testConnection と同じレジストリ確認を足し、3項目（api・registry・billing）を返す。
+  it('専有型の接続テストは3項目（api・registry・billing）を返す形になっている（roadmap #35・W-38: 共用型と同じチェックリストに揃える）', () => {
     const at = dedicatedIpc.indexOf("ipcMain.handle('apprunDedicated:testConnection'")
     const end = dedicatedIpc.indexOf('\n  })', at)
     const block = dedicatedIpc.slice(at, end)
-    expect(block).toContain('checks: { api, billing }')
+    expect(block).toContain('checks: { api, registry, billing }')
   })
 })
 

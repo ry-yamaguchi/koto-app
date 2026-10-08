@@ -24,9 +24,11 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   DEFAULT_SETTINGS, sanitizeSettings, sanitizeMonths, thisMonth, applyRecord,
-  checkBeforeRequestOf,
+  checkBeforeRequestOf, hashKey,
   type BudgetSettings, type UsageStore, type KeyBucket, type ModelUsage,
 } from '../shared/usageBudget'
+// 型だけの import（実行時には何も読み込まない＝rag/client.ts との循環も起きない）。
+import type { RagBudgetCheck } from './rag/client'
 
 /** renderer へ渡す読み取り用の写し（usage:get の返り値・usage:changed の中身）。 */
 export type UsageSnapshot = { settings: BudgetSettings; months: UsageStore }
@@ -155,10 +157,30 @@ export function recordUsage(fp: string, model: string, promptTokens: number, com
   notify()
 }
 
-/** リクエスト前のチェック（現在の設定・実績で判定するだけ。shared の純関数を呼ぶ）。 */
-export function checkBeforeRequest(fp: string): { allowed: boolean; message?: string } {
+/**
+ * リクエスト前のチェック（現在の設定・実績で判定するだけ。shared の純関数を呼ぶ）。
+ *
+ * 戻りの `warning` は W-21（2026-09-27決定）: 「上限に達したら止める」（enforce）がオフでも
+ * 上限を超えていれば、止めずに（allowed:true のまま）この文が付く。ここで落とすと、設定画面の
+ * 「オフの場合は止めず、上限を超えたら作業中にも知らせます」が嘘になる（chatTurn.ts が吹き出しにする）。
+ */
+export function checkBeforeRequest(fp: string): { allowed: boolean; message?: string; warning?: string } {
   ensureLoaded()
   return checkBeforeRequestOf(settings, months, thisMonth(), fp)
+}
+
+/**
+ * W-85: 📚 資料の API（rag/client.ts の queryDocuments・chatDocuments・uploadDocument）へ渡す
+ * 「上限の確認」を作る**唯一の場所**（掟10: ipc/rag.ts・chat/turnRunner.ts・ipc/claude.ts が
+ * それぞれ `() => checkBeforeRequest(hashKey(apiKey))` を書き写さない）。
+ *
+ * apiKey は引数で受けて指紋（hashKey）にするだけで、保持しない（掟4）。
+ * 返す関数は呼ばれるたびに**その時点の**設定・実績で判定する（渡した後に上限を超えても効く）。
+ * electron を読み込まない側（claude/tools.ts）へは、この関数の返り値を引数で渡す
+ * （tools.ts が usageStore.ts を import するとテストの作りに響くため）。
+ */
+export function budgetCheckForKey(apiKey: string): RagBudgetCheck {
+  return () => checkBeforeRequest(hashKey(apiKey))
 }
 
 /** 予算設定を丸ごと置き換える（サニタイズを通す）。 */

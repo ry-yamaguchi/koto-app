@@ -54,7 +54,12 @@ describe('AccessKeySection.tsx: JSX は accessKeyView の結果をそのまま�
 
   it('見出しは「{stepNo} {keyLabel}」、説明文はサービス名を差し込んだ1文', () => {
     expect(section).toContain('{stepNo} {keyLabel}')
-    expect(section).toContain('Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。')
+    expect(section).toContain('Koto が {serviceTitle} にアクセスするために必要な情報です。')
+    // 「合言葉」のようなたとえは使わない（2026-10-01 作者「こんないい方は普通しない」）
+    expect(section).not.toContain('合言葉')
+    expect(section).not.toContain('Koto が、あなたの代わりに {serviceTitle} へアクセスするための合言葉です。')
+    // 2026-10-01 rc.5 の実機: 誰の代わりかが無く、語順がおかしかった。古い文へ戻らないこと
+    expect(section).not.toContain('Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。')
   })
 
   it('ConnectionChecklist を使う（手描きの一覧を複製しない）', () => {

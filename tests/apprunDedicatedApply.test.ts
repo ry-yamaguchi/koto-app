@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import {
   createClusterFlow,
   teardownFlow,
+  appStopWaitProgressMessage,
   buildClusterCreateBody,
   buildAsgCreateBody,
   buildLbCreateBody,
@@ -1698,9 +1699,13 @@ describe('teardownFlow: D-9 DELETEの前に有効なバージョンを無効化�
       if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
       send(404, { error: `test router: 未定義のルート ${key}` })
     })
-    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    // 2026-10-07: やり直す前に待つ（既定15秒）。実際には待たず、sleep を偽物にして呼ばれ方だけ見る。
+    const sleeps: number[] = []
+    const sleep = async (ms: number) => { sleeps.push(ms) }
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep }, baseUrl)
     expect(r.ok).toBe(true)
     expect(deleteCount).toBe(2)
+    expect(sleeps).toEqual([15000]) // やり直す前に1回だけ待つ（間を置かずに打たない）
     expect(calls).toEqual([
       'GET /applications/app1',
       'GET /applications/app1/containers',
@@ -1716,7 +1721,7 @@ describe('teardownFlow: D-9 DELETEの前に有効なバージョンを無効化�
     expect(rec.applicationID).toBeFalsy()
   })
 
-  it('(d) 3回やり直しても400のまま→止まり、remaining.applicationIDが残り、messageに生の応答が載る', async () => {
+  it('(d) 待ってやり直しても（合計の上限まで）400のまま→止まり、remaining.applicationIDが残り、messageに生の応答が載る', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
     const calls: string[] = []
     const rawTitle = 'Cannot delete application because it has active version'
@@ -1724,12 +1729,16 @@ describe('teardownFlow: D-9 DELETEの前に有効なバージョンを無効化�
       'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
       'DELETE /applications/app1': { status: 400, body: { status: 400, title: rawTitle } },
     }, calls))
-    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    // 2026-10-07: 回数の上限（3回）は無い。合計の待ち時間の上限（timeoutMs）で止まる。
+    // 上限60秒・間隔15秒＝待ち4回・DELETE 5回（待った合計が60秒になった回で、もう一度試して止まる）。
+    const sleep = async () => { /* 実際には待たない */ }
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 60_000 }, baseUrl)
     expect(r.ok).toBe(false)
     expect(r.remaining.applicationID).toBe('app1')
     expect(r.message).toContain(rawTitle) // 生の応答（title）がmessageに載る
-    expect(calls.filter(c => c === 'DELETE /applications/app1').length).toBe(3)
-    expect(calls.filter(c => c === 'GET /applications/app1').length).toBe(3)
+    expect(calls.filter(c => c === 'DELETE /applications/app1').length).toBe(5)
+    // 「active version」のときは、やり直すたびに無効化の確認（GET）からやり直す。
+    expect(calls.filter(c => c === 'GET /applications/app1').length).toBe(5)
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.applicationID).toBe('app1')
   })
@@ -1806,14 +1815,15 @@ describe('teardownFlow: D-10 DELETEが400「currently running」でもやり直�
       if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
       send(404, { error: `test router: 未定義のルート ${key}` })
     })
-    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    const sleep = async () => { /* 実際には待たない（待ちの中身は下の「2026-10-07」の節で固定する） */ }
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep }, baseUrl)
     expect(r.ok).toBe(true)
     expect(deleteCount).toBe(2)
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.applicationID).toBeFalsy()
   })
 
-  it('★ 3回とも400「currently running」なら、課金が続くことを隠さずに止める（「有効なバージョン」とは書かない）', async () => {
+  it('★ 待っても400「currently running」のままなら、課金が続くことを隠さずに止める（「有効なバージョン」とは書かない）', async () => {
     writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
     const calls: string[] = []
     const rawTitle = 'Cannot delete application because it is currently running'
@@ -1822,12 +1832,14 @@ describe('teardownFlow: D-10 DELETEが400「currently running」でもやり直�
       'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
       'DELETE /applications/app1': { status: 400, body: { status: 400, title: rawTitle } },
     }, calls))
-    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true }, baseUrl)
+    const sleep = async () => { /* 実際には待たない */ }
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 60_000 }, baseUrl)
     expect(r.ok).toBe(false)
     expect(r.remaining.applicationID).toBe('app1')
-    expect(r.message).toContain('課金が続きます')
+    expect(r.message).toContain('クラスタなどの課金は続いています')
+    expect(r.message).not.toContain('アプリが消えるまで')
     expect(r.message).not.toContain('有効なバージョン') // 理由が違うのに決め打ちの文面を出すと嘘になる
-    expect(calls.filter(c => c === 'DELETE /applications/app1').length).toBe(3)
+    expect(calls.filter(c => c === 'DELETE /applications/app1').length).toBe(5) // 上限（60秒）まで、15秒おきに試した
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.applicationID).toBe('app1')
   })
@@ -1934,5 +1946,543 @@ describe('teardownFlow: D-10 DELETEの前にコンテナが0件になるまで�
     expect(deleteAt).toBeGreaterThan(lastContainersAt) // 0件を確認したあとにDELETE
     const rec = readApprunDedicatedFs(projectDir)
     expect(rec.applicationID).toBeFalsy()
+  })
+})
+
+
+// ── 2026-10-07（実機実測・0.6.20-rc.6）: DELETE が400「まだ動いている」で断られたら、**待ってから**やり直す ──────
+//
+// 📡 公開したもの一覧から専有型のアプリ（landingTEST）の 🗑 を押すと、**すぐに**
+// 「破棄できませんでした: アプリケーションの削除に失敗しました。コンテナの停止が終わりません＝課金が続きます:
+//  Cannot delete application because it is currently running（HTTP 400）」になった。
+// 以前は、400のあと**間を置かずに**やり直して3回で止まったため、コンテナの停止が終わっていないと
+// 1〜2秒で3回とも400になっていた。いまは、間隔（既定15秒）を置いて、合計の上限（既定10分）まで粘る。
+// 入口は2つ（📡 の🗑＝appOnly・⑥のすべて削除）で、どちらも同じ attemptDeleteApplication を通る＝両方で固める。
+// お金・破壊の歯止めなので、偽サーバに実際に流して**呼ばれた要求の一覧・sleep の呼ばれ方**で固定する（掟10）。
+
+type StopDelete = { status: number; title?: string }
+const RUNNING_TITLE = 'Cannot delete application because it is currently running'
+const ACTIVE_TITLE = 'Cannot delete application because it has active version'
+
+/** DELETE /applications/app1 の n 回目（1始まり）の応答を決める。204 を返すまで（または上限まで）続く。 */
+type StopCfg = {
+  deleteAt: (n: number) => StopDelete
+  /** GET /applications/app1/containers の応答（既定: 読めた形で0件）。 */
+  containers?: Route
+  /** containers の応答を、そこまでの DELETE の回数などで切り替えたいとき用（あれば containers より優先）。 */
+  containersFn?: (c: StopCounters) => Route
+  /** PUT（無効化）のあと、有効なバージョンが「まだ非null」のまま見える GET の回数（無効化の確認の待ちを作る）。既定 0。 */
+  lagGetsAfterPut?: number
+  /** 400 を返したあと、有効なバージョンが「また付いた」状態にする（無効化がまだ効いていない状況）。PUT で null に戻る。 */
+  rearmActiveVersionAfter400?: boolean
+  /** ⑥の全部破棄用に、LB/ASG/クラスタの応答も足す（すべて204→一覧は空）。 */
+  full?: boolean
+}
+type StopCounters = { deletes: number; puts: number; getApp: number }
+
+function stopServer(calls: string[], cfg: StopCfg, c: StopCounters): http.RequestListener {
+  let activeVersion: number | null = null
+  // PUT のあと、あと何回の GET が「まだ非null」を返すか（無効化の確認の待ちを作る）。
+  let lagLeft = 0
+  return (req, res) => {
+    const key = `${req.method} ${req.url}`
+    calls.push(key)
+    req.on('data', () => { /* 本文は読み捨てる */ })
+    req.on('end', () => {
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') {
+        c.getApp++
+        if (lagLeft > 0 && activeVersion === null) { lagLeft--; return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: 4 } }) }
+        return send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion } })
+      }
+      if (key === 'PUT /applications/app1') { c.puts++; activeVersion = null; lagLeft = cfg.lagGetsAfterPut ?? 0; return send(204, {}) }
+      if (key === 'GET /applications/app1/containers') {
+        const r = cfg.containersFn ? cfg.containersFn(c) : (cfg.containers ?? { status: 200, body: { nodes: [] } })
+        return send(r.status, r.body)
+      }
+      if (key === 'DELETE /applications/app1') {
+        c.deletes++
+        const d = cfg.deleteAt(c.deletes)
+        if (d.status === 204) return send(204, {})
+        if (cfg.rearmActiveVersionAfter400) activeVersion = 4
+        return send(d.status, { status: d.status, title: d.title ?? 'boom' })
+      }
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') return send(200, { applications: [] })
+      if (cfg.full) {
+        if (key === 'DELETE /clusters/c1/asg/a1/load_balancers/l1') return send(204, {})
+        if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') return send(200, { loadBalancers: [] })
+        if (key === 'DELETE /clusters/c1/asg/a1') return send(204, {})
+        if (key === 'GET /clusters/c1/asg?maxItems=20') return send(200, { autoScalingGroups: [] })
+        if (key === 'DELETE /clusters/c1') return send(204, {})
+        if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      }
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+  }
+}
+
+const newCounters = (): StopCounters => ({ deletes: 0, puts: 0, getApp: 0 })
+/** 実際には待たず、呼ばれた間隔（ms）だけを記録する sleep。 */
+function recordingSleep(): { sleeps: number[]; sleep: (ms: number) => Promise<void> } {
+  const sleeps: number[] = []
+  return { sleeps, sleep: async (ms: number) => { sleeps.push(ms) } }
+}
+
+describe('teardownFlow: 2026-10-07 アプリの削除が400「currently running」で断られたら、待ってからやり直す', () => {
+  it('★ 📡 の🗑（appOnly）: 400が3回続いたあと204 → 成功。15秒おきに3回待ち、無効化は打ち直さず、進み具合が待つたびに出る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: n => (n <= 3 ? { status: 400, title: RUNNING_TITLE } : { status: 204 }),
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const progress: string[] = []
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, progress: m => progress.push(m) }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(c.deletes).toBe(4) // 3回断られて、4回目で受け付けられた
+    expect(sleeps).toEqual([15000, 15000, 15000]) // 待ち3回・既定の間隔（15秒）
+    // 「currently running」では無効化を打ち直さない（無効化の確認の GET も最初の1回だけ・PUT は0回）。
+    expect(c.getApp).toBe(1)
+    expect(c.puts).toBe(0)
+    // 待つたびに進み具合が出る（3回待った＝3回出る。15秒・30秒のうちは経過を書かない）。
+    const waiting = progress.filter(m => m.includes('アプリのコンテナが止まるのを待っています'))
+    expect(waiting).toEqual([
+      'アプリのコンテナが止まるのを待っています…',
+      'アプリのコンテナが止まるのを待っています…',
+      'アプリのコンテナが止まるのを待っています（1分経過）…',
+    ])
+    // 受け付けられたあとの確認は従来どおり（一覧から消えたのを確かめて、記録を外す）。
+    expect(r.executed.some(e => e.includes('アプリケーション『app1』を削除しました（消えたことを確認）'))).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBeFalsy()
+  })
+
+  it('★ ⑥のすべて削除（appOnly なし）でも同じ: 400が3回続いたあと204 → アプリが消えてから LB → ASG → クラスタへ進む', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: n => (n <= 3 ? { status: 400, title: RUNNING_TITLE } : { status: 204 }),
+      full: true,
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const progress: string[] = []
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, progress: m => progress.push(m) }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(c.deletes).toBe(4)
+    expect(sleeps).toEqual([15000, 15000, 15000])
+    expect(c.puts).toBe(0)
+    expect(progress.filter(m => m.includes('アプリのコンテナが止まるのを待っています')).length).toBe(3)
+    // 順序: アプリの4回目の DELETE が先、そのあとで LB → ASG → クラスタ（アプリが消える前に下位へ進まない）。
+    const lastAppDelete = calls.lastIndexOf('DELETE /applications/app1')
+    const lbDelete = calls.indexOf('DELETE /clusters/c1/asg/a1/load_balancers/l1')
+    const asgDelete = calls.indexOf('DELETE /clusters/c1/asg/a1')
+    const clusterDelete = calls.indexOf('DELETE /clusters/c1')
+    expect(lastAppDelete).toBeGreaterThanOrEqual(0)
+    expect(lbDelete).toBeGreaterThan(lastAppDelete)
+    expect(asgDelete).toBeGreaterThan(lbDelete)
+    expect(clusterDelete).toBeGreaterThan(asgDelete)
+    const rec = readApprunDedicatedFs(projectDir)
+    expect(rec.applicationID).toBeFalsy()
+    expect(rec.clusterID).toBeFalsy()
+  })
+
+  it('★ 待ち間隔は opts.deleteRetryIntervalMs で差し替えられる（既定は15秒）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: n => (n <= 2 ? { status: 400, title: RUNNING_TITLE } : { status: 204 }),
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, deleteRetryIntervalMs: 1000 }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(sleeps).toEqual([1000, 1000])
+  })
+
+  it('★ 合計の上限（timeoutMs）に達したら止まる。記録は消さず、次にすることが分かる文面＋生の応答が載り、inProgress は立てない', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, { deleteAt: () => ({ status: 400, title: RUNNING_TITLE }), full: true }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, sleep, timeoutMs: 60_000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    // 上限60秒・間隔15秒＝待ち4回。待った合計が60秒になった回でもう一度試して、それでも断られたら止まる（DELETE 5回）。
+    expect(sleeps).toEqual([15000, 15000, 15000, 15000])
+    expect(c.deletes).toBe(5)
+    // 「3回で即失敗」の形が残っていない。
+    expect(c.deletes).not.toBe(3)
+    // 記録（remaining と、ディスク上の applicationID）は消さない＝もう一度押せば続きから進む。
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+    // 下位（LB/ASG/クラスタ）には触らない・記録も残す。
+    expect(calls.some(x => x.startsWith('DELETE /clusters'))).toBe(false)
+    expect(r.remaining.clusterID).toBe('c1')
+    // 次にすることが分かる文面＋生の応答。新しい文では「＝」のメモ書きを使わない。
+    expect(r.message).toContain('まだコンテナが止まっていません')
+    expect(r.message).toContain('しばらくしてから、もう一度押してください')
+    expect(r.message).toContain('無効化済み')
+    expect(r.message).toContain(RUNNING_TITLE) // 生の応答
+    expect(r.message).not.toContain('＝')
+    // 受け付けられていない（DELETE は断られた）ので、「削除を受け付けました」の inProgress にはしない。
+    expect(r.inProgress).toBeUndefined()
+  })
+
+  it('★ 上限で止まったあと、もう一度押せば続きから進む（記録が残っているので、受け付けられれば消える）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    let accepting = false
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: () => (accepting ? { status: 204 } : { status: 400, title: RUNNING_TITLE }),
+    }, c))
+    const { sleep } = recordingSleep()
+    const first = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 30_000 }, baseUrl)
+    expect(first.ok).toBe(false)
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+    accepting = true // コンテナが止まった
+    const second = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 30_000 }, baseUrl)
+    expect(second.ok).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBeFalsy()
+  })
+
+  it('★ 既定の合計の上限は10分（waitUntilGone と同じ）: 15秒おき40回待って、DELETE は41回目で止まる', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, { deleteAt: () => ({ status: 400, title: RUNNING_TITLE }) }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const progress: string[] = []
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, progress: m => progress.push(m) }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(sleeps.length).toBe(40)
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(10 * 60 * 1000)
+    expect(c.deletes).toBe(41)
+    // 進み具合: 最初は経過なし、30秒を過ぎたら「N分経過」（実際より長く見せない）。最後は10分近い。
+    const waiting = progress.filter(m => m.includes('アプリのコンテナが止まるのを待っています'))
+    expect(waiting.length).toBe(40)
+    expect(waiting[0]).toBe('アプリのコンテナが止まるのを待っています…')
+    expect(waiting[1]).toBe('アプリのコンテナが止まるのを待っています…')
+    expect(waiting[2]).toBe('アプリのコンテナが止まるのを待っています（1分経過）…')
+    expect(waiting[39]).toBe('アプリのコンテナが止まるのを待っています（10分経過）…')
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+
+  it('★ 待ちの合計には、コンテナが止まるのを待った分も数える（上限は「この段の合計」）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    // コンテナが止まらずに動き続ける（読めた形で1件）。DELETE は断られ続ける。
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: () => ({ status: 400, title: RUNNING_TITLE }),
+      containers: { status: 200, body: { nodes: [{ containersStats: [{ state: 'running', status: 'Up 5 minutes' }] }] } },
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 30_000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    // コンテナの待ち（5秒おき・上限30秒＝6回）で上限を使い切っているので、DELETE は1回だけ試して止まる。
+    expect(sleeps).toEqual([5000, 5000, 5000, 5000, 5000, 5000])
+    expect(c.deletes).toBe(1)
+    expect(r.executed.some(e => e.includes('時間切れ'))).toBe(true)
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+
+  const unreadableContainers: [string, Route][] = [
+    ['一覧の取得が失敗（500）', { status: 500, body: { status: 500, title: 'boom' } }],
+    ['200 だが形が違う', { status: 200, body: { foo: 'bar' } }],
+    // 原本 OpenAPI の例（ListApplicationContainersResponse）の形。containersStats は配列ではなく
+    // { collectedAtSec, containers: [...] } の**オブジェクト**。いまの readContainerStates は配列だけを読むので null＝読めない。
+    ['原本の例の形（containersStats がオブジェクト）', {
+      status: 200,
+      body: {
+        nodes: [{
+          nodeID: 'b7e6a1c2-3f4d-4e2a-9b1a-2c3d4e5f6a7b',
+          containersStats: {
+            collectedAtSec: 1721203200,
+            containers: [{ id: 'container-1', image: 'nginx:latest', state: 'running', status: 'Up 5 minutes', cpuUsagePercent: 12.5, applicationID: 'f47ac10b-58cc-4372-a567-0e02b2c3d479', applicationVersion: 2 }],
+          },
+          desired: { containers: [] },
+        }],
+      },
+    }],
+  ]
+  it.each(unreadableContainers)('★ コンテナの一覧が読めなくても（%s）、待たずに DELETE へ進み、400 の待ち直しは効く', async (_label, containers) => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: n => (n <= 2 ? { status: 400, title: RUNNING_TITLE } : { status: 204 }),
+      containers,
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    // 一覧を理由にした待ちは入らない（sleep は DELETE の待ち直しの2回だけ）。
+    expect(sleeps).toEqual([15000, 15000])
+    expect(c.deletes).toBe(3)
+    expect(r.executed.some(e => e.includes('時間切れ'))).toBe(false)
+  })
+
+  // ── 合計の上限の数え方（無効化の確認の待ち・コンテナの待ちも合算し、それぞれ「合計の残り」までしか待たない）──
+  it('★ 待ちの合計には、無効化の確認の待ちも数える（active version で再武装した状態で、無効化後の確認が1回遅れる）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: () => ({ status: 400, title: ACTIVE_TITLE }),
+      rearmActiveVersionAfter400: true,
+      lagGetsAfterPut: 1, // PUT のあと、最初の確認はまだ非null → 5秒（既定の確認間隔）待ってから引き直す
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 40_000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    // 待ち直し15秒 → 無効化の確認5秒 → 待ち直し15秒 → 無効化の確認5秒＝合計40秒で上限。3回目の DELETE（400）で止まる。
+    // （確認の待ちを合計に数えないと、ここで止まらずにもう1回待ち直す＝sleeps が6本・DELETE が4回になる）
+    expect(sleeps).toEqual([15000, 5000, 15000, 5000])
+    expect(c.deletes).toBe(3)
+    expect(r.message).toContain('有効なバージョンが解消しません')
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+
+  it('★ 無効化の確認の待ちは「合計の残り」までしか待たない（上限を超えて、確認だけで10分待ち続けない）。止まっても記録は残る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: () => ({ status: 400, title: ACTIVE_TITLE }),
+      rearmActiveVersionAfter400: true,
+      lagGetsAfterPut: 3, // 無効化のたびに、確認が3回「まだ非null」を返す
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 40_000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    // 1回目の待ち直し15秒 → 確認を3回待つ（5秒×3）→ DELETE（400）→ 待ち直し15秒＝45秒で、合計の上限（40秒）を超える。
+    // 次の無効化の確認は「残り0秒」なので、1回確かめて待たずに止まる（上限をまるごと渡すと、ここでさらに15秒待ってしまう）。
+    expect(sleeps).toEqual([15000, 5000, 5000, 5000, 15000])
+    expect(c.deletes).toBe(2)
+    expect(r.message).toContain('無効になったことを確認できませんでした')
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+
+  it('★ コンテナが止まるのを待つ上限も「合計の残り」（待ち直しを1回したあとの回で、残り時間だけ待って打ち切る）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: () => ({ status: 400, title: RUNNING_TITLE }),
+      // 1回目の DELETE のあと、動いているコンテナが読めるようになる（1件・止まらない）。
+      containersFn: cc => (cc.deletes === 0
+        ? { status: 200, body: { nodes: [] } }
+        : { status: 200, body: { nodes: [{ containersStats: [{ state: 'running', status: 'Up 5 minutes' }] }] } }),
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 60_000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    // 1回目の待ち直し15秒のあと、コンテナの待ちは残り45秒＝5秒×9回で打ち切る（合計の上限を使い切るので、DELETE は2回で止まる）。
+    // 上限をまるごと（60秒）渡すと、ここが5秒×12回になる。
+    expect(sleeps).toEqual([15000, ...Array(9).fill(5000)])
+    expect(c.deletes).toBe(2)
+    expect(r.executed.some(e => e.includes('時間切れ'))).toBe(true)
+    expect(r.message).toContain('まだコンテナが止まっていません')
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+
+  // ── 安全弁: 回数の上限を置かない作りなので、間隔・上限が変な値でもループが終わる ──
+  it.each([
+    ['0', 0],
+    ['負の値', -5000],
+    ['NaN', Number.NaN],
+  ] as const)('★ 待ち間隔が %s でも、休みなく DELETE を打ち続けず、止まる（下限1秒・数でないときは既定の15秒）', async (_label, interval) => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, { deleteAt: () => ({ status: 400, title: RUNNING_TITLE }) }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 30_000, deleteRetryIntervalMs: interval }, baseUrl)
+    expect(r.ok).toBe(false)
+    const expected = Number.isNaN(interval) ? 15000 : 1000
+    expect(sleeps.length).toBeGreaterThan(0)
+    expect(sleeps.every(ms => ms === expected)).toBe(true)
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(30_000)
+    expect(c.deletes).toBe(sleeps.length + 1)
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+
+  it('★ 合計の上限（timeoutMs）が NaN でも、既定の10分で止まる（終わらないループにしない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, { deleteAt: () => ({ status: 400, title: RUNNING_TITLE }) }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: Number.NaN }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(sleeps.length).toBe(40)
+    expect(c.deletes).toBe(41)
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+
+  it('やり直せない400（別の文言）は、待たずに1回で止まる（待ち直しの対象を広げすぎない）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, { deleteAt: () => ({ status: 400, title: 'Some other reason entirely' }) }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(c.deletes).toBe(1)
+    expect(sleeps).toEqual([])
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+  })
+})
+
+describe('teardownFlow: 2026-10-07 アプリの削除が400「active version」で断られたら、待ってから、無効化からやり直す', () => {
+  it('★ 400が2回続いたあと204 → 待つたびに無効化の確認（GET）からやり直し、有効なバージョンが付いていれば PUT で無効化する', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, {
+      deleteAt: n => (n <= 2 ? { status: 400, title: ACTIVE_TITLE } : { status: 204 }),
+      rearmActiveVersionAfter400: true, // 400のあと、有効なバージョンが「また付いている」
+    }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(sleeps).toEqual([15000, 15000]) // やり直す前に待つ（間を置かずに打たない）
+    expect(c.deletes).toBe(3)
+    expect(c.puts).toBe(2) // 2回のやり直しのたびに無効化し直した（最初は null だったので PUT なし）
+    // 1回目の DELETE（400）→ 待つ → GET → PUT → GET（確認）→ コンテナ → DELETE（400）→ … の順。
+    expect(calls.slice(0, 12)).toEqual([
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications/app1',
+      'PUT /applications/app1',
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+      'DELETE /applications/app1',
+      'GET /applications/app1',
+      'PUT /applications/app1',
+      'GET /applications/app1',
+      'GET /applications/app1/containers',
+    ])
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBeFalsy()
+  })
+
+  it('★ 上限に達したら止まる。「有効なバージョンが解消しません」と書き、記録は消さず、生の応答が載る', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const c = newCounters()
+    const baseUrl = await listen(stopServer(calls, { deleteAt: () => ({ status: 400, title: ACTIVE_TITLE }) }, c))
+    const { sleeps, sleep } = recordingSleep()
+    const r = await teardownFlow(AUTH, projectDir, { confirmed: true, appOnly: true, sleep, timeoutMs: 45_000 }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(sleeps).toEqual([15000, 15000, 15000])
+    expect(c.deletes).toBe(4)
+    expect(r.message).toContain('有効なバージョンが解消しません')
+    expect(r.message).toContain('しばらくしてから、もう一度押してください')
+    expect(r.message).toContain(ACTIVE_TITLE)
+    expect(r.message).not.toContain('コンテナが止まっていません') // 理由が違うのに決め打ちの文面を出すと嘘になる
+    expect(r.remaining.applicationID).toBe('app1')
+    expect(readApprunDedicatedFs(projectDir).applicationID).toBe('app1')
+    expect(r.inProgress).toBeUndefined()
+  })
+})
+
+describe('appStopWaitProgressMessage: 進み具合の一文（ロードバランサの待ちの言い方に揃える）', () => {
+  it('待ち始め・30秒未満は経過を書かない。30秒以上は「N分経過」（30秒→1分・3分→3分）', () => {
+    expect(appStopWaitProgressMessage(0)).toBe('アプリのコンテナが止まるのを待っています…')
+    expect(appStopWaitProgressMessage(15_000)).toBe('アプリのコンテナが止まるのを待っています…')
+    expect(appStopWaitProgressMessage(30_000)).toBe('アプリのコンテナが止まるのを待っています（1分経過）…')
+    expect(appStopWaitProgressMessage(180_000)).toBe('アプリのコンテナが止まるのを待っています（3分経過）…')
+  })
+})
+
+// ── 2026-10-07 検分: アプリがさくら側ですでに無い（GET が 404）と、押し直しても先へ進めなかった ────
+// 無効化の段が 404 を「分からない」として PUT を送り、PUT も 404 で止まっていた。DELETE の 404 の枝
+// （一覧で確かめてから記録を外す）に届かず、クラスタなどを Koto から消せない（課金を止められない）。
+// いまは 404 なら無効化を飛ばして DELETE へ進み、**最終の判断は一覧の確認**に任せる。
+function goneAppServer(calls: string[], cfg: { getApp: number; put?: number; listHasApp?: boolean; full?: boolean }): http.RequestListener {
+  return (req, res) => {
+    const key = `${req.method} ${req.url}`
+    calls.push(key)
+    req.on('data', () => { /* 読み捨て */ })
+    req.on('end', () => {
+      const send = (status: number, body: unknown) => {
+        if (status === 204) { res.writeHead(204); res.end(); return }
+        res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body))
+      }
+      if (key === 'GET /applications/app1') {
+        return cfg.getApp === 404
+          ? send(404, { status: 404, title: 'Not Found' })
+          : send(200, { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: 3 } })
+      }
+      if (key === 'PUT /applications/app1') return send(cfg.put ?? 404, { status: cfg.put ?? 404, title: 'Not Found' })
+      if (key === 'GET /applications/app1/containers') return send(404, { status: 404, title: 'Not Found' })
+      if (key === 'DELETE /applications/app1') return send(404, { status: 404, title: 'Not Found' })
+      if (key === 'GET /applications?clusterID=c1&maxItems=20') {
+        return send(200, { applications: cfg.listHasApp ? [{ applicationID: 'app1', name: 'myapp', clusterID: 'c1' }] : [] })
+      }
+      if (cfg.full) {
+        if (key === 'DELETE /clusters/c1/asg/a1/load_balancers/l1') return send(204, {})
+        if (key === 'GET /clusters/c1/asg/a1/load_balancers?maxItems=20') return send(200, { loadBalancers: [] })
+        if (key === 'DELETE /clusters/c1/asg/a1') return send(204, {})
+        if (key === 'GET /clusters/c1/asg?maxItems=20') return send(200, { autoScalingGroups: [] })
+        if (key === 'DELETE /clusters/c1') return send(204, {})
+        if (key === 'GET /clusters?maxItems=20') return send(200, { clusters: [] })
+      }
+      send(404, { error: `test router: 未定義のルート ${key}` })
+    })
+  }
+}
+
+describe('teardownFlow: アプリがさくら側ですでに無い（404）ときは、削除へ進み、一覧で確かめて記録を外す（2026-10-07）', () => {
+  const noWait = { confirmed: true as const, sleep: async () => {}, intervalMs: 1, timeoutMs: 10 }
+
+  it('★★ 📡 の🗑（appOnly）: GET 404 → 無効化を送らずに DELETE（404）→ 一覧に無い → 成功・記録から外れる', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(goneAppServer(calls, { getApp: 404 }))
+    const r = await teardownFlow(AUTH, projectDir, { ...noWait, appOnly: true }, baseUrl)
+    expect(r.ok, JSON.stringify(r)).toBe(true)
+    expect(calls).not.toContain('PUT /applications/app1') // 無いものを無効にしようとしない
+    expect(calls).toContain('DELETE /applications/app1')
+    expect(calls).toContain('GET /applications?clusterID=c1&maxItems=20') // 最終の判断は一覧の確認
+    expect(readApprunDedicatedFs(projectDir)?.applicationID ?? null).toBeNull()
+  })
+
+  it('★★ 手順6: アプリが無くても止まらず、ロードバランサ → ASG → クラスタまで進む（課金を止められる）', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(goneAppServer(calls, { getApp: 404, full: true }))
+    const r = await teardownFlow(AUTH, projectDir, noWait, baseUrl)
+    expect(r.ok, JSON.stringify(r)).toBe(true)
+    expect(calls).toContain('DELETE /clusters/c1/asg/a1/load_balancers/l1')
+    expect(calls).toContain('DELETE /clusters/c1/asg/a1')
+    expect(calls).toContain('DELETE /clusters/c1')
+  })
+
+  it('★★ 「分からない」を成功に倒さない: GET 404 でも、一覧にまだアプリがあれば止まり、記録は残す', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(goneAppServer(calls, { getApp: 404, listHasApp: true }))
+    const r = await teardownFlow(AUTH, projectDir, { ...noWait, appOnly: true }, baseUrl)
+    expect(r.ok).toBe(false)
+    expect(readApprunDedicatedFs(projectDir)?.applicationID).toBe('app1')
+  })
+
+  it('★ GET と PUT のあいだに消えた（PUT が 404）ときも、DELETE へ進み一覧で確かめる', async () => {
+    writeApprunDedicatedRecordFs(projectDir, { clusterID: 'c1', applicationID: 'app1' })
+    const calls: string[] = []
+    const baseUrl = await listen(goneAppServer(calls, { getApp: 200, put: 404 }))
+    const r = await teardownFlow(AUTH, projectDir, { ...noWait, appOnly: true }, baseUrl)
+    expect(r.ok, JSON.stringify(r)).toBe(true)
+    expect(calls).toContain('PUT /applications/app1')
+    expect(calls).toContain('DELETE /applications/app1')
+    expect(readApprunDedicatedFs(projectDir)?.applicationID ?? null).toBeNull()
   })
 })

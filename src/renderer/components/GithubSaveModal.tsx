@@ -3,6 +3,7 @@ import SakuraLogo from './SakuraLogo'
 import { getGithubToken } from './CredentialsModal'
 import CopyButton from './CopyButton'
 import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
+import { mergeProjectMeta } from '../projectMeta'
 
 // 💾 GitHubに保存（バックアップ・共有・P3-⑬ G1）。
 // git 語彙はUIに出さない（コミット→保存・リポジトリ→「GitHubの保管場所」等）。
@@ -64,11 +65,10 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
   }, [metaPath])
 
   const saveMeta = useCallback(async (gh: { repoFullName: string; lastSavedAt: string | null }) => {
-    const m = await readMeta()
-    const next = { ...m, github: { ...(m.github ?? {}), ...gh } }
-    await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(next, null, 2))
+    // 差分だけを main へ渡す（書く直前にディスクから読み直して当てる・src/renderer/projectMeta.ts）。
+    await mergeProjectMeta(projectDir, { github: gh })
     window.dispatchEvent(new Event('sakura-meta-changed'))
-  }, [metaPath, readMeta])
+  }, [projectDir])
 
   // 初回読み込み: トークン・メタ（保存先リポジトリ・前回保存日時）
   useEffect(() => {

@@ -211,12 +211,18 @@ export async function runSakuraStream(
     // ⏹ で押されたわけではないので aborted にはしない（押してもいないのに
     // 「停止しました」と出ると利用者が混乱する）。専用の印で呼び出し側へ伝える。
     //
-    // ── 1件も届かないまま打ち切ったら 'first'（2026-09-23 検分の指摘11）────────
+    // ── 1件も届かないまま打ち切ったら 'first-silent'（2026-09-25 検分の指摘27）──────
     // SDK の時計はヘッダ到着で解除されるので、実機の症状「ヘッダだけ返して黙る」では
-    // STREAM_FIRST_CHUNK_TIMEOUT_MS は一度も発火せず、必ずこちらへ落ちる。
-    // 件数を見ずに 'idle' と決めていたため、1文字も届いていないのに
-    // 「途中までの内容はそのまま残しています」と表示されていた（残っているものが無い）。
-    if (timedOut && !abortRequested) return { usage: null, timedOut: received === 0 ? 'first' : 'idle' }
+    // STREAM_FIRST_CHUNK_TIMEOUT_MS は一度も発火せず、**必ずこちら**へ落ちる。
+    // つまりここへ来た人が実際に待ったのは、どちらの場合も idleMs（既定 90秒）だけ。
+    //
+    // 最初は 'idle' 固定だったので、1文字も届いていないのに「途中までの内容はそのまま
+    // 残しています」と出た（2026-09-23 検分の指摘11）。次に 'first' へ寄せたので、こんどは
+    // 90秒しか待っていない人に「120秒×2回（合計およそ240秒）」と出た（指摘27）。
+    // **どちらの時計で切れたのかを取り違えない**ため、ここは 'first-silent'（＝つながったが
+    // 無音のまま）という専用の印で返す。'first'（＝応答ヘッダすら返らない・SDK の時計）は
+    // 下の catch（isSdkTimeoutError）だけが返す。文言は shared/chatTimeouts.ts。
+    if (timedOut && !abortRequested) return { usage: null, timedOut: received === 0 ? 'first-silent' : 'idle' }
     usage = state.usage
     // SDK が例外を投げずに静かに終わる版への対応（2026-08-28 実測・openai 4.104.0）。
     // for-await が正常終了しても、abort を要求していたなら「止めた」ことにする
@@ -233,8 +239,10 @@ export async function runSakuraStream(
     if (abortRequested || err?.name === 'APIUserAbortError' || /abort/i.test(err?.message ?? '')) {
       return { usage: null, aborted: true }
     }
-    // 返事が始まる前の時間切れ（SDK の APIConnectionTimeoutError）。
+    // 応答ヘッダすら返らないままの時間切れ（SDK の APIConnectionTimeoutError）。
     // ⏹ とは別物なので、別の印で返して別の言葉を出させる。
+    // **'first' を返すのはここだけ**（＝120秒×2回の時計で切れた場合だけ）。ヘッダは返ったが
+    // 無音、という実機の症状は上の 'first-silent' で、待った時間が違う（指摘27）。
     if (isSdkTimeoutError(err)) return { usage: null, timedOut: 'first' }
     throw err
   }

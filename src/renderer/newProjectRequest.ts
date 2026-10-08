@@ -48,7 +48,7 @@ function sitePrompt(siteType: string, target: TargetId): string {
     p +=
       `\n【公開先: さくらのAppRun】\n` +
       `- nginx:alpine で静的サイトを配信する Dockerfile を含める（ポート8080で待ち受け、linux/amd64）\n` +
-      `- .dockerignore を含める（公開は IDE の【③公開】→さくらのAppRun が自動で行うため deploy.sh は不要）`
+      `- .dockerignore を含める（公開は Koto の【③公開】→さくらのAppRun が自動で行うため deploy.sh は不要）`
   }
   return p
 }
@@ -73,18 +73,18 @@ function targetPrompt(target: TargetId): string {
         `- コンテナをサーバレス実行する環境。必ず Dockerfile を含め、コンテナ化する\n` +
         `- アプリは環境変数 PORT（既定 8080）で待ち受ける。0.0.0.0 でリッスンする\n` +
         `- Dockerfile は linux/amd64 前提。.dockerignore も含める\n` +
-        `- README.md に公開手順（IDE の【③公開】→さくらのAppRun から、Docker不要でそのまま公開）を日本語で書く\n` +
+        `- README.md に公開手順（Koto の【③公開】→さくらのAppRun から、Docker不要でそのまま公開）を日本語で書く\n` +
         `- ヘルスチェック用に /healthz を用意する。スタックは要望に合わせて選んでよい（Node/Python等）`
       )
     case 'hanamii':
       return (
         `\n\n【公開先: HANAMII（重要・最優先で従うこと）】\n` +
-        `- さくらのクラウド基盤上の国産PaaS。コンテナとして実行される\n` +
+        `- さくらのクラウド基盤上の国産のクラウドサービス。コンテナとして実行される\n` +
         `- 言語マニフェスト（Node なら package.json、Python なら requirements.txt 等）を必ず含める\n` +
         `- アプリは環境変数 PORT（既定 8080）で待ち受ける。0.0.0.0 でリッスンする\n` +
         `- Dockerfile を含める場合は必ず「EXPOSE 8080」を書く（HANAMII は待ち受けポートを EXPOSE で判定する）\n` +
         `- 永続データはコンテナ内のローカルファイルに保存しない（再起動で消える前提）\n` +
-        `- README.md に公開手順（IDE の【③公開】→ HANAMII から公開）を日本語で書く`
+        `- README.md に公開手順（Koto の【③公開】→ HANAMII から公開）を日本語で書く`
       )
     case 'sakura-vps':
       return `\n\n【公開先: さくらのVPS】サーバ内で完結する構成にし、起動方法・systemd例・必要パッケージをREADMEに日本語で記載する。`
@@ -136,6 +136,10 @@ export function buildNewProjectRequest(args: NewProjectRequestArgs): string | nu
   const stackGuide = kind === 'site' ? sitePrompt(siteType ?? 'lp', t) : targetPrompt(t)
 
   return (
+    // W-73: 作成直後、自分の発言としてこの依頼文がそのままチャット欄に出る（作者の透明性方針）。
+    // write_file・Dockerfile・linux/amd64 のような専門語が並ぶため、「自分がこう頼まないと
+    // いけないのか」と誤解しないよう、冒頭に一文だけ断りを入れる（畳みUIは作らない・決定: 別案）。
+    `ここからは Koto が自動でAIへ送る指示です。同じ言葉で頼み直す必要はありません。\n\n` +
     `新規プロジェクト「${name}」のフォルダは作成済みで、いまこのプロジェクトを開いています。\n` +
     `ここから初期ファイル一式を作成してください。\n\n` +
     `プロジェクト名: ${name}\n` +

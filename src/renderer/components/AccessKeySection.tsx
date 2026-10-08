@@ -83,7 +83,7 @@ export default function AccessKeySection({
     <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
       <p className="text-sm font-semibold text-ink">{stepNo} {keyLabel}</p>
       <p className="text-[11px] text-ink-muted leading-relaxed">
-        Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。
+        Koto が {serviceTitle} にアクセスするために必要な情報です。
       </p>
 
       {view.credentialsButton === 'open' ? (

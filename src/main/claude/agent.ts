@@ -25,29 +25,79 @@ const dynamicImportSdk = new Function('specifier', 'return import(specifier)') a
   specifier: string
 ) => Promise<typeof import('@anthropic-ai/claude-agent-sdk')>
 
+import * as fs from 'fs'
 import * as path from 'path'
 import type { Options, PermissionResult, CanUseTool, HookCallback, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { resolveClaudeBinary } from './client'
 import { isDangerousCommand } from './guard'
 import { mapSdkMessage, type UiEvent } from './events'
 import { buildIdeToolsServer } from './tools'
+import type { RagBudgetCheck } from '../rag/client'
 import { IDE_MCP_SERVER_NAME, IDE_MCP_TOOL_NAMES, DELEGATION_GUIDANCE } from './toolText'
 import { UNTRUSTED_RULE } from '../../shared/untrustedBlock'
 import { nowContext } from '../../shared/chatTime'
 import { snapshotBeforeWrite, snapshotBeforeChange } from '../backup/store'
 import { buildUserContent } from './vision'
 import { isProtectedWritePath, protectedWriteMessage } from '../../shared/protectedPaths'
+import { requiresConfirmation } from '../../shared/aiToolsCore'
+// W-18（掟10・安全の歯止め）: 「✋ 毎回確認」の承認は、さくらのAI Engine 経路
+// （main/chat/turnRunner.ts の decideApproval）とまったく同じ仕組みを使い回す。新しく作らない。
+// 判定・文面は shared/approvalPlan.ts の純関数、駐機（聞いて待つ）は chat/approvalStore.ts。
+import { planApproval, writeDenialMessage, runCommandDenialMessage, type WriteMode } from '../../shared/approvalPlan'
+import { requestApproval } from '../chat/approvalStore'
 
 /** Claude頭脳モードの既定モデル（dev-plan.md C2 で指定）。
  *  renderer の DEFAULT_CLAUDE_MODEL（claudeMode.ts）と一致させること（未指定時のみ使う保険）。 */
 export const CLAUDE_DEFAULT_MODEL = 'claude-opus-5'
 
-/** C2a で有効化する SDK 内蔵ツール一覧。 */
+/** C2a で有効化する SDK 内蔵ツール一覧（canUseTool 側の一覧チェック＝ALLOWED_TOOL_NAMES 用）。 */
 const BUILTIN_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'] as const
 
-/** 許可するツールの全名。C2b: IDE固有MCPツール（fetch_url / search_docs / open_preview）は
+/**
+ * 読み取り専用で、確認なしのまま SDK に自動許可させてよいツール（W-18 の配線）。
+ *
+ * ⚠️ **Edit/Write/Bash をここに含めてはいけない**（検分の指摘1・2026-09-27）。
+ * `options.allowedTools` に**名前だけ**（`(引数の絞り込み)` の無い bare 指定）で入れると、
+ * SDK は canUseTool を呼ぶ**前**にそのツール呼び出し全体を自動許可してしまう。実際に
+ * node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs 自身が起動時にこう警告する:
+ *   "canUseTool will not be invoked for: Edit, Write, Bash. Bare allowedTools entries
+ *    auto-approve the whole tool before the callback is consulted. To gate every tool
+ *    call, use a PreToolUse hook; or remove the bare names from allowedTools so they
+ *    fall through to canUseTool."
+ * つまり以前の実装（BUILTIN_TOOL_NAMES を丸ごと allowedTools に渡す）は、makeCanUseTool の
+ * 保護パス判定・危険コマンド判定・W-18 の承認（planApproval/requestApproval）**すべてを、
+ * Write/Edit/Bash に関しては素通りさせていた**。「✋ 毎回確認」でも確認なしで保存・実行される。
+ * 読み取り専用の Read/Glob/Grep は危険が無いので、ここに残して確認なしのままでよい。
+ */
+const AUTO_APPROVED_TOOL_NAMES = ['Read', 'Glob', 'Grep'] as const
+
+/** 許可するツールの全名（canUseTool 内の一覧チェック用。これ自体は allowedTools には渡さない）。
+ *  C2b: IDE固有MCPツール（fetch_url / search_docs / open_preview）は
  *  修飾名 `mcp__ide__<tool名>` で登録する（修飾規則の一次情報は toolText.ts 冒頭コメント参照）。 */
 const ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([...BUILTIN_TOOL_NAMES, ...IDE_MCP_TOOL_NAMES])
+
+/**
+ * SDK の `query()` に渡す `allowedTools`/`permissionMode` の組（W-18 の配線を固定するために
+ * 純関数として切り出した。tests/w-chat-claudeApproval.test.ts から直接呼び、Edit/Write/Bash が
+ * 名前だけで allowedTools に戻っていないか・permissionMode が canUseTool より先に
+ * Edit/Write を自動許可する 'acceptEdits' に戻っていないかを固定する）。
+ *
+ * `permissionMode` は明示的に 'default' にする。'acceptEdits' は型定義どおり
+ * "Auto-accept file edit operations" であり、Edit/Write を canUseTool の判断より先に
+ * 許可しうる（AUTO_APPROVED_TOOL_NAMES の bare-allow と同じ形の迂回）。'default' は
+ * 「危険な操作は確認する」標準挙動で、ここでは canUseTool（makeCanUseTool）が
+ * 唯一の判定者になる。
+ *
+ * ⚠️ この関数が正しいだけでは足りない。**query() の options へ実際に展開されていること**は
+ * tests/claudeQueryOptionsWiring.test.ts が、偽の SDK（startClaudeChat の第2引数）に渡った options で固定している
+ * （上の返り値だけを見るテストは、展開の1行を消しても・後ろのキーで上書きしても通ってしまう）。
+ */
+export function claudeToolGatingOptions(): Pick<Options, 'allowedTools' | 'permissionMode'> {
+  return {
+    allowedTools: [...AUTO_APPROVED_TOOL_NAMES, ...IDE_MCP_TOOL_NAMES],
+    permissionMode: 'default',
+  }
+}
 
 export type StartClaudeChatParams = {
   /**
@@ -67,6 +117,9 @@ export type StartClaudeChatParams = {
   writeRoot: string
   /** Anthropic APIキー（方式B・呼び出しの子プロセスenvにのみ注入。保存しない）。 */
   apiKey: string
+  /** AIのファイル保存・コマンド実行の権限モード（W-18）。'confirm' なら、さくらのAI Engine
+   *  経路と同じ承認ダイアログを Write/Edit/Bash の前に必ず出す（ChatPanel.tsx の 🪄/✋ 切替）。 */
+  writeMode: WriteMode
   /** さくらのAI Engine のAPIキー（方式B・search_docs ツール用。未登録なら null。保存しない）。 */
   aiEngineKey: string | null
   /** このターンのユーザー入力（新規メッセージ本文のみ。履歴は resume が担う）。 */
@@ -86,6 +139,10 @@ export type StartClaudeChatParams = {
   onEvent: (event: UiEvent) => void
   /** open_preview ツールの副作用（renderer への通知）。プロジェクト相対パスを受け取る。 */
   onOpenPreview: (relPath: string) => void
+  /** W-85: search_docs（📚 資料の検索）の上限の確認。tools.ts の buildIdeToolsServer へそのまま渡す
+   *  （ipc/claude.ts が usageStore.ts の budgetCheckForKey で作る。キーが無ければ常に許可＝search_docs は「キーが要る」と返すため）。
+   *  ⚠️ 必須: 任意にすると渡し忘れが型検査を素通りし、上限を超えても資料検索が止まらなくなる。 */
+  ragBudgetCheck: RagBudgetCheck
   /** delegate_implementation 実行後の副作用（renderer への通知・usage記録用。C3）。 */
   onDelegated: (info: { model: string; promptTokens: number; completionTokens: number }) => void
   /** Edit/Write・委譲書き込みの成功後にファイルの相対パスを通知（renderer がエディタの開きタブを
@@ -96,6 +153,9 @@ export type StartClaudeChatParams = {
 export type ClaudeChatHandle = {
   /** 進行中のクエリを中断する。 */
   abort: () => void
+  /** このセッションの承認（requestApproval）を束ねる鍵（W-18）。⏹ 停止時に
+   *  cancelApprovalsForTurn(turnId) を呼んで、承認待ちで固まらないようにする。 */
+  turnId: string
 }
 
 /** projectDir 配下に閉じ込めた相対パスを返す（プロジェクト外を指す絶対パスは null）。 */
@@ -107,14 +167,21 @@ function relPathInProject(projectDir: string, absPath: string): string | null {
 }
 
 /**
- * Bash の危険コマンドを拒否する canUseTool。
+ * Bash の危険コマンドを拒否し、「✋ 毎回確認」（W-18）では Write/Edit/Bash の前に許可を求める canUseTool。
  * 有効化するツール（ALLOWED_TOOL_NAMES = SDK内蔵6種＋IDE固有MCP3種の修飾名）以外は、
  * `tools`/`allowedTools` を絞らずともここで一律拒否する（スコープ最小化という設計を安全網としても徹底するため）。
  * 戻り値は必ず `{behavior:'allow'|'deny', ...}` の具体的な PermissionResult を返す
  * （SDKの型定義注記どおり、`null` を返すのは呼び出し元が control_response を別経路で
  *   送った場合専用のため、ここでは絶対に使わない）。
+ *
+ * @param scopeDir  🕘履歴の退避先＝プロジェクト直下（承認ダイアログを出す先・install依存名の読み取り元）。
+ *                  さくらのAI Engine 経路の decideApproval の scopeDir（payload.spec.toolsProjectDir）と同じ役割。
+ * @param writeRoot Claude の作業フォルダ（書き込みを許す範囲）。パスの相対化・commandScopeNote に使う。
+ * @param writeMode 'confirm' なら W-18 の承認を必ず通す（さくらのAI Engine 経路と同じ判定・同じ文面）。
+ * @param turnId    承認の駐機を束ねる鍵。⏹（claude:chatCancel）で cancelApprovalsForTurn(turnId) を呼び、
+ *                  承認待ちのまま固まらないようにする（2026-09-23 の教訓と同じ形）。
  */
-function makeCanUseTool(projectDir: string): CanUseTool {
+export function makeCanUseTool(scopeDir: string, writeRoot: string, writeMode: WriteMode, turnId: string): CanUseTool {
   return async (toolName, input) => {
     if (!ALLOWED_TOOL_NAMES.has(toolName)) {
       const result: PermissionResult = {
@@ -127,12 +194,22 @@ function makeCanUseTool(projectDir: string): CanUseTool {
     // 特に .sakuraide-backup を書き換えられると「AIの失敗を取り消す仕組み」自体が壊れ、
     // .git/hooks へ書けると commandGuard を迂回して任意のコードが実行されてしまう。
     // 判定は shared/protectedPaths.ts に一本化（write_file / delegate と共通・2026-08-05）。
+    // ここは writeMode を問わず常に拒否する（承認しても書けない領域のため、確認より先に判定する）。
     if (toolName === 'Write' || toolName === 'Edit') {
       const filePath = typeof (input as any)?.file_path === 'string' ? (input as any).file_path as string : ''
-      const rel = filePath ? relPathInProject(projectDir, filePath) : null
+      const rel = filePath ? relPathInProject(writeRoot, filePath) : null
       if (rel && isProtectedWritePath(rel)) {
         const result: PermissionResult = { behavior: 'deny', message: protectedWriteMessage(rel) }
         return result
+      }
+      // W-18: さくらのAI Engine 経路（shared/approvalPlan.ts の planApproval）と同じ判定・同じ文面を
+      // 使い回す。「✋ 毎回確認」のときは、保存の前に必ずここで止まる（tests/w-chat-claudeApproval.test.ts）。
+      const mappedName = toolName === 'Write' ? 'write_file' : 'edit_file'
+      const argsJson = JSON.stringify({ path: rel ?? filePath })
+      const plan = planApproval(mappedName, argsJson, { writeMode })
+      if (plan) {
+        const approved = await requestApproval({ turnId, dir: scopeDir, label: plan.label })
+        if (!approved) return { behavior: 'deny', message: writeDenialMessage(mappedName, argsJson) }
       }
     }
     if (toolName === 'Bash') {
@@ -143,6 +220,25 @@ function makeCanUseTool(projectDir: string): CanUseTool {
           message: `危険と判定されたコマンドのため実行を拒否しました: ${command}`,
         }
         return result
+      }
+      // W-18: run_command 側も同じ仕組み。危険コマンドは上で既に拒否済みなので、ここに来るのは
+      // 「確認すれば実行してよい」コマンドだけ（planApproval が writeMode==='confirm' か
+      // requiresConfirmation(cmd) のときだけ承認要と判定する。おまかせでも危険寄りのコマンドは駐機する）。
+      let deps: string[] = []
+      if (writeMode === 'confirm' || requiresConfirmation(command)) {
+        try {
+          if (scopeDir && /\b(install|i|add)\b/.test(command)) {
+            const raw = fs.readFileSync(`${scopeDir}/package.json`, 'utf-8')
+            const d = JSON.parse(raw)?.dependencies
+            deps = d && typeof d === 'object' ? Object.keys(d) : []
+          }
+        } catch { /* 読めなければ名前なしで確認する */ }
+      }
+      const argsJson = JSON.stringify({ command })
+      const plan = planApproval('run_command', argsJson, { writeMode, scopeDir, scopeRoot: writeRoot, deps })
+      if (plan) {
+        const approved = await requestApproval({ turnId, dir: scopeDir, label: plan.label })
+        if (!approved) return { behavior: 'deny', message: runCommandDenialMessage(argsJson) }
       }
     }
     const result: PermissionResult = { behavior: 'allow' }
@@ -217,12 +313,28 @@ async function* singleUserMessage(text: string, images: string[]): AsyncGenerato
 }
 
 /**
+ * startClaudeChat が SDK から実際に使うもの（query／tool／createSdkMcpServer）。
+ * テストが偽の SDK を渡すときの型（tests/claudeQueryOptionsWiring.test.ts）。
+ */
+export type ClaudeSdkModule = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'query' | 'tool' | 'createSdkMcpServer'>
+
+/**
  * Agent SDK の query() を起動し、ストリームメッセージを mapSdkMessage() で UI イベントへ変換して
  * onEvent へ流す。呼び出しはすぐに ClaudeChatHandle を返す（ストリームは非同期に進む）。
+ *
+ * @param sdkOverride **テスト専用**の差し込み口。SDK 本体は ESM 専用で動的 import するしかなく（冒頭の
+ *   ESM/CJS事情）、これまで query() に**実際に何が渡るか**を振る舞いでは確かめられなかった
+ *   （claudeToolGatingOptions() の返り値は検査していても、それを query() へ渡す1行を消すと
+ *   全部通ってしまう＝「守りの関数は正しいのに呼ばれていない」）。ここへ偽の SDK を渡すと、
+ *   動的 import の代わりにそれを使う。**本番の呼び出し元（ipc/claude.ts）は渡さない**——渡さなければ
+ *   従来どおり動的 import する（tests/claudeQueryOptionsWiring.test.ts が呼び出し側の引数の数を固定している）。
  */
-export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle {
-  const { projectDir, writeRoot, apiKey, aiEngineKey, prompt, images, snapshotId, resumeSessionId, model, onEvent, onOpenPreview, onDelegated, onFileWritten } = params
+export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: ClaudeSdkModule): ClaudeChatHandle {
+  const { projectDir, writeRoot, apiKey, aiEngineKey, prompt, images, snapshotId, resumeSessionId, model, writeMode, onEvent, onOpenPreview, ragBudgetCheck, onDelegated, onFileWritten } = params
   const abortController = new AbortController()
+  // W-18: このセッションの承認（requestApproval）を束ねる鍵。approvalStore.ts の nextId() と
+  // 同じ形（連番の代わりに時刻＋乱数。衝突しなければ形は問わない・1セッション1本なので連番は不要）。
+  const turnId = `claude-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   // 🕘 履歴の見出し（このターンのユーザーの指示文。長さの整形は ipc/backup.ts 側で行う）。
   // 「どの指示でこうなったか」が一覧に出ることで「3つ前の状態に戻す」を選べるようにする（2026-08-05）。
   const snapshotLabel = prompt.trim() || (images.length > 0 ? '画像についての依頼' : '')
@@ -245,11 +357,15 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
     // delegate_implementation（C3）も常に許可リストへ含める（実際に呼べるかはツール登録の有無で決まる。
     // buildIdeToolsServer 側が aiEngineKey が無いモード（B）では tools 配列に入れないため、
     // 許可されていても登録が無ければ呼び出し自体が発生しない）。
-    allowedTools: [...BUILTIN_TOOL_NAMES, ...IDE_MCP_TOOL_NAMES],
+    // W-18: allowedTools に Edit/Write/Bash を名前だけで入れない・permissionMode を
+    // 'acceptEdits' にしない（claudeToolGatingOptions() のコメント参照。どちらも
+    // canUseTool より先にツール呼び出しを自動許可してしまい、「✋ 毎回確認」が効かなくなる）。
+    ...claudeToolGatingOptions(),
     settingSources: [], // ユーザーの ~/.claude 設定・project/local settings を読ませない
-    permissionMode: 'acceptEdits',
     // 書き込みを許すのは作業フォルダの中だけ（退避先の projectDir ではない）。
-    canUseTool: makeCanUseTool(writeRoot),
+    // W-18: 承認ダイアログを出す先（dir）は退避先の projectDir（さくらのAI Engine 経路の
+    // scopeDir と同じ役割・ChatPanel.tsx の pendingApprovals が dir===projectDir で絞り込む）。
+    canUseTool: makeCanUseTool(projectDir, writeRoot, writeMode, turnId),
     hooks: {
       PreToolUse: [{ matcher: 'Edit|Write', hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)] }],
       // 実行成功後にエディタへ反映を通知（stale tab のオートセーブ上書きによるデータ喪失防止）
@@ -272,7 +388,7 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
   void (async () => {
     let sdk: any
     try {
-      sdk = await dynamicImportSdk('@anthropic-ai/claude-agent-sdk')
+      sdk = sdkOverride ?? await dynamicImportSdk('@anthropic-ai/claude-agent-sdk')
     } catch (e: any) {
       if (!abortController.signal.aborted) onEvent({ kind: 'error', message: e?.message ?? String(e) })
       return
@@ -280,8 +396,14 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
     // C2b/C3: IDE固有ツール（fetch_url / search_docs / open_preview / delegate_implementation）を
     // インプロセスMCPサーバとして注入する。createSdkMcpServer / tool も ESM 専用 SDK の関数のため、
     // 動的 import 済みモジュールを渡す。
+    // W-18: delegate_implementation（mcp__ide__…）は allowedTools の自動許可で canUseTool を通らないため、
+    // 委譲の書き込みの「✋ 毎回確認」は tools.ts 側（writeDelegatedFiles）で取る。そのため
+    // makeCanUseTool と**同じ writeMode・同じ turnId**をここで渡す（⏹ の cancelApprovalsForTurn も同じ鍵で効く）。
+    // isStopped は ⏹（claude:chatCancel の abort()）の印。AI Engine の応答待ちの最中に ⏹ が押されると、
+    // そのとき承認待ちはまだ無く cancelApprovalsForTurn は0件を取り消すだけ。応答が返ったあとに承認待ちを
+    // 新しく立てると ⏹ ではもう消せないので、止まっていれば聞かず・書かない（tools.ts の writeDelegatedFiles）。
     options.mcpServers = {
-      [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, onOpenPreview, snapshotId, snapshotLabel, onDelegated, onFileWritten }),
+      [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, writeMode, turnId, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, isStopped: () => abortController.signal.aborted }),
     }
 
     // query() を1回実行してストリームを onEvent へ流す。emittedAny=このストリームで何かイベントを
@@ -327,5 +449,5 @@ export function startClaudeChat(params: StartClaudeChatParams): ClaudeChatHandle
     onEvent({ kind: 'error', message: first.error?.message ?? String(first.error) })
   })()
 
-  return { abort: () => abortController.abort() }
+  return { abort: () => abortController.abort(), turnId }
 }

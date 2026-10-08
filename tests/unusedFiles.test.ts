@@ -4,6 +4,7 @@ import {
   NODE_ALWAYS_USED_RE, PHP_ALWAYS_USED_RE, DATA_LAYER_ALWAYS_USED_RE,
 } from '../src/shared/unusedFiles'
 import { DATA_LAYER_FILES } from '../src/shared/objectStorage'
+import { publishExcludedDirNames } from '../src/shared/publishExclude'
 
 // findUnusedFiles（roadmap #18）の判定は「参照らしき文字列が出現するか」という
 // 控えめな判定（真の到達グラフではない）。誤る方向は「未使用と言いすぎない」側に
@@ -295,5 +296,41 @@ describe('findUnusedFiles: koto-data は参照が無くても片づけの対象�
   it('（対） 似ているだけの名前は、参照が無ければ未使用のまま', () => {
     const unused = findUnusedFiles(['koto-data.json', 'my-koto-data.js', 'koto-data.ts'], readerOf({}))
     expect(unused).toEqual(['koto-data.json', 'my-koto-data.js', 'koto-data.ts'])
+  })
+})
+
+// ── 公開から外すフォルダの中身は、判定にも掛けない（2026-09-24）──────────────
+// 実際の画面（main/ipc/unused.ts）は publishView でファイルを集めるので、
+// `.koto-data` の中へはそもそも入らない。**だから今は出ない。** だが守りが
+// 「集める段」にしか無いと、呼び口が1つ増えた瞬間に穴が開く——利用者が
+// 「素材置き場へ移動」を押して**アプリのデータを失う**（2026-09-23 の実機で
+// 実際に一覧へ並んだ）。判定そのものでも同じ定義を当てて二重に守る。
+describe('公開から外すフォルダの中身は、判定にも出さない', () => {
+  it.each([
+    ['.koto-data/entries/1.json', 'アプリのデータ'],
+    ['.koto-data/config/join.json', 'アプリの設定'],
+    ['.sakuraide/chat.json', '会話の記録'],
+    ['.sakura-cloud/env.json', 'クラウドの設定'],
+    ['public/.koto-data/dates/dates.json', '公開の根より下でも'],
+  ])('★ %s は未使用に出ない（%s）', (rel) => {
+    expect(findUnusedFiles([rel, 'server.js'], readerOf({ 'server.js': 'const x = 1' }))).not.toContain(rel)
+  })
+
+  it('★ 守りは公開の除外と同じ定義から来ている（新しい定義を作らない・掟10）', () => {
+    // 除外フォルダ名を1つ取り、その中のファイルが必ず落ちることを確かめる
+    for (const dir of publishExcludedDirNames()) {
+      expect(findUnusedFiles([`${dir}/x.json`], readerOf({}))).toEqual([])
+    }
+  })
+
+  // ★（対） 名前が似ているだけのフォルダまで守ると、片づけが効かなくなる
+  it('（対） 似ているだけのフォルダは、これまでどおり未使用に出る', () => {
+    const files = ['koto-data/x.json', '.koto-database/y.json', 'sakuraide/z.json']
+    expect(findUnusedFiles(files, readerOf({}))).toEqual(files)
+  })
+
+  // ★（対） 除外フォルダ「そのもの」ではなく、親にあるファイルは対象のまま
+  it('（対） 除外フォルダの外にあるデータは、これまでどおり出る', () => {
+    expect(findUnusedFiles(['data/schedule.json'], readerOf({}))).toEqual(['data/schedule.json'])
   })
 })

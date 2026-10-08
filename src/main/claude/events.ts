@@ -63,7 +63,9 @@ export function describeAssistantError(code: string): string {
     oauth_org_not_allowed: '組織の設定によりこの認証は許可されていません。',
     // ※ この文言は renderer 側 claudeMode.ts の isClaudeUsageBlockedError() が「請求設定に問題」で
     //   検出して「さくらのAI Engineに切り替える」提案を出す判定に使う。変更する場合は同関数も追随すること。
-    billing_error: '請求設定に問題があります（Anthropic Console を確認してください）。',
+    // W-11: 登録画面の呼び名「Claude Console（platform.claude.com）」に揃える。
+    // 判定は「請求設定に問題」の部分文字列で行うため、括弧の中だけを変える（判定文字列は変えない）。
+    billing_error: '請求設定に問題があります（Claude Console（platform.claude.com）を確認してください）。',
     rate_limit: 'リクエストが多すぎます。しばらく待ってからもう一度お試しください。',
     overloaded: 'Anthropic側が混雑しています。しばらく待ってからもう一度お試しください。',
     invalid_request: 'リクエストが不正です。',

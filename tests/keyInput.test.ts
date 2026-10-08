@@ -97,8 +97,8 @@ describe('📚 資料の置き場所と文言', () => {
     const s = read('src/renderer/components/KnowledgeModal.tsx')
     expect(s).not.toContain('④ このプロジェクトで使う')
     expect(s).not.toContain('このプロジェクトのチャットで資料を使う\n')
-    // **機能が消えたと思わせない**
-    expect(s).toContain('チャット上部の「📚」')
+    // **機能が消えたと思わせない**（W-84・2026-09-27 決定: 実物の場所どおりに言い換え）
+    expect(s).toContain('チャットの入力欄のすぐ上の「📚 資料を使う／使わない」')
   })
 
   it('切替はチャットに置き、資料が無ければ押しても黙らない', () => {

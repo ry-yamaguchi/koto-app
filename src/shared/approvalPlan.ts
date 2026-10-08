@@ -45,7 +45,9 @@ export function planApproval(toolName: string, toolArgsJson: string, opts: PlanA
     let relPath = ''
     try { relPath = JSON.parse(toolArgsJson || '{}').path ?? '' } catch { /* パス不明でも確認は出す */ }
     const isEdit = toolName === 'edit_file'
-    return { label: `${relPath || '(不明なファイル)'}${isEdit ? '（部分編集）' : ''}` }
+    // W-41: パスだけでは「読む・消す・保存する」のどれかが分からない。進行中の見出しと同じ
+    // 「✏️ ファイルの保存／編集」の形にそろえる（パスは省略せず全部出す）。
+    return { label: `✏️ ファイルの${isEdit ? '編集' : '保存'}（${relPath || '(不明なファイル)'}）` }
   }
   // コマンド実行：危険なコマンドは常に、また「毎回確認」モードでは全コマンドで許可を取る
   if (toolName === 'run_command') {

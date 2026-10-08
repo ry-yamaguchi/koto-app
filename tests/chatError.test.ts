@@ -11,10 +11,10 @@ describe('formatChatError - 認証エラー（401）の誘導先の出し分け'
     expect(out).not.toContain('Anthropic')
   })
 
-  it('engine=claude では Claude のキー／Anthropic へ誘導する', () => {
+  it('engine=claude では Claude のキー／Claude Console へ誘導する', () => {
     const out = formatChatError('Error 401: unauthorized', 'claude')
     expect(out).toContain('Claude')
-    expect(out).toContain('Anthropic')
+    expect(out).toContain('Claude Console')
     expect(out).not.toContain('さくらのAI Engine でキーを再発行')
   })
 
@@ -38,9 +38,9 @@ describe('formatChatError - コンテキスト超過', () => {
 })
 
 describe('formatClaudeError - 請求・クレジット不足（402相当）', () => {
-  it('Anthropic Console の請求設定と、さくらへの切替を案内する', () => {
+  it('Claude Console の請求設定と、さくらへの切替を案内する', () => {
     const out = formatClaudeError('Your credit balance is too low to access the API')
-    expect(out).toContain('Anthropic Console')
+    expect(out).toContain('Claude Console')
     expect(out).toContain('さくらのAI Engine')
   })
 })

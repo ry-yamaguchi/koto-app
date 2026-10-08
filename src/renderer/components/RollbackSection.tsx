@@ -91,7 +91,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
         window.electronAPI.cloud.listVersions(projectDir),
       ])
       if (t.ok) { setRows(t.rows ?? []); setState(t.state ?? null) }
-      else { setRows([]); setState(null); errMsg = t.message ?? '配分を取得できませんでした' }
+      else { setRows([]); setState(null); errMsg = t.message ?? 'いまどのバージョンが見えているかを確かめられませんでした' }
       if (v.ok) setVersions(v.versions ?? [])
       else { setVersions([]); if (!errMsg) errMsg = v.message ?? 'バージョン一覧を取得できませんでした' }
     } catch (e: any) {
@@ -139,11 +139,11 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
   const serving = servingVersionNames(rows)
 
   const stateSummary =
-    state?.kind === 'latest' ? '最新のバージョンに自動で追従しています。'
+    state?.kind === 'latest' ? '最新のバージョン（公開すると自動で切り替わります）。'
     : state?.kind === 'pinned' ? `『${state.versionName}』に固定されています。`
     // 4【低】: split は「A/Bテスト中」の断定ではなく、応答が読めなかった場合も含む
     // （trafficState は判断できない形をすべて split に倒す）。断定せず、その通り伝える。
-    : state?.kind === 'split' ? 'いまの配分を判断できませんでした（複数のバージョンに分かれている可能性があります）。'
+    : state?.kind === 'split' ? 'いまどのバージョンが見えているか判断できませんでした（複数のバージョンに分かれている可能性があります）。'
     : ''
 
   return (
@@ -179,7 +179,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
 
       {!loading && !error && (
         <>
-          <p className="text-xs text-ink-secondary leading-relaxed">現在の配分: {stateSummary || '確認できませんでした。'}</p>
+          <p className="text-xs text-ink-secondary leading-relaxed">いま見えているもの: {stateSummary || '確認できませんでした。'}</p>
 
           {versions.length === 0 ? (
             <p className="text-xs text-ink-muted">まだバージョンがありません。</p>

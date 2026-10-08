@@ -44,7 +44,7 @@ interface Props {
 
 const TARGETS: { id: ImportTarget; label: string; hint: string }[] = [
   { id: 'vercel', label: '▲ Vercel', hint: '公開したファイル一式をインポートします' },
-  { id: 'sakura-apprun', label: '📦 さくらのAppRun', hint: '公開中のイメージから中身をインポートします' },
+  { id: 'sakura-apprun', label: '📦 さくらのAppRun', hint: 'いま公開されているアプリの中身を取り出します' },
 ]
 
 /**
@@ -151,7 +151,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       if (t === 'vercel') {
         const [token, teamId] = await Promise.all([getVercelTokenById(id), getVercelTeamIdById(id)])
         if (!token) {
-          setError('Vercel のトークンが登録されていません。「認証情報」で登録してから、もう一度お試しください。')
+          setError('Vercel のキー（トークン）が登録されていません。「認証情報」で登録してから、もう一度お試しください。')
           return
         }
         creds.current = { token, ...(teamId ? { teamId } : {}) }
@@ -187,7 +187,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       setKeys(list)
       if (!list.length) {
         setError(t === 'vercel'
-          ? 'Vercel のトークンが登録されていません。「認証情報」で登録してから、もう一度お試しください。'
+          ? 'Vercel のキー（トークン）が登録されていません。「認証情報」で登録してから、もう一度お試しください。'
           : 'さくらのクラウドのキーが登録されていません。「認証情報」で登録してから、もう一度お試しください。')
         setLoading(false)
         return
@@ -546,7 +546,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       {error && (
         <div className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">
           {error}
-          {error.includes('トークンが登録されていません') && (
+          {keys.length === 0 && (
             <button onClick={onOpenCredentials} className="ml-2 underline">認証情報を開く</button>
           )}
         </div>

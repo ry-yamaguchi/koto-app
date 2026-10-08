@@ -133,7 +133,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
         }
         const tree = await c.getDeploymentFiles(args.id)
         if (!tree.ok) {
-          return { ok: false, message: `このデプロイからは中身を取り出せませんでした（HTTP ${tree.status}）。` }
+          return { ok: false, message: `この公開からは中身を取り出せませんでした（HTTP ${tree.status}）。` }
         }
         const flat = flattenVercelTree(Array.isArray(tree.data) ? tree.data as any : (tree.data as any)?.files)
         const { files, stripped } = stripSingleRoot(flat)

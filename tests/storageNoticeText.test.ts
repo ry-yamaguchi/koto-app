@@ -3,7 +3,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   askAiRewriteText, askAiRewritePlan, dataLayerUsageLine, rewriteCheckLine,
-  storageNoticeHeadline, describeWriteSite, storagePreparedText, STORAGE_REWRITE_REMAINING,
+  storageNoticeHeadline, describeWriteSite, storagePreparedText, dataLayerUpdateLine, STORAGE_REWRITE_REMAINING,
+  STORAGE_REWRITE_MAYBE_REMAINING,
 } from '../src/shared/storageNoticeText'
 import { DATA_LAYER_FILE, DATA_LAYER_FILE_CJS } from '../src/shared/objectStorage'
 
@@ -195,7 +196,9 @@ describe('画面への配線', () => {
   const src = read('src/renderer/components/StorageNotice.tsx')
 
   it('依頼文は、見つけた場所を渡して作る', () => {
-    expect(src).toContain('const plan = askAiRewritePlan(files, layer)')
+    // メモリだけに持っている場所も一緒に渡す（2026-10-01）。ファイルの場所だけの呼び方に戻っていないこと
+    expect(src).toContain('const plan = askAiRewritePlan(files, layer, memoryFiles)')
+    expect(src).not.toContain('const plan = askAiRewritePlan(files, layer)')
     expect(src).toContain("detail: { text: plan.text }")
     // 直す前は、場所を持たない固定の文面だった
     expect(src).not.toContain('const ASK_AI_TEXT =')
@@ -242,7 +245,11 @@ describe('画面への配線', () => {
   })
 
   it('見出しは純関数が決める（画面に条件を書き散らさない）', () => {
-    expect(src).toContain('storageNoticeHeadline({ hasPlacement: !!placement, warn })')
+    expect(src).toContain('storageNoticeHeadline({')
+    expect(src).toContain('hasPlacement: !!placement,')
+    // 理由が「メモリだけに持っていそう」という推定だけのときは、見出しも断定しない（2026-10-01 検分）
+    expect(src).toContain("const guess = need.kind === 'will-lose-data' && need.memoryOnly === true")
+    expect(src).toContain('          guess,\n        })}')
     // 直す前は、見出しの条件が JSX に直接書かれていた
     expect(src).not.toContain("placement ? '💾 データの保存（用意済み）' : warn ?")
   })
@@ -405,5 +412,76 @@ describe('保存場所を用意したときの完了文', () => {
     const text = storagePreparedText('my-bucket', true, DATA_LAYER_FILE_CJS)
     expect(text).toContain('my-bucket')
     expect(text).toContain('次に公開すると、アプリから読み書きできるようになります。')
+  })
+})
+
+// ── 古い koto-data を差し替えたか、触れなかったか（2026-09-24 検分）───────
+// 直しの出発点は「いま公開中のアプリが壊れている」ことで、その対象はすべて
+// 既にファイルを持っている。**差し替えたのか・触れなかったのかが見えない**と、
+// 「直したのに直っていない」が原因の分からない形で残る。
+describe('koto-data の版について、画面に出す1行', () => {
+  it('差し替えたときは、そう言う', () => {
+    const line = dataLayerUpdateLine({ ok: true, file: 'koto-data.cjs', replaced: true, needsUpdate: false })
+    expect(line).toContain('koto-data.cjs')
+    expect(line).toContain('差し替えました')
+  })
+
+  // ★ 勝手に上書きしていないことを、はっきり伝える
+  it('★ 触れなかったときは「そのままにしました」と言い、勝手に直したと言わない', () => {
+    const line = dataLayerUpdateLine({ ok: true, file: 'koto-data.js', replaced: false, needsUpdate: true })
+    expect(line).toContain('そのままにしました')
+    expect(line).not.toContain('差し替えました')
+    expect(line).toContain('Koto に相談してください')
+  })
+
+  it('言うことが無ければ、何も出さない', () => {
+    expect(dataLayerUpdateLine({ ok: true, file: 'koto-data.js', replaced: false, needsUpdate: false })).toBe('')
+    expect(dataLayerUpdateLine({ ok: false })).toBe('')
+    expect(dataLayerUpdateLine(null)).toBe('')
+    expect(dataLayerUpdateLine(undefined)).toBe('')
+  })
+
+  // ★ 画面が、この1行を実際に出していること（作っただけで出していない、を防ぐ）
+  //
+  // 2026-09-25（検分の指摘15）: 出し先を `setCheckLine` から**覚えておく側**へ変えた。
+  // `askAi()` はこの直後に `onAskAi?.()`（③公開のモーダルを閉じる関数）を呼ぶので、
+  // 閉じたら消える state に入れるだけでは**利用者が一度も読めない**（モーダルの作り直しで
+  // state は空に戻る）。覚えて、次に開いたときに出す。
+  // 実際に出ることは tests/storageNoticeMarkerAndDataLayerLine.test.ts が描画して確かめる。
+  it('★ StorageNotice が、ensureLayer の結果からこの1行を出している', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/renderer/components/StorageNotice.tsx'), 'utf-8')
+    expect(src).toContain('const updateLine = dataLayerUpdateLine(layer)')
+    expect(src).toContain('rememberDataLayerLine(projectDir, updateLine)')
+    // 閉じたら消える state だけに入れる形（直す前）へ戻っていないこと
+    expect(src).not.toContain('if (updateLine) setCheckLine(updateLine)')
+  })
+})
+
+// ── 2026-10-01 検分2巡目: 推定の見出しの下の1行・ボタンが出ない場面の頼み方 ──────────
+describe('検分2巡目: 推定のときは断定しない／頼み方まで書く', () => {
+  it('★ 推定版の1行は「書き直しだけ」と言い切らない', () => {
+    expect(STORAGE_REWRITE_MAYBE_REMAINING).toContain('保存場所は用意できています')
+    expect(STORAGE_REWRITE_MAYBE_REMAINING).not.toContain('書き直しだけ')
+  })
+
+  it('★ 画面は、見出しと同じ guess で2つの文を選び分ける', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/StorageNotice.tsx'), 'utf-8')
+    expect(src).toContain("const guess = need.kind === 'will-lose-data' && need.memoryOnly === true")
+    expect(src).toContain('{guess ? STORAGE_REWRITE_MAYBE_REMAINING : STORAGE_REWRITE_REMAINING}</p>')
+    // 直す前の形（推定でも断定の1行を出す）に戻っていない
+    expect(src).not.toContain('{STORAGE_REWRITE_REMAINING}</p>')
+  })
+
+  it('★ ✅ でもメモリの場所が残るとき、ボタンが出ないので頼み方（場所入り）まで書く', () => {
+    const line = rewriteCheckLine({
+      usesDataLayer: true,
+      writesFiles: [],
+      keepsInMemory: [],
+      memoryNotWarned: [{ file: 'server.js', lines: [13] }],
+    } as Parameters<typeof rewriteCheckLine>[0])
+    expect(line.startsWith('✅')).toBe(true)
+    expect(line).toContain('チャットで AI に「')
+    expect(line).toContain('server.js')
+    expect(line).not.toContain('AI にもう一度お願いしてください')
   })
 })
