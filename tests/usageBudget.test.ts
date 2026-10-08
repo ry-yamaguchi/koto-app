@@ -117,6 +117,7 @@ describe('利用量の記録（applyRecord）', () => {
     expect(u.completionTokens).toBe(1000)
   })
 
+  // 知らないモデルを「知っているどのモデルより安く数えない」ことは tests/unknownModelPrice.test.ts で固定している
   it('価格表に無いモデルでも課金を0にしない（取りこぼしで上限が効かなくなるのを防ぐ）', () => {
     const months = applyRecord({}, MONTH, FP_A, '見たことのないモデル', 1_000_000, 1_000_000)
     expect(computeUsageForKey(months, MONTH, FP_A).costYen).toBeGreaterThan(0)

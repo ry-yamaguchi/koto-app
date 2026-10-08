@@ -23,7 +23,7 @@ describe('main の3経路: markPendingFs / clearPendingFs / writePublishRecordFs
     {
       name: 'HANAMII（hanamii:publish）',
       file: 'src/main/ipc/hanamii.ts',
-      imports: "import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs } from '../publishMetaFs'",
+      imports: "import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs, readHanamiiProjectIdFs } from '../publishMetaFs'",
       mark: "markPendingFs(projectDir, 'hanamii')",
       clear: 'finally { clearPendingFs(projectDir) }',
       record: "writePublishRecordFs(projectDir, 'hanamii', { publishedAt: new Date().toISOString(), url: null })",
@@ -96,10 +96,17 @@ describe('renderer の3パネル: markPublishPending / clearPublishPending / sav
   }
 })
 
-describe('消しすぎの検出: HanamiiPanel のポーリングによる URL 更新（main では取れない）は残っている', () => {
-  it('startPolling が READY 後に publish.targets の url を saveHanamiiMeta で書き込む形が残っている', () => {
+describe('HanamiiPanel のポーリング（READY 後の URL 記録）は画面から撤去済み（main の後段が書く）', () => {
+  // 2026-09-29: 以前は「main では READY が取れないので、画面の startPolling が READY 後に公開記録の url を
+  // 書く」形だった。いまは main の hanamii:publish が新しい版の READY を確かめるまで返らず、url を記録に書く
+  // （tests/hanamiiAftercare.test.ts が main の振る舞いで固定）。画面が書くと二重になり、
+  // 画面を閉じたときだけ書かれない穴が戻る。
+  it('画面に startPolling も、READY 後に publish.targets の url を書く形も残っていない', () => {
     const s = read('src/renderer/components/HanamiiPanel.tsx')
-    expect(s).toContain('await saveHanamiiMeta({}, { publishedAt: prevAt, url: r.url })')
+    expect(s).not.toContain('startPolling')
+    expect(s).not.toContain('await saveHanamiiMeta({}, { publishedAt: prevAt, url: r.url })')
+    // 公開記録（publish.targets）に url を書くのは main（ipc/hanamii.ts の writePublishRecordFs）
+    expect(read('src/main/ipc/hanamii.ts')).toContain("writePublishRecordFs(projectDir, 'hanamii', { publishedAt:")
   })
 })
 

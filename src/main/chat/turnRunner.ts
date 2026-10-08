@@ -55,7 +55,7 @@ import { planSend, planCompact, compactPrompt, acceptSummary, compactSource } fr
 import { shouldSendTools, isKnownToolCapable, shouldTryImagesDirectly } from '../../shared/modelLearning'
 import { getLearning, recordLearning } from '../learningStore'
 import { hashKey } from '../../shared/usageBudget'
-import { checkBeforeRequest, recordUsage } from '../usageStore'
+import { checkBeforeRequest, recordUsage, budgetCheckForKey } from '../usageStore'
 // B'-3d-2b: executeTool の main 直呼び用の追加インポート ──────────────────────
 import { executeToolCore, type CoreToolContext, type ToolIo, type SearchConfig } from '../../shared/toolExecCore'
 import { cleanAiRelPath } from '../../shared/publishRoot'
@@ -203,14 +203,20 @@ export function buildMainIo(
     // （2026-08-30 時点）と一字一句同じパラメータ（query.slice(0,1000)・tags・topK 3）で組む。
     // rag（opts.rag）が無ければ undefined＝core が「資料検索は現在利用できません」を返す
     // （renderer 側で ctx.ragSearch が無いときと同じ振る舞い）。失敗は ''（renderer 版と同じ）。
+    // W-85: 月間上限を超えていたら通信そのものを止める（budgetCheck＝usageStore.ts の budgetCheckForKey。
+    // ipc/rag.ts の rag:query と同じ判定）。止めたときだけは '' にせず、止めた理由を返す——
+    // '' は core が「該当する資料が見つかりませんでした」と言い換えるため、上限で止めたのに
+    // 「資料に無かった」と読まれてしまう（AI も利用者もそう受け取る）。それ以外の失敗は従来どおり ''。
     ragSearch: rag ? async (query: string) => {
       try {
         const hits = await ragClient.queryDocuments(payload.spec.apiKey, query.slice(0, 1000), {
           tags: rag.tags.length ? rag.tags : undefined,
           topK: 3,
+          budgetCheck: budgetCheckForKey(payload.spec.apiKey),
         })
         return buildRagBlockText(hits)
-      } catch {
+      } catch (e) {
+        if (ragClient.isBudgetStopError(e)) return `（📚 資料の検索は止めました: ${(e as Error).message}）`
         return ''
       }
     } : undefined,

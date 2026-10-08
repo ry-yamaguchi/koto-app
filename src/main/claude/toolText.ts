@@ -278,3 +278,49 @@ export function summarizeDelegateResult(
     '\n\n変更内容を確認し、可能であれば build/test で検証してください。'
   )
 }
+
+/**
+ * 「✋ 毎回確認」（W-18）で、ユーザーが委譲の書き込みを許可しなかったときにClaudeへ返す文面（純粋関数）。
+ * 先頭は拒否の文面そのもの（shared/approvalPlan.ts の writeDenialMessage ＝ Claude の Write/Edit・
+ * さくらのAI Engine 経路と同じ。「保存せずに、どう進めるべきかユーザーに確認してください」）。
+ * 拒否より前に保存済みのファイルと、拒否を受けて保存しなかった残りのファイルも伝える（半端な状態を隠さない）。
+ * summarizeDelegateResult と同じく、content（ファイル本文）は一切含めない。
+ */
+export function summarizeDelegateDenied(
+  denialMessage: string,
+  written: { path: string; bytes: number }[],
+  notReached: string[],
+  usage: DelegateUsageInfo
+): string {
+  const parts: string[] = [denialMessage]
+  if (written.length) {
+    parts.push(`拒否より前に保存済みのファイル（${written.length}件）:\n${written.map(f => `- ${f.path}（${f.bytes}バイト）`).join('\n')}`)
+  }
+  if (notReached.length) {
+    parts.push(`このあと保存する予定だった次のファイルも、保存していません: ${notReached.join(', ')}`)
+  }
+  parts.push(`消費トークン: 入力${usage.promptTokens} / 出力${usage.completionTokens}`)
+  return parts.join('\n\n')
+}
+
+/**
+ * 利用者が ⏹ で止めたあとに AI Engine の応答が返ってきたときに、Claudeへ返す文面（純粋関数・W-18 検分の指摘）。
+ * 止めたあとは聞きもせず・書きもしない（承認待ちを新しく立てると、⏹ では消せない承認待ちが残ってしまう）。
+ * ここまでに保存済みのファイルと、止められたので保存しなかったファイルを、半端な状態を隠さず伝える。
+ * summarizeDelegateResult と同じく、content（ファイル本文）は一切含めない。
+ */
+export function summarizeDelegateStopped(
+  written: { path: string; bytes: number }[],
+  notReached: string[],
+  usage: DelegateUsageInfo
+): string {
+  const parts: string[] = ['ユーザーが ⏹ で停止したため、委譲されたファイルの保存を中止しました。']
+  if (written.length) {
+    parts.push(`停止より前に保存済みのファイル（${written.length}件）:\n${written.map(f => `- ${f.path}（${f.bytes}バイト）`).join('\n')}`)
+  }
+  if (notReached.length) {
+    parts.push(`次のファイルは、保存していません: ${notReached.join(', ')}`)
+  }
+  parts.push(`消費トークン: 入力${usage.promptTokens} / 出力${usage.completionTokens}`)
+  return parts.join('\n\n')
+}

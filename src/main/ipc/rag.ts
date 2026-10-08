@@ -4,7 +4,18 @@ import { app, ipcMain } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as ragClient from '../rag/client'
+import { budgetCheckForKey } from '../usageStore'
 import type { IpcDeps } from './types'
+
+// W-85（2026-09-27 決定）: AI Engine のモデルを使う資料の操作（検索 rag:query・回答づくり rag:chat・
+// 取り込みの索引づくり rag:upload）は、AIチャットと同じ上限（APIキーごとの月間上限）で止める。
+// main/chat/turnRunner.ts の usage.check と同じ判定（usageStore.ts の budgetCheckForKey＝
+// checkBeforeRequest(hashKey(apiKey))）で渡し、止めるときの文もチャットと同じもの
+// （shared/usageBudget.ts の checkBeforeRequestOf の message）。
+// 作り方は budgetCheckForKey の1か所だけ（turnRunner.ts の資料検索・ipc/claude.ts の search_docs も同じ）。
+// 判定は通信の直前（rag/client.ts の assertBudgetAllows）に行う。一覧・取得・更新・削除・チャンク一覧は
+// モデルを使わないので対象外（上限を超えていても資料の整理はできる）。
+// apiKey は方式Bで引数に渡ってくるだけで保持しない（掟4）。指紋にして使う。
 
 export function registerRagHandlers(_deps: IpcDeps) {
   ipcMain.handle('rag:list', async (_, apiKey: string, opts?: { page?: number; pageSize?: number; name?: string; tag?: string }) => {
@@ -23,7 +34,7 @@ export function registerRagHandlers(_deps: IpcDeps) {
 
   ipcMain.handle('rag:upload', async (_, apiKey: string, args: { filePath?: string; content?: string; filename: string; name?: string; tags?: string[] }) => {
     try {
-      const doc = await ragClient.uploadDocument(apiKey, args)
+      const doc = await ragClient.uploadDocument(apiKey, { ...args, budgetCheck: budgetCheckForKey(apiKey) })
       return { ok: true, document: doc }
     } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
   })
@@ -51,14 +62,20 @@ export function registerRagHandlers(_deps: IpcDeps) {
 
   ipcMain.handle('rag:query', async (_, apiKey: string, args: { query: string; tags?: string[]; topK?: number; threshold?: number }) => {
     try {
-      const hits = await ragClient.queryDocuments(apiKey, args.query, args)
+      const hits = await ragClient.queryDocuments(apiKey, args.query, {
+        tags: args.tags, topK: args.topK, threshold: args.threshold,
+        budgetCheck: budgetCheckForKey(apiKey),
+      })
       return { ok: true, hits }
     } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
   })
 
   ipcMain.handle('rag:chat', async (_, apiKey: string, args: { query: string; chatModel: string; tags?: string[] }) => {
     try {
-      const result = await ragClient.chatDocuments(apiKey, args.query, { chatModel: args.chatModel, tags: args.tags })
+      const result = await ragClient.chatDocuments(apiKey, args.query, {
+        chatModel: args.chatModel, tags: args.tags,
+        budgetCheck: budgetCheckForKey(apiKey),
+      })
       return { ok: true, answer: result.answer, sources: result.sources }
     } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
   })

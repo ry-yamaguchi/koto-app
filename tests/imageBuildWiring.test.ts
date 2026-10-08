@@ -1,7 +1,23 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
-import { excludedFileNames, excludedDirNames, servedExcludedFileNames, BUILD_CONFIG_FILES } from '../src/shared/publishExclude'
+import { excludedFileNames, excludedDirNames, servedExcludedFileNames, BUILD_CONFIG_FILES, isSecretFile } from '../src/shared/publishExclude'
+import { copyTree } from '../src/main/cloud/imageBuild'
+
+/**
+ * 文字列の位置。**-1（＝その文字列が無い）はここで落とす。**
+ *
+ * ── なぜ要るか（2026-09-25 検分・実証済み）──────────────────────────────
+ * `expect(source.indexOf(a)).toBeLessThan(source.indexOf(b))` は、a が**消えた**ときに
+ * `-1 < （b の位置）` で**常に真**になる。つまり守りが消えた瞬間に、それを見張る検査が
+ * いちばん静かに通る。位置を比べる前に必ず -1 を弾く。
+ */
+function at(body: string, needle: string, why: string): number {
+  const i = body.indexOf(needle)
+  expect(i, why).toBeGreaterThan(-1)
+  return i
+}
 
 // 2026-08-14 実機で発覚。公開したアプリのURLを開くと、`.sakuraide.json` が
 // ブラウザから読めていた（静的配信だったため一覧に出た）。
@@ -56,8 +72,92 @@ describe('公開イメージの除外リスト', () => {
     }
   })
 
-  it('秘密ファイルの判定も通している（.env をイメージへ焼かない）', () => {
-    expect(source).toContain('isSecretFile')
+  // ⚠️ ここは `expect(source).toContain('isSecretFile')` だけだった（2026-09-25 検分で実証）。
+  // `isSecretFile` は **import 行**（ファイル先頭）にも出るので、copyTree の
+  // `|| isSecretFile(e.name)` を丸ごと消しても緑のままだった。
+  // **除外している行そのもの**を一意に指す（振る舞いの網は下の「偽のプロジェクトを実際に複製する」）。
+  it('★★ 秘密ファイルの判定を、除外の行で実際に呼んでいる（import 行では通さない）', () => {
+    at(source, 'EXCLUDE_NAMES.has(e.name) || isSecretFile(e.name)', '複製をスキップする行で isSecretFile を呼んでいない')
+  })
+})
+
+// ── 秘密ファイルの流出を、振る舞いで固定する（2026-09-25 検分・掟10）──────────────
+//
+// 上の2件はどちらも **imageBuild.ts の文字列を読むだけ**だった。そして実際に、
+// `|| isSecretFile(e.name)` を丸ごと落としても 20件すべて緑になった
+// （`isSecretFile` が import 行に出るため）。**ソースを読む検査は、守りが消えたことを
+// いちばん静かに見逃す。**
+//
+// `.env` が公開物に入る事故は 2026-08-05（`.sakuraide` 流出）・2026-08-09（`.env` 流出）・
+// 2026-08-14（`.sakuraide.json` が公開URLから読めた）と**3回**起きている。
+// ここでは偽のプロジェクトを実際に作り、`copyTree` に複製させて、
+// **複製先に秘密ファイルが1件も無いこと**を見る。
+describe('★★★ 秘密ファイルは公開イメージへ複製されない（偽のプロジェクトを実際に複製する）', () => {
+  let tmp = ''
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-imagebuild-secret-')) })
+  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 消せなくてもよい */ } })
+
+  /** 複製先にあるものを、根からの相対パスで全部並べる。 */
+  function walk(dir: string, prefix = ''): string[] {
+    const out: string[] = []
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name
+      if (e.isDirectory()) out.push(...walk(path.join(dir, e.name), rel))
+      else out.push(rel)
+    }
+    return out.sort()
+  }
+
+  /** 公開イメージに**絶対に入ってはいけない**もの（名前は SECRET_FILE_PATTERNS が唯一の定義）。 */
+  const SECRETS = ['.env', '.env.local', '.env.production', 'id_rsa', 'server.pem', 'client.p12', '.netrc']
+
+  it('★★★ .env・秘密鍵・証明書は、複製先に1件も無い（全階層）', () => {
+    const src = path.join(tmp, 'project')
+    const dest = path.join(tmp, 'stage-app')
+    fs.mkdirSync(path.join(src, 'public', 'assets'), { recursive: true })
+    fs.writeFileSync(path.join(src, 'server.js'), 'console.log(1)\n')
+    fs.writeFileSync(path.join(src, 'public', 'index.html'), '<!doctype html><h1>ok</h1>')
+    fs.writeFileSync(path.join(src, 'public', 'assets', 'logo.png'), Buffer.from([0x89, 0x50]))
+    for (const name of SECRETS) fs.writeFileSync(path.join(src, name), 'SAKURA_SECRET=ほんもの\n')
+    // **下の階層にもある**（全階層で外れること。浅いところだけ見ていると素通りする）
+    fs.writeFileSync(path.join(src, 'public', '.env'), 'DEEP_SECRET=1\n')
+    fs.writeFileSync(path.join(src, 'public', 'assets', 'id_rsa'), 'PRIVATE KEY\n')
+    // Koto の内部ファイル（2026-08-14 に公開URLから読めていたもの）も一緒に見る
+    fs.writeFileSync(path.join(src, '.sakuraide.json'), '{}')
+
+    copyTree(src, dest)
+
+    // ① 複製されたものを**全部**数え上げる（「入っていないはず」ではなく「これだけ」）
+    expect(walk(dest)).toEqual(['public/assets/logo.png', 'public/index.html', 'server.js'])
+    // ② 名指しでも見る（①の比較が緩くなっても落ちる）
+    for (const rel of [...SECRETS, 'public/.env', 'public/assets/id_rsa', '.sakuraide.json']) {
+      expect(fs.existsSync(path.join(dest, rel)), `${rel} が公開イメージへ複製されている`).toBe(false)
+    }
+    // ③ 中身が1バイトも出ていないこと（名前を変えて複製する形もここで落ちる）
+    for (const rel of walk(dest)) {
+      expect(fs.readFileSync(path.join(dest, rel), 'latin1')).not.toContain('SAKURA_SECRET')
+    }
+  })
+
+  it('★★★ 除外の判定は、一元定義（isSecretFile）と同じ範囲である', () => {
+    // 「ここだけ手で並べ直す」が過去3回の事故の形（掟10）。名前の集合そのものを突き合わせる。
+    for (const name of SECRETS) expect(isSecretFile(name), `${name} を秘密と見ていない`).toBe(true)
+    // 公開鍵・ふつうのファイルまで消していないこと（奪いすぎも事故）
+    for (const name of ['id_rsa.pub', 'server.js', 'environment.js', 'index.html']) {
+      expect(isSecretFile(name), `${name} を秘密と見てしまっている`).toBe(false)
+    }
+  })
+
+  it('★★ 普通のファイルは、ちゃんと複製されている（全部消す変異で緑にしない）', () => {
+    const src = path.join(tmp, 'p2')
+    const dest = path.join(tmp, 'd2')
+    fs.mkdirSync(src, { recursive: true })
+    fs.writeFileSync(path.join(src, 'server.js'), 'console.log(1)\n')
+    fs.writeFileSync(path.join(src, '.env'), 'SECRET=1\n')
+
+    copyTree(src, dest)
+
+    expect(walk(dest)).toEqual(['server.js'])
   })
 })
 
@@ -127,15 +227,22 @@ describe('公開イメージのファイル権限', () => {
     expect(source).toMatch(/mode \| bits/)
   })
 
-  it('秘密ファイルは、権限を触る前に除外されている', () => {
-    // isSecretFile の判定が copyFileSync より前にあること（順序が逆だと
-    // 「複製してから除外」になり、一瞬でも秘密が複製される）
-    expect(source.indexOf('isSecretFile')).toBeLessThan(source.indexOf('fs.copyFileSync'))
+  // ⚠️ ここは `source.indexOf('isSecretFile')` を **-1 で守らずに** `toBeLessThan` へ渡していた
+  // （2026-09-25 検分で実証）。当たっていたのは imageBuild.ts:20 の **import 行**で、import は
+  // ファイル先頭なので `fs.copyFileSync` より必ず前にある＝**同語反復**。
+  // 実証: `if (EXCLUDE_NAMES.has(e.name) || isSecretFile(e.name)) continue` から
+  // `|| isSecretFile(e.name)` を落としても 20件すべて緑だった。
+  // `.env` が公開物に入る事故は 2026-08-05・08-09・08-14 と3回起きている（掟10）。
+  it('★★ 秘密ファイルは、権限を触る前に除外されている（除外の行そのものを指す）', () => {
+    const guard = at(source, 'EXCLUDE_NAMES.has(e.name) || isSecretFile(e.name)', '秘密ファイルの除外が無い')
+    const copy = at(source, 'fs.copyFileSync', '複製（copyFileSync）が見つからない')
+    // 順序が逆だと「複製してから除外」になり、一瞬でも秘密が複製される
+    expect(guard, '除外より先に複製している').toBeLessThan(copy)
   })
 
   it('権限を変えられなくても、公開そのものは止めない', () => {
-    const at = source.indexOf('function addPermission')
-    expect(source.slice(at, at + 400)).toContain('catch')
+    const start = at(source, 'function addPermission', 'addPermission が見つからない')
+    expect(source.slice(start, start + 400)).toContain('catch')
   })
 })
 
@@ -200,19 +307,18 @@ describe('公開イメージ: node_modules も書庫の直前でそろえる（i
     // 振る舞い側の網は tests/imageBuildPermissions.test.ts（書庫を読む4本）。
     const call = /\n {2}normalizeStageTree\(appDir\)\n/.exec(source)
     expect(call, 'normalizeStageTree(appDir) の呼び出しが（コメントではなく）見つからない').not.toBeNull()
-    const at = call!.index
-    const install = source.indexOf('await installDependencies(appDir')
-    const tar = source.indexOf("runExecFile('tar', ['-cf', layer, '-C', stageDir, 'app'])")
-    expect(install, 'installDependencies の呼び出しが見つからない').toBeGreaterThan(0)
-    expect(tar, 'tar の呼び出しが見つからない').toBeGreaterThan(0)
-    expect(at, 'npm install より前でそろえている（node_modules が素通りする）').toBeGreaterThan(install)
-    expect(at, 'tar のあとでそろえている（書庫には古い mode が入る）').toBeLessThan(tar)
+    const callAt = call!.index
+    const install = at(source, 'await installDependencies(appDir', 'installDependencies の呼び出しが見つからない')
+    const tar = at(source, "runExecFile('tar', ['-cf', layer, '-C', stageDir, 'app'])", 'tar の呼び出しが見つからない')
+    expect(callAt, 'npm install より前でそろえている（node_modules が素通りする）').toBeGreaterThan(install)
+    expect(callAt, 'tar のあとでそろえている（書庫には古い mode が入る）').toBeLessThan(tar)
   })
 
   it('★★ そろえる中身は copyTree と同じ2つ（フォルダ 0o1777・ファイルは fileModeForImage）で、判断を複製していない', () => {
-    const at = source.indexOf('export function normalizeStageTree')
-    expect(at).toBeGreaterThan(0)
-    const body = source.slice(at, source.indexOf('\n}', at)) // 関数の本体だけ（次のコメントを巻き込まない）
+    const start = at(source, 'export function normalizeStageTree', 'normalizeStageTree の定義が見つからない')
+    const end = source.indexOf('\n}', start)
+    expect(end, 'normalizeStageTree の終わりが見つからない').toBeGreaterThan(start)
+    const body = source.slice(start, end) // 関数の本体だけ（次のコメントを巻き込まない）
     expect(body).toContain('addPermission(dir, 0o1777)')
     expect(body).toContain('setImageFileMode(p)')
     // シンボリックリンクを辿ると、ステージングの外（利用者の持ち物）の mode を変えてしまう

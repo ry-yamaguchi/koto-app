@@ -104,7 +104,7 @@ export function costNote(row: { kind: ResourceKind; monthlyYen: number; scaleMin
 
 const KIND_LABEL: Record<ResourceKind, string> = {
   'apprun-app': '公開したアプリ',
-  registry: 'イメージの置き場',
+  registry: 'イメージの置き場（コンテナレジストリ）',
   bucket: 'データの保存場所',
   'dedicated-cluster': '専有型のクラスタ',
 }

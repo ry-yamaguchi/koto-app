@@ -92,7 +92,7 @@ export default function TelemetryNotice({ projectDir, kind }: { projectDir: stri
             setAction(refetched.action)
             setConfirming(true)
           } else {
-            setError('保存場所の状態を確認できませんでした。もう一度お試しください')
+            setError(`${KIND_LABEL[kind]}の保存場所の状態を確認できませんでした。もう一度お試しください`)
           }
           return
         }

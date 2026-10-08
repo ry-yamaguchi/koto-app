@@ -3,7 +3,7 @@ import {
   REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB,
   registryCostNotice, ongoingCostNotice, registryDeleteLabel, registryDeleteHelp,
   registryUnknownNotice, urlChangesOnTeardownNotice,
-  teardownTargets, remainingCostWarning, BUCKET_MONTHLY_YEN,
+  teardownTargets, remainingCostWarning, teardownRemainingWarnings, BUCKET_MONTHLY_YEN,
   costSummaryLines,
 } from '../src/shared/cloudCost'
 
@@ -59,7 +59,7 @@ describe('破棄で消えるものの一覧', () => {
     const t = teardownTargets({ hasBucket: true, deleteRegistry: true, registryName: 'myapp' })
     expect(t.join('')).toContain('AppRun アプリ')
     expect(t.join('')).toContain('myapp')
-    expect(t.join('')).toContain('バケット')
+    expect(t.join('')).toContain('保存場所にある、このプロジェクトのデータ')
   })
 
   it('レジストリを残すときは一覧から消える（消えないものを消えると書かない）', () => {
@@ -70,7 +70,7 @@ describe('破棄で消えるものの一覧', () => {
 
   it('バケットが無ければ載せない', () => {
     const t = teardownTargets({ hasBucket: false, deleteRegistry: true, registryName: 'x' })
-    expect(t.join('')).not.toContain('バケット')
+    expect(t.join('')).not.toContain('保存場所にある、このプロジェクトのデータ')
   })
 })
 
@@ -206,6 +206,28 @@ describe('破棄しても止まらない費用', () => {
     expect(w).toContain(`月額${REGISTRY_MONTHLY_YEN + BUCKET_MONTHLY_YEN}円`)
   })
 
+  // HANAMII・専有型の破棄は、同意済みの保存場所を全件片づけるので、残る保存場所も複数ありうる（2026-09-30 検分）。
+  // 1件だけ名指しすると、名前が出なかった保存場所の月額が黙って続く。
+  it('★ 残った保存場所が複数なら、全部の名前と、その数ぶんの月額を言う', () => {
+    const w = remainingCostWarning({ deleteRegistry: true, registryName: null, keptBucketNames: ['koto-data-x', 'koto-data-y'] })!
+    expect(w).toContain('『koto-data-x』')
+    expect(w).toContain('『koto-data-y』')
+    expect(w).toContain(`月額${BUCKET_MONTHLY_YEN * 2}円`)
+  })
+
+  it('keptBucketName と keptBucketNames に同じ名前が重なっても、1つと数える', () => {
+    const w = remainingCostWarning({ deleteRegistry: true, registryName: null, keptBucketName: 'koto-data-x', keptBucketNames: ['koto-data-x'] })!
+    expect(w).toContain(`月額${BUCKET_MONTHLY_YEN}円`)
+    expect(w.split('koto-data-x').length - 1).toBe(1)
+    // 1件だけのときの文は、これまでと同じ
+    expect(w).toBe(remainingCostWarning({ deleteRegistry: true, registryName: null, keptBucketName: 'koto-data-x' }))
+  })
+
+  it('空の keptBucketNames は何も足さない', () => {
+    expect(remainingCostWarning({ deleteRegistry: true, registryName: null, keptBucketNames: [] })).toBeNull()
+    expect(teardownRemainingWarnings({ keptBucketNames: [] })).toEqual([])
+  })
+
   it('keptBucketName を渡さない既存の呼び出しは、これまでどおり', () => {
     expect(remainingCostWarning({ deleteRegistry: true, registryName: 'myapp' })).toBeNull()
     expect(remainingCostWarning({ deleteRegistry: false, registryName: 'myapp' })!).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
@@ -279,5 +301,54 @@ describe('想定される費用の3行（costSummaryLines）', () => {
     for (const line of costSummaryLines({ hasBucket: true, scaleMin: 1 })) {
       expect(line).not.toMatch(/\*\*|__|`|\[[^\]]+\]\([^)]+\)/)
     }
+  })
+})
+
+
+// ── teardownRemainingWarnings: 共用型の破棄の返り値（事実）から警告を作る（2026-09-30 検分の指摘6）──────────────
+// その場の画面（AppRunPanel）も、閉じて開き直したあとの処理の記録（main/projectOps.ts）も、この1つの関数を通る。
+// 選択（レジストリを残すか）からではなく、main が返した事実（残ったもの）から作るので、その場と開き直しで食い違わない。
+describe('teardownRemainingWarnings: 返り値の事実から、月額が続く警告を作る', () => {
+  it('何も残っていなければ空（言いすぎない）', () => {
+    expect(teardownRemainingWarnings({})).toEqual([])
+    expect(teardownRemainingWarnings({ keptBucketName: null })).toEqual([])
+    expect(teardownRemainingWarnings({ keptBucketName: '', keptRegistryName: '' })).toEqual([])
+    expect(teardownRemainingWarnings({ keptRegistryUnnamed: false })).toEqual([])
+  })
+
+  it('★ 残したレジストリは名前つきで、月額が続くと言う（remainingCostWarning と同じ文）', () => {
+    expect(teardownRemainingWarnings({ keptRegistryName: 'myreg' }))
+      .toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg' })!])
+  })
+
+  it('★★ 記録に名前が無いレジストリ: 「残る」と断定せず、確認画面と同じ文（記録が無いので Koto からは消せない・残していれば月額が続く）で言う', () => {
+    const w = teardownRemainingWarnings({ keptRegistryUnnamed: true })
+    expect(w).toEqual([`⚠️ ${registryUnknownNotice()}`])
+    expect(w[0]).toContain('記録がない')
+    expect(w[0]).not.toContain('は残るため')   // 残っていると確かめていないことを断定しない
+  })
+
+  it('★ 名前つきのレジストリが分かっているときは、名前なしの文は重ねない', () => {
+    const w = teardownRemainingWarnings({ keptRegistryName: 'myreg', keptRegistryUnnamed: true })
+    expect(w).toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg' })!])
+  })
+
+  it('★ 残った保存場所・残したレジストリの両方があれば、合算して1つの警告にする', () => {
+    const w = teardownRemainingWarnings({ keptBucketName: 'koto-data-x', keptRegistryName: 'myreg' })
+    expect(w).toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg', keptBucketName: 'koto-data-x' })!])
+    expect(w[0]).toContain('koto-data-x')
+    expect(w[0]).toContain('myreg')
+    expect(w[0]).toContain(`月額${REGISTRY_MONTHLY_YEN + BUCKET_MONTHLY_YEN}円`)
+  })
+
+  it('保存場所だけが残ったなら、レジストリには触れない。保存場所とレジストリ名不明が同時なら2つの警告', () => {
+    const only = teardownRemainingWarnings({ keptBucketName: 'koto-data-x' })
+    expect(only).toHaveLength(1)
+    expect(only[0]).toContain('koto-data-x')
+    expect(only[0]).not.toContain('コンテナレジストリ')
+    const both = teardownRemainingWarnings({ keptBucketName: 'koto-data-x', keptRegistryUnnamed: true })
+    expect(both).toHaveLength(2)
+    expect(both[0]).toContain('koto-data-x')
+    expect(both[1]).toBe(`⚠️ ${registryUnknownNotice()}`)
   })
 })

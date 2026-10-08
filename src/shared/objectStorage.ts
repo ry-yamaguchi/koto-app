@@ -291,8 +291,7 @@ export function publicUrlFor(s3Endpoint: string, bucket: string, key: string): s
  */
 export function storageCostNote(mode: BucketMode, monthlyYen: number): string {
   if (mode === 'dedicated') {
-    return `このプロジェクト専用の保存場所を作ります。月額${monthlyYen}円（税込）が追加でかかります。`
-      + 'ほかのプロジェクトとデータが混ざらない代わりに、プロジェクトごとに費用がかかります。'
+    return `新しいプロジェクトは、公開のとき専用の保存場所を作れます（1つ月額${monthlyYen}円（税込）・作る前に金額を確認）。`
   }
   return `ほかのプロジェクトと共有の保存場所を使います。追加の費用はかかりません（保存場所ぜんぶで月額${monthlyYen}円）。`
     + 'ただし、公開したアプリの鍵が漏れると、同じ保存場所にあるほかのプロジェクトのデータにも届きます。'

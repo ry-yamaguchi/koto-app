@@ -335,19 +335,35 @@ export function appDeleteRetryable(title: string | null | undefined): boolean {
 }
 
 /**
- * やり直しの上限（3回）に達してもアプリの削除が 400 のままだったときの、画面向けメッセージ（純関数）。
+ * アプリの削除が 400 で断られたとき、やり直す前に**有効なバージョンの無効化からやり直すか**（純関数）。
+ * 「active version」のときだけ true——無効化がまだ効いていないことがあるため。
+ * 「currently running」（コンテナがまだ止まっていない）のときは false: 無効化は済んでいるので、待って
+ * DELETE だけをやり直す（すでに無効のものへ無効化を打ち直さない。原本の updateApplication の説明に、
+ * 繰り返し送って安全とは書かれていない）。判定の文言は `appDeleteRetryable` と同じ配列（掟10・1か所）。
+ */
+export function appDeleteNeedsReDeactivation(title: string | null | undefined): boolean {
+  return (title ?? '').toLowerCase().includes(APP_DELETE_RETRYABLE_NEEDLES[0])
+}
+
+/**
+ * 待ってやり直しても（合計の時間の上限まで）アプリの削除が 400 のままだったときの、画面向けメッセージ（純関数）。
  * `title` からどちらの理由で止まったかを判定し、**その理由に合った文面**を返す——理由を決め打ちで
  * 「有効なバージョンが解消しません」と書くと、`currently running` で止まったときに嘘になる
  * （2026-09-16 実機実測）。判定に使う文言は `appDeleteRetryable` と同じ配列（掟10・1か所）。
  * どの理由にも当たらなければ（想定外・呼び出し側のガードが緩んだとき）汎用の文面にする。
+ *
+ * **次にすることが分かる文にする**（2026-10-07）: 記録は消していないので、しばらくしてからもう一度押せば続きから進む。
+ * 生の応答（`rawMessage`）は末尾に載せる。課金に触れるときは、**終わりの条件を言わない**（「アプリが消えるまで」と書くと、
+ * アプリを消せば課金が止まるように読める。計画書 5-7 では常時課金はクラスタ・ASG・LB で、アプリは「ワーカ枠の中」。
+ * 📡 一覧の「アプリだけ破棄」はクラスタ・LB をわざと残す）。ここで言えるのは「いま課金が続いている」までにする。
  */
 export function appDeleteExhaustedMessage(title: string | null | undefined, rawMessage: string): string {
   const lower = (title ?? '').toLowerCase()
   if (lower.includes(APP_DELETE_RETRYABLE_NEEDLES[0])) {
-    return `アプリケーションの削除に失敗しました。有効なバージョンが解消しません＝課金が続きます: ${rawMessage}`
+    return `アプリケーションの削除に失敗しました。有効なバージョンが解消しません。しばらくしてから、もう一度押してください（クラスタなどの課金は続いています）: ${rawMessage}`
   }
   if (lower.includes(APP_DELETE_RETRYABLE_NEEDLES[1])) {
-    return `アプリケーションの削除に失敗しました。コンテナの停止が終わりません＝課金が続きます: ${rawMessage}`
+    return `アプリケーションの削除に失敗しました。まだコンテナが止まっていません。しばらくしてから、もう一度押してください（アプリは無効化済みです。クラスタなどの課金は続いています）: ${rawMessage}`
   }
   return `アプリケーションの削除に失敗しました。残っています＝課金が続きます: ${rawMessage}`
 }

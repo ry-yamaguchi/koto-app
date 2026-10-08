@@ -147,12 +147,17 @@ describe('main/chat/turnRunner.ts: buildMainIo の ragSearch（search_docs の m
     expect(src).toContain('topK: 3,')
   })
 
-  it('失敗は ""（renderer 版と同じ振る舞い）で、rag が無ければ undefined', () => {
+  it('失敗は ""（renderer 版と同じ振る舞い）で、rag が無ければ undefined。上限で止めたときだけ理由を返す（W-85）', () => {
     const idx = src.indexOf('ragSearch: rag ? async (query: string) => {')
     expect(idx).toBeGreaterThan(-1)
-    const block = src.slice(idx, idx + 400)
-    expect(block).toContain('} catch {')
+    const end = src.indexOf('} : undefined,', idx)
+    expect(end).toBeGreaterThan(idx)
+    const block = src.slice(idx, end + '} : undefined,'.length)
+    // W-85: catch は「上限で止めた」だけを見分け、それ以外の失敗は従来どおり ''
+    expect(block).toContain('} catch (e) {')
+    expect(block).toContain('if (ragClient.isBudgetStopError(e)) return')
     expect(block).toContain("return ''")
+    expect(block).toContain('budgetCheck: budgetCheckForKey(payload.spec.apiKey),')
     expect(block).toContain('} : undefined,')
   })
 })

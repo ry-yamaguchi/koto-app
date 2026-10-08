@@ -418,8 +418,8 @@ describe('claudeModelShortLabel', () => {
 
 describe('claudeCostFooter', () => {
   it('formats the cost with 4 decimal places, Claude-only branding, and the model short label', () => {
-    expect(claudeCostFooter(0.1234, 'claude-opus-5')).toBe('🤖 Powered by Claude (Opus 5)・$0.1234')
-    expect(claudeCostFooter(0.1, 'claude-sonnet-5')).toBe('🤖 Powered by Claude (Sonnet 5)・$0.1000')
+    expect(claudeCostFooter(0.1234, 'claude-opus-5')).toBe('🤖 Powered by Claude (Opus 5)・今回の利用額 約19円（$0.1234）')
+    expect(claudeCostFooter(0.1, 'claude-sonnet-5')).toBe('🤖 Powered by Claude (Sonnet 5)・今回の利用額 約15円（$0.1000）')
     expect(claudeCostFooter(0.1234, 'claude-opus-5')).not.toContain('Claude Code') // ブランディング制約
   })
 

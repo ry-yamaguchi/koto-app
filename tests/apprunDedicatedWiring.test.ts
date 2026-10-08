@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+
+// roadmap は 2026-09-30 に v0.6.19 以前の記録を docs/roadmap-archive.md へ移した。
+// ここで固定している D-7・D-8・D-12・D-13 の記録はそちらにあるので、**両方をつないで読む**
+// （古い記録を先に置く。indexOf で切り出す検査が、その記録を指すように）。
+// not.toContain の検査は両方のファイルに掛かるので、移す前より弱くはならない。
+const roadmapWithArchive = (): string =>
+  readFileSync(join(__dirname, '..', 'docs/roadmap-archive.md'), 'utf-8') + '\n' +
+  readFileSync(join(__dirname, '..', 'docs/roadmap.md'), 'utf-8')
 import { priceSummary, priceUnselectedText, planKeyFromPath, monthlyYenForPlanPath, isValidResourceName, isReservedPort, pickCheapestWorkerPlan, pickCheapestLbPlan, cheapestMonthlyState, alwaysOnChargeText, minimumCostText, selectableZones, defaultZone, STAGE_LABEL, resourceIdLabel, type CreateClusterFlowStage, PUBLISH_STAGE_LABEL, type PublishAppStage, buildTeardownSummary, computePublishFormErrors } from '../src/renderer/components/AppRunDedicatedPanel'
 import { readZones } from '../src/shared/apprunDedicatedShapes'
 // D-14（2026-09-16 の検分）: 使い方ガイドの約束を、実装（見出しの出し分け・確認できる公開の条件）
@@ -15,17 +23,28 @@ import { canVerify, dedicatedVerifyMode, dedicatedProbePath } from '../src/share
 // 変異試験で別途確かめてある（報告のみ・このファイルは元の形を固定する）。
 
 /**
- * CHANGELOG の**いちばん新しい節**だけを切り出す（2026-09-23）。
+ * CHANGELOG のうち、**AppRun 専有型を説明している節**だけを集める（2026-09-25）。
  *
- * 以前は `## [未リリース]` から `## [0.6.18]` までを直接指していたが、
- * **リリースのたびに節名が変わって、この形のテストが一斉に落ちる**
- * （0.6.19 で実際に9件落ちた）。版に依らず「先頭の節」を見る。
+ * ── 同じ形で2度落ちている ───────────────────────────────────────────
+ * 1度目（0.6.19）: `## [未リリース]` から `## [0.6.18]` までを**名前で**指していた。
+ *   リリースで節名が変わり、`indexOf` が -1 を返して `slice(-1, …)` が**空文字**になり、
+ *   ここの9件が一斉に落ちた。「名前ではなく構造（先頭の節）に留めよ」と直した。
+ * 2度目（0.6.20）: その「先頭の節」も時間で動いた。**新しい版の節が上に載った瞬間**、
+ *   当て先が中身の違う節へ移って、また9件が落ちた。
+ *
+ * **位置は、どう指しても時間で動く。** ここで見たいのは位置ではなく**中身**——
+ * 「専有型について書いたことが、確かめていないことを断定していないか」である。
+ * だから専有型を説明している節を**中身で**探す。節が増えても減っても当て先は動かない。
+ * しかも当て先が**全部**になるので、`not.toContain` の守りは以前より強い。
+ *
+ * **見つからなければ例外にする。** 空文字を返すと `not.toContain` が全部通り、
+ * **誰も気づかないまま素通りする**（1度目に落ちたのは `toContain` 側だったので
+ * 気づけただけで、運がよかった）。
  */
-function newestChangelogSection(text: string): string {
-  const first = text.indexOf('\n## [')
-  if (first < 0) return ''
-  const next = text.indexOf('\n## [', first + 1)
-  return next < 0 ? text.slice(first) : text.slice(first, next)
+function dedicatedChangelogSections(text: string): string {
+  const found = text.split(/\n(?=## \[)/).filter(s => s.includes('専有型'))
+  if (found.length === 0) throw new Error('CHANGELOG に専有型を説明している節がありません')
+  return found.join('\n')
 }
 
 const ipc = readFileSync(join(__dirname, '..', 'src/main/ipc/apprunDedicated.ts'), 'utf-8')
@@ -237,8 +256,10 @@ describe('PublishModal: AppRun は一覧で1行にまとめ、タブで共用型
     // hidden で隠す形にした。タブの見た目の選択状態は aria-selected が持つ（上のテスト）。
     expect(block).toContain("<div className={target === 'sakura-apprun' ? undefined : 'hidden'}>")
     expect(block).toContain("<div className={target === 'sakura-apprun-dedicated' ? undefined : 'hidden'}>")
-    expect(block).toContain('<AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />')
-    expect(block).toContain('<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />')
+    // 各パネルには「そのタブが目の前に出ているか」（visible）も渡す（隠れているタブのパネルが、見ていない結果を「見た」と
+    // 伝えないため・2026-09-30 検分。渡し方の形ごとの確認は tests/ops-modal-wiring.test.ts）
+    expect(block).toContain('<AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === \'sakura-apprun\'} />')
+    expect(block).toContain('<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} visible={target === \'sakura-apprun-dedicated\'} />')
   })
 
   it('保存された meta.target が sakura-apprun-dedicated なら、専有型タブが開いた状態になる（初期化ロジックが target を直接使う）', () => {
@@ -265,8 +286,13 @@ describe('PublishModal: AppRun は一覧で1行にまとめ、タブで共用型
     expect(publishModal).not.toContain('さくら以外の公開先')
     expect(publishModal).toContain('その他の公開先')
     // 見出しのすぐ後に HANAMII・Vercel・VPS の3つが続くこと（中身は変えていない）。
+    // 2026-09-24: 窓を `at + 1300` の固定長で切っていたため、**説明文を1文足しただけで
+    // VPS が窓から落ちて落ちた**（見出しと中身の対応は何も壊れていないのに）。
+    // 窓は文字数ではなく、**次の分岐（レンタルサーバ）まで**という構造で取る。
     const at = publishModal.indexOf('その他の公開先')
-    const block = publishModal.slice(at, at + 1300)
+    const end = publishModal.indexOf("target === 'sakura-rental'", at)
+    expect(end).toBeGreaterThan(at)
+    const block = publishModal.slice(at, end)
     expect(block).toContain('🌸 HANAMII')
     expect(block).toContain('▲ Vercel')
     expect(block).toContain('🖥 さくらのVPS')
@@ -514,11 +540,14 @@ describe('alwaysOnChargeText / minimumCostText: 3分岐とも、それ自体で�
       .toBe('最小構成（ワーカ・ロードバランサとも最安プラン1台ずつ）でも、月2万円〜かかります。')
   })
 
-  it('★★ まだ調べていないとき: 数字を推測で書かず、③の「🔍 調べる」を案内する', () => {
+  it('★★ まだ調べていないとき: 数字を推測で書かず、③の取得を案内する（C・押させない）', () => {
     expect(alwaysOnChargeText({ workerPlans: null, lbPlans: null }))
-      .toBe('⚠️ 動いていなくても請求される固定料金がかかります。正確な金額は、③の「🔍 調べる」を押すと出せます。')
+      .toBe('⚠️ 動いていなくても請求される固定料金がかかります。正確な金額は、③でプランを取得できたら出せます。')
     expect(minimumCostText({ workerPlans: null, lbPlans: null }))
-      .toBe('最小構成（ワーカ・ロードバランサとも最安プラン1台ずつ）の正確な金額は、③の「🔍 調べる」を押すと出せます。')
+      .toBe('最小構成（ワーカ・ロードバランサとも最安プラン1台ずつ）の正確な金額は、③でプランを取得できたら出せます。')
+    // C（2026-09-24）: ③は自動で取りに行く。**押させる前提の文を残さない**
+    expect(alwaysOnChargeText({ workerPlans: null, lbPlans: null })).not.toContain('押す')
+    expect(minimumCostText({ workerPlans: null, lbPlans: null })).not.toContain('押す')
   })
 
   it('★★ 料金表に無いとき: 「調べれば出る」とは言わない（理由が違う）', () => {
@@ -682,7 +711,7 @@ describe('⑤: 単価表に無いプランのときは金額を捏造しない�
     const r = priceSummary(null, null, 1)
     expect(r.totalYen).toBeNull()
     expect(r.text, '違う理由（料金表に無い）を告げている').not.toContain('料金表に無い')
-    expect(r.text).toContain('③の「🔍 調べる」')
+    expect(r.text).toContain('③でプランを取得できたら')
   })
 
   it('★★ 片方だけ選ばれていないときも「まだ出せません」（料金表のせいにしない）', () => {
@@ -706,10 +735,11 @@ describe('⑤: 単価表に無いプランのときは金額を捏造しない�
     expect(r.text).not.toContain('料金表に無い')
   })
 
-  it('★★ プラン未取得なら、次の一手は③の「🔍 調べる」（理由も「まだ取得していない」と言う）', () => {
+  it('★★ プラン未取得なら、次の一手は③の取得（理由も「まだ取得していない」と言う・押させない）', () => {
     const r = priceSummary(null, null, 1, 1, { plansFetched: false })
     expect(r.totalYen).toBeNull()
-    expect(r.text).toContain('③の「🔍 調べる」')
+    expect(r.text).toContain('③でプランを取得できたら')
+    expect(r.text, 'C: 自動で取れるのに押させている').not.toContain('押')
     expect(r.text).toContain('プランをまだ取得していないため')
     expect(r.text).not.toContain('料金表に無い')
   })
@@ -718,7 +748,7 @@ describe('⑤: 単価表に無いプランのときは金額を捏造しない�
     const r = priceSummary(null, null, 1)
     expect(r.totalYen).toBeNull()
     // 「取得済み」「未取得」のどちらかに倒さない（分からないことを断定しない・掟1）
-    expect(r.text).toContain('③の「🔍 調べる」')
+    expect(r.text).toContain('③でプランを取得できたら')
     expect(r.text).toContain('選ぶと出せます')
     expect(r.text).not.toContain('料金表に無い')
   })
@@ -1152,7 +1182,7 @@ describe('事故の直し1: IsDummy が boolean でない行は「本物」に�
 // 「押すと選べます」という嘘の文言が出ていた。
 describe('事故の直し2: ゾーン欄の3分岐（未実施／取得失敗／取得できたが0件）', () => {
   it('3つの文言がすべてソースにある', () => {
-    expect(panel).toContain('自由入力です。③の「🔍 調べる」を押すと一覧から選べるようになります。')
+    expect(panel).toContain('自由入力です。ゾーンの一覧は③が自動で取得します（取得できたら選べるようになります）。')
     expect(panel).toContain('ゾーン一覧を取得できませんでした。手で入力してください。')
     expect(panel).toContain('一覧は取得できましたが、選べるゾーンがありませんでした。手で入力してください。')
   })
@@ -1162,7 +1192,7 @@ describe('事故の直し2: ゾーン欄の3分岐（未実施／取得失敗／
     expect(at).toBeGreaterThan(0)
     const block = panel.slice(at, panel.indexOf('</div>', at))
     // 出現順が「未実施」→「失敗」→「選べる」→「0件」になっていること（三項演算子の分岐順）。
-    const iNone = block.indexOf('自由入力です。③の「🔍 調べる」')
+    const iNone = block.indexOf('自由入力です。ゾーンの一覧は③が自動で取得します')
     const iErr = block.indexOf('ゾーン一覧を取得できませんでした')
     const iOk = block.indexOf('さくらのクラウドのゾーン一覧から選びます')
     const iEmpty = block.indexOf('選べるゾーンがありませんでした')
@@ -1234,7 +1264,8 @@ describe('事故の直し1: ①APIキーの見出し・説明文・接続テス�
   })
 
   // 委譲仕様 UX-E（判断8）: ①の説明文は AccessKeySection.tsx の1文
-  // 「Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。」に統一した
+  // 「Koto が {serviceTitle} にアクセスするために必要な情報です。」に統一した
+  // （2026-10-01 rc.5 の実機で作者「合言葉のようないい方は普通しない」。旧: 「Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。」）
   // （旧: 共用型・専有型それぞれが別々の長い説明文を持っていた＝掟10違反）。
   // 専有型は serviceTitle="さくらのクラウド" を渡し、共用型と全く同じ部品・同じ文言を使う。
   it('説明文は AccessKeySection（共用型と全く同じ部品）が出す。旧来の専有型だけの長い説明文は複製していない', () => {
@@ -1247,7 +1278,9 @@ describe('事故の直し1: ①APIキーの見出し・説明文・接続テス�
     expect(section).toContain('keyLabel="APIキー"')
     // 専有型と共用型は同じキーを使う、という1文は専有型の①にだけ残す。
     expect(section).toContain('共用型と同じキーです。')
-    expect(accessKeySection).toContain('Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。')
+    expect(accessKeySection).toContain('Koto が {serviceTitle} にアクセスするために必要な情報です。')
+    expect(accessKeySection).not.toContain('Koto が、あなたの代わりに {serviceTitle} へアクセスするための合言葉です。')
+    expect(accessKeySection).not.toContain('Koto が {serviceTitle} へ代わりにアクセスするための合言葉です。')
   })
 
   it('この操作に使うキー（旧「この確認に使うキー」ではない）', () => {
@@ -1493,7 +1526,9 @@ describe('#25/事故の直し1: ①APIキーに、③「調べる」の疎通結
     expect(guardAt).toBeGreaterThan(at)
     expect(afterGuard).toBeGreaterThan(guardAt)
     const block = panel.slice(guardAt, afterGuard)
-    expect(block).toContain("setCheckError('さくらのクラウドAPIキーが未登録です。①で登録してください。')")
+    // 2026-09-24 検分の指摘2: 失敗も「中身」として覚えるため、文言は一度 msg に取ってから渡す。
+    expect(block).toContain("const msg = 'さくらのクラウドAPIキーが未登録です。①で登録してください。'")
+    expect(block).toContain('setCheckError(msg)')
     // 直す前は setApiReachable(false) がここにあった。この早期return分岐からは setConn 呼び出しも
     // 消えていること（'ng' はもちろん、いかなる setConn(...) も呼ばない）。
     expect(block).not.toContain('setConn(')
@@ -1552,8 +1587,9 @@ describe('⑤: STAGE_LABEL / resourceIdLabel（2026-09-10 レビューの修理�
       limits: '上限の確認',
       'cluster-create': 'クラスタの作成',
       'cluster-verify': 'クラスタの実在確認',
-      'asg-create': 'ASGの作成',
-      'asg-verify': 'ASGの実在確認',
+      // W-96（2026-09-27 決定）: 略さず「オートスケーリンググループ」と書く
+      'asg-create': 'オートスケーリンググループの作成',
+      'asg-verify': 'オートスケーリンググループの実在確認',
       'lb-create': 'ロードバランサの作成',
       'lb-verify': 'ロードバランサの実在確認',
       done: '完了',
@@ -1752,19 +1788,30 @@ describe('⑤: 入力チェックの純関数', () => {
 })
 
 describe('⑥: 記録があるとき、または破棄結果が残っているときに表示し、破棄は確認ダイアログを通る（B-2・2026-09-10実機修理）', () => {
-  it('⑥のsectionは hasAnyResource か shouldShowTeardownResult(teardownResult) のどちらかがあれば描く（記録が空になっても破棄結果だけは残せる）', () => {
-    expect(panel).toContain('{(hasAnyResource || shouldShowTeardownResult(teardownResult)) && (')
+  it('⑥のsectionは showTeardownButton か shouldShowTeardownResult(teardownResult) のどちらかがあれば描く（記録が空になっても破棄結果だけは残せる）', () => {
+    expect(panel).toContain('{(showTeardownButton || shouldShowTeardownResult(teardownResult)) && (')
     expect(panel).toContain('const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)')
   })
 
-  it('破棄フォーム（警告文・対象一覧・「すべて削除する」ボタン）は hasAnyResource のときだけ描く', () => {
-    const at = panel.indexOf('{(hasAnyResource || shouldShowTeardownResult(teardownResult)) && (')
+  // 2026-09-24 検分の指摘1: 「すべて削除する」を hasAnyResource だけで出していると、
+  // 計算資源を消し切ったあとに保存場所の片づけだけが失敗したとき、**ボタンごと消えて
+  // バケットの月額が止められなくなる**。表示条件は純関数（shouldShowTeardownButton）に置き、
+  // 記録の storageLeftoverBucket も見る。
+  it('破棄フォーム（警告文・「すべて削除する」ボタン）は showTeardownButton のときに描き、判定は純関数に置く', () => {
+    expect(panel).toContain("import { shouldShowTeardownButton, storageLeftoverNote, shouldClearPublishRecord } from '../apprunDedicatedActions'")
+    expect(panel).toContain('const showTeardownButton = shouldShowTeardownButton({')
+    expect(panel).toContain('storageLeftoverBucket: apprunState?.storageLeftoverBucket,')
+    const at = panel.indexOf('{(showTeardownButton || shouldShowTeardownResult(teardownResult)) && (')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('{shouldShowTeardownResult(teardownResult) && teardownResult && (', at)
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
-    expect(block).toContain('{hasAnyResource && (')
+    expect(block).toContain('{showTeardownButton && (')
     expect(block).toContain('すべて削除する')
+    // 残っているバケット名は⑥の中で必ず名指しする（押し直せば片づくことも）。
+    expect(block).toContain('storageLeftoverNote(apprunState?.storageLeftoverBucket)')
+    // 記録の一覧・月額目安は、計算資源があるときだけ（保存場所だけ残った回に空の表を出さない）。
+    expect(block).toContain('{hasAnyResource && (')
   })
 
   it('#39: ⑥の実行中は進捗（teardown-progress）を「削除しています…」の下に出す', () => {
@@ -1802,13 +1849,19 @@ describe('⑥: 記録があるとき、または破棄結果が残っている�
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
     expect(block).toContain('runTeardown(')
-    expect(block).toContain("const ok = await confirm({ title: '⚠️ 専有型クラスタを破棄します', body: confirmMessage, confirmLabel: '破棄する', danger: true })")
+    // W-117（2026-09-27 決定）: ConfirmModal は danger:true のとき自分で「⚠️ 」を付けるので、
+    // 呼び出し側の title からは外した（二重表示「⚠️ ⚠️」を防ぐ）。
+    expect(block).toContain("const ok = await confirm({ title: '専有型クラスタを破棄します', body: confirmMessage, confirmLabel: '破棄する', danger: true })")
+    expect(block).not.toContain("title: '⚠️ 専有型クラスタを破棄します'")
     expect(block).toContain('confirm: () => ok,')
     // window.confirm へ退行していないこと（2026-09-11 CLAUDE.md 掟5改定）。
     expect(block).not.toContain('window.confirm(')
     // teardown実行そのもの（IPC呼び出し）は runTeardown の deps.teardown の中。
     expect(block).toContain('window.electronAPI.apprunDedicated.teardown(projectDir, auth, opts)')
-    expect(block).toContain('消さない限り課金が続きます')
+    // 2026-09-24（案2）: 確認の文面は画面で組み立てず、純関数（teardownConfirmMessage）に任せる。
+    // 中身（保存場所を名指しするか・課金の説明が止まる側か）は tests/apprunDedicatedActions.test.ts が固定する。
+    expect(block).toContain('const confirmMessage = teardownConfirmMessage({')
+    expect(block).not.toContain('消さない限り課金が続きます')
   })
 
   it('失敗が残ったら、残った資源のIDとコントロールパネルへの導線を出す', () => {
@@ -1818,6 +1871,8 @@ describe('⑥: 記録があるとき、または破棄結果が残っている�
     expect(panel).toContain('teardownResult.remaining.loadBalancerID')
     expect(panel).toContain('teardownResult.remaining.asgID')
     expect(panel).toContain('teardownResult.remaining.clusterID')
+    // 2026-09-24 検分の指摘5: 保存場所だけが残った回は、計算資源のIDが1件も出ない。
+    expect(panel).toContain('teardownResult.remaining.storageBucket')
   })
 
   // D-4f: ⑥「すべて削除する」で⑧の公開記録（applicationID）が残ったままだと、破棄そのものは
@@ -1840,7 +1895,10 @@ describe('⑥: 記録があるとき、または破棄結果が残っている�
     const outcomeAt = block.indexOf('if (outcome.cancelled) return')
     expect(outcomeAt).toBeGreaterThan(confirmAt)
     const afterOutcome = block.slice(outcomeAt)
-    expect(afterOutcome).toContain('if (outcome.result.ok && hadApplicationID) {')
+    // 2026-09-24 検分の指摘4・9・13: 判断は「破棄全体が ok」ではなく「**アプリが消えたか**」。
+    // 保存場所の片づけだけ失敗した回も計算資源は消えているので、ここで記録を残すと📡に幽霊が出る。
+    expect(afterOutcome).toContain('if (shouldClearPublishRecord({ hadApplicationID, result: outcome.result })) {')
+    expect(afterOutcome).not.toContain('if (outcome.result.ok && hadApplicationID) {')
     expect(afterOutcome).toContain("await clearPublishRecord(projectDir, 'sakura-apprun-dedicated')")
   })
 })
@@ -1859,12 +1917,19 @@ describe('同意（consentedAt）を記録する形になっている（2026-08-
     expect(block).toContain('await saveMeta({ consentedAt: iso })')
   })
 
-  it('saveMeta は shared/publishMeta.ts の withApprunDedicatedRecord を通して publish.apprunDedicated へ書く（掟10: 一元化。main側 apprunDedicatedApply.ts と同じ関数を使う）', () => {
-    expect(panel).toContain("const metaPath = `${projectDir}/.sakuraide.json`")
-    expect(panel).toContain("import { withApprunDedicatedRecord } from '../../shared/publishMeta'")
-    expect(panel).toContain('const merged = withApprunDedicatedRecord(m, patch)')
-    // 同じ形のマージをここで再度手書きしていない（旧・段階①の書き方が残っていないこと）。
+  it('saveMeta は差分だけを mergeProjectMeta（main が書く直前にディスクから読み直して当てる）へ渡す。画面の写しで全体を書き戻さない（2026-09-29）', () => {
+    expect(panel).toContain("import { mergeProjectMeta } from '../projectMeta'")
+    expect(panel).toContain("target: 'sakura-apprun-dedicated',\n      publish: { apprunDedicated: patch },")
+    // 直す前の形（読んで・マージして・全体を書き戻す）が残っていない
+    expect(panel).not.toContain('const merged = withApprunDedicatedRecord(m, patch)')
+    expect(panel).not.toContain('window.electronAPI.fs.writeFile(metaPath')
     expect(panel).not.toContain('apprunDedicated: { ...(m.publish?.apprunDedicated ?? {}), ...patch }')
+  })
+
+  it('★ 画面が書いてよいのは「手作業の入力」（サービスプリンシパルID・費用への同意）だけ。クラスタ・ASG・LB・アプリの資源IDは型で書けない', () => {
+    // 資源IDを画面の古い写しで上書きすると、⑥で破棄できなくなり課金が止められない。
+    expect(panel).toContain("const saveMeta = useCallback(async (patch: Pick<ApprunDedicatedRecord, 'servicePrincipalId' | 'consentedAt'>) => {")
+    expect(panel).not.toContain('const saveMeta = useCallback(async (patch: Record<string, unknown>)')
   })
 
   it('同意済みなら日時を表示し、取り消せる', () => {
@@ -1941,9 +2006,9 @@ describe('⑧ アプリを公開する（D-4）: 節の位置・表示条件・�
     expect(block).toContain('公開のあと、DNS の A レコードの設定が要ります（ロードバランサの IP が複数なら A レコードも複数）')
   })
 
-  it('envReady === false なら「公開の設定（env.json）がまだありません」＋「公開の設定を作る」（cloud.scaffoldEnv を呼ぶ）', () => {
+  it('envReady === false なら「公開の設定がまだありません」＋「公開の設定を作る」（cloud.scaffoldEnv を呼ぶ）', () => {
     expect(panel).toContain('appStatus.envReady === false ?')
-    expect(panel).toContain('公開の設定（env.json）がまだありません。')
+    expect(panel).toContain('公開の設定がまだありません。')
     expect(panel).toContain("'公開の設定を作る'")
     const at = panel.indexOf('const doScaffoldEnv = async () => {')
     expect(at).toBeGreaterThan(0)
@@ -2022,12 +2087,20 @@ describe('⑧ アプリを公開する（D-4）: 節の位置・表示条件・�
     // publish 実行そのもの（IPC）は runPublishApp の deps.publish の中。キーは方式B（使う瞬間に loadKey）。
     expect(block).toContain('const auth = await window.electronAPI.cloud.loadKey()')
     expect(block).toContain('window.electronAPI.apprunDedicated.publishApp(projectDir, auth, i, opts)')
+    // 2026-09-29: 窓を閉じる警告は全部で1つの文（PUBLISH_CLOSE_WARNING）。専有型だけ別の文を持つ形はやめた
+    // （記録はどの公開先でも main が書く）。別の警告文（_MAIN_RECORD）に戻っていないことも見る。
     expect(block).toContain("beginActivity('専有型アプリの公開', { closeWarning: PUBLISH_CLOSE_WARNING })")
+    expect(block).not.toContain('PUBLISH_CLOSE_WARNING_MAIN_RECORD')
   })
 
-  it('進捗は onPublishProgress を購読して1行出す（実行中だけ）', () => {
+  // D（2026-09-24）: 進行は「小さな1行」から、いま何をしているか・待ってほしいことを出す枠になった。
+  // 文面の組み立ては純関数 publishProgressView（tests/apprunDedicatedPanelUx.test.ts が中身を固定する）。
+  it('進捗は onPublishProgress を購読し、実行中だけ publishProgressView の枠で出す', () => {
     expect(panel).toContain('window.electronAPI.apprunDedicated.onPublishProgress((msg) => setPublishProgress(msg))')
-    expect(panel).toContain('{publishing && publishProgress && (')
+    expect(panel).toContain('{publishing && (() => {')
+    expect(panel).toContain('const v = publishProgressView(publishProgress)')
+    // 直す前の形（小さな1行だけ）に戻っていないこと
+    expect(panel).not.toContain('{publishing && publishProgress && (')
   })
 
   it('成功時: URL（コピー）・DNS の A レコード用 IP（IP ごとにコピー／無ければ取得できなかった旨）・warnings', () => {
@@ -2598,8 +2671,8 @@ describe('D-7 の記録: 未確認のことを、確かめた事実のように�
   // 既存機能の不具合を直したわけではない。「これまでは…でした」という不具合修正のような
   // 書き方をやめ、「⑧は公開のあと応答を確かめます」と機能の説明として書く（直す前の形に
   // 戻っていないことも、あわせて固定する）。
-  it('★★ CHANGELOG の最新の節 は、⑧の verify 段を新機能として説明し、既存機能の不具合修正のような書き方（これまでは…でした）にしない。利用者向けにも「アプリが応答していなかった」までしか言わない', () => {
-    const block = newestChangelogSection(changelog)
+  it('★★ CHANGELOG の専有型の節 は、⑧の verify 段を新機能として説明し、既存機能の不具合修正のような書き方（これまでは…でした）にしない。利用者向けにも「アプリが応答していなかった」までしか言わない', () => {
+    const block = dedicatedChangelogSections(changelog)
     expect(block).toContain('専有型の⑧は、公開のあとに**アプリが本当に応答しているかを確かめます**')
     expect(block).toContain('アプリがまだ応答していません')
     expect(block).not.toContain('これまでは、アプリが応答していなくても')
@@ -2712,7 +2785,7 @@ describe('D-8 の記録: 「フォルダを作れる」はまだ確認できて�
   const readme = readFileSync(join(__dirname, '..', 'README.md'), 'utf-8')
   const guide = readFileSync(join(__dirname, '..', 'docs/usage-guide.html'), 'utf-8')
   const changelogAll = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf-8')
-  const unreleased = newestChangelogSection(changelogAll)
+  const unreleased = dedicatedChangelogSections(changelogAll)
   const planDoc2 = readFileSync(join(__dirname, '..', 'docs/apprun-dedicated-plan.md'), 'utf-8')
 
   it('★★ 3つの文書とも「作れます／作れるようになりました」と断定しない（まだ確認できていないと書く）', () => {
@@ -2778,7 +2851,7 @@ describe('D-8 の記録: 「フォルダを作れる」はまだ確認できて�
 // roadmap は動く文書なので、ここでは**戻ってはいけない形**だけを固定する（掟10 の「直す前の形を
 // not.toContain で禁じる」）。
 describe('roadmap: 「稼働コンテナ 1」を成功の証拠として残さない（D-7・D-8）', () => {
-  const roadmap = readFileSync(join(__dirname, '..', 'docs/roadmap.md'), 'utf-8')
+  const roadmap = roadmapWithArchive()
 
   it('★★ 直す前の形（稼働コンテナ 1 …を確認）に戻っていない', () => {
     expect(roadmap).not.toContain('稼働コンテナ 1・ホスト名')
@@ -2813,7 +2886,7 @@ describe('D-12: スティッキービットの説明と、消えるデータの�
   const readme = readFileSync(join(__dirname, '..', 'README.md'), 'utf-8')
   const guide = readFileSync(join(__dirname, '..', 'docs/usage-guide.html'), 'utf-8')
   const changelogAll = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf-8')
-  const unreleased = newestChangelogSection(changelogAll)
+  const unreleased = dedicatedChangelogSections(changelogAll)
   const planDoc3 = readFileSync(join(__dirname, '..', 'docs/apprun-dedicated-plan.md'), 'utf-8')
 
   // high: 「像の中のファイルの所有者は root」は**未確認のうえ実測と食い違う**
@@ -2892,7 +2965,7 @@ describe('D-12: スティッキービットの説明と、消えるデータの�
 
 // ── D-12: 「説明がつく」と「確定」の書き分け・⑥の合格の記録（検分・2026-09-16）──────────
 describe('D-12: 5-13 の書き分けと、⑥の破棄が合格したことの記録（掟1・掟9）', () => {
-  const roadmap2 = readFileSync(join(__dirname, '..', 'docs/roadmap.md'), 'utf-8')
+  const roadmap2 = roadmapWithArchive()
   const planDoc4 = readFileSync(join(__dirname, '..', 'docs/apprun-dedicated-plan.md'), 'utf-8')
 
   // high: 見出しだけが「原因が判明した」と断定し、直下の本文（「断定はしない」）と矛盾していた。
@@ -3000,7 +3073,7 @@ describe('D-13 F: 共用型（AppRunPanel.tsx）にも ephemeralDataNote() を�
 // あわせて「次」の行が、合格済みの⑥の破棄確認を**未了として**残していた。
 // roadmap は動く文書なので、**戻ってはいけない形**を `not.toContain` で禁じる（掟10）。
 describe('D-13 I: roadmap の版の表と「次」の行を、同じ文書の「🚧 いまここ」と食い違わせない', () => {
-  const roadmap3 = readFileSync(join(__dirname, '..', 'docs/roadmap.md'), 'utf-8')
+  const roadmap3 = roadmapWithArchive()
   const row = roadmap3.slice(roadmap3.indexOf('| **v0.6.19-rc.1** |'), roadmap3.indexOf('\n| 配布済み |'))
 
   it('★★ 版の表の行が「欠陥2件」のままになっていない（同じ日に4件出ている）', () => {
@@ -3059,7 +3132,7 @@ describe('D-14: 使い方ガイドの「応答の確認」が、実装より強�
   const guide = readFileSync(join(__dirname, '..', 'docs/usage-guide.html'), 'utf-8')
   const readme = readFileSync(join(__dirname, '..', 'README.md'), 'utf-8')
   const changelogAll = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf-8')
-  const unreleased = newestChangelogSection(changelogAll)
+  const unreleased = dedicatedChangelogSections(changelogAll)
   const docs = [['usage-guide', guide], ['README', readme], ['CHANGELOG［最新の節］', unreleased]] as const
 
   // 実装の側（ここが変わったら、下の文書の約束も見直すこと）
@@ -3196,9 +3269,11 @@ describe('D-14: 使い方ガイドの日本語（検分・2026-09-16）', () => 
   })
 
   // medium: 「公開先は4種類（VPS は準備中）」が、VPS を4つの内と外どちらにも読めた
+  // W-82（2026-09-27 決定・案1）: 公開先はボタンで選ぶ／タブは AppRun の共用型・専有型だけ／
+  // VPS は「開発中」と書き、4種類（ボタンで選ぶもの）の外だと明確に読めるようにした。
   it('★★ さくらのVPS が4種類の外だと読める書き方になっている', () => {
     expect(guide, '4種類の内か外か読めない形が戻っている').not.toContain('公開先は4種類です（「さくらのVPS」は')
-    expect(guide).toContain('公開先は4種類です。このほかに「さくらのVPS」のタブがありますが')
+    expect(guide).toContain('（さくらのレンタルサーバ・さくらのAppRun・HANAMII・Vercelの4種類）。このほかに「さくらのVPS」もありますが、<b>開発中</b>で')
   })
 })
 
@@ -3304,7 +3379,7 @@ describe('G-2/G-3: 証明書の確かめ方の案内と、「自動で発行し�
   const readme = readFileSync(join(__dirname, '..', 'README.md'), 'utf-8')
   const guide = readFileSync(join(__dirname, '..', 'docs/usage-guide.html'), 'utf-8')
   const changelogAll = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf-8')
-  const unreleased = newestChangelogSection(changelogAll)
+  const unreleased = dedicatedChangelogSections(changelogAll)
 
   it('★★ README と使い方ガイドに、コントロールパネルの「証明書情報」で確かめる案内がある', () => {
     for (const [name, src] of [['README', readme], ['usage-guide', guide]] as const) {

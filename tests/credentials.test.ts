@@ -53,7 +53,7 @@ describe('groupServices（SERVICES を3グループへ分ける純関数・UX-A�
 
   it('見出し文言・折りたたみ表示に使う件数がラベルと一致する', () => {
     expect(CREDENTIAL_GROUP_LABEL.first).toBe('まず必要')
-    expect(CREDENTIAL_GROUP_LABEL.perTarget).toBe('公開先ごとに必要')
+    expect(CREDENTIAL_GROUP_LABEL.perTarget).toBe('使うものだけ')
     expect(CREDENTIAL_GROUP_LABEL.auto).toBe('開発中・自動管理')
     // 折りたたみの表示文言「開発中・自動管理（2件）を表示」の元になる件数
     const auto = groupServices(SERVICES).find(s => s.group === 'auto')!
@@ -62,7 +62,7 @@ describe('groupServices（SERVICES を3グループへ分ける純関数・UX-A�
 
   it('各グループの見出し直下の1行案内: first/perTargetにはあり、auto（折りたたみ）には無い', () => {
     expect(CREDENTIAL_GROUP_DESCRIPTION.first).toBe('これだけで作る・試すまでできます')
-    expect(CREDENTIAL_GROUP_DESCRIPTION.perTarget).toBe('使う公開先のものだけ登録すれば十分です')
+    expect(CREDENTIAL_GROUP_DESCRIPTION.perTarget).toBe('公開先・Claude・Web検索など、使うものだけ登録すれば十分です')
     expect(CREDENTIAL_GROUP_DESCRIPTION.auto).toBeUndefined()
   })
 })

@@ -29,8 +29,13 @@ export type StoragePermission = {
  * 専有型は AppRun の共用型とは別のアプリなので、同じ値を使い回すと
  * `permissionNameFor` が同じ名前を返し、**専有型の公開が共用型の鍵を消して、
  * 動いているアプリが 403 で落ちる**（逆も同じ）。名前は完全一致で見分けている。
+ *
+ * **2026-09-24 に `vercel` を追加**（Vercel へも保存場所の設定を渡せるようにした）。
+ * ここを `'apprun'` などと同じ値で済ませると、**Vercel への公開が AppRun の鍵を消して、
+ * 動いている AppRun のアプリが 403 で落ちる**（専有型を足したときと同じ穴）。
+ * 名前は下の `permissionNameFor` が `koto-<名前>_vercel` を返す（区切りは TARGET_SEP）。
  */
-export type StorageTarget = 'apprun' | 'apprun-dedicated' | 'hanamii'
+export type StorageTarget = 'apprun' | 'apprun-dedicated' | 'hanamii' | 'vercel'
 
 /**
  * 公開先を継ぎ足すときの区切り（2026-09-23 検分の指摘9）。
@@ -87,6 +92,30 @@ export function permissionsToCleanUp(opts: {
   const mine = permissionNameFor(opts.projectName, opts.target ?? 'apprun')
   return (opts.all ?? [])
     .filter(p => p && p.displayName === mine && String(p.id) !== String(opts.keepId))
+    .map(p => String(p.id))
+}
+
+/**
+ * **その公開先の鍵をまとめて選ぶ**（残す1件を持たない版・2026-09-24 検分の指摘6）。
+ *
+ * `permissionsToCleanUp` は「いま使っている1件」を残すための関数なので、`keepId` が無いと
+ * 1件も返さない（現役が分からないまま消さない＝正しい守り）。ところが**破棄のとき**は
+ * 事情が逆で、その公開先の資源はもう1つも残っていない＝**現役の鍵は存在しない**。
+ * 記録にある1件しか無効にしないと、確認が確定しないまま2回以上公開したときの古い鍵
+ * （記録は最新の1件で上書きされる）が、**誰にも片づけられないまま生き残る**。
+ * 共有バケットが残るケースでは、その鍵は**ほかのプロジェクトのデータにも届く**。
+ *
+ * **呼んでよいのは「その公開先を全部消し終えたあと」だけ。** 名前は完全一致で見るので、
+ * ほかのプロジェクト・ほかの公開先の鍵には触れない（掟11）。
+ */
+export function permissionsForTarget(opts: {
+  all: readonly StoragePermission[]
+  projectName: string
+  target: StorageTarget
+}): string[] {
+  const mine = permissionNameFor(opts.projectName, opts.target)
+  return (opts.all ?? [])
+    .filter(p => p && p.displayName === mine)
     .map(p => String(p.id))
 }
 

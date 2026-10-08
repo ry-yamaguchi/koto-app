@@ -137,10 +137,43 @@ export async function listChunks(apiKey: string, documentId: string, opts: { pag
   return parseChunkList(raw)
 }
 
+/**
+ * W-85（2026-09-27 決定）: 上限の確認を受ける口の型。shared/usageBudget.ts の checkBeforeRequestOf
+ * （main では usageStore.ts の checkBeforeRequest）の返り値と同じ形。
+ */
+export type RagBudgetCheck = () => { allowed: boolean; message?: string }
+
+/**
+ * 上限を超えていたら、AI Engine へ通信する前にここで止める（W-85）。資料の API のうちモデルを使うもの
+ * （検索・回答づくり・取り込みの索引づくり）は必ず通信の前にこれを通る＝唯一の関所（掟10）。
+ * check が無い呼び出し側は素通り（未対応の間の後方互換）。止めるときの文は check が返す message
+ * （チャットで止めるときと同じ文）をそのまま使い、無いときだけ action を入れた既定文にする。
+ */
+function assertBudgetAllows(check: RagBudgetCheck | undefined, action: string): void {
+  if (!check) return
+  const gate = check()
+  if (!gate.allowed) {
+    const err = new Error(gate.message ?? `今月の利用上限に達しているため、${action}は行っていません。`) as Error & { kotoBudgetStop?: boolean }
+    err.kotoBudgetStop = true // 「上限で止めた」印（isBudgetStopError が読む）。通信の失敗と区別するため
+    throw err
+  }
+}
+
+/**
+ * assertBudgetAllows が上限のために投げた例外か（通信の失敗・応答の読み違いなど、それ以外の失敗は false）。
+ * 資料検索の呼び出し側（chat/turnRunner.ts）が「資料に無かった」と「上限で止めた」を言い分けるために使う。
+ * 印（kotoBudgetStop）の付け外しはこのファイルの中だけで行う（掟10: 印の名前を他所へ書き写さない）。
+ */
+export function isBudgetStopError(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { kotoBudgetStop?: unknown }).kotoBudgetStop === true
+}
+
 export interface RagQueryOpts {
   tags?: string[]
   topK?: number
   threshold?: number
+  /** 上限の確認（W-85）。渡すと、上限を超えているときは通信そのものを行わずに止める。 */
+  budgetCheck?: RagBudgetCheck
 }
 
 /** query 文を送信前に必ず RAG_QUERY_MAX 文字へ切り詰める。 */
@@ -150,6 +183,7 @@ function clampQuery(query: string): string {
 
 /** POST /v1/documents/query/ — ベクトル検索のみ。 */
 export async function queryDocuments(apiKey: string, query: string, opts: RagQueryOpts = {}): Promise<RagQueryHit[]> {
+  assertBudgetAllows(opts.budgetCheck, '資料の検索')
   const raw = await requestJson(apiKey, 'POST', queryPath(), {
     body: {
       query: clampQuery(query),
@@ -169,10 +203,20 @@ export interface RagChatOpts {
   threshold?: number
   prompt?: string
   useFullContent?: boolean
+  /**
+   * W-85（2026-09-27 決定）: 「AI を呼ぶのは次の場面だけです」に 📚 資料が抜けており、
+   * しかも資料検索（このAPI・/v1/documents/chat/）は checkBeforeRequest／recordUsage を
+   * 通らないため、上限に達していても呼び続けていた。呼び出し側（ipc/rag.ts）が
+   * usageStore.ts の checkBeforeRequest（shared/usageBudget.ts の checkBeforeRequestOf）の結果を
+   * ここへ渡すと、通信そのものを行わずに止める。渡さなければ（未対応の呼び出し側の間は）従来どおり素通りする。
+   * 検索（queryDocuments）・取り込み（uploadDocument）も同じ関所（assertBudgetAllows）を通る（掟10）。
+   */
+  budgetCheck?: RagBudgetCheck
 }
 
-/** POST /v1/documents/chat/ — 検索＋回答生成。 */
+/** POST /v1/documents/chat/ — 検索＋回答生成。上限を超えているときは budgetCheck が通信そのものを止める（W-85）。 */
 export async function chatDocuments(apiKey: string, query: string, opts: RagChatOpts): Promise<RagChatResult> {
+  assertBudgetAllows(opts.budgetCheck, '資料の検索')
   const raw = await requestJson(apiKey, 'POST', chatPath(), {
     body: {
       query: clampQuery(query),
@@ -195,10 +239,13 @@ export interface RagUploadArgs {
   filename: string
   name?: string
   tags?: string[]
+  /** 上限の確認（W-85）。取り込みも索引づくりにモデルを使うため、上限を超えているときは通信そのものを行わずに止める。 */
+  budgetCheck?: RagBudgetCheck
 }
 
 /** POST /v1/documents/upload/ — multipart/form-data アップロード。model は RAG_EMBED_MODEL 固定・chunk_size は送らない。 */
 export async function uploadDocument(apiKey: string, args: RagUploadArgs): Promise<RagDocument | null> {
+  assertBudgetAllows(args.budgetCheck, '資料の取り込み')
   if (!args.filePath && args.content === undefined) {
     throw new Error('アップロードするファイル、または内容がありません')
   }

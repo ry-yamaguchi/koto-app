@@ -412,7 +412,8 @@ describe('公開したもの一覧からも片づけられる', () => {
 
   it('★ 実体は消えないと、押す前に伝える', () => {
     const src = read('src/renderer/components/PublishedListModal.tsx')
-    expect(src).toContain('実体は残ります')
+    // W-93（2026-09-27 決定・案2）: 押したボタンと確定ボタンを同じ言い方に揃える
+    expect(src).toContain('記録を片づける（公開したものは残ります）')
   })
 
   it('★ 判断は1つ（同じ処理を二度書かない）', () => {

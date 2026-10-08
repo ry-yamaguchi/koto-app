@@ -515,7 +515,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
                 Homebrew をインストール
               </button>
               <p className="mt-2 text-[10px] text-ink-muted leading-snug">
-                ※ パスワードの入力を求められる場合があります。導入後はターミナルを開き直す（またはIDEを再起動）と確実です。その後もう一度「② 試す」を押してください。
+                ※ パスワードの入力を求められる場合があります。導入後はターミナルを開き直す（またはKotoを再起動）と確実です。その後もう一度「② 試す」を押してください。
               </p>
             </>
           )}

@@ -8,6 +8,7 @@ import {
   buildDeploymentBody,
   extractDeployment,
   vercelErrorMessage,
+  vercelEnvErrorMessage,
   sanitizeProjectName,
 } from '../src/main/vercel/client'
 
@@ -159,6 +160,33 @@ describe('extractDeployment', () => {
   it('returns all nulls for null/undefined', () => {
     expect(extractDeployment(null)).toEqual({ id: null, url: null, readyState: null, error: null })
     expect(extractDeployment(undefined)).toEqual({ id: null, url: null, readyState: null, error: null })
+  })
+})
+
+// 2026-09-24 検分の指摘14。初回公開では Vercel 側にプロジェクトが無く、公開の**あと**に
+// 設定を置き直す。その置き直しが失敗しても**公開そのものは済んでいる**ので、
+// 「公開を中止しました」は嘘になる。理由と直し方は共通で出し、末尾だけ出し分ける。
+describe('vercelEnvErrorMessage', () => {
+  it('403 では理由（HTTP 403）と直し方（認証情報）を必ず出す', () => {
+    const msg = vercelEnvErrorMessage(403)
+    expect(msg).toContain('403')
+    expect(msg).toContain('認証情報')
+    expect(msg).toContain('公開を中止しました')
+  })
+
+  it('★ 公開が済んでいるときは「公開を中止しました」と言わない', () => {
+    const msg = vercelEnvErrorMessage(403, { alreadyPublished: true })
+    expect(msg).toContain('403')
+    expect(msg).toContain('認証情報')            // 直し方は落とさない
+    expect(msg).not.toContain('公開を中止しました')
+    expect(msg).toContain('もう一度')
+  })
+
+  it('★ どの状態でも、末尾の出し分けだけが変わる（429・その他）', () => {
+    for (const status of [429, 500]) {
+      expect(vercelEnvErrorMessage(status)).toContain('公開を中止しました')
+      expect(vercelEnvErrorMessage(status, { alreadyPublished: true })).not.toContain('公開を中止しました')
+    }
   })
 })
 

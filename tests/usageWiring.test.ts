@@ -35,7 +35,8 @@ describe('turnRunner.ts: usage.*/compactWarnOnce はもう bridge.ask ではな�
 
   it('usageStore（main）+ shared/usageBudget（純関数）から直接呼んでいる', () => {
     expect(src).toContain("import { hashKey } from '../../shared/usageBudget'")
-    expect(src).toContain("import { checkBeforeRequest, recordUsage } from '../usageStore'")
+    // W-85: 資料検索（ragSearch）の上限の確認を作る budgetCheckForKey も同じ usageStore から取る
+    expect(src).toContain("import { checkBeforeRequest, recordUsage, budgetCheckForKey } from '../usageStore'")
     expect(src).toContain('check: () => checkBeforeRequest(hashKey(payload.spec.apiKey)),')
     expect(src).toContain('record: (model, promptTokens, completionTokens) => recordUsage(hashKey(payload.spec.apiKey), model, promptTokens, completionTokens),')
   })

@@ -232,6 +232,25 @@ describe('「まだ何も書いていないプロジェクト」を見落とさ�
     expect(keepMarkerKey('projects/myapp/')).toBe('projects/myapp/.koto-keep')
   })
 
+  // ── 目印が「効く」ことを、判断そのもので固定する（2026-09-24）──────────────
+  // 名前を作る純関数のテストだけでは、**目印を置き忘れても落ちない**。
+  // 実際に守られるのは teardownPlanFor の判断なので、そこを対で固定する。
+  it('★ 目印があれば、ほかのプロジェクトを破棄してもバケットは残る', () => {
+    const plan = teardownPlanFor(
+      { bucket: 'b', prefix: 'projects/b/', shared: true } as any,
+      [keepMarkerKey('projects/a/'), 'projects/b/x.json'],
+    )
+    expect(plan.deleteBucket).toBe(false)
+  })
+
+  it('★（対） 目印が無いと、用意しただけのプロジェクトを巻き込んでバケットごと消える', () => {
+    const plan = teardownPlanFor(
+      { bucket: 'b', prefix: 'projects/b/', shared: true } as any,
+      ['projects/b/x.json'], // A は用意しただけ＝一覧に出てこない
+    )
+    expect(plan.deleteBucket).toBe(true)
+  })
+
   it('一覧のキーからプロジェクトのプレフィックスを取り出す', () => {
     expect(projectPrefixesFromKeys([
       'projects/myapp/data/posts.json',
@@ -264,9 +283,13 @@ describe('公開URL', () => {
 })
 
 describe('費用の説明', () => {
-  it('専用は追加費用がかかると言う', () => {
+  // W-61（2026-09-27 決定）: 「専用」側は「新しいプロジェクトは、公開のとき専用の保存場所を
+  // 作れます（1つ月額495円（税込）・作る前に金額を確認）」に直した（「いま作って課金」に
+  // 読めていたのを、作る前に金額を確認できる書き方にした）。
+  it('専用は月額の費用がかかると言う', () => {
     expect(storageCostNote('dedicated', 495)).toContain('495')
-    expect(storageCostNote('dedicated', 495)).toContain('追加')
+    expect(storageCostNote('dedicated', 495)).toContain('月額495円（税込）')
+    expect(storageCostNote('dedicated', 495)).toContain('作る前に金額を確認')
   })
 
   // 共有の弱点（鍵が漏れると他プロジェクトに届く）を隠さない

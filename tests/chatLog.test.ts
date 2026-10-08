@@ -377,17 +377,38 @@ describe('chatStore/file.ts: 実ファイルでの検証', () => {
   // 引数を入れ替えた式もたまたま同じ結論=追記になりがちなため。実際にミューテーション試験で
   // 確認済み）。無駄だけが積み上がる状況（同じ位置を上書きし続ける）で初めて表に出るので、
   // 実ファイルの大きさの推移で確かめる。
+  // ⚠️ 2026-09-25: ここは**時限式**だった。1件が数十バイトの `msg()` で 64KB の下駄
+  //    （shouldRewrite の `+ 65536`）を越えるには最大1,500回の**同期**ファイル書き込みが要り、
+  //    全走では実測21.5秒かかって 20000ms の制限に当たって落ちた（機械の混み具合しだいで
+  //    落ちたり通ったりする＝いちばん質の悪い落ち方）。tests/kotoDataOptions.test.ts の
+  //    時限式を直したときと同じ作法で、**実時間に依らない形**に置き換える。
+  //
+  //    やったこと: 回数を減らすのではなく、**1回あたりの無駄を大きくする**。
+  //    1件を約8KBにすると、下駄（64KB）＋中身の2倍を越えるのに十数回で足りる。
+  //    固定している振る舞いは前と同じ——「同じ位置を上書きし続けると、無駄が溜まって
+  //    書き直しに切り替わる（＝ファイルが縮む）」。shouldRewrite の判定を潰せば落ちる。
   it('同じ位置を上書きし続けると、無駄が溜まって書き直しに切り替わる（shouldRewriteの配線の実地証拠）', () => {
-    saveProjectChatFile(filePath, json([msg(0)])) // 初回書き直し
+    // 1件あたり約8KB。中身の大きさは毎回ほぼ同じ（末尾の連番は桁を揃える）ので、
+    // shouldRewrite の contentBytes 側は動かず、**追記ぶんの無駄だけが積み上がる**
+    const big = (n: number) => ({ role: 'user', content: 'x'.repeat(8000) + `-${String(n).padStart(4, '0')}` })
+
+    saveProjectChatFile(filePath, json([big(0)])) // 初回書き直し
     let prevSize = fs.statSync(filePath).size
     let sawShrink = false
-    for (let n = 1; n <= 1500 && !sawShrink; n++) {
-      saveProjectChatFile(filePath, json([msg(0, `-${n}`)])) // 同じ index 0 だけを書き換え続ける
+    let saves = 0
+    for (let n = 1; n <= 60 && !sawShrink; n++) {
+      saveProjectChatFile(filePath, json([big(n)])) // 同じ index 0 だけを書き換え続ける
+      saves = n
       const size = fs.statSync(filePath).size
       if (size < prevSize) sawShrink = true // 増え続けていたものが縮んだ＝書き直しが起きた
       prevSize = size
     }
     expect(sawShrink).toBe(true)
     expect(loadProjectChatFile(filePath).ok).toBe(true) // 書き直したあとも読める
-  }, 20000) // 64KBの無駄を積むには数百〜千回超の同期fs書き込みが要るため、既定の5秒では足りない
+    // 書き直しに切り替わるまでの回数まで固定する。ここが跳ね上がったら（＝また
+    // 実時間に頼る形に戻ったら）、時間切れで落ちる前にこの行で落ちる
+    expect(saves).toBeLessThanOrEqual(20)
+    // 書き直し直後は「いまの会話1件ぶん」まで縮んでいる（追記の積み上がりが消えた証拠）
+    expect(fs.statSync(filePath).size).toBeLessThan(2 * 8000 + 65536)
+  })
 })

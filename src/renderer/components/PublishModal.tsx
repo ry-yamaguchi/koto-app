@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { getTargetProfile, isAutoPublishTarget } from '../targetProfiles'
 import StorageNotice from './StorageNotice'
-import { withoutPublishTarget, canForgetRow, PUBLISH_TARGET_CONSOLE, PUBLISH_TARGET_LABEL, buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, detectInterruptedPublish, latestPublishedTarget, type PendingPublish, type PublishTargetKind } from '../publishStatus'
-import { clearPublishPending } from '../publishPending'
+import { canForgetRow, PUBLISH_TARGET_CONSOLE, PUBLISH_TARGET_LABEL, buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, judgePendingPublish, pendingPublishMessage, latestPublishedTarget, isKnownPublishTarget, type PendingPublish, type PublishTargetKind } from '../publishStatus'
+import { mergeProjectMetaThenLoad, forgetPublishTargetThenLoad, dismissInterruptedPublish, loadPublishSnapshot, rentalPublishPatch, type PublishSnapshot } from '../projectMeta'
 import { rsyncExcludeArgs } from '../../shared/publishExclude'
 import SecurityCheckSection from './SecurityCheckSection'
 import UnusedFilesSection from './UnusedFilesSection'
@@ -12,6 +12,9 @@ import VercelPanel from './VercelPanel'
 import VpsPanel from './VpsPanel'
 import AppRunDedicatedPanel from './AppRunDedicatedPanel'
 import { resolvePublishRoot } from '../publishRootRenderer'
+// 記録を読む・「見た」と伝える・誰の持ち場か決める・警告と時刻の文にする、は共通の1か所（掟10・2026-09-30 検分の指摘2）。
+import { watchProjectOps, sendAck, unseenOf, visiblePanelShows, holdsWarning, type OpsWatch } from '../projectOpsView'
+import { warningLine } from '../../shared/opsText'
 
 // 「🚀 公開」モーダル：
 // - .sakuraide.json の公開先・設定を読み、フォーム入力（次回から再入力不要）
@@ -49,7 +52,7 @@ interface Meta {
     lastPublishedAt?: string // 最後に公開操作を実行した日時（ISO）
     targets?: Partial<Record<PublishTargetKind, PublishTargetRecord>>
     hanamii?: { projectId?: string | null }
-    // 公開開始マーカー（中断・失敗の検知用。src/renderer/publishPending.ts が読み書きする）。
+    // 公開開始マーカー（中断・失敗の検知用。main が書く・消す＝src/main/publishMetaFs.ts の markPendingFs / clearPendingFs）。
     pending?: PendingPublish | null
   }
 }
@@ -65,6 +68,36 @@ interface Props {
 }
 
 const NAME_OK = /^[A-Za-z0-9][A-Za-z0-9.-]*$/
+
+// ── 処理の記録（main のメモリ上・window.electronAPI.projectOps）を画面に出すための小さな道具 ──────
+// （2026-09-29・作者の決定 ①②。記録の本体は src/main/projectOps.ts。ここに型や意味を複製しない。）
+
+/** 「聞き直す」間隔。既存の3秒のポーリングと共用する（走っているかを、開いている間も聞き直す）。 */
+const OPS_POLL_MS = 3000
+
+/** 画面に出す「経過」の文（純関数）。 */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  if (total < 60) return `${total}秒`
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return s === 0 ? `${m}分` : `${m}分${s}秒`
+}
+
+/** どの公開先の操作か（記録の target が公開先の種類でない＝'unknown' のときは、公開先を名指ししない）。 */
+function opTargetName(rec: ProjectOpRecordShape): string {
+  return isKnownPublishTarget(rec.target) ? PUBLISH_TARGET_LABEL[rec.target] : 'このプロジェクト'
+}
+
+/**
+ * 終わった記録を、画面が持っている分へ足す（純関数）。**startedAt が記録の識別子**（同じプロジェクトで必ず増える）。
+ * すでに持っているものは足さない。古い順に並べる。
+ */
+function mergeFinished(held: ProjectOpRecordShape[], incoming: ProjectOpRecordShape[]): ProjectOpRecordShape[] {
+  const fresh = incoming.filter(r => r && !held.some(h => h.startedAt === r.startedAt))
+  if (fresh.length === 0) return held
+  return [...held, ...fresh].sort((a, b) => a.startedAt - b.startedAt)
+}
 
 export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpenCredentials, onOpenPublishedList }: Props) {
   const [meta, setMeta] = useState<Meta>({})
@@ -111,25 +144,146 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   const projName = projectDir.split('/').pop() ?? 'app'
   const rentalServiceUrl = getTargetProfile('sakura-rental').serviceUrl
 
-  // 前回の公開が完了前に中断された可能性の検知（Part2: 公開開始マーカー・publish.pending）。
-  // meta は projectDir を開いた/変えたときに読み込まれる値なので、meta.publish が変わったときだけ再計算する。
-  const interruptedPublish = useMemo(() => detectInterruptedPublish(meta.publish ?? {}, Date.now()), [meta.publish])
+  // 公開開始マーカー（publish.pending）の見せ方（Part2 ＋ 2026-09-29）。
+  // 公開の本体は main の1回の IPC で最後まで進む（この画面を閉じて開き直しても走り続ける）ので、
+  // 「pending が古い」だけで「中断」と決めない。**いま main が公開を走らせているか**（main の鍵・
+  // `publishMeta:runningOp`）と合わせて、進行中／中断の可能性／なし、の3通りに出し分ける
+  // （src/renderer/publishStatus.ts の judgePendingPublish）。
+  const [runningOp, setRunningOp] = useState<'作成' | '削除' | '公開' | null>(null)
+  const pendingView = useMemo(
+    () => judgePendingPublish(meta.publish ?? {}, runningOp, Date.now()),
+    [meta.publish, runningOp],
+  )
 
-  // 「確認しました」: .sakuraide.json の publish.pending を削除し、画面上のバナーも消す。
-  const dismissInterruptedPublish = async () => {
-    await clearPublishPending(projectDir)
-    setMeta(prev => ({ ...prev, publish: { ...prev.publish, pending: null } }))
+  // 画面が持つ「いま走っているか」と「記録」を**必ず対で**入れる唯一の口（2026-09-29 検分）。
+  // 記録だけを取り込むと、ディスクの pending と、前に聞いた「走っていない」が食い違い、走っている公開自身の印を
+  // 「中断の可能性」と誤る。この画面では setMeta をここでしか呼ばない（tests/publishPendingView.test.ts が固定）。
+  const applySnapshot = useCallback((snap: PublishSnapshot) => {
+    setRunningOp(snap.runningOp)
+    setMeta(snap.meta as Meta)
+  }, [])
+
+  // 「いま走っているか」と記録を読み直す。**走っているかを先に聞く**（順序は loadPublishSnapshot が守る）。
+  const refreshPublishState = useCallback(async () => {
+    const snap = await loadPublishSnapshot(projectDir)
+    applySnapshot(snap)
+    return snap.meta as Meta
+  }, [projectDir, applySnapshot])
+
+  // 「確認しました」: 中断の可能性の印（publish.pending）を消す。**いま公開が走っているあいだは main が断る**
+  // ので、断られたときは消さずに、いまの状態を読み直す（→「進んでいます」の表示になる）。
+  const dismissInterruptedNotice = async () => {
+    await dismissInterruptedPublish(projectDir)
+    await refreshPublishState()
   }
+
+  // ── 処理の記録（projectOps）: 走っている操作・終わってまだ見られていない結果 ──────────────────────
+  // 公開・破棄・作成の本体は main の1回の IPC で最後まで進む。この画面を閉じても止まらない。
+  // 失われていたのは**画面の表示だけ**（進み具合・結果・「月額が続きます」のような警告）なので、
+  // 開いたときに main の記録を読んで続きを出す（作者の決定 ①②・2026-09-29）。
+  // 記録は projectDir ごと（掟11）。走っているのが別の公開先の操作でも、このプロジェクトの鍵は1つなので
+  // 見せる（どの公開先の何かは文に書く）。
+  const [opsRunning, setOpsRunning] = useState<ProjectOpRecordShape | null>(null)
+  // main の記録を、少なくとも1回は受け取ったか（それまでは「走っていない」とも言えない）。
+  const [opsKnown, setOpsKnown] = useState(false)
+  // 終わった結果。**利用者が「確認しました」を押すまで手元に持つ**——各パネルが先に「見た」と伝えても
+  // （ack）、この画面の表示は消さない（隠れたタブのパネルが先に伝えて、利用者は何も見ていない、を防ぐ）。
+  // ただし**上部に出すのは、目の前の公開先の画面が出していないものだけ**（下の topResults）。
+  const [heldResults, setHeldResults] = useState<ProjectOpRecordShape[]>([])
+  // 目の前の公開先の画面が出した（＝利用者が見た）結果。あとで別の画面へ移っても、上部に出し直さない
+  // （利用者が画面の前で見ていた結果を、「確認しました」を押すまで残さない・二重表示の解消）。
+  const seenInPanel = useRef<Set<number>>(new Set())
+  const opsWatch = useRef<OpsWatch | null>(null)
+
+  const applyOps = useCallback((s: ProjectOpsSnapshotShape) => {
+    setOpsKnown(true)
+    setOpsRunning(s.running ?? null)
+    const finished = unseenOf(s)
+    if (finished.length > 0) setHeldResults(prev => mergeFinished(prev, finished))
+  }, [])
+
+  // 開いたとき1回聞き、開いている間は押し出しを受ける（共通の watchProjectOps。別のプロジェクトの知らせは無視し、
+  // 押し出しより古い応答は捨てる・掟11）。開いている間の聞き直しは下の3秒ごとの effect。
+  useEffect(() => {
+    setOpsRunning(null)
+    setOpsKnown(false)
+    setHeldResults(prev => (prev.length === 0 ? prev : []))
+    seenInPanel.current = new Set()
+    let watch: OpsWatch | null = null
+    try {
+      watch = watchProjectOps(window.electronAPI.projectOps, projectDir, applyOps)
+    } catch { /* preload 未注入。何も出ないだけで、公開そのものは動く */ }
+    opsWatch.current = watch
+    return () => { watch?.stop(); if (opsWatch.current === watch) opsWatch.current = null }
+  }, [projectDir, applyOps])
+
+  // ── 上部に出すもの（二重表示の解消・2026-09-30 検分の指摘3）──────────────────────────────
+  // 進み具合・結果は、**目の前の公開先の画面が自分の画面に出すもの**は、ここでは重ねて出さない
+  // （HANAMII・Vercel・共用型・専有型の各画面が、自分の記録の進み具合と結果を出している。
+  //  以前は上部にも同じ段が出て、利用者が画面の前で見ていた結果まで「確認しました」を押すまで残った）。
+  // ここが出すのは、**どの画面も出さない**もの: 別の公開先の操作・目の前に無い（隠れたタブの・閉じた）画面の分・
+  // 公開先を選ぶ前・レンタルサーバ。**別の公開先の警告（月額が続くなど）を見逃さないための最後の受け皿**。
+  // 誰の持ち場かは共通の visiblePanelShows（projectOpsView.ts の1か所）。読み込み前（公開先が決まる前）は出さない。
+  //
+  // ⚠️ ただし**警告つきの結果は、目の前の画面が出していても、ここにも出す**（2026-09-30 検分の指摘）。各パネルは結果を
+  // 公開ボタンのずっと下（①〜④の下・⑥⑧の節の中）に出すので、スクロールせずに閉じると、見せたことにならないのに
+  // 「見た」と伝えて、月額が続く警告が二度と出なくなった。警告つきの記録は、パネルは「見た」と伝えず
+  // （ackUpToFor が止める）、**ここで「結果を確認しました」を押されたときにだけ**見たことにする
+  // （作者の決定 ②「閉じて開き直しても、『確認しました』を押すまで出る」）。
+  const topRunning = loaded && opsRunning && !visiblePanelShows(target, opsRunning) ? opsRunning : null
+  const topResults = loaded
+    ? heldResults.filter(r => holdsWarning(r) || (!visiblePanelShows(target, r) && !seenInPanel.current.has(r.startedAt)))
+    : []
+  useEffect(() => {
+    if (!loaded) return
+    for (const r of heldResults) if (visiblePanelShows(target, r)) seenInPanel.current.add(r.startedAt)
+  }, [loaded, target, heldResults])
+
+  // 「確認しました」: 上部に見せた結果を、見たことにする。**見せた記録の startedAt まで**を伝える
+  // （見せている間に次の操作が終わっても、その結果まで消さない）。
+  const acknowledgeResults = () => {
+    if (topResults.length === 0) return
+    const newest = Math.max(...topResults.map(r => r.startedAt))
+    setHeldResults(prev => prev.filter(r => r.startedAt > newest))
+    try { sendAck(window.electronAPI.projectOps, projectDir, newest) } catch { /* 伝えられなくても、次に開いたとき見える（見逃すより安全） */ }
+  }
+
+  // 何かが走っているか。main の記録（projectOps）か、既存の runningOp のどちらかが「走っている」と言えば走っている。
+  const opRunning = opsRunning !== null || runningOp !== null
+  // 走っている間は、**画面の外のクリックでは閉じない**（作者の決定 ①・2026-09-29）。✗ は押せば閉じる。
+  // レンタルサーバの公開（ターミナルで進む）は main の記録に載らない（withProjectLock を通らない）ので対象外:
+  // 進みはこの画面の外のターミナルにあり、閉じても隠れるものがない。むしろ画面の外をクリックして
+  // ターミナルを見る、が自然な動きなので、閉じられないようにしない。
+  const handleBackdropClick = () => { if (!opRunning) onClose() }
+
+  // main の記録（projectOps）が「走っていない」と言うのに、既存の runningOp（開いたときに聞いた古い答え）が
+  // 「走っている」のままなら、読み直す。main は終わりに記録（publish.targets・専有型の資源ID）を書くので、
+  // 公開状況の一覧も更新される。読み直さないと、終わったのに外側をクリックしても閉じない（次の3秒の聞き直しまで）。
+  useEffect(() => {
+    if (opsKnown && opsRunning === null && runningOp !== null) void refreshPublishState()
+  }, [opsKnown, opsRunning, runningOp, refreshPublishState])
+
+  // 走っているか・記録は、開いている間も数秒ごとに聞き直す（押し出しが届かなかったときの保険）。
+  // 既存の「公開が走っているあいだ、終わるのを待って表示を更新する」ポーリングと共用する。
+  // 終わったら（走っている操作の名前が変わったら）ディスクの記録を読み直す——main は終わりに記録
+  // （publish.targets・専有型の資源ID）を書いているので、公開状況の一覧も更新する。
+  useEffect(() => {
+    const id = window.setInterval(async () => {
+      void opsWatch.current?.refresh()
+      if (runningOp === null) return
+      const snap = await loadPublishSnapshot(projectDir)
+      if (snap.runningOp !== runningOp) applySnapshot(snap)
+    }, OPS_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [runningOp, projectDir, applySnapshot])
 
   // 既存の設定を読み込む
   useEffect(() => {
     ;(async () => {
-      let m: Meta = {}
-      try {
-        const raw = await window.electronAPI.fs.readFile(`${projectDir}/.sakuraide.json`)
-        m = JSON.parse(raw)
-      } catch { /* メタ無し（既存フォルダ等） */ }
-      setMeta(m)
+      // 走っているかを先に聞いてから、記録を読む（loadPublishSnapshot）。
+      const snap = await loadPublishSnapshot(projectDir)
+      const m = snap.meta as Meta
+      applySnapshot(snap)
       // 最初に開く画面は「最後に公開した公開先」（2026-07-31 ユーザー要望）。
       // 公開実績が無ければ、従来どおりプロジェクトに設定された公開先（meta.target）を使う。
       const last = latestPublishedTarget(m.publish)
@@ -157,11 +311,16 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
     if (!hostEdited && account) setHost(`${account}.sakura.ne.jp`)
   }, [account, hostEdited])
 
+  // **差分だけ**を main へ渡す。main が書く直前にディスクから読み直して当てて書く
+  // （src/renderer/projectMeta.ts）。以前は、この画面を開いたときに読んだ `meta`（古い写し）で
+  // .sakuraide.json 全体を書き戻していた。開いている間に main が書いた記録
+  // （専有型の資源ID publish.apprunDedicated・publish.targets・HANAMII の projectId）が**消え**、
+  // 専有型のクラスタの記録が消えると⑥で破棄できず、月額の課金が止められなくなる（掟10）。
+  // 書いたあとは、ディスクの実際の内容と「いま走っているか」をまとめて取り直して、この画面の表示用の写しを更新する。
   const saveMeta = async (patch: Partial<Meta>) => {
-    const next = { ...meta, ...patch, publish: { ...meta.publish, ...patch.publish } }
-    setMeta(next)
-    await window.electronAPI.fs.writeFile(`${projectDir}/.sakuraide.json`, JSON.stringify(next, null, 2))
-    return next
+    const snap = await mergeProjectMetaThenLoad(projectDir, patch as Record<string, unknown>)
+    applySnapshot(snap)
+    return snap.meta
   }
 
   // ── 公開実行 ─────────────────────────────
@@ -175,14 +334,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
         return
       }
       const publishedAt = new Date().toISOString()
-      const url = `https://${host}/`
-      await saveMeta({
-        target: 'sakura-rental',
-        publish: {
-          account, host, url, lastPublishedAt: publishedAt,
-          targets: { ...meta.publish?.targets, 'sakura-rental': { publishedAt, url } },
-        },
-      })
+      await saveMeta(rentalPublishPatch({ account, host, publishedAt }))
       window.dispatchEvent(new Event('sakura-meta-changed'))
       const hasPublic = await window.electronAPI.fs.exists(`${projectDir}/public`)
       const hasApp = await window.electronAPI.fs.exists(`${projectDir}/app`)
@@ -223,14 +375,21 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={handleBackdropClick}>
       <div
         className="w-[640px] max-h-[85vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-xl p-6 fade-in"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center justify-between gap-3 mb-1">
           <h2 className="text-lg font-bold text-ink">🚀 公開</h2>
-          <button onClick={onClose} className="text-ink-muted hover:text-ink text-lg leading-none">×</button>
+          {/* ✗ の近くに、見える形で出す（title だけにしない）。走っている間、✗ は押せば閉じるが、
+              閉じても処理は止まらないことを、押す前に伝える（作者の決定 ①）。 */}
+          <div className="flex items-center gap-2 min-w-0">
+            {opRunning && (
+              <span className="text-[11px] text-ink-secondary text-right leading-snug">閉じても処理は最後まで進みます</span>
+            )}
+            <button onClick={onClose} aria-label="閉じる" className="text-ink-muted hover:text-ink text-lg leading-none flex-none">×</button>
+          </div>
         </div>
         <div className="flex items-center justify-between gap-2 mb-4">
           <p className="text-xs text-ink-muted truncate" title={projectDir}>{projName}</p>
@@ -245,19 +404,40 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
           )}
         </div>
 
-        {/* 前回の公開が完了前に中断された可能性の警告（Part2: 公開開始マーカー）。
+        {/* 終わった結果（まだ見られていないもの）。**閉じて開き直しても、「確認しました」を押すまで出る**
+            （作者の決定 ②）。警告（「保存場所が残ったので月額が続きます」など）は黄色の枠で出し、見逃させない。
             画面（公開先未選択／各パネル）によらず、このモーダルを開いている間は常に見せる。 */}
-        {interruptedPublish && (
-          <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 mb-4 space-y-2">
-            <p className="text-sm text-ink leading-relaxed">
-              ⚠️ 前回、{PUBLISH_TARGET_LABEL[interruptedPublish.target]}への公開が完了前に中断された可能性があります。実際に公開されたか、下の公開状況や公開先の管理画面でご確認ください。
-            </p>
-            <div className="flex justify-end">
-              <button
-                onClick={dismissInterruptedPublish}
-                className="text-xs text-ink-secondary border border-line rounded-lg px-3 py-1.5 hover:border-sakura hover:text-ink"
-              >確認しました（この通知を消す）</button>
-            </div>
+        {topResults.length > 0 && (
+          <OpFinishedCards records={topResults} onAcknowledge={acknowledgeResults} />
+        )}
+
+        {/* いま走っている操作の進み具合（別の公開先の操作でも、このプロジェクトの鍵は1つなので出す）。
+            **目の前の公開先の画面が出しているものは、ここでは出さない**（二重表示の解消・上の topRunning の説明）。
+            公開の開始マーカー（下の pending の枠）が同じ公開のことを言っているときは、その枠の中に出して二重にしない。 */}
+        {topRunning && !(pendingView.kind === 'running' && topRunning.op === '公開') && (
+          <OpRunningCard rec={topRunning} />
+        )}
+
+        {/* 前回の公開が完了前に中断された可能性の警告（Part2: 公開開始マーカー）。
+            画面（公開先未選択／各パネル）によらず、このモーダルを開いている間は常に見せる。
+            ただし「進んでいます」（running）は、**目の前の公開先の画面が同じ公開の進み具合を出している間は出さない**
+            （二重に出る・2026-09-30 検分。HANAMII の起動待ちは最長およそ5分続き、その間ずっと2つ並んでいた）。
+            進んでいるのが別の公開先・隠れたタブ・公開先の選択前なら、目の前に進み具合を出す画面が無いので、ここが出す。 */}
+        {pendingView.kind !== 'none' && !(pendingView.kind === 'running' && opsRunning !== null && visiblePanelShows(target, opsRunning)) && (
+          <div className={`rounded-xl border ${pendingView.kind === 'running' ? 'border-line' : 'border-brand-yellow/70'} bg-surface p-4 mb-4 space-y-2`}>
+            <p className="text-sm text-ink leading-relaxed">{pendingPublishMessage(pendingView)}</p>
+            {pendingView.kind === 'running' && topRunning && topRunning.op === '公開' && (
+              <OpProgressLines rec={topRunning} />
+            )}
+            {/* 進んでいる最中は消せない（消すのは「中断の可能性」のときだけ）。 */}
+            {pendingView.kind === 'interrupted' && (
+              <div className="flex justify-end">
+                <button
+                  onClick={dismissInterruptedNotice}
+                  className="text-xs text-ink-secondary border border-line rounded-lg px-3 py-1.5 hover:border-sakura hover:text-ink"
+                >確認しました（この通知を消す）</button>
+              </div>
+            )}
           </div>
         )}
 
@@ -340,13 +520,26 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               publish={meta.publish}
               latestChangeAt={latestChangeAt}
               apprunLegacy={apprunLegacy}
-              onForget={async t => { await saveMeta({ publish: withoutPublishTarget(meta.publish, t) as Meta['publish'] }) }}
+              // 消すのは**その公開先の記録だけ**。main が書く直前にディスクから読み直して消すので、
+              // 開いてから main が書いた専有型の資源ID・ほかの公開先の記録は残る（projectMeta.ts）。
+              onForget={async t => {
+                // 片づけたあとは、走っているかも聞き直す（公開のパネルで公開を始めたあと、
+                // 一覧へ戻って片づけると、走っている公開の印を「中断」と誤るため）。
+                applySnapshot(await forgetPublishTargetThenLoad(projectDir, t))
+                window.dispatchEvent(new Event('sakura-meta-changed'))
+              }}
             />
             {showMismatch ? (
               <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4">
-                <p className="text-sm text-ink leading-relaxed">
-                  現在の公開先「{getTargetProfile(cur).label}」は、IDE からの自動公開にまだ対応していません。自動公開できるのは下の2つです（選ぶと公開先もそれに変わります）。
-                </p>
+                {cur === 'sakura-apprun-dedicated' ? (
+                  <p className="text-sm text-ink leading-relaxed">
+                    現在の公開先「{getTargetProfile(cur).label}」は、この画面からの自動公開にはまだ対応していません。📦 さくらのAppRun の専有型タブから公開できます。
+                  </p>
+                ) : (
+                  <p className="text-sm text-ink leading-relaxed">
+                    現在の公開先「{getTargetProfile(cur).label}」は、この画面からはまだ自動公開できません。自動公開できるのは 🌐 さくらのレンタルサーバ・📦 さくらのAppRun・🌸 HANAMII・▲ Vercel です（選ぶと公開先もそれに変わります）。
+                  </p>
+                )}
               </div>
             ) : (
               <p className="text-sm text-ink-secondary">このプロジェクトの公開先を選んでください（あとから変更できます）。</p>
@@ -357,7 +550,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
             >
               <p className="text-sm font-semibold text-ink">🌐 さくらのレンタルサーバ</p>
-              <p className="text-xs text-ink-muted mt-0.5">HTML/PHPサイト向け。契約済みのサーバへ rsync でアップロードします。</p>
+              <p className="text-xs text-ink-muted mt-0.5">HTML や PHP のサイト向け。契約済みのサーバへファイルを送ります。</p>
             </button>
             <button
               onClick={() => setTarget('sakura-apprun')}
@@ -380,15 +573,16 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 onClick={() => setTarget('hanamii')}
                 className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
               >
-                <p className="text-sm font-semibold text-ink">🌸 HANAMII（国産PaaS）</p>
-                <p className="text-xs text-ink-muted mt-0.5">さくら基盤上の国産PaaS。ZIPアップロードで数十秒で公開・データ100%国内。Node常駐サーバも動かせます。</p>
+                <p className="text-sm font-semibold text-ink">🌸 HANAMII（国産のクラウドサービス）</p>
+                <p className="text-xs text-ink-muted mt-0.5">国産のクラウドサービス。サーバーで動き続けるアプリ（Node.js など）も公開できます。データは100%国内です。</p>
               </button>
               <button
                 onClick={() => setTarget('vercel')}
                 className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
               >
-                <p className="text-sm font-semibold text-ink">▲ Vercel（海外PaaS）</p>
-                <p className="text-xs text-ink-muted mt-0.5">静的サイト／フロントエンド向けの海外PaaS。IDEがファイルをアップロードして数十秒で公開します。データは国外に置かれます。</p>
+                <p className="text-sm font-semibold text-ink">▲ Vercel（海外のクラウドサービス）</p>
+                {/* 2026-09-24 検分の指摘2と同じ一文。国外なのはアプリが動く場所だけ（データは国内）。 */}
+                <p className="text-xs text-ink-muted mt-0.5">海外のクラウドサービスです。ページを見せるだけのサイト向けで、サーバーで動き続けるアプリは扱えません。アプリが動くのは国外です。データの保存を使う場合、そのデータはさくらのオブジェクトストレージ（日本国内）に置かれます。</p>
               </button>
               <button
                 onClick={() => setTarget('sakura-vps')}
@@ -407,7 +601,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
               <p className="text-sm font-semibold text-ink">🌐 さくらのレンタルサーバで公開</p>
               <p className="text-xs text-ink-muted leading-relaxed">
-                静的HTML/PHP + MySQLが動く共有ホスティング。契約済みのサーバへ rsync でアップロードします。
+                HTML や PHP のサイト向け（データベース（MySQL）も使えます）。契約済みのサーバへファイルを送ります。
               </p>
               {rentalServiceUrl && (
                 <p className="text-[11px] text-ink-muted">
@@ -503,16 +697,117 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 三項演算子に戻すと、タブを行き来するたびに③の調査結果が消えて⑦を取り直す。 */}
             {mountedApprunTabs['sakura-apprun'] && (
               <div className={target === 'sakura-apprun' ? undefined : 'hidden'}>
-                <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
+                <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun'} />
               </div>
             )}
             {mountedApprunTabs['sakura-apprun-dedicated'] && (
               <div className={target === 'sakura-apprun-dedicated' ? undefined : 'hidden'}>
-                <AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
+                <AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun-dedicated'} />
               </div>
             )}
           </div>
         ) : null}
+      </div>
+    </div>
+  )
+}
+
+// 進み具合の行（いまやっていること・補足・経過）。記録の progress をそのまま出す（main が秘密を伏せてある）。
+function OpProgressLines({ rec }: { rec: ProjectOpRecordShape }) {
+  const p = rec.progress
+  const stepText = typeof p?.step === 'number' && typeof p?.total === 'number' ? `（${p.step} / ${p.total}）` : ''
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-ink-secondary leading-relaxed select-text">{`${p?.label ?? ''}${stepText}`}</p>
+      {p?.detail ? <p className="text-[11px] text-ink-muted leading-relaxed select-text">{p.detail}</p> : null}
+      <p className="text-[11px] text-ink-muted">{`経過 ${formatElapsed(Date.now() - rec.startedAt)}`}</p>
+    </div>
+  )
+}
+
+// いま走っている操作の枠。
+function OpRunningCard({ rec }: { rec: ProjectOpRecordShape }) {
+  return (
+    <div className="rounded-xl border border-line bg-surface p-4 mb-4 space-y-2" role="status">
+      <p className="text-sm text-ink leading-relaxed">{`⏳ ${opTargetName(rec)}の${rec.op}が進んでいます`}</p>
+      <OpProgressLines rec={rec} />
+      <p className="text-[11px] text-ink-muted leading-relaxed">この画面を閉じても処理は進みますが、Koto を終了すると途中で止まります。</p>
+    </div>
+  )
+}
+
+function CopyTextButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* クリップボード不可は無視 */ }
+  }
+  return <button onClick={copy} className="text-[11px] font-medium text-sakura hover:underline">{copied ? '✓ コピーしました' : 'コピー'}</button>
+}
+
+// 終わった操作の結果と警告。うまくいかなかった・警告があるときは黄色の枠にして、見逃させない。
+function OpFinishedCard({ rec }: { rec: ProjectOpRecordShape }) {
+  const r = rec.result
+  const what = `${opTargetName(rec)}の${rec.op}`
+  const warnings = r?.warnings ?? []
+  const lines = r?.lines ?? []
+  const ok = r?.ok === true
+  const title = !r
+    ? `⚠️ ${what}は終わりましたが、結果を読み取れませんでした`
+    : !r.ok
+      ? `⚠️ ${what}は、うまくいきませんでした`
+      : warnings.length > 0
+        ? `⚠️ ${what}は終わりましたが、確認が必要なことがあります`
+        : `✅ ${what}が終わりました`
+  const when = rec.finishedAt ? formatPublishedAt(new Date(rec.finishedAt).toISOString()) : null
+  const needsAttention = !ok || warnings.length > 0
+  return (
+    <div className={`rounded-xl border ${needsAttention ? 'border-brand-yellow/70' : 'border-line'} bg-surface p-4 space-y-2`}>
+      <p className="text-sm font-semibold text-ink leading-relaxed">{title}</p>
+      {when && <p className="text-[11px] text-ink-muted">{`${when} に終わりました`}</p>}
+      {r?.message && <p className="text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap select-text">{r.message}</p>}
+      {warnings.map((w, i) => (
+        <p key={i} className="text-xs text-ink leading-relaxed whitespace-pre-wrap select-text">{warningLine(w)}</p>
+      ))}
+      {r?.url?.startsWith('http') && (
+        <a href={r.url} className="text-xs text-sakura hover:underline break-all">{r.url}</a>
+      )}
+      {lines.length > 0 && (
+        <details className="text-[11px] text-ink-muted">
+          <summary className="cursor-pointer">実行した内容</summary>
+          <ul className="mt-1 space-y-0.5 select-text">
+            {lines.map((l, i) => <li key={i}>{l}</li>)}
+          </ul>
+        </details>
+      )}
+      {r?.detail && (
+        <details className="text-[11px] text-ink-muted">
+          <summary className="cursor-pointer">詳しい情報（診断用）</summary>
+          <pre className="mt-1 whitespace-pre-wrap break-all select-text">{r.detail}</pre>
+        </details>
+      )}
+      {needsAttention && (
+        <div className="flex justify-end">
+          <CopyTextButton text={[title, r?.message ?? '', ...warnings].filter(Boolean).join('\n')} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 終わった結果の一覧＋「確認しました」。押すまで消えない（押すと、見たことにして main へ伝える）。
+function OpFinishedCards({ records, onAcknowledge }: { records: ProjectOpRecordShape[]; onAcknowledge: () => void }) {
+  return (
+    <div className="mb-4 space-y-3">
+      {records.map(rec => <OpFinishedCard key={rec.startedAt} rec={rec} />)}
+      <div className="flex justify-end">
+        <button
+          onClick={onAcknowledge}
+          className="text-xs text-ink-secondary border border-line rounded-lg px-3 py-1.5 hover:border-sakura hover:text-ink"
+        >結果を確認しました（この表示を消す）</button>
       </div>
     </div>
   )
@@ -534,10 +829,13 @@ function PublishStatusBox({ publish, latestChangeAt, apprunLegacy, onForget }: {
     <div className="rounded-xl border border-line bg-surface p-4 space-y-2">
       <p className="text-sm font-semibold text-ink">📡 このプロジェクトの公開状況</p>
       <p className="text-[11px] text-ink-muted leading-relaxed">
-        キーを失くしたり作り直したりして Koto から操作できなくなっても、
+        🔗 キーを失くしたり作り直したりして Koto から操作できなくなっても、各行の
         <span className="text-ink-secondary">管理画面</span>から辿れます。
+      </p>
+      <p className="text-[11px] text-ink-muted leading-relaxed">
         <span className="text-ink-secondary">記録を片づける</span>のは、この一覧から消すだけです
-        （<b className="text-ink">公開したもの自体は消えません</b>。先に「破棄」してください）。
+        （<b className="text-ink">公開したもの自体は消えません</b>）。公開をやめるときは、先に各公開先で止めてください
+        （さくらのAppRun 共用型・HANAMII は「🗑 破棄」、専有型は専有型タブの⑥「すべて削除する」。レンタルサーバ・Vercel は管理画面で消します）。
       </p>
       <ul className="space-y-1.5">
         {rows.map(row => {

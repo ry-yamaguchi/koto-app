@@ -64,20 +64,23 @@ describe('AppRunPanel（共用型）は AccessKeySection の test.checks に3項
   })
 })
 
-describe('AppRunDedicatedPanel（専有型）も AccessKeySection の test.checks に2項目を渡している（roadmap #35 本題）', () => {
+describe('AppRunDedicatedPanel（専有型）も AccessKeySection の test.checks に3項目を渡している（roadmap #35 本題・W-38）', () => {
   it('AccessKeySection を使っている', () => {
     expect(dedicatedPanel).toContain('<AccessKeySection')
   })
 
-  it('専有型API参照（制限・プラン）/請求（コスト）参照の2項目を渡し、レジストリは注記で「後で確認する」と案内する', () => {
+  // W-38（2026-09-27 決定・案2）: 「公開に対応したときに確認します」の注記は古い。
+  // 接続テストでレジストリも確かめる（共用型と同じ3項目）ようにし、注記は消した。
+  it('専有型API参照（制限・プラン）/コンテナレジストリ 一覧/請求（コスト）参照の3項目を渡している', () => {
     const at = dedicatedPanel.indexOf('<AccessKeySection')
     expect(at).toBeGreaterThan(0)
     const end = dedicatedPanel.indexOf('</AccessKeySection>', at)
     expect(end).toBeGreaterThan(at)
     const block = dedicatedPanel.slice(at, end)
     expect(block).toContain("label: '専有型API 参照（制限・プラン）'")
+    expect(block).toContain("label: 'コンテナレジストリ 一覧'")
     expect(block).toContain("label: '請求（コスト）参照'")
-    expect(block).toContain('レジストリの権限は、アプリの公開に対応したときに確認します')
+    expect(block).not.toContain('レジストリの権限は、アプリの公開に対応したときに確認します') // 直す前の形
   })
 
   // roadmap #35 の元々の目的（共用型と専有型で①の文言を揃える）は、UX-E で

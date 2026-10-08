@@ -12,6 +12,7 @@
 //        新規モデル／提供終了／価格未設定 を一覧表示する（scripts/check-models.mjs）
 //   2. 公開単価はさくらの情報で確認（APIから取れないため手動）:
 //      https://ai.sakura.ad.jp/sakura-ai/ai-engine/ ／ コントロールパネルの提供モデル
+//      → 料金の照合（キー不要）: npm run check:pricing（製品ページの公式料金表 × PRICING・scripts/check-pricing.mjs）
 //   3. 差分を MODELS / VISION_MODELS / PRICING に反映し、DEFAULT_MODEL を
 //      「その時点でコード作成に最も適したモデル」に見直す
 //   最終確認: v0.1.0（2026-06 時点の最適は旧世代のコード特化480Bモデル）
@@ -34,6 +35,10 @@ export const MODELS: { id: string; label: string }[] = [
   { id: 'preview/Kimi-K2.6', label: 'Kimi K2.6（プレビュー）' },
   { id: 'preview/Qwen3-0.6B-cpu', label: 'Qwen3 0.6B（CPU・プレビュー）' },
   { id: 'preview/Phi-4-mini-instruct-cpu', label: 'Phi-4 mini（CPU・プレビュー）' },
+  // 2026-09-24 提供開始（医療特化・東京大学 松尾・岩澤研究室。gpt-oss-120b に日本語の医学論文・
+  // 診療ガイドライン等で追加学習）。ツール対応は**書かない**——お知らせに記述が無く、
+  // 実際に使ったときに modelLearning.ts が学ぶ（掟1: 推測しない）。
+  { id: 'preview/Weblab-MedLLM-gpt-oss-120b', label: 'Weblab-MedLLM 120B（医療・プレビュー）' },
 ]
 
 /** マルチモーダル（画像入力）対応モデル（さくらのAI Engine パブリックプレビュー） */
@@ -69,6 +74,7 @@ export const MODEL_PURPOSE: Record<string, { purpose: string; note?: string }> =
   'llm-jp-3.1-8x13b-instruct4': { purpose: '日本語特化', note: 'ツール非対応・文脈を無視することあり' },
   'preview/Qwen3-0.6B-cpu': { purpose: '小型', note: 'ツール非対応' },
   'preview/Phi-4-mini-instruct-cpu': { purpose: '小型', note: 'ツール非対応' },
+  'preview/Weblab-MedLLM-gpt-oss-120b': { purpose: '医療特化', note: '無償枠なし' },
 }
 
 /**

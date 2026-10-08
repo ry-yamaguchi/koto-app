@@ -9,6 +9,10 @@
 // renderer と main の両方がこの関数を呼ぶ（main 側は src/main/publishMetaFs.ts が
 // ディスク読み書きを担い、この純関数を使う）。
 //
+// 2026-09-29: renderer は**もう .sakuraide.json を自分で書かない**。差分（patch）だけを main へ渡し、
+// main が書く直前にディスクから読み直して `withMetaPatch` で当てる（入口は src/renderer/projectMeta.ts。
+// 画面が開いたときの古い写しで全体を書き戻して、main が書いた記録を消す事故が起きたため）。
+//
 // electron/DOM には依存しない（node からも直接テストできる純粋関数のみ）。
 // ⚠️ node の path/fs も import しない: shared は renderer からも import され、vite は node 組み込みを
 // 空の shim にするため、実行時に `(void 0) is not a function` で死ぬ（appChatDirs.ts と同じ理由・
@@ -16,7 +20,7 @@
 //
 // PublishTargetKind は src/renderer/publishStatus.ts が唯一の定義（型のみの import・複製しない）。
 // src/shared/teardownSupport.ts が既に同じ形でこの型を type-only import している（先例）。
-import type { PublishTargetKind } from '../renderer/publishStatus'
+import type { PublishTargetKind, PublishMeta } from '../renderer/publishStatus'
 
 export type { PublishTargetKind }
 
@@ -141,6 +145,31 @@ export type ApprunDedicatedRecord = {
   lbAddresses?: string[] | null
   /** アプリケーションを最後に公開した時刻（ISO文字列）。 */
   appPublishedAt?: string | null
+
+  // ── 2026-09-24: 保存場所（オブジェクトストレージ）の鍵 ────────────────────────
+  /**
+   * いまアプリへ渡してある、保存場所の鍵の**ID だけ**（共用型の `state.meta.storagePermissionId`
+   * に当たるもの）。⑥の破棄で、保存場所を消したあとにこの鍵を無効にするために記録する。
+   *
+   * **秘密（secretKey）は絶対にここへ書かない**（掟4。シークレットは発行の応答でしか読めず、
+   * main の中で公開の本文へ渡し切る）。記録が無い＝古いプロジェクトのときは、
+   * **鍵の無効化だけ飛ばして破棄は続ける。**
+   */
+  storagePermissionId?: string | null
+
+  /**
+   * ⑥の破棄で**計算資源は消えたのに、保存場所だけが片づかなかった**ときのバケット名
+   * （2026-09-24 検分の指摘1）。
+   *
+   * ⑥の「すべて削除する」ボタンは、記録に clusterID/asgID/loadBalancerID が1つでもある間しか
+   * 画面に出ない。保存場所の一覧が 403 や一時的な通信失敗で落ちると、記録は空・ボタンは消え、
+   * **バケットだけが残って月額が黙って続く**（Koto には保存場所を消す口がほかに無い）。
+   * ここへバケット名を残しておけば、窓を閉じて開き直しても⑥をもう一度押せる
+   * （＝共用型が state.json にバケットを残して破棄をやり直せるのと同じ形）。
+   *
+   * 片づけられたら null に戻す。
+   */
+  storageLeftoverBucket?: string | null
 }
 
 /**
@@ -178,4 +207,96 @@ export function withHanamiiProjectId(meta: unknown, projectId: string | null): R
       hanamii: { ...hanamii, projectId },
     },
   }
+}
+
+/** プレーンオブジェクトか（配列・null・文字列・数値は「葉」として置き換える側に回す）。 */
+function isPlainObject(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === 'object' && !Array.isArray(x)
+}
+
+/**
+ * 公開の記録（.sakuraide.json）へ**差分（patch）だけ**を当てる純関数（2026-09-29・掟10の一元化）。
+ *
+ * ── なぜ「全体を渡さず、差分だけ渡す」形にするか ──────────────────────────────
+ * 以前は PublishModal.saveMeta が、**画面を開いたときに一度だけ読んだ写し**を材料に
+ * .sakuraide.json 全体を書き戻していた。ダイアログを開いている間に main が書いた記録
+ * （専有型の資源ID・publish.targets・HANAMII の projectId）は写しに入っていないので、
+ * **書き戻すたびに消えた**。専有型のクラスタの記録が消えると⑥で破棄できず、月額22,000円が
+ * 止められなくなる（掟10「画面が持っている写しは、いつでも古い」と同じ形）。
+ *
+ * 差分だけを受ける関数にすれば、**画面が編集しない項目は、書く直前にディスクから読んだ値が正**になる
+ * （呼び出し側が古い写しを渡す口が、そもそも無い）。読み直して当てて書くのは main の
+ * `mergeMetaPatchFs`（1回の同期処理＝ほかの main の書き込みと交錯しない）。
+ *
+ * ── 当て方 ───────────────────────────────────────────────────────────────────
+ * ・両側がプレーンオブジェクトなら、キーごとに再帰してマージする（patch に無いキーはディスクのまま）
+ * ・それ以外（配列・文字列・数値・boolean・null）は patch の値で**置き換える**（null は「値を null にする」）
+ * ・patch の値が `undefined` のキーは**取り除く**（「消す」の明示。JSON.stringify が undefined を落とす
+ *   のに頼らず、返す meta からも確実に消す）
+ * ・`__proto__` のキーは読み飛ばす
+ * どちらの引数も壊れた値（null・配列・文字列）が来ても落ちない（asRecord と同じ）。
+ */
+export function withMetaPatch(meta: unknown, patch: unknown): Record<string, unknown> {
+  const base = asRecord(meta)
+  if (!isPlainObject(patch)) return base
+  const out: Record<string, unknown> = { ...base }
+  for (const key of Object.keys(patch)) {
+    if (key === '__proto__') continue
+    const value = patch[key]
+    if (value === undefined) { delete out[key]; continue }
+    const current = out[key]
+    out[key] = isPlainObject(value) && isPlainObject(current) ? withMetaPatch(current, value) : cloneLeaf(value)
+  }
+  return out
+}
+
+/** patch の値を、ディスクの値と参照を共有しない形で取り込む（配列・入れ子のプレーンオブジェクト）。 */
+function cloneLeaf(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneLeaf)
+  if (isPlainObject(value)) return withMetaPatch({}, value)
+  return value
+}
+
+/**
+ * 公開記録から1つの公開先を取り除く（破棄・削除に成功したとき／「記録を片づける」用の純関数）。
+ *
+ * ── なぜここ（shared）にあるか（2026-09-29）──────────────────────────────────
+ * 以前は renderer/publishStatus.ts にあり、renderer が**自分の持つ写し**に当てて書き戻していた。
+ * 書き戻しを main の1か所（`forgetPublishTargetFs`）へ集めたので、main からも使える
+ * shared に置く（publishStatus.ts からは再エクスポートしている＝既存の呼び出しは変わらない）。
+ *
+ * ── 消すのは「その公開先の記録」だけ ─────────────────────────────────────────
+ * 2026-08-06 の点検で判明: 公開したときは publish.targets へ記録するのに、**Koto 自身で破棄しても
+ * 記録が残っていた**。その結果「📡 公開したもの一覧」に、もう存在しない公開が出続ける。
+ * 消すのは targets の該当エントリだけ。**publish.apprunDedicated（専有型の資源ID）・
+ * publish.pending・他の公開先の記録には触れない**（専有型の資源IDが消えると、⑥で破棄できず、
+ * 月額22,000円が止められなくなる）。publish.lastPublishedAt / url は
+ * 「最後に公開したときの情報」として残す（履歴としての意味がある）。
+ */
+export function withoutPublishTarget(
+  publish: PublishMeta | null | undefined, target: PublishTargetKind,
+): PublishMeta {
+  const base = publish ?? {}
+  const targets = { ...(base.targets ?? {}) }
+  delete targets[target]
+  const next: PublishMeta = { ...base, targets }
+  // ── 行を復活させる手がかりも一緒に消す（2026-08-15）──────────────────
+  // buildPublishStatusRows は、targets に無くても
+  //   ・hanamii.projectId があれば hanamii の行
+  //   ・lastPublishedAt + host があればレンタルサーバの行
+  // を**作り直す**（古いプロジェクトの救済）。消し残すと、片づけたのに一覧へ
+  // 戻ってきて「効いていない」ように見える。
+  // 破棄の導線（📡 公開したもの一覧）はここしか通らないので、ここで消す。
+  if (target === 'hanamii') next.hanamii = { ...(base.hanamii ?? {}), projectId: null }
+  if (target === 'sakura-rental') {
+    next.lastPublishedAt = undefined
+    next.host = undefined
+  }
+  return next
+}
+
+/** meta 全体から1つの公開先の記録を取り除く（`publish` 以外のキーは保つ）。 */
+export function withoutPublishTargetInMeta(meta: unknown, target: PublishTargetKind): Record<string, unknown> {
+  const m = asRecord(meta)
+  return { ...m, publish: withoutPublishTarget(m.publish as PublishMeta | null | undefined, target) }
 }

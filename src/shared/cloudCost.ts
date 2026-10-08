@@ -186,7 +186,7 @@ export function registryDeleteDefault(opts: { registryName: string | null; adopt
 export function projectDeleteRegistryNote(opts: { registryName: string | null; adopted: boolean }): string | null {
   if (!opts.registryName) return null
   if (!opts.adopted) return null
-  return `イメージの置き場『${opts.registryName}』は残します`
+  return `イメージの置き場（コンテナレジストリ）『${opts.registryName}』は残します`
     + '（Koto が作ったものではなく、ほかのアプリのイメージも入っている可能性があるためです）。'
     + `月額${REGISTRY_MONTHLY_YEN}円（税込）は続きます。要らなければ、`
     + 'さくらのクラウドのコントロールパネルで削除してください。'
@@ -233,7 +233,7 @@ export function teardownTargets(opts: { hasBucket: boolean; deleteRegistry: bool
   if (opts.deleteRegistry) {
     out.push(`コンテナレジストリ${opts.registryName ? `『${opts.registryName}』` : ''}（push用ユーザー・登録済みイメージごと）`)
   }
-  if (opts.hasBucket) out.push('バケット（データ）')
+  if (opts.hasBucket) out.push('保存場所にある、このプロジェクトのデータ（くわしくは下の💾）')
   return out
 }
 
@@ -251,6 +251,12 @@ export function remainingCostWarning(opts: {
   registryName: string | null
   /** 破棄したのに保存場所が残ったか（残った場合のみ名前を渡す）。 */
   keptBucketName?: string | null
+  /**
+   * 残った保存場所が**複数**あるとき、その全部の名前（HANAMII・専有型の破棄は、同意済みの保存場所を全件片づけるので
+   * 複数ありうる）。`keptBucketName` と重なる名前は1つと数える。**1件だけ名指しすると、名前が出なかった保存場所の
+   * 月額が黙って続く**（objectStorage の検分の指摘5と同じ形）。
+   */
+  keptBucketNames?: readonly string[] | null
 }): string | null {
   const parts: string[] = []
   let total = 0
@@ -258,12 +264,47 @@ export function remainingCostWarning(opts: {
     total += REGISTRY_MONTHLY_YEN
     parts.push(`コンテナレジストリ${opts.registryName ? `『${opts.registryName}』` : ''}`)
   }
-  if (opts.keptBucketName) {
-    total += BUCKET_MONTHLY_YEN
-    parts.push(`データの保存場所『${opts.keptBucketName}』`)
+  const keptBuckets = Array.from(new Set([opts.keptBucketName, ...(opts.keptBucketNames ?? [])]
+    .filter((n): n is string => typeof n === 'string' && n !== '')))
+  if (keptBuckets.length > 0) {
+    total += BUCKET_MONTHLY_YEN * keptBuckets.length
+    parts.push(`データの保存場所${keptBuckets.map(n => `『${n}』`).join('')}`)
   }
   if (parts.length === 0) return null
   // 「どこで消せるか」を必ず添える（2026-09-11 利用者目線レビュー）。📡 公開したもの一覧では
   // 破棄で記録の行が消えるため、この一文が片づけ先を知る唯一の手がかりになる。
   return `⚠️ ${parts.join('と')}は残るため、月額${total}円（税込）の課金は続きます。後で消す場合は、さくらのクラウドのコントロールパネルから削除してください。`
+}
+
+/**
+ * 共用型の破棄の**返り値（main が返す事実）**から、月額が続く警告を作る（無ければ空の配列）。
+ *
+ * **その場の画面（AppRunPanel の破棄の結果）と、閉じて開き直したあとの処理の記録（main/projectOps.ts の
+ * summarizeResult）は、どちらもこの1つの関数を通る**（2026-09-30 検分の指摘6）。以前は、その場の画面が
+ * 自分の選択（レジストリを残すか）から警告を作り、記録は main が返した事実から作っていたので、
+ * 破棄が途中で失敗した回や、記録にレジストリ名が無い回に、その場では月額が続くと言うのに、
+ * 開き直すと警告が消えた。
+ *   ・keptBucketName … 破棄したのに残った保存場所
+ *   ・keptRegistryName … 利用者が「残す」と選んだ、コンテナレジストリの名前
+ *   ・keptRegistryUnnamed … 「残す」と選んだが、記録に名前が無い。**残っているとは確かめられていない**ので、
+ *     「残る」と断定せず、確認の画面と同じ文（registryUnknownNotice）で言う
+ * 名前のあるもの（レジストリ・保存場所）は合算して1つの警告にする（月額の合計を出すため）。
+ */
+export function teardownRemainingWarnings(r: {
+  keptBucketName?: string | null
+  /** 残った保存場所が複数あるときの全部（HANAMII・専有型）。`keptBucketName` と重なる名前は1つと数える。 */
+  keptBucketNames?: readonly string[] | null
+  keptRegistryName?: string | null
+  keptRegistryUnnamed?: boolean
+}): string[] {
+  const out: string[] = []
+  const named = remainingCostWarning({
+    deleteRegistry: !r.keptRegistryName,
+    registryName: r.keptRegistryName || null,
+    keptBucketName: r.keptBucketName || null,
+    keptBucketNames: r.keptBucketNames ?? null,
+  })
+  if (named) out.push(named)
+  if (r.keptRegistryUnnamed === true && !r.keptRegistryName) out.push(`⚠️ ${registryUnknownNotice()}`)
+  return out
 }

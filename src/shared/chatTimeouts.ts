@@ -79,8 +79,21 @@ export function isSdkTimeoutError(err: any): boolean {
   return /^request timed out\.?$/i.test(String(err?.message ?? '').trim())
 }
 
-/** 時間切れの種類。'first'＝返事が始まらなかった／'idle'＝返事の途中で止まった。 */
-export type StreamTimeoutKind = 'first' | 'idle'
+/**
+ * 時間切れの種類＝**実際にどちらの時計で切れたか**（2026-09-25 検分の指摘27）。
+ *
+ * 待ち時間の見張りは2つあり、上限も別々なので、種類も分けないと文言の秒数が嘘になる:
+ *   'first'        … 応答ヘッダすら返らなかった。SDK の時計（STREAM_FIRST_CHUNK_TIMEOUT_MS
+ *                     ×（STREAM_MAX_RETRIES+1）＝およそ240秒）で切れた。
+ *   'first-silent' … つながったのに1文字も届かなかった。SDK の時計はヘッダ到着で解除済みなので、
+ *                     切ったのは無音の見張り（STREAM_IDLE_TIMEOUT_MS＝90秒・shared/streamIdle.ts）。
+ *                     **実機の症状「ヘッダだけ返して黙る」は必ずこれ**。
+ *   'idle'         … 返事が始まったあと途中で止まった。同じく無音の見張り（90秒）。
+ *
+ * 直す前は 'first-silent' を 'first' に混ぜていたため、90秒しか待っていない人の画面に
+ * 「120秒×2回（合計およそ240秒）」と出ていた（engine.ts の timedOut の作り方も参照）。
+ */
+export type StreamTimeoutKind = 'first' | 'first-silent' | 'idle'
 
 /** 秒に直して文中に出す（値を変えたら文言の数字も自動で追随する＝一元定義）。 */
 function sec(ms: number): number {
@@ -101,9 +114,29 @@ export function streamTimeoutMessage(kind: StreamTimeoutKind): string {
     // つまり STREAM_MAX_RETRIES=1 だと「120秒で1回目が切れる → 再試行 → もう120秒」で、
     // 利用者が実際に待つのはおよそ240秒。画面の経過秒カウンタもその数字を出しているので、
     // 「120秒待っても」とだけ書くと**数字が食い違って見える**。試行回数まで文に出す。
-    return `⏱ AIからの返事が${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS)}秒×${STREAM_MAX_RETRIES + 1}回`
-      + `（合計およそ${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS * (STREAM_MAX_RETRIES + 1))}秒）試しても始まらなかったため、`
-      + 'この問い合わせを打ち切りました。混み合っているだけのことも多いので、もう一度お試しください。'
+    //
+    // ── ここは「つながらなかった」ときだけの文（2026-09-25 検分の指摘27/28）──────
+    // ヘッダは返ったのに1文字も届かない症状（実機でいちばん多い）は 'first-silent' へ分けた。
+    // 以前はそれもこの文で説明していたため、**90秒しか待っていない人の画面に
+    // 「合計およそ240秒」**と出て、直前まで数えていた経過秒と食い違っていた。
+    // あわせて「実際に待った時間は、画面に出ていた秒数のとおりです」も落とす——
+    // この文はあいさつの生成（ChatPanel.tsx の greetLoading）でも出るが、そこでは
+    // 経過秒が一度も描画されない（elapsedSec は emit の loading:true でしか動かない）。
+    // **画面に無いものを「出ていた」と言わない。**
+    return '⏱ AIからの返事が1文字も始まらないまま待ち時間の上限に達したため、この問い合わせを打ち切りました。'
+      + `返事が始まるのを待てるのは${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS)}秒×${STREAM_MAX_RETRIES + 1}回`
+      + `（合計およそ${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS * (STREAM_MAX_RETRIES + 1))}秒）までです。`
+      + '混み合っているだけのことも多いので、もう一度お試しください。'
+  }
+  if (kind === 'first-silent') {
+    // ── ヘッダだけ返して黙られた（2026-09-25 検分の指摘27）──────────────────
+    // 利用者が実際に待ったのは**無音の上限（90秒）だけ**。SDK の時計はヘッダ到着で
+    // 解除されているので、120秒・240秒はこの人には一度も関係していない（engine.ts の
+    // 'first-silent'）。「返事を始めかけた」のような**画面に現れない出来事**の言葉は使わず、
+    // 見えたとおり（つながった／でも何も出ない）で書く。
+    return `⏱ AIにはつながりましたが、返事が1文字も届かないまま${sec(STREAM_IDLE_TIMEOUT_MS)}秒たったため、ここで打ち切りました。`
+      + 'まだ何も届いていないので、残っている内容はありません。'
+      + '混み合っているだけのことも多いので、もう一度お試しください。'
   }
   return `⏱ AIの返事が途中で${sec(STREAM_IDLE_TIMEOUT_MS)}秒以上止まったため、`
     + 'ここで打ち切りました。途中までの内容はそのまま残しています。もう一度お試しください。'

@@ -5,6 +5,7 @@ import { getKeyLimit, setKeyLimit, getSettings } from '../usage'
 import { isSubmitEnter } from '../keyInput'
 import { useConfirm } from '../useConfirm'
 import { runDiscardCredentialEdits, runEraseVpsKey } from '../confirmedActions'
+import { cleanRemoteError } from '../remoteError'
 
 interface Props {
   apiKey: string                       // さくらのAI Engine の現在キー（チャットで使用）
@@ -56,7 +57,7 @@ export const SERVICES: ServiceDef[] = [
     ],
   },
   {
-    id: 'vps', title: 'さくらのVPS', hint: 'SSHデプロイ先の接続情報（秘密鍵はIDEが自動生成・管理します）', group: 'auto',
+    id: 'vps', title: 'さくらのVPS', hint: '公開先（SSH）の接続情報（秘密鍵はKotoが自動生成・管理します）', group: 'auto',
     fields: [
       { key: 'host', label: 'ホスト名/IP', placeholder: '例: xxx.vs.sakura.ne.jp または IPアドレス' },
       { key: 'port', label: 'ポート番号（既定22）', placeholder: '22' },
@@ -64,12 +65,12 @@ export const SERVICES: ServiceDef[] = [
     ],
   },
   {
-    id: 'hanamii', title: 'HANAMII（国産PaaS）', hint: '③公開→「HANAMII」で使うAPIトークン（hnm_…）。HANAMII の管理画面で発行します。',
+    id: 'hanamii', title: 'HANAMII（国産のクラウドサービス）', hint: '③公開→「HANAMII」で使うAPIトークン（hnm_…）。HANAMII の管理画面で発行します。',
     active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIトークン', secret: true, placeholder: 'hnm_…' }],
   },
   {
-    id: 'vercel', title: 'Vercel（海外PaaS）', hint: '③公開→Vercel で使うトークン。',
+    id: 'vercel', title: 'Vercel（海外のクラウドサービス）', hint: '③公開→Vercel で使うトークン。',
     helpUrl: 'https://vercel.com/account/tokens',
     active: true, group: 'perTarget',
     fields: [
@@ -78,7 +79,7 @@ export const SERVICES: ServiceDef[] = [
     ],
   },
   {
-    id: 'github', title: '💾 GitHubに保存（バックアップ・共有）', hint: 'Fine-grained PAT・Contents Read/Write＋リポジトリ作成権限が必要です。',
+    id: 'github', title: '💾 GitHubに保存（バックアップ・共有）', hint: 'GitHub で発行するトークンが要ります（作り方は下の「🔰 トークン（PAT）の取得手順」）',
     active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: '個人アクセストークン（PAT）', secret: true, placeholder: 'github_pat_…' }],
   },
@@ -96,7 +97,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: 'braveSearch', title: 'Web検索: Brave Search API', hint: '',
     active: true, custom: true, group: 'perTarget',
-    fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: 'X-Subscription-Token' }],
+    fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: '発行したAPIキーを貼り付け' }],
   },
 ]
 
@@ -104,13 +105,13 @@ export const SERVICES: ServiceDef[] = [
 export const CREDENTIAL_GROUP_ORDER: CredentialGroup[] = ['first', 'perTarget', 'auto']
 export const CREDENTIAL_GROUP_LABEL: Record<CredentialGroup, string> = {
   first: 'まず必要',
-  perTarget: '公開先ごとに必要',
+  perTarget: '使うものだけ',
   auto: '開発中・自動管理',
 }
 /** 見出し直下の1行案内（3つ目「開発中・自動管理」は既定で折りたたむため案内なし）。 */
 export const CREDENTIAL_GROUP_DESCRIPTION: Partial<Record<CredentialGroup, string>> = {
   first: 'これだけで作る・試すまでできます',
-  perTarget: '使う公開先のものだけ登録すれば十分です',
+  perTarget: '公開先・Claude・Web検索など、使うものだけ登録すれば十分です',
 }
 
 export interface CredentialGroupSection { group: CredentialGroup; label: string; services: ServiceDef[] }
@@ -127,6 +128,41 @@ export function groupServices(services: ServiceDef[]): CredentialGroupSection[] 
     services: services.filter(s => s.group === group),
   }))
 }
+
+// ── W-58（2026-09-27決定・案2）: 保存されているキーや設定を読み取れなかった（unreadable）ときは、
+// 「保存」を押す前に必ず確認する（掟10・confirmedActions.ts と同型のゲート）。空欄に見える入力欄の
+// まま保存すると、読み取れなかった元のキーや設定が確認なしに消えるため。
+// confirmedActions.ts は他の担当のファイルも扱う共通置き場のため触れず、ここに同型の純関数を持つ。
+export type ConfirmFn = (message: string) => Promise<boolean>
+
+export interface RunSaveWithUnreadableCheckDeps {
+  confirm: ConfirmFn
+  save: () => void | Promise<void>
+}
+
+/**
+ * unreadable が true のときだけ確認を挟む。confirm が false（キャンセル）なら save には一切触れない
+ * （＝読み取れなかった元のキーや設定は消えない）。unreadable が false なら、従来どおり確認なしで
+ * そのまま save を呼ぶ。
+ */
+export async function runSaveWithUnreadableCheck(
+  unreadable: boolean,
+  message: string,
+  deps: RunSaveWithUnreadableCheckDeps,
+): Promise<{ cancelled: boolean }> {
+  if (unreadable) {
+    const ok = await deps.confirm(message)
+    if (!ok) return { cancelled: true }
+  }
+  await deps.save()
+  return { cancelled: false }
+}
+
+export const UNREADABLE_SAVE_CONFIRM_MESSAGE =
+  '保存されているキーや設定を読み取れませんでした。このまま保存すると、元のキーや設定は失われます。よろしいですか？'
+
+// ── W-59（2026-09-27決定）: 接続テストの失敗に付く英語の頭（Error invoking remote method '…': Error: ）は
+// cleanRemoteError（src/renderer/remoteError.ts・初回案内の接続テストと共通の1つ）で取り除く。
 
 // Web検索の優先プロバイダ（秘密情報ではないため平文のlocalStorageに保存）
 export type SearchProvider = 'tavily' | 'brave'
@@ -398,7 +434,7 @@ export async function activateCloudKey(id: string): Promise<{ ok: boolean; messa
   try {
     await window.electronAPI.cloud.saveKey(token, secret)
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? String(e) }
+    return { ok: false, message: cleanRemoteError(e) }
   }
   window.dispatchEvent(new Event('sakura:credentials-changed'))
   return { ok: true }
@@ -531,7 +567,7 @@ function KeyTestButton({ apiKey }: { apiKey: string }) {
       const models = await window.electronAPI.sakura.models(apiKey.trim())
       setState('ok'); setDetail(`利用可能なモデル: ${models.length}個`)
     } catch (e: any) {
-      setState('ng'); setDetail(e?.message ?? String(e))
+      setState('ng'); setDetail(cleanRemoteError(e))
     }
   }
   return (
@@ -558,7 +594,7 @@ function GithubTestButton({ apiKey }: { apiKey: string }) {
       if (r.ok) { setState('ok'); setDetail(r.login ? `ログイン: ${r.login}` : '接続できました') }
       else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
     } catch (e: any) {
-      setState('ng'); setDetail(e?.message ?? String(e))
+      setState('ng'); setDetail(cleanRemoteError(e))
     }
   }
   return (
@@ -585,7 +621,7 @@ function AnthropicTestButton({ apiKey }: { apiKey: string }) {
       if (r.ok) { setState('ok'); setDetail(`利用可能なモデル: ${r.modelCount ?? 0}個`) }
       else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
     } catch (e: any) {
-      setState('ng'); setDetail(e?.message ?? String(e))
+      setState('ng'); setDetail(cleanRemoteError(e))
     }
   }
   return (
@@ -612,7 +648,7 @@ function HanamiiTestButton({ token }: { token: string }) {
       if (r.ok) { setState('ok'); setDetail('') }
       else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
     } catch (e: any) {
-      setState('ng'); setDetail(e?.message ?? String(e))
+      setState('ng'); setDetail(cleanRemoteError(e))
     }
   }
   return (
@@ -660,7 +696,7 @@ function VercelTestButton({ token, teamId }: { token: string; teamId: string }) 
       if (r.ok) { setState(r.warn ? 'warn' : 'ok'); setDetail(r.message ?? '') }
       else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
     } catch (e: any) {
-      setState('ng'); setDetail(e?.message ?? String(e))
+      setState('ng'); setDetail(cleanRemoteError(e))
     }
   }
   return (
@@ -719,7 +755,7 @@ function GithubPatGuide() {
             </a> を開く（GitHubへのログインが必要です）
           </li>
           <li>「Generate new token」をクリック</li>
-          <li>Repository access: 「All repositories」（または後で作る保管場所を指定）を選択</li>
+          <li>Repository access: 「All repositories」を選択（Koto が新しい保管場所を作るため、これを選んでください）</li>
           <li>Permissions で「Contents」を Read and write、「Administration」を Read and write に設定</li>
           <li>生成されたトークン（<span className="font-mono">github_pat_…</span>）をコピーして上の欄に貼り付け</li>
         </ol>
@@ -961,15 +997,27 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
     setTimeout(() => setSaved(false), 3000)
   }
 
+  // 「保存」ボタンの共通ハンドラ（W-58・2026-09-27決定）。読み取れなかった（unreadable）ときだけ
+  // 確認を挟み、キャンセルなら save には一切触れない（＝元のキーや設定は消えない）。
+  // 保存できた（cancelled:false）ときは unreadable を下ろす（検分の指摘）: 中身は読める状態で
+  // 上書き済みなのに、赤枠と2回目の確認が出続けるのを防ぐ。
+  const onSaveClick = async () => {
+    const outcome = await runSaveWithUnreadableCheck(unreadable, UNREADABLE_SAVE_CONFIRM_MESSAGE, {
+      confirm: (body) => confirm({ title: '読み取れなかったキーや設定があります', body, confirmLabel: 'このまま保存する', danger: true }),
+      save,
+    })
+    if (!outcome.cancelled) setUnreadable(false)
+  }
+
   // 閉じる操作（背景クリック・✕・「閉じる」ボタン）の共通ハンドラ（所見5）。
   // 未保存の変更（dirty）があるときだけ確認を挟み、破棄を選んだ場合のみ閉じる。
   // 「保存」ボタン経由の閉じる（save 後にユーザーが改めて閉じる）は dirty=false なので確認は出ない。
   const requestClose = async () => {
     if (!dirty) { onClose(); return }
     await runDiscardCredentialEdits(
-      '保存していない変更があります。破棄して閉じますか？',
+      '保存していない変更があります。保存せずに閉じますか？',
       {
-        confirm: (body) => confirm({ title: '未保存の変更を破棄しますか', body, confirmLabel: '破棄して閉じる', danger: true }),
+        confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
         discard: () => onClose(),
       },
     )
@@ -999,19 +1047,6 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
               <p className="text-[11px] text-brand-yellow mt-0.5">※ VPSでの公開機能は開発中です（現在は「🚀 公開」→さくらのVPSの「① 接続」のみ利用できます）</p>
             )}
           </div>
-          {/* ── 読めなかったことを、はっきり言う（2026-08-19 実機）──────────────
-              復号できないのに「未登録」と見せると、利用者はそこへ入力し直し、
-              **元の設定が上書きされて消える**。署名の違うビルド（署名版と手元の
-              未署名ビルド）はキーチェーンの鍵が別になるため、実際に起こる。 */}
-          {unreadable && (
-            <div className="rounded-xl border border-brand-red/60 bg-surface p-3 text-xs text-ink leading-relaxed select-text">
-              ⚠️ <b>保存されている設定を読み取れませんでした。</b>
-              このアプリとは<b>別の版（署名の異なるビルド）で保存された</b>可能性があります。
-              下の入力欄は「未登録」に見えていますが、<b className="text-brand-red">
-              このまま保存すると、元の設定は失われます</b>。
-              元の版のアプリで開くと読めることがあります。
-            </div>
-          )}
           <button onClick={() => addEntry(def.id)} className="text-xs font-medium text-sakura hover:underline flex-none">＋ 追加</button>
         </div>
 
@@ -1024,7 +1059,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
             <div key={e.id} className="bg-elevated border border-line rounded-lg p-3 space-y-2.5">
               <div className="flex items-center gap-2">
                 {def.active && (
-                  <label className="flex items-center gap-1 text-[11px] text-ink-secondary cursor-pointer flex-none" title="チャットで使用するキー">
+                  <label className="flex items-center gap-1 text-[11px] text-ink-secondary cursor-pointer flex-none" title="複数登録したとき、どれを使うか">
                     <input type="radio" checked={st.activeId === e.id} onChange={() => setActive(def.id, e.id)} />
                     使用中
                   </label>
@@ -1146,7 +1181,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
         onChange={v => setSingleKey('tavily', v)}
       />
       <Field
-        def={{ key: 'apiKey', label: 'Brave Search APIキー（毎月$5クレジット＝約1,000回 / brave.com/search/api）', secret: true, placeholder: 'X-Subscription-Token' }}
+        def={{ key: 'apiKey', label: 'Brave Search APIキー（毎月$5クレジット＝約1,000回 / brave.com/search/api）', secret: true, placeholder: '発行したAPIキーを貼り付け' }}
         value={singleKey('braveSearch')}
         onChange={v => setSingleKey('braveSearch', v)}
       />
@@ -1229,11 +1264,25 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
             🔒 入力した値は <b className="text-ink-secondary">Macの安全な保管領域（キーチェーン）で暗号化して保存</b>されます。
           </p>
 
+          {/* ── 読めなかったことを、はっきり言う（2026-08-19 実機・W-58で2026-09-27に画面上に1回だけへ変更）──
+              復号できないのに「未登録」と見せると、利用者はそこへ入力し直し、
+              **元のキーや設定が上書きされて消える**。署名の違うビルド（署名版と手元の
+              未署名ビルド）はキーチェーンの鍵が別になるため、実際に起こる。
+              以前はカードごと（6枚）に同じ長文を繰り返していたので、画面の上に1回だけにした。 */}
+          {unreadable && (
+            <div className="rounded-xl border border-brand-red/60 bg-surface p-3 text-xs text-ink leading-relaxed select-text">
+              ⚠️ <b>保存されているキーや設定を読み取れませんでした。</b>
+              別の版の Koto で保存した可能性があります。
+              下の欄は空に見えますが、<b className="text-brand-red">このまま「保存」を押すと元のキーや設定は消えます</b>。
+              元の版の Koto で開くと読めることがあります。
+            </div>
+          )}
+
           {groupServices(SERVICES).map(renderGroupSection)}
 
           <div className="flex items-center gap-2 pt-1">
             <button onClick={requestClose} className="flex-1 py-2.5 rounded-xl text-sm font-medium text-ink-secondary bg-surface border border-line hover:text-ink transition-colors">閉じる</button>
-            <button onClick={save} className="flex-1 py-2.5 rounded-xl text-sm font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity">
+            <button onClick={onSaveClick} className="flex-1 py-2.5 rounded-xl text-sm font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity">
               {saved ? '✓ 保存しました' : '保存'}
             </button>
           </div>

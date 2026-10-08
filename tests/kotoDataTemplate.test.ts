@@ -281,3 +281,143 @@ describe('require を使うアプリ向けの版（koto-data.cjs）', () => {
     await expect(save('../../etc', { a: 1 })).rejects.toThrow('保存先の名前')
   })
 })
+
+// ── 説明文が事実と合っているか（2026-09-24）────────────────────────────────
+// 2026-09-23、Koto が AI に「koto-data.js が無ければ用意します」と**守れない約束**をして
+// いたために、AI が辻褄を合わせようとして利用者のアプリを起動不能にした。
+// その教訓で `docs/storage-options.md` の調査を行ったところ、**このテンプレート自身にも
+// 同じ形の記述が2つ**あった:
+//
+//   ①「数千件を超えると一覧の取得が遅くなります」… 約1桁楽観的（実際は数百件）
+//   ②「検索や集計が必要になったらデータベースに変えたいと伝えてください」
+//      … 公開している4つの口に絞り込み・並べ替え・件数の指定が**1つも無い**ので、
+//        データベースに替えても list() は全件を返すまま。**検索はできない。**
+//
+// 直したうえで、**書き戻されないように**ここで固定する。
+// このファイルは**利用者のプロジェクトへ置かれる**ので、嘘が一番遠くまで届く。
+describe('テンプレートの説明文が、実物と食い違わない', () => {
+  const bodies = () => [
+    ['koto-data.js', fs.readFileSync(TEMPLATE, 'utf-8')],
+    ['koto-data.cjs', fs.readFileSync(TEMPLATE.replace(/\.js$/, '.cjs'), 'utf-8')],
+  ] as const
+
+  // ★ 2026-09-25 まで、ここは `src.indexOf('import ')` で窓を切っていた。当て先は
+  //   本物の import 文ではなく**冒頭の使い方の例**（11行目の
+  //   `//   import { list, get, save, remove } from './koto-data.js'`）に当たり、
+  //   .js 側は**先頭289文字＝冒頭11行**しか見ていなかった。説明文の本体（件数の目安・
+  //   守れない約束）は一度も見ていない。.cjs には `import ` が無いので -1 になり、
+  //   こちらだけ意図どおり4000文字を見ていた。**窓を当てずにファイル全体を見る。**
+  it('★ 「数千件」と書かない（実際の境目は数百件）', () => {
+    for (const [name, src] of bodies()) {
+      expect(src, name).not.toMatch(/数千件/)
+    }
+  })
+
+  it('★ 件数の目安を数字で書いてある（読んだ人が自分で判断できる）', () => {
+    for (const [name, src] of bodies()) {
+      expect(src, name).toContain('200件')
+      expect(src, name).toContain('1,000件')
+    }
+  })
+
+  // ★ 2026-09-25 まで、ここは `src.slice(0, 4000)` で窓を切っていた。**文字数で切った窓は、
+  //   冒頭の説明が伸びるたびに効き目が縮む。** 実際、上の指摘を直して冒頭を約470文字
+  //   伸ばしたところ、`（tests/kotoDataTemplate.test.ts が固定しています）。` の位置が
+  //   3,632文字目から 4,102文字目（**窓の外**）へ動き、その行の直後に
+  //   「検索や集計が必要になったらデータベースに変えたい」と書き足しても**30件すべて緑**に
+  //   なった。**窓を切らず、ファイル全体を見る**（禁止語のチェックと同じ形にそろえた）。
+  it('★ 「データベースに変えれば検索できる」と読める書き方をしない', () => {
+    for (const [name, src] of bodies()) {
+      // 「検索」と「データベースに変えたい」が同じ勧めとして並んでいないこと
+      expect(src, name).not.toMatch(/検索や集計[^。]*データベースに変えたい/)
+    }
+  })
+
+  // 2026-09-25 の検分。速い道の skip は「読み飛ばす分も実際に読む」形になり、
+  // **通信の回数が skip に比例する**ようになった（`{ limit: 20, skip: 980 }` は 1,001回で
+  // 全件読みと変わらない）。冒頭の説明が「limit と skip を指定すれば減る」のままだと、
+  // このファイル自身が掲げる「守れない約束を書かないこと」に背く。
+  // **回数そのものは tests/kotoDataOptions.test.ts が偽サーバで数えて固定している**ので、
+  // ここで見るのは「利用者と AI が読む文に、その事実が書いてあるか」だけ。
+  // ★ 説明は**2か所**にある（冒頭の「件数の目安」と、list() のすぐ上）。どちらも
+  //   別々に当てる——片方だけを見る書き方にすると、もう片方が古いまま残っても緑になる
+  //   （実際、当て先が2か所に出る書き方にしたせいで、冒頭を書き換える変異が素通りした）。
+  it('★ skip を付けると読み飛ばす分も読みに行くことを、2か所とも回数つきで書いてある', () => {
+    for (const [name, src] of bodies()) {
+      // ① 冒頭の「件数の目安」（利用者が最初に読むところ）
+      expect(src, `${name}: 冒頭`).toMatch(/skip を付けると、読み飛ばす分も実際に読みに行きます/)
+      expect(src, `${name}: 冒頭の回数`).toMatch(/list\('entries', \{ limit: 20, skip: 980 \}\)[^\n]*1,001回/)
+      expect(src, `${name}: 冒頭`).toMatch(/ページを送るほど遅くなります/)
+      // ② list() の説明（アプリを作る AI が関数のそばで読むところ）
+      expect(src, `${name}: list() の説明`).toMatch(/skip は、読み飛ばす分も実際に読みに行きます/)
+      expect(src, `${name}: list() の説明の回数`).toMatch(/`\{ limit: 20, skip: 980 \}` は 1,001回/)
+      // 読みに行く回数が skip に比例すること（回数そのものは kotoDataOptions が偽サーバで数える）
+      expect(src, name).toMatch(/skip ＋ limit/)
+      // ★ 直す前の約束（skip も通信を減らす）が戻ってきたら落ちる
+      expect(src, name).not.toMatch(/skip も通信を減らします/)
+      expect(src, name).not.toMatch(/skip を付けても速いまま/)
+    }
+  })
+
+  // 2026-09-24。list() に limit / skip / where / sort を足したので、
+  // 「絞り込みはできません」はもう事実ではなくなった。**だが通信は減らない。**
+  // ここを曖昧にすると「絞り込めば速くなる」という、新しい守れない約束になる
+  // （減るのは limit と skip のときだけで、しかも条件がある）。
+  it('★ 絞り込み（where）と並べ替え（sort）が通信を減らさないことを、はっきり書いてある', () => {
+    for (const [name, src] of bodies()) {
+      expect(src, name).toContain('**通信の回数が減るのは、limit（と skip）を指定したときだけです。**')
+      expect(src, name).toContain('**検索・絞り込み（where）と並べ替え（sort）は、通信を減らしません。**')
+    }
+  })
+
+  // ★ 直す前の説明（もう事実でない）が戻ってきたら落ちる
+  it('★ 「絞り込み・件数の指定はできません」という古い説明が残っていない', () => {
+    for (const [name, src] of bodies()) {
+      expect(src, name).not.toContain('絞り込み・並べ替えの指定・件数の指定はできません')
+      expect(src, name).not.toContain('list() は毎回すべてを返します')
+    }
+  })
+
+  // ★ 「同時に書いても壊れない」は守れない約束だった（版は検知であって防止ではない）
+  it('★ 「同時に書いても壊れない」と書いていない', () => {
+    for (const [name, src] of bodies()) {
+      expect(src, name).not.toContain('同時に書いても壊れない')
+      expect(src, name).toContain('防止ではありません')
+    }
+  })
+
+  it('★ 約束を取り消した理由が残っている（次に読む人が戻さないように）', () => {
+    for (const [name, src] of bodies()) {
+      expect(src, name).toContain('守れない約束')
+    }
+  })
+
+  // ★ 2026-09-25 まで、ここは `件数の目安 … 守れない約束` の**一部分だけ**を切り出して
+  //   比べていた。切り出した外で説明が食い違っても、誰も気づかない。
+  //   いまは**冒頭の説明を丸ごと**突き合わせ、食い違ってよいのは
+  //   「読み込み方」（1行目のファイル名・使い方の1行・読み込みの3行）と、
+  //   cjs にしかない「このファイルと koto-data.js の違い」の節だけにする。
+  it('import 版と require 版で、説明文が食い違わない', () => {
+    const [[, js], [, cjs]] = bodies()
+    // 本体が始まる手前まで＝説明文の全部（文字数で窓を切らない）
+    const headOf = (s: string, label: string) => {
+      const end = s.indexOf('const BUCKET =')
+      expect(end, `${label} に const BUCKET = がありません`).toBeGreaterThan(0)
+      return s.slice(0, end)
+    }
+    const jsHead = headOf(js, 'koto-data.js')
+    const cjsHeadRaw = headOf(cjs, 'koto-data.cjs')
+    expect(cjsHeadRaw).toContain('── このファイルと koto-data.js の違い')
+    const cjsHead = cjsHeadRaw.replace(/^\/\/ ── このファイルと koto-data\.js の違い[\s\S]*?\n\/\/\n/m, '')
+    expect(cjsHead, 'cjs だけの節を取り除けていない').not.toContain('── このファイルと koto-data.js の違い')
+
+    /** 読み込み方だけを落とす（ここだけは違ってよい）。 */
+    const norm = (s: string) => s
+      .replace(/^\/\/ koto-data\.(js|cjs) — [^\n]*\n/m, '')
+      .replace(/^\/\/ {3}(import \{ list|const \{ list)[^\n]*\n/m, '')
+      .replace(/^(import|const) (crypto|fs|path)[^\n]*\n/gm, '')
+    expect(norm(cjsHead)).toBe(norm(jsHead))
+    // 比べているものが本当に説明文であること（短い断片どうしを比べて緑、を防ぐ）
+    expect(norm(jsHead).length).toBeGreaterThan(3000)
+  })
+})

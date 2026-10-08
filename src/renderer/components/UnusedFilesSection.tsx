@@ -103,7 +103,7 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
             ✅ 問題なし（内訳を見る）
           </summary>
           <p className="mt-1 text-[11px] text-ink-secondary leading-relaxed">
-            すべてのファイルが、どこかのページ・コードから使われています。
+            使われていないように見えるファイルは見つかりませんでした（ファイル名がどこかに書かれているかで判断しています）。
           </p>
         </details>
       ) : (

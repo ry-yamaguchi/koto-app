@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { permissionsToCleanUp, permissionNameFor, parsePermissions } from '../src/shared/storageKeys'
+import { permissionsForTarget } from '../src/shared/storageKeys'
 
 // 2026-08-14 実機。公開のたびに新しい鍵を発行し、**デプロイAPIが 200 を返したその場で
 // 古い鍵を消して**いた。AppRun のデプロイは非同期で、新しいコンテナが立ち上がるまで
@@ -158,5 +159,46 @@ describe('公開先ごとに鍵を分ける', () => {
     expect(permissionsToCleanUp({ all, projectName: 'myapp', keepId: '3', target: 'apprun-dedicated' })).toEqual(['2'])
     // 逆も同じ: 別プロジェクトの共用型の片づけは、専有型の鍵に触れない
     expect(permissionsToCleanUp({ all, projectName: 'myapp-apprun-dedicated', keepId: 'now', target: 'apprun' })).toEqual(['1'])
+  })
+})
+
+// ── 2026-09-24 検分の指摘6: 破棄では「その公開先の鍵をまとめて」無効にする ───────────────
+//
+// 公開のたびに鍵を発行し、記録（storagePermissionId）は**最新の1件で上書き**される。
+// 古い鍵の片づけ（permissionsToCleanUp）は「応答を確かめられた公開」でしか走らないので、
+// LB の IP が付かない等で verify が確定しないまま2回以上公開すると、1回目の鍵は記録からも
+// 消え、誰にも片づけられない状態になる。破棄がその1件しか無効にしないと、共有バケットが
+// ほかのプロジェクトのために残るケースで、**バケット全体へ読み書きできる鍵**が残り続ける。
+//
+// **呼んでよいのは、その公開先を全部消し終えたあとだけ**（現役の鍵が存在しないと言い切れるとき）。
+
+describe('permissionsForTarget: 破棄のときに、その公開先の鍵をまとめて選ぶ', () => {
+  const ALL = [
+    { id: 'p1', displayName: 'koto-myapp_apprun-dedicated' },
+    { id: 'p2', displayName: 'koto-myapp_apprun-dedicated' },
+    { id: 'p3', displayName: 'koto-myapp' },                    // 共用型
+    { id: 'p4', displayName: 'koto-myapp-hanamii' },            // HANAMII
+    { id: 'p5', displayName: 'koto-other_apprun-dedicated' },   // 別プロジェクト
+  ]
+
+  it('★★ 同じ名前の鍵を全部返す（keepId を持たない＝現役が無いときに使う）', () => {
+    expect(permissionsForTarget({ all: ALL, projectName: 'myapp', target: 'apprun-dedicated' })).toEqual(['p1', 'p2'])
+  })
+
+  it('★★ ほかの公開先・ほかのプロジェクトの鍵には触れない（掟11）', () => {
+    const ids = permissionsForTarget({ all: ALL, projectName: 'myapp', target: 'apprun-dedicated' })
+    expect(ids).not.toContain('p3')
+    expect(ids).not.toContain('p4')
+    expect(ids).not.toContain('p5')
+  })
+
+  it('★ 公開先ごとに、その公開先の名前だけを選ぶ', () => {
+    expect(permissionsForTarget({ all: ALL, projectName: 'myapp', target: 'apprun' })).toEqual(['p3'])
+    expect(permissionsForTarget({ all: ALL, projectName: 'myapp', target: 'hanamii' })).toEqual(['p4'])
+  })
+
+  it('★ 一致するものが無ければ1件も返さない', () => {
+    expect(permissionsForTarget({ all: ALL, projectName: 'nobody', target: 'apprun-dedicated' })).toEqual([])
+    expect(permissionsForTarget({ all: [], projectName: 'myapp', target: 'apprun-dedicated' })).toEqual([])
   })
 })

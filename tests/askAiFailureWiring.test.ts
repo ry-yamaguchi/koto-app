@@ -74,10 +74,50 @@ describe('HanamiiPanel.tsx / ErrorMessageBlock: 失敗時のみ出す。🔄再�
     expect(hanamiiPanel.slice(teardownAt, teardownAt + 150)).toContain("setMsgKind('破棄')")
   })
 
-  it('メインの失敗欄（msg）は kind={msgKind} target="HANAMII" を渡す', () => {
+  // ── msg は失敗と成功の**共有欄**である（2026-09-25 検分・3巡目の指摘2）─────────────
+  // この欄には破棄の「✅ 破棄しました。…」と、公開で koto-data を差し替えたときの知らせも流れる。
+  // だから restartMsg と同じく ok を**明示的に渡す**（渡し忘れると成功の知らせに
+  // 「🤖 AIに相談する」が出る）。`ok={msgOk}` を足したときにこの期待を直し忘れて赤のままだったので、
+  // **実物の行をそのまま**固定する。
+  it('メインの欄（msg）は kind={msgKind} target="HANAMII" ok={msgOk} を渡す（成功の知らせにも流れる共有欄）', () => {
     expect(hanamiiPanel).toContain(
-      '{msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} kind={msgKind} target="HANAMII" />}'
+      '{msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} kind={msgKind} target="HANAMII" ok={msgOk} />}'
     )
+    // 直す前の形（ok を渡さない＝成功の知らせに 🤖 が出る）が戻っていないか
+    expect(
+      hanamiiPanel,
+      'ok={msgOk} を渡さない形が残っている（成功の知らせに 🤖 AIに相談する が出る）',
+    ).not.toContain('kind={msgKind} target="HANAMII" />}')
+  })
+
+  it('msgOk は既定 false（失敗側）で、操作の先頭で必ず倒してから msg を出す', () => {
+    expect(hanamiiPanel).toContain('const [msgOk, setMsgOk] = useState(false)')
+    for (const [name, head] of [
+      ['publish', 'const publish = async (nameOverride?: string) => {'],
+      ['teardown', 'const teardown = async () => {'],
+    ] as const) {
+      const at = hanamiiPanel.indexOf(head)
+      expect(at, `${name} が見つからない`).toBeGreaterThan(-1)
+      expect(hanamiiPanel.slice(at, at + 150), `${name} の先頭で msgOk を倒していない`).toContain('setMsgOk(false)')
+    }
+  })
+
+  // ── 公開が koto-data を差し替えたときの知らせ（指摘13 の HANAMII 経路）──────────────
+  // main は差し替えた1行を executed で返す。**成功の知らせ**なので、失敗の欄（msg・🤖 AIに相談する）には
+  // 入れない。立てないと「🤖 AIに相談する」が付き、成功したのに失敗に見える。
+  // 2026-09-29: この知らせは msg 欄（msgOk を立てて共有）ではなく、main の処理の記録の lines から、
+  // 成功の記録の枠（HanamiiOpResult）に出すようになった（閉じて開き直しても出る）。
+  // 画面に出る様子（1回だけ出る・🤖 が付かない）は tests/ops-hanamiiVercel-hanamii.test.ts が動かして固定している。
+  // ここは構造: 返り値の executed を msg 欄へ流す旧い形が戻っていないこと、成功の枝に失敗の枠が無いこと。
+  it('公開の成功で差し替えの知らせを出すとき、msg 欄（失敗の欄）へ流さない。成功の記録の枠（lines）で出す', () => {
+    expect(hanamiiPanel, '返り値の executed を失敗の欄へ流す旧い形が戻っている').not.toContain('setMsg((r.executed ?? []).join')
+    const at = hanamiiPanel.indexOf('function HanamiiOpResult(')
+    expect(at).toBeGreaterThan(-1)
+    const body = hanamiiPanel.slice(at)
+    // 失敗の枠（ErrorMessageBlock）を出すのは failure があるときだけ。lines は failure の有無に関わらず出る
+    expect(body).toContain('failure !== null\n        ? <ErrorMessageBlock')
+    expect(body).toContain('const lines = res.lines ?? []')
+    expect(body).toContain('{lines.map((l, i) =>')
   })
 
   it('🔄再起動の欄（restartMsg）は成功メッセージも流れる共有欄のため、ok={restartOk} を明示的に渡す', () => {

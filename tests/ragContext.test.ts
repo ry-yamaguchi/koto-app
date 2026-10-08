@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildRagBlockText, parseRagSettings, mergeRagSettings, buildWebPageMarkdown, sanitizeFilename } from '../src/renderer/ragContext'
+import { buildRagBlockText, parseRagSettings, ragSettingsPatch, buildWebPageMarkdown, sanitizeFilename } from '../src/renderer/ragContext'
+import { withMetaPatch } from '../src/shared/publishMeta'
 
 // buildRagBlockText が参照する RagQueryHit / RagDocument はグローバル型（src/renderer/global.d.ts）。
 // テストではプレーンオブジェクトで代用する（型は any 経由で満たす）。
@@ -71,10 +72,16 @@ describe('parseRagSettings', () => {
   })
 })
 
-describe('mergeRagSettings', () => {
+// 書き込みは「差分（patch）だけを main へ渡す」形（2026-09-29・src/renderer/projectMeta.ts）。
+// main が書く直前にディスクから読み直した .sakuraide.json へ withMetaPatch で当てる。
+describe('ragSettingsPatch（差分）＋ withMetaPatch（当て方）', () => {
+  it('patch は rag だけ。publish など既存のキーには触れない', () => {
+    expect(ragSettingsPatch({ enabled: true, tags: ['a', 'b'] })).toEqual({ rag: { enabled: true, tags: ['a', 'b'] } })
+  })
+
   it('preserves existing keys (e.g. publish) while writing rag', () => {
     const meta = { name: 'my-app', target: 'sakura-apprun', publish: { hanamii: { projectId: 'p1' } } }
-    const merged = mergeRagSettings(meta, { enabled: true, tags: ['a', 'b'] })
+    const merged = withMetaPatch(meta, ragSettingsPatch({ enabled: true, tags: ['a', 'b'] }))
     expect(merged).toEqual({
       name: 'my-app',
       target: 'sakura-apprun',
@@ -84,13 +91,13 @@ describe('mergeRagSettings', () => {
   })
 
   it('creates a fresh object with just rag when meta is empty/null', () => {
-    expect(mergeRagSettings(null, { enabled: false, tags: [] })).toEqual({ rag: { enabled: false, tags: [] } })
-    expect(mergeRagSettings({}, { enabled: true, tags: ['x'] })).toEqual({ rag: { enabled: true, tags: ['x'] } })
+    expect(withMetaPatch(null, ragSettingsPatch({ enabled: false, tags: [] }))).toEqual({ rag: { enabled: false, tags: [] } })
+    expect(withMetaPatch({}, ragSettingsPatch({ enabled: true, tags: ['x'] }))).toEqual({ rag: { enabled: true, tags: ['x'] } })
   })
 
-  it('overwrites a previous rag value entirely (not deep-merged)', () => {
+  it('タグは置き換わる（前のタグが混ざらない）', () => {
     const meta = { rag: { enabled: true, tags: ['old'] } }
-    const merged = mergeRagSettings(meta, { enabled: false, tags: [] })
+    const merged = withMetaPatch(meta, ragSettingsPatch({ enabled: false, tags: [] }))
     expect(merged.rag).toEqual({ enabled: false, tags: [] })
   })
 })

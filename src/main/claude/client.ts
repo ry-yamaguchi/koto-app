@@ -62,7 +62,8 @@ export function describeClaudeError(status: number): string {
   if (status === 401) {
     return (
       'APIキーが認証されませんでした（401）。キーが無効・失効した可能性があります。\n\n' +
-      '🔑 platform.claude.com（Claude Console）でキーを確認し、うまくいかない場合は新しいキーを発行して入れ直してください。\n' +
+      // W-11: 登録画面（CredentialsModal.tsx）と同じ語順「Claude Console（platform.claude.com）」に揃える。
+      '🔑 Claude Console（platform.claude.com）でキーを確認し、うまくいかない場合は新しいキーを発行して入れ直してください。\n' +
       '（「🔌 接続テスト」で有効かどうか再確認できます）'
     )
   }

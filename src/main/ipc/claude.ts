@@ -6,6 +6,13 @@ import { testAnthropicKey, checkClaudeBinary, listAnthropicModels } from '../cla
 import { startClaudeChat, type ClaudeChatHandle } from '../claude/agent'
 import type { IpcDeps } from './types'
 import { resolvePublishRoot } from '../publishRootFs'
+import type { WriteMode } from '../../shared/approvalPlan'
+// W-18: ⏹（claude:chatCancel）・新しいセッションの開始時に、前のセッションの承認待ちが
+// あれば「拒否」として解いておく（さくらのAI Engine 経路の chatTurn:abort と同じ理由・
+// 2026-09-23 の教訓: requestApproval はタイムアウトしないため、ここで解かないと固まる）。
+import { cancelApprovalsForTurn } from '../chat/approvalStore'
+// W-85: search_docs（📚 資料の検索）を月間上限で止める確認（ipc/rag.ts・chat/turnRunner.ts と同じ作り方の1か所）。
+import { budgetCheckForKey } from '../usageStore'
 
 // 同時実行は1セッションのみ（C2の設計どおり）。新しい claude:chatStart が来たら、
 // 進行中のセッションがあれば中断してから開始する。
@@ -36,8 +43,9 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
   // images は C2d（画像添付ターンをClaude自身に直接処理させる。data URL配列・空配列可）。
   ipcMain.handle(
     'claude:chatStart',
-    (event, projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string) => {
-      activeChat?.abort()
+    (event, projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string) => {
+      // 前のセッションが残っていれば、応答だけでなく承認待ちも一緒に閉じる（W-18）。
+      if (activeChat) { activeChat.abort(); cancelApprovalsForTurn(activeChat.turnId) }
       const handle = startClaudeChat({
         projectDir,
         // Claude の作業フォルダは`public/`（無ければプロジェクト直下）。
@@ -45,11 +53,15 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
         writeRoot: resolvePublishRoot(projectDir),
         apiKey,
         aiEngineKey: aiEngineKey ?? null,
+        // W-85: 資料検索の上限の確認。キーが無ければ search_docs はそもそも「キーが要る」と返して通信しないので、確認は通す側でよい。
+        ragBudgetCheck: aiEngineKey ? budgetCheckForKey(aiEngineKey) : () => ({ allowed: true }),
         prompt,
         images: images ?? [],
         snapshotId,
         resumeSessionId: resumeSessionId ?? null,
         model,
+        // W-18: 「✋ 毎回確認」（ChatPanel.tsx の writeMode）を Claude 経路にも渡す。
+        writeMode: (writeMode as WriteMode) === 'confirm' ? 'confirm' : 'auto',
         onEvent: uiEvent => {
           try { event.sender.send('claude:stream', uiEvent) } catch { /* ウィンドウ破棄時は無視 */ }
           // result/error はそのターンの終端。次のセッションが不要に前回分を中断しないよう解放する。
@@ -77,9 +89,10 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
     }
   )
 
-  // 進行中の Claude セッションを中断する。
+  // 進行中の Claude セッションを中断する。承認待ちで止まっていても、ここで拒否として解ける
+  // （2026-09-23 の教訓と同じ形・W-18でClaude経路にも承認待ちが生まれたため必須）。
   ipcMain.handle('claude:chatCancel', () => {
-    activeChat?.abort()
+    if (activeChat) { activeChat.abort(); cancelApprovalsForTurn(activeChat.turnId) }
     activeChat = null
     return { ok: true }
   })

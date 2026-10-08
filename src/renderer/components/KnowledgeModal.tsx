@@ -418,7 +418,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
           {!apiKey ? (
             <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-3">
               <p className="text-sm text-ink leading-relaxed">
-                認証情報（⌘ ,）で さくらのAI Engine のAPIキーを登録してください。
+                メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）で さくらのAI Engine のAPIキーを登録してください。
               </p>
               <button
                 onClick={onOpenCredentials}
@@ -456,7 +456,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                   className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
                 >{uploading ? 'アップロード中…' : 'ファイルを追加'}</button>
                 <p className="text-[11px] text-ink-muted leading-relaxed">
-                  対応形式: txt / pdf / html / docx / xlsx / md。アップロードした資料は<b className="text-ink-secondary">さくらのクラウド（AI Engine）に保存</b>されます。
+                  対応形式: txt / pdf / html / docx / xlsx / md。取り込んだ資料は<b className="text-ink-secondary">さくらのAI Engine（さくらインターネットのサーバー）に保存</b>されます。
                 </p>
                 {uploadNotice && (
                   <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all">{uploadNotice}</p>
@@ -488,7 +488,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 </div>
                 <label className="flex items-center gap-2 text-xs text-ink-secondary cursor-pointer">
                   <input type="checkbox" checked={ideOnly} onChange={e => setIdeOnly(e.target.checked)} />
-                  IDEで追加した資料のみ表示
+                  Kotoで追加した資料のみ表示
                 </label>
 
                 {pollTimedOut && (
@@ -635,7 +635,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                   使う場所（チャット）で切り替える形にした。 */}
               {projectDir && (
                 <p className="text-[11px] text-ink-muted leading-relaxed px-1">
-                  このプロジェクトのチャットで資料を使うかどうかは、<b className="text-ink-secondary">チャット上部の「📚」</b>で切り替えられます。
+                  このプロジェクトのチャットで資料を使うかどうかは、<b className="text-ink-secondary">チャットの入力欄のすぐ上の「📚 資料を使う／使わない」</b>で切り替えられます。
                 </p>
               )}
 

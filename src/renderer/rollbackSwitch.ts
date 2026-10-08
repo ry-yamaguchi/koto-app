@@ -39,7 +39,7 @@ export type SwitchOutcome =
  * その事実に触れていなかった。触れる側に寄せ、確認文に含める）。
  */
 export function buildSwitchConfirmMessage(req: SwitchRequest): string {
-  const splitNote = req.isSplit ? 'いまの配分（複数バージョンへの分散）は失われます。' : ''
+  const splitNote = req.isSplit ? 'いま複数のバージョンに分けて見せている状態は失われます。' : ''
   return req.versionName === null
     ? `最新のバージョンに自動で追従する状態へ戻します。${splitNote}訪問者に見えるものが変わることがあります。よろしいですか？`
     : `訪問者に見えるものが『${req.label}』に切り替わります。${splitNote}よろしいですか？`

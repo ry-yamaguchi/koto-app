@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react'
 import StorageSettings from './StorageSettings'
 import SakuraLogo from './SakuraLogo'
 import {
-  getSettings, setSettings, getUsage, getUsageByModel, resetThisMonth, budgetStatus, PRICING,
-  modelLabel, getDefaultModel, setDefaultModel, priceFor,
-  getUsageForKey, effectiveLimit, getKeyLimit,
+  getSettings, setSettings, getUsage, getUsageByModel, resetThisMonth, PRICING,
+  modelLabel, getDefaultModel, setDefaultModel,
+  getUsageForKey, effectiveLimit, getKeyLimit, isKeyOverLimit,
   modelPickerText, orderModelsForPicker, DEFAULT_MODEL, DEFAULT_CHAT_MODEL,
   type BudgetSettings, type MonthUsage, type ModelUsageRow,
 } from '../usage'
@@ -12,12 +12,37 @@ import { useModels } from '../hooks/useModels'
 import { getAnthropicToken } from './CredentialsModal'
 import { SHOW_THINKING_KEY, isThinkingAlwaysOpen } from './ThinkingBlock'
 import { updateStatusText, shouldHighlight, type UpdateState } from '../../shared/updatePolicy'
+// 料金の表示は shared の1か所から（料金表に無いモデルに、実在しない料金を出さない・2026-09-25）
+import { priceLabel, usageCostNote, unknownPriceRuleText } from '../../shared/usageBudget'
 import {
   isClaudeModeEnabled, setClaudeMode, claudeMonthKey,
   getClaudeCostThisMonth, approxJpyFromUsd, getClaudeWarnUsd, setClaudeWarnUsd, isOverClaudeWarnThreshold,
+  USD_JPY_APPROX,
 } from '../claudeMode'
+import { useConfirm } from '../useConfirm'
 
 interface KeyRow { label: string; apiKey: string }
+
+// ── W-51（2026-09-27決定）: 「今月の記録を0に戻す」は、上限による停止まで解除する取り消せない
+// 操作なので、押す前に必ず確認する（掟10: お金の歯止めは振る舞いで固定・confirmedActions.ts と同型）。
+// confirm が false（キャンセル）なら reset には一切触れない（＝今月の記録は0に戻らない）。
+export const RESET_USAGE_CONFIRM_MESSAGE =
+  'Koto が数えた今月の利用額を0に戻します。上限で止まっていた場合は、それも解除されます（実際の請求は減りません）。'
+
+export interface RunResetUsageWithConfirmDeps {
+  confirm: (message: string) => Promise<boolean>
+  reset: () => void
+}
+
+export async function runResetUsageWithConfirm(
+  message: string,
+  deps: RunResetUsageWithConfirmDeps,
+): Promise<{ cancelled: boolean }> {
+  const ok = await deps.confirm(message)
+  if (!ok) return { cancelled: true }
+  deps.reset()
+  return { cancelled: false }
+}
 
 interface Props {
   apiKey: string
@@ -43,6 +68,8 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
   )
 
   const [keys, setKeys] = useState<KeyRow[]>([])
+  // 未保存の変更を破棄・鍵を消去する確認と同じ様式（掟5・判断9・2026-09-11）: window.confirm は使わない。
+  const { confirm, element: confirmElement } = useConfirm()
 
   const refresh = () => { setUsage(getUsage()); setByModel(getUsageByModel()); setIdeModel(getDefaultModel('ide')); setChatModel(getDefaultModel('chat')); setLocal(getSettings()) }
   useEffect(() => {
@@ -123,10 +150,6 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
     }
   }
 
-  const status = budgetStatus()
-  const ratioPct = status.ratio == null ? 0 : Math.min(100, status.ratio * 100)
-  const barColor = status.over ? 'var(--red)' : status.warn ? 'var(--yellow)' : 'var(--sakura)'
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
@@ -141,7 +164,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
           <SakuraLogo size={24} />
           <div>
             <h2 className="text-lg font-bold text-ink">設定</h2>
-            <p className="text-xs text-ink-secondary">AIの利用状況・費用の上限・アプリの設定</p>
+            <p className="text-xs text-ink-secondary">AIの利用状況・費用の上限・Koto の設定</p>
           </div>
           <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
@@ -150,54 +173,55 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
           {/* Usage this month */}
           <div className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-baseline justify-between mb-2">
-              <span className="text-xs font-semibold text-ink-secondary">今月の利用状況（推定）</span>
+              <span className="text-xs font-semibold text-ink-secondary">今月のさくらのAI Engine 利用額（推定）</span>
               <span className="text-[11px] text-ink-muted">{usage.month}</span>
             </div>
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold text-ink">¥{usage.costYen.toFixed(1)}</span>
-              {status.limit != null && (
-                <span className="text-sm text-ink-muted">/ ¥{status.limit}</span>
-              )}
             </div>
-            {/* progress */}
-            {status.limit != null && (
-              <div className="mt-2 h-2 rounded-full bg-overlay overflow-hidden">
-                <div className="h-full rounded-full transition-all" style={{ width: `${ratioPct}%`, background: barColor }} />
-              </div>
-            )}
+            {/* W-20（2026-09-27決定・案2）: 全キー合計 vs 既定上限の帯・棒グラフはやめた（実際に
+                止まる基準＝キーごとの実効上限と食い違うため）。「上限に達しています」は、下の
+                キー別の行で、そのキー自身の基準（checkBeforeRequestOf と同じ・isKeyOverLimit）
+                に対してだけ出す。 */}
             <div className="mt-2 flex items-center justify-between text-[11px] text-ink-muted">
               <span>{usage.totalTokens.toLocaleString()} トークン（≒文字数の目安。日本語1文字で1〜2トークン）（入力 {usage.promptTokens.toLocaleString()} / 出力 {usage.completionTokens.toLocaleString()}）</span>
               <button
-                onClick={() => { resetThisMonth(); refresh() }}
+                onClick={async () => {
+                  await runResetUsageWithConfirm(RESET_USAGE_CONFIRM_MESSAGE, {
+                    confirm: (body) => confirm({ title: '今月の記録を0に戻しますか', body, confirmLabel: '0に戻す', danger: true }),
+                    reset: () => { resetThisMonth(); refresh() },
+                  })
+                }}
                 className="text-sakura hover:underline"
               >
-                リセット
+                今月の記録を0に戻す
               </button>
             </div>
-            {status.over && (
-              <p className="mt-2 text-[11px] text-white bg-brand-red-fill rounded-md px-2 py-1">⚠️ 上限に達しています</p>
-            )}
-            {!status.over && status.warn && (
-              <p className="mt-2 text-[11px] text-ink bg-brand-yellow/25 rounded-md px-2 py-1">上限の{Math.round(settings.warnRatio * 100)}%を超えました</p>
-            )}
 
             {/* Per-key breakdown */}
             {keys.length > 0 && (
               <div className="mt-3 pt-3 border-t border-line">
-                <div className="text-[11px] font-semibold text-ink-secondary mb-1.5">APIキー別の利用額／上限</div>
+                <div className="text-[11px] font-semibold text-ink-secondary mb-1.5">さくらのAI Engine のキー別の利用額／上限</div>
                 <div className="space-y-1">
                   {keys.map((k, i) => {
                     const cost = getUsageForKey(k.apiKey).costYen
                     const lim = effectiveLimit(k.apiKey)
                     const explicit = getKeyLimit(k.apiKey)
-                    const over = lim != null && cost >= lim
+                    // W-20（2026-09-27決定・案2）: 「上限に達しています」は、実際に止まる基準
+                    // （checkBeforeRequestOf と同じ・isKeyOverLimit）でこの行にだけ出す。
+                    const over = isKeyOverLimit(k.apiKey)
                     return (
-                      <div key={i} className="flex items-center justify-between text-[11px]">
-                        <span className="text-ink truncate mr-2">🔑 {k.label}</span>
-                        <span className={`flex-none ${over ? 'text-brand-red font-medium' : 'text-ink-muted'}`}>
-                          ¥{cost.toFixed(1)} / {lim == null ? '無制限' : `¥${lim}`}
-                          <span className="text-ink-muted">{explicit === undefined ? '（既定）' : ''}</span>
-                        </span>
+                      <div key={i} className="text-[11px]">
+                        <div className="flex items-center justify-between">
+                          <span className="text-ink truncate mr-2">🔑 {k.label}</span>
+                          <span className={`flex-none ${over ? 'text-brand-red font-medium' : 'text-ink-muted'}`}>
+                            ¥{cost.toFixed(1)} / {lim == null ? '無制限' : `¥${lim}`}
+                            <span className="text-ink-muted">{explicit === undefined ? '（既定の上限）' : ''}</span>
+                          </span>
+                        </div>
+                        {over && (
+                          <p className="mt-0.5 text-[10px] text-brand-red">⚠️ 上限に達しています</p>
+                        )}
                       </div>
                     )
                   })}
@@ -211,24 +235,31 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               <div className="mt-3 pt-3 border-t border-line">
                 <div className="text-[11px] font-semibold text-ink-secondary mb-1.5">モデル別の利用額</div>
                 <div className="space-y-1">
-                  {byModel.map(row => (
-                    <div key={row.model} className="flex items-center justify-between text-[11px]">
-                      <span className="text-ink truncate mr-2">{modelLabel(row.model)}</span>
-                      <span className="text-ink-muted flex-none">
-                        {row.totalTokens.toLocaleString()} トークン ・ <span className="text-ink font-medium">¥{row.costYen.toFixed(1)}</span>
-                      </span>
-                    </div>
-                  ))}
+                  {byModel.map(row => {
+                    // 料金表に無いモデルの額は、そのモデルの料金で数えた額ではない（確かな額のように見せない）
+                    const note = usageCostNote(row.model)
+                    return (
+                      <div key={row.model}>
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-ink truncate mr-2">{modelLabel(row.model)}</span>
+                          <span className="text-ink-muted flex-none">
+                            {row.totalTokens.toLocaleString()} トークン ・ <span className="text-ink font-medium">¥{row.costYen.toFixed(1)}</span>
+                          </span>
+                        </div>
+                        {note && <p className="text-[10px] text-ink-muted">{note}</p>}
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )}
           </div>
 
-          {/* 所見8: 今月のClaude利用額（実額）。Claudeキー登録済みのときだけ表示する。 */}
+          {/* 所見8: 今月のClaude利用額（Koto で使った分・目安）。Claudeキー登録済みのときだけ表示する。 */}
           {hasClaudeKey && (
             <div className="bg-surface border border-line rounded-xl p-4">
               <div className="flex items-baseline justify-between mb-2">
-                <span className="text-xs font-semibold text-ink-secondary">今月のClaude利用額（実額）</span>
+                <span className="text-xs font-semibold text-ink-secondary">今月のClaude利用額（Koto で使った分・目安）</span>
                 <span className="text-[11px] text-ink-muted">{claudeMonthKey()}</span>
               </div>
               <div className="flex items-baseline gap-2">
@@ -236,12 +267,16 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
                 <span className="text-sm text-ink-muted">（約¥{Math.round(approxJpyFromUsd(claudeCostUsd)).toLocaleString()}）</span>
               </div>
               <p className="mt-2 text-[11px] text-ink-muted">
-                Claudeの利用料金はAnthropicに直接課金され、上の月間上限（¥）とは別枠です（概算換算・実際の請求はAnthropicのレート/通貨によります）。
+                Claude の料金は Anthropic から直接請求されます。上の「今月のさくらのAI Engine 利用額」や月間上限には入りません。
+                円は 1ドル＝{USD_JPY_APPROX}円 のおおよその換算です。実際の請求は Claude Console で確認してください。
               </p>
 
-              {/* 所見8（任意）: 警告のみのしきい値。送信はブロックしない目安表示。 */}
+              {/* 所見8（任意）: 警告のみのしきい値。送信はブロックしない目安表示。
+                  W-53（2026-09-27決定・案2）: 超えたときはチャット欄にも知らせる（送信は止めない）。
+                  判定・文面は shared/usageBudget.ts の isClaudeCostOverWarnUsd／claudeChatWarningText
+                  に置いた（チャット側での表示は useAiChat.ts／ChatPanel.tsx の担当。handoff 参照）。 */}
               <div className="mt-3 pt-3 border-t border-line">
-                <label className="text-[11px] font-semibold text-ink-secondary">警告の目安額（USD・任意）</label>
+                <label className="text-[11px] font-semibold text-ink-secondary">警告の目安額（ドル・任意）</label>
                 <div className="mt-1.5 flex items-center gap-2">
                   <span className="text-ink-muted text-xs">$</span>
                   <input
@@ -266,7 +301,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               「いますぐ再起動」は利用者が押したときだけで、作業中なら断る（updatePolicy.ts）。 */}
           <div className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-semibold text-ink-secondary">アプリの更新</div>
+              <div className="text-xs font-semibold text-ink-secondary">Koto の更新</div>
               <button
                 onClick={async () => { setUpdate(await window.electronAPI.update.check()) }}
                 disabled={update.kind === 'checking' || update.kind === 'downloading'}
@@ -329,10 +364,15 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
             </p>
           </div>
 
-          {/* 所見6: チャットの頭脳（Claude / さくらのAI Engine）。両方のキーが登録済みのときだけ切替を出す。 */}
+          {/* 所見6: チャットの頭脳（Claude / さくらのAI Engine）。両方のキーが登録済みのときだけ切替を出す。
+              W-19（2026-09-27決定・別案＋案5）: 見出しは、切替を出す（＝両方のキーがある）ときだけ
+              「IDE の AI（頭脳）」にする。片方だけのときは、そのキーで動いていると文で言い切っている
+              ので「チャットの頭脳」のままでも混同は起きない（書き換えは両方のキーがあるときに限る）。 */}
           {(hasClaudeKey || hasAiEngineKey) && (
             <div className="bg-surface border border-line rounded-xl p-4">
-              <div className="text-xs font-semibold text-ink-secondary mb-2">チャットの頭脳</div>
+              <div className="text-xs font-semibold text-ink-secondary mb-2">
+                {hasClaudeKey && hasAiEngineKey ? 'IDE の AI（頭脳）' : 'チャットの頭脳'}
+              </div>
               {hasClaudeKey && hasAiEngineKey ? (
                 <>
                   <div className="flex bg-elevated border border-line rounded-xl p-1 gap-1">
@@ -376,19 +416,16 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               title={ideDesc || undefined}
               className="mt-1.5 w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-sm text-ink outline-none focus:border-sakura cursor-pointer transition-colors"
             >
-              {orderModelsForPicker(models.map(m => m.id), DEFAULT_MODEL).map(id => {
-                const p = priceFor(id)
-                return (
-                  <option key={id} value={id}>
-                    {modelPickerText(id).name}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
-                  </option>
-                )
-              })}
+              {orderModelsForPicker(models.map(m => m.id), DEFAULT_MODEL).map(id => (
+                <option key={id} value={id}>
+                  {modelPickerText(id).name}{priceLabel(id)}
+                </option>
+              ))}
             </select>
             {ideDesc && <p className="mt-1 text-sm text-ink-secondary">{ideDesc}</p>}
             <p className="mt-1 text-[11px] text-ink-muted">
-              コード作成・プロジェクト生成・公開前チェックで使います。
-              Claude で動かしているときは、チャット画面右上のモデル選択で選びます。
+              コード作成・プロジェクト生成・🛡 簡易セキュリティチェックで使います。
+              Claude で動かしているときは、IDE の右側にある AIチャット欄の上のモデル選択で選びます。
             </p>
           </div>
 
@@ -401,19 +438,16 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               title={chatDesc || undefined}
               className="mt-1.5 w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-sm text-ink outline-none focus:border-sakura cursor-pointer transition-colors"
             >
-              {orderModelsForPicker(models.map(m => m.id), DEFAULT_CHAT_MODEL).map(id => {
-                const p = priceFor(id)
-                return (
-                  <option key={id} value={id}>
-                    {modelPickerText(id).name}（入力¥{p.in} / 出力¥{p.out} ・100万トークン）
-                  </option>
-                )
-              })}
+              {orderModelsForPicker(models.map(m => m.id), DEFAULT_CHAT_MODEL).map(id => (
+                <option key={id} value={id}>
+                  {modelPickerText(id).name}{priceLabel(id)}
+                </option>
+              ))}
             </select>
             {chatDesc && <p className="mt-1 text-sm text-ink-secondary">{chatDesc}</p>}
             <p className="mt-1 text-[11px] text-ink-muted">
               チャットモードの会話で使います。会話ごとに個別変更もできます。
-              Claude で動かしているときは、チャット画面右上のモデル選択で選びます。
+              Claudeの頭脳モードは、プロジェクトを開いた画面（IDEモード）でのみ使えます。
             </p>
           </div>
 
@@ -435,11 +469,18 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
             </p>
           </div>
 
-          {/* Enforce toggle */}
+          {/* Enforce toggle
+              W-21（2026-09-27決定・別案）: オフでも「止めない」だけで、作業中の知らせは出す
+              （判定・文面は shared/usageBudget.ts の checkBeforeRequestOf の warning）。
+              ⚠️ 呼び出し（実際にチャットへ表示する配線）は useAiChat.ts／ChatPanel.tsx ではない
+              （検分で確認済み: 通常の AI Engine チャットのターンは main/chat/turnRunner.ts →
+              main/usageStore.ts を通り、renderer/usage.ts の checkBeforeRequest を経由しない）。
+              main/usageStore.ts の戻り値型に warning を足し、shared/chatTurn.ts の runEngineTurn で
+              表示する対応が要る（担当外のため handoff 参照）。ここはスイッチの名前・説明のみ直す。 */}
           <label className="flex items-center justify-between cursor-pointer">
             <div>
-              <div className="text-xs font-semibold text-ink">上限に達したらリクエストを停止</div>
-              <div className="text-[11px] text-ink-muted">オフの場合は警告のみ表示します</div>
+              <div className="text-xs font-semibold text-ink">上限に達したら さくらのAI Engine を止める</div>
+              <div className="text-[11px] text-ink-muted">オフの場合は止めず、上限を超えたら作業中にも知らせます</div>
             </div>
             <button
               onClick={() => persist({ ...settings, enforce: !settings.enforce })}
@@ -460,15 +501,17 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
                   <li key={m}>・{modelLabel(m)}: 入力 ¥{p.in} / 出力 ¥{p.out}</li>
                 ))}
               </ul>
+              <p className="pt-1">{unknownPriceRuleText()}</p>
               <p className="pt-1">
                 実際の課金・無料枠は{' '}
                 <a href="https://www.sakura.ad.jp/aipf/ai-engine/" className="text-sakura hover:underline">さくらのAI Engine 公式</a>
-                {' '}をご確認ください。これはあくまでアプリ側の使いすぎ防止の目安です。
+                {' '}をご確認ください。これはあくまで Koto 側の使いすぎ防止の目安です。
               </p>
             </div>
           </details>
         </div>
       </div>
+      {confirmElement}
     </div>
   )
 }

@@ -44,11 +44,100 @@ export const PRICING: Record<string, { in: number; out: number }> = {
   'preview/Kimi-K2.6': { in: 60, out: 300 },                   // 0.6 / 3
   'preview/Kimi-K2.7-Code': { in: 52, out: 504 },  // 0.52 / 5.04 円（1万tok）2026-09-04 公式ページ
   'preview/gemma-4-31B-it': { in: 24, out: 96 },   // 0.24 / 0.96
+  // 2026-09-25: 2026-09-24 提供開始のお知らせ（cloud.sakura.ad.jp/news/2026/09/24/ai-engine-weblab-medllm-gpt-oss-120b-pubprev/）と
+  // 製品ページの料金表の2つの原本で一致。**無償プラン・課金プラン内の無償利用枠のどちらにも入らない**。
+  // 載せる前は既定値（15/75）で見積もっており、**6倍安く**数えていた＝月の上限で止まるべきところで止まらなかった。
+  'preview/Weblab-MedLLM-gpt-oss-120b': { in: 90, out: 450 },  // 0.9 / 4.5 円（1万tok）
 }
-export const DEFAULT_PRICE = { in: 15, out: 75 }
 
-export function priceFor(model: string): { in: number; out: number } {
-  return PRICING[model] ?? DEFAULT_PRICE
+// ── 料金表に無いモデルの見積もり（2026-09-25・お金の歯止め・掟10「迷ったら警告に倒す」）────────
+// 以前は料金表に無いモデルを固定の既定値（¥15／¥75 ・100万トークン＝いちばん安い部類）で数えていた。
+// さくらの AI Engine に Weblab-MedLLM（¥90／¥450）が加わったとき、料金表へ載せるまで**6倍安く**
+// 数えており、月の上限（checkBeforeRequestOf）が遅れて効いた＝止まるべきところで止まらなかった。
+// 新しいモデルは予告なく一覧に現れ、**料金が公開されないモデルもある**（PLaMo 3.0 Prime・cotomi v3 は
+// 申請制で、料金は承認された人にしか表示されない）ので、「載せ忘れ」は今後も必ず起きる。
+//
+// そこで知らないモデルは、**料金表の入力の最大・出力の最大**で数える（下の unknownModelPriceFrom）。
+// 数字は手で書かない。料金表にもっと高いモデルが載れば、知らないモデルの見積もりも**勝手に上がる**。
+// 入力と出力の最大は別々に取る（同じモデルとは限らない）。どの1つの既知モデルよりも安くならない側へ倒すため。
+//
+// ⚠️ 限界（正直に書いておく）: これでも**知っているどのモデルより高い新モデル**は、安く数えうる。
+// 料金表の最大は「Koto が知っている範囲の最大」でしかなく、未知のモデルの本当の料金の上限ではない。
+// 画面では知らないモデルの料金を数字で示さず（priceLabel）、利用額にも「料金表に無いモデル」と添える
+// （usageCostNote）。根本の手当ては、新しいモデルを原本の料金で PRICING に載せること
+// （scripts/check-models.mjs が「価格未設定モデル」として一覧に出す）。
+
+export type Price = { in: number; out: number }
+
+/**
+ * 料金表に無いモデルの見積もりに使う単価を、料金表から導く（純関数）。
+ * 入力は表の入力の最大、出力は表の出力の最大（別々に取る）。
+ * 有限でない値・負の値は数えない（壊れた1行で見積もりを NaN や負にしない）。
+ * 使える行が1つも無い表は例外にする: 0円で数えると上限が永遠に効かなくなるため、黙って通さない
+ * （PRICING が空になるのは実装の誤りであり、テストの import 時点で落ちて気づける）。
+ */
+export function unknownModelPriceFrom(table: Record<string, Price>): Price {
+  let maxIn = -1
+  let maxOut = -1
+  for (const p of Object.values(table)) {
+    if (!p || !isFiniteNumber(p.in) || !isFiniteNumber(p.out) || p.in < 0 || p.out < 0) continue
+    if (p.in > maxIn) maxIn = p.in
+    if (p.out > maxOut) maxOut = p.out
+  }
+  if (maxIn < 0 || maxOut < 0) {
+    throw new Error('料金表に使える行がありません（知らないモデルの見積もりを導けない）')
+  }
+  return { in: maxIn, out: maxOut }
+}
+
+/** 料金表に無いモデルの見積もり単価（¥/100万トークン）。名前は互換のため残す。値は料金表から導く（上の注記）。 */
+export const DEFAULT_PRICE: Price = unknownModelPriceFrom(PRICING)
+
+/**
+ * そのモデルの料金を Koto の料金表が知っているか。
+ * 自分自身が持つキーだけを見る（'constructor' や '__proto__' のような id で、Object の
+ * プロトタイプの中身を料金として拾わない）。
+ */
+export function isPriceKnown(model: string): boolean {
+  return Object.prototype.hasOwnProperty.call(PRICING, model)
+}
+
+export function priceFor(model: string): Price {
+  return isPriceKnown(model) ? PRICING[model] : DEFAULT_PRICE
+}
+
+/**
+ * モデル選択（設定画面）でモデル名の後ろに添える料金の表示（**表示の元はここ1つ**・掟10）。
+ * 料金表にあるモデルは従来どおりの書式（1文字も変えない）。
+ * 料金表に無いモデルは**料金の数字を出さない**（知らない料金を、そのモデルの料金として見せない）。
+ * 「実際より高い」とは言わない（上の限界のとおり、断定できない）。何で数えるかだけを言う。
+ */
+export function priceLabel(model: string): string {
+  if (!isPriceKnown(model)) return '（Koto の料金表に無いモデル・利用額は表でいちばん高い単価で見積もります）'
+  const p = PRICING[model]
+  return `（入力¥${p.in} / 出力¥${p.out} ・100万トークン）`
+}
+
+/**
+ * モデル別の利用額（設定画面）に添える一言。料金表にあるモデルは空（従来どおり何も添えない）。
+ * 料金表に無いモデルの額は、そのモデルの料金で数えた額ではないので、確かな額のように見せない。
+ *
+ * **何の単価で数えたかは言い切らない**（2026-09-25 検分）。記録済みの額は再計算しないので、
+ * この版より前に記録した分は旧既定値（15/75・MedLLM では6倍安かった）で数えたままである。
+ * 「いちばん高い単価で数えた額です」と添えると、**安く数えた額を安全側の額だと思わせる**。
+ * いつの記録にも正しい「そのモデルの料金で数えた額ではない」だけを言う。
+ */
+export function usageCostNote(model: string): string {
+  return isPriceKnown(model) ? '' : '料金表に無いモデルのため、このモデルの料金で数えた額ではありません（見積もり）'
+}
+
+/**
+ * 設定画面「単価について」に添える、知らないモデルの数え方の説明。
+ * ここで数字を出すのは「見積もりに使う単価」としてであって、どれかのモデルの料金としてではない。
+ */
+export function unknownPriceRuleText(): string {
+  return `料金表に無いモデルは、入力・出力それぞれ表でいちばん高い単価（入力 ¥${DEFAULT_PRICE.in} / 出力 ¥${DEFAULT_PRICE.out}）で見積もります。` +
+    'それより高いモデルだと、実際より少なく数えることがあります。'
 }
 
 // ── 予算設定 ────────────────────────────────────────────────────
@@ -263,13 +352,34 @@ export function budgetStatusForKeyOf(settings: BudgetSettings, months: UsageStor
   return { limit, cost, ratio, over: ratio >= 1, warn: ratio >= settings.warnRatio }
 }
 
-/** リクエスト前のチェック（使用中キーの上限で判定）。メッセージ文言は移設前と一字一句同じ。 */
-export function checkBeforeRequestOf(settings: BudgetSettings, months: UsageStore, month: string, fp: string): { allowed: boolean; message?: string } {
-  if (!settings.enforce) return { allowed: true }
+/**
+ * 指定キーが、今月の実効上限（キー個別 → 既定の順に解決）に達しているか。
+ * checkBeforeRequestOf が「止める」と判定する基準そのもの（掟10: 二重に定義しない）。
+ * SettingsModal のキー別表示（W-20）はこれを使い、全キー合計 vs 既定上限（budgetStatusOf）という
+ * 別の基準で「上限に達しています」と言わない（実際に止まる基準と画面の言い分を一致させる）。
+ */
+export function isKeyOverLimitOf(settings: BudgetSettings, months: UsageStore, month: string, fp: string): boolean {
+  const limit = effectiveLimitOf(settings, fp)
+  if (limit == null) return false // 無制限
+  const cost = computeUsageForKey(months, month, fp).costYen
+  return cost >= limit
+}
+
+/**
+ * リクエスト前のチェック（使用中キーの上限で判定）。
+ * 「止める」場合のメッセージ文言は移設前と一字一句同じ。
+ *
+ * W-21（2026-09-27決定・別案）: 「上限に達したら停止」（settings.enforce）がオフでも、
+ * 実効上限を超えていれば止めずに `warning` を返す（作業中の知らせを、設定画面を開いたときだけに
+ * 限らない）。enforce がオンで止めるときは、これまでどおり allowed:false・message のみを返す
+ * （warning は付けない＝呼び出し側の「止まったかどうか」判定を変えない）。
+ */
+export function checkBeforeRequestOf(settings: BudgetSettings, months: UsageStore, month: string, fp: string): { allowed: boolean; message?: string; warning?: string } {
   const limit = effectiveLimitOf(settings, fp)
   if (limit == null) return { allowed: true } // 無制限
   const cost = computeUsageForKey(months, month, fp).costYen
-  if (cost >= limit) {
+  if (cost < limit) return { allowed: true }
+  if (settings.enforce) {
     return {
       allowed: false,
       message:
@@ -277,7 +387,45 @@ export function checkBeforeRequestOf(settings: BudgetSettings, months: UsageStor
         `認証情報（⇧⌘,）でこのキーの上限を変更するか、別のキーに切り替えてください。`,
     }
   }
-  return { allowed: true }
+  return {
+    allowed: true,
+    warning:
+      `⚠️ このAPIキーの今月の利用額（推定 ¥${cost.toFixed(1)}）が上限 ¥${limit} を超えています。` +
+      `止める設定ではないため、このまま続けられます（止めたいときは 設定（⌘,）の「上限に達したら さくらのAI Engine を止める」をオンにしてください）。`,
+  }
+}
+
+// ── W-53（2026-09-27決定・別案）: Claude の目安額（USD）を超えたら、チャット欄にも知らせる ──────
+// これまでは設定画面（⌘,）を開いたときにしか分からなかった（isOverClaudeWarnThreshold は
+// claudeMode.ts にあり、設定画面の表示だけに使われている）。ここでは「チャット欄に出す」ための
+// 判定・文面を shared の純関数として持ち、呼び出し（チャット側での表示）は useAiChat.ts／
+// ChatPanel.tsx 側で行う（掟7: チャットの送信の流れを変えるのはそちら側だけ）。送信は止めない。
+//
+// ⚠️ 境界は claudeMode.ts の isOverClaudeWarnThreshold（`>`・ちょうどは超過ではない）と
+// 必ず揃える（掟10: 二重に定義しない）。claudeMode.ts は renderer 専用（localStorage 依存）で
+// shared からは import できないため、ここでは同じ境界のロジックを持つに留める
+// （tests/claudeAgent.test.ts:669 がその境界を固定しているので、そちらは変えない）。
+// 本来は isOverClaudeWarnThreshold の中身をこちらへ移し、claudeMode.ts 側は re-export に
+// するのが望ましい（claudeMode.ts は担当外のため、この整理は handoff で引き継ぐ）。
+
+/** Claude の今月の利用額（USD）が、設定した目安額（USD）を超えているか。未設定（null）なら常に false。
+ *  境界は claudeMode.ts の isOverClaudeWarnThreshold と同じ `>`（ちょうど＝超過ではない）。 */
+export function isClaudeCostOverWarnUsd(costUsd: number, warnUsd: number | null): boolean {
+  if (warnUsd == null || !Number.isFinite(warnUsd) || warnUsd <= 0) return false
+  if (!Number.isFinite(costUsd)) return false
+  return costUsd > warnUsd
+}
+
+/**
+ * 超えているときにチャット欄へ出す注記（純関数・文面のみ）。超えていなければ null。
+ * 送信は止めない（W-53の決定どおり）。
+ */
+export function claudeChatWarningText(costUsd: number, warnUsd: number | null): string | null {
+  if (!isClaudeCostOverWarnUsd(costUsd, warnUsd)) return null
+  return (
+    `⚠️ Claude の今月の利用額（$${costUsd.toFixed(4)}）が、設定した目安額（$${warnUsd}）を超えています。` +
+    `送信は止めていません。金額は 設定（⌘,）で確認できます。`
+  )
 }
 
 /**

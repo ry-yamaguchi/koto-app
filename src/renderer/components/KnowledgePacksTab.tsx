@@ -140,7 +140,7 @@ export default function KnowledgePacksTab({ apiKey, onUploaded }: Props) {
             この資料で増える費用: 会話1回あたり最大 約{costPerTurnYen.toFixed(1)}円
             （{modelLabel(model)}・関連する話題のときだけ、最大{maxCharsPerTurn.toLocaleString()}字が追加されます）。
           </p>
-          <p>取り込みは一回だけです。索引化した資料は、会話のたびに全文が送られるわけではありません。</p>
+          <p>取り込むのは最初の一回だけです。会話のたびに資料の全文が送られることはありません（関係する部分だけが送られます）。</p>
         </div>
       </details>
 
@@ -212,7 +212,7 @@ export default function KnowledgePacksTab({ apiKey, onUploaded }: Props) {
       })}
 
       <p className="text-[11px] text-ink-muted leading-relaxed">
-        取得したページは私的利用の範囲でご利用ください。資料には出典URLが記録されます。アップロードした資料はさくらのクラウド（AI Engine）に保存されます。
+        取得したページは私的利用の範囲でご利用ください。資料には出典URLが記録されます。取り込んだ資料は、さくらのAI Engine（さくらインターネットのサーバー）に保存されます。
       </p>
     </div>
   )

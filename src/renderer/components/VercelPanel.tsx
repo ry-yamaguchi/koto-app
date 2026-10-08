@@ -6,12 +6,17 @@ import { getTargetProfile } from '../targetProfiles'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import CopyButton from './CopyButton'
 import { askAiAboutCheck } from '../../shared/preflight'
-import { askAiAboutFailure } from '../../shared/askAi'
+import { askAiAboutFailure, askAiAboutNotice } from '../../shared/askAi'
 import { publishButtonLabel } from '../../shared/publishLabels'
 import { readPublishTargets } from '../publishRecord'
+import { mergeProjectMeta } from '../projectMeta'
 import AccessKeySection from './AccessKeySection'
+import { OpProgressCard, OpForeignNote, OpWarnings } from './HanamiiPanel'
+import { useProjectOpsView } from '../hooks/useProjectOpsView'
+import { isVercelOp } from '../projectOpsView'
+import { clockText, opWarningText } from '../../shared/opsText'
 
-// Vercel（海外PaaS）への公開パネル。HanamiiPanel と同じ流儀を踏襲する:
+// Vercel（海外のクラウドサービス）への公開パネル。HanamiiPanel と同じ流儀を踏襲する:
 // トークン（＋チームID）は「認証情報」に一元登録し（方式B）、このパネルは使う瞬間に読んで
 // main へ引数で渡す（main には保存しない）。
 // 流れ: 認証情報でトークン登録 → 公開名入力 → 公開（IDEがファイルをアップロード→デプロイ作成→
@@ -47,8 +52,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
   const [tokenId, setTokenId] = useState('')
   const [publishName, setPublishName] = useState('')
   const [publishing, setPublishing] = useState(false)
-  const [progress, setProgress] = useState('')
-  const [result, setResult] = useState<{ url: string | null; readyState: string | null } | null>(null)
+  // 局所のメッセージ（トークン無し・確認の案内・記録が作られない断り方）。公開の結果・お知らせは main の記録から出す（下の ops）。
   const [msg, setMsg] = useState('')
   const [msgDetail, setMsgDetail] = useState('')
   // 公開ボタンの文言（判断8・publishButtonLabel）に使う「既に公開済みか」。
@@ -68,19 +72,16 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
   }, [metaPath])
 
   const saveVercelMeta = useCallback(async (v: { tokenId?: string; name?: string }, publishRecord?: { publishedAt: string | null; url: string | null }) => {
-    const m = await readMeta()
-    const next = {
-      ...m,
+    // 差分だけを main へ渡す（書く直前にディスクから読み直して当てる・src/renderer/projectMeta.ts）。
+    await mergeProjectMeta(projectDir, {
       target: 'vercel',
       publish: {
-        ...(m.publish ?? {}),
-        vercel: { ...(m.publish?.vercel ?? {}), ...v },
-        ...(publishRecord ? { targets: { ...(m.publish?.targets ?? {}), vercel: publishRecord } } : {}),
+        vercel: v,
+        ...(publishRecord ? { targets: { vercel: publishRecord } } : {}),
       },
-    }
-    await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(next, null, 2))
+    })
     window.dispatchEvent(new Event('sakura-meta-changed'))
-  }, [metaPath, readMeta])
+  }, [projectDir])
 
   // トークン一覧を読み込み、選択中の tokenId を決める（優先順位: メタの保存値 → ストアの使用中 → 先頭）
   const loadTokenList = useCallback(async (preferredId?: string | null) => {
@@ -156,7 +157,34 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
 
   // **押さなくても出す。** Vercel の失敗は静かなので、開いた時点で知らせる
   // （何も作らず何も送らない、手元のファイルを読むだけの確認）。
-  useEffect(() => { void runPreflight() }, [runPreflight])
+  //
+  // ── 保存場所を用意した直後に取り直す（2026-09-24 検分）──────────────────
+  // この確認は「保存場所をまだ用意していないため、いまのままではデータは残りません。
+  // 上の『保存場所を用意する』から用意してください。」と、**同じ画面のボタンを名指し**する。
+  // ところが言われたとおり用意しても（月額が始まっても）、ここは開いた時点の判断を
+  // 出し続けていた。**払ったのに直っていない**ように見えるうえ、その行の「AIに相談する」は
+  // 「保存場所をまだ用意していない」という嘘を AI へ送り、直っているものを直させにいく。
+  // 隣の2枚（AppRunPanel・AppRunDedicatedPanel）は同じ出来事を受けて取り直している。
+  useEffect(() => {
+    void runPreflight()
+    const onPrepared = () => { void runPreflight() }
+    window.addEventListener('sakura:storage-prepared', onPrepared)
+    return () => { window.removeEventListener('sakura:storage-prepared', onPrepared) }
+  }, [runPreflight])
+
+  // ── 公開の進み具合と結果は、main の記録から出す（2026-09-29）────────────────────────────
+  // 公開の本体は main の1回の IPC で最後まで進み、記録も main が書く。ダイアログを閉じても処理は止まらない。
+  // 失われていたのは**画面の表示だけ**（進み具合・結果・お知らせ）だった。main が持つ処理の記録
+  // （window.electronAPI.projectOps）を読んで、開き直した画面にも続きと結果を出す。
+  // 進み具合は従来 `vercel.onProgress` で受けていたが、あれは**開いている間しか届かない**ので、記録に一本化した。
+  const ops = useProjectOpsView(projectDir, isVercelOp, (rec) => {
+    // 公開できた記録を見たら、ボタンの文言（更新）を合わせる。main が書いた公開記録を、隣の画面にも知らせる。
+    if (rec.result?.ok) setPublished(true)
+    window.dispatchEvent(new Event('sakura-meta-changed'))
+  })
+  const publishRunning = publishing || !!ops.ownRunning
+  // 同じプロジェクトでは1つずつしか走らせない（main の鍵）。別の公開先の操作が走っている間も押せない。
+  const locked = publishRunning || !!ops.running
 
   const publish = async () => {
     setMsg(''); setMsgDetail('')
@@ -169,38 +197,60 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
       return
     }
     const name = safeName(publishName.trim() || projName)
-    setPublishing(true); setResult(null); setProgress('公開を開始しています…')
-    // 進捗を購読（アップロード n/N・ビルド中…）。finally で必ず購読解除＆publishing解除する
-    // ＝どんな失敗経路でもボタンが「公開中…」で固まらないようにする。
-    const unsubscribe = window.electronAPI.vercel.onProgress((m) => setProgress(m))
+    // この公開を頼んだ時刻。main の記録の startedAt と同じ時計（同じパソコン）なので、
+    // 「この公開の記録が残ったか」を、返り値のあとで確かめるのに使う。
+    const askedAt = Date.now()
+    setPublishing(true); ops.clearShown()
     // 実行中フラグ（終了確認ダイアログ用）。中断・失敗でも必ず解除されるよう最外の finally で呼ぶ。
     const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
       const r = await window.electronAPI.vercel.publish(projectDir, { token, teamId: teamId ?? undefined, name })
-      if (!r.ok) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? ''); return }
-      setResult({ url: r.url ?? null, readyState: r.readyState ?? null })
+      // 結果（成功・失敗・お知らせ）は main の記録から出す。返り値をここで並べ直さない:
+      // 同じ結果が、閉じて開き直した画面にも同じ形で出るようにするため（二重に見えることも無いように）。
+      // ただし**記録が作られない断り方**がある（同じプロジェクトで別の操作が走っている・トークン無し）。
+      // 返り値のあとで記録を読み直し、この公開の記録が無いときだけ、返り値の文を出す。
+      if (!r.ok) {
+        await ops.sync()
+        if (!ops.didFinishSince('vercel:publish', askedAt)) { setMsg(r.message ?? '公開に失敗しました'); setMsgDetail(r.detail ?? '') }
+        return
+      }
       setPublished(true)
       // 統一公開記録（publish.targets）と公開開始マーカーの後片づけは main 側（vercel:publish）が
       // 済ませている（roadmap #20・main は1 invoke で完走するため、窓を閉じても記録が残る）。
       // ここでは設定値（tokenId/name）だけを保存する。saveVercelMeta の readMeta→write が
       // main の書いた記録を読み直して保持し、sakura-meta-changed で画面へ反映する。
-      await saveVercelMeta({ tokenId, name })
+      try {
+        await saveVercelMeta({ tokenId, name })
+      } catch (e: any) {
+        // 設定の保存に失敗しても、公開の結果は記録が伝える。ここで黙ると、設定が消えている理由が分からない。
+        setMsg(`公開は終わりましたが、設定（トークンの選択・公開名）を保存できませんでした: ${e?.message ?? String(e)}`)
+      }
+      await ops.sync()
     } catch (e: any) {
-      setMsg(`公開処理でエラーが発生しました: ${e?.message ?? String(e)}`)
+      // main の本体が例外で終わったときも記録は残る（予期しない失敗として）。残っていなければ、ここで伝える。
+      await ops.sync()
+      if (!ops.didFinishSince('vercel:publish', askedAt)) setMsg(`公開処理でエラーが発生しました: ${e?.message ?? String(e)}`)
     } finally {
-      unsubscribe()
       setPublishing(false)
-      setProgress('')
       endActivity()
     }
   }
 
+  // 進み具合・別の操作の知らせ・結果（**公開のボタンのすぐ下**に出す。トークンが無い間も結果は見失わない）。
+  const opsBlock = (
+    <>
+      {ops.ownRunning && <OpProgressCard rec={ops.ownRunning} />}
+      {ops.foreignRunning && <OpForeignNote rec={ops.foreignRunning} />}
+      {ops.shown.map(rec => <VercelOpResult key={rec.startedAt} rec={rec} />)}
+    </>
+  )
+
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
-        <p className="text-sm font-semibold text-ink">▲ Vercel（海外PaaS）で公開</p>
+        <p className="text-sm font-semibold text-ink">▲ Vercel（海外のクラウドサービス）で公開</p>
         <p className="text-xs text-ink-secondary leading-relaxed">
-          静的サイト／フロントエンド向けの海外PaaS。IDEがプロジェクトのファイルをアップロードし、Vercel側でビルド・公開します。
+          ページを見せるだけのサイト向けで、サーバーで動き続けるアプリは扱えません。Koto がプロジェクトのファイルをアップロードし、Vercel 側でビルド・公開します。
         </p>
         {getTargetProfile('vercel').serviceUrl && (
           <p className="text-[11px] text-ink-muted">
@@ -301,42 +351,113 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
               value={publishName}
               onChange={e => setPublishName(e.target.value)}
               placeholder={safeName(projName)}
-              disabled={publishing}
+              disabled={publishRunning}
               className="mt-1 w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink placeholder-ink-muted outline-none focus:border-sakura disabled:opacity-50"
             />
             <p className="mt-1 text-[11px] text-ink-muted leading-relaxed">
-              同じ名前で公開し直すと、Vercel側で同じプロジェクトの本番デプロイとして更新されます。
+              同じ名前で公開し直すと、Vercel 側で同じプロジェクトの本番の公開として更新されます（Vercel ではこれを「本番デプロイ」と呼びます）。
             </p>
           </div>
           <button
             onClick={publish}
-            disabled={publishing}
+            disabled={locked}
             className={`w-full rounded-lg px-4 py-2.5 text-sm font-semibold hover:opacity-90 disabled:opacity-40 ${
               preflight && preflight.canPublish === false
                 ? 'bg-overlay text-brand-red border border-brand-red/60'
                 : 'sakura-gradient text-white'
             }`}
-          >{publishing
-            ? (progress || '公開中…（アップロード→ビルド。数十秒〜数分かかることがあります）')
+          >{publishRunning
+            ? '公開中…（アップロード→ビルド。数十秒〜数分かかることがあります）'
             : confirmBroken ? '⚠️ それでも公開する' : publishButtonLabel(published)}</button>
 
-          {result && (
-            <div className="rounded-lg border border-line bg-overlay p-3 space-y-1">
-              <p className="text-xs text-ink-secondary">
-                状態: {result.readyState === 'READY' ? '✅ 公開済み' : result.readyState ?? '—'}
-              </p>
-              {result.url && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <a href={result.url} className="inline-block text-sm text-sakura hover:underline break-all font-semibold">🌐 {result.url}</a>
-                  <CopyButton text={result.url} title="公開URLをコピー" />
-                </div>
-              )}
-            </div>
-          )}
+          {opsBlock}
         </section>
       )}
 
+      {/* トークンを消した・まだ読めていない間も、進み具合と結果は見失わない（公開の節ごと隠れるため、ここに出す）。 */}
+      {!token && (ops.ownRunning || ops.foreignRunning || ops.shown.length > 0) && <div className="space-y-3">{opsBlock}</div>}
+
       {msg && <ErrorMessageBlock msg={msg} detail={msgDetail} />}
+    </div>
+  )
+}
+
+/**
+ * 終わった Vercel の公開1件を、結果と（成功していれば）お知らせとして出す。
+ *
+ * ── 成功のお知らせを、失敗の枠に入れない（2026-09-24 検分の指摘3）──────────────────────────
+ * 初回公開の案内（「もう一度『公開する』を押してください」など）は、**公開が成功したうえでの**次にすべきこと。
+ * 失敗専用の枠（ErrorMessageBlock）に出すと、🤖ボタンが AI へ「公開で次の失敗が出ました」と送り、
+ * 起きていない失敗の原因探しが始まって、動いているものを直そうとする。
+ * だから成功の記録の知らせは **URL の近く・結果の枠の中**に PublishNoticeBlock（成功前提の文面）で出し、
+ * 失敗の記録だけを ErrorMessageBlock で出す。記録の warnings（main が返り値の notice を集めたもの）が、
+ * 閉じて開き直した画面でも見逃されない。
+ */
+function VercelOpResult({ rec }: { rec: ProjectOpRecordShape }) {
+  const res = rec.result
+  const head = `🚀 公開の結果（${clockText(rec.startedAt)} に始まった操作）`
+  if (!res) {
+    return (
+      <div className="space-y-2">
+        <p className="text-[11px] text-ink-muted">{head}</p>
+        <p className="text-xs text-ink-secondary leading-relaxed">結果を読み取れませんでした。Vercel の管理画面で状態を確かめてください。</p>
+      </div>
+    )
+  }
+  if (!res.ok) {
+    return (
+      <div className="space-y-2">
+        <p className="text-[11px] text-ink-muted">{head}</p>
+        <ErrorMessageBlock msg={res.message ?? '公開に失敗しました'} detail={res.detail ?? ''} />
+        <OpWarnings warnings={res.warnings ?? []} />
+      </div>
+    )
+  }
+  const readyState = typeof res.extra?.readyState === 'string' ? res.extra.readyState : null
+  const lines = res.lines ?? []
+  return (
+    <div className="rounded-lg border border-line bg-overlay p-3 space-y-1">
+      <p className="text-[11px] text-ink-muted">{head}</p>
+      <p className="text-xs text-ink-secondary">
+        状態: {readyState === 'READY' ? '✅ 公開済み' : readyState ?? '—'}
+      </p>
+      {res.url && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <a href={res.url} className="inline-block text-sm text-sakura hover:underline break-all font-semibold">🌐 {res.url}</a>
+          <CopyButton text={res.url} title="公開URLをコピー" />
+        </div>
+      )}
+      {lines.length > 0 && (
+        <ul className="space-y-0.5">
+          {lines.map((l, i) => <li key={i} className="text-[11px] text-ink-muted leading-relaxed whitespace-pre-wrap break-all select-text">{l}</li>)}
+        </ul>
+      )}
+      {(res.warnings ?? []).map((n, i) => <PublishNoticeBlock key={i} notice={opWarningText(n)} />)}
+    </div>
+  )
+}
+
+/**
+ * 公開の**お知らせ**ブロック（2026-09-24 検分の指摘3）。**これは失敗ではない。**
+ *
+ * 初回公開でデータの保存の設定を置き直したときなど、「公開はできたが次にすべきことがある」を出す。
+ * 以前はこれを `msg` に入れて `ErrorMessageBlock`（失敗専用）で出していたため、URL の下に失敗の枠が
+ * 並び、🤖ボタンが AI へ「公開で次の失敗が出ました」と送っていた（起きていない失敗の原因探しが始まる）。
+ * 文面は `askAiAboutNotice`（成功前提・「動いているものを直そうとしないでください」付き）を使う。
+ */
+function PublishNoticeBlock({ notice }: { notice: string }) {
+  return (
+    <div className="rounded-lg border border-brand-yellow/70 bg-elevated p-2.5 space-y-2">
+      <div className="flex items-start gap-2">
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">ℹ️ {notice}</p>
+        <CopyButton text={notice} title="お知らせをコピー" />
+      </div>
+      <button
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text: askAiAboutNotice('Vercel', notice) } }))
+        }}
+        className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+      >🤖 次にすべきことをAIに聞く</button>
     </div>
   )
 }
@@ -373,7 +494,7 @@ function ErrorMessageBlock({ msg, detail }: { msg: string; detail: string }) {
   )
 }
 
-// 🔰 初めて公開する方へ（折りたたみ）。トークン発行手順・国外データ・常駐サーバ不可の注意。
+// 🔰 初めて公開する方へ（折りたたみ）。トークン発行手順・アプリが動く場所・常駐サーバ不可の注意。
 function VercelFirstTimeGuide() {
   return (
     <details className="rounded-xl border border-brand-yellow/70 bg-surface p-3">
@@ -403,7 +524,15 @@ function VercelFirstTimeGuide() {
           <li>チームアカウントで使う場合は、チームIDも合わせて登録する（個人アカウントなら空欄でよい）</li>
         </ol>
         <div className="bg-elevated border border-line rounded-lg px-2.5 py-2 space-y-1">
-          <p>⚠️ <b className="text-ink-secondary">データは国外（Vercelの海外サーバ）に置かれます。</b>国内保管が必要な場合は HANAMII やさくらのAppRun を選んでください。</p>
+          {/*
+            **「データは国外」は 2026-09-24 から誤り**（検分の指摘2）。この日から Koto は
+            さくらのオブジェクトストレージ（日本国内）の設定を Vercel へ渡すので、
+            データ自体は国内に置かれる。国外なのは**アプリが動く場所**だけ。
+            同じ画面の公開前チェックは「データが置かれるのは日本国内です」と出るため、
+            直さないと利用者は正反対の2文を同時に読むことになり、条件を満たしている Vercel を
+            この一文だけを理由に諦める。targetProfiles.ts の説明文と揃える。
+          */}
+          <p>⚠️ <b className="text-ink-secondary">アプリが動くのは国外（Vercelの海外サーバ）です。</b>データの保存を使う場合、データ自体はさくらのオブジェクトストレージ（日本国内）に置かれます。アプリの実行そのものを国内にしたい場合は HANAMII やさくらのAppRun を選んでください。</p>
           <p>⚠️ <b className="text-ink-secondary">常駐サーバは動きません。</b>Vercelは静的サイト・サーバーレス関数向けです（Node.jsのlisten等は不可）。</p>
         </div>
       </div>

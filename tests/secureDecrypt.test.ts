@@ -33,11 +33,13 @@ describe('読めなかったことを、利用者に伝える', () => {
 
   it('★ 「未登録」と見せたまま黙って上書きさせない', () => {
     expect(modal).toContain('setUnreadable(true)')
-    expect(modal).toContain('保存されている設定を読み取れませんでした')
-    expect(modal).toContain('元の設定は失われます')
+    // W-58（2026-09-27 決定・案2）: 文は「キーや設定」と書く（画面の上に1回だけ出す）
+    expect(modal).toContain('保存されているキーや設定を読み取れませんでした')
+    expect(modal).toContain('元のキーや設定は失われます')
   })
 
+  // W-58（2026-09-27 決定・案2）: 「署名の異なるビルド」という専門用語ではなく、平易な文にする
   it('原因の見当（別の版で保存された）まで書く', () => {
-    expect(modal).toContain('署名の異なるビルド')
+    expect(modal).toContain('別の版の Koto で保存した可能性があります')
   })
 })

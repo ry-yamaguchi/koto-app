@@ -164,7 +164,8 @@ describe('AppRunDedicatedPanel.tsx: 構成図は⑤「クラスタを作成す�
 
   it('diagram の描画から「クラスタを作成する」ボタンまでの間に、他の入力欄を挟んでいない', () => {
     const diagramAt = panel.indexOf('{diagram.lines.join')
-    const buttonAt = panel.indexOf(">{creating ? 'クラスタ→ASG→LB の順で作成しています…' : 'クラスタを作成する'}</button>")
+    // W-96（2026-09-27 決定）: 「ASG」「LB」は略さず「オートスケーリンググループ」「ロードバランサ」と書く
+    const buttonAt = panel.indexOf(">{creating ? 'クラスタ→オートスケーリンググループ→ロードバランサの順で作成しています…' : 'クラスタを作成する'}</button>")
     expect(diagramAt).toBeGreaterThan(0)
     expect(buttonAt).toBeGreaterThan(diagramAt)
     const between = panel.slice(diagramAt, buttonAt)

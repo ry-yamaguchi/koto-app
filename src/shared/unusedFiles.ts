@@ -18,6 +18,7 @@
 // このモジュールは fs/electron/DOM に依存しない純粋な定義のみ（renderer からも main からも使える）。
 
 import { DATA_LAYER_FILES } from './objectStorage'
+import { publishExcludedDirNames } from './publishExclude'
 
 /**
  * 参照が無くても要る慣習ファイル（常に「使用中」扱いにする）。
@@ -162,8 +163,24 @@ export function findUnusedFiles(
     texts.push({ rel, lower: content.toLowerCase() })
   }
 
+  // 公開から外すフォルダの中身は、**判定に掛ける前に落とす**（2026-09-24）。
+  //
+  // ── なぜ二重に守るか ──────────────────────────────────────────────
+  // 実際に画面へ出る経路（main/ipc/unused.ts）は `publishView: true` でファイルを
+  // 集めるので、`.koto-data`（アプリのデータ）や `.sakuraide`（会話の記録）の中へは
+  // そもそも入らない。**だから今は出ない。** だが守りが「集める段」にしかなく、
+  // **この判定そのものは渡されれば「使われていない」と答える**。
+  // 呼び口が1つ増えた瞬間に、利用者が「素材置き場へ移動」を押して
+  // **アプリのデータを失う**（2026-09-23 に実際に起きた形）。
+  // 掟10 が3度記録している「一元化したと書いてあることと、全経路が通っていることは別」。
+  // **新しい定義は作らない** ——公開と同じ `publishExcludedDirNames()` をそのまま使う。
+  const excludedDirs = publishExcludedDirNames()
+  const inExcludedDir = (rel: string): boolean =>
+    rel.split('/').slice(0, -1).some(seg => excludedDirs.has(seg))
+
   const unused: string[] = []
   for (const rel of files) {
+    if (inExcludedDir(rel)) continue
     if (ALWAYS_USED_RE.test(rel)) continue
     // Koto が置いた「データの保存」の部品。**AI が書き直す前は参照が0件**なので、
     // ここで守らないと置いた直後に片づけの対象へ出る（2026-09-23 検分）

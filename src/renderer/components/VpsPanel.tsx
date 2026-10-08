@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { getVpsCredentials, getVpsCredentialsById, listVpsEntries, saveVpsKeypair } from './CredentialsModal'
 import { beginActivity } from '../activity'
 import CopyButton from './CopyButton'
+import { mergeProjectMeta } from '../projectMeta'
 
 // さくらのVPS 公開機能 V1a: 「① 接続」のみ（②初期セットアップ・③公開は次フェーズ。ここでは作らない）。
 // docs/vps-plan.md の「決定事項（2026-07-18）」に基づき、接続は2ルート:
@@ -54,18 +55,10 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
   // HanamiiPanel/VercelPanel と同じく、このプロジェクトの公開先を 'sakura-vps' として記録する
   // （PublishModal を再度開いたときに同じパネルへ戻れるようにするため）。
   const saveVpsMeta = useCallback(async (v: Record<string, unknown>) => {
-    const m = await readMeta()
-    const next = {
-      ...m,
-      target: 'sakura-vps',
-      publish: {
-        ...(m.publish ?? {}),
-        vps: { ...(m.publish?.vps ?? {}), ...v },
-      },
-    }
-    await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(next, null, 2))
+    // 差分だけを main へ渡す（書く直前にディスクから読み直して当てる・src/renderer/projectMeta.ts）。
+    await mergeProjectMeta(projectDir, { target: 'sakura-vps', publish: { vps: v } })
     window.dispatchEvent(new Event('sakura-meta-changed'))
-  }, [metaPath, readMeta])
+  }, [projectDir])
 
   const applyCred = (c: Awaited<ReturnType<typeof getVpsCredentials>>) => {
     setHostInfo(c && c.host ? { host: c.host, port: c.port, user: c.user } : null)
@@ -300,7 +293,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
               {!keys ? (
                 <>
                   <p className="text-xs text-ink-secondary leading-relaxed">
-                    IDEが鍵ペアを生成し、公開鍵だけを埋め込んだ初期設定スクリプトを作ります。パスワードは一切扱いません。
+                    Kotoが鍵ペアを生成し、公開鍵だけを埋め込んだ初期設定スクリプトを作ります。パスワードは一切扱いません。
                   </p>
                   <button
                     onClick={ensureKey}

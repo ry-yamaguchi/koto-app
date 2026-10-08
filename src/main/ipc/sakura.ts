@@ -1,4 +1,4 @@
-// さくらのAI Engine 呼び出しの IPC（sakura:*）。ストリーミング/abort管理の状態（activeChatStreams）はモジュール内に保持する。
+// さくらのAI Engine 呼び出しの IPC（sakura:*）。abort管理の状態（activeChats・ストリーミングと非ストリーミングで共有）はモジュール内に保持する。
 // deps は使わない（apiKey は都度引数で渡される＝方式B）。
 //
 // ── B'-3b（土台の入れ替え・main側 その1）─────────────────────────────
@@ -6,7 +6,7 @@
 // ストリーミングのロジック本体）は electron 非依存の src/main/sakura/engine.ts へ移した
 // （main プロセス内で直接ループを走らせる chat/turnRunner.ts からも同じ実体を呼ぶため）。
 // ここに残る2つのハンドラは、その関数を呼んで wc.send する薄い包みに書き直してある
-// （activeChatStreams の管理・チャンネル名・成功/失敗の形は従来のまま）。
+// （abort管理・チャンネル名・成功/失敗の形は従来のまま）。
 // sakuraClient・isContextLimitError・safeMaxTokens は既存の呼び出し元（claude/tools.ts）が
 // このファイルから import しているため、re-export して壊さないようにする（重複定義はしない）。
 import { ipcMain } from 'electron'
@@ -66,20 +66,49 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
     }
   })
 
-  // 非ストリーミングのチャット（プロジェクト生成などで使用）。実体は engine.ts の runSakuraChat。
+  // ── 「⏹ 停止」の置き場（ストリーミングと非ストリーミングで**同じもの**を使う）──────────
+  // 進行中の呼び出しの中断関数を id で保持し、sakura:chat-abort で呼べるようにする。
+  //
+  // ⚠️ ここを2つに分けてはいけない（2026-09-25 検分の指摘4）。
+  // 0.3.50 で engine.ts の runSakuraChat に中断の口（cbs.onAbortReady）を足したとき、
+  // 使ったのは main のターン経路（chat/turnRunner.ts）だけで、**renderer から呼ばれるこの口
+  // （sakura:chat）には配線しなかった**。そのため手動の【🗂 まとめる】は、画面が
+  // 「⏹ で停止できます」と出しているのに押しても何も起きず、最悪およそ600秒
+  // （NON_STREAM_TIMEOUT_MS × 再試行）抜けられなかった。置き場も口も1つにして、
+  // 「片方だけ直る」形を作らない。
+  //
+  // ⚠️ renderer から `sakura.chat` を呼ぶ口は**2つある**（2026-09-25 検分の指摘6）。
+  // 足すときは、増やしたぶんも必ず onStart を渡すこと（`grep -rn 'electronAPI.sakura.chat(' src`）:
+  //   ① src/renderer/hooks/useAiChat.ts の chatOnce（🗂 まとめ作り）
+  //   ② src/renderer/securityCheck.ts の runSecurityCheck（公開前セキュリティチェック）
+  // 指摘4 を直したとき配線したのは①だけで、②は onStart を渡さないまま残っていた
+  // （＝「片方だけ直る」の5度目を作りかけた）。onStart は任意の引数なので、
+  // **渡し忘れても型検査は通る**。増えたら数え直す。
+  const activeChats = new Map<string, { abort: () => void }>()
+
+  // 非ストリーミングのチャット（🗂 まとめ作り・公開前セキュリティチェック）。実体は engine.ts の runSakuraChat。
+  // id は preload が採番して必ず渡す（任意にすると渡し忘れても誰も気づかない＝掟10）。
   ipcMain.handle(
     'sakura:chat',
-    async (_, args: { apiKey: string; model: string; messages: ChatMsg[]; maxTokens?: number; temperature?: number }) => {
-      return runSakuraChat(args)
+    async (_, args: { id: string; apiKey: string; model: string; messages: ChatMsg[]; maxTokens?: number; temperature?: number }) => {
+      const { id } = args
+      try {
+        // ★ runSakuraChat は**リクエストを投げる前に** onAbortReady を呼ぶ（engine.ts の
+        //   「先に中断関数を渡す」）。await より先に登録が終わるので、返事が一度も返ってこない
+        //   相手でも ⏹ が届く。
+        return await runSakuraChat(args, {
+          onAbortReady: (abortFn) => { activeChats.set(id, { abort: abortFn }) },
+        })
+      } finally {
+        activeChats.delete(id)
+      }
     }
   )
 
   // ストリーミングのチャット（チャット/AIパネル）。チャンクをイベントで返す。
-  // 「⏹ 停止」のため、進行中のストリームをIDで保持して中断できるようにする。
+  // 「⏹ 停止」のため、進行中のストリームをIDで保持して中断できるようにする（上の activeChats）。
   // 実体は engine.ts の runSakuraStream。ここは呼んで wc.send するだけの薄い包み
-  // （activeChatStreams の管理・チャンネル名・成功/失敗の形は従来のまま）。
-  const activeChatStreams = new Map<string, { abort: () => void }>()
-
+  // （チャンネル名・成功/失敗の形は従来のまま）。
   ipcMain.handle(
     'sakura:chat-stream',
     async (event, args: { id: string; apiKey: string; model: string; messages: ChatMsg[]; maxTokens?: number; tools?: any[] }) => {
@@ -91,7 +120,7 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
           {
             onDelta: (d) => wc.send(`sakura:chat-chunk:${id}`, d),
             onReasoning: (d) => wc.send(`sakura:chat-reasoning:${id}`, d),
-            onAbortReady: (abortFn) => { activeChatStreams.set(id, { abort: abortFn }) },
+            onAbortReady: (abortFn) => { activeChats.set(id, { abort: abortFn }) },
           },
         )
         // runSakuraStream は正常終了（usage・toolCalls・reasoningText）と、ユーザーによる停止
@@ -101,13 +130,14 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
       } catch (err: any) {
         wc.send(`sakura:chat-error:${id}`, err?.message ?? String(err))
       } finally {
-        activeChatStreams.delete(id)
+        activeChats.delete(id)
       }
     }
   )
 
-  // 進行中のAI応答を停止する
+  // 進行中のAI応答を停止する（ストリーミング・非ストリーミングの両方。id は preload が採番する）。
+  // 登録が無ければ何もしない（すでに終わっている・知らない id）。
   ipcMain.handle('sakura:chat-abort', (_, id: string) => {
-    activeChatStreams.get(id)?.abort()
+    activeChats.get(id)?.abort()
   })
 }

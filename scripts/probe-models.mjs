@@ -19,9 +19,11 @@
  * 答える前に打ち切られて empty/ng になっていた（能力が無いのではなく測れていなかった）。
  * あわせて各テストの completion トークン消費量を記録する（推論の重さの目安になる）。
  */
+// チャット用途でないモデルを外す判定は lib に1つだけ置き、check-models.mjs・check-pricing.mjs と共用する（掟10: 複製しない）
+import { NON_CHAT } from './lib/appConfig.mjs'
+
 const MAX_TOKENS = 512
 const BASE = 'https://api.ai.sakura.ad.jp/v1'
-const NON_CHAT = /whisper|embed|e5-|voicevox|tts|speech|rerank|transcrib/i
 
 const authKey = process.env.SAKURA_API_KEY
 if (!authKey) {

@@ -220,6 +220,21 @@ export function extractProjectIds(data: unknown): { projectId: string | null; de
 /** 実行中アプリの健康状態（runtimeStatus）。値の網羅はしない（healthy か否かのみ画面側で判定）。 */
 export type HanamiiRuntimeStatus = { status: string | null; detail: string | null; syncedAt: string | null }
 
+/**
+ * getProject 応答の `project.latestDeployment.id`（無ければ null）。
+ *
+ * HANAMII 公式 API リファレンス（https://hanamii.jp/docs/api・2026-09-29 に原本を取得して確認）:
+ * `latestDeployment` は `{ id, readyState, errorCode }`。**「現在稼働中の deployment ではなく、直近の
+ * deployment 試行」を表す**——再デプロイ直後は前回の版が latest のことがあり、失敗しても稼働中の版は
+ * 前回のまま。だから「新しい版が READY か」は readyState だけでなく **id が自分の deployment か**まで
+ * 見ないと確かめられない（前回の版の READY を「新しい版が動いた」と読むと、古い保存場所の鍵を早く消す）。
+ * 既存の `extractProjectStatus` は返す形をテストが固定しているので、別の関数にしてある。
+ */
+export function extractLatestDeploymentId(data: unknown): string | null {
+  const id = (data as any)?.project?.latestDeployment?.id
+  return typeof id === 'string' && id ? id : null
+}
+
 /** getProject 応答から 公開URL と readyState、実行中アプリの健康状態（runtime）を取り出す。 */
 export function extractProjectStatus(data: unknown): { url: string | null; readyState: string | null; errorCode: string | null; runtime: HanamiiRuntimeStatus } {
   const p = (data as any)?.project

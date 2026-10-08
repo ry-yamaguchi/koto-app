@@ -2,6 +2,8 @@
 // useAiChat.ts から呼ばれる（掟7: チャット変更は useAiChat.ts のみを修正するが、
 // historyCompact.ts / aiTools.ts と同様に独立した純粋ロジックは別モジュールへ切り出す）。
 
+import { isClaudeCostOverWarnUsd } from '../shared/usageBudget'
+
 /** モードのオン/オフ（既定=オン）。'off' が明示されているときだけ Claude 経路を使わない。 */
 export const CLAUDE_MODE_KEY = 'sakura_claude_mode'
 /** 初回同意フラグ（コード・指示が Anthropic へ送信される旨への同意）。 */
@@ -132,8 +134,9 @@ export function setClaudeMode(enabled: boolean): void {
  *
  * 検出対象は2経路の文言:
  *  (1) SDKストリームの error は main 側 events.ts の describeAssistantError() で**日本語化してから**
- *      renderer に届く。billing_error → 「請求設定に問題があります（Anthropic Console を確認してください）。」
- *      → 「請求設定に問題」で拾う。**events.ts の billing_error の文言を変えたらここも追随すること（相互参照）。**
+ *      renderer に届く。billing_error → 「請求設定に問題があります（Claude Console（platform.claude.com）を
+ *      確認してください）。」→ 「請求設定に問題」で拾う（W-11）。
+ *      **events.ts の billing_error の文言を変えたらここも追随すること（相互参照）。**
  *  (2) chatStart の .catch で来る例外は英語の原文のことがある（credit balance/billing 等）→ 英語語でも拾う。
  * ※ aiTools.ts の formatChatError の 402/billing 分岐とも語を揃える（案内文と検出条件を一致させる）。
  */
@@ -144,8 +147,10 @@ export function isClaudeUsageBlockedError(message: string): boolean {
 
 /** チャット利用不可時（isChatUsable=false）に案内画面へ出す文言。ChatPanel/ChatApp 共通。 */
 export const CHAT_NO_KEY_MESSAGE = 'APIキーが登録されていません。'
-/** 上の案内に続けて示すボタン誘導文。「さくらのAI Engine」「Claude」どちらのキーでも利用開始できる旨を伝える。 */
-export const CHAT_NO_KEY_HINT = '右上の 🔑 ボタンから「さくらのAI Engine」または「Claude」のキーを登録してください。'
+/** 上の案内に続けて示すボタン誘導文。「さくらのAI Engine」「Claude」どちらのキーでも利用開始できる旨を伝える。
+ *  W-1: この画面には「右上の 🔑」は無い（ChatPanel.tsx/ChatApp.tsx とも、直下に「🔑 APIキーを登録する」
+ *  ボタンが実在する）。案内は無い場所ではなく、そのボタンを指す。 */
+export const CHAT_NO_KEY_HINT = '下の「🔑 APIキーを登録する」から、「さくらのAI Engine」または「Claude」のキーを登録してください。'
 
 /**
  * isChatUsable — チャット画面を表示してよいか（さくらのAI EngineキーまたはClaudeキーのいずれかがあれば利用可）。
@@ -255,10 +260,13 @@ export function setClaudeWarnUsd(usd: number | null): void {
 /**
  * 所見8（任意）: 今月のClaude利用額（USD）が警告しきい値を超えているか（警告のみ・送信はブロックしない）。
  * しきい値未設定（null）のときは常に false。
- */
+ *
+ * W-0.3（2026-09-27・掟10の一元化）: 判定の実体は shared/usageBudget.ts の
+ * isClaudeCostOverWarnUsd に一本化した（W-53 でチャット欄向けに同じ境界の判定が要り、
+ * 二重定義になっていた）。**この関数の名前・引数・境界（`>`・ちょうどは超過ではない）は
+ * tests/claudeAgent.test.ts が固定しているため変えていない**（re-export のみ）。 */
 export function isOverClaudeWarnThreshold(costUsdThisMonth: number, warnUsd: number | null): boolean {
-  if (warnUsd == null || !Number.isFinite(warnUsd) || warnUsd <= 0) return false
-  return costUsdThisMonth > warnUsd
+  return isClaudeCostOverWarnUsd(costUsdThisMonth, warnUsd)
 }
 
 /** localStorage の月別コスト累計を読み込み、加算して書き戻す（副作用あり）。 */
@@ -270,19 +278,30 @@ export function recordClaudeCost(costUsd: number): void {
 
 /**
  * ターン末尾の小さなフッタ文言。ブランディング制約: 「Claude Code」表記は使用禁止（「Claude」のみ可）。
- * C2c: 使用したモデルの短いラベルを付記する（例: `🤖 Powered by Claude (Opus 4.8)・$0.1234`）。
+ * C2c: 使用したモデルの短いラベルを付記する（例: `🤖 Powered by Claude (Opus 5)・今回の利用額 約19円（$0.1234）`）。
  * 後方互換は不要（C2b までの「モデル名なし」形式は置き換える）。
  *
- * costUsd が0以下・非有限（NaN等）のときは `$0.0000` ではなく「利用額を取得できませんでした」と表示する。
- * 理由: SDK同梱CLIが知らない新モデルID（CLAUDE_MODELS.md冒頭コメント参照）で送信すると、
- * SDKの実額集計（total_cost_usd）が0のまま返ってくることがあり、「$0.0000」だと無料だったと誤解させるため。
+ * W-102（2026-09-27 作者決定）:
+ * - 成功して costUsd > 0 のとき: 円（概算・`approxJpyFromUsd`）を添える。1円未満は「1円未満」。
+ * - 成功して costUsd が0以下・非有限（NaN等）のとき: 従来どおり「利用額を取得できませんでした」。
+ *   理由: SDK同梱CLIが知らない新モデルID（CLAUDE_MODELS.md冒頭コメント参照）で送信すると、
+ *   SDKの実額集計（total_cost_usd）が0のまま返ってくることがあり、「$0.0000」だと無料だったと誤解させるため。
+ * - エラーで終わり（isError）、かつ costUsd が0以下のとき: 空文字を返す（呼び出し側は吹き出しを出さない）。
+ *   クレジット不足（billing_error）等では Anthropic がリクエストを断っており料金はかかっていない。
+ *   エラーの説明はすでに別の吹き出しで出ているので、「利用額を取得できませんでした」は
+ *   「かかっていないものを取れなかった」と言ってしまう分だけ有害。
+ * - エラーで終わったが costUsd > 0（途中まで使った）ときは、成功時と同じにその金額を出す。
  */
-export function claudeCostFooter(costUsd: number, modelId: string): string {
+export function claudeCostFooter(costUsd: number, modelId: string, isError: boolean = false): string {
   const label = claudeModelShortLabel(modelId)
-  if (!Number.isFinite(costUsd) || costUsd <= 0) {
+  const hasCost = Number.isFinite(costUsd) && costUsd > 0
+  if (!hasCost) {
+    if (isError) return ''
     return `🤖 Powered by Claude (${label})・利用額を取得できませんでした`
   }
-  return `🤖 Powered by Claude (${label})・$${costUsd.toFixed(4)}`
+  const jpy = approxJpyFromUsd(costUsd)
+  const jpyText = jpy < 1 ? '1円未満' : `約${Math.round(jpy).toLocaleString()}円`
+  return `🤖 Powered by Claude (${label})・今回の利用額 ${jpyText}（$${costUsd.toFixed(4)}）`
 }
 
 /**

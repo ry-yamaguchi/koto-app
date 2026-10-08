@@ -31,6 +31,25 @@ const ACTION_LABEL: Record<BackupFileAction, string> = {
   'pre-restore': '復元前の内容',
 }
 
+// main/backup/store.ts の restoreToSnapshot が「この時点に戻す」の直前に付ける、定型の label。
+// ここだけ固定文字列で突き合わせているのは、同じ「pre-restore主体」の形を、
+// 実際の復元操作の退避分（バッジで表示）と、取り込みなどの起点（名前をそのまま表示）とで
+// 区別する手段がこれしか無いため（W-63）。
+export const RESTORE_BEFORE_LABEL = '「元に戻す」を実行する直前の状態'
+// ファイルの記録がすべて pre-restore／create で、pre-restore を含むもの
+// （復元の退避分か、取り込みなどの起点。どちらも通常の編集の記録とは形が違う）
+export const isAllPreRestoreFiles = (s: BackupSnapshotSummary) => s.files.length > 0
+  && s.files.every(f => f.action === 'pre-restore' || f.action === 'create')
+  && s.files.some(f => f.action === 'pre-restore')
+// 「復元前の自動保存」だけのスナップショットか（実際に「この時点に戻す」を実行した退避分。
+// バッジで区別する）。label が無い、または復元時の定型文のときだけ当たる
+export const isPreRestoreSnapshot = (s: BackupSnapshotSummary) => isAllPreRestoreFiles(s)
+  && (!s.label || s.label === RESTORE_BEFORE_LABEL)
+// 形は復元の退避分と同じだが、label が別に付いている＝取り込みなどの起点。
+// 「「…」の直前」には流し込まず、名前をそのまま出す（流し込むと事実と違う。W-63）
+export const isNamedOriginSnapshot = (s: BackupSnapshotSummary) => isAllPreRestoreFiles(s)
+  && !!s.label && s.label !== RESTORE_BEFORE_LABEL
+
 export default function HistoryModal({ projectDir, onClose, onRestored }: Props) {
   const [snapshots, setSnapshots] = useState<BackupSnapshotSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -77,10 +96,6 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
     }
   }
 
-  // 「復元前の自動保存」だけのスナップショットか（復元操作の退避分。バッジで区別する）
-  const isPreRestoreSnapshot = (s: BackupSnapshotSummary) => s.files.length > 0 && s.files.every(f => f.action === 'pre-restore' || f.action === 'create')
-    && s.files.some(f => f.action === 'pre-restore')
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <div className="w-[560px] max-h-[85vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in" onClick={e => e.stopPropagation()}>
@@ -88,7 +103,7 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
           <SakuraLogo size={24} />
           <div>
             <h2 className="text-lg font-bold text-ink">🕘 履歴（前の状態に戻す）</h2>
-            <p className="text-xs text-ink-secondary">AIの変更・自分の編集の直前を自動で記録しています（直近50件）。選んだ時点の状態にまるごと戻せます</p>
+            <p className="text-xs text-ink-secondary">AIの変更・自分の編集の直前を自動で記録しています（直近50件）。選んだ時点の状態に戻せます。※AIが実行したコマンドでの変更・ゴミ箱へ移したものは記録されません</p>
           </div>
           <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
@@ -103,7 +118,9 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
             <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-3">
               <p className="text-sm font-semibold text-ink">
                 ⚠️ {formatDate(pendingRestore.createdAt)} の時点に戻します
-                {pendingRestore.label && !isPreRestoreSnapshot(pendingRestore) ? `（「${pendingRestore.label}」の直前）` : ''}
+                {pendingRestore.label && !isPreRestoreSnapshot(pendingRestore)
+                  ? (isNamedOriginSnapshot(pendingRestore) ? `（「${pendingRestore.label}」）` : `（「${pendingRestore.label}」の直前）`)
+                  : ''}
               </p>
               <p className="text-sm text-ink-secondary leading-relaxed">
                 この時点より後の変更をすべて取り消し、{pendingRestore.restoreCount}個のファイルが当時の内容に戻ります
@@ -167,10 +184,12 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
                           )}
                         </div>
                         {/* 当時の指示文。これがあると「3つ前のデザイン」を日時ではなく内容で選べる。
-                            「戻す前の自動保存」はバッジで説明済みなので、見出しは出さない（二重になる）。 */}
+                            「戻す前の自動保存」はバッジで説明済みなので、見出しは出さない（二重になる）。
+                            取り込みなどの起点（isNamedOriginSnapshot）は、名前をそのまま出す
+                            （「…の直前」に流し込むと事実と違う。W-63）。 */}
                         {s.label && !isPreRestoreSnapshot(s) && (
                           <p className="text-[11px] text-ink-secondary leading-snug mt-0.5 truncate" title={s.label}>
-                            「{s.label}」の直前
+                            {isNamedOriginSnapshot(s) ? s.label : `「${s.label}」の直前`}
                           </p>
                         )}
                       </div>

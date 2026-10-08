@@ -20,6 +20,10 @@ import { streamTimeoutMessage, compactTimeoutMessage, isSdkTimeoutError, type St
 import { isToolError } from './toolExecCore'
 // 実行できなかった操作の呼び名は、実行中の見出しと**同じ表**から作る（掟10）。
 import { toolActionName, unexecutedToolsNote } from './aiToolsCore'
+// W-47: 既定モデル（Kimi K2.7 Code）を使っている最中は、その名前を「切り替えて」の案内に出さない。
+import { DEFAULT_MODEL } from './modelInfo'
+// W-21: 「上限を超えています」の知らせを、同じ会話・同じキー・同じ月で1度だけにするための鍵（下の usageWarned）。
+import { hashKey, thisMonth } from './usageBudget'
 
 // メッセージの形（renderer の ChatMessage と構造的に同じ。shared から renderer を import しない）
 export type TurnMessage = {
@@ -99,9 +103,10 @@ export type TurnHelpers = {
   condenseReasoning(text: string): string
   hasTextToolMarkup(text: string): boolean
   stripToolMarkup(text: string): string
-  unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean): string | null
+  // currentModel は W-47（既定モデルのときは名前を出さない）。
+  unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean, currentModel?: string): string | null
   claimsFileChange(text: string): boolean
-  unexecutedChangeWarning(claims: boolean, wrote: boolean): string | null
+  unexecutedChangeWarning(claims: boolean, wrote: boolean, currentModel?: string): string | null
   /** 直前の返事と同一の案内段落（②試す等の定型文）を取り除く（2026-08-30・aiToolsCore.ts）。 */
   stripRepeatedGuidance(content: string, prevAssistant: string | null | undefined): string
   // ⚠️ 仕様書は (name, argsJson) の2引数としていたが、実体（aiTools.ts）は
@@ -132,6 +137,10 @@ export type TurnHelpers = {
   searchStatusContext(hasSearch: boolean): string
 }
 
+/** 送信前の予算チェックの結果（main/usageStore.ts の checkBeforeRequest・shared/usageBudget.ts の
+ *  checkBeforeRequestOf と同じ形）。 */
+export type UsageCheckResult = { allowed: boolean; message?: string; warning?: string }
+
 /** 副作用の差し込み口。
  *
  * ── T | Promise<T> について（B'-3b）────────────────────────────────
@@ -159,7 +168,9 @@ export type EngineTurnPorts = {
    *  ループが各ラウンド冒頭でこれを見る（2026-09-04 実機）。 */
   stopRequested?: () => boolean
   usage: {
-    check(): { allowed: boolean; message?: string } | Promise<{ allowed: boolean; message?: string }>
+    /** allowed=false は止める（message を出す）。allowed=true で warning があるときは、止めないが
+     *  上限を超えている（W-21: 「止める」設定がオフのとき）ので、作業中に1度だけ知らせる。 */
+    check(): UsageCheckResult | Promise<UsageCheckResult>
     record(model: string, promptTokens: number, completionTokens: number): void | Promise<void>
     estimate(text: string): number | Promise<number>
   }
@@ -254,7 +265,8 @@ export async function runCompact(
   if (!apiKey || !model) return { error: 'さくらのAI Engine のキーが登録されていないため、まとめを作れません。' }
   // 予算の上限に達しているときは作らない（まとめのために上限を超えない）。
   if (!(await ports.usage.check()).allowed) {
-    return { error: '今月のさくらのAI Engine の利用額が上限に達しているため、まとめを作れません（上限は ⚙️ 設定で変えられます）。' }
+    // W-6: 止まる基準はキーごとの上限なので、案内先も ⚙️ 設定ではなく 認証情報 にそろえる。
+    return { error: '今月のさくらのAI Engine の利用額が上限に達しているため、まとめを作れません（上限は 認証情報（⇧⌘,）で、キーごとに変えられます）。' }
   }
   // 材料には**書き込み・実行の実況も混ぜる**（どのファイルを変えたかは本文に残らない）。
   const { system, user } = ports.h.compactPrompt(plan.base, ports.h.compactSource(history, plan.from, plan.to))
@@ -321,6 +333,35 @@ async function compactIfNeeded(
   return null
 }
 
+// ── W-21: 「止めない設定」で上限を超えたときの知らせは、同じ会話で1度だけ ────────────────
+// 「上限に達したら さくらのAI Engine を止める」をオフにした人にも、超えたことは作業中に知らせる
+// （設定画面を開いたときだけ分かる、では「警告は出る」と信じたまま使いすぎる）。ただし超えている間は
+// **毎ターン**同じ警告が並ぶことになり、会話が警告だらけになって読み飛ばされる（本当に見てほしい
+// 1回目まで埋もれる）。そこで、まとめ失敗の警告（compactWarnOnce）と同じく1度だけにする。
+//
+// 「1度」の単位は 会話（convDir）× キー（指紋。生のキーは保持しない・掟4）× 月。
+//   ・会話ごと: 別の会話を開いたときは、そこで初めて見る人のために、もう一度出す。
+//   ・キーごと: 会話の途中で別のキー（別の上限）へ切り替えたときは、そのキーの超過を新しく知らせる。
+//   ・月ごと: 月が変われば実績は0に戻り、超過は別の出来事になる（アプリを起動したままでも、来月また超えたら出す）。
+// 寿命はこのモジュールのメモリ（アプリ起動ごと・main では main プロセスの寿命）。ファイルには残さない
+// （再起動後の最初の1回が出るのは、むしろ「まだ超えている」ことの再確認になって都合がよい）。
+// ⚠️ 履歴（getHistory）の中に警告が残っているかで判断する案は採らなかった: 月をまたぐ会話で、
+// 先月の警告が今月の超過を黙らせてしまう。
+const usageWarned = new Set<string>()
+
+/** テスト用: 「1度だけ」の印をリセットする。本番コードはこれを呼ばない。 */
+export function resetUsageWarnedForTest(): void {
+  usageWarned.clear()
+}
+
+/** 初めてなら true を返して印を付ける（以後 false）。 */
+function claimUsageWarning(apiKey: string, convDir: string | null): boolean {
+  const key = `${thisMonth()}|${hashKey(apiKey)}|${convDir ?? '@chat-app'}`
+  if (usageWarned.has(key)) return false
+  usageWarned.add(key)
+  return true
+}
+
 /**
  * AI Engine 経路の1ターン（send() の AI Engine 部分）。
  *
@@ -371,6 +412,12 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
   const userMsg: TurnMessage = { role: 'user', content: text, images: hasImages ? images : undefined }
   ports.emit({ kind: 'append', msg: userMsg })
   await ports.onUserMessage?.(text, isFirst)
+  // W-21: 「止める」設定がオフで上限を超えているときは、止めずに続ける代わりに知らせる（同じ会話では1度だけ）。
+  // 利用者の吹き出しの**あと**に出す（自分の発言より前に警告が来ると、何への警告か分からない）。
+  // 表示専用（toolNote）なので AI へは送らない。文面は shared/usageBudget.ts の checkBeforeRequestOf が作る。
+  if (budget.warning && claimUsageWarning(apiKey, spec.convDir)) {
+    ports.emit({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: budget.warning } })
+  }
   ports.emit({ kind: 'loading', value: true })
 
   try {
@@ -749,8 +796,10 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           ports.emit({
             kind: 'replaceLast',
             msg: {
+              // W-47: いま使っているモデル（useModel）が既定（Kimi K2.7 Code）なら、その名前は出さない
+              // （もう選んでいるのに、と迷わせるため）。「ツールを使えるもの」という条件は残す。
               role: 'assistant', content: sawToolMarkup
-                ? '（このモデルはツール（ファイル参照など）が必要な操作に対応していません。モデルを「Kimi K2.7 Code」などに切り替えてお試しください）'
+                ? `（このモデルはツール（ファイル参照など）が必要な操作に対応していません。${useModel === DEFAULT_MODEL ? 'ツールを使える別のモデルに切り替えてお試しください' : 'モデルを「Kimi K2.7 Code」などに切り替えてお試しください'}）`
                 : '（応答が空でした。もう一度送るか、モデルを変えてお試しください）',
             },
           })
@@ -802,15 +851,17 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           const shown = ports.h.stripRepeatedGuidance(r.content, prevAssistantContent)
           if (shown !== r.content) ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: shown } })
           // 促してもやらなかった場合は、**黙って成功に見せない**
-          const warn = ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles)
-            ?? ports.h.unexecutedToolWarning(sawToolMarkup, usedTools)
+          // W-47: 現在のモデル（useModel）が既定（Kimi K2.7 Code）なら、その名前は出さない。
+          const warn = ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles, useModel)
+            ?? ports.h.unexecutedToolWarning(sawToolMarkup, usedTools, useModel)
           if (warn) {
             ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: `${shown}\n\n${warn}` } })
           } else if (askedToActuallyWrite && !wroteFiles) {
             // 促しに対して「変更は不要」等で書かずに終えた。正しい辞退か嘘の逃げかは
             // Koto には判定できないので、**事実だけ**を短く添える（利用者が
             // 「更新済みです」という答えと突き合わせて矛盾に気づける・2026-08-30 実機）。
-            ports.emit({ kind: 'append', msg: { role: 'assistant', content: 'ℹ️ このターンでは、ファイルは変更されていません。', toolNote: true } })
+            // W-50: 「ターン」は内部用語で通じない → 「今回の依頼」に言い換える。
+            ports.emit({ kind: 'append', msg: { role: 'assistant', content: 'ℹ️ 今回の依頼では、ファイルは変わっていません。', toolNote: true } })
           }
         }
         break
@@ -827,7 +878,8 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             content: (r.content ? r.content + '\n\n' : '') +
               '⚠️ ファイルの内容が大きすぎて、AIの一度の出力に収まりませんでした。\n' +
               '・変更を小さめに分けて依頼する（例: 「まず○○の部分だけ直して」）\n' +
-              '・別のモデル（Kimi K2.7 Code など）に切り替えて試す\n' +
+              // W-47: いま使っているモデルが既定（Kimi K2.7 Code）なら、その名前は出さない。
+              `・${useModel === DEFAULT_MODEL ? '別のモデルに切り替えて試す' : '別のモデル（Kimi K2.7 Code など）に切り替えて試す'}\n` +
               'のいずれかをお試しください。',
           },
         })
@@ -849,7 +901,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             content: (r.content ? r.content + '\n\n' : '') +
               '⚠️ AIが同じ操作を繰り返しているため中断しました。\n' +
               '・依頼をもう少し具体的に伝える\n' +
-              '・別のモデル（Kimi K2.7 Code など）に切り替える\n' +
+              `・${useModel === DEFAULT_MODEL ? '別のモデルに切り替える' : '別のモデル（Kimi K2.7 Code など）に切り替える'}\n` +
               'のいずれかをお試しください。',
           },
         })

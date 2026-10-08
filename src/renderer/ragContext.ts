@@ -4,6 +4,7 @@
 // (2) query結果を出典付きブロックに整形する純粋関数、(3) それらを繋ぐ自動注入関数。
 
 import { wrapUntrusted } from '../shared/untrustedBlock'
+import { mergeProjectMeta } from './projectMeta'
 
 /** プロジェクト単位の資料設定（.sakuraide.json の rag キー） */
 export interface RagSettings {
@@ -34,12 +35,12 @@ export function parseRagSettings(meta: any): RagSettings | null {
 }
 
 /**
- * .sakuraide.json へ rag 設定を書き込むためのマージ済みオブジェクトを作る。
- * 既存キー（publish 等）を壊さないよう、既存の生JSONオブジェクトに rag だけ上書きする。
+ * .sakuraide.json へ書く rag 設定の**差分**（patch）を作る。
+ * publish 等の既存キーには触れない（main が書く直前にディスクから読み直した上へ当てる・
+ * src/renderer/projectMeta.ts）。
  */
-export function mergeRagSettings(meta: any, settings: RagSettings): any {
-  const base = meta && typeof meta === 'object' ? meta : {}
-  return { ...base, rag: { enabled: settings.enabled, tags: settings.tags } }
+export function ragSettingsPatch(settings: RagSettings): { rag: RagSettings } {
+  return { rag: { enabled: settings.enabled, tags: settings.tags } }
 }
 
 /**
@@ -148,9 +149,6 @@ export function sanitizeFilename(title: string): string {
  */
 export async function saveRagSettings(projectDir: string, next: RagSettings): Promise<void> {
   if (!projectDir) return
-  const metaPath = `${projectDir}/.sakuraide.json`
-  let meta: any = {}
-  try { meta = JSON.parse(await window.electronAPI.fs.readFile(metaPath)) } catch { /* メタ無し→新規 */ }
-  await window.electronAPI.fs.writeFile(metaPath, JSON.stringify(mergeRagSettings(meta, next), null, 2))
+  await mergeProjectMeta(projectDir, ragSettingsPatch(next))
   window.dispatchEvent(new Event('sakura-meta-changed'))
 }

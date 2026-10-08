@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import SakuraLogo from './SakuraLogo'
+// ipcRenderer.invoke が失敗に付ける英語の頭を取り除く関数（W-59・掟10: 認証情報の接続テストと共通の1つ）
+import { cleanRemoteError } from '../remoteError'
 
 interface Props {
   onSetApiKey: (key: string) => void
@@ -24,7 +26,12 @@ export default function OnboardingModal({ onSetApiKey, onClose, onCreateProject,
       const models = await window.electronAPI.sakura.models(key.trim())
       setResult({ ok: true, msg: `✅ 接続できました（利用可能なモデル: ${models.length}個）` })
     } catch (e: any) {
-      setResult({ ok: false, msg: `❌ 接続できませんでした（キーをご確認ください）: ${e?.message ?? String(e)}` })
+      // Electron の ipcRenderer.invoke は失敗を必ず「Error invoking remote method '<channel>':
+      // Error: <本文>」の形にくるむ（W-59・2026-09-27）。本文（describeSakuraError が日本語にした
+      // もの）だけを取り出して見せる（cleanRemoteError）。「（キーをご確認ください）」も describeSakuraError が
+      // 401/403 のときすでに言っているので重ねない。
+      const msg = cleanRemoteError(e)
+      setResult({ ok: false, msg: `❌ ${msg}` })
     } finally {
       setTesting(false)
     }
@@ -74,7 +81,7 @@ export default function OnboardingModal({ onSetApiKey, onClose, onCreateProject,
           <div>
             <h2 className="text-lg font-bold text-ink mb-3">APIキーの取得</h2>
             <p className="text-sm text-ink-secondary mb-4">
-              AIを使うには、さくらのAI Engine のAPIキー（無料で取得可）が必要です
+              AIを使うには、さくらのAI EngineのAPIキーを登録します（登録・無料枠内の利用は無料。無料枠を超えると料金がかかることがあります）。Claudeのキーでもあとで設定から使えます。
             </p>
             <ol className="text-sm text-ink-secondary space-y-3 list-decimal list-inside bg-surface border border-line rounded-xl p-4 mb-6">
               <li>

@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import SakuraLogo from './SakuraLogo'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
 import { clearPublishRecord, readHanamiiProjectId, readPublishTargets } from '../publishRecord'
-import { teardownSupport, manualTeardownGuide, teardownScopeNote } from '../../shared/teardownSupport'
-import { REGISTRY_MONTHLY_YEN, registryDeleteDefault, projectDeleteRegistryNote } from '../../shared/cloudCost'
+import { teardownSupport, manualTeardownGuide, teardownDataNoteForAll, teardownRemovesStorage } from '../../shared/teardownSupport'
+import { REGISTRY_MONTHLY_YEN, BUCKET_MONTHLY_YEN, registryDeleteDefault, projectDeleteRegistryNote } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { isPublished, isPublishedTop, MATERIALS_DIR } from '../../shared/publishExclude'
@@ -67,14 +67,15 @@ function iconFor(name: string, isDir: boolean): string {
   return map[ext ?? ''] ?? '📄'
 }
 
-interface MenuState { x: number; y: number; entry: FileEntry }
+interface MenuState { x: number; y: number; entry: FileEntry; published: boolean }
 
 /**
- * そのエントリが「公開されるもの（`<PUBLISH_DIR>/` の中）」に居るか。
+ * そのエントリが「実際に `<PUBLISH_DIR>/` の中に置かれているか」（path ベース）。
  *
- * roadmap #9②: 右クリックメニューの移動項目を、いま居る側で出し分けるための判定。
+ * roadmap #9②: 右クリックメニューの移動項目を出し分けるための判定の土台。
  * `entry.path` はプロジェクト直下からの絶対パスなので、`currentDir` を引いた先頭の段が
- * `PUBLISH_DIR` かどうかで見る（isPublishedTop と同じ「いちばん上の階層だけ見る」考え方）。
+ * `PUBLISH_DIR` かどうかで見る。public/ が無い・いちばん上の階層のときの特例は
+ * `isMoveTargetPublished`（W-23）が上乗せする。ここ自体は変えていない。
  */
 function isInPublishDir(currentDir: string | null, entryPath: string): boolean {
   if (!currentDir) return false
@@ -84,16 +85,127 @@ function isInPublishDir(currentDir: string | null, entryPath: string): boolean {
   return rel === PUBLISH_DIR || rel.startsWith(`${PUBLISH_DIR}/`)
 }
 
-function ContextMenu({ menu, currentDir, onClose, onRename, onDelete, onNewFile, onMove }: {
-  menu: MenuState
+/**
+ * 右クリックメニュー・ファイル移動が「いま公開される側にいるか」をどう見るか（W-23・2026-09-27）。
+ *
+ * ── なぜ isInPublishDir だけでは足りないか ────────────────────────────
+ * `isInPublishDir` は「実際に `<project>/public/` の中に置かれているか」しか見ない。
+ * ところが `public/` がまだ無いプロジェクトでは、プロジェクト直下（いちばん上の階層）の
+ * ファイルは、ファイル一覧の見出し「公開されるもの」に**すでに**並んでいる（isPublishedTop）。
+ * それなのに `isInPublishDir` は「public/ という実在フォルダの中か」しか見ないため常に false を
+ * 返し、もう公開される側にあるファイルにまで「🌐 公開するものへ移動」が出ていた
+ * （押しても意味がなく、しかも初めて押すと public/ ができて**ほかの直下ファイルが
+ * 一斉に「公開されないもの」へ移る**という副作用に誰も気づけない）。
+ *
+ * 「public/ が無い」ときは、直下のファイルだけでなく**入れ子のファイルも**同じ扱いにする
+ * （W-23・直し漏れの修正・2026-09-27再検分）。public/ が無いプロジェクトでは、直下フォルダ
+ * （例: `css/`）の中身（`css/style.css`）も、ファイル一覧の見出し「公開されるもの」に
+ * すでに並ぶ（`isPublishedTop` が深さを見ないため）。それなのに旧実装は depth>0 で
+ * `isInPublishDir` に戻っており、これは実フォルダ `public/` の中かしか見ないので常に false
+ * ＝「🌐 公開するものへ移動」が出たままだった。押すと `public/style.css` へ階層を潰して移り、
+ * 初めて `public/` ができて**ほかの直下フォルダのファイルも一斉に「公開されないもの」へ移る**。
+ *
+ * 「public/ が無い」ときは、常にいちばん上の階層（先頭の段＝直下のファイル名、または
+ * 入れ子ならそのトップのフォルダ名）について `isPublishedTop(…, false)` で判定する
+ * （＝除外されていない限り「もう公開されている」）。「public/ がある」ときだけ、
+ * これまでどおり `isInPublishDir`（実際に public/ の中に置かれているか）に従う。
+ */
+export function isMoveTargetPublished(args: {
   currentDir: string | null
+  entryPath: string
+  entryName: string
+  entryIsDir: boolean
+  hasPublishDir: boolean
+}): boolean {
+  const { currentDir, entryPath, entryName, entryIsDir, hasPublishDir } = args
+  if (currentDir && !hasPublishDir) {
+    const prefix = currentDir.endsWith('/') ? currentDir : `${currentDir}/`
+    if (entryPath.startsWith(prefix)) {
+      const rel = entryPath.slice(prefix.length)
+      const isTopLevel = rel === entryName
+      // 直下のファイル／フォルダそのものはその名前・isDir のまま、入れ子のファイルは
+      // 先頭の段（トップのフォルダ名）をフォルダとして判定する（isPublishedTop(…, true, false)）。
+      const topSegment = rel.split('/')[0]
+      return isTopLevel
+        ? isPublishedTop(entryName, entryIsDir, false)
+        : isPublishedTop(topSegment, true, false)
+    }
+  }
+  return isInPublishDir(currentDir, entryPath)
+}
+
+/**
+ * ファイル移動の確認文（W-23・2026-09-27）。
+ *
+ * `willCreatePublishDir`（この移動で初めて `public/` ができる＝これまで「公開されるもの」に
+ * 並んでいたほかの直下ファイルが一斉に「公開されないもの」へ移る）ときだけ、その影響を
+ * 事前に伝える一文を足す。画面の文は素のテキスト（掟5・Markdown記法は使わない）。
+ */
+export function moveConfirmBody(entryName: string, destLabel: string, willCreatePublishDir: boolean): string {
+  const warn = willCreatePublishDir
+    ? `「${destLabel}」フォルダができるため、いま「公開されるもの」に並んでいるほかのファイルは公開されなくなります。`
+    : ''
+  return `「${entryName}」を「${destLabel}」へ移動します。${warn}よろしいですか？\n\n🕘 元に戻すで戻せます。`
+}
+
+/** `blocksProjectDeleteFor` の第2引数。publish.apprunDedicated の資源IDだけを見る（他のフィールドは要らない）。 */
+export type DedicatedResourceIds = { clusterID?: string | null; asgID?: string | null; loadBalancerID?: string | null } | null | undefined
+
+/**
+ * 専有型（sakura-apprun-dedicated）の資源が残っている間は、プロジェクト削除を止める
+ * （W-69・2026-09-27・作者決定／2026-09-27 再検分で穴を1つ塞いだ）。
+ *
+ * ── なぜ「公開も一緒に破棄する」のチェックだけに任せられないか ────────────────
+ * クラスタ・ロードバランサの記録はプロジェクトのフォルダ（.sakura-cloud）の中にしかない。
+ * 専有型のアプリ自体は、この画面の破棄（teardownPublished）に通しても**必ず失敗に積む**
+ * （この版はまだ対応していない）ので、チェックが入っていれば自動的にブロックされる。だが
+ * 「公開も一緒に破棄する」のチェックを**外す**と teardownPublished は呼ばれず、フォルダだけが
+ * そのままゴミ箱へ移ってしまう。記録が消えると、クラスタ・ロードバランサの月額を
+ * Koto からは二度と止められなくなる。だからチェックの有無に関わらず、専有型が残っている間は
+ * 削除そのものを止め、先に専有型タブの「⑥ 作ったものを壊す」で片づけるよう案内する。
+ *
+ * ── なぜ pendingPublish（publish.targets）だけでは足りないか（2026-09-27 再検分の指摘3） ──
+ * クラスタ・ASG・LB の ID は publish.targets とは**別の場所**（publish.apprunDedicated。
+ * `window.electronAPI.apprunDedicated.state(dir)` で読む）にある。次の2つは pendingPublish
+ * だけでは検知できない:
+ *   (a) 📡 一覧の「🗑 破棄」でアプリだけ消した場合。`apprunDedicated.teardownApp` は
+ *       publish.targets からは消すが、クラスタ・ASG・LB の記録には触らない
+ *       （PublishedListModal.tsx: 破棄後の文言も「クラスタ・ロードバランサ…は残っています」）
+ *   (b) ⑤でクラスタを作ったが、⑧でまだアプリを公開していない場合。publish.targets には
+ *       まだ何も書かれていない（アプリを公開して初めて書かれる＝D-3）
+ * どちらも pendingPublish は空のままなので、clusterID/asgID/loadBalancerID のどれかが
+ * 残っていれば合わせてブロックする。
+ */
+export function blocksProjectDeleteFor(pendingPublish: PublishTargetKind[], dedicated?: DedicatedResourceIds): boolean {
+  if (pendingPublish.includes('sakura-apprun-dedicated')) return true
+  return !!dedicated && (!!dedicated.clusterID || !!dedicated.asgID || !!dedicated.loadBalancerID)
+}
+
+/**
+ * プロジェクト削除で「公開も一緒に破棄する」を外したとき、保存場所が残ることを伝える文
+ * （W-22・2026-09-27 再検分の指摘）。
+ *
+ * 同じ保存場所を別のプレフィックスで2件持っていると、`pendingPlacements` に同じ
+ * バケット名が2回並ぶ（bucket は同じでも prefix が違う）。名前は重複を除いて出し、
+ * 金額は保存場所が2つ以上あるときだけ「1つにつき」と明記する（バケットが共有でも
+ * 専用でも、月額495円は**バケット単位**でかかる。合計を出すと、実は同じ保存場所を
+ * 指しているだけの重複行を2重に数えかねないので、合算はしない）。
+ */
+export function remainingPlacementsNote(placements: Array<{ bucket: string }>): string {
+  const names = Array.from(new Set(placements.map(p => p.bucket)))
+  const amount = names.length > 1 ? `1つにつき月額${BUCKET_MONTHLY_YEN}円・税込` : `月額${BUCKET_MONTHLY_YEN}円・税込`
+  return `保存場所「${names.join('・')}」とその中のデータは残ります（消すまで${amount}が続きます）。`
+}
+
+function ContextMenu({ menu, onClose, onRename, onDelete, onNewFile, onMove }: {
+  menu: MenuState
   onClose: () => void
   onRename: (entry: FileEntry) => void
   onDelete: (entry: FileEntry) => void
   onNewFile: (entry: FileEntry) => void
-  onMove: (entry: FileEntry) => void
+  onMove: (entry: FileEntry, published: boolean) => void
 }) {
-  const { entry } = menu
+  const { entry, published } = menu
   const isHtml = /\.html?$/i.test(entry.name)
   useEffect(() => {
     const close = () => onClose()
@@ -103,23 +215,22 @@ function ContextMenu({ menu, currentDir, onClose, onRename, onDelete, onNewFile,
   }, [onClose])
 
   // roadmap #9②「ファイルの移動手段が無い」: 公開する／しないを手で切り替える項目。
+  // 出し分けは isMoveTargetPublished が決めた「いま公開される側にいるか」（W-23）に従う。
   // **ディレクトリは対象外。** 中身ごとの移動は「フォルダ内の全ファイルに検証・退避・
   // 同名衝突の解決を通す」ことになり、守りの検証が一気に複雑になる（1件ずつなら
   // isProtectedWritePath・nextFreeMaterialName の単純な適用で済むが、フォルダを渡すと
   // 「配下に保護パスが混じっていたら？」「配下だけで名前が衝突したら？」まで考える必要が
   // 出る）。今回は「任意の“ファイル”を移す」までを対象にし、フォルダ移動は見送る。
-  const isPublishedSide = isInPublishDir(currentDir, entry.path)
-
   const items: { label: string; onClick: () => void; show?: boolean }[] = [
     { label: '🌐 ブラウザで開く', show: isHtml && !entry.isDir, onClick: () => window.electronAPI.shell.openPath(entry.path) },
     { label: '📁 Finder で表示', onClick: () => window.electronAPI.shell.showInFolder(entry.path) },
-    { label: '📋 パスをコピー', onClick: () => navigator.clipboard.writeText(entry.path) },
+    { label: '📋 場所（パス）をコピー', onClick: () => navigator.clipboard.writeText(entry.path) },
     { label: '📋 名前をコピー', onClick: () => navigator.clipboard.writeText(entry.name) },
     { label: '✏️ 名前の変更', onClick: () => onRename(entry) },
     {
-      label: isPublishedSide ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',
+      label: published ? '📦 公開しないものへ移動' : '🌐 公開するものへ移動',
       show: !entry.isDir,
-      onClick: () => onMove(entry),
+      onClick: () => onMove(entry, published),
     },
     { label: '🗑 削除（ゴミ箱へ）', onClick: () => onDelete(entry) },
     { label: '＋ 新規ファイル', show: entry.isDir, onClick: () => onNewFile(entry) },
@@ -257,6 +368,13 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   const loadingProjects = new Set(loadingKeys())
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(0)
+  /**
+   * プロジェクト直下に `public/` があるか（W-23・2026-09-27）。
+   * 右クリックメニュー・ファイル移動の「いま公開される側にいるか」（isMoveTargetPublished）に
+   * 要る。FileTree が内部で持つのと同じ判定を、右クリックの瞬間に同期して使えるよう
+   * Sidebar 側でも保つ（ファイル一覧と同じ理由で変わるたび読み直す）。
+   */
+  const [hasPublishDir, setHasPublishDir] = useState(false)
   // 所見13: 隠しファイル（'.' 始まり）を表示するか。既定=非表示。localStorage に保存する。
   const [showHidden, setShowHidden] = useState(loadShowHidden)
   const [projMenu, setProjMenu] = useState(false)
@@ -289,6 +407,23 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
    * それらも一緒に消える。
    */
   const [pendingRegistry, setPendingRegistry] = useState<{ registryName: string | null; adopted: boolean }>({ registryName: null, adopted: false })
+  /**
+   * このプロジェクトの保存場所（同意済みの**全件**。2026-09-25 検分の指摘2）。
+   *
+   * ── なぜ要るか ──────────────────────────────────────────────────
+   * 「公開も一緒に破棄する」で HANAMII を破棄すると、`hanamii:teardown` は
+   * **保存場所のバケット・その中のデータ・鍵まで片づける**。ところがこのダイアログは
+   * データが消えることを一言も言っていなかった。**言わずに消してはいけない**（掟5・掟10）。
+   * 1件だけ名指しすると、名前が出なかった保存場所とデータまで消える（指摘5）ので**全件**読む。
+   */
+  const [pendingPlacements, setPendingPlacements] = useState<Array<{ bucket: string; prefix: string; shared: boolean }>>([])
+  /**
+   * このプロジェクトの専有型（sakura-apprun-dedicated）の資源ID（クラスタ・ASG・LB）。
+   * `blocksProjectDeleteFor` の第2引数（W-69・2026-09-27 再検分の指摘3）。
+   * publish.targets（pendingPublish）とは別の場所（publish.apprunDedicated）にあるので、
+   * 削除確認を開くたびに `apprunDedicated.state()` で別に読む。
+   */
+  const [pendingDedicated, setPendingDedicated] = useState<DedicatedResourceIds>(null)
   /** ファイルの移動確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。 */
   const { confirm, element: confirmElement } = useConfirm()
 
@@ -303,7 +438,8 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   }, [currentDir])
 
   // ワークスペースのプロジェクト一覧を読み直す（スイッチャー表示時・未オープン時）。
-  // 置き場は getWorkspaceDir()（選び直されていればそれ・無ければ既定の ~/SAKURAIDE）。
+  // 置き場は getWorkspaceDir()（選び直されていればそれ・無ければ既定。W-121・2026-09-27で
+  // 既定を ~/Koto にした。すでに ~/SAKURAIDE がある人はそのまま）。
   // 以前は `~/SAKURAIDE` を直に組んでいて、ワークスペースを選び直した利用者には
   // 別の場所の一覧が出ていた（roadmap #7・2026-09-03 修正）。
   // 世代カウンタ: 並行して複数回呼ばれたとき、古い呼び出しのディスク読み取り結果が最新の状態
@@ -371,9 +507,21 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     if (!currentDir) return
     return window.electronAPI.fs.watchDir(currentDir, () => setAutoRefresh(n => n + 1))
   }, [currentDir])
+
+  // public/ の有無を保つ（W-23）。ファイル一覧が更新されるたびに読み直す。
+  useEffect(() => {
+    if (!currentDir) { setHasPublishDir(false); return }
+    let cancelled = false
+    window.electronAPI.fs.exists(`${currentDir}/${PUBLISH_DIR}`).then(v => { if (!cancelled) setHasPublishDir(v) })
+    return () => { cancelled = true }
+  }, [currentDir, refreshKey, autoRefresh])
+
   const onContextMenu = (e: React.MouseEvent, entry: FileEntry) => {
     e.preventDefault()
-    setMenu({ x: e.clientX, y: e.clientY, entry })
+    const published = isMoveTargetPublished({
+      currentDir, entryPath: entry.path, entryName: entry.name, entryIsDir: entry.isDir, hasPublishDir,
+    })
+    setMenu({ x: e.clientX, y: e.clientY, entry, published })
   }
 
   const openFolder = async () => {
@@ -415,20 +563,25 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
 
   /**
    * roadmap #9②「ファイルの移動手段が無い」: 手で公開する／しない側を切り替える。
-   * いま居る側で移動先を決める（公開される側にいれば素材置き場へ、それ以外は公開されるものへ）。
+   * 移動先は、右クリックを開いた瞬間に isMoveTargetPublished が決めた向き（`published`）の逆
+   * （公開される側にいれば素材置き場へ、それ以外は公開されるものへ・W-23）。
    * ディレクトリは ContextMenu 側で項目自体を出していないが、ここでも防御的に弾く（多層防御）。
    */
-  const moveEntry = async (entry: FileEntry) => {
+  const moveEntry = async (entry: FileEntry, published: boolean) => {
     if (!currentDir || entry.isDir) return
     const prefix = currentDir.endsWith('/') ? currentDir : `${currentDir}/`
     if (!entry.path.startsWith(prefix)) return // 想定外（プロジェクト外のパス）は何もしない
     const rel = entry.path.slice(prefix.length)
-    const dest: 'materials' | 'publish' = isInPublishDir(currentDir, entry.path) ? 'materials' : 'publish'
+    const dest: 'materials' | 'publish' = published ? 'materials' : 'publish'
     const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
     const destLabel = dest === 'publish' ? PUBLISH_DIR_LABEL : MATERIALS_DIR
+    // public/ がまだ無いプロジェクトで初めて「公開するものへ移動」すると、public/ ができて
+    // ほかの直下ファイルが一斉に「公開されないもの」へ移る（isPublishedTop の仕様）。
+    // その影響を移動前に伝える（W-23 別案の確認文）。
+    const willCreatePublishDir = dest === 'publish' && !hasPublishDir
     const ok = await confirm({
       title: 'ファイルを移動します',
-      body: `「${entry.name}」を「${destLabel}」へ移動します。よろしいですか？\n\n🕘 元に戻すで戻せます。`,
+      body: moveConfirmBody(entry.name, destLabel, willCreatePublishDir),
       confirmLabel: '移動する',
     })
     if (!ok) return
@@ -454,15 +607,33 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   // 削除の確認ダイアログを開くたびに、そのプロジェクトの公開記録を読む。
   // 「何が公開されたままか」を見せないと、ユーザーは破棄の判断ができない。
   useEffect(() => {
-    if (!confirmProjDelete) { setPendingPublish([]); return }
+    if (!confirmProjDelete) { setPendingPublish([]); setPendingPlacements([]); setPendingDedicated(null); return }
     let cancelled = false
     setTeardownOnDelete(true) // 開くたびに既定（破棄する）へ戻す
     setPendingRegistry({ registryName: null, adopted: false }) // 前のプロジェクトのものを引きずらない
+    setPendingPlacements([]) // 同上（前のプロジェクトの保存場所を出さない）
+    setPendingDedicated(null) // 同上（前のプロジェクトの専有型の資源IDを引きずらない）
     readPublishTargets(confirmProjDelete).then(ts => { if (!cancelled) setPendingPublish(ts) })
     // 置き場のことは**消す前に見せる**（このダイアログには今まで一言も出ていなかった）
     window.electronAPI.cloud.registryName(confirmProjDelete)
       .then(r => { if (!cancelled) setPendingRegistry({ registryName: r?.name ?? null, adopted: r?.adopted === true }) })
       .catch(() => { /* 読めなくても削除はできる（消えるものが増えるわけではない） */ })
+    // 保存場所のことも**消す前に見せる**（HANAMII の破棄はバケットとデータまで片づける）
+    window.electronAPI.storage.placement(confirmProjDelete)
+      .then(r => {
+        if (cancelled || !r.ok) return
+        const all = r.placements ?? (r.placement ? [r.placement] : [])
+        setPendingPlacements(all.map(p => ({ bucket: p.bucket, prefix: p.prefix, shared: p.shared })))
+      })
+      .catch(() => { /* 読めなくても削除はできる（消えるものが増えるわけではない） */ })
+    // 専有型の資源ID（クラスタ・ASG・LB）も読む（W-69・2026-09-27 再検分の指摘3）。
+    // publish.targets（pendingPublish）だけでは、📡一覧でアプリだけ破棄した後や、
+    // ⑤でクラスタだけ作った状態を検知できない（blocksProjectDeleteFor 参照）。
+    // API は呼ばない、ただのファイル読み取りなので読めなくても実害は小さいが、
+    // 読めない間は「ブロックしない」側に倒れる（pendingPublish 側の判定はそのまま効く）。
+    window.electronAPI.apprunDedicated.state(confirmProjDelete)
+      .then(r => { if (!cancelled) setPendingDedicated(r ?? null) })
+      .catch(() => { /* 読めなくても削除はできる（pendingPublish 側の判定は残る） */ })
     return () => { cancelled = true }
   }, [confirmProjDelete])
 
@@ -505,7 +676,14 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
           if (!id) { failed.push(`${PUBLISH_TARGET_LABEL[t]}: プロジェクトIDの記録がありません`); continue }
           const token = await getHanamiiToken()
           if (!token) { failed.push(`${PUBLISH_TARGET_LABEL[t]}: トークンが未登録です`); continue }
-          r = await window.electronAPI.hanamii.teardown(id, token)
+          // ── projectDir（dir）を必ず渡す（2026-09-25 検分の指摘2）────────────────
+          // 渡さないと main は保存場所へ1件も要求を出さずに ok:true を返し、**成功扱いのまま
+          // この直後に fs.trash でフォルダごとゴミ箱へ入る**。バケットの唯一の記録は
+          // .sakura-cloud/env.json（フォルダの中）なので、**Koto から二度と保存場所を消せなくなる**
+          // ＝月額495円と、バケットへ読み書きできる鍵が、辿れないまま残る。
+          // このダイアログ自身が「記録も消えるため、あとから Koto では破棄できなくなります」と
+          // 警告しているそのものの状態を、HANAMII だけが作っていた。
+          r = await window.electronAPI.hanamii.teardown(id, token, dir)
         } else {
           // teardownSupport が 'supported' と言うのに、ここに破棄の枝が無い種類。
           // 以前は「sakura-apprun でなければ HANAMII」の二値前提で、新しい種類が HANAMII の
@@ -527,6 +705,16 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   // 公開済みのサイト/アプリ・GitHubのリポジトリは対象外（ローカルのフォルダのみ）。
   // 破壊操作のため専用の確認ダイアログを挟む（掟5）。confirmProjDelete = 削除確認中のパス。
   const deleteProject = async (path: string) => {
+    // W-69: 専有型が残っている間は、チェックの有無に関わらずここで止める（多層防御。
+    // ボタン自体も無効化してあるが、このガードが最後の砦）。pendingDedicated も渡し、
+    // 📡一覧でアプリだけ破棄した後や、クラスタだけ作った状態も検知する（指摘3）。
+    if (blocksProjectDeleteFor(pendingPublish, pendingDedicated)) {
+      window.alert(
+        '専有型（さくらのAppRun 専有型）の資源が残っているため、この画面からは削除できません。\n\n'
+        + '先に「📦 さくらのAppRun」の専有型タブ「⑥ 作ったものを壊す」で、クラスタ・ロードバランサを含めて片づけてから、もう一度削除してください。'
+      )
+      return
+    }
     // ── 先に公開を破棄する（2026-08-09 Ryosuke の指摘）─────────────────────
     // フォルダをゴミ箱へ移すと .sakura-cloud/state.json も一緒に消える。これは
     // 「どのコンテナレジストリを使っているか」の**唯一の記録**なので、消えた後は
@@ -636,7 +824,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
           <button
             onClick={() => setAutoRefresh(n => n + 1)}
             className="text-ink-muted hover:text-sakura w-6 h-6 flex items-center justify-center rounded-md hover:bg-overlay transition-colors"
-            title="ツリーを更新"
+            title="一覧を更新"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
               <path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
@@ -855,12 +1043,11 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       {menu && (
         <ContextMenu
           menu={menu}
-          currentDir={currentDir}
           onClose={() => setMenu(null)}
           onRename={entry => openNameDialog('rename', entry)}
           onDelete={entry => deleteEntry(entry)}
           onNewFile={entry => openNameDialog('new', entry)}
-          onMove={entry => { void moveEntry(entry) }}
+          onMove={(entry, published) => { void moveEntry(entry, published) }}
         />
       )}
 
@@ -885,27 +1072,40 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                   フォルダを消すと .sakura-cloud/state.json（どのレジストリを使っているかの
                   唯一の記録）も一緒に消える。消えた後は Koto から後片付けできず、
                   月220円が黙って続く。だから削除の前にここで止められるようにする。 */}
-              {pendingPublish.length > 0 && (
+              {(pendingPublish.length > 0 || blocksProjectDeleteFor(pendingPublish, pendingDedicated)) && (
                 <div className="rounded-lg border border-brand-red/50 bg-surface p-2.5 space-y-1.5">
-                  <p className="text-ink font-medium">このプロジェクトは公開されています</p>
-                  <ul className="list-disc pl-4 text-ink-secondary">
-                    {pendingPublish.map(t => (
-                      <li key={t}>
-                        {PUBLISH_TARGET_LABEL[t]}
-                        {teardownSupport(t) === 'manual' && (
-                          <span className="text-ink-muted"><br />{manualTeardownGuide(t)}</span>
-                        )}
-                        {/* 専有型は「アプリだけ消える。クラスタ・LB は⑥で別に」を**消す前に**見せる
-                            （消し忘れの課金を止めるのがこの枠の目的）。共用型・HANAMII には出さない:
-                            共用型は置き場の扱いを下の projectDeleteRegistryNote が別に言っており、
-                            scope note の「コンテナレジストリを削除します」と食い違う場合（借り物）がある。 */}
-                        {t === 'sakura-apprun-dedicated' && (
-                          <span className="text-ink-muted"><br />{teardownScopeNote(t)}</span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                  {pendingPublish.some(t => teardownSupport(t) === 'supported') && (
+                  {pendingPublish.length > 0 && (
+                    <>
+                      <p className="text-ink font-medium">このプロジェクトは公開されています</p>
+                      <ul className="list-disc pl-4 text-ink-secondary">
+                        {pendingPublish.map(t => (
+                          <li key={t}>
+                            {PUBLISH_TARGET_LABEL[t]}
+                            {teardownSupport(t) === 'manual' && (
+                              <span className="text-ink-muted"><br />{manualTeardownGuide(t)}</span>
+                            )}
+                            {/* 専有型（sakura-apprun-dedicated）は、この一覧に出ても
+                                teardownScopeNote（「…削除します」）を出さない（W-69 再検分の指摘2）。
+                                専有型が pendingPublish に入っているときは blocksProjectDeleteFor が
+                                常に true になり、すぐ下の赤字が「この画面からは削除できません」と
+                                言う。「削除します」（teardownScopeNote）と「削除できません」が
+                                同じ枠に並ぶと、利用者はどちらを信じればよいか分からなくなる。 */}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  {blocksProjectDeleteFor(pendingPublish, pendingDedicated) ? (
+                    // W-69（2026-09-27・再検分で拡張）: 専有型の資源（クラスタ・ASG・LB）が
+                    // 残っている間はこの画面から削除できない。記録はフォルダの中にしかなく、
+                    // フォルダを先に消すと月額を二度と止められなくなる。まだアプリを公開して
+                    // いない（pendingPublish が空）ときも、クラスタだけ作っていれば同じくブロック
+                    // するので、「公開されています」の見出しが無くてもこの赤字は単独で出る。
+                    // チェックの有無に関わらず、ここで完全に止める（先に⑥で片づけてもらう）。
+                    <p className="text-brand-red font-medium">
+                      ⚠️ 専有型（さくらのAppRun 専有型）の資源が残っているため、この画面からは削除できません。先に「📦 さくらのAppRun」の専有型タブ「⑥ 作ったものを壊す」で、クラスタ・ロードバランサを含めて片づけてから、もう一度削除してください。
+                    </p>
+                  ) : pendingPublish.some(t => teardownSupport(t) === 'supported') && (
                     <>
                       <label className="flex items-start gap-1.5 cursor-pointer pt-0.5">
                         <input
@@ -920,21 +1120,56 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                       <p className={`pl-5 ${teardownOnDelete ? 'text-ink-muted' : 'text-brand-red'}`}>
                         {teardownOnDelete
                           ? '先に公開を破棄してから、フォルダをゴミ箱へ移します。破棄に失敗したときは削除しません。'
-                          : '公開はそのまま残ります。フォルダを消すと「どこに何を公開したか」の記録も消えるため、'
-                            + `あとから Koto では破棄できなくなります（AppRun はコンテナレジストリの月額${REGISTRY_MONTHLY_YEN}円が続きます）。`}
+                          : '公開はそのまま残ります。フォルダを消すと「どこに何を公開したか」の記録も消えるため、あとから Koto では破棄できなくなります。'
+                            + (pendingPublish.includes('sakura-apprun')
+                              ? ` イメージの置き場（コンテナレジストリ）の月額${REGISTRY_MONTHLY_YEN}円（税込）が、消すまで続きます。`
+                              : '')}
                       </p>
+                      {/* W-22（案1後半）: チェックを外して破棄しないときも、保存場所が残ることを
+                          その場で伝える（下の💾行は teardownOnDelete のときだけ描くため、外したときは
+                          こちらが無いと保存場所の話が画面から消えてしまう）。同じ保存場所を
+                          プレフィックス違いで2件持つと bucket 名が重複するので、名前の重複を除き、
+                          2件以上あるときは「1つにつき」と明記する（remainingPlacementsNote・
+                          2026-09-27 再検分の指摘）。 */}
+                      {!teardownOnDelete && pendingPlacements.length > 0 && (
+                        <p className="pl-5 text-brand-red select-text">
+                          💾 {remainingPlacementsNote(pendingPlacements)}
+                        </p>
+                      )}
                       {/* 置き場をどうするかは**ここでは選ばせない**（一気に進む操作なので、
                           選択肢を増やすより安全側に倒す）。選ばせない代わりに、
                           残すときは必ずそう書く（2026-08-25 Ryosuke の問いで見つけた）。 */}
                       {teardownOnDelete && projectDeleteRegistryNote(pendingRegistry) && (
                         <p className="pl-5 text-brand-red select-text">⚠️ {projectDeleteRegistryNote(pendingRegistry)}</p>
                       )}
+                      {/* ── 保存場所のデータも消える（2026-09-25 検分の指摘2・3巡目の指摘3）──────
+                          破棄はバケットの中のこのプロジェクトのデータと鍵まで片づけ、ほかに使っている
+                          プロジェクトが無ければ**バケットそのものも消す**。チェックひとつで一気に進む
+                          操作なので、**消えるものを名指しで見せてから押させる**（掟5・掟10）。
+
+                          ⚠️ **公開先を決め打ちで書かない。** ここは `pendingPublish.includes('hanamii')`
+                          だったため、**共用型 AppRun（cloud:teardown の delete プラン）ではデータが
+                          消えることを一言も言わずに消していた**——指摘2で閉じたはずの穴が、同じ
+                          ダイアログの隣にそのまま残っていた。判定は一元定義（teardownSupport /
+                          teardownRemovesStorage）に通し、**新しい公開先が増えても勝手に正しくなる**形にする。
+                          文の組み立ても shared/teardownSupport.ts の純関数に任せ、**placements（全件）**で
+                          組み立てる（1件だけ名指しすると、名前が出なかった保存場所とデータまで消える）。
+                          公開先ごとに1行出すので、HANAMII と共用型が両方ある案件でも取りこぼさない。 */}
+                      {teardownOnDelete && pendingPublish
+                        .filter(t => teardownSupport(t) === 'supported' && teardownRemovesStorage(t, 'list'))
+                        .map(t => ({ t, note: teardownDataNoteForAll({ target: t, scope: 'list', placements: pendingPlacements }) }))
+                        .filter(x => !!x.note)
+                        .map(x => (
+                          <p key={x.t} className="pl-5 text-brand-red select-text">
+                            💾 {PUBLISH_TARGET_LABEL[x.t]}: {x.note}
+                          </p>
+                        ))}
                     </>
                   )}
                 </div>
               )}
 
-              <p className="text-ink-muted">💾GitHubに保存したリポジトリは<b>そのまま残ります</b>。</p>
+              <p className="text-ink-muted">GitHub に保存したファイル（コード）は<b>そのまま残ります</b>。アプリに入っているデータは GitHub には入っていません。</p>
               <p className="font-mono text-[10px] text-ink-muted break-all">{confirmProjDelete}</p>
             </div>
             <div className="flex justify-end gap-2 mt-3">
@@ -945,7 +1180,8 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
               >キャンセル</button>
               <button
                 onClick={() => deleteProject(confirmProjDelete)}
-                disabled={deletingBusy}
+                disabled={deletingBusy || blocksProjectDeleteFor(pendingPublish, pendingDedicated)}
+                title={blocksProjectDeleteFor(pendingPublish, pendingDedicated) ? '専有型を先に専有型タブの⑥で片づけてください' : undefined}
                 className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red-fill hover:opacity-90 transition-opacity disabled:opacity-40"
               >{deletingBusy ? '公開を破棄しています…' : '🗑 ゴミ箱に移動'}</button>
             </div>

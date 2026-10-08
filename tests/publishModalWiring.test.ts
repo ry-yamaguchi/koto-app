@@ -98,10 +98,13 @@ describe('PublishModal.tsx: 公開先ラベルを書き写さず PUBLISH_TARGET_
     expect(imports.some(i => /\btype\s+PUBLISH_TARGET_LABEL\b/.test(i.names))).toBe(false)
   })
 
-  it('消しすぎの検出: 中断検知バナーが import した PUBLISH_TARGET_LABEL を引いている', () => {
+  it('消しすぎの検出: 中断検知・進行中のバナーの文は、PUBLISH_TARGET_LABEL を引く純関数（pendingPublishMessage）が作る', () => {
     const s = read(FILE)
-    // 呼び出しの形ごと一意に指す（前後の文言つき）
-    expect(s).toContain('{PUBLISH_TARGET_LABEL[interruptedPublish.target]}への公開が完了前に中断された可能性があります')
+    // 文の中身は publishStatus.ts の pendingPublishMessage（tests/publishPendingView.test.ts が3通りを固定）。
+    // 画面はその戻り値をそのまま出す（文を書き写さない・掟10）。
+    expect(s).toContain('{pendingPublishMessage(pendingView)}')
+    expect(s).not.toContain('への公開が完了前に中断された可能性があります')
+    expect(read('src/renderer/publishStatus.ts')).toContain('${PUBLISH_TARGET_LABEL[view.pending.target]}への公開が完了前に中断された可能性があります')
   })
 })
 
@@ -162,14 +165,14 @@ describe('共用型／専有型のタブ: 一度開いたパネルは外さず h
     expect(sharedAt).toBeGreaterThan(0)
     const sharedBlock = modal.slice(sharedAt, sharedAt + 300)
     expect(sharedBlock).toContain("<div className={target === 'sakura-apprun' ? undefined : 'hidden'}>")
-    expect(sharedBlock).toContain('<AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />')
+    expect(sharedBlock).toContain('<AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === \'sakura-apprun\'} />')
 
     // 専有型
     const dedicatedAt = modal.indexOf("{mountedApprunTabs['sakura-apprun-dedicated'] && (")
     expect(dedicatedAt).toBeGreaterThan(0)
     const dedicatedBlock = modal.slice(dedicatedAt, dedicatedAt + 300)
     expect(dedicatedBlock).toContain("<div className={target === 'sakura-apprun-dedicated' ? undefined : 'hidden'}>")
-    expect(dedicatedBlock).toContain('<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />')
+    expect(dedicatedBlock).toContain('<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} visible={target === \'sakura-apprun-dedicated\'} />')
 
     // 専有型が先に描かれない（タブの並びと同じ順序であること）。
     expect(sharedAt).toBeLessThan(dedicatedAt)

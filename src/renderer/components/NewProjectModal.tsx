@@ -15,9 +15,10 @@ import { skipMigrationForTarget } from '../../shared/migratePlan'
 // **文字列を手で並べず**公開の一元定義から組み立てる（掟10・2026-09-23 検分）。
 import { rsyncExcludeArgs, dockerignoreLines, kotoIgnoreLines } from '../../shared/publishExclude'
 import ImportFromPublishedPanel from './ImportFromPublishedPanel'
+// 既定の置き場所の決定規則（W-121・2026-09-27）は workspace.ts に一本化する（掟10。
+// ここで別の既定を組み立てると、Sidebar・ChatApp 側の getWorkspaceDir() とずれる）。
+import { getWorkspaceDir, WORKSPACE_KEY } from '../workspace'
 
-const WORKSPACE_KEY = 'sakura_workspace'
-const WORKSPACE_DIRNAME = 'SAKURAIDE'
 // 「このあとチャットで作業するAI」の選択（作成実行時に一度だけ、実際のチャットの頭脳・モデルへ反映する。
 // 詳しくは runCreate 内のコメント参照）。選んだ内容は次回の初期値として localStorage に覚えておく。
 const NEWPROJECT_AGENT_KEY = 'sakura_newproject_agent'
@@ -37,16 +38,18 @@ interface Props {
 
 interface GenFile { path: string; content: string }
 
+// hint は AI への技術の指定（変えない）。uiHint は画面に出す、用途で書いた補足（W-74）。
+// 2つを分けているのは、画面の言葉を変えても AI に渡す技術の指定は変わらないようにするため。
 const TEMPLATES = [
-  { id: 'blank', label: '空', hint: '最小構成（README のみ）' },
-  { id: 'web', label: 'Web', hint: 'HTML / CSS / JS の静的サイト' },
-  { id: 'react', label: 'React', hint: 'Vite + React + TypeScript' },
-  { id: 'python', label: 'Python', hint: 'main.py + requirements.txt' },
-  { id: 'node', label: 'Node API', hint: 'Express の REST API' },
+  { id: 'blank', label: '空', hint: '最小構成（README のみ）', uiHint: '迷ったらこれで大丈夫です' },
+  { id: 'web', label: 'Web', hint: 'HTML / CSS / JS の静的サイト', uiHint: 'ふつうのホームページ' },
+  { id: 'react', label: 'React', hint: 'Vite + React + TypeScript', uiHint: '画面の多いアプリ' },
+  { id: 'python', label: 'Python', hint: 'main.py + requirements.txt', uiHint: '計算・処理が中心' },
+  { id: 'node', label: 'Node API', hint: 'Express の REST API', uiHint: 'データを返す仕組み' },
 ]
 
 // 「何を作るか」：Webサイト（静的サイト中心）／アプリ（ツール・API等）／まっさら（空で始める）
-type KindId = 'site' | 'app' | 'blank'
+export type KindId = 'site' | 'app' | 'blank'
 const KINDS: { id: KindId; label: string; hint: string }[] = [
   { id: 'site', label: '🌐 Webサイト', hint: 'ホームページ・LP・お店/会社の紹介' },
   { id: 'app', label: '⚙️ アプリ', hint: '動きのあるツール・Webアプリ・API' },
@@ -57,25 +60,48 @@ const KINDS: { id: KindId; label: string; hint: string }[] = [
 // SITE_TYPES（サイトの種類）は newProjectRequest.ts へ一本化（依頼文の組み立てと表示の両方で使うため）。
 
 // 公開先の選択肢。準備中の target（VPS/クラウド）は targetProfiles.isAvailableTarget で除外して表示しない。
-// group で「さくらインターネットのサービス」と「さくら以外」に分けて表示する（③公開ダイアログと同じ方針）。
+// group で「さくらインターネットのサービス」と「その他の公開先」に分けて表示する（③公開ダイアログと同じ方針・W-80）。
 const TARGETS: { id: TargetId; label: string; hint: string; group: 'sakura' | 'other' }[] = [
-  { id: 'local', label: 'あとで決める（おすすめ）', hint: 'まずは手元で作って試せます。公開先はあとから選べます（おすすめ）', group: 'sakura' },
+  { id: 'local', label: 'あとで決める（おすすめ）', hint: 'まずは手元で作って試せます。公開先はあとから選べます', group: 'sakura' },
   { id: 'sakura-rental', label: 'さくらのレンタルサーバ', hint: 'ホームページ向け。さくらのレンタルサーバで公開', group: 'sakura' },
   { id: 'sakura-apprun', label: 'さくらのAppRun', hint: 'プログラムが動くアプリ向け。さくらのAppRunで公開', group: 'sakura' },
   { id: 'sakura-vps', label: 'さくらのVPS', hint: '上級者向け。サーバ内で完結する構成', group: 'sakura' },
   { id: 'sakura-cloud', label: 'さくらのクラウド', hint: '上級者向け。クラウドサービス前提', group: 'sakura' },
-  { id: 'hanamii', label: 'HANAMII（国産PaaS）', hint: 'さくらのクラウド基盤の国産PaaS。サイトもアプリも公開可', group: 'other' },
-  { id: 'vercel', label: 'Vercel（海外）', hint: '静的サイト/フロントエンド向けの海外PaaS。データは国外', group: 'other' },
+  // 補足の「公開サービス」は W-108 が退けた別案の言葉（W-1直し漏れ・2026-09-27再検分の指摘）。
+  // ラベルの「クラウドサービス」と揃え、全画面で同じ呼び名にする（W-108・W-118・W-28決定）。
+  { id: 'hanamii', label: 'HANAMII（国産のクラウドサービス）', hint: '国産のクラウドサービス。サイトもアプリも置けます', group: 'other' },
+  // 「データは国内」は条件つき（データの保存を使う場合だけ）。条件なしで言い切ると、
+  // 保存場所を用意していないプロジェクトでは事実と違う（W-28・W-29・2026-09-27再検分の指摘）。
+  // PublishModal.tsx の同じ説明と同じ言い方に揃える。
+  { id: 'vercel', label: 'Vercel（海外のクラウドサービス）', hint: 'Webサイト向けの海外のクラウドサービス。動くのは国外です。データの保存を使う場合、データは日本国内に置かれます', group: 'other' },
 ]
 
 // 公開先のグループ表示順とタイトル（PublishModal と同じ文言）
 const TARGET_GROUPS: { key: 'sakura' | 'other'; title: string }[] = [
   { key: 'sakura', title: 'さくらインターネットのサービス' },
-  { key: 'other', title: 'さくら以外の公開先' },
+  { key: 'other', title: 'その他の公開先' },
 ]
 
 /** 「ベース」指定を無視して専用構成で生成する公開先 */
 const FIXED_STACK_TARGETS: TargetId[] = ['sakura-rental', 'sakura-apprun']
+
+/**
+ * 新規プロジェクトの見出しの下の説明文（W-70・2026-09-27）。
+ *
+ * まっさら（kind==='blank'）は AI に何も依頼しない（buildNewProjectRequest が null を返す）ので、
+ * キーの有無に関わらず「空で始める」ことを伝える。以前はキーの有無だけを見ていたため、
+ * キーがある状態で「📄 まっさら」を選ぶと「作成後、チャットでAIが初期ファイルを作ります」の
+ * ままで、すぐ下の説明「ファイルは作成しません」と逆のことを言っていた。
+ */
+export function newProjectHeaderNote(kind: KindId, hasKey: boolean): string {
+  if (kind === 'blank') return '空で始めます。あとからチャットで頼めます'
+  return hasKey ? '作成後、チャットでAIが初期ファイルを作ります' : 'フォルダと雛形を作成します'
+}
+
+/** 作成ボタンの文字（W-70）。まっさらは AI を呼ばないので、キーがあっても「フォルダを作成」のまま。 */
+export function newProjectSubmitLabel(kind: KindId, hasKey: boolean): string {
+  return kind !== 'blank' && hasKey ? '✨ AIで作成' : 'フォルダを作成'
+}
 
 /** Minimal local scaffold per base — used as a fallback when no API key is registered. */
 function localTemplate(base: string, name: string, description: string): GenFile[] {
@@ -134,9 +160,9 @@ function guideFile(name: string): GenFile {
       `現在あるのは、選択したベースの**最小限の雛形ファイル**のみです。\n\n` +
       `## 次のステップ\n\n` +
       `1. **APIキーを登録する**\n` +
-      `   - 画面右上の「チャット」または「AI」パネルの設定（⚙️）から、さくらのAI Engine または Claude のAPIキーを入力\n` +
+      `   - メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）を開き、さくらのAI Engine または Claude のAPIキーを入力\n` +
       `   - さくらのAI Engineのキーは [さくらのAI Engine](https://ai.sakura.ad.jp/) で取得できます\n` +
-      `   - Claudeのキーは [Anthropic Console](https://console.anthropic.com/) で取得できます\n` +
+      `   - Claudeのキーは [Claude Console](https://platform.claude.com) で取得できます\n` +
       `2. **AIに開発を依頼する**\n` +
       `   - キー登録後、チャットで「このプロジェクトに〇〇を実装して」と依頼するとコードを生成します\n` +
       `3. もう一度「新規プロジェクト」から作り直すこともできます\n\n` +
@@ -279,7 +305,7 @@ return [
 
   const deploySh =
 `#!/usr/bin/env bash
-# さくらのレンタルサーバ デプロイスクリプト（rsync over SSH）
+# さくらのレンタルサーバ 公開スクリプト（deploy.sh・rsync over SSH）
 # 1) 下の ACCOUNT を初期ドメインのアカウント名に変更
 # 2) SSHが使えること（スタンダードプラン以上）を確認
 # 3) ./deploy.sh を実行
@@ -344,7 +370,7 @@ ${name}/
 3. **接続情報を設定**：\`app/config.sample.php\` を \`app/config.php\` にコピーし、MySQL情報を入力
    （\`config.php\` は \`.gitignore\` 済み。サーバへは deploy.sh が安全にアップロードします）
 4. **SSHの準備**：コントロールパネルでSSHを有効化（鍵 or パスワード）
-5. **デプロイ**：\`deploy.sh\` の \`ACCOUNT\` を自分のアカウント名に変更して実行
+5. **公開**：\`deploy.sh\` の \`ACCOUNT\` を自分のアカウント名に変更して実行
    \`\`\`bash
    ./deploy.sh
    \`\`\`
@@ -487,14 +513,14 @@ docker run -p 8080:8080 ${name}
 
 ## 公開手順（さくらのAppRun）
 
-このプロジェクトは **IDE の【③ 公開】→「さくらのAppRun」** からそのまま公開できます。
-Docker のインストールやコントロールパネルでの操作は不要です。IDE が自動で
+このプロジェクトは **Koto の【③ 公開】→「さくらのAppRun」** からそのまま公開できます。
+Docker のインストールやコントロールパネルでの操作は不要です。Koto が自動で
 コンテナをビルドし、コンテナレジストリの作成・イメージの登録・アプリの作成・
 公開URLの発行まで行います（ポートは 8080）。
 
 1. 画面上部の【③ 公開】を開く
 2. 公開先で「さくらのAppRun」を選ぶ
-3. 「構築する」を押す（プランを確認 → 実行）。完了すると公開URLが表示されます
+3. 「🚀 公開する」を押し、確認画面で内容を確かめて「公開する」を押す。完了すると公開URLが表示されます
 
 ## メモ
 - AppRun は x86_64 なので、必ず \`--platform linux/amd64\` でビルドします（Apple Silicon でも同様）。
@@ -515,9 +541,9 @@ Docker のインストールやコントロールパネルでの操作は不要�
 function deployNote(target: TargetId, name: string): GenFile {
   const body =
     target === 'sakura-vps'
-      ? `## デプロイ: さくらのVPS\n\nVPS向けの完全な構成は今後のアップデートで追加予定です。\n\n**想定する構成（VPS内で完結）**\n- Webサーバ（nginx / Apache）＋アプリ＋DBを同一VPSに構築\n- systemd でアプリを常駐\n- ファイアウォール / SSH 公開鍵でアクセス制御\n`
-      : `## デプロイ: さくらのクラウド\n\nクラウド向けの完全な構成は今後のアップデートで追加予定です。\n\n**検討するさくらのクラウドサービス例**\n- サーバ / ロードバランサ / データベースアプライアンス\n- オブジェクトストレージ / DNS\n- スタートアップスクリプトでの自動構築\n`
-  return { path: 'DEPLOY.md', content: `# ${name} デプロイ構成\n\n${body}` }
+      ? `## 公開: さくらのVPS\n\nVPS向けの完全な構成は今後のアップデートで追加予定です。\n\n**想定する構成（VPS内で完結）**\n- Webサーバ（nginx / Apache）＋アプリ＋DBを同一VPSに構築\n- systemd でアプリを常駐\n- ファイアウォール / SSH 公開鍵でアクセス制御\n`
+      : `## 公開: さくらのクラウド\n\nクラウド向けの完全な構成は今後のアップデートで追加予定です。\n\n**検討するさくらのクラウドサービス例**\n- サーバ / ロードバランサ / データベースアプライアンス\n- オブジェクトストレージ / DNS\n- スタートアップスクリプトでの自動構築\n`
+  return { path: 'DEPLOY.md', content: `# ${name} 公開の構成\n\n${body}` }
 }
 
 /** Build the local scaffold for a given deploy target (used without AI, or as fallback). */
@@ -682,18 +708,14 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
     localStorage.setItem(NEWPROJECT_AGENT_KEY, b)
   }
 
-  // Initialise the location to the app workspace root (default: ~/SakuraIDE),
-  // or the last-used workspace if the user changed it before.
+  // Initialise the location to the app workspace root（既定は W-121 の規則。新しく入れた人は
+  // ~/Koto、すでに ~/SAKURAIDE がある人はそのまま）、or the last-used workspace if the user
+  // changed it before. 規則そのものは workspace.ts の getWorkspaceDir() に一本化してある。
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const saved = localStorage.getItem(WORKSPACE_KEY)
-      if (saved) {
-        if (!cancelled) setParentDir(saved)
-        return
-      }
-      const home = await window.electronAPI.fs.homeDir()
-      if (!cancelled) setParentDir(`${home}/${WORKSPACE_DIRNAME}`)
+      const dir = await getWorkspaceDir()
+      if (!cancelled) setParentDir(dir)
     })()
     return () => { cancelled = true }
   }, [])
@@ -721,7 +743,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
     setError('')
     setConflict(null)
     const n = projName.trim()
-    if (!parentDir) { setError('ワークスペースが未設定です'); return }
+    if (!parentDir) { setError('プロジェクトを置くフォルダが決まっていません'); return }
     if (!n) { setError('プロジェクト名を入力してください'); return }
     if (!NAME_OK.test(n)) {
       setError('プロジェクト名は半角英数字・ハイフン(-)・アンダースコア(_)・ドット(.)のみ使用できます')
@@ -880,7 +902,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
             <p className="text-xs text-ink-secondary">
               {mode === 'import'
                 ? '公開されているものをインポートし、編集できるようにします'
-                : apiKey || claudeKey ? '作成後、チャットでAIが初期ファイルを作ります' : 'フォルダと雛形を作成します'}
+                : newProjectHeaderNote(kind, !!(apiKey || claudeKey))}
             </p>
           </div>
           {!busy && !importBusy && (
@@ -892,7 +914,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           {/* Location (workspace root) */}
           <div>
             <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-ink-secondary">ワークスペース</label>
+              <label className="text-xs font-semibold text-ink-secondary">プロジェクトを置くフォルダ</label>
               <button
                 onClick={pickDir}
                 disabled={busy}
@@ -1062,21 +1084,21 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
             })}
             {kind === 'site' && target === 'local' && (
               <p className="mt-1.5 text-[11px] text-ink-muted leading-relaxed">
-                💡 Webサイトの公開には<b className="text-sakura">さくらのレンタルサーバ</b>がおすすめです（完成後に【③ 公開】からも選べます）。
+                💡 完成して公開するときは、Webサイトなら<b className="text-sakura">さくらのレンタルサーバ</b>が向いています（【③ 公開】で選べます）。
               </p>
             )}
             {target === 'sakura-rental' && (
               <p className="mt-1.5 text-[11px] text-sakura leading-relaxed">
                 {kind === 'site'
-                  ? <>静的サイトを public/ 構成で生成し、<b>deploy.sh</b> で簡単に公開できます。</>
-                  : <>PHP とデータベース（MySQL）の構成で生成し、<b>deploy.sh</b> で簡単に公開できます（ベース指定は無視されます）。</>}
+                  ? <>静的サイトを public/ 構成で生成し、<b>🚀 公開→さくらのレンタルサーバ</b> から公開できます。</>
+                  : <>PHP とデータベース（MySQL）の構成で生成し、<b>🚀 公開→さくらのレンタルサーバ</b> から公開できます（ベース指定は無視されます）。データベースの作成はコントロールパネルで別に必要です。</>}
               </p>
             )}
             {target === 'sakura-apprun' && (
               <p className="mt-1.5 text-[11px] text-sakura leading-relaxed">
                 {kind === 'site'
-                  ? <>静的サイトとして生成し、<b>③公開→さくらのAppRun</b> から Docker不要でそのまま公開できます。</>
-                  : <>Docker コンテナ構成（Node.js + Dockerfile）で生成し、<b>③公開→さくらのAppRun</b> から Docker不要でそのまま公開できます（ベース指定は無視されます）。</>}
+                  ? <>静的サイトとして生成し、<b>③公開→さくらのAppRun</b> からそのまま公開できます。</>
+                  : <>③公開→<b>さくらのAppRun</b> から、そのまま公開できる形で作ります（ここで選んだ技術は使わず、AppRun 向けの形になります）。</>}
               </p>
             )}
             {(() => {
@@ -1095,8 +1117,11 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           {/* Template (base stack) — アプリのときのみ表示（サイトは静的HTML固定） */}
           {kind === 'app' && (
           <div>
+            {/* 「専用構成」は W-74 がそもそも避けたい専門語のまま残っていた（2026-09-27再検分の
+                指摘）。見出し自体を「ベース」→「使う技術」に変えた理由（何を選んでも通じない）が
+                この一言にも当てはまる。AppRun 側の説明文と同じ言い回しに揃える。 */}
             <label className="text-xs font-semibold text-ink-secondary">
-              ベース {FIXED_STACK_TARGETS.includes(target) && <span className="text-ink-muted font-normal">（この公開先では専用構成で生成）</span>}
+              使う技術（わからなければ「空」のままで大丈夫です） {FIXED_STACK_TARGETS.includes(target) && <span className="text-ink-muted font-normal">（ここで選んだ技術は使いません）</span>}
             </label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {TEMPLATES.map(t => (
@@ -1104,7 +1129,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
                   key={t.id}
                   onClick={() => setTemplate(t.id)}
                   disabled={busy || FIXED_STACK_TARGETS.includes(target)}
-                  title={t.hint}
+                  title={t.uiHint}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-40 ${
                     template === t.id
                       ? 'sakura-gradient text-white border-transparent'
@@ -1233,7 +1258,11 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
                   <button
                     onClick={() => runCreate(name, true)}
                     className="px-3 py-1.5 rounded-lg text-xs font-medium bg-overlay text-ink border border-line hover:border-sakura transition-colors"
-                    title="既存ファイルは上書きせず、不足分だけ追加します"
+                    title={
+                      (apiKey || claudeKey) && kind !== 'blank'
+                        ? '今あるファイルを残したまま、AIに続きを作ってもらいます（同じ名前のファイルをAIが書き換えることがあります。🕘 から戻せます）'
+                        : '既存ファイルは上書きせず、不足分だけ追加します'
+                    }
                   >
                     中に追加生成する
                   </button>
@@ -1266,7 +1295,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
               disabled={busy || !name.trim() || !NAME_OK.test(name.trim())}
               className="flex-1 py-2.5 rounded-xl text-sm font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-1.5"
             >
-              {busy ? '処理中...' : (apiKey || claudeKey) ? '✨ AIで作成' : 'フォルダを作成'}
+              {busy ? '処理中...' : newProjectSubmitLabel(kind, !!(apiKey || claudeKey))}
             </button>
           </div>
 

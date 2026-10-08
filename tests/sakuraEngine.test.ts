@@ -176,7 +176,14 @@ describe('runSakuraChat: 🗂 まとめ作り中に ⏹ が効かない不具合
     expect(result).toEqual({ content: 'こんにちは', usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
   })
 
-  it('cbs を渡さなくても従来どおり動く（main の sakura:chat 経路は cbs 無しで呼んでいる）', async () => {
+  // ⚠️ 2026-09-25 検分（指摘V9）: ここは括弧内が「main の sakura:chat 経路は cbs 無しで呼んでいる」
+  //    のままだった。**いまは渡している**（src/main/ipc/sakura.ts の sakura:chat と
+  //    src/main/chat/turnRunner.ts の chatOnce。本番の呼び出し元はこの2つだけで、両方 cbs 付き）。
+  //    古い説明を残すと、次に読む人が「sakura:chat は中断できない側」と信じ、
+  //    ipc/sakura.ts:72-86 の戒めが繰り返すなと言っている「片方だけ直す」罠へ戻る。
+  //    このテストが守っているのは**省いて呼べること（引数が任意のままであること）**であって、
+  //    「本番が省いている」ことではない。
+  it('cbs を渡さなくても従来どおり動く（本番の呼び出し元は2つとも cbs 付き。省いて呼ばれても壊れないことの対照）', async () => {
     const port = await listen((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({

@@ -97,7 +97,7 @@ describe('checkUnusedFiles: 対応範囲（roadmap #22・静的サイト／Node�
 
   it('絶対パスでない projectDir は supported:false', () => {
     const r = checkUnusedFiles('not-absolute')
-    expect(r).toEqual({ supported: false, unused: [], runtime: 'static' })
+    expect(r).toEqual({ supported: false, unused: [], runtime: 'static', truncated: false, dataFilesReferenced: 0 })
   })
 })
 

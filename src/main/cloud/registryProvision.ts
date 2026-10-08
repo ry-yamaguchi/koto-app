@@ -138,7 +138,7 @@ export async function provisionRegistryWithMeta(
   }
 
   const id = extractRegistryId(r.data)
-  if (!id) return { ok: false, message: 'レジストリのIDを取得できませんでした（レスポンス形を要確認）' }
+  if (!id) return { ok: false, message: 'レジストリのIDを取得できませんでした。さくらのクラウドのコントロールパネルでご確認のうえ、もう一度お試しください。' }
 
   if (!metaIncluded) {
     // 分類を付けずに作成した。
