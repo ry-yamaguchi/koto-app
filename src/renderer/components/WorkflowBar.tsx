@@ -47,13 +47,13 @@ function formatPublishedAt(iso?: string): string | null {
 export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusChat, onRunCmd, onStopCmd, onOpenPublish, onChangeTarget, onOpenServer }: Props) {
   // 公開先変更のドロップダウン開閉
   const [showTargetMenu, setShowTargetMenu] = useState(false)
-  // ② 試す の検出中フラグ（ボタン無効化に使用）
+  // 試す の検出中フラグ（ボタン無効化に使用）
   const [running, setRunning] = useState(false)
-  // ②試すで起動したサーバーが実行中かどうか（停止ボタンの表示に使用）
+  // 試すで起動したサーバーが実行中かどうか（停止ボタンの表示に使用）
   const [serverRunning, setServerRunning] = useState(false)
   // 実行方法が見つからなかった時のインラインヒント表示フラグ
   const [showHint, setShowHint] = useState(false)
-  // ②疎通確認がタイムアウトした時のインラインヒント表示フラグ（showHint と同じ8秒自動消去の作法・別枠）
+  // 試すの疎通確認がタイムアウトした時のインラインヒント表示フラグ（showHint と同じ8秒自動消去の作法・別枠）
   const [showPortHint, setShowPortHint] = useState(false)
   // 実行に必要なランタイムが見つからない時の導入パネル（runtime と Homebrew の有無）
   const [missingRuntime, setMissingRuntime] = useState<{ runtime: 'php' | 'node' | 'python3'; hasBrew: boolean } | null>(null)
@@ -65,7 +65,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
   const portHintTimer = useRef<number | null>(null)
   // バー全体の参照（外側クリック判定用）
   const containerRef = useRef<HTMLDivElement | null>(null)
-  // ②疎通確認のポーリングを打ち切るフラグ（プロジェクト切替・アンマウントで真にする。下の effect 参照）
+  // 試すの疎通確認のポーリングを打ち切るフラグ（プロジェクト切替・アンマウントで真にする。下の effect 参照）
   const pollCancelledRef = useRef(false)
 
   // ヒントを表示し、8秒後に自動で消すタイマーをセット
@@ -88,7 +88,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
     }
   }
 
-  // ②疎通確認タイムアウト用ヒント。openHint/closeHint と同じ作法（8秒で自動消去）
+  // 試すの疎通確認タイムアウト用ヒント。openHint/closeHint と同じ作法（8秒で自動消去）
   function openPortHint() {
     setShowPortHint(true)
     if (portHintTimer.current !== null) {
@@ -125,14 +125,14 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
   // プロジェクトが切り替わったらサーバー実行中フラグをリセット
   useEffect(() => { setServerRunning(false) }, [projectDir])
 
-  // ②疎通確認のポーリング中断フラグ。プロジェクトが切り替わる・アンマウントされる直前の
+  // 試すの疎通確認のポーリング中断フラグ。プロジェクトが切り替わる・アンマウントされる直前の
   // クリーンアップで真にし、進行中のポーリングを止める（root effect と同じ cancelled の作法）。
   useEffect(() => {
     pollCancelledRef.current = false
     return () => { pollCancelledRef.current = true }
   }, [projectDir])
 
-  // 「② 試す」で動かすのは**実際に公開されるもの**（`public/`。無ければ直下）。
+  // 「試す」で動かすのは**実際に公開されるもの**（`public/`。無ければ直下）。
   // ここがずれると「試すと動くのに、公開すると別の中身」になる（2026-08-20）。
   const [root, setRoot] = useState<string>(projectDir)
   useEffect(() => {
@@ -154,7 +154,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
     }
   }, [])
 
-  // ②疎通確認: ポートが開通するまで500ms間隔・最大40回（20秒。npm install の時間を見込む）ポーリングし、
+  // 試すの疎通確認: ポートが開通するまで500ms間隔・最大40回（20秒。npm install の時間を見込む）ポーリングし、
   // 開通したらブラウザを開く。開通しないまま終わればインラインで案内する
   // （2026-09-01 実機・helmet 欠けでサーバーが即クラッシュし、旧実装の固定1.5秒待ちでは
   // 「接続が拒否されました」だけが見えていた）。
@@ -193,7 +193,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
     }
   }
 
-  // ② 試す: ファイルの実体から実行方法を決める。判定の本体は runPlan.ts の planRun（純粋・テスト対象）。
+  // 試す: ファイルの実体から実行方法を決める。判定の本体は runPlan.ts の planRun（純粋・テスト対象）。
   //
   // ── 2026-09-01（Ryosuke の調査依頼）: 判定順を「サーバー優先」へ反転した ─────────
   // 従来はここに静的優先（index.html → … → server.js）の判定が埋め込まれており、
@@ -216,8 +216,8 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
       const api = window.electronAPI
       // **走らせる直前に koto-data を置く**（2026-09-23 検分）。
       // AI への指示（aiContext.ts の DATA_RULE）は「Koto が用意します」と約束している。
-      // ところが以前の入口は ③公開 の「保存場所を用意する」と「AIに書き直してもらう」
-      // の2つだけで、いちばん通る道（① 作る → すぐ ② 試す）では1つも置かれなかった。
+      // ところが以前の入口は 公開 の「保存場所を用意する」と「AIに書き直してもらう」
+      // の2つだけで、いちばん通る道（作る → すぐ 試す）では1つも置かれなかった。
       // AI は指示どおり require('./koto-data.cjs') を書くので、ここを通さないと
       // `Cannot find module './koto-data.cjs'` でアプリが起動しない。
       // **既にあれば触らないので、何度押しても安全。**
@@ -304,62 +304,53 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
       <div
         className="flex items-center gap-1 px-3 h-10 bg-surface border-b border-line flex-none overflow-x-auto"
       >
-        {/* ① 作る */}
+        {/* 作る */}
         <button
           type="button"
           onClick={onFocusChat}
           className="rounded-lg px-3 py-1 flex items-center gap-2 hover:bg-overlay transition-colors flex-none"
         >
-          <span className="sakura-gradient text-white text-[10px] font-semibold rounded-md w-4 h-4 flex items-center justify-center flex-none">
-            1
-          </span>
           <span className="flex flex-col items-start leading-tight">
-            <span className="text-xs font-semibold text-ink">① 作る</span>
+            <span className="text-xs font-semibold text-ink">作る</span>
             <span className="text-[10px] text-ink-muted">AIに依頼</span>
           </span>
         </button>
 
         <span className="text-ink-muted text-xs flex-none">→</span>
 
-        {/* ② 試す */}
+        {/* 試す */}
         <button
           type="button"
           onClick={handleRun}
           disabled={running}
           className="rounded-lg px-3 py-1 flex items-center gap-2 hover:bg-overlay transition-colors flex-none disabled:opacity-50"
         >
-          <span className="sakura-gradient text-white text-[10px] font-semibold rounded-md w-4 h-4 flex items-center justify-center flex-none">
-            2
-          </span>
           <span className="flex flex-col items-start leading-tight">
-            <span className="text-xs font-semibold text-ink">② 試す</span>
+            <span className="text-xs font-semibold text-ink">試す</span>
             <span className="text-[10px] text-ink-muted">{running ? '確認中…' : '実行して確認'}</span>
           </span>
         </button>
 
-        {/* ②試すで起動したサーバーの停止ボタン（実行中のみ表示） */}
+        {/* 試すで起動したサーバーの停止ボタン（実行中のみ表示） */}
         {serverRunning && (
           <button
             type="button"
             onClick={() => { onStopCmd(); setServerRunning(false) }}
             className="rounded-lg px-2 py-1 flex items-center gap-1 hover:bg-overlay transition-colors flex-none text-[11px] text-ink-secondary border border-line"
-            title="②試すで起動したサーバーを停止します（ターミナルに Ctrl+C を送信）"
+            title="「試す」で起動したサーバーを停止します（ターミナルに Ctrl+C を送信）"
           >⏹ サーバー停止</button>
         )}
 
         <span className="text-ink-muted text-xs flex-none">→</span>
 
-        {/* ③ 公開 */}
+        {/* 公開 */}
         <button
           type="button"
           onClick={onOpenPublish}
           className="rounded-lg px-3 py-1 flex items-center gap-2 hover:bg-overlay transition-colors flex-none"
         >
-          <span className="sakura-gradient text-white text-[10px] font-semibold rounded-md w-4 h-4 flex items-center justify-center flex-none">
-            3
-          </span>
           <span className="flex flex-col items-start leading-tight">
-            <span className="text-xs font-semibold text-ink">③ 公開</span>
+            <span className="text-xs font-semibold text-ink">公開</span>
             <span className={`text-[10px] ${isPublished ? 'text-brand-green' : 'text-ink-muted'}`}>
               {isPublished ? '✅ 公開済み' : 'さくらで公開'}
             </span>
@@ -418,7 +409,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
               >
                 {selected ? '✓ ' : ''}{TARGET_PROFILES[id].label}
                 <span className="text-[10px] text-ink-muted ml-1">
-                  {TARGET_PROFILES[id].autoPublish ? '（ここから公開できます）' : '（③公開からは公開できません・AIが構成を合わせるだけ）'}
+                  {TARGET_PROFILES[id].autoPublish ? '（ここから公開できます）' : '（「公開」からは公開できません・AIが構成を合わせるだけ）'}
                 </span>
               </button>
             )
@@ -445,7 +436,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
         </div>
       )}
 
-      {/* ②疎通確認がタイムアウトした時のインラインヒント（window.alert は使わない・8秒で自動消去） */}
+      {/* 試すの疎通確認がタイムアウトした時のインラインヒント（window.alert は使わない・8秒で自動消去） */}
       {showPortHint && (
         <div className="absolute left-3 top-full mt-1 z-10 bg-elevated border border-line-soft rounded-lg px-3 py-2 shadow-lg max-w-md">
           <p className="text-xs text-ink-secondary leading-snug">
@@ -488,13 +479,13 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
                 Homebrew で {runtimeLabel[missingRuntime.runtime]} をインストール
               </button>
               <p className="mt-2 text-[10px] text-ink-muted leading-snug">
-                インストールが終わったら、もう一度「② 試す」を押してください。
+                インストールが終わったら、もう一度「試す」を押してください。
               </p>
             </>
           ) : (
             <>
               <p className="mt-2 text-[10px] text-ink-muted leading-snug">
-                先に Homebrew（macOS のソフト導入ツール）が必要です。
+                先に Homebrew（macOS 用のパッケージ管理ツール）が必要です。
               </p>
               <button
                 type="button"
@@ -515,7 +506,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
                 Homebrew をインストール
               </button>
               <p className="mt-2 text-[10px] text-ink-muted leading-snug">
-                ※ パスワードの入力を求められる場合があります。導入後はターミナルを開き直す（またはKotoを再起動）と確実です。その後もう一度「② 試す」を押してください。
+                ※ パスワードの入力を求められる場合があります。導入後はターミナルを開き直す（またはKotoを再起動）と確実です。その後もう一度「試す」を押してください。
               </p>
             </>
           )}

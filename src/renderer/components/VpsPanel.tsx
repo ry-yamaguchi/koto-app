@@ -4,7 +4,7 @@ import { beginActivity } from '../activity'
 import CopyButton from './CopyButton'
 import { mergeProjectMeta } from '../projectMeta'
 
-// さくらのVPS 公開機能 V1a: 「① 接続」のみ（②初期セットアップ・③公開は次フェーズ。ここでは作らない）。
+// さくらのVPS 公開機能 V1a: 「手順1 接続」のみ（手順2 初期セットアップ・手順3 公開は次フェーズ。ここでは作らない）。
 // docs/vps-plan.md の「決定事項（2026-07-18）」に基づき、接続は2ルート:
 //   ルートA（推奨・新規/作り直してよいVPS）: IDEが鍵を生成し、公開鍵だけを埋め込んだ初期設定スクリプトを
 //     さくらのVPS コントロールパネルの「マイスクリプト」へ登録してもらう（Kotoはパスワードを一切扱わない）。
@@ -45,7 +45,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
   const [testBusy, setTestBusy] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message?: string } | null>(null)
   const [fingerprint, setFingerprint] = useState<string | null>(null)
-  const [fpAlert, setFpAlert] = useState<string | null>(null) // ホスト鍵の指紋不一致（赤で中断・バイパス不可）
+  const [fpAlert, setFpAlert] = useState<string | null>(null) // ホスト鍵のフィンガープリント不一致（赤で中断・バイパス不可）
   const [hardened, setHardened] = useState(false)
 
   const readMeta = useCallback(async (): Promise<any> => {
@@ -150,7 +150,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
       }
       const r = await window.electronAPI.vps.testConnection(hostInfo.host, hostInfo.port, hostInfo.user, keys.privateKey, fp)
       if (!r.ok) {
-        if ((r.message ?? '').includes('指紋が記録済みの値と一致しません')) { setFpAlert(r.message ?? ''); return }
+        if ((r.message ?? '').includes('フィンガープリントが記録済みの値と一致しません')) { setFpAlert(r.message ?? ''); return }
         setTestResult({ ok: false, message: r.message ?? '接続に失敗しました' })
         return
       }
@@ -187,12 +187,12 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
         setFingerprint(fp)
         await saveVpsMeta({ entryId, host: hostInfo.host, port: hostInfo.port, hostKeyFingerprint: fp })
       }
-      if (!fp) { setInstallMsg('鍵は設置しましたが、ホスト鍵の指紋が確認できませんでした。「接続を確認」を押して再度お試しください。'); return }
+      if (!fp) { setInstallMsg('鍵は設置しましたが、ホスト鍵のフィンガープリントが確認できませんでした。「接続を確認」を押して再度お試しください。'); return }
 
       setInstallMsg('鍵認証で接続を確認しています…')
       const check = await window.electronAPI.vps.testConnection(hostInfo.host, hostInfo.port, hostInfo.user, k.privateKey, fp)
       if (!check.ok) {
-        if ((check.message ?? '').includes('指紋が記録済みの値と一致しません')) { setFpAlert(check.message ?? ''); setInstallMsg(''); return }
+        if ((check.message ?? '').includes('フィンガープリントが記録済みの値と一致しません')) { setFpAlert(check.message ?? ''); setInstallMsg(''); return }
         setInstallMsg(`鍵は設置しましたが、鍵認証での接続確認に失敗しました: ${check.message ?? ''}`)
         return
       }
@@ -215,9 +215,9 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
-        <p className="text-sm font-semibold text-ink">🖥 さくらのVPSで公開（① 接続）</p>
+        <p className="text-sm font-semibold text-ink">🖥 さくらのVPSで公開（手順1 接続）</p>
         <p className="text-xs text-ink-muted leading-relaxed">
-          自由度の高い仮想サーバ。まずは「鍵認証だけで安全に繋がる状態」を作ります。② 初期セットアップ・③ 公開は開発中のため、このバージョンでは接続確認までです。
+          自由度の高い仮想サーバ。まずは「鍵認証だけで安全に接続できる状態」を作ります。手順2 初期セットアップ・手順3 公開は開発中のため、このバージョンでは接続確認までです。
         </p>
       </div>
 
@@ -258,7 +258,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
 
           {fpAlert && (
             <div className="rounded-xl border border-brand-red/70 bg-overlay p-4 space-y-2">
-              <p className="text-sm font-semibold text-brand-red">⚠️ ホスト鍵の指紋が記録済みの値と一致しません（接続を中断しました）</p>
+              <p className="text-sm font-semibold text-brand-red">⚠️ ホスト鍵のフィンガープリントが記録済みの値と一致しません（接続を中断しました）</p>
               <p className="text-xs text-ink-secondary leading-relaxed select-text">{fpAlert}</p>
               <p className="text-[11px] text-ink-muted leading-relaxed">
                 心当たりがない場合は接続を再開せず、サーバの状態をさくらのVPSコントロールパネルで確認してください。

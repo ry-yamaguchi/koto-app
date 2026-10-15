@@ -173,6 +173,17 @@ export type ApprunDedicatedRecord = {
 }
 
 /**
+ * `publish`（`.sakuraide.json` の `publish`）から、②で記録してあるサービスプリンシパルIDを読む。
+ * 形が違えば（`publish` が無い・`apprunDedicated` が無い・文字列でない）null。**読むだけ**で、
+ * 前後の空白も落とさない（形の判定は呼び出し側＝servicePrincipalCandidates.ts の
+ * `resourceIdFormatOk`）。`fs:publishedRecords` が返す `publish` をそのまま渡せる。
+ */
+export function servicePrincipalIdOf(publish: unknown): string | null {
+  const v = asRecord(asRecord(publish).apprunDedicated).servicePrincipalId
+  return typeof v === 'string' ? v : null
+}
+
+/**
  * `publish.apprunDedicated` へパッチをマージ書き込みする（他のキー・他の publish.* は保つ）。
  * 段階①からある `consentedAt`／`servicePrincipalId` の書き込みも、段階②のID記録も、
  * 必ずこの1箇所を通す（同じ形のマージを別々に書かない・掟10）。

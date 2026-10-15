@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // AIの search_in_files ツール用：プロジェクト内の全文検索（単純な部分一致）
     searchInProject: (projectDir: string, query: string, pathPattern?: string) =>
       ipcRenderer.invoke('fs:searchInProject', projectDir, query, pathPattern),
-    // プロジェクトの最終変更時刻（③公開の「公開状況」で、公開後にコードが変わっていないかの判定に使う）
+    // プロジェクトの最終変更時刻（【公開】の「公開状況」で、公開後にコードが変わっていないかの判定に使う）
     latestChangeAt: (projectDir: string) => ipcRenderer.invoke('fs:latestChangeAt', projectDir),
     // 「📡 公開したもの一覧」用: ワークスペース配下の全プロジェクトの公開記録を集める（キー不要・オフライン可）
     publishedRecords: (workspaceDir: string) => ipcRenderer.invoke('fs:publishedRecords', workspaceDir),
@@ -144,7 +144,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // 永続データ（storage:*）。値は読まず、扱いだけを調べる。
   storage: {
-    /** プロジェクトのデータの扱いを調べる（③公開で保存場所の要否を出す）。 */
+    /** プロジェクトのデータの扱いを調べる（【公開】で保存場所の要否を出す）。 */
     scan: (projectDir: string) => ipcRenderer.invoke('storage:scan', projectDir),
     /** koto-data（.js / .cjs）が要るなら置く（既にあれば触らない）。 */
     ensureLayer: (projectDir: string) => ipcRenderer.invoke('storage:ensureLayer', projectDir),
@@ -364,6 +364,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // 段ごとの目安（どこにどれくらい時間がかかったか・2026-10-07）。この Mac の記録の最近5回の中央値、
+  // 無ければ開発時の実測、どちらも無い段は含まれない。引数は取らない。読み取りだけ（何も書かない・外へ送らない）。
+  stageTiming: {
+    estimates: () => ipcRenderer.invoke('stageTiming:estimates'),
+  },
+
   vercel: {
     // 方式B: トークン/チームIDは中央ストア（認証情報）から renderer が読んで引数で渡す。main には保存しない。
     testConnection: (token: string, teamId?: string) => ipcRenderer.invoke('vercel:testConnection', token, teamId),
@@ -413,7 +419,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
   vps: {
-    // さくらのVPS 公開機能 V1a（①接続の2ルート）。方式B: 秘密鍵・パスワードは renderer が
+    // さくらのVPS 公開機能 V1a（手順1 接続の2ルート）。方式B: 秘密鍵・パスワードは renderer が
     // 中央ストア（認証情報）／state から読んで引数で渡す。main には保存しない。
     generateKeypair: () => ipcRenderer.invoke('vps:generateKeypair'),
     buildStartupScript: (publicKey: string) => ipcRenderer.invoke('vps:buildStartupScript', publicKey),
@@ -428,8 +434,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('vps:hardenSshd', host, port, user, privateKey, fingerprint),
   },
   apprunDedicated: {
-    // さくらのAppRun 専有型（roadmap #23）。段階①（下調べ・GETのみ）に加え、
-    // 段階②「作る」＋④「破棄」を持つ。
+    // さくらのAppRun 専有型（roadmap #23）。段階1（下調べ・GETのみ）に加え、
+    // 段階2「作る」＋段階4「破棄」を持つ。
     // 方式B: auth は cloud.loadKey() 等で renderer が読んだ token/secret をそのまま渡す（main には保存しない）。
     // 接続テスト（roadmap #35）: 共用型 cloud.testConnection と同じ「チェックリスト」の形で返す。
     testConnection: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:testConnection', auth),
@@ -437,14 +443,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // ワーカとロードバランサのプランをまとめて返す。
     plans: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:plans', auth),
     clusters: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:clusters', auth),
-    // GET /zone（さくらのクラウドのゾーン一覧。roadmap #28）。⑤のゾーン選択式化に使う。GETのみ。
+    // GET /zone（さくらのクラウドのゾーン一覧。roadmap #28）。手順5のゾーン選択式化に使う。GETのみ。
     zones: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:zones', auth),
-    // 段階②: クラスタ→ASG→LB の順で作る。同意（consentedAt）が記録に無ければ main 側が
+    // 段階2: クラスタ→ASG→LB の順で作る。同意（consentedAt）が記録に無ければ main 側が
     // API を一度も呼ばずに中止する。押す前の確認ダイアログは呼び出し側（画面）の責務。
     // opts.confirmed は「確認ダイアログを通ったか」の印（2026-09-10 レビューの修理・A）。
     create: (projectDir: string, auth: { token: string; secret: string }, spec: ApprunDedicatedClusterSpec, opts?: { confirmed?: boolean }) =>
       ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec, opts),
-    // 段階④: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
+    // 段階4: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
     teardown: (projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }) =>
       ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts),
     // #39: 破棄の進捗メッセージ購読（各段が一覧から消えるまで待つ間、30秒ごとに1行）。
@@ -456,28 +462,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     // いま何が作られているか（.sakuraide.json の記録）を返す。API は呼ばない。
     state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir),
-    // #38「⑦ ログ・メトリクス」: プロジェクト単位（クラスタ単位ではない・5-12実測）。
+    // #38「手順7 ログ・メトリクス」: プロジェクト単位（クラスタ単位ではない・5-12実測）。
     // 共用型 cloud.telemetryStatus/enableTelemetry と同じ約束（opts.consented は
     // 「費用に同意する」ボタンを押したときだけ true を渡す）。
     telemetryStatus: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:telemetryStatus', auth),
     enableTelemetry: (auth: { token: string; secret: string }, kind: 'logs' | 'metrics', opts?: { consented?: boolean }) =>
       ipcRenderer.invoke('apprunDedicated:enableTelemetry', auth, kind, opts),
-    // ── ⑧「アプリを公開する」（D-4）────────────────────────────────────────
+    // ── 手順8「アプリを公開する」（D-4）────────────────────────────────────────
     // 前提（env.json の有無・Let's Encrypt のメールの有無・記録）を1回で返す。GETのみ・何も作らない。
     appStatus: (projectDir: string, auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:appStatus', projectDir, auth),
-    // ⑧「🔄 IP を取り直す」（D-5）: LB ノードの一覧を1回引き、DNS の A レコードに向ける素の IP を記録して返す。
+    // 手順8「🔄 IP を取り直す」（D-5）: LB ノードの一覧を1回引き、DNS の A レコードに向ける素の IP を記録して返す。
     // GET と記録の書き込みだけ・何も作らない（公開で IP が空のまま終わったときの取り直し口）。
     lbAddresses: (projectDir: string, auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:lbAddresses', projectDir, auth),
-    // ⑧「🔎 公開先と https を確かめる」（O-1）: ドメインの向き先・証明書・ブラウザで開けるか・
+    // 手順8「🔎 公開先と https を確かめる」（O-1）: ドメインの向き先・証明書・ブラウザで開けるか・
     // アプリの応答の4つを1回だけ調べて、画面に出す行を返す。読むだけ・何も作らない・鍵は要らない。
     checkSite: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:checkSite', projectDir),
     // 記録済みのクラスタの上にアプリを公開する（イメージの組み立て→レジストリへ push→アプリ/バージョン作成）。
     // opts.confirmed は「確認ダイアログを通ったか」の印（create/teardown と同じ約束）。
     publishApp: (projectDir: string, auth: { token: string; secret: string }, input: AppPublishInput, opts?: { confirmed?: boolean }) =>
       ipcRenderer.invoke('apprunDedicated:publishApp', projectDir, auth, input, opts),
-    // 📡 一覧の「破棄」から、専有型のアプリ（全バージョン）だけを消す（LB/ASG/クラスタには触らない）。
-    teardownApp: (projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }) =>
-      ipcRenderer.invoke('apprunDedicated:teardownApp', projectDir, auth, opts),
     // 公開の進捗メッセージ購読（onTeardownProgress と同じ形）。戻り値の関数を呼ぶと購読解除。
     onPublishProgress: (cb: (msg: string) => void) => {
       const handler = (_: Electron.IpcRendererEvent, msg: string) => cb(msg)

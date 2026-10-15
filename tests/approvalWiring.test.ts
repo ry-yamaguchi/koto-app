@@ -205,7 +205,8 @@ describe('close ダイアログの実態合わせ（AI応答は対象外・公�
     const end = src.indexOf('if (!hasUnsavedChanges) return', start)
     expect(end).toBeGreaterThan(start)
     const block = src.slice(start, end)
-    expect(block).toContain('if (closeBlockingBusy) {')
+    // 2026-10-10: before-quit で「終了する」を選んだあとは、同じことを二重に聞かないよう (1) だけ飛ばす（tests/quitGuard.test.ts）。見るのは今も closeBlockingBusy
+    expect(block).toContain('if (closeBlockingBusy && !quitGuard.isQuitConfirmed()) {')
     expect(block).not.toContain('if (isBusy) {')
     expect(block).toContain('closeBlockingBusy = false')
   })

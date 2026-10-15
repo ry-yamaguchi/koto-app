@@ -21,7 +21,7 @@ export function publishButtonLabel(published: boolean): string {
 // （「このプロジェクトのコンテナレジストリを探し直し…」）と揃えた。
 export function publishFailureHintText(hint: string | undefined): string | null {
   if (hint === 'reset-registry') {
-    return 'イメージの置き場（コンテナレジストリ）の接続情報が古い可能性があります。共用型タブの「レジストリを設定し直す」を押してから、もう一度お試しください。'
+    return 'コンテナレジストリの接続情報が古い可能性があります。共用型タブの「レジストリを設定し直す」を押してから、もう一度お試しください。'
   }
   return null
 }
@@ -81,7 +81,7 @@ export function publishHeadline(
   verify: DedicatedVerifyOutcome | null | undefined,
 ): { text: string; tone: 'ok' | 'warn' } {
   if (verify === 'no-backend') {
-    return { text: '⚠️ 公開の手続きは通りましたが、アプリがまだ応答していません', tone: 'warn' }
+    return { text: '⚠️ 公開の処理は完了しましたが、アプリがまだ応答していません', tone: 'warn' }
   }
   // D-19b（2026-09-16 の検分）: 404・502・504 のような**失敗応答**も、見出しを警告に倒す。
   // 直す前は「503 以外の応答はすべて `responding`」だったため、**ホスト名の振り分けが効かず
@@ -89,7 +89,7 @@ export function publishHeadline(
   // が出ていた（利用者から見てページは開けない）。**届いたことを、開けることの証拠にしない。**
   // 「応答していません」とは書かない——応答は返っている（返ってきたのがエラーである）。
   if (verify === 'error-status') {
-    return { text: '⚠️ 公開の手続きは通りましたが、公開先がエラーを返しています', tone: 'warn' }
+    return { text: '⚠️ 公開の処理は完了しましたが、公開先がエラーを返しています', tone: 'warn' }
   }
   return { text: '✅ 公開しました', tone: 'ok' }
 }
@@ -121,10 +121,10 @@ export function publishHeadline(
 // だった。共用型の公開画面（AppRunPanel.tsx）でも同じ1文を出すため、どちらで読んでも
 // 通じる言い方にする（文言を複製せず、この関数を両方から呼ぶ・掟10）。
 export function ephemeralDataNote(): string {
-  return 'アプリが自分のフォルダに書いたデータは残りません。アプリを動かしている入れもの（コンテナ）は使い捨てで、公開し直したときだけでなく、あなたが何もしなくても入れ替わる（再起動する）ことがあり、そのたびに中身は公開したときの状態へ戻ります（台数を2以上にすると、コンテナごとに別のデータになります）。入力を残したいときは、「保存場所」（オブジェクトストレージ）やデータベースのような、入れものの外に残る仕組みが要ります。'
+  return 'アプリが自分のフォルダに書いたデータは残りません。アプリを動かしているコンテナ（実行環境）は使い捨てで、公開し直したときだけでなく、あなたが何もしなくても入れ替わる（再起動する）ことがあり、そのたびに中身は公開したときの状態へ戻ります（台数を2以上にすると、コンテナごとに別のデータになります）。入力を残したいときは、「保存場所」（オブジェクトストレージ）やデータベースのような、コンテナの外に残る仕組みが要ります。'
 }
 
-// containerStateSummary — ⑧の「いまのコンテナの様子」を1行にする（D-8・2026-09-16 実機）。
+// containerStateSummary — ⑧の「いまのコンテナの状態」を1行にする（D-8・2026-09-16 実機）。
 //
 // verify が `no-backend`（503）のとき、Koto はこれまで「アプリがまだ応答していません。
 // ランタイムログを見てください」としか言えなかった。実機では、コンテナが `/app/data` を
@@ -152,7 +152,7 @@ export function containerStateSummary(
   states: { state: string; status: string }[] | null | undefined,
 ): string {
   // 配列ですらない＝何台動いているかは分からない。**0件に倒さない。**
-  if (!Array.isArray(states)) return 'いまのコンテナの様子を読み取れませんでした（何台動いているかは分かりません）。'
+  if (!Array.isArray(states)) return 'いまのコンテナの状態を読み取れませんでした（何台動いているかは分かりません）。'
   const list = states
   // 0件＝どのノードでもコンテナが動いていない。**「取得できなかった」ではなく「動いていない」**
   // （原本の形で読めた結果が0件のときだけ、呼び出し側がここへ空配列を渡す）。
@@ -163,7 +163,7 @@ export function containerStateSummary(
     counts.set(key, (counts.get(key) ?? 0) + 1)
   }
   const parts = [...counts.entries()].map(([k, n]) => (n > 1 ? `${k} × ${n}` : k))
-  return `いまのコンテナの様子: ${parts.join('・')}`
+  return `いまのコンテナの状態: ${parts.join('・')}`
 }
 
 // showDnsGuidanceExpanded — DNS の案内（IP・コピー・dnsGuidanceLines）を最初から開いて見せてよいか

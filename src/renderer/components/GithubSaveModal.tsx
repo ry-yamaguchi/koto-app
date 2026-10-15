@@ -6,7 +6,7 @@ import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
 import { mergeProjectMeta } from '../projectMeta'
 
 // 💾 GitHubに保存（バックアップ・共有・P3-⑬ G1）。
-// git 語彙はUIに出さない（コミット→保存・リポジトリ→「GitHubの保管場所」等）。
+// 用語は GitHub の画面の標準に揃える（リポジトリ・コミット。2026-10-01 作者決定: 「保管場所」「保存の記録」はやめた）。
 // トークンは方式B（中央ストアから読んで main へ引数で渡す。main には保存しない）。
 // .sakuraide.json には github: { repoFullName, lastSavedAt } のみを保存する（トークンは書かない）。
 
@@ -106,7 +106,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
     const r = await window.electronAPI.github.createRepo(token, name)
     if (!r.ok || !r.repoFullName) {
       setCreating(false)
-      setResult({ ok: false, text: r.message ?? '保管場所の作成に失敗しました' })
+      setResult({ ok: false, text: r.message ?? 'リポジトリの作成に失敗しました' })
       return
     }
     setRepoFullName(r.repoFullName)
@@ -168,12 +168,12 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
             </div>
           ) : !repoFullName ? (
             <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-ink">① 保存先を作成</h3>
+              <h3 className="text-sm font-semibold text-ink">手順1 保存先を作成</h3>
               <p className="text-xs text-ink-secondary leading-relaxed">
-                このプロジェクト専用のGitHubの保管場所（プライベート・非公開）を作成します。
+                このプロジェクト専用の GitHub リポジトリ（プライベート・非公開）を作成します。
               </p>
               <div>
-                <label className="text-[11px] font-medium text-ink-secondary">保管場所の名前</label>
+                <label className="text-[11px] font-medium text-ink-secondary">リポジトリ名</label>
                 <input
                   value={newRepoName}
                   onChange={e => setNewRepoName(e.target.value)}
@@ -186,7 +186,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
                 className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
               >{creating ? '作成中…' : saving ? '保存中…' : 'プライベートで作成して保存'}</button>
 
-              {/* 保管場所名の衝突（重複）時: ワンクリックで代替名に変えて作成し直す（AppRunPanel/HanamiiPanel と同じ導線）。 */}
+              {/* リポジトリ名の衝突（重複）時: ワンクリックで代替名に変えて作成し直す（AppRunPanel/HanamiiPanel と同じ導線）。 */}
               {conflictCardShown && (
                 <NameConflictRetry
                   currentName={lastAttemptedName || safeName(newRepoName)}
@@ -209,7 +209,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
                 <CopyButton text={`https://github.com/${repoFullName}`} title="リポジトリURLをコピー" />
               </div>
               <div>
-                <label className="text-[11px] font-medium text-ink-secondary">保存メッセージ（任意）</label>
+                <label className="text-[11px] font-medium text-ink-secondary">コミットメッセージ（任意）</label>
                 <input
                   value={message}
                   onChange={e => setMessage(e.target.value)}
@@ -255,7 +255,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
   )
 }
 
-// 保管場所名の衝突（重複）時に表示する、ワンクリックで代替名に変えて作成し直すブロック。
+// リポジトリ名の衝突（重複）時に表示する、ワンクリックで代替名に変えて作成し直すブロック。
 // AppRunPanel / HanamiiPanel の同名コンポーネント（NameConflictRetry）と同じ考え方（所見28）。
 // suggested は currentName（≒直近に失敗した名前）が変わるたびに新しく算出する。
 function NameConflictRetry({ currentName, onRetry }: { currentName: string; onRetry: (suggested: string) => void }) {

@@ -161,7 +161,8 @@ describe('保存場所を用意する（偽のさくらへ実際に流す）', (
     const r = await prepare({}, projectDir, { bucket: BUCKET })
 
     expect(r.ok).toBe(false)
-    expect(String(r.message ?? '')).toContain('一覧に現れません')
+    expect(String(r.message ?? '')).toContain('一覧に見つかりません')
+    expect(String(r.message ?? '')).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
     // **記録を残さない**（consentedAt が付くと、公開で鍵と環境変数を渡してしまう）
     expect(readEnv()).toBeNull()
     // 存在しないバケットへ書きに行かない
@@ -277,10 +278,10 @@ describe('保存場所を用意したら、目印も置く（形）', () => {
     expect(lb).toBeLessThan(pm)
   })
 
-  it('★ 目印を置く処理は、実在確認と記録の間にある（区切りで指す）', () => {
+  it('★ 使用中を示すファイルを置く処理は、存在確認と記録の間にある（区切りで指す）', () => {
     const body = prepareHandler()
-    // 「実在を確かめる」から「env.json へ書く」までの区切りの中に putMarker がある
-    const check = at(body, '一覧に現れません', 'バケットの実在確認のメッセージが無い')
+    // 「存在を確かめる」から「env.json へ書く」までの区切りの中に putMarker がある
+    const check = at(body, '一覧に見つかりません', 'バケットの存在確認のメッセージが無い')
     const save = at(body, 'fs.writeFileSync(file', 'env.json への書き込みが無い')
     const between = body.slice(check, save)
     expect(between).toContain('putMarker(')

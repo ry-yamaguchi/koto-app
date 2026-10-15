@@ -41,14 +41,14 @@ export function isProtectedWritePath(rel: string): boolean {
   const segments = p.split('/').filter(Boolean)
   if (!segments.length) return false
 
-  // ① Koto と git の管理フォルダ配下（どの階層にあっても保護する）
+  // (1) Koto と git の管理フォルダ配下（どの階層にあっても保護する）
   const protectedDirs = new Set<string>([...KOTO_INTERNAL_DIRS, ...OTHER_PROTECTED_DIRS])
   if (segments.some(seg => protectedDirs.has(seg))) return true
 
-  // ② Koto のメタ情報ファイル（プロジェクト直下）
+  // (2) Koto のメタ情報ファイル（プロジェクト直下）
   if (segments.length === 1 && (KOTO_INTERNAL_FILES as readonly string[]).includes(segments[0])) return true
 
-  // ③ 秘密情報が入るファイル（.env / .env.local / .env.production …）
+  // (3) 秘密情報が入るファイル（.env / .env.local / .env.production …）
   const base = segments[segments.length - 1]
   if (base.startsWith('.env')) return true
 
@@ -62,7 +62,7 @@ export function protectedWriteMessage(rel: string): string {
   // 「テスト用のデータを入れておいて」と頼んだ利用者に理由が伝わらず、AI も
   // 別の場所へ書こうとして空回りするので、この場合の一文をここに持つ（2026-09-23 検分）。
   if (normalize(rel).split('/').filter(Boolean).includes(DATA_LAYER_LOCAL_DIR)) {
-    return `${rel} はアプリが保存したデータの置き場なので、AI からは書き換えません。`
+    return `${rel} はアプリが保存したデータのフォルダなので、AI からは書き換えません。`
       + 'データの追加・変更・削除は、アプリの画面から行ってください。'
   }
   return `${rel} は Koto が管理する領域のため書き込めません（履歴・設定・.git・秘密情報のファイル）。`

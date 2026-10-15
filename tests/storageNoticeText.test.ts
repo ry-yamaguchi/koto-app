@@ -352,7 +352,11 @@ describe('送ってよいかの判断（用意できなければ送らない）'
     ]) {
       const plan = askAiRewritePlan(site, layer as never)
       expect(plan.send, JSON.stringify(layer)).toBe(false)
-      if (!plan.send) expect(plan.error).toContain('保存の部品を用意できませんでした')
+      if (!plan.send) {
+        expect(plan.error).toContain('データ保存用のファイル（koto-data）を用意できませんでした')
+        // 0.6.21（作者の決定 2026-10-01）: 「保存の部品」は「データ保存用のファイル（koto-data）」に揃えた。直す前の言い方は戻さない
+        expect(plan.error).not.toContain('保存の部品')
+      }
     }
   })
 
@@ -398,7 +402,8 @@ describe('保存場所を用意したときの完了文', () => {
       const text = storagePreparedText('koto-data-abc', true, file)
       expect(text).not.toContain('koto-data.js')
       expect(text).not.toContain('koto-data.cjs')
-      expect(text).toContain('データの保存の部品')
+      expect(text).toContain('データ保存用のファイル（koto-data）')
+      expect(text).not.toContain('部品') // 0.6.21: 直す前の言い方は戻さない
     }
   })
 

@@ -12,7 +12,7 @@ import {
   PUBLISH_STOP_NOTE,
 } from '../src/renderer/components/AppRunDedicatedPanel'
 import { panelBusyReason } from '../src/renderer/apprunDedicatedActions'
-// 2026-09-24 検分の指摘4・7・10: ⑧の「途中で閉じても…」は、実際に閉じるときの警告と
+// 2026-09-24 検分の指摘4・7・10: 手順8の「途中で閉じても…」は、実際に閉じるときの警告と
 // **同じ定義**から引く。片方だけ直して食い違う事故を落とすため、原本を読んで突き合わせる。
 import { PUBLISH_STOP_NOTE_MAIN_RECORD, PUBLISH_CLOSE_WARNING, PUBLISH_QUIT_STOPS } from '../src/renderer/activity'
 
@@ -30,7 +30,7 @@ const appApply = readFileSync(join(__dirname, '..', 'src/main/cloud/apprunDedica
 const imagePublish = readFileSync(join(__dirname, '..', 'src/main/cloud/imagePublish.ts'), 'utf-8')
 const activity = readFileSync(join(__dirname, '..', 'src/renderer/activity.ts'), 'utf-8')
 
-/** ⑤の入力がすべて空（＝何も入れていない）状態。 */
+/** 手順5の入力がすべて空（＝何も入れていない）状態。 */
 const emptyInput = {
   clusterName: '',
   resourceId: '',
@@ -42,7 +42,7 @@ const emptyInput = {
   maxNodes: 1,
 }
 
-/** ⑤の入力がすべて揃った状態。 */
+/** 手順5の入力がすべて揃った状態。 */
 const fullInput = {
   ...emptyInput,
   clusterName: 'demo',
@@ -57,7 +57,7 @@ const REVEAL = true
 // まだ何も触っていない初期表示（判断7・2026-09-11／2026-09-24 検分の指摘5）。
 const INITIAL = false
 
-describe('B: ⑤が押せないとき、足りないものが名前で出る', () => {
+describe('B: 手順5が押せないとき、足りないものが名前で出る', () => {
   it('★ 足りないものが名前で出る（何を入れればよいか分かる言葉で）', () => {
     const r = createBlockedReason(computeDedicatedFormErrors({ ...fullInput, clusterName: '' }), '', REVEAL)
     expect(r.kind).toBe('input')
@@ -69,7 +69,7 @@ describe('B: ⑤が押せないとき、足りないものが名前で出る', (
     expect(r.kind).toBe('input')
     expect(r.items).toEqual([
       'クラスタ名を入力してください',
-      '②でサービスプリンシパルIDを入力してください',
+      '手順2でサービスプリンシパルIDを入力してください',
       'ゾーンを入力してください',
       'ワーカプランを選んでください',
       'ロードバランサプランを選んでください',
@@ -106,7 +106,7 @@ describe('B: ⑤が押せないとき、足りないものが名前で出る', (
     const r = createBlockedReason(computeDedicatedFormErrors(emptyInput), busy, REVEAL)
     expect(r.kind).toBe('busy')
     expect(r.heading).toBe('⚠️ いまは「クラスタを作成する」を押せません。')
-    expect(r.headline).toBe('いま⑥の削除を実行中です。終わるまでお待ちください。')
+    expect(r.headline).toBe('いま手順6の削除を実行中です。終わるまでお待ちください。')
     // ほかの操作の最中は、入力の不足を並べない（直しても押せないため、次の一手にならない）
     expect(r.items).toEqual([])
   })
@@ -151,12 +151,14 @@ describe('D: 公開中は、いま何をしているかと待ってほしいこ�
     expect(v.heading).toBe('⏳ 公開しています')
   })
 
-  it('★ 段が進んだことが分かる（いくつ中のいくつか）', () => {
-    // いちばん最初に出るのは「保存場所の鍵の用意」（指摘16 で段に数えるようにした）
-    const first = publishProgressView('🔑 保存場所の鍵を用意しています…')
+  it('★ ステップが進んだことが分かる（いくつ中のいくつか）', () => {
+    // いちばん最初に出るのは「保存場所のアクセスキーの用意」（指摘16 で段に数えるようにした）
+    const first = publishProgressView('🔑 保存場所のアクセスキーを用意しています…')
     const later = publishProgressView('新しいバージョンを有効化しています…')
-    expect(first.stepText).toBe(`1／${PUBLISH_PROGRESS_STEPS.length} 段目（進み方によっては飛ぶ段もあります）`)
-    expect(later.stepText).toBe(`${PUBLISH_PROGRESS_STEPS.indexOf('activate') + 1}／${PUBLISH_PROGRESS_STEPS.length} 段目（進み方によっては飛ぶ段もあります）`)
+    // 0.6.21（作者の決定 2026-10-01）: 「段目」は「ステップ」に揃えた。直す前の言い方は戻さない
+    expect(first.stepText).not.toContain('段目')
+    expect(first.stepText).toBe(`ステップ 1／${PUBLISH_PROGRESS_STEPS.length}（進み方によってはスキップするステップもあります）`)
+    expect(later.stepText).toBe(`ステップ ${PUBLISH_PROGRESS_STEPS.indexOf('activate') + 1}／${PUBLISH_PROGRESS_STEPS.length}（進み方によってはスキップするステップもあります）`)
     // 段は進む向きにしか動かない（並びが逆転していないこと）
     expect(PUBLISH_PROGRESS_STEPS.indexOf('activate')).toBeGreaterThan(PUBLISH_PROGRESS_STEPS.indexOf('version-create'))
   })
@@ -210,27 +212,27 @@ describe('D: 公開中は、いま何をしているかと待ってほしいこ�
     for (const msg of pick(imagePublish)) {
       expect(publishProgressStep(msg), `段に対応づいていないイメージの1行: ${msg}`).toBe('image')
     }
-    expect(publishProgressStep('📦 イメージを組み立てています…（server.js で起動）')).toBe('image')
-    expect(publishProgressStep('🔑 保存場所の鍵を用意しています…')).toBe('storage')
+    expect(publishProgressStep('📦 イメージをビルドしています…（server.js で起動）')).toBe('image')
+    expect(publishProgressStep('🔑 保存場所のアクセスキーを用意しています…')).toBe('storage')
   })
 
-  it('★ イメージの組み立て・push の間も、段の名前と「何段目か」が出る（検分の指摘16）', () => {
+  it('★ イメージのビルド・プッシュの間も、ステップの名前と「何ステップ目か」が出る（検分の指摘16）', () => {
     const v = publishProgressView('📤 レジストリへプッシュしています…')
     expect(v.stageLabel).toBe(PUBLISH_STAGE_LABEL['image'])
-    expect(v.stepText).toBe(`${PUBLISH_PROGRESS_STEPS.indexOf('image') + 1}／${PUBLISH_PROGRESS_STEPS.length} 段目（進み方によっては飛ぶ段もあります）`)
-    const s = publishProgressView('🔑 保存場所の鍵を用意しています…')
+    expect(v.stepText).toBe(`ステップ ${PUBLISH_PROGRESS_STEPS.indexOf('image') + 1}／${PUBLISH_PROGRESS_STEPS.length}（進み方によってはスキップするステップもあります）`)
+    const s = publishProgressView('🔑 保存場所のアクセスキーを用意しています…')
     expect(s.stageLabel).toBe(PUBLISH_STAGE_LABEL['storage'])
-    // 走る順（鍵 → イメージ → publishAppFlow）どおりに並んでいる
+    // 実行される順（アクセスキー → イメージ → publishAppFlow）どおりに並んでいる
     expect(PUBLISH_PROGRESS_STEPS.indexOf('storage')).toBeLessThan(PUBLISH_PROGRESS_STEPS.indexOf('image'))
     expect(PUBLISH_PROGRESS_STEPS.indexOf('image')).toBeLessThan(PUBLISH_PROGRESS_STEPS.indexOf('no-cluster'))
   })
 
-  it('段の外の1行（公開のあとの後片づけ）には番号を振らない（分からないものを断定しない）', () => {
-    const v = publishProgressView('🧹 古い鍵を片づけています…')
+  it('ステップの外の1行（公開のあとの古いアクセスキーの削除）には番号を振らない（分からないものを断定しない）', () => {
+    const v = publishProgressView('🧹 保存場所の古いアクセスキーを削除しています…')
     expect(v.stageLabel).toBeNull()
     expect(v.stepText).toBeNull()
     // それでも、いま届いている1行と待ってほしいことは出す
-    expect(v.detail).toBe('🧹 古い鍵を片づけています…')
+    expect(v.detail).toBe('🧹 保存場所の古いアクセスキーを削除しています…')
     expect(v.waitNote).toBe(PUBLISH_WAIT_NOTE)
     expect(v.stopNote).toBe(PUBLISH_STOP_NOTE)
   })

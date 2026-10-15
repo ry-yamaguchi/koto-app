@@ -110,7 +110,8 @@ describe('新しい保存場所を作る（偽のさくらへ実際に流す）'
     const r = await createBucket({}, BUCKET)
 
     expect(r.ok, '作れていないのに「作れました」と返している').toBe(false)
-    expect(String(r.message ?? '')).toContain('一覧に現れません')
+    expect(String(r.message ?? '')).toContain('一覧に見つかりません')
+    expect(String(r.message ?? '')).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
     // 作成のあとに一覧を引いている（順序そのものを固定する）
     expect(h.calls.indexOf('listBuckets')).toBeGreaterThan(h.calls.indexOf('createBucket'))
   })
@@ -135,7 +136,8 @@ describe('新しい保存場所を作る（偽のさくらへ実際に流す）'
     const r = await createBucket({}, BUCKET)
 
     expect(r.ok).toBe(false)
-    expect(String(r.message ?? '')).toContain('一覧に現れません')
+    expect(String(r.message ?? '')).toContain('一覧に見つかりません')
+    expect(String(r.message ?? '')).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
   })
 
   it('★★ 409 でも、その名前が実在していれば作れたことにする（既にある保存場所を使える）', async () => {

@@ -321,7 +321,9 @@ describe('★★ 持ち場: どの画面が、どの記録を自分の画面に�
     }
   })
 
-  it('★★ 専有型のパネルが受け持つのは⑤⑥⑧だけ。📡 一覧の「アプリだけ破棄」（teardownApp）は持ち場が無い', () => {
+  it('★★ 専有型のパネルが受け持つのは手順5・6・8（create・teardown・publishApp）だけ。アプリだけを消す旧い口（teardownApp・2026-10-08 に廃止）の名前は持ち場が無い', () => {
+    // 📡 一覧の専有型の 🗑 も手順6と同じ apprunDedicated:teardown（表の中身は DEDICATED_PANEL_HANDLERS の3つだけ）
+    expect(Object.keys(DEDICATED_PANEL_HANDLERS).sort()).toEqual(['apprunDedicated:create', 'apprunDedicated:publishApp', 'apprunDedicated:teardown'])
     expect(isDedicatedPanelOp(rec(DEDICATED_TARGET, 'apprunDedicated:create'))).toBe(true)
     expect(isDedicatedPanelOp(rec(DEDICATED_TARGET, 'apprunDedicated:teardown'))).toBe(true)
     expect(isDedicatedPanelOp(rec(DEDICATED_TARGET, 'apprunDedicated:publishApp'))).toBe(true)

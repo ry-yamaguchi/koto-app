@@ -145,10 +145,10 @@ export async function verifyPublished(
 export function runtimeSkipNoteFor(opts: { runtimeKind: string; publicUrl: string | null }): string | null {
   if (canVerify(opts.runtimeKind, opts.publicUrl)) return null
   if (!opts.publicUrl) {
-    return 'ℹ️ 公開先のURLを取得できなかったため、内容が新しくなったかの確認はとばしました（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
+    return 'ℹ️ 公開先のURLを取得できなかったため、内容が新しくなったかの確認は行いませんでした（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
   }
   // それ以外（静的配信でない等）はこれまでの文のまま。
-  return 'ℹ️ このビルド方式は公開物に版の目印を持たないため、内容が新しくなったかの確認はとばしました（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
+  return 'ℹ️ このビルド方式では公開物にバージョン情報のファイル（.koto-build）を入れないため、内容が新しくなったかの確認は行いませんでした（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
 }
 
 async function waitForHealthy(
@@ -211,7 +211,7 @@ async function cleanUpOldKeys(
   const all = await storage.listPermissions()
   const targets = permissionsToCleanUp({ all, projectName, keepId })
   if (targets.length === 0) return
-  progress('🧹 保存場所の古い鍵を片づけています…')
+  progress('🧹 保存場所の古いアクセスキーを削除しています…')
   for (const id of targets) {
     try { await storage.deletePermission(id) } catch { /* 1つ失敗しても続ける */ }
   }
@@ -320,7 +320,7 @@ export type ConsentedPlacement = { bucket: string; prefix: string; shared: boole
  * このプロジェクトの同意済みの保存場所を**全件**読む（2026-09-25 検分の指摘23）。
  *
  * ── なぜ全件なのか ────────────────────────────────────────────────
- * 破棄（⑥「すべて削除する」）は `storagePlacementsOf`（src/main/cloud/storageForTarget.ts）で
+ * 破棄（手順6「すべて削除する」）は `storagePlacementsOf`（src/main/cloud/storageForTarget.ts）で
  * **全件**を片づける。ところが確認ダイアログの材料になるこの口は**先頭の1件しか返して
  * いなかった**ので、env.json に保存場所が2件ある状態（手で編集した・過去の記録が残っている）では
  * 「保存場所『A』（中のデータも消えます）」としか出ないまま、**名前が一度も出なかった『B』と
@@ -1010,7 +1010,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       // ── image 以外のソース かつ プランがアプリの create/update を含むなら、
       //    同梱の crane で「公開ベース＋ファイル層＋起動設定」を組み立ててレジストリへ push する。
       //    （Docker デーモン不要。Dockerfile も不要。実体は cloud/imagePublish.ts の
-      //    prepareAppImage に集約——専有型の「⑧ アプリを公開する」からも同じ関数を呼ぶ・掟10）。
+      //    prepareAppImage に集約——専有型の「手順8 アプリを公開する」からも同じ関数を呼ぶ・掟10）。
       if (spec.service.source.type !== 'image' && planTouchesApp(plan)) {
         // 差し替えの1行は**受け取った時点で**載せる（2026-09-25 検分の指摘13）。ここで止まると
         // 画面は message しか出さないので、withDataLayerNote を通さないと
@@ -1081,7 +1081,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         if (!saved.ok) {
           // 書き戻しに失敗しても、公開そのものは成立している（PATCH は既に送ってある）。
           // 黙って握りつぶさず、次回また聞かれることだけ伝える。
-          progress('⚠️ さくら側の起動のしかたを Koto の設定へ取り込めませんでした（次回の公開でもう一度確認します）')
+          progress('⚠️ さくら側の最小スケールを Koto の設定へ取り込めませんでした（次回の公開でもう一度確認します）')
         }
       }
 
@@ -1305,7 +1305,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       result = await run()
     } finally {
       // **必ず戻す。** 失敗しても戻す（上がったままにしない）
-      opts.progress('🗑 片づけを終えています…')
+      opts.progress('🗑 古いイメージの削除の後処理をしています…')
       const down = await setPermission('readwrite')
       restored = !(down.dryRun === false && !down.ok)
       if (restored) opts.markElevated(false) // 戻せたときだけ印を消す
@@ -1322,7 +1322,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (!spec) return { ok: false, message: 'env.json がありません（先に公開の設定を作ってください）' }
       const source = spec.service.source
       if (source.type !== 'dockerfile' || !source.image) {
-        return { ok: false, message: 'このプロジェクトは Koto がイメージを組み立てていないため、片づける対象がありません' }
+        return { ok: false, message: 'このプロジェクトは Koto がイメージをビルドしていないため、削除できる古いイメージはありません' }
       }
       const regCreds = loadRegistryCredentials()
       if (!regCreds) {
@@ -1340,7 +1340,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
             ? 'コンテナレジストリの認証情報が未登録です'
             : `このプロジェクトはコンテナレジストリ『${push.recorded}』を使う設定ですが、`
               + `いまは別のレジストリ『${push.credential}』の接続情報が入っています。`
-              + `別のプロジェクトのイメージを消してしまうため、片づけは行いません。`
+              + `別のプロジェクトのイメージを消してしまうため、削除は行いません。`
               + `下の「レジストリを設定し直す」を押してから、もう一度お試しください。`,
         }
       }
@@ -1465,7 +1465,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         }
       }
       const r = guarded.result
-      progress(r.failed.length === 0 ? '✅ 片づけました' : '⚠️ 一部を片づけられませんでした')
+      progress(r.failed.length === 0 ? '✅ 削除しました' : '⚠️ 一部を削除できませんでした')
       return {
         ok: r.failed.length === 0,
         dryRun: false,
@@ -1473,14 +1473,14 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         deleted: r.deleted,
         failed: r.failed,
         message: (r.failed.length === 0
-          ? `古いイメージを ${r.deleted.length} 件片づけました。`
+          ? `古いイメージを ${r.deleted.length} 件削除しました。`
           : r.permission
             ? 'イメージを削除する権限がありませんでした。'
               + 'さくらのコントロールパネルで、このレジストリの利用者権限を「All」に変更してからお試しください。'
             : r.unsupported
               ? 'このレジストリは、Koto からのイメージ削除に対応していないようです。'
                 + 'さくらのコントロールパネルから削除してください。'
-              : '一部のイメージを片づけられませんでした。')
+              : '一部のイメージを削除できませんでした。')
           // **戻せなかったことは黙らない。**（上がったままだと、できることが広がったままになる）
           + (!guarded.restored
             ? '\n⚠️ レジストリの権限を元（Push & Pull）に戻せませんでした。'
@@ -1744,7 +1744,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     }
   })
   /**
-   * プロジェクトのデータの扱いを調べる（③公開で保存場所の要否を出すため）。
+   * プロジェクトのデータの扱いを調べる（【公開】で保存場所の要否を出すため）。
    * 値は読まず、**どのファイルがどう扱っているか**だけを返す。
    */
   ipcMain.handle('storage:scan', (_e, projectDir: string) => {
@@ -1824,7 +1824,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     const failed: string[] = []
     const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
 
-    // ① 公開したアプリ（詳細（getApp）まで引いて min_scale を読む・roadmap #31 検分で修理。
+    // (1) 公開したアプリ（詳細（getApp）まで引いて min_scale を読む・roadmap #31 検分で修理。
     //    原本 apprun-shared-api.json v1.5.0: 一覧に min_scale は無く、詳細にしか無い）。
     //    集める処理そのものは electron 非依存の純関数（collectAppRunApps）に切り出してある。
     try {
@@ -1833,7 +1833,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (appsFailed) failed.push('公開したアプリ')
     } catch { failed.push('公開したアプリ') }
 
-    // ② イメージの置き場（コンテナレジストリ）
+    // (2) イメージの置き場（コンテナレジストリ）
     try {
       // レジストリは全ゾーン共通（グローバル資源）。既定のゾーンで引く
       // 2026-09-08 実測で裏づけ済み: is1a/tk1a/tk1b/is1b の4ゾーンで GET /commonserviceitem を
@@ -1843,10 +1843,10 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         for (const g of pickContainerRegistries(r.data)) {
           if (g.subdomainLabel) actual.push({ kind: 'registry', id: g.subdomainLabel, name: g.subdomainLabel })
         }
-      } else failed.push('イメージの置き場（コンテナレジストリ）')
-    } catch { failed.push('イメージの置き場（コンテナレジストリ）') }
+      } else failed.push('コンテナレジストリ')
+    } catch { failed.push('コンテナレジストリ') }
 
-    // ③ データの保存場所（バケット）。**利用開始前は問い合わせない**（無いので）
+    // (3) データの保存場所（バケット）。**利用開始前は問い合わせない**（無いので）
     try {
       const os = new ObjectStorageClient({ credentials: creds, dryRun: false })
       const site = await os.pickSite()
@@ -1857,7 +1857,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
     } catch { failed.push('データの保存場所') }
 
-    // ④ 専有型のクラスタ（常時課金）。listApps／listContainerRegistries／listBuckets の
+    // (4) 専有型のクラスタ（常時課金）。listApps／listContainerRegistries／listBuckets の
     //    3種しか引いていなかったため、専有型（常時課金・月2万円超）が棚卸しに一切出ない
     //    穴があった。listClusters（apprunDedicated.ts）は読むだけで使う（他エージェントの
     //    持ち場のため変更しない）。金額は不明のまま返す（0円と決めつけない）。
@@ -2015,7 +2015,7 @@ function findSiteIssues(root: string): SiteIssue[] {
     try {
       const creds = loadCredentials()
       if (!creds) {
-        add('key', 'APIキー', 'ng', 'さくらのクラウドのAPIキーが登録されていません。「① APIキー」から登録してください。')
+        add('key', 'APIキー', 'ng', 'さくらのクラウドのAPIキーが登録されていません。「手順1 APIキー」から登録してください。')
         return { ok: true, ...summarizePreflight(sortChecks(checks)) }
       }
       add('key', 'APIキー', 'ok', '登録されています。')
@@ -2026,7 +2026,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       }
       if (!spec) {
         if (checks.every(c => c.id !== 'spec')) {
-          add('spec', '公開の設定', 'ng', '公開の設定がまだありません。「② 公開の設定」で作成してください。')
+          add('spec', '公開の設定', 'ng', '公開の設定がまだありません。「手順2 公開の設定」で作成してください。')
         }
         return { ok: true, ...summarizePreflight(sortChecks(checks)) }
       }
@@ -2041,7 +2041,7 @@ function findSiteIssues(root: string): SiteIssue[] {
         //（2026-08-20 実機で発生。相対パスの解決の基準がずれていた）。
         const issues = findSiteIssues(resolvePublishRoot(projectDir))
         if (issues.length === 0) {
-          add('look', '見た目', 'ok', 'よくある落とし穴（背景画像・リンク切れ・スマホ対応・画像の大きさ）は見つかりませんでした。')
+          add('look', '見た目', 'ok', 'よくある問題（背景画像・リンク切れ・スマホ対応・画像の大きさ）は見つかりませんでした。')
         } else {
           const lines = issues.slice(0, 6).map(i => `・${i.file}: ${i.note}`)
           if (issues.length > 6) lines.push(`・ほか ${issues.length - 6} 件`)
@@ -2066,18 +2066,18 @@ function findSiteIssues(root: string): SiteIssue[] {
         try { contextAbs = resolveBuildContext(resolvePublishRoot(projectDir), spec.service.source.context) } catch { /* 既定のまま */ }
         const choice = detectRuntimeFor(contextAbs)
         // コードを直せば通るので、AIに相談できるようにする
-        if (choice.kind === 'unsupported') add('runtime', 'アプリの作り', 'ng', choice.reason, 'ask-ai')
+        if (choice.kind === 'unsupported') add('runtime', 'アプリの構成', 'ng', choice.reason, 'ask-ai')
         else if (choice.kind === 'node') {
           // 依存ライブラリがあると、公開のたびに手元で用意する（数分かかることがある）。
           // **待たされる理由を先に伝える**（改善案 1-5・2026-08-18）
           const deps = planDependencies(readProjectPackageJson(contextAbs))
-          add('runtime', 'アプリの作り', 'ok',
+          add('runtime', 'アプリの構成', 'ok',
             `Node で ${choice.entry} を起動します。`
             + (deps.kind === 'install'
               ? `ライブラリ ${deps.names.length}件（${deps.names.slice(0, 3).join('、')}${deps.names.length > 3 ? ' ほか' : ''}）も一緒に用意します。${installTimeNote(deps.names.length)}。`
               : ''))
         }
-        else add('runtime', 'アプリの作り', 'ok', 'ファイルをそのまま配信します（HTML など）。')
+        else add('runtime', 'アプリの構成', 'ok', 'ファイルをそのまま配信します（HTML など）。')
       }
 
       const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
@@ -2089,14 +2089,14 @@ function findSiteIssues(root: string): SiteIssue[] {
         if (listed.dryRun === false && listed.ok) {
           const names = pickContainerRegistries(listed.data).map(r => r.subdomainLabel)
           const recorded = state.meta?.registryName
-          if (!recorded) add('registry', 'イメージの置き場（コンテナレジストリ）', 'ok', '公開のときに用意します。')
-          else if (names.includes(recorded)) add('registry', 'イメージの置き場（コンテナレジストリ）', 'ok', `『${recorded}』が使えます。`)
+          if (!recorded) add('registry', 'コンテナレジストリ', 'ok', '公開のときに用意します。')
+          else if (names.includes(recorded)) add('registry', 'コンテナレジストリ', 'ok', `『${recorded}』が使えます。`)
           // **直し方が分かっているなら、その場で押せるようにする**（2026-08-14 Ryosuke 指摘）
-          else add('registry', 'イメージの置き場（コンテナレジストリ）', 'ng', `『${recorded}』が見つかりません（削除された可能性があります）。下のボタンで作り直せます。`, 'reset-registry')
+          else add('registry', 'コンテナレジストリ', 'ng', `『${recorded}』が見つかりません（削除された可能性があります）。下のボタンで作り直せます。`, 'reset-registry')
         } else {
-          add('registry', 'イメージの置き場（コンテナレジストリ）', 'warn', '確認できませんでした（公開はできます）。')
+          add('registry', 'コンテナレジストリ', 'warn', '確認できませんでした（公開はできます）。')
         }
-      } catch { add('registry', 'イメージの置き場（コンテナレジストリ）', 'warn', '確認できませんでした（公開はできます）。') }
+      } catch { add('registry', 'コンテナレジストリ', 'warn', '確認できませんでした（公開はできます）。') }
 
       // 公開名が空いているか（**自分のアプリなら衝突ではない**）
       try {
@@ -2114,7 +2114,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       } catch { add('name', '公開名', 'warn', '確認できませんでした（公開はできます）。') }
 
       // 「起動のしかた（min_scale）」が、さくら側と Koto の設定で食い違っていないか
-      // （Ryosuke さん決定・案②・2026-09-10）。**未公開（mine 無し）なら項目を出さない**
+      // （Ryosuke さん決定・案2・2026-09-10）。**未公開（mine 無し）なら項目を出さない**
       // （まだ実物が無いので食い違いようがない）。ここは**止めない**（warn）。実際に止めて
       // 聞くのは公開を押したとき（歯止めは main の公開の実行層＝純関数側。掟10の基準）。
       const mine = state.resources.find(r => r.kind === 'apprun-app')?.id
@@ -2124,14 +2124,14 @@ function findSiteIssues(root: string): SiteIssue[] {
           const detail = await client.getApp(mine)
           const actual = detail.dryRun === false && detail.ok ? readActualMinScale(detail.data) : null
           if (actual === null) {
-            add('scale', '起動のしかた', 'warn', `確認できませんでした（公開すると Koto の設定『${kotoLabel}』で公開します）。`)
+            add('scale', '最小スケール', 'warn', `確認できませんでした（公開すると Koto の設定『${kotoLabel}』で公開します）。`)
           } else if (actual === spec.service.scale.min) {
-            add('scale', '起動のしかた', 'ok', `さくら側と Koto の設定は一致しています（${kotoLabel}）。`)
+            add('scale', '最小スケール', 'ok', `さくら側と Koto の設定は一致しています（${kotoLabel}）。`)
           } else {
-            add('scale', '起動のしかた', 'warn', `さくら側は『${scaleLabel(actual)}』、Koto の設定は『${kotoLabel}』です。公開を押すと、どちらにするかを聞きます。`)
+            add('scale', '最小スケール', 'warn', `さくら側は『${scaleLabel(actual)}』、Koto の設定は『${kotoLabel}』です。公開を押すと、どちらにするかを聞きます。`)
           }
         } catch {
-          add('scale', '起動のしかた', 'warn', `確認できませんでした（公開すると Koto の設定『${kotoLabel}』で公開します）。`)
+          add('scale', '最小スケール', 'warn', `確認できませんでした（公開すると Koto の設定『${kotoLabel}』で公開します）。`)
         }
       }
 
@@ -2142,11 +2142,11 @@ function findSiteIssues(root: string): SiteIssue[] {
           const os = new ObjectStorageClient({ credentials: creds, dryRun: false })
           const site = await os.pickSite()
           if (!(await os.isSiteReady(site.id))) {
-            add('storage', 'データの保存場所', 'ng', '保存場所の利用がまだ始まっていません。「③公開」の案内から用意してください。')
+            add('storage', 'データの保存場所', 'ng', '保存場所の利用がまだ始まっていません。【公開】の案内から用意してください。')
           } else {
             const names = (await os.listBuckets(site.id)).map(b => b.name)
             if (names.includes(bucket.bucket)) add('storage', 'データの保存場所', 'ok', `『${bucket.bucket}』が使えます。`)
-            else add('storage', 'データの保存場所', 'ng', `『${bucket.bucket}』が見つかりません。「③公開」の案内から選び直してください。`)
+            else add('storage', 'データの保存場所', 'ng', `『${bucket.bucket}』が見つかりません。【公開】の案内から選び直してください。`)
           }
         } catch { add('storage', 'データの保存場所', 'warn', '確認できませんでした（公開はできます）。') }
       }
@@ -2158,7 +2158,7 @@ function findSiteIssues(root: string): SiteIssue[] {
   })
 
   /**
-   * このプロジェクトの保存場所の設定を読む（③公開の案内が「用意済みか」を出すため）。
+   * このプロジェクトの保存場所の設定を読む（【公開】の案内が「用意済みか」を出すため）。
    * env.json の persistence から、**同意済みのもの**だけを返す。
    *
    * **`placements` は全件。`placement` は先頭の1件**（用意済みかの表示に使う古い口）。
@@ -2175,7 +2175,7 @@ function findSiteIssues(root: string): SiteIssue[] {
   })
 
   /**
-   * 保存場所を用意する（③公開の案内から。**費用の同意を得てから呼ぶこと**）。
+   * 保存場所を用意する（【公開】の案内から。**費用の同意を得てから呼ぶこと**）。
    *
    * ここで行うのは3つ。**どれも課金に直結する**ので、まとめて1回の同意で済ませる:
    *   1. サイトの利用開始（`POST /account`）… まだなら
@@ -2240,7 +2240,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       if (!names.includes(placement.bucket)) {
         return {
           ok: false,
-          message: `保存場所『${placement.bucket}』を作成しましたが、一覧に現れません。`
+          message: `保存場所『${placement.bucket}』を作成しましたが、一覧に見つかりません。`
             + '同じ名前の保存場所を削除した直後は、名前が解放されるまで作り直せないことがあります。'
             + 'しばらく待ってからお試しください。'
             + `（作成の応答: HTTP ${created.status}${created.text ? ' ' + created.text : ''}）`,
@@ -2252,7 +2252,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       // ── なぜ要るか（objectStorage.ts の keepMarkerKey のコメントが正）─────────
       // バケットの一覧に現れるのは**オブジェクトが1つ以上あるプレフィックスだけ**。
       // 「用意したが、まだ何も保存していない」プロジェクトは一覧に出てこないので、
-      // 同じバケットを共有する別のプロジェクトを⑥で破棄すると、teardownPlanFor が
+      // 同じバケットを共有する別のプロジェクトを手順6で破棄すると、teardownPlanFor が
       // 「ほかに使っている人はいない」と判断して**バケットごと消してしまう**。
       //
       // 設計は前からあったのに、`putMarker` を呼ぶのは共用型 AppRun の apply
@@ -2269,9 +2269,9 @@ function findSiteIssues(root: string): SiteIssue[] {
         try { await marker.putMarker(placement.bucket, keepMarkerKey(placement.prefix ?? '')) }
         finally { await marker.dispose() }
       } catch (e: any) {
-        markerNote = `保存場所は用意できましたが、目印を置けませんでした（${e?.message ?? e}）。`
+        markerNote = `保存場所は用意できましたが、使用中であることを示すファイル（.koto-keep）を作成できませんでした（${e?.message ?? e}）。`
           + 'このままでも保存は使えますが、同じ保存場所を共有するほかのプロジェクトを破棄したときに、'
-          + 'この保存場所が巻き込まれることがあります。一度データを保存すれば解消します。'
+          + 'この保存場所ごと削除されることがあります。一度データを保存すれば解消します。'
       }
 
       // 5. env.json に記録する。**consentedAt がここで付く**（これが無いと
@@ -2325,7 +2325,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       if (!names.includes(bucket)) {
         return {
           ok: false,
-          message: `保存場所『${bucket}』を作成しましたが、一覧に現れません。`
+          message: `保存場所『${bucket}』を作成しましたが、一覧に見つかりません。`
             + 'その名前は使えないか、削除した直後で名前が解放されていない可能性があります。別の名前でお試しください。'
             + `（作成の応答: HTTP ${created.status}${created.text ? ' ' + created.text : ''}）`,
         }

@@ -13,7 +13,7 @@ import { storageCostNote, type BucketMode } from '../../shared/objectStorage'
 //   ・新しく作る（**バケット単位で月額が発生する**ので同意を取る）
 //
 // 逆に「保存場所を用意する」の入口はここに置かない。永続データが要るかは
-// 作っている間に決まるので、**③公開で公開先を選ぶときに提案する**（StorageNotice）。
+// 作っている間に決まるので、**【公開】で公開先を選ぶときに提案する**（StorageNotice）。
 
 const MODE_KEY = 'koto_storage_mode'
 

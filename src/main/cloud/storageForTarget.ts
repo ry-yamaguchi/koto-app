@@ -21,6 +21,7 @@ import { loadCredentials } from './auth'
 import { createStorageAdapter } from './storageAdapter'
 import { teardownStorage } from './storageTeardown'
 import { validateSpec } from './spec'
+import { loadCloudSpec } from './specStore'
 import { consentedBuckets, storageEnvVars, containsSecretEnv, STORAGE_ENV, type StoragePlacement } from '../../shared/objectStorage'
 import { permissionNameFor, permissionsToCleanUp, permissionsForTarget, type StorageTarget } from '../../shared/storageKeys'
 
@@ -78,7 +79,7 @@ export async function issueStorageEnvFor(opts: {
       })
       // **最後の砦**（apply.ts と同じ）。秘密でない側に秘密が紛れていないか
       if (containsSecretEnv(publicVars)) {
-        return { ok: false, reason: 'error', message: '内部エラー: 秘密でない設定に秘密が混ざっています。公開を中止しました。' }
+        return { ok: false, reason: 'error', message: '内部エラー: シークレットではない環境変数にシークレットが混ざっています。公開を中止しました。' }
       }
       return {
         ok: true,
@@ -96,7 +97,7 @@ export async function issueStorageEnvFor(opts: {
       await storage.dispose()
     }
   } catch (e: any) {
-    return { ok: false, reason: 'error', message: `保存場所の鍵を用意できませんでした: ${e?.message ?? e}` }
+    return { ok: false, reason: 'error', message: `保存場所のアクセスキーを用意できませんでした: ${e?.message ?? e}` }
   }
 }
 
@@ -135,18 +136,20 @@ export async function cleanUpOldKeysFor(opts: {
   projectName: string
   target: StorageTarget
   keepId: string | null
-}): Promise<{ deleted: number }> {
+}): Promise<{ deleted: number; failed: number }> {
   const creds = loadCredentials()
-  if (!creds || !opts.keepId) return { deleted: 0 }
+  if (!creds || !opts.keepId) return { deleted: 0, failed: 0 }
   const storage = await createStorageAdapter(creds)
   try {
     const all = await storage.listPermissions()
     const ids = permissionsToCleanUp({ all, projectName: opts.projectName, keepId: opts.keepId, target: opts.target })
     let deleted = 0
+    let failed = 0
     for (const id of ids) {
-      try { await storage.deletePermission(id); deleted++ } catch { /* 片づけの失敗で公開を失敗にしない */ }
+      try { await storage.deletePermission(id); deleted++ } catch { failed++ /* 片づけの失敗で公開を失敗にしない */ }
     }
-    return { deleted }
+    // failed は「時間の記録に入れるか」の判断に使う（一部でも失敗した回の時間は、ふつうの所要時間ではない）
+    return { deleted, failed }
   } finally {
     await storage.dispose()
   }
@@ -169,13 +172,20 @@ export function storagePlacementOf(projectDir: string): StoragePlacement | null 
 /**
  * 同意済みの保存場所を**全件**返す（2026-09-24 検分の指摘10）。
  *
- * 画面（③「保存場所を用意する」）は常に1件しか書かないが、env.json は手で編集できる。
+ * 画面（【公開】の「保存場所を用意する」）は常に1件しか書かないが、env.json は手で編集できる。
  * 先頭の1件だけを片づけると、**2つ目のバケットが残って月額の課金が続く**——しかも
  * 確認ダイアログにもその名前は出ないので、利用者は「全部消えた」と受け取る。
  * 破棄はこちら（全件）を使う。
  */
 export function storagePlacementsOf(projectDir: string): StoragePlacement[] {
-  const spec = readSpec(projectDir)
+  // ── 読み方は `storage:placement`（確認画面が「消える保存場所」を出す口）と同じ `loadCloudSpec` ──────────
+  // env.json が無い → null（保存場所を使っていない）。**JSON として読めない／スペックの検証に通らない → 投げる。**
+  // ここを上の `readSpec`（検証に通らないと null＝「使っていない」）にしていた間は、env.json が JSON としては読めるが検証に通らないとき、
+  // 確認画面は「保存場所の設定を読めない」（`storage:placement` は ok:false）と言うのに、破棄の本体は「保存場所を使っていない」と読み、
+  // 保存場所に触れないまま成功を返して、前回の削除で立てた「保存場所が残っている」印まで下ろしていた（Koto から押し直せなくなり、
+  // 月額が続く・2026-10-08 検分）。画面と main が同じ読み方なら、読めないときは両方が「読めない」と言う（掟10）。
+  // 呼び出し側（apprunDedicated.ts・hanamii.ts の破棄）は、投げたら「保存場所の設定を読めないため、保存場所は削除していません」で止まる。
+  const spec = loadCloudSpec(projectDir)
   if (!spec) return []
   return consentedBuckets(spec.persistence?.objectStorage)
     .map(b => ({ bucket: b.bucket, prefix: b.prefix ?? '', shared: b.shared !== false }))
@@ -199,10 +209,10 @@ export type ProjectStorageTeardownResult =
  * （2026-09-24 検分の指摘3・8）。
  *
  * ── なぜ要るか ────────────────────────────────────────────────────
- * バケットを消しても記録が残ると、画面は保存場所を「用意済み」として出し続け、次の⑧公開は
+ * バケットを消しても記録が残ると、画面は保存場所を「用意済み」として出し続け、次の手順8の公開は
  * **消えたバケット宛ての鍵と環境変数を渡したまま成功扱いになる**（専有型の公開経路には
  * バケットを作る段が1つも無い＝共用型のような自己修復が効かない）。アプリのデータ保存だけが
- * 黙って失敗し続ける、いちばん気づけない形になる。記録を外せば③「保存場所を用意する」から
+ * 黙って失敗し続ける、いちばん気づけない形になる。記録を外せば【公開】の「保存場所を用意する」から
  * やり直す形に戻る。
  *
  * **バケットを消していないときは呼ばないこと**（prefix だけ消してバケットが残る＝共有）。
@@ -301,12 +311,12 @@ async function sweepKeys(
   try {
     all = await storage.listPermissions()
   } catch (e: any) {
-    return [`保存場所の鍵の一覧を取得できなかったため、古い鍵が残っているかもしれません: ${e?.message ?? e}`]
+    return [`保存場所のパーミッション（アクセスキー）の一覧を取得できなかったため、古いアクセスキーが残っているかもしれません: ${e?.message ?? e}`]
   }
   const ids = permissionsForTarget({ all, projectName: target.projectName, target: target.target })
   let failed = 0
   for (const id of ids) {
     try { await storage.deletePermission(id) } catch { failed++ }
   }
-  return failed > 0 ? [`保存場所の鍵を${failed}件、無効にできませんでした`] : []
+  return failed > 0 ? [`保存場所のアクセスキーを${failed}件、無効にできませんでした`] : []
 }

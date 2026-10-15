@@ -9,7 +9,7 @@ import { setBaseline, getBaseline, pruneBaselines } from '../knowledgeBaseline'
 import { isSubmitEnter } from '../keyInput'
 
 // 「📚 資料」モーダル：さくらのAI Engine RAG API を使った資料（ドキュメント）管理（R1）
-// ＋ このプロジェクトのチャットで資料を使うかの設定（R2・セクション④）
+// ＋ このプロジェクトのチャットで資料を使うかの設定（R2・セクション4）
 // ＋ Webから資料を作る（ナレッジコレクター・R3）
 // ＋ さくらの資料パック（既定URLセットの一括取り込み・roadmap.md N-2）。
 // CredentialsModal / ServerFilesModal と同じモーダル様式。UI文言に「RAG」「ベクトル」「埋め込み」は出さない。
@@ -21,7 +21,7 @@ interface Props {
   onClose: () => void
   onOpenCredentials: () => void
   // このプロジェクトのチャットで使う資料設定（.sakuraide.json の rag キー）を編集する対象。
-  // 未選択（null/undefined）の場合はセクション④自体を表示しない。
+  // 未選択（null/undefined）の場合はセクション4自体を表示しない。
   projectDir?: string | null
 }
 
@@ -410,7 +410,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
         )}
         {apiKey && (
           <p className="px-6 pt-2 text-[11px] text-ink-muted leading-relaxed">
-            登録済み＝いまAIが参照できる資料／Webから作る＝好きなページを選んで登録／さくらの資料パック＝よく使う公式ドキュメントをまとめて登録
+            「登録済み」はいまAIが参照できる資料です。「Webから作る」は好きなページを選んで登録し、「さくらの資料パック」はよく使う公式ドキュメントをまとめて登録します。
           </p>
         )}
 
@@ -438,9 +438,9 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
             />
           ) : (
             <>
-              {/* ① 追加。**初めて開くと一覧は空**なので、追加を先に置く（2026-08-25 Ryosuke と設計）。 */}
+              {/* 手順1 追加。**初めて開くと一覧は空**なので、追加を先に置く（2026-08-25 Ryosuke と設計）。 */}
               <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-                <h3 className="text-sm font-semibold text-ink">① 資料を追加</h3>
+                <h3 className="text-sm font-semibold text-ink">手順1 資料を追加</h3>
                 <div>
                   <label className="text-[11px] font-medium text-ink-secondary">タグ（任意・カンマ区切り）</label>
                   <input
@@ -463,10 +463,10 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 )}
               </div>
 
-              {/* ② 一覧 */}
+              {/* 手順2 一覧 */}
               <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-ink">② 登録済みの資料</h3>
+                  <h3 className="text-sm font-semibold text-ink">手順2 登録済みの資料</h3>
                   {/* ── 全体と個別で役割を分ける（2026-08-18 Ryosuke 指摘）──────────
                       同じ「更新を確認」が2箇所にあると、どちらが何をするのか分からない。
                       **全体＝確認と一括更新／個別＝その資料の更新**にする。 */}
@@ -577,9 +577,9 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                                   st === 'checking' ? { text: '元のページを確認中…', warn: false }
                                   : st === 'changed' ? { text: '🔄 元のページが更新されています', warn: true }
                                   : st === 'same' ? { text: '✅ 元のページと同じ内容です（最新です）', warn: false }
-                                  : st === 'no-baseline' ? { text: '取り込んだときの内容が控えられていないため、更新の有無は分かりません（いまの内容を基準にしました）', warn: false }
+                                  : st === 'no-baseline' ? { text: '取り込んだときの内容が記録されていないため、更新の有無は分かりません（いまの内容を基準にしました）', warn: false }
                                   : st === 'no-url' ? { text: `出典URLが記録されていないため、確認できません（本文の先頭: ${sourceHead[doc.id] ?? '—'}）`, warn: false }
-                                  : st === 'fetch-failed' ? { text: '元のページに届きませんでした', warn: false }
+                                  : st === 'fetch-failed' ? { text: '元のページを取得できませんでした', warn: false }
                                   : null
                                 return (
                                   <div className="flex items-baseline gap-2 flex-wrap text-[11px]">
@@ -614,7 +614,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 )}
               </div>
 
-              {/* ③ 削除確認 */}
+              {/* 削除確認 */}
               {pendingDelete && (
                 <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-3">
                   <p className="text-sm font-semibold text-ink">⚠️ 資料を削除します</p>
@@ -639,12 +639,12 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 </p>
               )}
 
-              {/* ③ 検索。**目的は「登録した資料がちゃんと引けるか」の確認**（2026-08-25 Ryosuke と設計）。
+              {/* 手順3 検索。**目的は「登録した資料がちゃんと引けるか」の確認**（2026-08-25 Ryosuke と設計）。
                   回答だけでなく、**どの資料のどこが当たったか**まで見せる。
                   応答（rag.chat）は前から出典・区切り番号・当たった本文を返しており、
                   **画面が資料名しか使わずに捨てていた**。追加の呼び出しは要らない。 */}
               <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-                <h3 className="text-sm font-semibold text-ink">③ 資料を検索</h3>
+                <h3 className="text-sm font-semibold text-ink">手順3 資料を検索</h3>
                 <div className="flex items-center gap-2">
                   <input
                     value={question}

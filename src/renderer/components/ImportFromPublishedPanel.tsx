@@ -142,7 +142,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
     }
   }, [parentDir])
 
-  // ── ① 公開先を選ぶ → 一覧 ──────────────────────────────────────────
+  // ── (1) 公開先を選ぶ → 一覧 ──────────────────────────────────────────
   /** 選んだキーで探し直す。Vercel はトークンを引数で渡す（方式B・副作用なし）。 */
   const fetchList = useCallback(async (t: ImportTarget, id: string, list: { id: string; label: string }[]) => {
     setError(''); setGitNote(''); setCandidates([]); setLoading(true)
@@ -200,7 +200,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
     }
   }, [fetchList])
 
-  // ── ② 選んだものを下調べ（**取り込む前に、何が起きるかを見せる**）──────
+  // ── (2) 選んだものを下調べ（**取り込む前に、何が起きるかを見せる**）──────
   const choose = useCallback(async (c: ImportCandidate) => {
     if (!target || c.blocked) return
     setSelected(c); setError(''); setGitNote(''); setLoading(true)
@@ -224,7 +224,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
     }
   }, [target, freeName])
 
-  // ── ③ 取り込む（ここで初めてディスクへ書く）────────────────────────
+  // ── (3) 取り込む（ここで初めてディスクへ書く）────────────────────────
   const runImport = useCallback(async () => {
     if (!target || !selected || !parentDir) return
     const n = name.trim()

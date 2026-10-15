@@ -254,23 +254,28 @@ describe('blockReasonForPackage: 断るかどうかはライブラリ単位で�
 describe('断る文面を、理由ごとに書き分ける', () => {
   const tail = /AIに「このライブラリを使わない作りに直して」と頼むか、公開先を「エキスパート（自分の Dockerfile）」に切り替えてください。$/
 
-  it('★ 組み立てられていないとき（これまでの文面のまま）', () => {
+  it('★ ビルドされていないとき（これまでの文面のまま）', () => {
     const m = nativeDepsMessage(['better-sqlite3'], 'needs-build')
-    expect(m).toContain('パソコンごとに組み立てが必要な部品を含んでいます')
+    expect(m).toContain('OS ごとにビルドが必要なネイティブモジュールを含んでいます')
+    // 0.6.21（作者の決定 2026-10-01）: 「組み立て」は「ビルド」、「部品」は「ネイティブモジュール」に揃えた。直す前の言い方は戻さない
+    expect(m).not.toContain('組み立て')
+    expect(m).not.toContain('部品')
     expect(m).toMatch(tail)
   })
 
   it('★ お使いのパソコン用しか入っていないとき', () => {
     const m = nativeDepsMessage(['bcrypt'], 'macho-only')
-    expect(m).toContain('お使いのパソコン用の部品しか入っていません')
-    expect(m).not.toContain('組み立てが必要')
+    expect(m).toContain('お使いのパソコン（macOS）用のネイティブモジュールしか入っていません')
+    expect(m).not.toContain('ビルドが必要')
+    expect(m).not.toContain('部品') // 0.6.21: 直す前の言い方は戻さない
     expect(m).toMatch(tail)
   })
 
   it('★ 公開先とは別の種類の Linux 用のとき', () => {
     const m = nativeDepsMessage(['bcrypt'], 'other-linux')
-    expect(m).toContain('公開先とは別の種類の Linux 用の部品です')
-    expect(m).not.toContain('組み立てが必要')
+    expect(m).toContain('公開先とは別の種類の Linux 用のネイティブモジュールです')
+    expect(m).not.toContain('ビルドが必要')
+    expect(m).not.toContain('部品') // 0.6.21: 直す前の言い方は戻さない
     expect(m).toMatch(tail)
   })
 
@@ -287,7 +292,7 @@ describe('断る文面を、理由ごとに書き分ける', () => {
     }
   })
 
-  it('理由を渡さなければ、これまでの文面（組み立てられていない）になる', () => {
+  it('理由を渡さなければ、これまでの文面（ビルドされていない）になる', () => {
     expect(nativeDepsMessage(['sqlite3'])).toBe(nativeDepsMessage(['sqlite3'], 'needs-build'))
   })
 })
@@ -295,26 +300,26 @@ describe('断る文面を、理由ごとに書き分ける', () => {
 // ── 理由が混ざっても、事実と違う説明をしない（検分の指摘・2026-09-17）──────────
 //
 // 理由を1つに畳んで名前を全部並べると、当てはまらない理由を告げることになる。
-// 例: better-sqlite3（組み立てが要る）と、お使いのパソコン用の部品しか無いライブラリが
-// 同時に引っかかると、両方の名前を並べて「組み立てが必要」と出てしまい、後者の持ち主は
-// 「組み立てを待てば直る」と原因を取り違える。
+// 例: better-sqlite3（ビルドが要る）と、お使いのパソコン用のネイティブモジュールしか無いライブラリが
+// 同時に引っかかると、両方の名前を並べて「ビルドが必要」と出てしまい、後者の持ち主は
+// 「ビルドを待てば直る」と原因を取り違える。
 describe('断る文面: 理由が混ざったら、理由ごとにまとめて並べる', () => {
   const MIXED = [
     { name: 'better-sqlite3', reason: 'needs-build' as const },
     { name: '@img/sharp-darwin-arm64', reason: 'macho-only' as const },
   ]
 
-  it('★★ 組み立てが要らないライブラリに「組み立てが必要」と言わない', () => {
+  it('★★ ビルドが要らないライブラリに「ビルドが必要」と言わない', () => {
     const m = nativeDepsMessageForBlocked(MIXED)
-    const build = m.split('\n').find(l => l.includes('組み立てが必要')) ?? ''
+    const build = m.split('\n').find(l => l.includes('ビルドが必要')) ?? ''
     expect(build).toContain('better-sqlite3')
-    expect(build, 'お使いのパソコン用しか無いライブラリに「組み立てが必要」と言っている')
+    expect(build, 'お使いのパソコン用しか無いライブラリに「ビルドが必要」と言っている')
       .not.toContain('@img/sharp-darwin-arm64')
   })
 
   it('★★ お使いのパソコン用しか無いライブラリには、その理由が付く', () => {
     const m = nativeDepsMessageForBlocked(MIXED)
-    const mac = m.split('\n').find(l => l.includes('お使いのパソコン用の部品しか入っていません')) ?? ''
+    const mac = m.split('\n').find(l => l.includes('お使いのパソコン（macOS）用のネイティブモジュールしか入っていません')) ?? ''
     expect(mac).toContain('@img/sharp-darwin-arm64')
     expect(mac).not.toContain('better-sqlite3')
   })

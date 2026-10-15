@@ -3,7 +3,7 @@ import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, setClaudeMode } from '../claudeMode'
 
 /**
- * チャットの頭脳（Claude / さくらのAI Engine）の表示＋クリック切替。
+ * 使う AI（Claude / さくらのAI Engine）の表示＋クリック切替。
  * StatusBar（IDEモード右下）から抽出し、ChatApp（チャットモード右下）でも共用する
  * （2026-07-13 ユーザー要望: チャットモードでもIDEと同様に右下クリックで切り替えたい）。
  * 両方のキーが登録済みのときだけクリックで切替できる（⇄ 付き）。片方のみは表示のみ。
@@ -42,12 +42,12 @@ export default function BrainToggle({ apiKey, className = '', compact = false, c
 
   // ツールチップは compact でも省略せず正式名称で出す（表示名だけを短くする）。
   const title = chatModeToggleable
-    ? 'チャットモードでは、いつも さくらのAI Engine が答えます。ここで切り替えると IDE の AI が変わります'
+    ? 'チャットモードでは、いつも さくらのAI Engine が答えます。ここで切り替えると IDEモードで使う AI が変わります'
     : canToggle
       ? (claudeActive
-        ? 'チャットの頭脳: Claude（クリックで さくらのAI Engine に切り替え）'
-        : 'チャットの頭脳: さくらのAI Engine（クリックで Claude に切り替え）')
-      : (claudeActive ? 'チャットの頭脳: Claude' : 'チャットの頭脳: さくらのAI Engine')
+        ? '使う AI: Claude（クリックで さくらのAI Engine に切り替え）'
+        : '使う AI: さくらのAI Engine（クリックで Claude に切り替え）')
+      : (claudeActive ? '使う AI: Claude' : '使う AI: さくらのAI Engine')
 
   if (compact) {
     // W-19: チャットモードで切り替えられるときは、短いラベルは「🧠 AI Engine」に据え置く
@@ -79,7 +79,7 @@ export default function BrainToggle({ apiKey, className = '', compact = false, c
   return (
     <span
       className={`flex items-center gap-1.5 text-ink-muted ${className}`}
-      title={claudeActive ? 'チャットの頭脳: Claude' : 'チャットの頭脳: さくらのAI Engine'}
+      title={claudeActive ? '使う AI: Claude' : '使う AI: さくらのAI Engine'}
     >
       <span className="w-1.5 h-1.5 rounded-full bg-brand-green" />
       {claudeActive ? 'Claude' : 'さくらのAI Engine'}

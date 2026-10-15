@@ -292,11 +292,14 @@ describe('費用の説明', () => {
     expect(storageCostNote('dedicated', 495)).toContain('作る前に金額を確認')
   })
 
-  // 共有の弱点（鍵が漏れると他プロジェクトに届く）を隠さない
+  // 共有の弱点（アクセスキーが漏れると他プロジェクトのデータにアクセスできてしまう）を隠さない
   it('共有は費用が増えないことと、その弱点の両方を言う', () => {
     const s = storageCostNote('shared', 495)
     expect(s).toContain('追加の費用はかかりません')
-    expect(s).toContain('ほかのプロジェクトのデータにも届きます')
+    expect(s).toContain('アクセスキーが漏れると')
+    expect(s).toContain('ほかのプロジェクトのデータにもアクセスできてしまいます')
+    // 0.6.21（作者の決定 2026-10-01）: 「鍵」は「アクセスキー」に揃えた。直す前の言い方は戻さない
+    expect(s).not.toContain('鍵')
   })
 
   it('Markdown 記法を混ぜない', () => {

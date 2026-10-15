@@ -331,7 +331,7 @@ export function mergeCheckResults(
   // 指摘欄の先頭に固定文で入れる（AIの指摘より前・件数や打ち切り注記より後）。
   // 件数の肥大防止は capList（上限を超えても件数そのものは「ほかN件」で必ず残す）。
   const dataLikeNote = dataLike.length
-    ? [`${capList(dataLike, DATA_LIKE_NOTE_LIMIT).join('、')}: 公開するとデータの中身が丸見えになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください`]
+    ? [`${capList(dataLike, DATA_LIKE_NOTE_LIMIT).join('、')}: 公開するとデータの中身を誰でも見られるようになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください`]
     : []
   const truncatedNote = truncated
     ? ['※ ファイルが多いため一覧は途中までです。チェックも全体の一部にとどまります']
@@ -409,7 +409,7 @@ export function buildCheckPrompt(opts: {
     // 不要ファイルの片づけは「使われていないファイル」機能（画面の移動ボタン・🕘で戻せる）が担当する。
     // AI が「削除してください」と勧めると、戻せない削除と戻せる移動の**競合する2つの案内**が
     // 並んでしまう（2026-09-03 実機・Ryosuke 指摘）。削除の提案はさせない。
-    '- 不要そうなファイルがあっても**削除は提案しない**（片づけは別機能が「公開されない場所への移動」で担当します。疑わしい名前の指摘までは書いてよい）\n' +
+    '- 不要そうなファイルがあっても**削除は提案しない**（不要なファイルの扱いは別機能が「公開されない場所への移動」で担当します。疑わしい名前の指摘までは書いてよい）\n' +
     '- 報告以外の文章（思考の経過・英語のメモ）は書かない\n\n' +
     // 切ったのは Koto の都合。**それを指摘として書かせない**（rc.3 実機で
     // 「全文を取得して確認すること」が指摘欄を埋めていた）
@@ -499,7 +499,7 @@ export async function runSecurityCheck(
    *
    * 本番の呼び出し元（2026-09-25 に繋いだ・増えたら数え直す:
    * `grep -rn 'runSecurityCheck(' src`）:
-   *   ① src/renderer/components/SecurityCheckSection.tsx の run()
+   *   (1) src/renderer/components/SecurityCheckSection.tsx の run()
    *      → 確認中に出る「⏹ 中止する」が、ここで受けた関数を呼ぶ
    */
   onAbortReady?: (abort: () => void) => void,
@@ -612,7 +612,7 @@ export async function runSecurityCheck(
       const report = raw ? extractCheckReport(raw) : null
       results.push(report
         ? { verdict: judgeVerdict(report), report }
-        : { verdict: 'skip', report: 'AIの応答から判定を読み取れませんでした（考える量が多すぎた可能性があります）。もう一度お試しください。' })
+        : { verdict: 'skip', report: 'AIの応答から判定を読み取れませんでした（AI が考える途中の文章が長くなりすぎて、判定まで書けなかった可能性があります）。もう一度お試しください。' })
     } catch (e: any) {
       // 中止で切れた通信は「失敗」として数えない（押した本人に失敗を報告しない）。
       if (stopped) break

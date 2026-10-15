@@ -6,11 +6,11 @@ import path from 'node:path'
 // ── なぜこのテストが要るか（2026-09-29・作者の決定 ①②）──────────────────────────
 // 公開・破棄・作成のダイアログを閉じて開き直したとき、進み具合と結果（警告を含む）が続きから見えるように、
 // main が「プロジェクトごとの処理の記録」を持つ（src/main/projectOps.ts）。記録は鍵（withProjectLock）が
-// 自動で書くので、**9本のハンドラが同じ道で記録される**ことをここで固定する。
+// 自動で書くので、**8本のハンドラが同じ道で記録される**ことをここで固定する。
 //   共用型 cloud:apply・cloud:teardown／HANAMII hanamii:publish・hanamii:teardown／Vercel vercel:publish／
-//   専有型 apprunDedicated:create・teardown・publishApp・teardownApp
+//   専有型 apprunDedicated:create・teardown・publishApp
 //
-// **ソースの文字列は読まない**（掟10）。9本を実際に呼び、偽の client（fetch・applyPlan・prepareAppImage）に流して、
+// **ソースの文字列は読まない**（掟10）。8本を実際に呼び、偽の client（fetch・applyPlan・prepareAppImage）に流して、
 // IPC（projectOps:get・projectOps:changed の押し出し）から読める記録で確かめる。
 // **画面（renderer）は1度も出てこない**——ダイアログを閉じても main が最後まで進めて、開き直したときに読めること。
 
@@ -215,18 +215,17 @@ const CASES: Case[] = [
     invoke: dir => handler('vercel:publish')(EVENT, dir, { token: 'vercel-token-CCCC3333', name: 'myapp' }) },
   { name: 'apprunDedicated:create（専有型の作成）', channel: 'apprunDedicated:create', op: '作成', target: 'sakura-apprun-dedicated',
     invoke: dir => handler('apprunDedicated:create')(EVENT, dir, D_AUTH, CLUSTER_SPEC, { confirmed: true }) },
-  { name: 'apprunDedicated:teardown（専有型⑥の全部削除）', channel: 'apprunDedicated:teardown', op: '削除', target: 'sakura-apprun-dedicated',
+  { name: 'apprunDedicated:teardown（専有型の全部削除。手順6も 📡 の 🗑 もこれ）', channel: 'apprunDedicated:teardown', op: '削除', target: 'sakura-apprun-dedicated',
     invoke: dir => handler('apprunDedicated:teardown')(EVENT, dir, D_AUTH, { confirmed: true }) },
   { name: 'apprunDedicated:publishApp（専有型⑧の公開）', channel: 'apprunDedicated:publishApp', op: '公開', target: 'sakura-apprun-dedicated',
     invoke: dir => handler('apprunDedicated:publishApp')(EVENT, dir, D_AUTH, APP_INPUT, { confirmed: true }) },
-  { name: 'apprunDedicated:teardownApp（専有型 📡 のアプリだけ削除）', channel: 'apprunDedicated:teardownApp', op: '削除', target: 'sakura-apprun-dedicated',
-    invoke: dir => handler('apprunDedicated:teardownApp')(EVENT, dir, D_AUTH, { confirmed: true }) },
 ]
 
-describe('★★★ 9本のハンドラすべてが、同じ道で記録される（実際に呼んで数える）', () => {
-  it('対象は9本（増減したら、ここも数え直す）', () => {
-    expect(CASES).toHaveLength(9)
-    expect(new Set(CASES.map(c => c.channel)).size).toBe(9)
+describe('★★★ 8本のハンドラすべてが、同じ道で記録される（実際に呼んで数える）', () => {
+  it('対象は8本（増減したら、ここも数え直す）。アプリだけを消す apprunDedicated:teardownApp は無い（2026-10-08）', () => {
+    expect(CASES).toHaveLength(8)
+    expect(new Set(CASES.map(c => c.channel)).size).toBe(8)
+    expect(h.handlers.has('apprunDedicated:teardownApp')).toBe(false)
   })
 
   for (const c of CASES) {
@@ -302,7 +301,7 @@ describe('★★★ 9本のハンドラすべてが、同じ道で記録され�
 describe('★★ 進み具合: 各ハンドラが送っていた進捗の段は、記録（と押し出し）に載る', () => {
   // 進捗の送り口は1つ（progressReporter）。ここは「ハンドラが段の変わり目で実際に送っている」ことを、
   // 押し出された記録の progress.label で確かめる（ハンドラを実際に呼ぶ）。
-  // 専有型の teardown／publishApp／teardownApp は、進捗が待ち（外部の一覧を引く段）の中で出るので、
+  // 専有型の teardown／publishApp は、進捗が待ち（外部の一覧を引く段）の中で出るので、
   // 送り口の配線は tests/projectOpsWiring.test.ts が固定している。
   const STAGES: Array<[string, string]> = [
     ['cloud:apply', '🚀 AppRun に反映しています…'],

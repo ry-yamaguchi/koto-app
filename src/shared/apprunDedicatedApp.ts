@@ -355,7 +355,7 @@ export function appDeleteNeedsReDeactivation(title: string | null | undefined): 
  * **次にすることが分かる文にする**（2026-10-07）: 記録は消していないので、しばらくしてからもう一度押せば続きから進む。
  * 生の応答（`rawMessage`）は末尾に載せる。課金に触れるときは、**終わりの条件を言わない**（「アプリが消えるまで」と書くと、
  * アプリを消せば課金が止まるように読める。計画書 5-7 では常時課金はクラスタ・ASG・LB で、アプリは「ワーカ枠の中」。
- * 📡 一覧の「アプリだけ破棄」はクラスタ・LB をわざと残す）。ここで言えるのは「いま課金が続いている」までにする。
+ * アプリの段で止まれば、後ろの LB・ASG・クラスタはまだ消えていない）。ここで言えるのは「いま課金が続いている」までにする。
  */
 export function appDeleteExhaustedMessage(title: string | null | undefined, rawMessage: string): string {
   const lower = (title ?? '').toLowerCase()
@@ -365,5 +365,40 @@ export function appDeleteExhaustedMessage(title: string | null | undefined, rawM
   if (lower.includes(APP_DELETE_RETRYABLE_NEEDLES[1])) {
     return `アプリケーションの削除に失敗しました。まだコンテナが止まっていません。しばらくしてから、もう一度押してください（アプリは無効化済みです。クラスタなどの課金は続いています）: ${rawMessage}`
   }
-  return `アプリケーションの削除に失敗しました。残っています＝課金が続きます: ${rawMessage}`
+  return `アプリケーションの削除に失敗しました。残っている間は課金が続きます: ${rawMessage}`
+}
+
+// ── 2026-10-08 検分 L・J: 待ち直しの対象を、5xx・通信の切れと「下位の資源の削除が反映されない」へ広げる ──────────────
+//
+// アプリの削除は、400（active version／currently running）で断られたら**待ってからやり直す**（rc.7）。ところが、その待ち直しの
+// 途中で DELETE が **5xx や通信の切れ**で失敗すると、そこで止まっていた（何分も待ったあとの一時的な失敗で、押し直しになる）。
+// 一時的な失敗なので、同じ合計の上限まで待ち直しの対象にする。**4xx（404・400 の既知のもの以外）は従来どおり止める**
+// （やり直しても同じ・または理由が違うため）。
+
+/**
+ * DELETE が**一時的な失敗**か（純関数）: HTTP の 5xx、または応答そのものが無い（通信の切れ・時間切れ。`status` が無い）。
+ * 4xx は false（やり直しても同じ）。`status` は `ApprunDedicatedResult` の `status`（HTTP を受け取れたときだけ付く）。
+ */
+export function appDeleteTransientFailure(status: number | undefined): boolean {
+  return status === undefined || (Number.isInteger(status) && status >= 500 && status <= 599)
+}
+
+/**
+ * 待ってやり直しても（合計の時間の上限まで）DELETE が 5xx・通信の切れのままだったときの、画面向けメッセージ（純関数）。
+ * **次にすることが分かる文にする**: 記録は消していないので、しばらくしてからもう一度押せば続きから進む。
+ * アプリの段で止まれば後ろのロードバランサ・ASG・クラスタはまだ消えていないので、ここで言えるのは「いま課金が続いている」まで
+ * （`appDeleteExhaustedMessage` と同じ言い方）。生の応答は末尾に載せる。
+ */
+export function appDeleteTransientExhaustedMessage(status: number | undefined, rawMessage: string): string {
+  const what = status === undefined ? 'さくらのクラウドと通信できませんでした' : 'さくらのクラウドが一時的にエラーを返しました'
+  return `アプリケーションの削除に失敗しました。${what}。しばらくしてから、もう一度押してください（クラスタなどの課金は続いています）: ${rawMessage}`
+}
+
+/**
+ * ASG・クラスタの削除を 409 で断られたのに、下位の資源（ロードバランサ／オートスケーリンググループ）の一覧が空のまま、
+ * 待っても削除が通らなかったとき（合計の上限）の、画面向けメッセージ（純関数）。記録は消していないので、押し直せば続きから進む。
+ * `ownLabel` はこの削除の名前（「オートスケーリンググループ」「クラスタ」）、`lowerLabel` は反映を待っていた相手。
+ */
+export function lowerResourceExhaustedMessage(ownLabel: string, lowerLabel: string, rawMessage: string): string {
+  return `${ownLabel}の削除に失敗しました。${lowerLabel}の削除がまだ反映されないようです。しばらくしてから、もう一度押してください（残っている間は課金が続きます）: ${rawMessage}`
 }

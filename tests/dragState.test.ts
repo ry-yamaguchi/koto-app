@@ -141,7 +141,10 @@ describe('落とせる場所の案内', () => {
 
   it('★★ ファイル一覧の上だけ、文面が変わる（そこだけ結果が違う）', () => {
     expect(app).toContain('プロジェクトに取り込みます')
-    expect(app).toContain('AIに見せます')
+    expect(app).toContain('チャットに添付します')
+    // 0.6.21: 直す前の「AIに見せます」「ここに落とすと」は戻さない
+    expect(app).not.toContain('AIに見せます')
+    expect(app).not.toContain('ここに落とすと')
     expect(app).toContain("closest?.('[data-drop=\"tree\"]')")
     expect(side).toContain('data-drop="tree"')
   })

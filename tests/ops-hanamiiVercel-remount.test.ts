@@ -77,7 +77,7 @@ const SPECS: Spec[] = [
     firstLabel: '📦 公開するファイルをまとめています…',
     start: (w, dir = DIR) => w.api.hanamii.publish(dir, { token: 'test-only-placeholder-token', workspaceId: 'ws1', name: 'app' }),
     setOk: w => { w.publishReply = { ok: true, projectId: 'prj_test1', deploymentId: 'dpl_test1', deployState: 'ready', readyState: 'READY', url: 'https://app-test.example.test' } },
-    okText: '公開できました。新しい版が動いたことを確かめました。',
+    okText: '公開できました。新しいバージョンが起動したことを確かめました。',
     warnMark: '⚠️ ',
     setWarn: (w, text) => { w.publishReply = { ok: true, projectId: 'prj_test1', deploymentId: 'dpl_test1', deployState: 'pending', readyState: 'BUILDING', warnings: [text] } },
     setFail: (w, text) => { w.publishReply = { ok: false, message: text } },

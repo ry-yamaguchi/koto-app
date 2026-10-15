@@ -106,7 +106,7 @@ const RUN_COMMAND_TOOL = {
     description:
       'プロジェクトフォルダ内でシェルコマンドを実行し、終了コードと出力を得る。ビルド・テスト・構文チェック・エラー調査に使う。' +
       '実行後は出力を必ず読み、エラーがあれば自分でコードを修正して再実行すること。' +
-      '【注意】60秒でタイムアウトするため、サーバーの常駐起動（npm start, php -S 等）には使わないこと（動作確認はユーザーに【② 試す】を案内する）。',
+      '【注意】60秒でタイムアウトするため、サーバーの常駐起動（npm start, php -S 等）には使わないこと（動作確認はユーザーに【試す】を案内する）。',
     parameters: {
       type: 'object',
       properties: {
@@ -424,7 +424,7 @@ export function condenseReasoning(text: string): string {
   let capped = false
   if (result.length > CAP) { result = result.slice(0, CAP).trim() + '…'; capped = true }
   if (looped || capped) {
-    result = '（モデルが本文ではなく思考過程のみを返しました。暴走・冗長を避けるため要約して表示します）\n\n' + result
+    result = '（モデルが本文ではなく思考過程のみを返しました。同じ内容の繰り返しや長すぎる表示を避けるため、要約して表示します）\n\n' + result
   }
   return result
 }
@@ -543,7 +543,7 @@ export function unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean, cu
 }
 
 /**
- * 直前の返事と**同一の案内段落**（「②試す で確認してみてください」等の定型文）を取り除く（純関数）。
+ * 直前の返事と**同一の案内段落**（「【試す】で確認してみてください」等の定型文）を取り除く（純関数）。
  *
  * ── なぜ（2026-08-30 実機・Ryosuke 指摘）──────────────────────────────
  * システムプロンプトは初心者向けに「作業がひと区切りしたら次にやることを案内」と指示している。
@@ -551,11 +551,14 @@ export function unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean, cu
  * 毎ターン一字一句同じ定型文を付けてきた。プロンプトで従わせるのは諦め、Koto 側で機械的に
  * 抑止する（stripToolMarkup と同じ発想: モデル任せにせず、判定はコードで）。
  *
- * 消すのは「①案内の形をした段落（GUIDANCE_RE）で、かつ ②直前のアシスタントの返事に
+ * 消すのは「(1)案内の形をした段落（GUIDANCE_RE）で、かつ (2)直前のアシスタントの返事に
  * **同じ段落がそのまま**在るもの」だけ。新しい内容の案内（初出）は残る。
  * 全段落が消える場合は元のまま返す（空の返事にしない）。
  */
-const GUIDANCE_RE = /画面上部の【[②③]|次にやることを1つ案内します/
+// 「画面上部の【試す】」「画面上部の【公開】」（いまの呼び方）と、古い版の返事に残る「画面上部の【② 試す】」
+// 「画面上部の【③ 公開】」（丸数字つき・2026-10-07 に廃止）の両方を案内として扱う。
+// 古い版の返事（会話履歴）と同じ段落を繰り返したときも抑止できるよう、丸数字の形は残す。
+const GUIDANCE_RE = /画面上部の【(?:[②③]|試す】|公開】)|次にやることを1つ案内します/
 export function stripRepeatedGuidance(content: string, prevAssistant: string | null | undefined): string {
   if (!content || !prevAssistant) return content
   const prevParas = new Set(prevAssistant.split(/\n{2,}/).map(p => p.trim()).filter(Boolean))

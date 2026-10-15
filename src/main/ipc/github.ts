@@ -58,7 +58,7 @@ export function registerGithubHandlers(_deps: IpcDeps) {
   ipcMain.handle('github:createRepo', async (_, token: string, name: string) => {
     if (!token) return { ok: false, message: 'GitHub のトークンが未登録です' }
     const trimmed = (name ?? '').trim()
-    if (!trimmed) return { ok: false, message: '保管場所の名前を入力してください' }
+    if (!trimmed) return { ok: false, message: 'リポジトリ名を入力してください' }
     try {
       const client = new GithubClient({ token })
       const r = await client.createRepo(trimmed)
@@ -78,7 +78,7 @@ export function registerGithubHandlers(_deps: IpcDeps) {
     if (!token) return { ok: false, message: 'GitHub のトークンが未登録です' }
     if (!projectDir) return { ok: false, message: 'プロジェクトが開かれていません' }
     const parsed = splitRepoFullName(repoFullName)
-    if (!parsed) return { ok: false, message: '保存先のリポジトリ（保管場所）が正しく設定されていません' }
+    if (!parsed) return { ok: false, message: '保存先のリポジトリが正しく設定されていません' }
     try {
       const rawEntries = walkProjectFiles(projectDir)
       const { included, excluded } = partitionEntries(rawEntries)
@@ -102,7 +102,7 @@ export function registerGithubHandlers(_deps: IpcDeps) {
   ipcMain.handle('github:status', async (_, token: string, repoFullName: string) => {
     if (!token) return { ok: false, message: 'GitHub のトークンが未登録です' }
     const parsed = splitRepoFullName(repoFullName)
-    if (!parsed) return { ok: false, message: '保存先のリポジトリ（保管場所）が正しく設定されていません' }
+    if (!parsed) return { ok: false, message: '保存先のリポジトリが正しく設定されていません' }
     const r = await new GithubClient({ token }).testConnection()
     if (!r.ok) return { ok: false, message: r.message ?? describeUserError(r.status ?? 0) }
     return { ok: true, login: r.login }

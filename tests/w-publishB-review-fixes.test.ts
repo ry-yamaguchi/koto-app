@@ -64,10 +64,12 @@ describe('W-29: 公開先を選ぶ画面の Vercel 説明（データは条件�
   })
 })
 
-describe('W-93: 📡 公開したもの一覧「記録を片づける」の確定ボタン（決定どおりに直っているか固定）', () => {
-  it('PublishedListModal.tsx の確定ボタンが「記録を片づける（公開したものは残ります）」に揃っている', () => {
+describe('W-93（0.6.21 で上書き）: 📡 公開したもの一覧「一覧から削除」の確定ボタン（決定どおりに直っているか固定）', () => {
+  it('PublishedListModal.tsx の確定ボタンが「一覧から削除（公開したものは残ります）」に揃っている', () => {
     const src = read('src/renderer/components/PublishedListModal.tsx')
-    expect(src).toContain('記録を片づける（公開したものは残ります）')
+    expect(src).toContain('一覧から削除（公開したものは残ります）')
+    // 0.6.21（作者の決定 2026-10-01）: 「記録を片づける」は「一覧から削除」に揃えた。直す前の言い方は戻さない
+    expect(src).not.toContain('記録を片づける')
     // 「実体」は通じない、というのが W-93 の理由なので、もう出てこない
     expect(src).not.toContain('実体は残ります')
   })

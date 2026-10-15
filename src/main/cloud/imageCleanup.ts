@@ -197,7 +197,7 @@ export async function deleteDigests(opts: {
       if (!/^sha256:[0-9a-f]{64}$/.test(digest)) continue // 形の怪しいものには触れない
       const r = await runCrane(['delete', `${repo}@${digest}`], cfgDir)
       done++
-      opts.onProgress?.(`🧹 古いイメージを片づけています…（${done}/${opts.digests.length}）`)
+      opts.onProgress?.(`🧹 古いイメージを削除しています…（${done}/${opts.digests.length}）`)
       if (r.ok) {
         res.deleted.push(digest)
       } else {

@@ -169,8 +169,8 @@ export type DelegateWriteOutcome = {
  * delegate_implementation が AI Engine から受け取ったファイルを、作業フォルダへ書く（W-18）。
  *
  * ── 書く**前**に、Claude の Write/Edit（agent.ts の makeCanUseTool）と同じ関門を通す ──────────
- * ① 守るパス（isProtectedWritePath）は、writeMode を問わず**聞かずに拒否**する（承認しても書けない領域）。
- * ② 「✋ 毎回確認」（writeMode==='confirm'）のときは、1件ごとに planApproval → requestApproval で承認を取る
+ * (1) 守るパス（isProtectedWritePath）は、writeMode を問わず**聞かずに拒否**する（承認しても書けない領域）。
+ * (2) 「✋ 毎回確認」（writeMode==='confirm'）のときは、1件ごとに planApproval → requestApproval で承認を取る
  *    （同じ turnId・同じ dir（＝projectDir）・同じ文面「✏️ ファイルの保存（<相対パス>）」）。
  *    拒否されたら**そのファイルは書かず、残りも聞かずに止める**（「いいえ」のあとに次々と確認を出さない）。
  *    「🪄 おまかせ」（'auto'）なら planApproval が null を返し、聞かずに書く。
@@ -183,7 +183,7 @@ export type DelegateWriteOutcome = {
  * AI Engine の応答待ち（最長で約10〜20分）の最中に ⏹ を押すと、取り消される承認待ちは0件。
  * 応答が返ったあとにここで承認待ちを新しく立てると、⏹ ではもう消せず（activeChat は既に null）、
  * 止めたはずの依頼の保存ダイアログが次の会話の最中に出て、許可すると書かれてしまう。
- * そこで isStopped を ①承認を求める前 ②許可された後の書く直前 ③次のファイルへ進む前 に見て、
+ * そこで isStopped を (1)承認を求める前 (2)許可された後の書く直前 (3)次のファイルへ進む前 に見て、
  * 止まっていれば聞かず・書かずに返す（「おまかせ」で ⏹ のあとに黙って書く道もこれで塞がる）。
  */
 export async function writeDelegatedFiles(files: DelegateParsedFile[], ctx: DelegateWriteContext): Promise<DelegateWriteOutcome> {
@@ -196,11 +196,11 @@ export async function writeDelegatedFiles(files: DelegateParsedFile[], ctx: Dele
     if (isStopped()) {
       return { written, denied: null, stopped: true, notReached: files.slice(i).map(x => x.path) }
     }
-    // ① 守るパス（呼び出し側の validateDelegatePath でも弾いているが、書く関数の側でも必ず通す）。
+    // (1) 守るパス（呼び出し側の validateDelegatePath でも弾いているが、書く関数の側でも必ず通す）。
     if (isProtectedWritePath(f.path)) {
       return { written, denied: { path: f.path, message: protectedWriteMessage(f.path) }, stopped: false, notReached }
     }
-    // ② 「✋ 毎回確認」。makeCanUseTool の Write と同じ mappedName（write_file）・同じ引数の形。
+    // (2) 「✋ 毎回確認」。makeCanUseTool の Write と同じ mappedName（write_file）・同じ引数の形。
     const argsJson = JSON.stringify({ path: f.path })
     const plan = planApproval('write_file', argsJson, { writeMode })
     if (plan) {
@@ -343,12 +343,12 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
 
         const choice = res.choices?.[0]
         if (choice?.finish_reason === 'length') {
-          return textResult('エラー: 出力が上限で切れたため委譲結果を確定できませんでした。タスクをより小さく分割して再度委譲してください。')
+          return textResult('エラー: 出力が上限で切れたため、任せた実装の結果を確定できませんでした。タスクをより小さく分割して、もう一度任せてください。')
         }
 
         const parsed = parseDelegateOutput(choice?.message?.content ?? '')
         if (!parsed.ok) {
-          return textResult(`エラー: 委譲結果の解析に失敗しました（${parsed.message}）。タスクの指示を見直して再度委譲してください。`)
+          return textResult(`エラー: 任せた実装の結果を解析できませんでした（${parsed.message}）。タスクの指示を見直して、もう一度任せてください。`)
         }
 
         const invalid = parsed.files.filter(f => !validateDelegatePath(f.path))
@@ -375,7 +375,8 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
         // 縮めて再試行したほうが時間切れになる道もあるので、ここでも日本語に直す
         // （直す前は「エラー: 委譲に失敗しました（Request timed out.）」と英語が混ざっていた）。
         if (isSdkTimeoutError(e)) return textResult(delegateTimeoutMessage())
-        return textResult(`エラー: 委譲に失敗しました（${e?.message ?? e}）`)
+        // この catch は AI Engine の呼び出しだけでなく、作業フォルダへの書き込み（writeDelegatedFiles）の例外も受けるので、原因を言い切らない
+        return textResult(`エラー: 実装を任せる処理に失敗しました（${e?.message ?? e}）`)
       }
     }
   )

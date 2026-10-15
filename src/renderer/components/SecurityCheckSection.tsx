@@ -10,7 +10,7 @@ import CopyButton from './CopyButton'
 // 公開時の自動実行は 2026-08-21 に作者の指摘で廃止した（コミット 94e0c08。毎回は不要）。
 // 公開はこの確認の最中でも押せる（任意の確認のため。押したときだけ実行する、という上の決定の帰結）。
 // どの公開先（AppRun / Vercel / HANAMII / レンタルサーバ）でも、この同じ部品を使う。
-// stepNo: 呼び出し元の画面の番号体系に乗せるための見出し番号（例 '④'）。
+// stepNo: 呼び出し元の画面の番号体系に乗せるための見出し番号（例 '手順4'）。
 // 渡されなければ従来どおり番号なし（PublishModal は番号体系を持たない画面のため未指定・2026-09-04 Ryosuke 指摘）。
 export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { projectDir: string; apiKey: string; stepNo?: string }) {
   const [checking, setChecking] = useState(false)
@@ -121,14 +121,14 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
           {/* 待たされている人に、止められることを字で伝える（ボタンだけだと気づかれない） */}
           <p className="text-[11px] text-ink-muted">
             {stopping
-              ? '中止しています。いま問い合わせている分が切れるまで、少し待ってください。'
+              ? '中止しています。実行中の AI への問い合わせが終わるまで、少しお待ちください。'
               : '時間がかかるときは「⏹ 中止する」で止められます。途中までの結果は「確認した」ことにはしません。'}
           </p>
         </>
       )}
 
       {/* ── 全部✅なら1行に畳む（判断6・利用者目線レビュー・2026-09-11）──────────────
-          ③事前チェック（AppRunPanel.tsx）の「preflight.checks.every(c => c.status === 'ok')」
+          手順3 事前チェック（AppRunPanel.tsx）の「preflight.checks.every(c => c.status === 'ok')」
           と同じ型を横展開する。判断そのものは foldSecurity に一元化してある（掟10）。 */}
       {result && (
         foldSecurity(result) ? (

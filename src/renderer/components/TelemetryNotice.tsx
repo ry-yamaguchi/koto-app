@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { TelemetryKind, TelemetryAction } from '../../shared/appLog'
 
-// TelemetryNotice — ⑧ ログ・メトリクス（roadmap #30・さくらの開発者の助言）。
+// TelemetryNotice — 手順7 ログ・メトリクス（roadmap #30・さくらの開発者の助言）。
 //
 // ── なぜ1つの部品でログ・メトリクス両方を出すのか ──────────────────────────
 // 判断（shared/appLog.ts の decideTelemetryAction）も画面の形も、ログとメトリクスで
@@ -128,14 +128,14 @@ export default function TelemetryNotice({ projectDir, kind }: { projectDir: stri
     return (
       <div className="rounded-lg border border-line p-3 space-y-2">
         <p className="text-xs text-ink leading-relaxed">
-          {icon} {label}の保存場所はすでにあります。このアプリの{label}をつなげます（追加費用はありません）。
+          {icon} {label}の保存場所はすでにあります。このアプリの{label}を、その保存場所に接続できます（追加費用はありません）。
         </p>
         <button
           onClick={() => enable(false)}
           disabled={busy}
           className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
-        >{busy ? 'つないでいます…' : `${label}をつなぐ`}</button>
-        {done && <p className="text-[11px] text-ink-secondary leading-relaxed">✅ つながりました。</p>}
+        >{busy ? '接続しています…' : `${label}を接続する`}</button>
+        {done && <p className="text-[11px] text-ink-secondary leading-relaxed">✅ 接続しました。</p>}
         {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {error}</p>}
       </div>
     )

@@ -125,6 +125,16 @@ export function readPublishedAtFs(projectDir: string, target: PublishTargetKind)
 }
 
 /**
+ * その公開先の公開記録（`publish.targets[target]`＝📡 公開したもの一覧の1行）があるか。
+ * 日時が無くても（`publishedAt` が空の「日時不明」の行でも）行があれば true——一覧は `targets[t]` があれば行を作る
+ * （renderer の buildPublishStatusRows と同じ見方）。無い・壊れている＝false。
+ */
+export function hasPublishRecordFs(projectDir: string, target: PublishTargetKind): boolean {
+  const m = readMetaRaw(projectDir) as any
+  return !!m?.publish?.targets?.[target]
+}
+
+/**
  * さくらのAppRun 専有型（roadmap #23）: `publish.apprunDedicated` を読む。
  * 無い/壊れている場合は空オブジェクト（＝何も作られていない・同意していない扱い）。
  */

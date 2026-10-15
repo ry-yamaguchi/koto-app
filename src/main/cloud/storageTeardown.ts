@@ -93,7 +93,7 @@ export async function teardownStorage(opts: {
   const warnings: string[] = []
   if (opts.permissionId) {
     try { await opts.storage.deletePermission(opts.permissionId) }
-    catch { warnings.push('保存場所の鍵を無効にできませんでした') }
+    catch { warnings.push('保存場所のアクセスキーを無効にできませんでした') }
   }
 
   return { ok: true, deletedBucket: decision.deleteBucket, note: decision.note, warnings }

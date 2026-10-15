@@ -420,7 +420,8 @@ describe('query() へ実際に渡った MCP サーバのツール: 登録・isSt
     expect(fs.readFileSync(inWriteRoot('index.html'), 'utf8')).toBe('OK')
     expect(run.onFileWritten).toHaveBeenCalledWith('public/index.html') // エディタの開きタブはプロジェクト直下からの相対パス
     expect(run.onDelegated).toHaveBeenCalledWith({ model: expect.any(String), promptTokens: 11, completionTokens: 22 })
-    expect(text(r)).toContain('委譲が完了しました')
+    expect(text(r)).toContain('任せた実装が完了しました')
+    expect(text(r)).not.toContain('委譲が完了しました') // 0.6.21: 直す前の言い方は戻さない
   })
 
   // ── delegate_implementation: writeMode・turnId ──

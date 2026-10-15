@@ -49,10 +49,10 @@ export const ALWAYS_USED_RE =
  *
  * ── なぜ常に使用中にするか（2026-09-23 検分）──────────────────────────
  * Koto はこれを**AI が書き直す前に**置く。置いた直後は参照が0件なので、
- * 出現判定では**必ず未使用に出る**。UnusedFilesSection は③公開の同じ画面に
+ * 出現判定では**必ず未使用に出る**。UnusedFilesSection は【公開】の同じ画面に
  * 並んでおり、利用者が「移動する」を押すと素材（公開しません）へ移る。
  * その直後に AI が読み込む形へ書き直すと、読み込み先が消えた状態になり、
- * ②試す・③公開が `Cannot find module './koto-data.cjs'` で落ちる。
+ * 【試す】・【公開】が `Cannot find module './koto-data.cjs'` で落ちる。
  *
  * **名前の正は objectStorage.ts の `DATA_LAYER_FILES`**（二重定義を作らない・掟10）。
  */
@@ -207,7 +207,7 @@ function splitExt(name: string): { stem: string; ext: string } {
  *
  * ── なぜ要るか（2026-09-04 実機で判明・未使用ファイルの移動が一括で失敗する不具合） ──────
  * 移動先は MATERIALS_DIR 直下の平置き。以前の ipc/unused.ts は
- *   ①素材置き場に既に同名がある ②同じ一括の中で basename が重複する
+ *   (1)素材置き場に既に同名がある (2)同じ一括の中で basename が重複する
  * のどちらも throw で**一括全体を拒否**していた（migrate.ts の「同名衝突は全体を中止する」
  * 方針をそのまま踏襲したもの）。ところが実機では、以前 Koto で移動した test002 が
  * 素材置き場に残っているというだけで、**新しい test002 を二度と移動できなくなった**

@@ -211,8 +211,8 @@ describe('目印は公開物から外されない', () => {
   })
 })
 
-// ── 専有型（AppRun 専有型）の⑧・D-7（2026-09-16 実機・0.6.19-rc.1）────────────
-// ⑧でアプリを公開し、Koto は「✅ 公開しました」と出した。だが**観測できたのは、
+// ── 専有型（AppRun 専有型）の手順8・D-7（2026-09-16 実機・0.6.19-rc.1）────────────
+// 手順8でアプリを公開し、Koto は「✅ 公開しました」と出した。だが**観測できたのは、
 // ロードバランサが 503 `no available server` を返し続けたことだけ**——コンテナ自体が
 // 起動していたかは未確認（同じ日のコンパネは「稼働コンテナ 1・アクティブ」と表示していた。
 // docs/apprun-dedicated-plan.md 5-13）。利用者は「公開できた」と信じて DNS を設定しに行くことになる。
@@ -235,13 +235,15 @@ describe('専有型の確認の言葉（D-7）', () => {
   it('★★ 古い内容のままなら、そう言う（黙って成功に見せない）', () => {
     const m = dedicatedVerifyMessage('stale')
     expect(m).toContain('古い内容のまま')
-    expect(m).toContain('⑧')
+    expect(m).toContain('手順8')
+    expect(m, '旧い丸数字の案内が戻っている').not.toContain('⑧')
   })
 
   it('★★ 確かめられなかっただけのときは、失敗と混ぜない', () => {
     const m = dedicatedVerifyMessage('unreachable')
     expect(m).toContain('確かめられませんでした')
-    expect(m).toContain('公開の手続き自体は通っています')
+    expect(m).toContain('公開の処理自体は完了しています')
+    expect(m).not.toContain('手続き') // 0.6.21（作者の決定 2026-10-01）: 「手続きは通りました」は「処理は完了しました」に揃えた。直す前の言い方は戻さない
   })
 
   it('★★ 「中身が新しいことまで確かめられた」と言ってよいのは ok だけ（ここが緩むと事故が戻る）', () => {
@@ -491,7 +493,7 @@ describe('専有型の確認の判定（D-7・純関数）', () => {
 // 仮証明書）。ブラウザでは「この接続は安全ではありません」が出る。
 // **それでも Koto は「✅ 公開しました」と出していた。証明書を一度も見ていなかった。**
 //
-// ⑧の公開直後の確認（verify）は **DNS を向ける前**に走るので、そこに証明書の検査を
+// 手順8の公開直後の確認（verify）は **DNS を向ける前**に走るので、そこに証明書の検査を
 // 足すのは誤り（その時点では仮証明書しか存在し得ない＝時間軸が違う）。押したときに
 // 1回だけ調べる別の口にした。ここはその判定（純関数）を固定する。
 
@@ -656,7 +658,7 @@ describe('O-1 siteCheckLines: 画面に出す行（1行につき1つの軸）', 
     expect(lines[1]).toBe('✅ https の証明書が発行されています')
     expect(lines[3].startsWith('❌')).toBe(true)
     expect(lines[3]).toContain('アプリがまだ応答していません')
-    // アプリの文は⑧と同じ一元定義（同じ観測に2つの言い方を作らない・掟10）
+    // アプリの文は手順8と同じ一元定義（同じ観測に2つの言い方を作らない・掟10）
     expect(lines[3]).toBe(dedicatedVerifyMessage('no-backend'))
   })
 
@@ -691,10 +693,11 @@ describe('O-1 siteCheckLines: 画面に出す行（1行につき1つの軸）', 
   })
 
   it('★★ 比べる先の IP が記録に無いとき、原因を「この端末」と断定しない（検分・2026-09-17）', () => {
-    // ⑧は「IP がまだ取れていません」＋「🔄 IP を取り直す」の下にもこのボタンを出す。
+    // 手順8は「IP がまだ取れていません」＋「🔄 IP を再取得」の下にもこのボタンを出す。
     const line = siteCheckLines({ dns: 'no-record', cert: 'unknown', httpsOpen: 'unknown', app: null })[0]
     expect(line).not.toContain('この端末から調べられませんでした')
-    expect(line).toContain('🔄 IP を取り直す')
+    expect(line).toContain('🔄 IP を再取得')
+    expect(line).not.toContain('取り直す') // 0.6.21: 「取り直す」は「再取得」に揃えた。直す前の言い方は戻さない
     // 本当に引けなかったときだけ「この端末から」と言う
     expect(siteCheckLines({ dns: 'unknown', cert: 'unknown', httpsOpen: 'unknown', app: null })[0])
       .toContain('この端末から調べられませんでした')

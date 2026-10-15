@@ -138,9 +138,9 @@ export function notarytoolCredentialArgs(env) {
   }
   throw new Error(
     '公証の資格情報がありません。次のいずれかを設定してください:\n' +
-      '  ① APPLE_KEYCHAIN_PROFILE（推奨。notarytool store-credentials で作る）\n' +
-      '  ② APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER\n' +
-      '  ③ APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID'
+      '  (1) APPLE_KEYCHAIN_PROFILE（推奨。notarytool store-credentials で作る）\n' +
+      '  (2) APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER\n' +
+      '  (3) APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID'
   )
 }
 

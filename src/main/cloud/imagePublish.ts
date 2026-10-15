@@ -191,7 +191,7 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
     if (!b.ok) {
       return {
         ok: false,
-        message: 'アプリの組み立て（Dockerビルド）に失敗しました。よくある原因: Dockerfile の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
+        message: 'アプリのビルド（Docker）に失敗しました。よくある原因: Dockerfile の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
         detail: b.log,
       }
     }
@@ -210,11 +210,11 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
     if (!ps.ok) {
       return {
         ok: false,
-        message: 'レジストリへの反映（プッシュ）に失敗しました。インターネット接続を確認して、もう一度お試しください。',
+        message: 'レジストリへのプッシュに失敗しました。インターネット接続を確認して、もう一度お試しください。',
         detail: ps.log,
       }
     }
-    progress('📤 レジストリへ反映しました')
+    progress('📤 レジストリへプッシュしました')
   } else {
     // ── 標準: 同梱 crane で「公開ベース＋ファイル層＋起動設定」を組み立てて push（Docker不要） ──
     if (!builderAvailable()) {
@@ -229,7 +229,7 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
       // **黙って static で公開しない。** 動かないうえにソースが丸見えになる
       return { ok: false, message: choice.reason }
     }
-    progress(choice.kind === 'node' ? `📦 イメージを組み立てています…（${choice.entry} で起動）` : '📦 イメージを組み立てています…')
+    progress(choice.kind === 'node' ? `📦 イメージをビルドしています…（${choice.entry} で起動）` : '📦 イメージをビルドしています…')
     const built = await buildAndPush({
       contextAbs,
       ref,
@@ -252,14 +252,14 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
         ok: false,
         ...(registryTrouble ? { hint: 'reset-registry' as const } : {}),
         message: registryTrouble
-          ? 'イメージの置き場（コンテナレジストリ）へ反映できませんでした。'
+          ? 'コンテナレジストリへプッシュできませんでした。'
             + '削除された、または接続情報が古い可能性があります。'
             + '下の「レジストリを設定し直す」を押してから、もう一度お試しください。'
-          : 'アプリの組み立てに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
+          : 'アプリのビルドに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
         detail,
       }
     }
-    progress('📤 レジストリへ反映しました')
+    progress('📤 レジストリへプッシュしました')
   }
 
   return {

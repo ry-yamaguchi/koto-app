@@ -98,6 +98,20 @@ describe('公開する前の確認（Vercel）', () => {
     expect(checks.find(c => c.id === 'storage')!.note).toContain('日本国内')
   })
 
+  // 0.6.21（検分）: 公開中の進み具合・完了通知（ipc/vercel.ts）は「環境変数を Vercel に登録」と言う。
+  // 公開前チェックの注記も同じ言い方にする（同じ操作を「Koto が設定を渡す」と別の名前で呼ばない）。
+  it('★ 保存場所の設定を渡す操作は、「環境変数を Vercel に登録」と言う（旧「Koto が設定を渡す」は戻さない）', () => {
+    for (const hasStorage of [true, false]) {
+      for (const writesFiles of [undefined, [], ['app.js']]) {
+        const note = judgeVercelFit({ packageJson: null, listens: [], usesData: ['app.js'], hasStorage, hasFiles: true, writesFiles })
+          .find(c => c.id === 'storage')!.note
+        expect(note).toContain('環境変数を Vercel に登録')
+        expect(note).not.toContain('Koto が設定を渡')
+        expect(note).not.toContain('設定を Koto が渡')
+      }
+    }
+  })
+
   // ── 2026-09-24 検分の指摘1・4・12: 保存場所が未用意なら「残ります」と言わない ──────
   // 用意していないプロジェクトでは `issueStorageEnvFor` が reason:'none' を返し、
   // **環境変数を1件も渡さないまま公開が成功する**。そのとき `koto-data` は手元のフォルダ

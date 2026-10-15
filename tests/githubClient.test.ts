@@ -65,7 +65,7 @@ describe('isRepoNameConflict', () => {
 describe('describeCreateRepoError', () => {
   it('gives a Japanese "name already exists" message on 422 name conflict', () => {
     const data = { message: 'name already exists on this account' }
-    expect(describeCreateRepoError(422, data)).toBe('その名前の保管場所は既に存在します。別の名前を試してください。')
+    expect(describeCreateRepoError(422, data)).toBe('その名前のリポジトリは既に存在します。別の名前を試してください。')
   })
 
   it('gives an auth failure message for 401', () => {

@@ -6,7 +6,9 @@ import {
   readClusters,
   readClusterIDs,
   readAsgIDs,
+  readAsgIdRows,
   readLoadBalancerIDs,
+  readLoadBalancerIdRows,
   readClusterId,
   readAsgId,
   readLoadBalancerId,
@@ -22,7 +24,7 @@ import {
   readVersionRows,
   readWorkerNodeAddresses,
   readLoadBalancerNodeAddresses,
-  readContainerStates,
+  readContainerStates, isContainerStopped, countRunningContainers, readRunningContainerCount,
   readHasLetsEncryptEmail,
   readClusterPorts,
 } from '../src/shared/apprunDedicatedShapes'
@@ -661,13 +663,16 @@ describe('readClusterPorts: GET /clusters/{id} の cluster.ports（配列でな�
   })
 })
 
-// ── readContainerStates（D-8・2026-09-16）: GET /applications/{id}/containers ──────────
-// 原本 ListApplicationContainersResponse:
-//   { "nodes": [ { "containersStats": [ { "state", "status", "image" } ], "desired": 1 } ] }
+// ── readContainerStates（D-8・2026-09-16）: GET /applications/{id}/containers の**旧い配列の形**と、読めない形 ──────
+// ⚠️ この節の形（`{ "nodes": [ { "containersStats": [ { "state", "status", "image" } ], "desired": 1 } ] }`）は、最初の実装
+// （2026-09-16）が原本と取り違えて決めた形で、**原本（OpenAPI v1.4.0）の形ではない**。原本の containersStats は
+// `{ collectedAtSec, containers: [...] }` のオブジェクト（か null）で、`workerNodeID`・`desired: 1` も原本に無い
+// （2026-10-08 に原本を取得して確かめた）。原本の形のテストはこの下の「原本の形（…）を読む（R6-2）」。
+// ここは、(1) 旧い配列の形も**読めるなら読む**ことと、(2) **読めない形は null**（0件に倒さない）ことを固定する。
 // 値は原本のまま返す（日本語へ言い換えない・全ての値を実測していないため・掟1）。
-// **空配列と null は別の意味**: `[]` ＝原本の形で読めて0件（1つも動いていない）／
-// `null` ＝原本の形として読めなかった（何台動いているかは分からない）。
-describe('readContainerStates: nodes[].containersStats[] の state/status だけを平らに読む', () => {
+// **空配列と null は別の意味**: `[]` ＝形として読めて0件（1つも動いていない）／
+// `null` ＝形として読めなかった（何台動いているかは分からない）。
+describe('readContainerStates: 旧い配列の形（containersStats が配列そのもの）を読めるなら読む／読めない形は null', () => {
   it('原本の形から読める（ノードが複数でも平らに並べる）', () => {
     const data = {
       nodes: [
@@ -731,5 +736,179 @@ describe('readContainerStates: nodes[].containersStats[] の state/status だけ
   it('★★ 原本の形で読めた結果が0件なら空配列（「1つも動いていない」は事実として出してよい）', () => {
     expect(readContainerStates({ nodes: [] })).toEqual([])
     expect(readContainerStates({ nodes: [{ workerNodeID: 'wn-1', desired: 1, containersStats: [] }] })).toEqual([])
+  })
+})
+
+// ── readContainerStates: 原本（OpenAPI v1.4.0）の形（2026-10-08・R6-2）──────────────────────────
+// 原本 ListApplicationContainersResponse の example（2026-10-08 に原本そのものを取得して写した）。
+// containersStats は配列ではなく { collectedAtSec, containers: [...] } のオブジェクトで、null もありうる（nullable）。
+// ⚠️ 実際の応答はまだ誰も見ていない。ここは原本の example／スキーマの形で固定している（実機で生の応答を見たら、実測へ差し替える）。
+const ORIGINAL_EXAMPLE = {
+  nodes: [
+    {
+      nodeID: 'b7e6a1c2-3f4d-4e2a-9b1a-2c3d4e5f6a7b',
+      containersStats: {
+        collectedAtSec: 1721203200,
+        containers: [
+          {
+            id: 'container-1', image: 'nginx:latest', state: 'running', status: 'Up 5 minutes', cpuUsagePercent: 12.5,
+            applicationID: 'f47ac10b-58cc-4372-a567-0e02b2c3d479', applicationVersion: 2,
+          },
+        ],
+      },
+      desired: { containers: [] },
+    },
+    {
+      nodeID: 'c8f7b2d3-4e5f-5a6b-8c2d-3e4f5a6b7c8d',
+      containersStats: { collectedAtSec: 1721203200, containers: [] },
+      desired: {
+        containers: [{ applicationID: '9c858901-8a57-4791-81fe-4c455b099bc9', applicationVersion: 1, cpuMillis: 250, memoryMB: 128, image: 'redis:alpine' }],
+      },
+    },
+  ],
+}
+
+describe('readContainerStates: 原本の形（containersStats が { collectedAtSec, containers } のオブジェクト）を読む（R6-2）', () => {
+  it('★★★ 原本の example が読める（ノードが複数でも平らに。desired は読まない）。直す前は null（読めない）だった', () => {
+    expect(readContainerStates(ORIGINAL_EXAMPLE)).toEqual([{ state: 'running', status: 'Up 5 minutes' }])
+  })
+
+  it('★★ containers が空のノードだけ → 空配列（原本の形で読めて、コンテナが 0 件）', () => {
+    expect(readContainerStates({ nodes: [{ nodeID: 'n1', containersStats: { collectedAtSec: 1, containers: [] }, desired: null }] })).toEqual([])
+    expect(readContainerStates({ nodes: [] })).toEqual([])
+  })
+
+  it('★★ collectedAtSec が無くても containers が配列なら読める（読むのはコンテナだけ。原本は必須だが、使わない値で読めなくしない）', () => {
+    expect(readContainerStates({ nodes: [{ containersStats: { containers: [{ state: 'exited', status: 'Exited (1)' }] } }] })).toEqual([{ state: 'exited', status: 'Exited (1)' }])
+  })
+
+  it('★★★ containersStats が null のノード（原本で nullable）: 読めたコンテナがあればそれを返し、他に何も読めないときは null（「0 件」とは言い切れない）', () => {
+    const nullNode = { nodeID: 'n0', containersStats: null, desired: null }
+    // 他のノードで読めたコンテナはそのまま（null のノードが、読めた事実を打ち消さない）
+    expect(readContainerStates({ nodes: [nullNode, ORIGINAL_EXAMPLE.nodes[0]] })).toEqual([{ state: 'running', status: 'Up 5 minutes' }])
+    // null のノードだけ → 未確認
+    expect(readContainerStates({ nodes: [nullNode] })).toBe(null)
+    // 読めたノードが 0 件で、他に null のノードがある → 「0 件」とは言えない
+    expect(readContainerStates({ nodes: [nullNode, ORIGINAL_EXAMPLE.nodes[1]] })).toBe(null)
+  })
+
+  it('★★ 旧い形（containersStats が配列）も、読めるなら読む（原本の形と混在していても）', () => {
+    expect(readContainerStates({ nodes: [{ containersStats: [{ state: 'running', status: 'healthy' }] }] })).toEqual([{ state: 'running', status: 'healthy' }])
+    expect(readContainerStates({
+      nodes: [{ containersStats: [{ state: 'a', status: 'b' }] }, { containersStats: { collectedAtSec: 1, containers: [{ state: 'c', status: 'd' }] } }],
+    })).toEqual([{ state: 'a', status: 'b' }, { state: 'c', status: 'd' }])
+  })
+
+  it('★★ 読めない形は null: containersStats が文字列・数値・containers の無いオブジェクト・containers が配列でない・キーが無い', () => {
+    for (const stats of ['running', 3, true, {}, { collectedAtSec: 1 }, { containers: 'x' }, { containers: { state: 'running', status: 'x' } }]) {
+      expect(readContainerStates({ nodes: [{ containersStats: stats }] }), JSON.stringify(stats)).toBe(null)
+    }
+    expect(readContainerStates({ nodes: [{ nodeID: 'n1', desired: null }] })).toBe(null) // キーが無い
+    expect(readContainerStates({ nodes: [{ containersStats: { containers: [{ state: 'running' }] } }] })).toBe(null) // status が無い
+    expect(readContainerStates({ nodes: [{ containersStats: { containers: [{ state: 1, status: 'x' }] } }] })).toBe(null)
+    expect(readContainerStates({ nodes: [{ containersStats: { containers: [null] } }] })).toBe(null)
+  })
+
+  it('★ 値は原本のまま返す（大文字小文字・知らない値も、そのまま）', () => {
+    expect(readContainerStates({ nodes: [{ containersStats: { containers: [{ state: 'Running', status: 'S' }, { state: 'zombie', status: '' }] } }] })).toEqual([
+      { state: 'Running', status: 'S' }, { state: 'zombie', status: '' },
+    ])
+  })
+})
+
+describe('isContainerStopped / countRunningContainers: 「止まっている」と言い切れるのは exited・dead だけ。知らない値は動いている側（R6-2）', () => {
+  it('★★★ 原本が挙げる7つの state のうち、止まっているのは exited・dead だけ', () => {
+    const stopped: Record<string, boolean> = {
+      created: false, running: false, restarting: false, removing: false, paused: false, exited: true, dead: true,
+    }
+    for (const [state, expected] of Object.entries(stopped)) expect(isContainerStopped(state), state).toBe(expected)
+  })
+
+  it('★★ 原本に無い値・空文字・大文字小文字違い: 知らない値は「動いている」側。exited／dead は大文字・前後の空白があっても止まっている', () => {
+    for (const state of ['zombie', '', 'Up', 'unknown', 'stopped', 'terminated', 'exit']) expect(isContainerStopped(state), JSON.stringify(state)).toBe(false)
+    for (const state of ['EXITED', 'Dead', ' exited ']) expect(isContainerStopped(state), JSON.stringify(state)).toBe(true)
+  })
+
+  it('★★ countRunningContainers: 止まっていないコンテナの数。空は 0。exited・dead だけなら 0', () => {
+    expect(countRunningContainers([])).toBe(0)
+    expect(countRunningContainers([{ state: 'exited', status: 'x' }, { state: 'dead', status: 'y' }])).toBe(0)
+    expect(countRunningContainers([{ state: 'exited', status: 'x' }, { state: 'running', status: 'y' }])).toBe(1)
+    expect(countRunningContainers([{ state: 'running', status: '' }, { state: 'paused', status: '' }, { state: 'zombie', status: '' }])).toBe(3)
+    // 原本の example（running が 1 件）
+    expect(countRunningContainers(readContainerStates(ORIGINAL_EXAMPLE) ?? [])).toBe(1)
+  })
+})
+
+// 2026-10-08 検分の再指摘: 削除前のコンテナの停止待ちは、最初の確認も待ちの中も readRunningContainerCount の1つで「動いている数」を読む。
+// null（読めない）は 0 ではない——使う側は null を「分からない → 待ちを理由に止めない（DELETE へ進み、400 の待ち直しに任せる）」と扱う。
+describe('readRunningContainerCount: 動いているコンテナの数。読めなければ null（0 とは別）', () => {
+  it('★★★ 原本の example（running が 1 件）は 1。原本の形で 0 件は 0（null ではない）', () => {
+    expect(readRunningContainerCount(ORIGINAL_EXAMPLE)).toBe(1)
+    expect(readRunningContainerCount({ nodes: [] })).toBe(0)
+    expect(readRunningContainerCount({ nodes: [{ nodeID: 'n', containersStats: { collectedAtSec: 1, containers: [] }, desired: null }] })).toBe(0)
+  })
+
+  it('★★★ exited・dead だけなら 0。知らない値（zombie）は動いている側＝1', () => {
+    const node = (...states: string[]) => ({ nodeID: 'n', containersStats: { collectedAtSec: 1, containers: states.map(state => ({ state, status: 's' })) }, desired: null })
+    expect(readRunningContainerCount({ nodes: [node('exited', 'dead')] })).toBe(0)
+    expect(readRunningContainerCount({ nodes: [node('exited', 'zombie')] })).toBe(1)
+    expect(readRunningContainerCount({ nodes: [node('running'), node('paused', 'exited')] })).toBe(2)
+  })
+
+  it('★★★ 読めない形は null（0 に倒さない）: 全ノード null・null のノードのほかに読めたコンテナが無い・形が違う・null／undefined', () => {
+    expect(readRunningContainerCount({ nodes: [{ nodeID: 'n0', containersStats: null, desired: null }] })).toBeNull()
+    // null のノード ＋ コンテナの無いノード（読めたコンテナが 1 件も無い）→ 0 件とは言い切れない
+    expect(readRunningContainerCount({ nodes: [{ nodeID: 'n0', containersStats: null }, { nodeID: 'n1', containersStats: { collectedAtSec: 1, containers: [] } }] })).toBeNull()
+    expect(readRunningContainerCount({ foo: 'bar' })).toBeNull()
+    expect(readRunningContainerCount(null)).toBeNull()
+    expect(readRunningContainerCount(undefined)).toBeNull()
+  })
+
+  it('null のノードがあっても、ほかのノードで読めたコンテナはそのまま数える（null のノードは読めたぶんを打ち消さない）', () => {
+    const exited = { nodeID: 'n1', containersStats: { collectedAtSec: 1, containers: [{ state: 'exited', status: 'x' }] } }
+    const running = { nodeID: 'n1', containersStats: { collectedAtSec: 1, containers: [{ state: 'running', status: 'x' }] } }
+    expect(readRunningContainerCount({ nodes: [{ nodeID: 'n0', containersStats: null }, exited] })).toBe(0)
+    expect(readRunningContainerCount({ nodes: [{ nodeID: 'n0', containersStats: null }, running] })).toBe(1)
+  })
+
+  it('旧い配列の形も、読めるなら読む', () => {
+    expect(readRunningContainerCount({ nodes: [{ containersStats: [{ state: 'running', status: 'x' }] }] })).toBe(1)
+  })
+})
+
+// 2026-10-08 検分の再指摘（J）: 「下位の一覧が空か」は ID だけで見る（name の無い行を捨てない）。読めない形は null（空とは別）。
+describe('readLoadBalancerIdRows / readAsgIdRows: 一覧を ID と deleting だけで読む。読めなければ null（空配列とは別）', () => {
+  it('★★★ 読めて空は []（反映のずれとみてよい）。name の無い行も拾う', () => {
+    expect(readLoadBalancerIdRows({ loadBalancers: [] })).toEqual([])
+    expect(readAsgIdRows({ autoScalingGroups: [] })).toEqual([])
+    expect(readLoadBalancerIdRows({ loadBalancers: [{ loadBalancerID: 'l9' }] })).toEqual([{ loadBalancerID: 'l9', deleting: null }])
+    expect(readAsgIdRows({ autoScalingGroups: [{ autoScalingGroupID: 'a9' }] })).toEqual([{ asgID: 'a9', deleting: null }])
+  })
+
+  it('★★★ deleting は boolean のときだけその値。それ以外は null（分からない）', () => {
+    expect(readLoadBalancerIdRows({ loadBalancers: [{ loadBalancerID: 'l1', deleting: true }, { loadBalancerID: 'l2', deleting: false }, { loadBalancerID: 'l3', deleting: 'yes' }] }))
+      .toEqual([{ loadBalancerID: 'l1', deleting: true }, { loadBalancerID: 'l2', deleting: false }, { loadBalancerID: 'l3', deleting: null }])
+    expect(readAsgIdRows({ autoScalingGroups: [{ autoScalingGroupID: 'a1', deleting: true }] })).toEqual([{ asgID: 'a1', deleting: true }])
+  })
+
+  it.each([
+    ['キーが無い・別のキー', { items: [] }],
+    ['配列でない', { loadBalancers: 'x', autoScalingGroups: 'x' }],
+    ['null', null],
+    ['要素があるのに ID を 1 つも読めない', { loadBalancers: [{ foo: 1 }, null, 'x'], autoScalingGroups: [{ foo: 1 }] }],
+  ])('★★★ 読めない（%s）→ null（空配列にしない）', (_label, body) => {
+    expect(readLoadBalancerIdRows(body)).toBeNull()
+    expect(readAsgIdRows(body)).toBeNull()
+  })
+
+  it('一部の要素だけ ID が読めるなら、読めた行だけを返す（null にはしない）', () => {
+    expect(readLoadBalancerIdRows({ loadBalancers: [{ foo: 1 }, { loadBalancerID: 'l1' }] })).toEqual([{ loadBalancerID: 'l1', deleting: null }])
+  })
+
+  it('対照: 名前探し用の readLoadBalancerRows は name の無い行を捨てる（だから「空か」の判定には使えない）', async () => {
+    const { readLoadBalancerRows, readAsgRows } = await import('../src/shared/apprunDedicatedShapes')
+    expect(readLoadBalancerRows({ loadBalancers: [{ loadBalancerID: 'l9' }] })).toEqual([])
+    expect(readAsgRows({ autoScalingGroups: [{ autoScalingGroupID: 'a9' }] })).toEqual([])
+    expect(readLoadBalancerIDs({ loadBalancers: [{ loadBalancerID: 'l9' }] })).toEqual(['l9'])
   })
 })

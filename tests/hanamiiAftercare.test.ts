@@ -314,14 +314,16 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(r.url).toBeUndefined()
     expect(r.warnings).toHaveLength(1)
     expect(r.warnings[0]).toContain('確かめられませんでした')
-    expect(r.warnings[0]).toContain('古い鍵は、動いたと確かめられるまで消さずに残しています')
+    expect(r.warnings[0]).toContain('古いアクセスキーは、新しいバージョンの起動を確認できるまで削除せずに残しています')
+    // 0.6.21（作者の決定 2026-10-01）: 「鍵」は「アクセスキー」、「片づける」は「削除」、「動いた」は「起動」に揃えた。直す前の言い方は戻さない
+    expect(r.warnings[0]).not.toContain('古い鍵')
     // 消し損ねた鍵の識別子は返る（旧い画面の互換。使わない）
     expect(r.storagePermissionId).toBe('perm-new')
     // url は記録に書かない
     expect(readMeta().publish.targets.hanamii.url).toBeNull()
   })
 
-  it('新しい版がずっと BUILDING → 時間切れ: 「まだ動いていません（状態: BUILDING）」と載せて消さない', async () => {
+  it('新しいバージョンがずっと BUILDING → 時間切れ: 「まだ起動していません（状態: BUILDING）」と載せて消さない', async () => {
     setupProject()
     h.detailQueue = [detail(NEW, 'BUILDING')]
     const r = await republish()
@@ -330,12 +332,13 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(r.deployState).toBe('pending')
     expect(r.readyState).toBe('BUILDING')
     expect(h.deleted).toEqual([])
-    expect(r.warnings[0]).toContain('まだ動いていません')
+    expect(r.warnings[0]).toContain('まだ起動していません')
+    expect(r.warnings[0]).not.toContain('まだ動いていません') // 0.6.21: 直す前の言い方は戻さない
     expect(r.warnings[0]).toContain('状態: BUILDING')
     // 記録にも警告が載る（開き直した画面が読む）
     const res = (await getOps(projectDir)).last.result
     expect(res.ok).toBe(true)
-    expect(res.warnings[0]).toContain('まだ動いていません')
+    expect(res.warnings[0]).toContain('まだ起動していません')
     expect(res.extra.deployState).toBe('pending')
   })
 
@@ -350,7 +353,8 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(h.deleted, 'ERROR の版のために、動いている前の版の鍵を消した').toEqual([])
     expect(r.message).toContain('起動できませんでした')
     expect(r.message).toContain('BUILD_FAILED')
-    expect(r.message).toContain('前の版が動き続けている場合があります')
+    expect(r.message).toContain('前のバージョンが動き続けている場合があります')
+    expect(r.message).not.toContain('前の版') // 0.6.21: 直す前の言い方は戻さない
     expect(readMeta().publish.targets.hanamii.url).toBeNull()
 
     const res = (await getOps(projectDir)).last.result
@@ -359,12 +363,13 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(res.extra).toMatchObject({ deployState: 'error', errorCode: 'BUILD_FAILED' })
   })
 
-  it('初回の公開が ERROR のときは、「前の版が動き続けている」とは言わない（前の版が無い）', async () => {
+  it('初回の公開が ERROR のときは、「前のバージョンが動き続けている」とは言わない（前のバージョンが無い）', async () => {
     setupProject({ storage: false })
     h.detailQueue = [detail(NEW, 'ERROR', { errorCode: 'BUILD_FAILED' })]
     const r = await firstPublish()
     expect(r.deployState).toBe('error')
     expect(r.message).not.toContain('前の版')
+    expect(r.message).not.toContain('前のバージョン')
   })
 
   it('★ 状態を取れない（404・権限）: 待たずに打ち切り、消さず、理由を載せる', async () => {
@@ -377,7 +382,8 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(stateGets()).toBe(1)                // 何度聞いても同じ答えなので、繰り返さない
     expect(h.deleted).toEqual([])
     expect(r.warnings[0]).toContain('HTTP 404')
-    expect(r.warnings[0]).toContain('古い鍵は、動いたと確かめられるまで消さずに残しています')
+    expect(r.warnings[0]).toContain('古いアクセスキーは、新しいバージョンの起動を確認できるまで削除せずに残しています')
+    expect(r.warnings[0]).not.toContain('古い鍵') // 0.6.21: 直す前の言い方は戻さない
   })
 
   it('状態の取得が続けて失敗（5xx）: 5回で打ち切り、消さない', async () => {
@@ -417,10 +423,11 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(r.deployState).toBe('unknown')
     expect(stateGets()).toBe(0)
     expect(h.deleted).toEqual([])
-    expect(r.warnings[0]).toContain('今回の公開の番号')
+    expect(r.warnings[0]).toContain('今回の公開の ID（deployment ID）')
+    expect(r.warnings[0]).not.toContain('公開の番号') // 0.6.21: 「番号」（ID のこと）は「ID」に揃えた。直す前の言い方は戻さない
   })
 
-  it('latestDeployment に id が無い応答は、READY でも「新しい版が動いた」と確かめられない → 消さない', async () => {
+  it('latestDeployment に id が無い応答は、READY でも「新しいバージョンが起動した」と確かめられない → 消さない', async () => {
     setupProject()
     h.detailQueue = [detail(null, 'READY')]
     const r = await republish()
@@ -428,7 +435,7 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(h.deleted).toEqual([])
   })
 
-  it('★ 動いたと確かめたあと、古い鍵の片づけに失敗しても公開は成功のまま。鍵の識別子と警告が残る（次の公開で片づく）', async () => {
+  it('★ 起動を確かめたあと、古いアクセスキーの削除に失敗しても公開は成功のまま。アクセスキーの識別子と警告が残る（次の公開で削除される）', async () => {
     setupProject()
     h.detailQueue = [detail(NEW, 'READY')]
     h.listThrows = true
@@ -438,12 +445,13 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(r.deployState).toBe('ready')
     expect(r.url).toBe(URL_LIVE)
     expect(r.warnings).toHaveLength(1)
-    expect(r.warnings[0]).toContain('古い鍵を片づけられませんでした')
-    expect(r.warnings[0]).toContain('動いていることは確かめられています')
+    expect(r.warnings[0]).toContain('古いアクセスキーを削除できませんでした')
+    expect(r.warnings[0]).toContain('新しいバージョンの起動は確認できています')
+    expect(r.warnings[0]).not.toContain('古い鍵を片づけられませんでした') // 0.6.21: 直す前の言い方は戻さない
     expect(r.storagePermissionId).toBe('perm-new')
     // URL は記録に書かれている
     expect(readMeta().publish.targets.hanamii.url).toBe(URL_LIVE)
-    expect((await getOps(projectDir)).last.result.warnings[0]).toContain('古い鍵を片づけられませんでした')
+    expect((await getOps(projectDir)).last.result.warnings[0]).toContain('古いアクセスキーを削除できませんでした')
   })
 })
 

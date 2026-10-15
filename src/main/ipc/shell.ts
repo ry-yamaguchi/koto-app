@@ -36,7 +36,7 @@ export async function runProjectCommand(
   })
 }
 
-// ── ②試すの疎通確認（2026-09-01・実機の教訓）────────────────────────────
+// ── 【試す】の疎通確認（2026-09-01・実機の教訓）────────────────────────────
 // 従来は「コマンドを実行した」＝「サーバーが起動した」とみなし、固定1.5秒後に
 // 問答無用でブラウザを開いていた。依存が欠けて即クラッシュするケース（helmet 欠け等）では
 // 利用者に「接続が拒否されました」だけが見えてしまう。ここでは実際にポートへ接続できるか
@@ -89,6 +89,6 @@ export function registerShellHandlers(_deps: IpcDeps) {
 
   ipcMain.handle('proc:run', (_, args: { cwd: string; command: string }) => runProjectCommand(args.cwd, args.command))
 
-  // ②試すの疎通確認（ポートが開通したか）。中身は isPortOpen（electron 非依存）。
+  // 【試す】の疎通確認（ポートが開通したか）。中身は isPortOpen（electron 非依存）。
   ipcMain.handle('shell:portOpen', (_, port: number) => isPortOpen(port))
 }

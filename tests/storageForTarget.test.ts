@@ -51,7 +51,11 @@ describe('HANAMII への配線', () => {
 
   it('何が持っていかれるかを画面に出す（黙って鍵を配らない）', () => {
     const panel = read('src/renderer/components/HanamiiPanel.tsx')
-    expect(panel).toContain('データの保存を持っていく')
+    // 0.6.21: 画面の見出しは「💾 データの保存を持っていく」から「💾 このプロジェクトの保存場所を使う」に変わった。
+    // 旧い見出しの文字はコメント（HanamiiPanel.tsx の「── データの保存を持っていく…」）にだけ残るので、
+    // 画面側の形（<span …>見出し</span>）で見る（コメントの文字だけで通る空振りにしない）。
+    expect(panel).toContain('<span className="text-ink font-medium">💾 このプロジェクトの保存場所を使う</span>')
+    expect(panel).not.toContain('<span className="text-ink font-medium">💾 データの保存を持っていく</span>')
     // W-34（2026-09-27 決定・案1）: 「AppRun と同じデータを見る」を
     // 「このプロジェクトのほかの公開先と同じデータを使います」に言い換えた
     expect(panel).toContain('このプロジェクトのほかの公開先（AppRun など）')

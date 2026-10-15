@@ -119,15 +119,15 @@ export type DelegateModel = (typeof DELEGATE_MODELS)[number]
 export const DELEGATE_DEFAULT_MODEL: DelegateModel = DELEGATE_MODELS[0]
 
 /** aiEngineKey が未登録のとき（本来は buildIdeToolsServer がツール自体を登録しないため到達しない防御用）。 */
-export const DELEGATE_NO_KEY_MESSAGE = '🤝 実装の委譲を使うには さくらのAI Engine のAPIキーが必要です'
+export const DELEGATE_NO_KEY_MESSAGE = '🤝 実装を さくらのAI Engine に任せるには、AI Engine のAPIキーが必要です'
 
 /** delegate_implementation の実装委譲指針（C3）。aiEngineKey があるときだけ agent.ts が systemPrompt に追記する。 */
 export const DELEGATION_GUIDANCE =
   '実装作業（新規ファイルの作成、まとまったコード生成、複数ファイルへの機械的な変更、テスト作成、類似ページの量産）は、' +
-  '可能な限り delegate_implementation ツールで さくらのAI Engine に委譲すること' +
+  '可能な限り delegate_implementation ツールで さくらのAI Engine に任せること' +
   '（ユーザーの方針: コストの高いあなたの出力トークンを節約するため、実装の実働は極力AI Engineに任せる）。' +
-  '委譲するタスクは対象ファイル・要件・受け入れ条件を含む自己完結した仕様で渡す。' +
-  '委譲結果は必ず検証し（変更ファイルの確認、可能なら Bash で build/test 実行）、' +
+  '任せるタスクは対象ファイル・要件・受け入れ条件を含む自己完結した仕様で渡す。' +
+  '任せた結果は必ず検証し（変更ファイルの確認、可能なら Bash で build/test 実行）、' +
   '同じタスクで2回失敗したら自分で実装に切り替える。' +
   '設計判断・原因調査・数行の小さな修正は自分で行ってよい。'
 
@@ -273,7 +273,7 @@ export function summarizeDelegateResult(
   const list = files.map(f => `- ${f.path}（${f.bytes}バイト）`).join('\n')
   const notesBlock = notes.trim() ? `\n\n補足: ${notes.trim()}` : ''
   return (
-    `さくらのAI Engineへの委譲が完了しました。書き込んだファイル（${files.length}件）:\n${list}` +
+    `さくらのAI Engineに任せた実装が完了しました。書き込んだファイル（${files.length}件）:\n${list}` +
     `${notesBlock}\n\n消費トークン: 入力${usage.promptTokens} / 出力${usage.completionTokens}` +
     '\n\n変更内容を確認し、可能であれば build/test で検証してください。'
   )
@@ -314,7 +314,7 @@ export function summarizeDelegateStopped(
   notReached: string[],
   usage: DelegateUsageInfo
 ): string {
-  const parts: string[] = ['ユーザーが ⏹ で停止したため、委譲されたファイルの保存を中止しました。']
+  const parts: string[] = ['ユーザーが ⏹ で停止したため、さくらのAI Engineに任せた実装のファイル保存を中止しました。']
   if (written.length) {
     parts.push(`停止より前に保存済みのファイル（${written.length}件）:\n${written.map(f => `- ${f.path}（${f.bytes}バイト）`).join('\n')}`)
   }

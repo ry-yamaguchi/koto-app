@@ -176,7 +176,7 @@ export function checkUnusedFiles(projectDir: string): {
   // ── 取りこぼしうる件数（dataFilesReferenced）の数え方（2026-09-25 検分・指摘V8）──────
   // 前は `データらしき拡張子の総数 − 未使用に出たデータらしき件数` だった。つまり
   // **アプリが正規に読んでいる .json / .csv が1つでもあれば必ず 1 以上**になり、
-  // 古いデータが1件も無いプロジェクトでも③公開を開くたびに注意書きが出た。
+  // 古いデータが1件も無いプロジェクトでも【公開】を開くたびに注意書きが出た。
   // 毎回出る注意書きは読み飛ばされ、本当に取りこぼしたときに効かなくなる。
   //
   // 数えたいのは**それではない**。下の ⚠️（leftoverDataFilesFs）が言っている
@@ -333,7 +333,7 @@ export function moveFilesToFs(
     ? `未使用ファイルの整理（${MATERIALS_DIR}）`
     : (dest === 'publish' ? `ファイルを移動（公開されるもの（${PUBLISH_DIR}）へ）` : `ファイルを移動（${MATERIALS_DIR}へ）`)
 
-  // ① 検証（何も変えない）。保護パス等、名前を変えても解決しないものだけ弾く
+  // (1) 検証（何も変えない）。保護パス等、名前を変えても解決しないものだけ弾く
   // （1件でも弾ければ全体を中止する・中途半端に動かさない）。
   // 移動先の同名衝突は弾かず、nextFreeMaterialName で空いている名前を自動で採る。
   const targets: MoveTarget[] = []
@@ -362,7 +362,7 @@ export function moveFilesToFs(
     return { ok: false, moved: [], snapshotOk: false, message: e?.message ?? String(e) }
   }
 
-  // ② 🕘 履歴へ「移す直前」を残す。**移動元・移動先の両方**を同じスナップショットIDで退避する
+  // (2) 🕘 履歴へ「移す直前」を残す。**移動元・移動先の両方**を同じスナップショットIDで退避する
   // （元＝内容退避=overwrite、先＝まだ無かった印=create）。取れなくても移動は続ける
   // （履歴の欠落より作業の完了を優先する。migrate.ts と同じ方針）。
   const snapshotId = nextFreeSnapshotId(
@@ -379,15 +379,15 @@ export function moveFilesToFs(
     } catch { /* 続ける */ }
   }
 
-  // ③ 実際に動かす。途中で失敗したら、動かした分を逆順に戻す。
+  // (3) 実際に動かす。途中で失敗したら、動かした分を逆順に戻す。
   const moved: string[] = []
   const touchedDirs = new Set<string>()
   try {
     fs.mkdirSync(path.join(projectDir, destDirName), { recursive: true })
     for (const t of targets) {
       if (fs.existsSync(t.toFull)) {
-        // レース: ①の検証のあと・ここで実際に動かす直前に、誰かが同じ名前を作った
-        // （① の時点では空きだった）。ここでも拒否せず、その場でもう一度
+        // レース: (1)の検証のあと・ここで実際に動かす直前に、誰かが同じ名前を作った
+        // （検証の時点では空きだった）。ここでも拒否せず、その場でもう一度
         // nextFreeMaterialName で採り直す（半端な状態を作らない）。
         const base = path.basename(t.rel)
         const reserved = new Set(targets.map(x => x.destRel))

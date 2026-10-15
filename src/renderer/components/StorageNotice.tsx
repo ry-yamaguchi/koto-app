@@ -15,7 +15,7 @@ import type { FileWriteSite } from '../../shared/objectStorage'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
 import { getStorageMode } from './StorageSettings'
 
-// StorageNotice — ③公開で、公開先を選んだときに「データの保存」について知らせる。
+// StorageNotice — 【公開】で、公開先を選んだときに「データの保存」について知らせる。
 //
 // ── なぜ公開先の選択と一緒なのか（2026-08-13 Ryosuke 提案）──────────────
 // 永続データが要るかは**作っている間に決まる**ので、設定画面で申告させない。
@@ -56,25 +56,25 @@ function rememberLeftoverAnswered(projectDir: string | null): void {
 
 // ── koto-data の版についての1行を、画面が閉じても残す（2026-09-25 検分の指摘15）──────
 //
-// 「AIに書き直してもらう」は、押すと `onAskAi` で**③公開のモーダルごと閉じる**
+// 「AIに書き直してもらう」は、押すと `onAskAi` で**【公開】のモーダルごと閉じる**
 // （PublishModal が onClose を渡している）。そのため `setCheckLine(updateLine)` に入れた
 // 「🔄 差し替えました／ℹ️ そのままにしました」は、**描き直される前に画面が消え**、
 // state はモーダルの作り直しで空に戻る——利用者は一度も読めない。
 // 「Koto は触っていません」と伝える唯一の口が塞がっていると、
 // 「直したのに直っていない」が原因の分からない形で残る。
 //
-// そこでプロジェクトごとに覚えて、**次に③公開を開いたときに出す**。
+// そこでプロジェクトごとに覚えて、**次に【公開】を開いたときに出す**。
 // 覚えられなくても動きは同じ（その回に出ないだけ）なので、読み書きは失敗しても黙って続ける。
 //
 // ── ⚠️ 覚えた1行には「いつの話か」を必ず付ける（2026-09-25 検分の指摘17）──────────
 // この1行は過去形の記録に見えて、末尾は「入れ替えてよいか分からないときは、Koto に
 // 相談してください」という**いま何をすべきかの指示**である。ところが koto-data を
-// 差し替えるのは③公開の画面だけではない——⑤公開の途中で main も差し替える
+// 差し替えるのは【公開】の画面だけではない——公開の途中で main も差し替える
 // （src/main/ipc/apprunDedicated.ts・src/main/ipc/vercel.ts）。時点も期限も持たずに
 // 覚えたままだと、**もう当てはまらないことを画面が断定し続ける**。
 //
-// そこで ①覚えるときに時点も一緒に持ち ②出すときに「いつ調べた話か」を添え
-// ③古くなったら黙る（DATA_LAYER_LINE_MAX_AGE_MS）。あわせて ensureLayer を呼ぶ経路は
+// そこで (1)覚えるときに時点も一緒に持ち (2)出すときに「いつ調べた話か」を添え
+// (3)古くなったら黙る（DATA_LAYER_LINE_MAX_AGE_MS）。あわせて ensureLayer を呼ぶ経路は
 // **通るたびに上書きする**（rememberLayerLine）ので、その場で分かった分は必ず新しくなる。
 
 /** 「koto-data を差し替えた／触れなかった」の1行を覚えておくキー（プロジェクトごと）。 */
@@ -133,7 +133,7 @@ export function dataLayerNoteText(note: DataLayerNote | null | undefined): strin
   if (!note || typeof note.line !== 'string' || note.line.length === 0) return ''
   if (!Number.isFinite(note.at)) return ''
   return `${note.line}（${dataLayerNoteWhen(note.at)} に調べたときの記録です。`
-    + 'そのあとに公開すると、Koto が新しい版へ差し替えることがあります。）'
+    + 'そのあとに公開すると、Koto が新しいバージョンへ差し替えることがあります。）'
 }
 
 /** 覚えてある1行を、そのまま画面に出せる形で読む（時点つき。無ければ空文字）。 */
@@ -157,7 +157,7 @@ export function rememberDataLayerLine(projectDir: string | null, line: string, a
  * main は目印（.koto-keep）を置けなかったときに `markerNote` を返していたのに、
  * **画面がそれを一度も読んでいなかった**。目印が無いと、用意しただけでまだ何も
  * 保存していないプロジェクトはバケットの一覧に現れず、同じ保存場所を共有する別の
- * プロジェクトを⑥で破棄したときに `teardownPlanFor` が「ほかに使っている人はいない」と
+ * プロジェクトを手順6で破棄したときに `teardownPlanFor` が「ほかに使っている人はいない」と
  * 判断して**バケットごと消す**。「✅ 用意しました」だけ出して警告を捨てる形は、
  * 事故のあとに手がかりを1つも残さない。**落とさないことをテストで固定できる形**にする。
  */
@@ -195,7 +195,7 @@ type DataLayerResult = Awaited<ReturnType<typeof window.electronAPI.storage.ensu
  * 置き替える唯一の自動経路**でもあり、`replaced` / `needsUpdate` を返す。呼ぶのは
  * 「AIに書き直してもらう」と「一緒に移してもらう」の2か所なのに、覚えて見せていたのは
  * 書き直しの側だけだった。「一緒に移してもらう」を押した人には、Koto が差し替えたことも・
- * 触れなかったことも**一度も伝わらなかった**（しかも直後の `onAskAi?.()` で③公開ごと
+ * 触れなかったことも**一度も伝わらなかった**（しかも直後の `onAskAi?.()` で【公開】ごと
  * 閉じるので、画面の state に入れるだけでは読まれる前に消える）。
  *
  * **通るたびに上書きする。** 書き直しで「そのままにしました」を覚えたあと、移すほうで
@@ -213,7 +213,7 @@ export function rememberLayerLine(projectDir: string | null, layer: DataLayerRes
  * **枠が変わっても消してはいけない行**（2026-09-25 検分の指摘36）。
  *
  * ⚠️ 目印を置けなかった警告は**お金と破棄に関わる**（目印が無いと、同じ保存場所を
- * 共有するほかのプロジェクトを⑥で破棄したときに巻き込まれうる）。ところが出していたのは
+ * 共有するほかのプロジェクトを手順6で破棄したときに巻き込まれうる）。ところが出していたのは
  * `will-lose-data` / `declared` の枠だけで、「🔎 書き直せたか確かめる」を押して need が
  * none や target-provides に転ぶと、**枠ごと黄色い⚠️が消えていた**。
  * koto-data の1行・確かめた結果も同じ扱いにすべきものなので、**3つの枠が同じものを
@@ -262,7 +262,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
   const [markerNote, setMarkerNote] = useState('')
   /**
    * koto-data を差し替えた／触れなかったの1行。**画面を閉じても残す**（覚えてある分を出す）。
-   * 初期値をここで読むので、③公開を開き直した最初の描画から出る。
+   * 初期値をここで読むので、【公開】を開き直した最初の描画から出る。
    */
   const [dataLayerLine, setDataLayerLine] = useState(() => readDataLayerLine(projectDir))
   /** いまある保存場所の名前。**すでにあるものを選べば費用は増えない。** */
@@ -274,8 +274,8 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
    *
    * ── なぜ「🔎 を押したとき」だけではいけないか（2026-09-24 検分）─────────────
    * 書き直しが成功すると `storageNeedFor` は 'declared' を返す（warn が下りる）。
-   * すると 🔎 ボタンごと消え、③公開のモーダルは閉じるたびに作り直されて状態も捨てる。
-   * つまり「AI に書き直してもらう → モーダルが閉じる → AI が直す → ③公開を開き直す」
+   * すると 🔎 ボタンごと消え、【公開】のモーダルは閉じるたびに作り直されて状態も捨てる。
+   * つまり「AI に書き直してもらう → モーダルが閉じる → AI が直す → 【公開】を開き直す」
    * という**いちばん自然な流れ**では、問いが一度も出なかった。**開いた時点でも探す。**
    *
    * 出す・出さないの判断は純関数（shouldLookForLeftoverData）に任せる（掟10）。
@@ -338,7 +338,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
       // 判断は純関数1本（開いたときと「確かめる」で同じ道を通す・掟10）
       setNeed(storageNeedForScan(scan, target))
       // **開き直しただけでも、書き直し済みなら問いを復元する。**
-      // ここが無いと、書き直したあとに ③公開 を開き直した人には二度と聞かれない
+      // ここが無いと、書き直したあとに 【公開】を開き直した人には二度と聞かれない
       const result = {
         usesDataLayer: scan.usesDataLayer,
         writesFiles: scan.writesFiles,
@@ -370,7 +370,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
       if (!r.ok || !r.placement) { setError(lines.error); return }
       setPlacement(r.placement)
       setConfirming(false)
-      // 同じ③公開の中にある公開パネルへ知らせる。**あちらは画面を開いた時点の
+      // 同じ【公開】の中にある公開パネルへ知らせる。**あちらは画面を開いた時点の
       // 写しで動いている**ので、放っておくと費用の表示も破棄の案内も古いまま
       window.dispatchEvent(new CustomEvent('sakura:storage-prepared'))
       // 文面は純関数に任せる。**ファイル名を画面に書き写さない**

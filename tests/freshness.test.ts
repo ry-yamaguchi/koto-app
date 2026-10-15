@@ -239,7 +239,8 @@ describe('鮮度が画面に届いている', () => {
       expect(modal).toContain(`'${reason}'`)
     }
     expect(modal).toContain('出典URLが記録されていない')
-    expect(modal).toContain('元のページに届きませんでした')
+    expect(modal).toContain('元のページを取得できませんでした')
+    expect(modal).not.toContain('元のページに届きませんでした') // 0.6.21: 直す前の言い方は戻さない
     // 控えが無いときは「変わった」と言わず、そう言う
     expect(modal).toContain('更新の有無は分かりません')
   })

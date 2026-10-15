@@ -12,6 +12,8 @@ import { applyLoginPath, describeLoginPathResult } from './loginPath'
 import { sendToWindow } from './windowSend'
 import { initUpdater } from './updater'
 import { scheduleBrowserCacheTrim } from './browserCacheLimit'
+import { listRunningOps } from './projectOps'
+import { createQuitGuard, createQuitAsk } from './quitGuard'
 
 const APP_NAME = 'Koto'
 const SAKURA_AI_URL = 'https://ai.sakura.ad.jp/'
@@ -34,6 +36,24 @@ let closeBlockingLabel = ''
 // 「中断されます」が実態と合わない——空文字（未指定）なら従来文言のまま。
 let closeBlockingDetail = ''
 let closeBlockingConfirm = ''
+
+// ── 終了の歯止め（2026-10-10・rc.1 の実機で、開き直したあとの ⌘Q が警告なしに終了し、削除が途中で止まった）──────
+// 下の 'close' の (1) は、画面が win:busy で登録した印（closeBlockingBusy）しか見ない。その印は「ウィンドウを閉じる」で外れ、
+// 開き直したウィンドウでは、その処理を映す画面を開くまで登録されず、ウィンドウが無いときの ⌘Q は 'close' が起きない——**main の中では処理が走っている
+// （projectOps の記録）のに、聞かずに終了できた。** そこで app の 'before-quit'（⌘Q・Dock・メニューの「終了」のすべてが通る）で、
+// 画面の登録ではなく main の記録（listRunningOps）を直接読んで聞く。判断と流れは quitGuard.ts（electron に触れない）。
+// 「終了する」を選んだあとは、'close' の (1)（処理中の警告）だけ飛ばす——同じことを二重に聞かない。
+// **forceQuit は流用しない**: 立てると 'close' の (2)（未保存の変更の確認）まで飛ばしてしまう。(2) は今までどおり出す。
+const quitGuard = createQuitGuard({
+  listRunning: listRunningOps,
+  // ダイアログの設定と、押されたボタンの番号の扱いは quitGuard.ts（偽のダイアログでテスト済み）。ここは electron の dialog につなぐだけ。
+  // ウィンドウがあればそれを親にする（無ければ親なし。Dock に残っているだけでも出る）
+  ask: createQuitAsk<BrowserWindow>({
+    getParent: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+    showMessageBox: (opts, parent) => (parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts)),
+  }),
+  quit: () => app.quit(),
+})
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -62,7 +82,8 @@ function createWindow() {
   // BrowserWindow が残り、`mainWindow?.webContents` の `?.` をすり抜けて
   // 「Object has been destroyed」で main プロセスごと落ちる（2026-08-09 実機で発生）。
   // macOS はウィンドウを閉じてもアプリが常駐するため、この状態が普通に起きる。
-  mainWindow.on('closed', () => { mainWindow = null })
+  // 終了の歯止めの「終了する」の印も戻す（ウィンドウが閉じただけで Koto が終了しなかったとき、次の ⌘Q で聞かずに終了しないように）
+  mainWindow.on('closed', () => { mainWindow = null; quitGuard.reset() })
 
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173')
@@ -92,9 +113,9 @@ function createWindow() {
   // WebView の作成を禁止
   wc.on('will-attach-webview', (e) => e.preventDefault())
 
-  // 終了時の確認。① 実行中なら最優先で確認（中断されることを明示）→ ② 未保存の変更（既存ロジック）。
+  // 終了時の確認。(1) 実行中なら最優先で確認（中断されることを明示）→ (2) 未保存の変更（既存ロジック）。
   //
-  // ── B'-3d-3: ①が見るのは closeBlockingBusy だけ（isBusy 全体ではない）─────────────
+  // ── B'-3d-3: (1)が見るのは closeBlockingBusy だけ（isBusy 全体ではない）─────────────
   // AI応答は main でターンが完走するようになり、窓を閉じても中断されない（activity.ts の
   // blocksClose コメント参照）。isBusy（自動更新の再起動ゲート用・AI応答も含む）をそのまま
   // ここで見ると、「実際には中断されないのに中断すると警告する」誤りになるため、
@@ -102,14 +123,21 @@ function createWindow() {
   mainWindow.on('close', async (e) => {
     if (forceQuit) return
 
-    // ① 実行中なら最優先で確認する（公開処理・VPS操作・プロジェクト作成の途中で閉じると中断される）
-    if (closeBlockingBusy) {
+    // (1) 実行中なら最優先で確認する（公開処理・VPS操作・プロジェクト作成の途中で閉じると中断される）。
+    // ただし before-quit で「終了する」を選んだあとは聞かない（同じことを二重に聞かない）。
+    if (closeBlockingBusy && !quitGuard.isQuitConfirmed()) {
       e.preventDefault()
       // 公開処理は文言差し替え（roadmap #14）。closeBlockingDetail/closeBlockingConfirm が
       // 空（未指定）のときだけ、従来どおり「中断されます」の一律文言にフォールバックする。
+      // フォールバックのボタン名も、押したときの実際の動きどおりにする（2026-10-08 検分 H の双子）: 押すと**ウィンドウが閉じる**
+      // だけで、Koto 自体は終了しない（macOS。下の window-all-closed）。この経路（closeWarning を渡さない処理＝新規プロジェクト作成・
+      // 公開済みの取り込み・VPS）は画面側が処理を持っているので、ウィンドウを閉じると処理は実際に中断される——「処理は続きます」ではなく、
+      // 「中断してウィンドウを閉じる」と言う。以前の「中断して終了」は、アプリが終了するように読めた。
+      // （「処理は続きます」〔activity.ts の PUBLISH_CLOSE_CONFIRM_LABEL〕が正しいのは macOS だけ: darwin 以外は window-all-closed で
+      // app.quit() するので処理も止まる。配布は mac だけ〔electron-builder.config.js〕なので今は問題ない。）
       const { response } = await dialog.showMessageBox(mainWindow!, {
         type: 'warning',
-        buttons: [closeBlockingConfirm || '中断して終了', 'キャンセル'],
+        buttons: [closeBlockingConfirm || '中断してウィンドウを閉じる', 'キャンセル'],
         defaultId: 1,
         cancelId: 1,
         message: '処理を実行中です',
@@ -122,9 +150,12 @@ function createWindow() {
       return
     }
 
-    // ② 未保存の変更があれば確認ダイアログを出す
+    // (2) 未保存の変更があれば確認ダイアログを出す
     if (!hasUnsavedChanges) return
     e.preventDefault()
+    // ここで進行中の終了は取り消された。「終了する」の印は、どの答えでもここで戻す（次の ⌘Q でまた聞く）。
+    // 「保存して終了」で保存に失敗するとウィンドウは開いたままになる——印が残っていると、あとの ⌘Q が聞かずに通り抜ける。
+    quitGuard.reset()
     const { response } = await dialog.showMessageBox(mainWindow!, {
       type: 'warning',
       buttons: ['保存して終了', '保存せずに終了', 'キャンセル'],
@@ -140,7 +171,7 @@ function createWindow() {
       forceQuit = true
       mainWindow!.close()
     }
-    // response === 2（キャンセル）は何もしない
+    // response === 2（キャンセル）: 閉じない
   })
 }
 
@@ -458,6 +489,8 @@ app.whenReady().then(() => {
   })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+// 終了の前に、走っている処理があれば聞く（上の quitGuard。ウィンドウの有無・画面の登録に関係なく main の記録を見る）
+app.on('before-quit', (e) => quitGuard.onBeforeQuit(e))
 // Dock やアイコンのクリックで飛ぶ。**準備前にも飛ぶ**ので、そのまま窓を作ると
 // `Cannot create BrowserWindow before app is ready` で落ちる（2026-08-19 実機）。
 // 二重起動で終了しようとしている側でも飛ぶため、鍵を持っていないときも作らない。

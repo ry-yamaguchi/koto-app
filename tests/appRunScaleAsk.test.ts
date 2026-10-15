@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // 委譲仕様: 起動のしかたが、さくら側と Koto の設定で食い違ったら、黙って上書きせず
-// どちらにするか選んでもらう（Ryosuke さん決定・案②・2026-09-10）。
+// どちらにするか選んでもらう（Ryosuke さん決定・案2・2026-09-10）。
 //
 // React を実レンダリングするテストインフラが無いため、apprunDedicatedWiring.test.ts /
 // appRunScaleChoice.test.ts と同じ「ソーステキストを固定する」流儀で確かめる。
@@ -47,17 +47,20 @@ describe('AppRunPanel.tsx: 選択カード（scaleAsk）', () => {
   const end = panel.indexOf('\n  // region（ゾーン）は表示専用', at)
   const block = panel.slice(at, end)
 
-  it('文言: 起動のしかたが違います。さくら側/Kotoの設定を scaleLabel で出す', () => {
-    expect(block).toContain('起動のしかたが違います。さくら側:『{scaleLabel(scaleAsk.actual)}』／Koto の設定:『{scaleLabel(scaleAsk.recorded)}』')
+  it('文言: 最小スケールの設定が違います。さくら側/Kotoの設定を scaleLabel で出す', () => {
+    expect(block).toContain('最小スケールの設定が違います。さくら側:『{scaleLabel(scaleAsk.actual)}』／Koto の設定:『{scaleLabel(scaleAsk.recorded)}』')
+    expect(block).not.toContain('起動のしかた') // 0.6.21: 直す前の言い方は戻さない
   })
 
-  it('① Koto の設定で公開する → scaleDecision:\'koto\' で doApply を呼び直す', () => {
-    expect(block).toContain('① Koto の設定で公開する')
+  it('(1) Koto の設定で公開する → scaleDecision:\'koto\' で doApply を呼び直す', () => {
+    expect(block).toContain('(1) Koto の設定で公開する')
+    expect(block, '旧い丸数字のボタン名が戻っている').not.toContain('① Koto の設定で公開する')
     expect(block).toContain("onClick={() => doApply(nextApplyOpts({ confirmed: scaleAsk.confirmed }, 'koto'))}")
   })
 
-  it('② さくら側の設定を Koto に取り込んで公開する → scaleDecision:\'sakura\' で doApply を呼び直す', () => {
-    expect(block).toContain('② さくら側の設定を Koto に取り込んで公開する')
+  it('(2) さくら側の設定を Koto に取り込んで公開する → scaleDecision:\'sakura\' で doApply を呼び直す', () => {
+    expect(block).toContain('(2) さくら側の設定を Koto に取り込んで公開する')
+    expect(block, '旧い丸数字のボタン名が戻っている').not.toContain('② さくら側の設定を Koto に取り込んで公開する')
     expect(block).toContain("onClick={() => doApply(nextApplyOpts({ confirmed: scaleAsk.confirmed }, 'sakura'))}")
   })
 

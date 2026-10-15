@@ -6,7 +6,7 @@
 //
 // ── なぜ自動で置くのか（2026-08-13）──────────────────────────────────
 // AI には「データの保存には koto-data を使う」と伝えてある（aiContext.ts の
-// DATA_RULE）。だが**ファイルが無ければ import が失敗し、「② 試す」で落ちる**。
+// DATA_RULE）。だが**ファイルが無ければ import が失敗し、「試す」で落ちる**。
 // 非エンジニアにとって「試すと壊れる」は致命的なので、**参照された時点で置く**。
 //
 // ── 上書きの決まり（重要・2026-09-24 に改めた）────────────────────────
@@ -61,7 +61,7 @@ const PACKAGE_JSON_MAX_LEVELS = 8
  * 公開の根（`public/`）に package.json が無く、プロジェクト直下に
  * `"type": "module"` があるプロジェクトでは、根だけを見ると require のアプリと
  * 誤り、`koto-data.cjs` を置いて `require` を勧めてしまう。ところが
- * `② 試す` は `public/` の中で `node server.js` を走らせるので、Node は直下の
+ * `試す` は `public/` の中で `node server.js` を走らせるので、Node は直下の
  * package.json を見て ESM として扱い、
  * `ReferenceError: require is not defined in ES module scope` で落ちる。
  *
@@ -91,8 +91,8 @@ function packageJsonChain(fromDir: string, stopAt?: string): (string | null)[] {
  * このプロジェクトが import と require のどちらを使う形か。
  *
  * **判定そのものは純関数（`moduleKindForDataLayer`）に集めてある**（掟10）。
- * ここは**材料を探して読むだけ**: ①読み込む側のファイル（拡張子が決め手になる）
- * ②近い順の package.json。
+ * ここは**材料を探して読むだけ**: (1)読み込む側のファイル（拡張子が決め手になる）
+ * (2)近い順の package.json。
  *
  * @param publishRootDir 公開の根（`public/` があればその中）
  * @param opts.projectDir プロジェクト直下。渡すと、根に package.json が無いとき
@@ -325,7 +325,7 @@ export function dataLayerPlacement(existing: string | null, template: string): D
  * に変える。自分でファイルに書き込んでいるアプリは、書き直し先がこれである。
  *
  * **メモリだけに持つアプリ（keepsInMemory）も「これから要る」側に数える**（2026-10-01）。
- * ③公開の「AIに書き直してもらう」は、ここが `ready` を返さないと依頼文を送らない
+ * 【公開】の「AIに書き直してもらう」は、ここが `ready` を返さないと依頼文を送らない
  * （askAiRewritePlan）。数えないと、メモリの警告は出るのに、直す導線のボタンだけが
  * 「保存の部品を用意できませんでした」で必ず失敗する。
  *

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
 
-// ── 共用型 AppRun: 閉じて開き直しても、進み具合と結果が続きから見える（2026-09-29・作者の決定 ②）──────────
+// ── 共用型 AppRun: 閉じて開き直しても、進み具合と結果が続きから見える（2026-09-29・作者の決定 (2)）──────────
 //
 // 公開・破棄の本体は main の1回の IPC で最後まで進み、記録も main が書く。だから**ダイアログを閉じても
 // 処理は止まらない**。失われていたのは画面の表示だけ——進み具合・結果・警告（「保存場所が残ったので月額が
@@ -178,7 +178,7 @@ const subs = new Set<(p: any) => void>()
 /** get を遅らせたいテスト用（null なら即答）。 */
 let getGate: { promise: Promise<void>; snapshotOverride?: () => unknown } | null = null
 
-/** 公開・破棄・片づけを「終わらせない」ための門（テストが開ける）。 */
+/** 公開・破棄・削除を「終わらせない」ための門（テストが開ける）。 */
 type Gate = { promise: Promise<void>; open: () => void }
 const newGate = (): Gate => { let open!: () => void; const promise = new Promise<void>(r => { open = r }); return { promise, open } }
 let applyGate: Gate | null = null
@@ -233,12 +233,12 @@ function installWindow() {
       }, { target: 'sakura-apprun', handler: 'cloud:teardown' })
       return r.busy ? { ok: false, message: mainLock.projectBusyMessage(r.running) } : r.value
     },
-    // 片づけ: 1回目（confirmed なし）は計画だけ、2回目（confirmed）は門で止めてから消したことにする
+    // 削除: 1回目（confirmed なし）は計画だけ、2回目（confirmed）は門で止めてから消したことにする
     cleanupImages: async (_dir: string, opts?: { confirmed?: boolean }) => {
       log.cloud.push(opts?.confirmed ? 'cleanup-confirmed' : 'cleanup-plan')
       if (!opts?.confirmed) return { ok: true, plan: { remove: ['v1', 'v2'], keep: ['v3'], untouched: [] }, keep: 5, currentTag: 'v3' }
       if (cleanupGate) await cleanupGate.promise
-      return { ok: true, message: '2件のイメージを片づけました。' }
+      return { ok: true, message: '2件のイメージを削除しました。' }
     },
   }
   const api: any = {
@@ -366,10 +366,10 @@ const PLAIN_DELETED = { ok: true, executed: ['アプリを削除'], keptBucketNa
 const PLAIN_DELETED_TEXT = '破棄が終わりました（テスト用）'
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ① 走っていれば、進み具合が出る
+// (1) 走っていれば、進み具合が出る
 // ═══════════════════════════════════════════════════════════════════════════
 describe('開き直したとき: 走っていれば、busy と進み具合が出る', () => {
-  it('★ 走っている公開の「いまやっていること」が出て、公開・破棄・片づけは押せない', async () => {
+  it('★ 走っている公開の「いまやっていること」が出て、公開・破棄・削除は押せない', async () => {
     mainStart(DIR, '公開', 'sakura-apprun', 'cloud:apply', '🚀 AppRun に反映しています…')
     const v = mountPanel()
     await settle()
@@ -378,7 +378,7 @@ describe('開き直したとき: 走っていれば、busy と進み具合が出
     // 押せない（同じプロジェクトの同時実行は main も断る。押させない）
     expect(v.button('🚀 公開する').props.disabled, '公開ボタンが押せてしまう').toBe(true)
     expect(v.button('破棄する（削除）').props.disabled, '破棄ボタンが押せてしまう').toBe(true)
-    expect(v.button('古いイメージを片づける').props.disabled, '片づけボタンが押せてしまう').toBe(true)
+    expect(v.button('古いイメージを削除する').props.disabled, '削除ボタンが押せてしまう').toBe(true)
   })
 
   it('★ 開いている間は、進み具合が知らせで置き換わる（購読を続ける）', async () => {
@@ -430,7 +430,7 @@ describe('開き直したとき: 走っていれば、busy と進み具合が出
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ② 終わっていれば、結果と警告が出る
+// (2) 終わっていれば、結果と警告が出る
 // ═══════════════════════════════════════════════════════════════════════════
 describe('開き直したとき: 終わっていれば、結果と警告が出る', () => {
   it('★★ 破棄で残ったもの（月額が続く）の警告を、見逃さず出す', async () => {
@@ -482,25 +482,26 @@ describe('開き直したとき: 終わっていれば、結果と警告が出�
     expect(t.indexOf('公開の結果'), '新しい結果が前の結果より後ろに出ている').toBeLessThan(t.indexOf('破棄の結果'))
   })
 
-  it('開き直した結果は、画面のいちばん上（⑥ より前）に出す — 下までスクロールしないと見逃す', async () => {
+  it('開き直した結果は、画面のいちばん上（手順6 より前）に出す — 下までスクロールしないと見逃す', async () => {
     mainRun(DIR, '削除', 'sakura-apprun', 'cloud:teardown', KEPT)
     const v = mountPanel()
     await settle()
     const t = v.text()
     expect(t.indexOf('破棄の結果')).toBeGreaterThan(-1)
-    expect(t.indexOf('② 公開の設定'), '目印の見出しが見つからない').toBeGreaterThan(-1)
-    expect(t.indexOf('破棄の結果'), '結果が ② より下に出ている').toBeLessThan(t.indexOf('② 公開の設定'))
+    expect(t.indexOf('手順2 公開の設定'), '目印の見出しが見つからない').toBeGreaterThan(-1)
+    expect(t.indexOf('破棄の結果'), '結果が 手順2 より下に出ている').toBeLessThan(t.indexOf('手順2 公開の設定'))
   })
 
-  it('★ 起動のしかたを選ぶ段階で止まった公開は、失敗と言わず、押し直す案内を出す（選ぶ画面は出さない）', async () => {
+  it('★ 最小スケールを選ぶ段階で止まった公開は、失敗と言わず、押し直す案内を出す（選ぶ画面は出さない）', async () => {
     mainRun(DIR, '公開', 'sakura-apprun', 'cloud:apply', {
       ok: false,
-      message: '起動のしかたが、さくら側と Koto の設定で違います。どちらで公開するか選んでください。',
+      message: '最小スケールの設定が、さくら側と Koto の設定で違います。どちらで公開するか選んでください。',
       needsScaleDecision: { appId: 'app-1', recorded: 0, actual: 1 },
     })
     const v = mountPanel()
     await settle()
-    expect(v.text()).toContain('起動のしかたを選ぶ段階で止まりました')
+    expect(v.text()).toContain('最小スケールを選ぶ段階で止まりました')
+    expect(v.text()).not.toContain('起動のしかた') // 0.6.21（作者の決定 2026-10-01）: 「起動のしかた」は「最小スケール」に揃えた。直す前の言い方は戻さない
     expect(v.text()).toContain('もう一度「公開する」を押してください')
     expect(v.text(), '失敗と言っている').not.toContain('失敗しました')
     // 選ぶ画面（確認を通らずに公開を呼び直す口）は開き直しでは出さない
@@ -523,7 +524,7 @@ describe('開き直したとき: 終わっていれば、結果と警告が出�
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ③ 見た（閉じる・次の操作）あとは出ない
+// (3) 見た（閉じる・次の操作）あとは出ない
 // ═══════════════════════════════════════════════════════════════════════════
 describe('見たら「見た」と伝え、そのあとは出ない', () => {
   it('★★ 結果を出している間は、まだ「見た」と伝えない（出しただけ・閉じるまでは残す）', async () => {
@@ -709,7 +710,7 @@ describe('★★★ 隠れているタブ（visible: false）では、出した�
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ④ ほかの公開先・ほかのプロジェクトのものは出さず、巻き込まない（掟11）
+// (4) ほかの公開先・ほかのプロジェクトのものは出さず、巻き込まない（掟11）
 // ═══════════════════════════════════════════════════════════════════════════
 describe('別の公開先・別のプロジェクト（掟11）', () => {
   it('★★ 別の公開先の操作が走っているとき、詳細は出さず1行だけ・押せない', async () => {
@@ -797,7 +798,7 @@ describe('別の公開先・別のプロジェクト（掟11）', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ④' 開いたまま、別のプロジェクトへ切り替わったとき（掟11）
+// (4)' 開いたまま、別のプロジェクトへ切り替わったとき（掟11）
 // ═══════════════════════════════════════════════════════════════════════════
 describe('プロジェクトの切り替え（掟11）', () => {
   it('★★ 前のプロジェクトの結果は、切り替えたあとの画面に残らない。前のプロジェクトの分は見たことになる（警告なしの結果）', async () => {
@@ -864,7 +865,7 @@ describe('プロジェクトの切り替え（掟11）', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ⑤ 読み込みの競合・堅さ
+// (5) 読み込みの競合・堅さ
 // ═══════════════════════════════════════════════════════════════════════════
 describe('読み込みの競合', () => {
   it('★★ 先に知らせが届いたら、遅れて届いた古い get の応答で上書きしない', async () => {
@@ -892,7 +893,7 @@ describe('読み込みの競合', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ⑥ この画面が動かした操作（live）— 二重に出さない・閉じても進む
+// (6) この画面が動かした操作（live）— 二重に出さない・閉じても進む
 // ═══════════════════════════════════════════════════════════════════════════
 describe('この画面が動かした操作', () => {
   it('★★ 返り値で出した結果を、開き直して読む結果として二重に出さない', async () => {
@@ -928,7 +929,7 @@ describe('この画面が動かした操作', () => {
     await settle()
     await first.click('公開する')
     await settle()
-    // 走っている（この画面が動かしている・従来どおり⑥に進み具合）
+    // 走っている（この画面が動かしている・従来どおり(6)に進み具合）
     expect(first.text()).toContain('AppRun に反映しています')
     // 閉じる（処理は止まらない）
     first.close()
@@ -1045,10 +1046,10 @@ describe('この画面が動かした操作', () => {
     expect(mainOps.getOps(DIR).last?.startedAt).toBe(startedAt)
   })
 
-  it('★★ 起動のしかたを聞かれて止まった公開は、選ぶ画面を出し、閉じて選び直したあとに「前の結果」として出し直さない', async () => {
+  it('★★ 最小スケールを聞かれて止まった公開は、選ぶ画面を出し、閉じて選び直したあとに「前の結果」として出し直さない', async () => {
     applyValue = {
       ok: false,
-      message: '起動のしかたが、さくら側と Koto の設定で違います。どちらで公開するか選んでください。',
+      message: '最小スケールの設定が、さくら側と Koto の設定で違います。どちらで公開するか選んでください。',
       needsScaleDecision: { appId: 'app-1', recorded: 0, actual: 1 },
     }
     const v = mountPanel()
@@ -1080,19 +1081,19 @@ describe('この画面が動かした操作', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ⑦ 古いイメージの片づけ（main の記録に載らない・画面のプロセス内で続きを持つ）
+// (7) 古いイメージの削除（main の記録に載らない・画面のプロセス内で続きを持つ）
 // ═══════════════════════════════════════════════════════════════════════════
-describe('古いイメージの片づけ', () => {
+describe('古いイメージの削除', () => {
   async function startCleanup(v: Mounted) {
-    await v.click('古いイメージを片づける') // 計画だけ（何も消さない）
+    await v.click('古いイメージを削除する') // 計画だけ（何も消さない）
     const go = RT.findAll(v.tree(), (n: any) => n.type === 'button' && RT.textOf(n).includes('理解した上で消す'))
-    expect(go.length, '片づけの確認画面が出ていない').toBe(1)
+    expect(go.length, '削除の確認画面が出ていない').toBe(1)
     expect(log.cloud).not.toContain('cleanup-confirmed')
     go[0].props.onClick()
     await settle()
   }
 
-  it('★★ 走っている間に閉じて開き直すと、片づけ中と出て、公開・破棄は押せない', async () => {
+  it('★★ 走っている間に閉じて開き直すと、削除中と出て、公開・破棄は押せない', async () => {
     cleanupGate = newGate()
     const first = mountPanel()
     await settle()
@@ -1102,18 +1103,20 @@ describe('古いイメージの片づけ', () => {
     await settle()
     const second = mountPanel()
     await settle()
-    expect(second.text()).toContain('古いイメージの片づけが進んでいます')
+    expect(second.text()).toContain('古いイメージの削除が進んでいます')
+    // 0.6.21（作者の決定 2026-10-01）: 「片づける」は「削除」に揃えた。直す前の言い方は戻さない
+    expect(second.text()).not.toContain('古いイメージの片づけ')
     expect(second.button('🚀 公開する').props.disabled, 'レジストリを触っている最中に公開できてしまう').toBe(true)
     expect(second.button('破棄する（削除）').props.disabled).toBe(true)
     cleanupGate.open()
     await settle()
-    expect(second.text()).toContain('古いイメージの片づけの結果')
-    expect(second.text()).toContain('2件のイメージを片づけました。')
-    expect(second.text()).not.toContain('片づけが進んでいます')
+    expect(second.text()).toContain('古いイメージの削除の結果')
+    expect(second.text()).toContain('2件のイメージを削除しました。')
+    expect(second.text()).not.toContain('削除が進んでいます')
     expect(second.button('🚀 公開する').props.disabled).toBe(false)
   })
 
-  it('★ 閉じている間に終わった片づけの結果は、開き直したとき出る（1回だけ）', async () => {
+  it('★ 閉じている間に終わった削除の結果は、開き直したとき出る（1回だけ）', async () => {
     cleanupGate = newGate()
     const first = mountPanel()
     await settle()
@@ -1124,12 +1127,12 @@ describe('古いイメージの片づけ', () => {
     await settle()
     const second = mountPanel()
     await settle()
-    expect(second.text()).toContain('古いイメージの片づけの結果')
-    expect(second.text()).toContain('2件のイメージを片づけました。')
+    expect(second.text()).toContain('古いイメージの削除の結果')
+    expect(second.text()).toContain('2件のイメージを削除しました。')
     second.close()
     const third = mountPanel()
     await settle()
-    expect(third.text(), '見たあとも同じ片づけの結果が出ている').not.toContain('2件のイメージを片づけました。')
+    expect(third.text(), '見たあとも同じ削除の結果が出ている').not.toContain('2件のイメージを削除しました。')
   })
 
   it('開いたままなら、返り値で出した結果を前の結果として出し直さない', async () => {
@@ -1140,12 +1143,12 @@ describe('古いイメージの片づけ', () => {
     cleanupGate.open()
     await settle()
     const t = v.text()
-    expect(t).toContain('2件のイメージを片づけました。')
-    expect(t.split('2件のイメージを片づけました。').length - 1).toBe(1)
-    expect(t).not.toContain('古いイメージの片づけの結果')
+    expect(t).toContain('2件のイメージを削除しました。')
+    expect(t.split('2件のイメージを削除しました。').length - 1).toBe(1)
+    expect(t).not.toContain('古いイメージの削除の結果')
   })
 
-  it('★ 別のプロジェクトの片づけ中は、こちらを止めない（掟11）', async () => {
+  it('★ 別のプロジェクトの削除中は、こちらを止めない（掟11）', async () => {
     cleanupGate = newGate()
     const a = mountPanel(OTHER)
     await settle()
@@ -1154,7 +1157,7 @@ describe('古いイメージの片づけ', () => {
     await settle()
     const b = mountPanel(DIR)
     await settle()
-    expect(b.text()).not.toContain('片づけが進んでいます')
+    expect(b.text()).not.toContain('削除が進んでいます')
     expect(b.button('🚀 公開する').props.disabled).toBe(false)
     cleanupGate.open()
     await settle()

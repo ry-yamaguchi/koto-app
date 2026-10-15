@@ -279,8 +279,26 @@ describe('HANAMII の破棄: 保存場所を消す前に、必ず一覧して確
 
     expect(result.ok).toBe(false)
     expect(result.appDeleted).toBe(true)
-    expect(result.message).toContain('保存場所は片づけていません')
+    expect(result.message).toContain('保存場所は削除していません')
+    expect(result.message).not.toContain('片づけていません') // 0.6.21（作者の決定 2026-10-01）: 「片づける」は「削除」に揃えた。直す前の言い方は戻さない
     expect(h.storageCalls).toEqual([])
+  })
+})
+
+// 2026-10-08 検分: JSON としては読めるが、スペックの検証に通らない env.json（確認画面の `storage:placement` は loadCloudSpec で読み、
+// 投げるので「保存場所の設定を読めない」と言う）。以前の破棄は readSpec（検証に通らないと null＝「使っていない」）で読んでいたため、
+// 保存場所に触れないまま成功を返していた。画面と main が同じ読み方（loadCloudSpec）なら、どちらも「読めない」と言う。
+describe('HANAMII の破棄: JSON としては読めるが検証に通らない env.json も「保存場所を使っていない」と読まない', () => {
+  it('★★★ {} や version の無いスペック → 保存場所には触れず、削除していないことを言う（成功にしない）', async () => {
+    for (const text of ['{}', JSON.stringify({ name: 'myapp' }), JSON.stringify({ version: 0 })]) {
+      setupProject()
+      fs.writeFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), text, 'utf-8')
+      const result = await run()
+      expect(result.ok, text).toBe(false)
+      expect(result.appDeleted, text).toBe(true)
+      expect(result.message, text).toContain('保存場所は削除していません')
+      expect(touched(), text).toEqual([])
+    }
   })
 })
 
@@ -450,14 +468,15 @@ describe('HANAMII の破棄: 保存場所の鍵', () => {
     expect(h.deletedPermissions).toEqual(['perm-1'])
   })
 
-  it('★ 鍵を消せなかったら黙らない（warnings として結果に出す）', async () => {
+  it('★ アクセスキーを消せなかったら黙らない（warnings として結果に出す）', async () => {
     setupProject()
     h.permissions = [{ id: 'perm-1', displayName: MINE }]
     h.revokeThrows = true
     const result = await run()
 
     expect(result.ok).toBe(true) // 保存場所そのものは片づいている
-    expect((result.executed ?? []).some((e: string) => e.includes('鍵を1件、無効にできませんでした'))).toBe(true)
+    expect((result.executed ?? []).some((e: string) => e.includes('アクセスキーを1件、無効にできませんでした'))).toBe(true)
+    expect((result.executed ?? []).some((e: string) => e.includes('鍵を1件'))).toBe(false) // 0.6.21: 直す前の言い方は戻さない
   })
 })
 

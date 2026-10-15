@@ -52,7 +52,7 @@ export async function waitForNewVersion(opts: {
   onProgress?: (label: string, detail: string) => void
 }): Promise<NewVersionOutcome> {
   if (!opts.deploymentId) {
-    return { kind: 'unknown', message: 'HANAMII の応答から、今回の公開の番号（deployment の id）を読み取れませんでした' }
+    return { kind: 'unknown', message: 'HANAMII の応答から、今回の公開の ID（deployment ID）を読み取れませんでした' }
   }
   const { intervalMs, maxPolls, sleep } = hanamiiWaitTuning
   const startedAt = Date.now()
@@ -84,7 +84,7 @@ export async function waitForNewVersion(opts: {
       }
     }
     const sec = Math.round((Date.now() - startedAt) / 1000)
-    opts.onProgress?.('⏳ HANAMII が新しい版を起動するのを待っています…', `状態: ${ourState ?? '確認中'}（${sec}秒経過）`)
+    opts.onProgress?.('⏳ HANAMII が新しいバージョンを起動するのを待っています…', `状態: ${ourState ?? '確認中'}（${sec}秒経過）`)
     if (i < maxPolls - 1) await sleep(intervalMs)
   }
   return { kind: 'pending', readyState: ourState, waitedSec: Math.round((Date.now() - startedAt) / 1000) }

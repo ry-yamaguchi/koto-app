@@ -1,5 +1,5 @@
 // AppRun 専有型の IPC（apprunDedicated:*）。
-// 段階①（下調べ画面。GET のみ）に加え、段階②「作る」＋④「破棄」を持つ。
+// 段階(1)（下調べ画面。GET のみ）に加え、段階(2)「作る」＋(4)「破棄」を持つ。
 // 掟4（方式B）: 認証情報は renderer から引数で受け取るだけで、main には保存しない
 // （src/main/cloud/apprunDedicated.ts と同じ方針）。
 import { ipcMain } from 'electron'
@@ -8,10 +8,10 @@ import { getZones } from '../cloud/zones'
 import { createClusterFlow, teardownFlow, shouldForgetPublishRecord, type ApprunDedicatedClusterSpec } from '../cloud/apprunDedicatedApply'
 import type { TeardownFlowResult } from '../cloud/apprunDedicatedApply'
 import { publishAppFlow } from '../cloud/apprunDedicatedAppApply'
-// D-5（2026-09-16）: ⑧「🔄 IP を取り直す」。上の import 行は tests/apprunDedicatedIpcWiring.test.ts が
+// D-5（2026-09-16）: 手順8「🔄 IP を取り直す」。上の import 行は tests/apprunDedicatedIpcWiring.test.ts が
 // 文字列で固定しているため、別行で足す（AppRunDedicatedPanel.tsx の runPublishApp と同じ理由）。
 import { refreshLbAddresses } from '../cloud/apprunDedicatedAppApply'
-// O-1（2026-09-17）: ⑧「🔎 公開先と https を確かめる」。⑧の verify（DNS を向ける前に走る）には
+// O-1（2026-09-17）: 手順8「🔎 公開先と https を確かめる」。手順8の verify（DNS を向ける前に走る）には
 // 足せないので、別の口にする（理由は cloud/dedicatedSiteCheck.ts 冒頭）。
 import { checkDedicatedSite } from '../cloud/dedicatedSiteCheck'
 import { prepareAppImage } from '../cloud/imagePublish'
@@ -21,6 +21,10 @@ import { fetchDedicatedTelemetryStatus, enableDedicatedTelemetry } from '../clou
 import { withProjectLock, projectBusyMessage } from '../projectLock'
 // 進捗の送り口は1つ（記録の更新と renderer への通知を兼ねる）。2026-09-29・projectOps.ts
 import { progressReporter } from '../projectOps'
+// 2026-10-07: どこにどれくらい時間がかかったかを残す。段の切り替わりの送り口（stageReporter）と、段の内部名（定義は
+// shared/stageTiming.ts の1か所）。上の import 行はテストが文字列で固定しているため、別行で足す。
+import { stageReporter } from '../projectOps'
+import { STAGE, UNMEASURED, type StageMark, type StageTimings } from '../../shared/stageTiming'
 import { readApprunDedicatedFs, markPendingFs, clearPendingFs, writePublishRecordFs } from '../publishMetaFs'
 import { readHasLetsEncryptEmail } from '../../shared/apprunDedicatedShapes'
 import { deriveApplicationName } from '../../shared/apprunDedicatedApp'
@@ -30,14 +34,19 @@ import { deriveApplicationName } from '../../shared/apprunDedicatedApp'
 // 環境変数の上限は別行で足す（refreshLbAddresses と同じ理由）。
 import { MAX_ENV_COUNT } from '../../shared/apprunDedicatedApp'
 import { issueStorageEnvFor, cleanUpOldKeysFor, revokeIssuedKey, type StorageEnvResult } from '../cloud/storageForTarget'
-// 2026-09-24（Ryosuke 決定「①は案2・一貫性が重要」）: ⑥の破棄で保存場所も片づける。
+// 2026-09-24（Ryosuke 決定「(1)は案2・一貫性が重要」）: 手順6の破棄で保存場所も片づける。
 // 手順と守りは共用型とまったく同じ1つ（cloud/storageTeardown.ts）を通る。ここでは新しい判断を書かない。
 // 記録の書き戻しは publishMetaFs の既存関数（上の import 行はテストが文字列で固定しているため別行で足す）。
 import { storagePlacementsOf, teardownStorageForProject, forgetDeletedBuckets } from '../cloud/storageForTarget'
 import { writeApprunDedicatedRecordFs } from '../publishMetaFs'
-// 2026-09-29: ⑥の後始末（公開記録を消す）を main へ移した（窓を閉じても最後まで済ませるため）。上の import 行は
+// 2026-09-29: 手順6の後始末（公開記録を消す）を main へ移した（窓を閉じても最後まで済ませるため）。上の import 行は
 // tests/apprunDedicatedIpcWiring.test.ts が文字列で固定しているため、別行で足す。
 import { forgetPublishTargetFs } from '../publishMetaFs'
+// 2026-10-08 検分: 公開記録（📡 の行）を消すかは「破棄の前に行があったか」で決める（applicationID ではなく）。上の import 行は
+// tests/apprunDedicatedIpcWiring.test.ts が文字列で固定しているため、別行で足す。
+import { hasPublishRecordFs } from '../publishMetaFs'
+// 2026-10-08 検分: 消すものが記録に無い（幽霊の行）なら、保存場所には触れない。判断は shared の1つ（画面の確認もこれを使う）。
+import { dedicatedTeardownHasWork } from '../../shared/teardownSupport'
 // 2026-09-23 検分: 片づけの門（応答を確かめられたか）・件数の事前確認・途中で止まったときの後始末。
 // **どれも新しい判定を書かず、既にある純関数を使う**（掟10「一元定義」）。
 import { dedicatedVerifySettled } from '../../shared/publishVerify'
@@ -54,6 +63,7 @@ import { isTelemetryKind, DEDICATED_VARIANTS } from '../../shared/appLog'
 import { ensureDataLayer } from '../dataLayer'
 import { resolvePublishRoot } from '../publishRootFs'
 import { dataLayerUpdateLine } from '../../shared/storageNoticeText'
+import { STORAGE_TEARDOWN_PROGRESS, storageTeardownDoneLine } from '../../shared/teardownSupport'
 import type { IpcDeps } from './types'
 
 // 請求（コスト）参照はアカウント単位（どのゾーン経由でも可）。共用型 cloud:testConnection と同じゾーン。
@@ -66,6 +76,21 @@ function isCreds(v: unknown): v is CloudCredentials {
 }
 
 const NO_KEY: ApprunDedicatedResult = { ok: false, message: 'クラウドのAPIキーが未登録です' }
+
+/**
+ * その場の結果（IPC の返り値）に、段ごとの所要時間を載せる（2026-10-07）。時間は鍵の中で測っているので、
+ * 結果を返す直前（鍵を放したあと）に足す。**記録（projectOps の結果の extra.stageTimings）と同じ値**——
+ * ダイアログを閉じて開き直したときは記録から、その場で終わったときはここから、同じ「かかった時間を見る」を出す（双子）。
+ * 段を渡さなかった・早く止まった（時間が無い）ときは、返り値をそのまま返す。
+ */
+function withStageTimings<T extends object>(value: T, stageTimings: StageTimings | undefined): T & { stageTimings?: StageTimings } {
+  return stageTimings ? { ...value, stageTimings } : value
+}
+
+/** このプロジェクトの記録にあるゾーン（段の所要時間を保存するとき、日付・版と一緒に残す。無ければ null）。 */
+function recordedZone(projectDir: string): string | null {
+  try { return readApprunDedicatedFs(projectDir).zone ?? null } catch { return null }
+}
 
 /**
  * 公開が途中で止まったときに、**いま発行したばかりの鍵だけ**を取り消す（2026-09-23 検分の指摘5・10）。
@@ -82,10 +107,10 @@ async function revokeJustIssuedKey(storage: StorageEnvResult): Promise<void> {
 }
 
 /**
- * ⑥「すべて削除する」の最後に、**保存場所も片づける**（2026-09-24 Ryosuke 決定「①は案2・
+ * 手順6「すべて削除する」の最後に、**保存場所も片づける**（2026-09-24 Ryosuke 決定「(1)は案2・
  * 一貫性が重要」＝共用型と同じにする）。
  *
- * ── なぜ⑥の最後なのか ────────────────────────────────────────────────
+ * ── なぜ手順6の最後なのか ────────────────────────────────────────────────
  * アプリ→LB→ASG→クラスタが消えてからにする。先に鍵とデータを消すと、**まだ動いている
  * アプリが 403 で落ちる**（2026-08-14 に共用型で実際に起きた形）。逆に、保存場所が
  * 片づかないことを理由に計算資源の削除を止めると、**月額の課金だけが残る**——だから
@@ -96,17 +121,20 @@ async function revokeJustIssuedKey(storage: StorageEnvResult): Promise<void> {
  * バケットのあと」は、すべて cloud/storageTeardown.ts の1つに集めてある。ここは
  * 「記録から鍵のIDを読んで渡し、結果を画面の言葉に直す」だけ。
  *
- * **📡 公開したもの一覧の『アプリだけ破棄』（teardownApp・appOnly）からは呼ばない。**
- * あちらはクラスタもデータもわざと残す操作で、利用者にもそう約束している。
+ * **📡 公開したもの一覧の「🗑 破棄」も、手順6と同じこの道（apprunDedicated:teardown）を通る**
+ * （2026-10-08 作者の決定: アプリだけを消す専用の口は廃止した）。だから、どちらの入口から押しても同じ。
  */
 async function teardownProjectStorage(
-  auth: CloudCredentials, projectDir: string, res: TeardownFlowResult, progress: (msg: string) => void,
+  auth: CloudCredentials, projectDir: string, res: TeardownFlowResult,
+  progress: (msg: string, extra?: { stage?: string }) => void,
+  onStage: (stage: string, mark?: StageMark) => void,
 ): Promise<TeardownFlowResult> {
   // ここへ来た時点で計算資源は消し切れている（呼び出し側が res.ok のときだけ呼ぶ）。
   // 以降どう転んでも、**アプリは消えた**という事実は落とさない（検分の指摘4・9・13）。
   const done: TeardownFlowResult = { ...res, appDeleted: true }
   // ── env.json が壊れていても、計算資源の削除結果を例外で捨てない（検分の指摘12・14・15）───
-  // storagePlacementsOf → readSpec は JSON.parse を素で呼ぶので、壊れた env.json では throw する。
+  // storagePlacementsOf → loadCloudSpec は、JSON として読めない env.json でも、読めてもスペックの検証に通らない env.json でも throw する
+  // （確認画面の storage:placement と同じ読み方・2026-10-08。検証に通らないものを「保存場所を使っていない」と読まない）。
   // IPC ハンドラにも withProjectLock にも catch が無いため、そのまま renderer まで飛び、画面は
   // 「⚠️ 削除できませんでした」＋空の executed に落とす——**全部消せているのに**。
   let placements: ReturnType<typeof storagePlacementsOf>
@@ -115,7 +143,9 @@ async function teardownProjectStorage(
   } catch (e: any) {
     return {
       ...done, ok: false,
-      message: `保存場所の設定を読めないため、保存場所は片づけていません: ${e?.message ?? String(e)}`,
+      // 双子の HANAMII（ipc/hanamii.ts）と同じ形にそろえる: 月額が続くことと、どこで確かめて消すか（2026-10-08 検分2巡目）
+      message: `保存場所の設定を読めないため、保存場所は削除していません（消すまで月額が続きます）: ${e?.message ?? String(e)}`
+        + '\nさくらのクラウドのコントロールパネル（オブジェクトストレージ）で、残っている保存場所を確かめて削除してください。',
     }
   }
   // 保存場所を使っていないプロジェクトでは、何も言わない・何も呼ばない。
@@ -128,37 +158,40 @@ async function teardownProjectStorage(
   }
   // 記録が無い（2026-09-23 より前に公開した）ときは null＝**鍵の無効化だけ飛ばして片づけは続ける**。
   const permissionId = readApprunDedicatedFs(projectDir).storagePermissionId ?? null
-  progress('🗄️ 保存場所を片づけています…')
+  // 保存場所の段（2026-10-07）: 文はこれまでどおり。段の内部名だけを添えて渡す。
+  progress(STORAGE_TEARDOWN_PROGRESS, { stage: STAGE.teardownStorage })
   let st: Awaited<ReturnType<typeof teardownStorageForProject>>
   try {
     // 鍵は記録の1件だけでなく、**この公開先の名前の鍵を全部**無効にする（検分の指摘6）。
-    // ⑥の時点でこのプロジェクトの専有型は全部消えている＝現役の鍵は存在しないので、
+    // 手順6の時点でこのプロジェクトの専有型は全部消えている＝現役の鍵は存在しないので、
     // storageKeys.ts の「現役が分からないときは消さない」規則とは矛盾しない。
     st = await teardownStorageForProject({ creds: auth, projectDir, permissionId, sweepKeysFor: 'apprun-dedicated' })
   } catch (e: any) {
-    return { ...done, ok: false, message: `保存場所を片づけられませんでした: ${e?.message ?? String(e)}` }
+    return { ...done, ok: false, message: `保存場所を削除できませんでした: ${e?.message ?? String(e)}` }
   }
   if (st.reason === 'none') return done
+  // 鍵の片づけなどで警告が出た（⚠️ の行になる）ときは、ふつうに片づいた回の測定ではない＝時間は結果に載せるが保存しない（2026-10-07 検分）。
+  if (st.warnings.length > 0) onStage(STAGE.teardownStorage, UNMEASURED)
   // バケットごとは消さなかった保存場所（残れば月額も続く）。executed の1行だけでは警告にならないので、事実として返す。
   const keptBuckets = st.done.filter(b => !b.deletedBucket).map(b => b.bucket)
   const kept: Pick<TeardownFlowResult, 'keptBucketName' | 'keptBucketNames'> =
     keptBuckets.length > 0 ? { keptBucketName: keptBuckets[0], keptBucketNames: keptBuckets } : {}
   const executed = [
     ...res.executed,
-    ...st.done.map(b => `保存場所『${b.bucket}』を片づけました — ${b.note}`),
+    ...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note)),
     ...st.warnings.map(w => `⚠️ ${w}`),
   ]
   // **バケットごと消したものは、env.json の記録からも外す**（検分の指摘3・8）。
-  // 残すと画面は「用意済み」のまま、次の⑧公開が**消えたバケット宛ての鍵**を渡して成功扱いになる。
+  // 残すと画面は「用意済み」のまま、次の手順8の公開が**消えたバケット宛ての鍵**を渡して成功扱いになる。
   const deletedBuckets = st.done.filter(b => b.deletedBucket).map(b => b.bucket)
   if (deletedBuckets.length > 0 && !forgetDeletedBuckets(projectDir, deletedBuckets)) {
     // 外せなかったら**黙らない**。記録が残ったままだと、画面は保存場所を「用意済み」として
-    // 出し続け、次の⑧公開が消えたバケット宛ての鍵を渡して「成功」してしまう。
-    executed.push('⚠️ 保存場所の記録（公開の設定）は残しています。次に公開する前に、③「保存場所を用意する」からやり直してください')
+    // 出し続け、次の手順8の公開が消えたバケット宛ての鍵を渡して「成功」してしまう。
+    executed.push('⚠️ 保存場所の記録（公開の設定）は残しています。次に公開する前に、【公開】の「保存場所を用意する」からやり直してください')
   }
   if (!st.ok) {
     // 計算資源は消えている（＝そのぶんの課金は止まった）が、保存場所は残った。**黙らない。**
-    // ① 残っているバケット名を一覧に出す（指摘5） ② 記録に印を残して⑥を押し直せるようにする（指摘1）。
+    // (1)残っているバケット名を一覧に出す（指摘5） (2)記録に印を残して手順6を押し直せるようにする（指摘1）。
     writeApprunDedicatedRecordFs(projectDir, { storageLeftoverBucket: st.remainingBucket })
     return {
       ...done, ok: false, executed, ...kept,
@@ -184,7 +217,7 @@ function isClusterSpec(v: unknown): v is ApprunDedicatedClusterSpec {
 }
 
 /**
- * ⑧「アプリを公開する」の入力（画面の入力欄そのまま・D-4）。preload が type import する。
+ * 手順8「アプリを公開する」の入力（画面の入力欄そのまま・D-4）。preload が type import する。
  * 値の範囲（cpu 100〜64000 等）はここでは見ない——publishAppFlow 内の validateAppSpec が最後の砦
  * （同じ検証を二重に書かない・掟10）。ここは「形」だけ。
  */
@@ -230,7 +263,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
   // 接続テスト（roadmap #35）＝共用型 cloud:testConnection と同じ「チェックリスト」の形に揃える。
   // (1) 専有型API 参照（制限・プラン。GET /limits） (2) コンテナレジストリ 一覧（GET） (3) 請求（コスト）参照。
   // どれも GET のみ（読み取り専用・何も作らない）。
-  // W-38（2026-09-27 決定・案2）: 専有型はすでに⑧でアプリを公開でき、公開にはレジストリの
+  // W-38（2026-09-27 決定・案2）: 専有型はすでに手順8でアプリを公開でき、公開にはレジストリの
   // 権限が要る（共用型 cloud:testConnection の (2) と同じ確認）。「まだ確認しない」という
   // 前提はもう食い違っているため、共用型と同じチェックを足し、画面側の注記（もう公開できるのに
   // 「まだ対応していません」と読める文）は削除する。請求チェックは共用型と同じ関数を呼ぶ
@@ -292,14 +325,14 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     return listClusters(auth)
   })
 
-  // GET /zone（さくらのクラウド API v1.1 設備関連API・roadmap #28）。⑤のゾーン選択式化に使う。
+  // GET /zone（さくらのクラウド API v1.1 設備関連API・roadmap #28）。手順5のゾーン選択式化に使う。
   // GETのみ・src/main/cloud/zones.ts に一元化（ここではキー確認と委譲だけ）。
   ipcMain.handle('apprunDedicated:zones', async (_, auth: unknown) => {
     if (!isCreds(auth)) return NO_KEY
     return getZones(auth)
   })
 
-  // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
+  // 段階(2)「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
   // 同意（consentedAt）が記録に無ければ createClusterFlow 自身が API を一度も呼ばずに中止する。
   // opts.confirmed（第4引数）は今回の確認ダイアログを通ったかの印（2026-09-10 レビューの修理・A）。
   ipcMain.handle('apprunDedicated:create', async (_, projectDir: unknown, auth: unknown, spec: unknown, opts: unknown) => {
@@ -309,44 +342,52 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     // 作成は数個のAPIを順に呼ぶだけで待ちが無い（createClusterFlow は進捗を出さない）ので、
     // 記録には「いま作っています」の1文だけを置く。閉じて開き直した画面が結果を読めるのが目的。
     const progress = progressReporter(projectDir)
+    // 段（クラスタ → ASG → LB）の切り替わりだけを記録に渡す。画面に出す文は上の1つのまま（2026-10-07）。
+    const onStage = stageReporter(projectDir)
     // H-1: 同じプロジェクトで作成・削除・公開を同時に走らせない（src/main/projectLock.ts）。
     const r = await withProjectLock(projectDir, '作成', () => {
       progress('🏗 クラスタ・オートスケーリンググループ・ロードバランサを作っています…')
-      return createClusterFlow(auth, projectDir, spec, { confirmed: isConfirmed(opts) })
-    }, { target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:create', secrets: [auth.token, auth.secret] })
-    return r.busy ? { ok: false, stage: 'consent', message: projectBusyMessage(r.running) } : r.value
+      return createClusterFlow(auth, projectDir, spec, { confirmed: isConfirmed(opts), onStage })
+    }, { target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:create', secrets: [auth.token, auth.secret], zone: spec.zone })
+    return r.busy ? { ok: false, stage: 'consent', message: projectBusyMessage(r.running) } : withStageTimings(r.value, r.stageTimings)
   })
 
-  // 段階④「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
+  // 段階(4)「破棄」: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。
   // opts.confirmed（第3引数）は今回の確認ダイアログを通ったかの印（2026-09-10 レビューの修理・A）。
   // #39: 各段は一覧から消えるまで待つため、進捗を 'apprunDedicated:teardown-progress' で
   // 逐次通知する（cloud:apply-progress と同じ形。event.sender.send）。
   ipcMain.handle('apprunDedicated:teardown', async (event, projectDir: unknown, auth: unknown, opts: unknown) => {
     if (typeof projectDir !== 'string' || !projectDir) return { ok: false, executed: [], message: 'プロジェクトフォルダが不正です', remaining: {} }
     if (!isCreds(auth)) return { ok: false, executed: [], message: 'クラウドのAPIキーが未登録です', remaining: {} }
-    // 送り口は projectOps.ts の1つ（progressReporter）: 処理の記録も更新するので、⑥のダイアログを
+    // 送り口は projectOps.ts の1つ（progressReporter）: 処理の記録も更新するので、手順6のダイアログを
     // 閉じて開き直した画面も、いまの進み具合（約9分かかる削除の待ち）を続きから読める（2026-09-29）。
     const progress = progressReporter(projectDir, msg => event.sender.send('apprunDedicated:teardown-progress', msg))
+    const onStage = stageReporter(projectDir) // 段の切り替わり（アプリ → LB → ASG → クラスタ → 保存場所）。文は変えない（2026-10-07）
     // H-1: 公開と同時に走らせない（記録が交錯して、消せない資源が残る）。
     // 保存場所の片づけも**同じ鍵の中**で行う（外へ出すと、片づけ中に公開が始まって
     // 「いま渡したばかりの鍵」を消しうる）。
     const r = await withProjectLock(projectDir, '削除', async () => {
-      // 公開記録（📡 一覧が読む publish.targets）を片づけるかの材料は、**破棄の前に**読む
-      // （アプリを消すと記録の applicationID も外れるため、あとからは「公開していたか」が分からない）。
-      const hadApplicationID = !!readApprunDedicatedFs(projectDir).applicationID
-      const res = await teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress })
+      // 破棄の前の記録を**先に**読む。アプリを消すと記録の applicationID も外れるため、あとからは「何があったか」が分からない。
+      //   ・before … 消すものが記録にあったか（dedicatedTeardownHasWork）。保存場所に触れてよいかの材料
+      //   ・hadPublishRecord … 公開記録（📡 の行）があったか。行を消してよいかの材料（applicationID ではない・shouldForgetPublishRecord）
+      const before = readApprunDedicatedFs(projectDir)
+      const hadPublishRecord = hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')
+      const res = await teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, onStage })
       // 途中で止まったなら保存場所には触らない（アプリがまだ動いている可能性がある）。
-      const done = res.ok ? await teardownProjectStorage(auth, projectDir, res, progress) : res
+      // **消すものが記録に無い（資源の記録が空・前回の保存場所の残りも無い＝幽霊の行）ときも触らない**（2026-10-08 検分）:
+      // teardownFlow は「記録がありません」で ok:true を返すので、ここで止めないと、何を消すか名指しできないまま
+      // プロジェクトの保存場所のデータ（ほかの公開先が使っているものを含む）が消える。行だけは下で外す（旧 📡 と同じ救済）。
+      const done = res.ok && dedicatedTeardownHasWork(before) ? await teardownProjectStorage(auth, projectDir, res, progress, onStage) : res
       // 2026-09-29: 公開記録の片づけは**ここ（main）で済ませる**。以前は画面（doTeardown）だけが行っており、
-      // ⑥のダイアログを閉じても破棄は最後まで進むのに、この後始末だけが走らず、存在しないアプリが
-      // 📡 公開したもの一覧に出続けた（URL は 404）。画面の後始末は残す（同じ記録を二度消しても害は無い）。
-      // 規則は画面の shouldClearPublishRecord と同じ（shouldForgetPublishRecord。真理値表テストで一致を固定）。
-      if (shouldForgetPublishRecord({ hadApplicationID, result: done })) {
+      // 手順6のダイアログを閉じても破棄は最後まで進むのに、この後始末だけが走らず、存在しないアプリが
+      // 📡 公開したもの一覧に出続けた（URL は 404）。
+      // 規則は shouldForgetPublishRecord の1つだけ（画面にあった同じ規則は 2026-10-08 に消した。手順6からも 📡 の 🗑 からもここ）。
+      if (shouldForgetPublishRecord({ hadPublishRecord, result: done })) {
         try { forgetPublishTargetFs(projectDir, 'sakura-apprun-dedicated') } catch { /* 後始末の失敗で破棄の結果を変えない */ }
       }
       return done
-    }, { target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:teardown', secrets: [auth.token, auth.secret] })
-    return r.busy ? { ok: false, executed: [], message: projectBusyMessage(r.running), remaining: {} } : r.value
+    }, { target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:teardown', secrets: [auth.token, auth.secret], zone: recordedZone(projectDir) })
+    return r.busy ? { ok: false, executed: [], message: projectBusyMessage(r.running), remaining: {} } : withStageTimings(r.value, r.stageTimings)
   })
 
   // 現在の記録（何が作られているか）を返す。API を呼ばない、ただのファイル読み取り。
@@ -355,7 +396,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     return readApprunDedicatedFs(projectDir)
   })
 
-  // ── ⑧「アプリを公開する」（D-4）──────────────────────────────────────────
+  // ── 手順8「アプリを公開する」（D-4）──────────────────────────────────────────
   // 前提を1回で返す: 記録（クラスタ・アプリ）／env.json の有無・ポート・環境変数の数／
   // クラスタに Let's Encrypt のメールが設定済みか。GET のみ・何も作らない。
   // hasLetsEncryptEmail は記録に clusterID があり auth が使えるときだけ GET /clusters/{id} で確かめ、
@@ -386,7 +427,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     }
   })
 
-  // ⑧「🔄 IP を取り直す」（D-5・2026-09-16）: 記録の clusterID/asgID/loadBalancerID で LB ノードの一覧を
+  // 手順8「🔄 IP を取り直す」（D-5・2026-09-16）: 記録の clusterID/asgID/loadBalancerID で LB ノードの一覧を
   // 1 回引き、素の IP（bareIp・`IP/24` の `/` より前）を記録（lbAddresses）して返す。GET と記録の書き込みだけ・
   // 何も作らない・待たない（待つのは publishAppFlow の lb-address 段）。判断は cloud/apprunDedicatedAppApply.ts の
   // refreshLbAddresses に一元化してあり、ここは「形の検査と委譲」だけ（掟10）。
@@ -396,7 +437,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     return refreshLbAddresses(auth, projectDir)
   })
 
-  // ⑧「🔎 公開先と https を確かめる」（O-1・2026-09-17）: 記録のホスト名とロードバランサの IP で、
+  // 手順8「🔎 公開先と https を確かめる」（O-1・2026-09-17）: 記録のホスト名とロードバランサの IP で、
   // ドメインの向き先・証明書・ブラウザで開けるか・アプリの応答の4つを1回だけ調べて、画面に出す行を返す。
   // **何も作らず・何も変えない**（読むだけ）ので、同意も確認ダイアログも要らない。さくらの API も
   // 呼ばない（証明書の状態を読む手段が無い）ので auth も取らない——**要らない鍵を渡さない**（掟4）。
@@ -422,9 +463,12 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     if (!isCreds(auth)) return { ok: false, stage: 'invalid', message: 'クラウドのAPIキーが未登録です' }
     if (!isAppPublishInput(input)) return { ok: false, stage: 'invalid', message: '入力が不正です' }
     if (!isConfirmed(opts)) return { ok: false, stage: 'consent', message: '確認ダイアログを通っていません' }
-    // 送り口は projectOps.ts の1つ（progressReporter）: 処理の記録も更新するので、⑧のダイアログを
+    // 送り口は projectOps.ts の1つ（progressReporter）: 処理の記録も更新するので、手順8のダイアログを
     // 閉じて開き直した画面も、いまの進み具合を続きから読める（2026-09-29）。
     const progress = progressReporter(projectDir, msg => event.sender.send('apprunDedicated:publish-progress', msg))
+    // 段の切り替わり（準備 → イメージ → 確認 → アプリ → … → 古いアクセスキーの削除）。文は変えない（2026-10-07）。
+    // 準備とイメージと古いアクセスキーの段はここで、確認〜コンテナの段は publishAppFlow が同じ口へ渡す。
+    const onStage = stageReporter(projectDir)
     // koto-data を新しい版へ差し替えたときの1行（下の ensureDataLayer で入る。何もしていなければ空）。
     let dataLayerLine = ''
     /**
@@ -446,10 +490,11 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     // 公開開始マーカー（途中で中断・失敗しても後から検知できるようにする）。成功/失敗いずれでも finally で消す（roadmap #20）。
     markPendingFs(projectDir, 'sakura-apprun-dedicated')
     try {
+      onStage(STAGE.publishPrepare) // 操作の始まりから、保存場所のアクセスキー・koto-data まで
       const spec = loadCloudSpec(projectDir)
       // W-36（2026-09-27 決定・案1）: 利用者はファイルを意識していない。「env.json を確認」と
       // 言われても、どこで何を見ればよいか分からない。画面では「公開の設定」とだけ言う。
-      if (!spec) return { ok: false, stage: 'invalid', message: '公開の設定がありません。⑧の「公開の設定を作る」を押してから、もう一度お試しください' }
+      if (!spec) return { ok: false, stage: 'invalid', message: '公開の設定がありません。手順8の「公開の設定を作る」を押してから、もう一度お試しください' }
       const state = loadCloudState(projectDir, spec)
 
       // prepareAppImage は「Koto が組み立てる」（source.type !== 'image'）のときだけ呼べる（imagePublish.ts の前提）。
@@ -458,11 +503,11 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
       if (spec.service.source.type === 'image') {
         return {
           ok: false, stage: 'image',
-          message: '公開の設定の service.source が image 型です。専有型への公開は、Koto が組み立てるイメージ（source.type が dockerfile）にだけ対応しています。公開の設定の service.source を dockerfile 型にしてから、もう一度お試しください',
+          message: '公開の設定の service.source が image 型です。専有型への公開は、Koto がビルドするイメージ（source.type が dockerfile）にだけ対応しています。公開の設定の service.source を dockerfile 型にしてから、もう一度お試しください',
         }
       }
       // ── データの保存を持っていく（2026-09-23 検分で発覚）──────────────────
-      // ③公開は「保存場所を用意すると、データが残るようになります」と約束している。
+      // 【公開】は「保存場所を用意すると、データが残るようになります」と約束している。
       // ところが鍵を渡していたのは HANAMII と AppRun 共用型だけで、**専有型は0件**だった。
       // 専有型もコンテナなので、渡さなければ**再公開のたびに中身ごと作り直され、データが消える**。
       // 利用者は「残る」と思って使うので、これは黙って失わせる形になる。
@@ -501,7 +546,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
 
       // 鍵の発行はさくらへの要求（認証情報の復号とアダプタの接続を含む）で、数秒止まることがある。
       // **押したのに何も起きない時間を作らない**（検分の指摘13・各段の頭で1回ずつ出すのと同じ形）。
-      if (willIssueStorageKey) progress('🔑 保存場所の鍵を用意しています…')
+      if (willIssueStorageKey) progress('🔑 保存場所のアクセスキーを用意しています…')
       const storage = await issueStorageEnvFor({ projectDir, target: 'apprun-dedicated' })
       if (!storage.ok && storage.reason === 'error') {
         // reason:'none'（保存場所を用意していない）は失敗ではない＝何も足さずに公開を続ける
@@ -521,9 +566,9 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
       ]
 
       // ── 公開の直前に koto-data を置く（2026-09-25 検分。ほか4経路と同じ約束）───────
-      // AI への説明文（aiContext.ts の DATA_RULE）は「『② 試す』『③ 公開』を押した直前に
+      // AI への説明文（aiContext.ts の DATA_RULE）は「『試す』『公開』を押した直前に
       // Koto が置きます」と言い切っており、共用型（cloud.ts）・HANAMII・Vercel・レンタルサーバは
-      // 全部そうしている。**専有型の⑧だけが通っていなかった**ので、AI が約束どおり書いた
+      // 全部そうしている。**専有型の手順8だけが通っていなかった**ので、AI が約束どおり書いた
       // `require('./koto-data.cjs')` の読み込み先がイメージに入らず、コンテナが
       // `Cannot find module` で起動しない（2026-09-23 に共用型・HANAMII で起きた形のまま）。
       //
@@ -537,6 +582,8 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
         if (layer.replaced) dataLayerLine = dataLayerUpdateLine({ ok: true, file: layer.file, replaced: true })
       } catch { /* 置けなくても公開は続ける（ほか4経路と同じ） */ }
 
+      // イメージのビルドとプッシュ（内蔵ビルダー crane は両方を1つのプロセスで行うので、外から分けられない＝1段・2026-10-07）。
+      onStage(STAGE.publishImage)
       const img = await prepareAppImage({ projectDir, spec, state, creds: auth, progress })
       if (!img.ok) {
         // ここで止まると、いま発行した鍵を**誰も使わないまま**残す（検分の指摘5・10）。
@@ -571,11 +618,11 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
         // この2行を固定している（掟10「任意の引数で機能を繋ぐと、渡し忘れても誰も気づかない」）。
         buildTag: img.tag,
         runtimeKind: img.runtimeKind,
-      }, { confirmed: isConfirmed(opts), progress })
+      }, { confirmed: isConfirmed(opts), progress, onStage })
       // 公開記録を main 側で残す（renderer が閉じても失われない・roadmap #20。他の公開先と同じ publish.targets）。
       if (result.ok) {
         writePublishRecordFs(projectDir, 'sakura-apprun-dedicated', { publishedAt: new Date().toISOString(), url: result.url ?? null })
-        // 2026-09-24: ⑥の破棄で鍵を無効にできるよう、**いま渡した鍵のIDだけ**を記録する
+        // 2026-09-24: 手順6の破棄で鍵を無効にできるよう、**いま渡した鍵のIDだけ**を記録する
         // （共用型の state.meta.storagePermissionId に当たるもの）。
         // **secretKey は書かない**（掟4。秘密は main の中で公開の本文へ渡し切る）。
         // 記録するのは公開が成立したときだけ——途中で止まった鍵はこのあと取り消され、
@@ -607,10 +654,16 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
           // 自分の登録したAPIキーが消されていると受け取りかねない。実際に消しているのは保存場所
           // （オブジェクトストレージ）の権限なので「保存場所の鍵」と言う（語順は「古い保存場所の鍵」
           // ＝「古い保存場所」の鍵、と読めないよう「保存場所の古い鍵」にする）。
-          progress('🧹 保存場所の古い鍵を片づけています…')
+          onStage(STAGE.publishKeyCleanup)
+          progress('🧹 保存場所の古いアクセスキーを削除しています…')
           try {
-            await cleanUpOldKeysFor({ projectName: storage.projectName, target: 'apprun-dedicated', keepId: storage.permissionId })
-          } catch { /* 片づけに失敗しても公開は成立している（共用型・HANAMII と同じ） */ }
+            const cleaned = await cleanUpOldKeysFor({ projectName: storage.projectName, target: 'apprun-dedicated', keepId: storage.permissionId })
+            // 1件ずつの失敗は中で飲み込まれるので、件数で見る（一部でも失敗した回の時間は保存しない・2026-10-07 検分2巡目）
+            if ((cleaned?.failed ?? 0) > 0) onStage(STAGE.publishKeyCleanup, UNMEASURED)
+          } catch {
+            /* 片づけに失敗しても公開は成立している（共用型・HANAMII と同じ） */
+            onStage(STAGE.publishKeyCleanup, UNMEASURED) // 失敗した片づけの時間は、保存しない（2026-10-07 検分）
+          }
         }
       } else if (stageLeftNoVersion(result.stage)) {
         // 版が1つも作られていないと言い切れるときだけ、いま発行した鍵を取り消す（検分の指摘5・10）。
@@ -624,30 +677,13 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     } finally {
       clearPendingFs(projectDir)
     }
-    }, { target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:publishApp', secrets: [auth.token, auth.secret] })
+    }, { target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:publishApp', secrets: [auth.token, auth.secret], zone: recordedZone(projectDir) })
     return locked.busy
       ? { ok: false, stage: 'consent', message: projectBusyMessage(locked.running) }
-      : locked.value
+      : withStageTimings(locked.value, locked.stageTimings)
   })
 
-  // 📡 一覧の「破棄」: 専有型の**アプリ（全バージョン）だけ**を消す（LB/ASG/クラスタには触らない＝
-  // teardownFlow の appOnly。⑥の全部破棄は上の apprunDedicated:teardown）。
-  // opts.confirmed（第3引数）は今回の確認ダイアログを通ったかの印。進捗は teardown と同じチャンネルに流す
-  // （「〜の削除を待っています」の意味が同じ。専有型パネルは tearingDown 中しか表示しないので混線しない）。
-  // 公開記録（publish.targets['sakura-apprun-dedicated']）は main では消さない——共用型と同じ手
-  // （cloud:teardown も記録を消さず、📡 一覧が r.ok のあとに clearPublishRecord(e.dir, e.target) で消す）。
-  ipcMain.handle('apprunDedicated:teardownApp', async (event, projectDir: unknown, auth: unknown, opts: unknown) => {
-    if (typeof projectDir !== 'string' || !projectDir) return { ok: false, executed: [], message: 'プロジェクトフォルダが不正です', remaining: {} }
-    if (!isCreds(auth)) return { ok: false, executed: [], message: 'クラウドのAPIキーが未登録です', remaining: {} }
-    const progress = progressReporter(projectDir, msg => event.sender.send('apprunDedicated:teardown-progress', msg))
-    // H-1: 公開と同時に走らせない（同上）。
-    const r = await withProjectLock(projectDir, '削除', () =>
-      teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, appOnly: true }),
-    { target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:teardownApp', secrets: [auth.token, auth.secret] })
-    return r.busy ? { ok: false, executed: [], message: projectBusyMessage(r.running), remaining: {} } : r.value
-  })
-
-  // #38「⑦ ログ・メトリクス」: 専有型はクラスタ単位ではなくプロジェクト単位（resource_id
+  // #38「手順7 ログ・メトリクス」: 専有型はクラスタ単位ではなくプロジェクト単位（resource_id
   // を送らない・5-12実測）。判断・GET/POSTの実装は共用型と共通の
   // src/main/cloud/monitoring.ts（fetchDedicatedTelemetryStatus/enableDedicatedTelemetry）に
   // 一元化してあり、ここは「呼ぶだけ」（掟10）。**何も作らない**（GETのみ）。

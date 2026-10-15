@@ -602,7 +602,8 @@ describe('★★★ ② 閉じて開き直したとき（外して付け直す�
     const t = root.text()
     expect(t).toContain('🌸 HANAMIIの公開が終わりました')
     expect(t).toContain('https://example.test/')
-    expect(t).toContain('さくらのAppRunの削除は、うまくいきませんでした')
+    expect(t).toContain('さくらのAppRunの削除に失敗しました')
+    expect(t).not.toContain('うまくいきませんでした') // 0.6.21: 「うまくいかなかった」は「失敗」に揃えた。直す前の言い方は戻さない
     expect(t).toContain('レジストリの削除に失敗しました')
   })
 
@@ -1119,7 +1120,7 @@ describe('★★★ 二重表示の解消: 目の前の公開先の画面が出�
     })
   }
 
-  it('★★★ 専有型の画面でも、⑤⑥⑧に無い操作（📡 一覧の「アプリだけ破棄」）の結果は、パネルが出さないので上部に出す', async () => {
+  it('★★★ 専有型の画面でも、パネルが受け持たない操作（手順5・6・8のどれでもない handler。廃止した旧い teardownApp の名前など）の結果は、パネルが出さないので上部に出す', async () => {
     viewing('sakura-apprun-dedicated')
     const op = startOp(DIR, '削除', DEDICATED_TEARDOWN_APP, { ok: false, message: '削除中のまま止まりました' })
     const { root } = open()

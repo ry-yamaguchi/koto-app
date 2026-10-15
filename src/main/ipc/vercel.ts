@@ -64,7 +64,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       // 範囲つき（Team / Project）のトークンは teamId を要らない。付いていると拒否される
       return {
         ok: true, warn: true, status: r.status,
-        message: `接続できました${who}。ただし、チームIDは空欄にしてください。このトークンは範囲が決まっていて、チームIDを付けると拒否されます。`,
+        message: `接続できました${who}。ただし、チームIDは空欄にしてください。このトークンは範囲（Scope）を絞ったものなので、チームIDを付けると拒否されます。`,
       }
     }
     const scope = typeof r.projects === 'number'
@@ -246,7 +246,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       // その1回だけは渡せないので、公開したあとに置き直し、**次の公開から効くことを正直に伝える**。
       let envDeferred = false
       if (storage.ok) {
-        progress('🔑 保存場所の設定を Vercel へ渡しています…')
+        progress('🔑 データの保存に使う環境変数を Vercel に登録しています…')
         const envRes = await client.createEnvVars(name, storage.envs)
         if (!envRes.ok) {
           if (envRes.status === 404) envDeferred = true
@@ -368,7 +368,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
           const retry = await client.createEnvVars(name, storage.envs)
           if (retry.ok) {
             envDelivered = true
-            notice = '公開できました。データの保存に使う設定を Vercel へ渡しました（今回の公開にはまだ反映されていません）。'
+            notice = '公開できました。データの保存に使う環境変数を Vercel に登録しました（今回の公開にはまだ反映されていません）。'
               + 'もう一度「公開する」を押すと、データの保存が使えるようになります。'
           } else {
             // **理由と直し方を落とさない**（2026-09-24 検分の指摘11・14）。

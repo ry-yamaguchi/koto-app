@@ -54,9 +54,10 @@ describe('Sidebar.tsx: プロジェクト未オープン画面の「📡 公開�
     expect(block).toContain('onClick={onOpenPublishedList}')
     expect(block).toContain('📡 公開したものと費用を見る')
     // 未オープン画面の中身（プロジェクトの場所一覧）より前に置かれている
-    // （「プロジェクトの場所」は開いているプロジェクトのスイッチャー内にも同じ文言があるため、
-    // このリンクより後ろで最初に出てくるものを探す）
-    const projectsAt = sidebar.indexOf('プロジェクトの場所', at)
+    // （一覧の見出し「プロジェクト」は開いているプロジェクトのスイッチャー内にも同じ文言があるため、
+    // このリンクより後ろで最初に出てくるものを探す。0.6.21: 見出しは「プロジェクトの場所」から「プロジェクト」に揃えた）
+    const projectsAt = sidebar.indexOf('>プロジェクト</div>', at)
     expect(projectsAt).toBeGreaterThan(at)
+    expect(sidebar).not.toContain('プロジェクトの場所')
   })
 })

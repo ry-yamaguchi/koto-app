@@ -1,20 +1,20 @@
 // projectLock.ts — 同じプロジェクトで、作成・削除・公開を同時に走らせない（main の歯止め）。
 //
 // ── なぜ要るか（H-1・2026-09-17。横断点検の6視点のうち4つが独立にここへ収束した）──────
-// ⑥「すべて削除する」は実測で約9分かかる。そのあいだ⑧「公開する」が押せてしまうと:
+// 手順6「すべて削除する」は実測で約9分かかる。そのあいだ手順8「公開する」が押せてしまうと:
 //
 //   ・破棄がロードバランサを消している最中に公開すると、公開はその場で記録を読み直すが
 //     clusterID 等がまだ残っているため通過し、**消えかけのクラスタに新しいアプリを作って**
 //     applicationID を記録する。破棄は先頭で読んだ記録のまま進み、最後に clusterID だけを
 //     null にする。結果 **applicationID があるのに clusterID が無い**記録が残り、
-//     次に⑥を押しても「クラスタのIDが記録にありません」で止まる＝**Koto からは二度と消せない**
+//     次に手順6を押しても「クラスタのIDが記録にありません」で止まる＝**Koto からは二度と消せない**
 //   ・アプリの段に割り込めば、破棄が無効にしたアプリを公開が作り直して有効化するので、
 //     削除が 400 を繰り返して**破棄そのものが失敗する**（月額およそ2万2千円が止まらない）
 //
 // ── なぜ画面のフラグだけでは足りないか ────────────────────────────────────────
 // 画面の `tearingDown` / `publishing` は**窓が持っている状態**でしかない。
 // **破棄の最中に窓を再読み込みするとフラグが消え**、main 側の破棄だけが走り続ける。
-// そこへ⑧を押せば同じ交錯が起きる。だから main にも歯止めを置く。
+// そこへ手順8を押せば同じ交錯が起きる。だから main にも歯止めを置く。
 //
 // ── 通す範囲（2026-09-29 に広げた）──────────────────────────────────────────
 // 最初は専有型（apprunDedicated.ts）だけだった。共用型（cloud:apply・cloud:teardown）・
@@ -32,6 +32,7 @@
 // 鍵として使うと「二度と押せない」になる。ここは**プロセスの寿命だけ**の印にする。
 
 import { beginOp, finishOp, runningOpName, type ProjectOp, type OpMeta } from './projectOps'
+import type { StageTimings } from '../shared/stageTiming'
 
 /** いま走っている操作（画面に出す日本語そのもの）。定義は projectOps.ts（記録と同じ場所）。 */
 export type { ProjectOp } from './projectOps'
@@ -72,25 +73,30 @@ export function runningOp(projectDir: string): ProjectOp | undefined {
  *
  * `meta` は記録のためのもの（どの公開先か・どの IPC か・引数で受け取った秘密）。
  * **型では必須**——渡し忘れると本体が通らない。テストだけが省ける（target は 'unknown' になる）。
+ *
+ * 戻り値の `stageTimings` は、段ごとの所要時間（`fn` の中で段を渡したときだけ。2026-10-07）。結果の記録
+ * （`extra.stageTimings`）と**同じ値**で、その場の結果へ載せて画面へ返すのに使う（開き直したときは記録から出す＝双子）。
  */
 export async function withProjectLock<T>(
   projectDir: string,
   op: ProjectOp,
   fn: () => Promise<T>,
   meta: OpMeta,
-): Promise<{ busy: true; running: ProjectOp } | { busy: false; value: T }> {
+): Promise<{ busy: true; running: ProjectOp } | { busy: false; value: T; stageTimings?: StageTimings }> {
   const current = runningOpName(projectDir)
   if (current) return { busy: true, running: current }
   beginOp(projectDir, op, meta)
   let outcome: { value: unknown } | { error: unknown } = { error: new Error('中断されました') }
+  let value: T
+  let stageTimings: StageTimings | undefined
   try {
-    const value = await fn()
+    value = await fn()
     outcome = { value }
-    return { busy: false, value }
   } catch (e) {
     outcome = { error: e }
     throw e
   } finally {
-    finishOp(projectDir, outcome)
+    stageTimings = finishOp(projectDir, outcome)
   }
+  return { busy: false, value, ...(stageTimings ? { stageTimings } : {}) }
 }

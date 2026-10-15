@@ -206,7 +206,7 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
           // ── 公開先が未設定 ──
           <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4">
             <p className="text-sm text-ink leading-relaxed">
-              まず公開先（さくらのレンタルサーバ）を設定してください。「③ 公開」からアカウント名・ホスト名を登録すると、ここからサーバのファイルを操作できます。
+              まず公開先（さくらのレンタルサーバ）を設定してください。【公開】からアカウント名・ホスト名を登録すると、ここからサーバのファイルを操作できます。
             </p>
           </div>
         ) : pendingUpload ? (

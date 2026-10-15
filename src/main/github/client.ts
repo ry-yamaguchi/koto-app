@@ -8,11 +8,11 @@
 // git 語彙はここでは普通に使う（GitHub API 自体の語彙）が、renderer 側 UI には出さない（掟）。
 //
 // 保存（＝1コミット）の流れ（dev-plan P3-⑬ 記載の5段階）:
-//   ① GET  /repos/{o}/{r}/git/ref/heads/main        … 親コミットのsha取得
-//   ② POST /repos/{o}/{r}/git/blobs                 … 各ファイルをblob化（content base64）
-//   ③ POST /repos/{o}/{r}/git/trees                 … tree作成（{tree:[{path,mode:'100644',sha}]}）
-//   ④ POST /repos/{o}/{r}/git/commits               … commit作成（{message, tree, parents:[親]}）
-//   ⑤ PATCH /repos/{o}/{r}/git/refs/heads/main       … refをcommitへ更新
+//   (1) GET  /repos/{o}/{r}/git/ref/heads/main        … 親コミットのsha取得
+//   (2) POST /repos/{o}/{r}/git/blobs                 … 各ファイルをblob化（content base64）
+//   (3) POST /repos/{o}/{r}/git/trees                 … tree作成（{tree:[{path,mode:'100644',sha}]}）
+//   (4) POST /repos/{o}/{r}/git/commits               … commit作成（{message, tree, parents:[親]}）
+//   (5) PATCH /repos/{o}/{r}/git/refs/heads/main       … refをcommitへ更新
 
 /** GitHub API のベースURL。 */
 export const GITHUB_API_BASE = 'https://api.github.com'
@@ -143,13 +143,13 @@ export class GithubClient {
 
   /**
    * 保存（＝1コミット）の Git Data フロー一式を実行する。
-   * ① ref取得 → ② blobs作成 → ③ tree作成 → ④ commit作成 → ⑤ ref更新。
+   * (1) ref取得 → (2) blobs作成 → (3) tree作成 → (4) commit作成 → (5) ref更新。
    * 途中で失敗した場合は日本語メッセージ付きで { ok:false } を返す（GitHub側に中途半端な状態が残っても
    * ref は更新されないため、mainブランチの履歴には影響しない＝再実行で回復可能）。
    */
   async save(owner: string, repo: string, files: GithubFileEntry[], message: string, branch = 'main'): Promise<{ ok: boolean; commitSha?: string; message?: string }> {
     try {
-      // ① 親コミットのsha取得
+      // (1) 親コミットのsha取得
       const refRes = await this.getRef(owner, repo, branch)
       if (!refRes.ok) {
         if (refRes.status === 404) {
@@ -162,7 +162,7 @@ export class GithubClient {
         return { ok: false, message: '保存先の情報取得に失敗しました（親情報が取得できません）' }
       }
 
-      // ② 各ファイルをblob化（content は既に base64 エンコード済み）
+      // (2) 各ファイルをblob化（content は既に base64 エンコード済み）
       const treeEntries: Array<{ path: string; mode: '100644'; type: 'blob'; sha: string }> = []
       for (const f of files) {
         const blobRes = await this.createBlob(owner, repo, f.content, 'base64')
@@ -176,27 +176,27 @@ export class GithubClient {
         treeEntries.push({ path: f.path, mode: '100644', type: 'blob', sha })
       }
 
-      // ③ tree作成（base_treeに親コミットのtreeを指定して差分マージ）
+      // (3) tree作成（base_treeに親コミットのtreeを指定して差分マージ）
       const treeRes = await this.createTree(owner, repo, treeEntries, await this.resolveParentTreeSha(owner, repo, parentSha))
       if (!treeRes.ok) {
-        return { ok: false, message: `保存内容のまとめ（tree作成）に失敗しました（HTTP ${treeRes.status}）` }
+        return { ok: false, message: `GitHub への保存に失敗しました（tree の作成・HTTP ${treeRes.status}）` }
       }
       const treeSha = (treeRes.data as any)?.sha
       if (typeof treeSha !== 'string' || !treeSha) {
-        return { ok: false, message: '保存内容のまとめ（tree作成）に失敗しました（応答が不正です）' }
+        return { ok: false, message: 'GitHub への保存に失敗しました（tree の作成・応答が不正です）' }
       }
 
-      // ④ commit作成
+      // (4) commit作成
       const commitRes = await this.createCommit(owner, repo, message || 'Koto から保存', treeSha, [parentSha])
       if (!commitRes.ok) {
-        return { ok: false, message: `保存の記録（commit作成）に失敗しました（HTTP ${commitRes.status}）` }
+        return { ok: false, message: `コミットの作成に失敗しました（HTTP ${commitRes.status}）` }
       }
       const commitSha = (commitRes.data as any)?.sha
       if (typeof commitSha !== 'string' || !commitSha) {
-        return { ok: false, message: '保存の記録（commit作成）に失敗しました（応答が不正です）' }
+        return { ok: false, message: 'コミットの作成に失敗しました（応答が不正です）' }
       }
 
-      // ⑤ ref更新
+      // (5) ref更新
       const updateRes = await this.updateRef(owner, repo, commitSha, branch)
       if (!updateRes.ok) {
         return { ok: false, message: `保存の反映に失敗しました（HTTP ${updateRes.status}）` }
@@ -234,7 +234,7 @@ export function isRepoNameConflict(status: number, data: unknown): boolean {
 /** createRepo の応答から日本語のエラーメッセージを組み立てる（422=名前衝突は区別して案内）。 */
 export function describeCreateRepoError(status: number, data: unknown): string {
   if (status === 422 && isRepoNameConflict(status, data)) {
-    return 'その名前の保管場所は既に存在します。別の名前を試してください。'
+    return 'その名前のリポジトリは既に存在します。別の名前を試してください。'
   }
   if (status === 401 || status === 403) {
     return '認証に失敗しました（GitHub のトークンと権限を確認してください）。'

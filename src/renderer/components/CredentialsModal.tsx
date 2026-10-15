@@ -14,7 +14,7 @@ interface Props {
 }
 
 /**
- * 【UX-A・判断10】認証情報のグループ分け（2026-09-11・利用者目線レビュー推奨①）。
+ * 【UX-A・判断10】認証情報のグループ分け（2026-09-11・利用者目線レビュー推奨(1)）。
  * 全10サービスをどれか1つに割り当てる。増やすときは3つのどれかに必ず入れる（groupServices が固定・
  * tests/credentials.test.ts）。
  *   - first: これだけで作る・試すまでできる（さくらのAI Engine のみ）
@@ -48,7 +48,7 @@ export const SERVICES: ServiceDef[] = [
     ],
   },
   {
-    id: 'registry', title: 'コンテナレジストリ（push用・自動管理）', hint: '③公開→「さくらのAppRun」で自動作成・保存されます。通常は手入力不要です。',
+    id: 'registry', title: 'コンテナレジストリ（push用・自動管理）', hint: '【公開】→「さくらのAppRun」で自動作成・保存されます。通常は手入力不要です。',
     custom: true, group: 'auto',
     fields: [
       { key: 'name', label: 'レジストリ名', placeholder: '例: myreg（→ myreg.sakuracr.jp）' },
@@ -65,12 +65,12 @@ export const SERVICES: ServiceDef[] = [
     ],
   },
   {
-    id: 'hanamii', title: 'HANAMII（国産のクラウドサービス）', hint: '③公開→「HANAMII」で使うAPIトークン（hnm_…）。HANAMII の管理画面で発行します。',
+    id: 'hanamii', title: 'HANAMII（国産のクラウドサービス）', hint: '【公開】→「HANAMII」で使うAPIトークン（hnm_…）。HANAMII の管理画面で発行します。',
     active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIトークン', secret: true, placeholder: 'hnm_…' }],
   },
   {
-    id: 'vercel', title: 'Vercel（海外のクラウドサービス）', hint: '③公開→Vercel で使うトークン。',
+    id: 'vercel', title: 'Vercel（海外のクラウドサービス）', hint: '【公開】→Vercel で使うトークン。',
     helpUrl: 'https://vercel.com/account/tokens',
     active: true, group: 'perTarget',
     fields: [
@@ -84,7 +84,7 @@ export const SERVICES: ServiceDef[] = [
     fields: [{ key: 'apiKey', label: '個人アクセストークン（PAT）', secret: true, placeholder: 'github_pat_…' }],
   },
   {
-    id: 'anthropic', title: 'Claude（Anthropic API）', hint: '登録すると、プロジェクトを開いたチャットの頭脳が Claude に切り替わります。キーは Claude Console（platform.claude.com）で発行します。',
+    id: 'anthropic', title: 'Claude（Anthropic API）', hint: '登録すると、プロジェクトを開いた画面（IDEモード）で使う AI が Claude に切り替わります。キーは Claude Console（platform.claude.com）で発行します。',
     active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: 'sk-ant-…' }],
   },
@@ -664,7 +664,7 @@ function HanamiiTestButton({ token }: { token: string }) {
 }
 
 // さくらのVPS の鍵の状態表示（registry サービスと同じ「IDEが自動管理」の流儀）。
-// 秘密鍵そのものは入力欄にしない・値も表示しない。生成は「🚀 公開」→さくらのVPSの「① 接続」パネルで行う
+// 秘密鍵そのものは入力欄にしない・値も表示しない。生成は「🚀 公開」→さくらのVPSの「手順1 接続」パネルで行う
 // （host/port 未設定でも鍵だけ先に生成できる）。ここでは状態表示と、トラブル時の消去のみ。
 function VpsKeyStatus({ hasKey, onClear }: { hasKey: boolean; onClear: () => void }) {
   return (
@@ -675,16 +675,16 @@ function VpsKeyStatus({ hasKey, onClear }: { hasKey: boolean; onClear: () => voi
           <button onClick={onClear} className="text-[11px] text-ink-muted hover:text-brand-red">消去</button>
         </>
       ) : (
-        <span className="text-[11px] text-ink-muted">未生成（「🚀 公開」→さくらのVPSの「① 接続」で生成できます）</span>
+        <span className="text-[11px] text-ink-muted">未生成（「🚀 公開」→さくらのVPSの「手順1 接続」で生成できます）</span>
       )}
     </div>
   )
 }
 
 // Vercel トークンの接続テスト（読み取りのみ）。teamId は任意。
-// **2段階**で見る: ①トークンが有効か（/v2/user）②公開する範囲が見えているか（デプロイ一覧）。
-// ②が通らないときは緑の ✅ にしない（2026-08-22 Ryosuke 指摘。範囲の無いトークンでも
-// ①は 200 を返すため、「接続OK」と出したのに公開で落ちる形になっていた）。
+// **2段階**で見る: (1)トークンが有効か（/v2/user）(2)公開する範囲が見えているか（デプロイ一覧）。
+// (2)が通らないときは緑の ✅ にしない（2026-08-22 Ryosuke 指摘。範囲の無いトークンでも
+// (1)は 200 を返すため、「接続OK」と出したのに公開で落ちる形になっていた）。
 function VercelTestButton({ token, teamId }: { token: string; teamId: string }) {
   const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'warn' | 'ng'>('idle')
   const [detail, setDetail] = useState('')
@@ -755,7 +755,7 @@ function GithubPatGuide() {
             </a> を開く（GitHubへのログインが必要です）
           </li>
           <li>「Generate new token」をクリック</li>
-          <li>Repository access: 「All repositories」を選択（Koto が新しい保管場所を作るため、これを選んでください）</li>
+          <li>Repository access: 「All repositories」を選択（Koto が新しいリポジトリを作るため、これを選んでください）</li>
           <li>Permissions で「Contents」を Read and write、「Administration」を Read and write に設定</li>
           <li>生成されたトークン（<span className="font-mono">github_pat_…</span>）をコピーして上の欄に貼り付け</li>
         </ol>
@@ -776,7 +776,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   const [dirty, setDirty] = useState(false)
   // 未保存破棄・鍵消去の確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
   const { confirm, element: confirmElement } = useConfirm()
-  // コンテナレジストリ認証の登録状況（③公開→AppRun が自動作成。ここでは表示のみ）
+  // コンテナレジストリ認証の登録状況（【公開】→AppRun が自動作成。ここでは表示のみ）
   const [regInfo, setRegInfo] = useState<{ name: string; user: string; password: string } | null>(null)
   // パスワードを表示中か（既定は伏せる。ほかのキーと同じ 👁 の作法）
   const [showRegPw, setShowRegPw] = useState(false)
@@ -972,7 +972,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
         await window.electronAPI.cloud.clearKey()
       }
     } catch { /* ignore（同期失敗してもローカル保存は完了している） */ }
-    // レジストリ認証は ③公開→さくらのAppRun（ensureRegistry）が自動作成・保存するため、ここでは同期しない。
+    // レジストリ認証は 【公開】→さくらのAppRun（ensureRegistry）が自動作成・保存するため、ここでは同期しない。
     // AppRunPanel 等が登録状態を取り直すための通知
     window.dispatchEvent(new Event('sakura:credentials-changed'))
     // AIキーごとの月間上限を予算設定へ反映
@@ -1041,10 +1041,10 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
                 </>
               )}
             </p>
-            {/* さくらのVPS は公開機能（②初期セットアップ／③公開）としては開発中（targetProfiles で
-                非表示）。V1a時点では「① 接続」（鍵認証での疎通確認）のみ利用できる。 */}
+            {/* さくらのVPS は公開機能（手順2 初期セットアップ／手順3 公開）としては開発中（targetProfiles で
+                非表示）。V1a時点では「手順1 接続」（鍵認証での疎通確認）のみ利用できる。 */}
             {def.id === 'vps' && (
-              <p className="text-[11px] text-brand-yellow mt-0.5">※ VPSでの公開機能は開発中です（現在は「🚀 公開」→さくらのVPSの「① 接続」のみ利用できます）</p>
+              <p className="text-[11px] text-brand-yellow mt-0.5">※ VPSでの公開機能は開発中です（現在は「🚀 公開」→さくらのVPSの「手順1 接続」のみ利用できます）</p>
             )}
           </div>
           <button onClick={() => addEntry(def.id)} className="text-xs font-medium text-sakura hover:underline flex-none">＋ 追加</button>
@@ -1107,13 +1107,13 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
     )
   }
 
-  // コンテナレジストリ（③公開→AppRun が自動作成・保存。ここでは読み取り専用で状況表示）
+  // コンテナレジストリ（【公開】→AppRun が自動作成・保存。ここでは読み取り専用で状況表示）
   const renderRegistryCard = () => (
     <div key="registry" className="bg-surface/40 border border-line rounded-xl p-4 space-y-3">
       <div>
         <h3 className="text-sm font-semibold text-ink">コンテナレジストリ（自動管理）</h3>
         <p className="text-[11px] text-ink-muted mt-0.5">
-          ③公開→「さくらのAppRun」で自動作成・保存されます。通常は操作不要です。
+          【公開】→「さくらのAppRun」で自動作成・保存されます。通常は操作不要です。
         </p>
       </div>
       {regInfo ? (
@@ -1127,7 +1127,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
                 window.dispatchEvent(new Event('sakura:credentials-changed'))
               }}
               className="text-[11px] text-ink-muted hover:text-brand-red transition-colors"
-              title="登録済みのレジストリ認証を消去します（トラブル時用。次回の③公開で再作成されます）"
+              title="登録済みのレジストリ認証を消去します（トラブル時用。次回の【公開】で再作成されます）"
             >消去</button>
           </div>
           <div className="space-y-1.5 text-xs">
@@ -1155,7 +1155,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
               <CopyButton text={regInfo.password} title="パスワードをコピー" />
             </div>
             <p className="text-[10px] text-ink-muted leading-relaxed">
-              この値は Koto が作って保存したもので、<b>ほかのどこにも控えがありません</b>。
+              この値は Koto が作って保存したもので、<b>ほかのどこにもコピーがありません</b>。
               ご自身で <code>docker login {regInfo.name}.sakuracr.jp</code> するときにも使えます。
             </p>
           </div>
@@ -1181,7 +1181,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
         onChange={v => setSingleKey('tavily', v)}
       />
       <Field
-        def={{ key: 'apiKey', label: 'Brave Search APIキー（毎月$5クレジット＝約1,000回 / brave.com/search/api）', secret: true, placeholder: '発行したAPIキーを貼り付け' }}
+        def={{ key: 'apiKey', label: 'Brave Search APIキー（毎月$5のクレジットで約1,000回 / brave.com/search/api）', secret: true, placeholder: '発行したAPIキーを貼り付け' }}
         value={singleKey('braveSearch')}
         onChange={v => setSingleKey('braveSearch', v)}
       />
@@ -1261,7 +1261,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
 
         <div className="px-6 pb-6 space-y-4">
           <p className="text-[11px] text-ink-muted bg-surface border border-line rounded-lg px-3 py-2">
-            🔒 入力した値は <b className="text-ink-secondary">Macの安全な保管領域（キーチェーン）で暗号化して保存</b>されます。
+            🔒 入力した値は <b className="text-ink-secondary">Macのキーチェーンで暗号化して保存</b>されます。
           </p>
 
           {/* ── 読めなかったことを、はっきり言う（2026-08-19 実機・W-58で2026-09-27に画面上に1回だけへ変更）──
@@ -1272,9 +1272,9 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
           {unreadable && (
             <div className="rounded-xl border border-brand-red/60 bg-surface p-3 text-xs text-ink leading-relaxed select-text">
               ⚠️ <b>保存されているキーや設定を読み取れませんでした。</b>
-              別の版の Koto で保存した可能性があります。
+              別のバージョンの Koto で保存した可能性があります。
               下の欄は空に見えますが、<b className="text-brand-red">このまま「保存」を押すと元のキーや設定は消えます</b>。
-              元の版の Koto で開くと読めることがあります。
+              元のバージョンの Koto で開くと読めることがあります。
             </div>
           )}
 

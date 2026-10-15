@@ -8,7 +8,7 @@ import {
   type DedicatedRunningView, type DedicatedFinished, type DedicatedOpsApi, type DedicatedOpKind,
 } from '../src/renderer/apprunDedicatedActions'
 
-// ── 専有型⑤作成・⑥すべて削除・⑧公開: 閉じて開き直したとき、続きと結果を出す（2026-09-29・作者の決定 ①②）──────
+// ── 専有型手順5 作成・手順6すべて削除・手順8 公開: 閉じて開き直したとき、続きと結果を出す（2026-09-29・作者の決定 (1)(2)）──────
 //
 // 公開のダイアログを閉じても、処理は main が最後まで進める（withProjectLock）。失われていたのは画面の表示だけ
 // ——進み具合・結果・「保存場所が残ったので月額が続きます」のような警告——なので、開き直したとき main の記録
@@ -83,7 +83,7 @@ async function finish(op: { release: () => void; done: Promise<unknown> }) { op.
 beforeEach(() => { resetProjectOpsForTests() })
 
 describe('★★★ 走っていれば、外して付け直しても進み具合が出る', () => {
-  it('⑥が走っている最中に付け直すと、走っていることと最新の進み具合が出る（外している間に進んだ分も）', async () => {
+  it('手順6が走っている最中に付け直すと、走っていることと最新の進み具合が出る（外している間に進んだ分も）', async () => {
     const { api } = makeApi()
     const op = startOp('teardown', { ok: true, executed: [], message: '', remaining: {} })
     op.progress('ロードバランサの削除を待っています（1分経過）。実測ではおよそ9分でした（目安です）。')
@@ -110,7 +110,7 @@ describe('★★★ 走っていれば、外して付け直しても進み具合
     await finish(op)
   })
 
-  it('⑤・⑧も同じ（種類が分かり、経過の材料 startedAt がある）', async () => {
+  it('手順5・8も同じ（種類が分かり、経過の材料 startedAt がある）', async () => {
     for (const kind of ['create', 'publish'] as const) {
       resetProjectOpsForTests()
       const { api } = makeApi()
@@ -145,13 +145,13 @@ describe('★★★ 走っていれば、外して付け直しても進み具合
 describe('★★★ 終わっていれば、外して付け直したとき結果と警告が出る。ack のあとは出ない', () => {
   const TEARDOWN_STORAGE_LEFT = {
     ok: false,
-    executed: ['アプリケーション『app1』を削除しました（消えたことを確認）', '⚠️ 保存場所の記録（公開の設定）は残しています。次に公開する前に、③「保存場所を用意する」からやり直してください'],
+    executed: ['アプリケーション『app1』を削除しました（消えたことを確認）', '⚠️ 保存場所の記録（公開の設定）は残しています。次に公開する前に、【公開】の「保存場所を用意する」からやり直してください'],
     message: '保存場所を片づけられませんでした: 403',
     remaining: { storageBucket: 'koto-data-x' },
     appDeleted: true,
   }
 
-  it('⑥が閉じている間に終わった: 付け直すと結果（残った保存場所）と警告（⚠️の行）が出る。警告つきなので、画面は ack しない', async () => {
+  it('手順6が閉じている間に終わった: 付け直すと結果（残った保存場所）と警告（⚠️の行）が出る。警告つきなので、画面は ack しない', async () => {
     const { api, acks } = makeApi()
     const op = startOp('teardown', TEARDOWN_STORAGE_LEFT)
     const first = mount(api)
@@ -165,7 +165,7 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     expect(items).toHaveLength(1)
     expect(items[0].kind).toBe('teardown')
 
-    // 結果欄（既存の⑥の結果欄がそのまま描ける形）: 残った保存場所が名指しで入っている
+    // 結果欄（既存の手順6の結果欄がそのまま描ける形）: 残った保存場所が名指しで入っている
     const typed = resumedTeardownResult(items[0].record)
     expect(typed.ok).toBe(false)
     expect(typed.remaining).toEqual({ storageBucket: 'koto-data-x' })
@@ -175,10 +175,11 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
 
     // 警告（見逃してはいけない知らせ）: ⚠️ の行は警告へ移してあり、そのまま出る
     const note = resumedNoteOf(items[0])
-    expect(note.warnings).toEqual(['⚠️ 保存場所の記録（公開の設定）は残しています。次に公開する前に、③「保存場所を用意する」からやり直してください'])
-    expect(note.headline).toContain('⑥ すべて削除')
+    expect(note.warnings).toEqual(['⚠️ 保存場所の記録（公開の設定）は残しています。次に公開する前に、【公開】の「保存場所を用意する」からやり直してください'])
+    expect(note.headline).toContain('手順6 すべて削除')
+    expect(note.headline, '旧い丸数字の見出しが戻っている').not.toContain('⑥')
 
-    // ack: **警告つきの記録は、画面が出しても「見た」と伝えない**（2026-09-30 検分）。⑥の結果欄は公開ボタンのずっと下にあり、
+    // ack: **警告つきの記録は、画面が出しても「見た」と伝えない**（2026-09-30 検分）。手順6の結果欄は公開ボタンのずっと下にあり、
     // スクロールせずに閉じると、見せたことにならないのに見たことにして、月額が続く警告が二度と出なくなった。
     // 上部の「結果を確認しました」（PublishModal）を押したときにだけ見たことになる。
     expect(acks, '警告つきの記録を、画面が出しただけで「見た」と伝えた').toEqual([])
@@ -223,7 +224,7 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     third.watch.stop()
   })
 
-  it('⑧: 動いていない公開の警告・DNS の IP・応答の確認・URL が、結果欄と警告に分かれて出る', async () => {
+  it('手順8: 動いていない公開の警告・DNS の IP・応答の確認・URL が、結果欄と警告に分かれて出る', async () => {
     const { api } = makeApi()
     const op = startOp('publish', {
       ok: true, stage: 'done', message: '公開しました。DNS の A レコードを次の IP に向けてください: 59.106.222.212',
@@ -249,7 +250,7 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     ])
   })
 
-  it('⑧が失敗した: 段・理由・詳細・回復の印（hint）が結果欄の形で戻る', async () => {
+  it('手順8が失敗した: 段・理由・詳細・回復の印（hint）が結果欄の形で戻る', async () => {
     const { api } = makeApi()
     const op = startOp('publish', { ok: false, stage: 'image', message: 'イメージの反映に失敗しました', detail: 'unauthorized', hint: 'reset-registry' })
     await finish(op)
@@ -259,7 +260,7 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     expect(typed).toMatchObject({ ok: false, stage: 'image', message: 'イメージの反映に失敗しました', detail: 'unauthorized', hint: 'reset-registry' })
   })
 
-  it('⑤: 途中で止まった結果（どこまで作られたか）が戻る', async () => {
+  it('手順5: 途中で止まった結果（どこまで作られたか）が戻る', async () => {
     const { api } = makeApi()
     const op = startOp('create', { ok: false, stage: 'asg-create', message: 'ASG の作成に失敗しました', clusterID: 'c1', asgID: null, loadBalancerID: null })
     await finish(op)
@@ -269,7 +270,7 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     expect(typed).toEqual({ ok: false, stage: 'asg-create', message: 'ASG の作成に失敗しました', clusterID: 'c1', asgID: null, loadBalancerID: null })
   })
 
-  it('⑤が成功: 作られた3つの ID と段が戻る', async () => {
+  it('手順5が成功: 作られた3つの ID と段が戻る', async () => {
     const { api } = makeApi()
     const op = startOp('create', { ok: true, stage: 'done', message: '作成できました。', clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
     await finish(op)
@@ -278,10 +279,10 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     expect(resumedCreateResult(m.allFinished()[0].record)).toEqual({ ok: true, stage: 'done', message: '作成できました。', clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' })
   })
 
-  it('⑥が「削除中です」で止まった / 消せずに残った: ID の一覧は結果欄が出し、同じ知らせを警告に重ねない（ただし知らせは消えない）', async () => {
+  it('手順6が「削除中です」で止まった / 消せずに残った: ID の一覧は結果欄が出し、同じ知らせを警告に重ねない（ただし知らせは消えない）', async () => {
     const { api } = makeApi()
     const inProgressOp = startOp('teardown', {
-      ok: false, executed: [], message: 'ロードバランサの削除を受け付けましたが、まだ削除中です。しばらくして⑥をもう一度押してください',
+      ok: false, executed: [], message: 'ロードバランサの削除を受け付けましたが、まだ削除中です。しばらくして手順6をもう一度押してください',
       remaining: { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' }, inProgress: { loadBalancerID: 'l1' },
     })
     await finish(inProgressOp)
@@ -300,7 +301,7 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     m1.watch.stop()
   })
 
-  it('★★ 結果欄が出せない知らせは落とさない: ⑤の警告・⑥の別の警告（残ったものが無いとき）は必ず知らせに載る', async () => {
+  it('★★ 結果欄が出せない知らせは落とさない: 手順5の警告・手順6の別の警告（残ったものが無いとき）は必ず知らせに載る', async () => {
     const { api } = makeApi()
     const op = startOp('create', { ok: true, stage: 'done', message: '作成できました。', clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', warnings: ['ロードバランサの IP はまだ付いていません'] })
     await finish(op)
@@ -347,7 +348,7 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
 
 // ── 隠れているタブの画面は、結果を「見た」に数えない（2026-09-30 検分）─────────────────────────
 // 専有型のタブは、共用型へ切り替えても**パネルを外さずに隠す**（PublishModal）。隠れている間に届いた結果は、画面の状態
-// （⑤⑥⑧の結果欄）には入っても、利用者は見ていない。以前は渡した直後・endLocal で、隠れたままでも ack していたので、
+// （手順5・6・8の結果欄）には入っても、利用者は見ていない。以前は渡した直後・endLocal で、隠れたままでも ack していたので、
 // 結果を見ないまま閉じると、開き直しても出なかった。
 describe('★★★ 隠れているタブ（isVisible が false）では、結果を渡しても ack しない。また出たとき（visibilityChanged）に ack する', () => {
   const PLAIN_TEARDOWN = { ok: true, executed: ['クラスタ『c1』を削除しました（消えたことを確認）'], message: '', remaining: {} }
@@ -512,9 +513,9 @@ describe('★★ この画面が始めた操作は、記録から二重に出さ
     const { api, acks } = makeApi()
     const m = mount(api)
     await flush()
-    m.watch.beginLocal('teardown')                                   // この画面が⑥を始めた
+    m.watch.beginLocal('teardown')                                   // この画面が手順6を始めた
     await finish(startOp('teardown', { ok: false, executed: [], message: '保存場所が残りました', remaining: { storageBucket: 'koto-data-x' } }))
-    await finish(startOp('publish', { ok: true, stage: 'done', message: '別の窓の⑧', warnings: ['まだ動いていません'] }))
+    await finish(startOp('publish', { ok: true, stage: 'done', message: '別の窓の手順8', warnings: ['まだ動いていません'] }))
     await flush()
     const unseen = () => [...getOps(DIR).earlier, ...(getOps(DIR).last ? [getOps(DIR).last!] : [])]
     const [l, c] = unseen()
@@ -540,7 +541,7 @@ describe('★★ この画面が始めた操作は、記録から二重に出さ
     await flush()
     m.watch.beginLocal('teardown')
     await finish(startOp('teardown', { ok: true, executed: [], message: '', remaining: {} }))
-    await finish(startOp('publish', { ok: true, stage: 'done', message: '別の窓の⑧' }))
+    await finish(startOp('publish', { ok: true, stage: 'done', message: '別の窓の手順8' }))
     await flush()
     expect(acks).toEqual([])
     const cStartedAt = getOps(DIR).last!.startedAt
@@ -561,7 +562,7 @@ describe('★★ この画面が始めた操作は、記録から二重に出さ
     expect(m.allFinished().map(i => i.record.result?.message)).toEqual(['前回の失敗'])
   })
 
-  it('別の種類（⑤を押している間に⑥の結果が終わっていた）は、⑤の操作に巻き込まれず出る', async () => {
+  it('別の種類（手順5を押している間に手順6の結果が終わっていた）は、手順5の操作に巻き込まれず出る', async () => {
     const { api } = makeApi()
     const m = mount(api)
     await flush()
@@ -573,7 +574,7 @@ describe('★★ この画面が始めた操作は、記録から二重に出さ
 })
 
 describe('★★ 別の公開先・別の操作の記録は出さない・巻き込まない（掟11）', () => {
-  it('別の公開先（Vercel）の公開が走っている: 詳細は出さず「別の操作」だけ。⑤⑥⑧の走っている印は立たない', async () => {
+  it('別の公開先（Vercel）の公開が走っている: 詳細は出さず「別の操作」だけ。手順5・6・8の走っている印は立たない', async () => {
     const { api } = makeApi()
     const op = startForeignOp()
     const m = mount(api)
@@ -585,13 +586,13 @@ describe('★★ 別の公開先・別の操作の記録は出さない・巻き
     await finish(op)
   })
 
-  it('📡 の「アプリだけ破棄」（同じ専有型でも handler が違う）は、⑥として扱わない', async () => {
+  it('同じ専有型でも handler が違う記録（廃止したアプリだけを消す旧い口 teardownApp の名前など）は、手順6として扱わない', async () => {
     const { api } = makeApi()
     const op = startForeignOp(DIR, 'apprunDedicated:teardownApp', 'sakura-apprun-dedicated')
     const m = mount(api)
     await flush()
     expect(m.lastRunning()!.running).toBeNull()
-    expect(m.lastRunning()!.other?.op).toBe('公開') // （この偽の操作の名前。走っていても⑥の進み具合にはならない）
+    expect(m.lastRunning()!.other?.op).toBe('公開') // （この偽の操作の名前。走っていても手順6の進み具合にはならない）
     await finish(op)
     await flush()
     expect(m.allFinished()).toEqual([])
@@ -752,14 +753,15 @@ describe('★ 押し出しが1つ届かなくても、聞き直し（refresh）�
   })
 })
 
-describe('⑥の節: 走っている間は、記録が空でも出し続ける', () => {
+describe('手順6の節: 走っている間は、記録が空でも出し続ける', () => {
   it('計算資源を消し切って保存場所を片づけている最中（記録が空・残りの印もまだ無い）でも、走っていれば出す', () => {
-    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: null, running: true })).toBe(true)
+    expect(shouldShowTeardownButton({ record: { storageLeftoverBucket: null }, running: true })).toBe(true)
+    expect(shouldShowTeardownButton({ record: {}, running: true })).toBe(true)
     // 走っていなければ従来どおり（何も無ければ出さない・資源か残った保存場所があれば出す）
-    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: null, running: false })).toBe(false)
-    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: null })).toBe(false)
-    expect(shouldShowTeardownButton({ hasAnyResource: true })).toBe(true)
-    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: 'koto-data-x' })).toBe(true)
+    expect(shouldShowTeardownButton({ record: { storageLeftoverBucket: null }, running: false })).toBe(false)
+    expect(shouldShowTeardownButton({ record: { storageLeftoverBucket: null } })).toBe(false)
+    expect(shouldShowTeardownButton({ record: { clusterID: 'c1' } })).toBe(true)
+    expect(shouldShowTeardownButton({ record: { storageLeftoverBucket: 'koto-data-x' } })).toBe(true)
   })
 })
 
@@ -803,6 +805,9 @@ describe('main の記録が作る警告の書き出しと、画面が外す書�
     const remaining = summarizeResult({ ok: false, remaining: { clusterID: 'c1' } }).warnings
     expect(remaining).toHaveLength(1)
     expect(remaining[0].startsWith(TEARDOWN_REMAINING_WARNING_HEAD)).toBe(true)
+    // 0.6.21（検分）: 「何かが残っている」という事実の文を先に言う（条件の文だけにしない）。「＝」のメモ書きも戻さない
+    expect(TEARDOWN_REMAINING_WARNING_HEAD).toBe('削除できずに残っているものがあります。残っている間は課金が続きます')
+    expect(remaining[0]).not.toContain('＝課金')
     const inProgress = summarizeResult({ ok: false, inProgress: { loadBalancerID: 'l1' }, remaining: { loadBalancerID: 'l1' } }).warnings
     expect(inProgress).toHaveLength(1)
     expect(inProgress[0].startsWith(TEARDOWN_IN_PROGRESS_WARNING_HEAD)).toBe(true)

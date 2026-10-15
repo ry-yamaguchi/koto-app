@@ -1,7 +1,7 @@
-// storageNoticeText.ts — ③公開の「データの保存」の枠に出る文と、AI への依頼文（純ロジック）。
+// storageNoticeText.ts — 【公開】の「データの保存」の枠に出る文と、AI への依頼文（純ロジック）。
 //
 // ── なぜ切り出すのか（2026-09-23 実機で起きたこと）────────────────────
-// ③公開に「⚠️ データが消えてしまいます」と出た。アプリの server.js が
+// 【公開】に「⚠️ データが消えてしまいます」と出た。アプリの server.js が
 // ファイルへ直接書いていたためで、**この判定は正しかった**。
 // 利用者が「AIに書き直してもらう」を押して頼むと、AI は2回とも
 // **「書き直しは既に完了しています」と答えたのに、実際には1文字も変わっていなかった**。
@@ -70,7 +70,7 @@ export function storagePreparedText(
   const name = typeof file === 'string' && file.length > 0 ? file : null
   const layer = !placed ? ''
     : name ? `${name} もプロジェクトに置きました。`
-    : 'データの保存の部品もプロジェクトに置きました。'
+    : 'データ保存用のファイル（koto-data）もプロジェクトに置きました。'
   return `保存場所『${bucket}』を用意しました。${layer}次に公開すると、アプリから読み書きできるようになります。`
 }
 
@@ -176,7 +176,7 @@ export function askAiRewritePlan(
     const detail = typeof layer?.message === 'string' && layer.message.length > 0 ? `（${layer.message}）` : ''
     return {
       send: false,
-      error: '保存の部品を用意できませんでした' + detail
+      error: 'データ保存用のファイル（koto-data）を用意できませんでした' + detail
         + '。この状態で書き直しをお願いすると、読み込み先が無いために失敗します。'
         + '少し待ってから、もう一度お試しください。',
     }
@@ -201,12 +201,12 @@ export function dataLayerUpdateLine(
 ): string {
   if (!layer || layer.ok !== true) return ''
   const name = typeof layer.file === 'string' && layer.file.length > 0 ? layer.file : 'koto-data'
-  if (layer.replaced === true) return `🔄 ${name} を新しい版に差し替えました（混み合ったときのやり直し・同時更新の検知が入ります）。`
+  if (layer.replaced === true) return `🔄 ${name} を新しいバージョンに差し替えました（混み合ったときのやり直し・同時更新の検知が入ります）。`
   if (layer.needsUpdate === true) {
     // 画面には素のテキストとして出る（StorageNotice.tsx の <p>{checkLine}</p>）。
     // **Markdown 記法を使わない**——アスタリスクがそのまま見える（このファイル冒頭の決まり）。
-    return `ℹ️ ${name} は Koto が置いた版か分からなかったので、そのままにしました。`
-      + '新しい版には、混み合ったときのやり直しと、同時更新の検知が入っています。'
+    return `ℹ️ ${name} は Koto が置いたバージョンか分からなかったので、そのままにしました。`
+      + '新しいバージョンには、混み合ったときのやり直しと、同時更新の検知が入っています。'
       + '入れ替えてよいか分からないときは、Koto に相談してください。'
   }
   return ''

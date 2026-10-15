@@ -1,7 +1,7 @@
 // apprunDedicatedActions.ts — AppRunDedicatedPanel.tsx の「確認→IPC」を、React/DOM から
 // 切り離した純関数として持つ（掟10・rollbackSwitch.ts と同型）。
 //
-// 専有型のクラスタ作成（⑤）・破棄（⑥）は、常時課金3資源を作る/壊す操作（docs/apprun-dedicated-plan.md
+// 専有型のクラスタ作成（手順5）・破棄（手順6）は、常時課金3資源を作る/壊す操作（docs/apprun-dedicated-plan.md
 // 5-7）。main 側は `opts.confirmed !== true` なら fetch を一切呼ばない歯止めを持つ
 // （src/main/cloud/apprunDedicatedApply.ts・2026-09-10 レビューの修理・A）が、その歯止めへ
 // `confirmed: true` を渡す判断（＝確認ダイアログを通ったか）を画面の中に埋め込んだままだと、
@@ -21,12 +21,12 @@
 // confirm が false（キャンセル）なら begin は一度も呼ばれない（＝実行中に数えない）。
 // begin が呼ばれたら、create/teardown の成功・失敗を問わず必ず end を1回呼ぶ（finally）。
 //
-// ── D-4（2026-09-15）: ⑧「アプリを公開する」も同じ形（runPublishApp）────────────────
+// ── D-4（2026-09-15）: 手順8「アプリを公開する」も同じ形（runPublishApp）────────────────
 // クラスタの上にアプリケーション（独自ドメイン）を載せる操作。イメージの組み立て・push・
 // POST /applications・POST versions と、確認無しに走らせてはいけない段が続くため、
-// ⑤⑥と同じく「confirm が false なら publish を一度も呼ばない」歯止めを純関数として持つ。
-// ⑧の節を出すかどうか（shouldShowPublishSection: クラスタ・ASG・LB の3つが揃っているときだけ）も
-// ここに置く（⑤の途中失敗でクラスタだけ作れた状態で⑧を出さない）。
+// 手順5・6と同じく「confirm が false なら publish を一度も呼ばない」歯止めを純関数として持つ。
+// 手順8の節を出すかどうか（shouldShowPublishSection: クラスタ・ASG・LB の3つが揃っているときだけ）も
+// ここに置く（手順5の途中失敗でクラスタだけ作れた状態で手順8を出さない）。
 
 import { PUBLISH_TARGET_LABEL, isKnownPublishTarget } from './publishStatus'
 // 記録を読む・「見た」と伝える・持ち場を決める・警告と時刻の文にする、は**共通の1か所**を使う（掟10・2026-09-30 検分の指摘2）。
@@ -35,6 +35,10 @@ import {
   type ProjectOpsApi,
 } from './projectOpsView'
 import { warningLine, clockText } from '../shared/opsText'
+// 段ごとの所要時間（記録の result.extra.stageTimings）を、その場の結果と同じ形に読み戻す（2026-10-07・「かかった時間を見る」の双子）。
+import { readStageTimings } from '../shared/stageTiming'
+// 「消すものが記録にあるか」は 📡 の 🗑（runDedicatedTeardown）と同じ1つの判断（掟10）。
+import { dedicatedTeardownHasWork } from '../shared/teardownSupport'
 
 export type ConfirmFn = (message: string) => boolean
 
@@ -104,13 +108,13 @@ export async function runTeardown<R>(req: TeardownReq, deps: RunTeardownDeps<R>)
   }
 }
 
-// ── B-2（2026-09-10 実機・Ryosuke さん指摘「消した後の表示が変」）: ⑤⑥の結果ブロックを
+// ── B-2（2026-09-10 実機・Ryosuke さん指摘「消した後の表示が変」）: 手順5・6の結果ブロックを
 // いつ出すかの判定を、React/DOM から切り離した純関数として持つ（掟10）。
 //
-// 直したかった事故: 破棄（⑥）が成功して記録（apprunState）が空になると、⑤の節が
-// 「hasAnyResource が false」の分岐へ切り替わり、そこに**古い createResult（⑤の前回の
-// 『✅ 作成できました』）がそのまま出ていた**。加えて、⑥の結果表示は「記録に何かある間」
-// だけ描く節の中に置いていたため、破棄が完了して記録が空になった瞬間に⑥の節ごと消え、
+// 直したかった事故: 破棄（手順6）が成功して記録（apprunState）が空になると、手順5の節が
+// 「hasAnyResource が false」の分岐へ切り替わり、そこに**古い createResult（手順5の前回の
+// 『✅ 作成できました』）がそのまま出ていた**。加えて、手順6の結果表示は「記録に何かある間」
+// だけ描く節の中に置いていたため、破棄が完了して記録が空になった瞬間に手順6の節ごと消え、
 // 「✅ すべて削除しました」という肝心の結果も一緒に見えなくなっていた。
 //
 // tests/apprunDedicatedActions.test.ts が、実装を壊すと落ちる形（掟10）で固定する。
@@ -119,7 +123,7 @@ export async function runTeardown<R>(req: TeardownReq, deps: RunTeardownDeps<R>)
 export type ApprunResourceRecord = { clusterID?: string | null; asgID?: string | null; loadBalancerID?: string | null } | null | undefined
 
 /**
- * ⑤「クラスタを作る」の結果ブロックを出すか。
+ * 手順5「クラスタを作る」の結果ブロックを出すか。
  * - createResult が無ければ出さない。
  * - createResult.ok が false（途中で止まった）なら、記録の状態に関わらず常に出す
  *   （失敗の内容・ここまで作られたIDは、破棄の判断に要る情報のため）。
@@ -134,17 +138,17 @@ export function shouldShowCreateResult(createResult: { ok: boolean } | null | un
 }
 
 /**
- * ⑥「作ったものを壊す」の結果ブロックを出すか。teardownResult があるときは常に true——
- * **⑥の節（記録があるときだけ出る）の有無に関係なく**、破棄の結果（「✅ すべて削除しました」
+ * 手順6「作ったものを削除する」の結果ブロックを出すか。teardownResult があるときは常に true——
+ * **手順6の節（記録があるときだけ出る）の有無に関係なく**、破棄の結果（「✅ すべて削除しました」
  * を含む）を出す。破棄が完了して記録が空になっても、結果自体は隠さない。
- * 次の⑤の作成を始めたら teardownResult 自体を null に戻す（呼び出し側＝画面の責務。
+ * 次の手順5の作成を始めたら teardownResult 自体を null に戻す（呼び出し側＝画面の責務。
  * doCreate の中で setTeardownResult(null) する）——ここは「今の値をそのまま出すか」だけを見る。
  */
 export function shouldShowTeardownResult(teardownResult: unknown | null | undefined): boolean {
   return teardownResult != null
 }
 
-// ── D-4（2026-09-15）: ⑧「アプリを公開する」の確認→IPC と、節の表示判定 ──────────────
+// ── D-4（2026-09-15）: 手順8「アプリを公開する」の確認→IPC と、節の表示判定 ──────────────
 
 export type PublishReq<Input> = {
   /** 確認ダイアログに出す文言（ホスト名・スペック・DNS の案内を含めて呼び出し側が組み立てる）。 */
@@ -182,34 +186,34 @@ export async function runPublishApp<Input, R>(req: PublishReq<Input>, deps: RunP
 }
 
 /**
- * ⑧「アプリを公開する」の節を出すか。**クラスタ・ASG・ロードバランサの3つが揃っているときだけ**
+ * 手順8「アプリを公開する」の節を出すか。**クラスタ・ASG・ロードバランサの3つが揃っているときだけ**
  * （AND。shouldShowCreateResult の「1つでもあれば」とは違う）。
  * - 記録が無い（null/undefined）→ false。
- * - ⑤が途中で止まってクラスタだけ作れた状態 → false（main の publishAppFlow は 'no-cluster' 相当で
- *   止まるので、押せるボタンを出しても意味が無い。先に⑥で破棄→⑤で作り直してもらう）。
+ * - 手順5が途中で止まってクラスタだけ作れた状態 → false（main の publishAppFlow は 'no-cluster' 相当で
+ *   止まるので、押せるボタンを出しても意味が無い。先に手順6で破棄→手順5で作り直してもらう）。
  */
 export function shouldShowPublishSection(record: ApprunResourceRecord): boolean {
   return !!(record?.clusterID && record?.asgID && record?.loadBalancerID)
 }
 
-// ── H-1（2026-09-17）: ⑤⑥⑦⑧ は同時に走らせない ──────────────────────────────────
-// 横断点検（6視点）のうち4つが独立に同じ欠陥へ収束した: **⑥「すべて削除する」の
-// 実行中でも⑧「公開する」が押せた**（逆も同じ）。⑥は実測で約9分かかるので、窓は広い。
+// ── H-1（2026-09-17）: 手順5・6・7・8 は同時に走らせない ──────────────────────────────────
+// 横断点検（6視点）のうち4つが独立に同じ欠陥へ収束した: **手順6「すべて削除する」の
+// 実行中でも手順8「公開する」が押せた**（逆も同じ）。手順6は実測で約9分かかるので、窓は広い。
 //
-// 何が壊れるか。破棄がロードバランサを消している最中に⑧を押すと、公開はその場で記録を
+// 何が壊れるか。破棄がロードバランサを消している最中に手順8を押すと、公開はその場で記録を
 // 読み直すが clusterID 等がまだ残っているため通過し、消えかけのクラスタに新しいアプリを
 // 作って applicationID を記録する。破棄は先頭で読んだ記録のまま進み、最後に clusterID だけを
-// null にする。結果、**applicationID があるのに clusterID が無い**記録が残り、次に⑥を
+// null にする。結果、**applicationID があるのに clusterID が無い**記録が残り、次に手順6を
 // 押しても「クラスタのIDが記録にありません」で止まる＝**Koto からは二度と消せない**。
 // アプリの段に割り込めば、破棄が無効にしたアプリを公開が作り直して有効化するので、
 // 削除が 400 を繰り返して**破棄そのものが失敗する**（月額およそ2万2千円が止まらない）。
 //
-// 直す形: 「この節で何かが走っているか」を1つにまとめ、**⑤⑥⑦⑧の操作を全部止める**。
+// 直す形: 「この節で何かが走っているか」を1つにまとめ、**手順5・6・7・8の操作を全部止める**。
 // 判定をここ（純関数）に置き、画面には条件を書き散らさない（掟10）。
 // **画面のフラグだけでは足りない**（窓を再読み込みすると消える）ので、main 側にも
 // プロジェクト単位の歯止めを置く（src/main/ipc/apprunDedicated.ts の withProjectLock）。
 
-/** ⑤⑥⑦⑧ のどれかが走っているか。走っている間、この節の操作は全部止める。 */
+/** 手順5・6・7・8 のどれかが走っているか。走っている間、この節の操作は全部止める。 */
 export function panelBusy(s: {
   creating?: boolean
   tearingDown?: boolean
@@ -231,17 +235,17 @@ export function panelBusyReason(s: {
   lbRefreshing?: boolean
 } | null | undefined): string {
   if (!s) return ''
-  if (s.tearingDown) return 'いま⑥の削除を実行中です。終わるまでお待ちください。'
-  if (s.publishing) return 'いま⑧の公開を実行中です。終わるまでお待ちください。'
-  if (s.creating) return 'いま⑤のクラスタ作成を実行中です。終わるまでお待ちください。'
-  if (s.lbRefreshing) return 'いま IP を取り直しています。終わるまでお待ちください。'
+  if (s.tearingDown) return 'いま手順6の削除を実行中です。終わるまでお待ちください。'
+  if (s.publishing) return 'いま手順8の公開を実行中です。終わるまでお待ちください。'
+  if (s.creating) return 'いま手順5のクラスタ作成を実行中です。終わるまでお待ちください。'
+  if (s.lbRefreshing) return 'いま IP を再取得しています。終わるまでお待ちください。'
   return ''
 }
 
-// ── ⑥の確認ダイアログの文面（2026-09-24 Ryosuke 決定「①は案2・一貫性が重要」）────────────
+// ── 手順6の確認ダイアログの文面（2026-09-24 Ryosuke 決定「(1)は案2・一貫性が重要」）────────────
 //
 // ── なぜ純関数として持つのか ──────────────────────────────────────────
-// 案2 では⑥の破棄で**利用者のデータが実際に消える**。それを名指ししない確認は嘘になる
+// 案2 では手順6の破棄で**利用者のデータが実際に消える**。それを名指ししない確認は嘘になる
 // （掟5「破壊操作は ConfirmModal」は、出すことだけでなく**何が消えるかを言うこと**まで含む）。
 // 画面の中で文字列を組み立てていると、保存場所の行が落ちてもテストで捕まえられない。
 
@@ -266,7 +270,7 @@ export function teardownKindsOf(targets: readonly string[]): string[] {
 }
 
 /**
- * ⑥「すべて削除する」の確認ダイアログの本文（純関数）。
+ * 手順6「すべて削除する」の確認ダイアログの本文（純関数）。
  *
  * - `targets` は削除するものの名前（アプリ・ロードバランサ・ASG・クラスタ）。
  * - `placements` があるときだけ、一覧に**保存場所の名前**を足し、「中のデータも消えます」と
@@ -278,12 +282,12 @@ export function teardownKindsOf(targets: readonly string[]): string[] {
  *   これは押す前の警告として逆向き（押したら何が止まるのかを言う）。
  *
  * ── なぜ `placement`（1件）ではなく `placements`（全件）なのか（2026-09-25 検分の指摘15・V6）──
- * ⑥の破棄は `teardownStorageForProject` が `for (const placement of placements)` で
+ * 手順6の破棄は `teardownStorageForProject` が `for (const placement of placements)` で
  * **env.json にある保存場所を全件**片づける。ところがこの文面は `storage:placement` の
  * 先頭1件だけで組み立てていたので、2件ある状態では確認に『A』しか出ないまま
  * **名前が一度も出なかった『B』とその中のデータまで消えた**。
  * **元に戻せない削除を、名指ししないまま実行させない**（掟10「お金・破壊の歯止め」）。
- * 📡一覧・HANAMII・サイドバーは既に全件を出しており、専有型⑥だけが取り残されていた。
+ * 📡一覧・HANAMII・サイドバーは既に全件を出しており、専有型手順6だけが取り残されていた。
  * 「ほか◯件」で省かない——名前が出ていないものは、利用者にとって存在しないのと同じ。
  * **1件のときの文面は従来と1文字も変えない**（文言を二重管理しないため）。
  */
@@ -304,11 +308,17 @@ export function teardownConfirmMessage(opts: {
    *
    * 保存場所は公開先ごとではなく**プロジェクト単位**で、HANAMII も共用型も同じ bucket/prefix を
    * 使う（`issueStorageEnvFor` を全員が通る）。「HANAMII で本番を公開したまま、専有型を試しに
-   * 作って⑥で壊す」と、ほかに使っているプロジェクトが無い限り `teardownPlanFor` は
+   * 作って手順6で壊す」と、ほかに使っているプロジェクトが無い限り `teardownPlanFor` は
    * `deleteBucket:true` を返し、**稼働中の HANAMII のアプリのデータごと消える**。
    * 名前を挙げずに押させてはいけない（掟11「ほかの公開先の資源に触れない」）。
    */
   otherTargets?: string[]
+  /**
+   * 時間のかかる段の予告（2026-10-08・作者の決定）。「ロードバランサの削除におよそ9分」のような一文を、
+   * 目安の仕組み（shared/stageEstimate.ts）の出力から作って呼び出し側が渡す（ここで数字を持たない）。
+   * 渡さなければ（目安が無い・ロードバランサが無い）何も足さない——**測っていない段に目安を作らない**。
+   */
+  waitNote?: string
 }): string {
   // 名前の無いもの（null・空の bucket）は数えない。`teardownDataNoteForAll` の選び方と揃える。
   const buckets = (opts.placements ?? [])
@@ -321,7 +331,9 @@ export function teardownConfirmMessage(opts: {
   // データや自分で置いたファイルは残す・ほかに使う人がいなければ保存場所ごと削除）と食い違っていた。
   // 保存場所が消えるかどうかは💾の行に任せ、ここでは「中にあるこのプロジェクトのデータ」とだけ言う。
   const list = buckets.length > 0 ? [...opts.targets, `保存場所${names}にある、このプロジェクトのデータ`] : [...opts.targets]
-  const paragraphs = [`次を削除します: ${list.join('・')}`]
+  // 一覧が空なら、空のまま「次を削除します: 」と出さない（何も名指ししていないのに「削除する」を押させない・掟10）。
+  // 通常は呼び出し側（dedicatedTeardownFlow）が、消すものが記録に無いときは確認自体を出さない。ここは最後の砦。
+  const paragraphs = [`次を削除します: ${list.length > 0 ? list.join('・') : '（記録に名前を挙げられるものがありません）'}`]
   if (buckets.length > 0 && opts.dataNote) paragraphs.push(`💾 ${opts.dataNote}`)
   const others = (opts.otherTargets ?? []).filter(t => !!t)
   if (buckets.length > 0 && others.length > 0) {
@@ -340,6 +352,8 @@ export function teardownConfirmMessage(opts: {
   const computeCost = kinds.length > 0 ? `${kinds.join('・')}の課金は止まります。` : ''
   const storageCost = buckets.length > 0 ? '保存場所は、ほかに使っているプロジェクトが無いときだけ止まります。' : ''
   const costLine = [computeCost, storageCost].filter(Boolean).join('')
+  // 時間のかかる段の予告は、最後の問いの直前に置く（押す前に読む位置）。
+  if (opts.waitNote) paragraphs.push(opts.waitNote)
   // どちらも無い（消すものが無い）ときは、無い費用の話をしない——確認文自体はそのまま出す。
   paragraphs.push(costLine
     ? `この操作は元に戻せません。削除すると、${costLine}よろしいですか？`
@@ -347,9 +361,9 @@ export function teardownConfirmMessage(opts: {
   return paragraphs.join('\n\n')
 }
 
-// ── ⑥をもう一度押せるようにする（2026-09-24 検分の指摘1）────────────────────────────
+// ── 手順6をもう一度押せるようにする（2026-09-24 検分の指摘1）────────────────────────────
 //
-// ⑥「すべて削除する」ボタンは、記録に clusterID/asgID/loadBalancerID が1つでもある間しか
+// 手順6「すべて削除する」ボタンは、記録に clusterID/asgID/loadBalancerID が1つでもある間しか
 // 画面に出ていなかった。ところが main 側は、**計算資源を消し切って記録を空にしたあとで**
 // 保存場所を片づける。「アプリ→LB→ASG→クラスタは全部消えた。保存場所の一覧取得が 403 や
 // 一時的な通信失敗で落ちた」という、まさに起こりうる並びで、**記録が空＝ボタンが消え、
@@ -360,52 +374,57 @@ export function teardownConfirmMessage(opts: {
 // 判断を画面に書き散らさないよう、ここ（純関数）に置いてテストで固定する（掟10）。
 
 /**
- * ⑥「すべて削除する」のボタンを出すか。
- * - 記録に計算資源が1つでもあれば出す（従来どおり）。
- * - 計算資源が空でも、**保存場所だけが残っている**（前回の破棄で片づけ切れなかった）なら出す。
+ * 手順6「すべて削除する」のボタンを出すか。
+ * - 記録に**消すものがあれば**出す——その判断は `dedicatedTeardownHasWork`（shared/teardownSupport.ts）の1つで、
+ *   📡 の 🗑（runDedicatedTeardown が破壊の確認を出すか）と**同じこれ**を使う。資源の ID（アプリ・ロードバランサ・
+ *   オートスケーリンググループ・クラスタ）が1つでもある、または前回の削除で保存場所だけが残った印（`storageLeftoverBucket`）がある。
+ *   以前はここだけが「クラスタ・ASG・LB」の3つで判断し（アプリだけの記録では出さず）、📡 とは判断が2か所に分かれていた
+ *   （2026-10-08 検分 E）。
+ * - 走っている間は出し続ける。
+ *
+ * ※ アプリのID だけで資源のIDが無い記録（本来は起きない）でもボタンが出る。押すと main は
+ *   「削除に必要なクラスタのIDが記録にありません」で止め、さくらには何も要求しない（📡 の 🗑 と同じ結果）。
+ *   そのとき、何を消すかの一覧（アプリ・ロードバランサ・オートスケーリンググループ・クラスタの行）も出すように、
+ *   一覧を出すかの判断も同じ土台に揃えてある（`shouldShowTeardownList`・2026-10-08 検分）。
  */
 export function shouldShowTeardownButton(s: {
-  hasAnyResource: boolean
-  /** 記録の `storageLeftoverBucket`（main が片づけに失敗したときに書く）。 */
-  storageLeftoverBucket?: string | null
+  /** `apprunDedicated:state` が返す記録（資源のID・storageLeftoverBucket）。 */
+  record?: Parameters<typeof dedicatedTeardownHasWork>[0]
   /**
-   * ⑥がいま走っている（この画面が始めたものでも、閉じて開き直す前に始めたものでもよい）。
-   * 走っている間は⑥の節を出し続ける——計算資源を消し切って保存場所を片づけている最中は、記録が空でも
+   * 手順6がいま走っている（この画面が始めたものでも、閉じて開き直す前に始めたものでもよい）。
+   * 走っている間は手順6の節を出し続ける——計算資源を消し切って保存場所を片づけている最中は、記録が空でも
    * 「いまどこまで進んでいるか」を出す場所が要る（2026-09-29）。
    */
   running?: boolean
 }): boolean {
-  return !!(s.hasAnyResource || s.storageLeftoverBucket || s.running)
-}
-
-/** 保存場所だけが残っているときに⑥へ出す一言（空文字なら出さない）。 */
-export function storageLeftoverNote(bucket: string | null | undefined): string {
-  if (!bucket) return ''
-  return `保存場所『${bucket}』だけが残っています（消すまで月額が続きます）。もう一度押すと片づけます。`
+  return dedicatedTeardownHasWork(s.record) || !!s.running
 }
 
 /**
- * 破棄のあと、公開記録（publish.targets）を片づけるか（2026-09-24 検分の指摘4・9・13）。
- *
- * **判断の基準は「破棄全体が成功したか」ではなく「アプリが実際に消えたか」。**
- * 保存場所の片づけだけが失敗した回は `ok:false` で返るが、アプリ・LB・ASG・クラスタは
- * 実際に消えている。そこで記録を残すと、📡 公開したもの一覧に**存在しないアプリ**が
- * 公開中として出続け、URL は 404 になる。しかも記録から applicationID が消えているため、
- * ⑥を押し直しても二度と自動では片づかない。
- *
- * `appDeleted` は main が立てる印。古い main（印が無い）との組み合わせでは `ok` に倒す。
+ * 手順6の「消すものの一覧」（アプリ・ロードバランサ・オートスケーリンググループ・クラスタの行）を出すか。
+ * ボタン（`shouldShowTeardownButton`）と同じ `dedicatedTeardownHasWork` の判断から、**保存場所の残りの印だけを除いた**もの——
+ * 保存場所だけが残っているときは、一覧に並べる行が無い（その一言は `storageLeftoverNote` が別に出す）。
+ * 以前は一覧を「クラスタ・ASG・LB のどれか」（hasAnyResource）でガードし、ボタンはアプリのIDだけでも出るのに、
+ * 何を消すかの一覧が無いボタンになった（2026-10-08 検分）。判断を2つに分けない。
  */
-export function shouldClearPublishRecord(s: {
-  hadApplicationID: boolean
-  result: { ok: boolean; appDeleted?: boolean } | null | undefined
-}): boolean {
-  if (!s.hadApplicationID || !s.result) return false
-  return s.result.appDeleted ?? s.result.ok
+export function shouldShowTeardownList(record: Parameters<typeof dedicatedTeardownHasWork>[0]): boolean {
+  return dedicatedTeardownHasWork({ ...record, storageLeftoverBucket: null })
 }
 
-// ── 閉じて開き直したとき、続きと結果を出す（2026-09-29・作者の決定 ①②）──────────────────────────
+/** 保存場所だけが残っているときに手順6へ出す一言（空文字なら出さない）。 */
+export function storageLeftoverNote(bucket: string | null | undefined): string {
+  if (!bucket) return ''
+  return `保存場所『${bucket}』だけが残っています（消すまで月額が続きます）。もう一度押すと削除します。`
+}
+
+// 破棄のあと、公開記録（publish.targets）を片づけるかの判断は**画面には持たない**（2026-10-08）。
+// main の `apprunDedicated:teardown`（src/main/ipc/apprunDedicated.ts）が、操作の鍵の中で1回だけ
+// `shouldForgetPublishRecord`（src/main/cloud/apprunDedicatedApply.ts）の規則で片づける。
+// 手順6からも 📡 の 🗑 からも同じこの1か所（画面の後始末は、閉じると走らず、再生されると新しい記録を消す穴だった）。
+
+// ── 閉じて開き直したとき、続きと結果を出す（2026-09-29・作者の決定 (1)(2)）──────────────────────────
 //
-// ⑤作成・⑥すべて削除・⑧公開の本体は main の1回の IPC で最後まで進み、記録も main が書く
+// 手順5の作成・手順6のすべて削除・手順8の公開の本体は main の1回の IPC で最後まで進み、記録も main が書く
 // （withProjectLock）。だから**公開のダイアログを閉じても処理は止まらない**。失われていたのは画面の表示
 // ——進み具合・結果・警告（「保存場所が残ったので月額が続きます」「まだ動いていません」など）——だけで、
 // 開き直すと「終わったのか」「うまくいったのか」「何が残ったのか」が分からなかった。
@@ -419,7 +438,7 @@ export function shouldClearPublishRecord(s: {
 // （tests/ops-dedicated-resume.test.ts）で固定する。画面（AppRunDedicatedPanel.tsx）は、これを付け外しして
 // 届いたものを state に置くだけ。
 
-/** このパネルが受け持つ操作（⑤⑥⑧）。 */
+/** このパネルが受け持つ操作（手順5・6・8）。 */
 export type DedicatedOpKind = 'create' | 'teardown' | 'publish'
 
 /** 専有型の公開先（記録の target）。定義は projectOpsView.ts（持ち場の表と同じ場所）。 */
@@ -427,16 +446,16 @@ export { DEDICATED_TARGET }
 
 /** 見出しに使う名前（画面の節の番号と揃える）。 */
 export const DEDICATED_OP_LABEL: Record<DedicatedOpKind, string> = {
-  create: '⑤ クラスタの作成',
-  teardown: '⑥ すべて削除',
-  publish: '⑧ アプリの公開',
+  create: '手順5 クラスタの作成',
+  teardown: '手順6 すべて削除',
+  publish: '手順8 アプリの公開',
 }
 
 /**
- * 記録が、このパネルの⑤⑥⑧のどれかか（違えば null）。
+ * 記録が、このパネルの手順5・6・8のどれかか（違えば null）。
  *
- * **見分けは target と handler の両方**。同じ「削除」でも⑥（`apprunDedicated:teardown`）と 📡 一覧の
- * 「アプリだけ破棄」（`apprunDedicated:teardownApp`）は別の操作で、後者はここには含めない（一覧の持ち場）。
+ * **見分けは target と handler の両方**。2026-10-08 から、手順6も 📡 一覧の「🗑 破棄」も同じ
+ * `apprunDedicated:teardown` で、記録は1種類。どちらの画面から始めた削除でも、記録からは同じように読める。
  * 鍵はプロジェクト単位なので、走っている・終わった記録は**別の公開先の操作**のことがある——そういう記録の
  * 詳細をここで出さず（掟11）、ack でも巻き込まない。
  */
@@ -460,7 +479,7 @@ export type DedicatedFinished = { kind: DedicatedOpKind; record: ProjectOpRecord
 /** 別の操作が走っているときの1行（詳細は出さない）。 */
 export function otherOpNote(other: DedicatedOtherOp): string {
   const what = other.targetLabel ? `${other.targetLabel}の${other.op}` : other.op
-  return `このプロジェクトでは別の操作（${what}）が進んでいます。終わるまで、⑤クラスタの作成・⑥すべて削除・⑧アプリの公開はできません。`
+  return `このプロジェクトでは別の操作（${what}）が進んでいます。終わるまで、手順5 クラスタの作成・手順6 すべて削除・手順8 アプリの公開はできません。`
 }
 
 /** 進み具合の一文（記録の progress。main が秘密を伏せてある）。補足があれば続ける。 */
@@ -476,11 +495,11 @@ export function opElapsedText(startedAt: number, nowMs: number): string {
   return min < 1 ? '始まってから1分未満' : `始まってから約${min}分`
 }
 
-// ── 記録 → 画面の結果（⑤⑥⑧の既存の結果欄がそのまま描ける形）─────────────────────────────
+// ── 記録 → 画面の結果（手順5・6・8の既存の結果欄がそのまま描ける形）─────────────────────────────
 // 記録の結果（OpResult）は main が各ハンドラの返り値から**許可した項目だけ**を写したもの。ここで
 // 既存の返り値の形へ戻し、生きている操作の結果と**同じ結果欄**で見せる（同じ意味を2つの見せ方にしない）。
 // **警告（warnings）は結果欄へ入れず、DedicatedResumedNote に集める**（同じ知らせを2か所に出さない・
-// 結果欄が警告を描かない場合〔失敗・⑤〕でも落とさない）。
+// 結果欄が警告を描かない場合〔失敗・手順5〕でも落とさない）。
 
 type CreateResultShape = Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['create']>>
 type TeardownResultShape = Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['teardown']>>
@@ -510,7 +529,17 @@ function pickIds(x: unknown, extraKeys: readonly string[] = []): Record<string, 
   return out
 }
 
-/** ⑤の結果（記録から）。 */
+/**
+ * 記録の extra から、段ごとの所要時間を読み戻す。**その場の結果（IPC の返り値の stageTimings）と同じ形**にして、
+ * 結果欄の「かかった時間を見る」が、その場で終わったときも開き直したときも**同じ部品に同じ値**を渡す（双子）。
+ * 無い・形が合わないときは何も足さない。
+ */
+function timingsPart(ex: Record<string, unknown>): { stageTimings?: NonNullable<ReturnType<typeof readStageTimings>> } {
+  const t = readStageTimings(ex.stageTimings)
+  return t ? { stageTimings: t } : {}
+}
+
+/** 手順5の結果（記録から）。 */
 export function resumedCreateResult(rec: ProjectOpRecordShape): CreateResultShape {
   const r = rec.result
   if (!r) return { ok: false, stage: 'record', message: RESULT_UNREADABLE }
@@ -523,10 +552,11 @@ export function resumedCreateResult(rec: ProjectOpRecordShape): CreateResultShap
     clusterID: asTextOrNull(ex.clusterID),
     asgID: asTextOrNull(ex.asgID),
     loadBalancerID: asTextOrNull(ex.loadBalancerID),
+    ...timingsPart(ex),
   }
 }
 
-/** ⑥の結果（記録から）。`executed` は起きたことの一覧（⚠️・※ の行は警告へ移してある）。 */
+/** 手順6の結果（記録から）。`executed` は起きたことの一覧（⚠️・※ の行は警告へ移してある）。 */
 export function resumedTeardownResult(rec: ProjectOpRecordShape): TeardownResultShape {
   const r = rec.result
   if (!r) return { ok: false, executed: [], message: RESULT_UNREADABLE, remaining: {} }
@@ -539,10 +569,11 @@ export function resumedTeardownResult(rec: ProjectOpRecordShape): TeardownResult
     remaining: pickIds(ex.remaining, ['storageBucket']),
     ...(inProgress ? { inProgress } : {}),
     ...(typeof ex.appDeleted === 'boolean' ? { appDeleted: ex.appDeleted } : {}),
+    ...timingsPart(ex),
   }
 }
 
-/** ⑧の結果（記録から）。DNS の案内（IP）・応答の確認・コンテナの様子まで、生きている結果と同じ欄で出せる。 */
+/** 手順8の結果（記録から）。DNS の案内（IP）・応答の確認・コンテナの様子まで、生きている結果と同じ欄で出せる。 */
 export function resumedPublishResult(rec: ProjectOpRecordShape): PublishResultShape {
   const r = rec.result
   if (!r) return { ok: false, stage: 'invalid', message: RESULT_UNREADABLE }
@@ -563,18 +594,19 @@ export function resumedPublishResult(rec: ProjectOpRecordShape): PublishResultSh
     ...(containerStates ? { containerStates } : {}),
     ...(r.detail ? { detail: r.detail } : {}),
     ...(ex.hint === 'reset-registry' ? { hint: 'reset-registry' as const } : {}),
+    ...timingsPart(ex),
   }
 }
 
 // ── 見逃してはいけない知らせ（警告）────────────────────────────────────────────────────────
 // 「保存場所が残ったので月額が続きます」のような結果の警告は、結果欄が描いても描かなくても**必ず出す**。
-// 出す場所は⑤⑥⑧の各節の結果欄の上（黄色）。
+// 出す場所は手順5・6・8の各節の結果欄の上（黄色）。
 
-// ⑥の結果欄は、消せずに残ったもの・削除中のものを**IDの一覧つき**で自分で描く。main が同じ事実から作る
+// 手順6の結果欄は、消せずに残ったもの・削除中のものを**IDの一覧つき**で自分で描く。main が同じ事実から作る
 // 警告の文（projectOps.ts の summarizeResult）と二重にならないよう、この2つの書き出しだけは警告から外す。
 // 書き出しが main と食い違うと二重に出るだけで、知らせが消えることはない
 // （tests/ops-dedicated-resume.test.ts が main の実際の文で一致を固定する）。
-export const TEARDOWN_REMAINING_WARNING_HEAD = '残っています＝課金が続きます'
+export const TEARDOWN_REMAINING_WARNING_HEAD = '削除できずに残っているものがあります。残っている間は課金が続きます'
 export const TEARDOWN_IN_PROGRESS_WARNING_HEAD = '削除の途中で、待ち切れずに止まりました'
 
 /** 開き直したあとの結果に添える、1件ぶんの知らせ。 */
@@ -630,14 +662,14 @@ export function addResumedNotes(
 // ── 記録を読む部品（React の外）──────────────────────────────────────────────────────────
 // 読む・押し出しを受ける・古い応答を捨てる・別のプロジェクトを無視する・「どこまで見たと伝えてよいか」は、
 // 共通の1か所（projectOpsView.ts の watchProjectOps／ackUpToFor）を通る。ここに書くのは、
-// **専有型の持ち場に固有の判断だけ**（⑤⑥⑧の見分け・この画面が始めた操作の結果は自分で出す）。
+// **専有型の持ち場に固有の判断だけ**（手順5・6・8の見分け・この画面が始めた操作の結果は自分で出す）。
 
 /** window.electronAPI.projectOps と同じ形（テストでは偽物を渡す）。定義は projectOpsView.ts。 */
 export type DedicatedOpsApi = ProjectOpsApi
 
 export interface DedicatedOpsWatch {
   /**
-   * **この画面が**⑤⑥⑧を始めるとき（IPC を呼ぶ直前）に呼ぶ。その操作の結果はこの画面が自分の返り値から出すので、
+   * **この画面が**手順5・6・8を始めるとき（IPC を呼ぶ直前）に呼ぶ。その操作の結果はこの画面が自分の返り値から出すので、
    * 記録のほうを**二重に出さない**（endLocal までは出さず・ack もしない）。
    */
   beginLocal(kind: DedicatedOpKind): void
@@ -683,10 +715,21 @@ export function watchDedicatedOps(deps: {
    * 2026-09-30 検分: これが無く、隠れたまま ack して、月額が続く警告が閉じて開き直すと消えた。
    */
   isVisible?: () => boolean
+  /**
+   * この画面が受け持つ操作の種類（既定は手順5・6・8の3つ＝専有型のパネル）。📡 公開したもの一覧の行は `['teardown']` だけ
+   * （削除の進み具合と結果を出す）。**受け持たない種類の記録は「別の持ち場の結果」として扱う**（出さない・ack にも巻き込まない・
+   * 走っているときは1行の知らせ〔other〕になる）。
+   */
+  kinds?: readonly DedicatedOpKind[]
 }): DedicatedOpsWatch {
   const { api, projectDir } = deps
   const now = deps.now ?? Date.now
   const isVisible = deps.isVisible ?? (() => true)
+  /** 受け持つ種類の記録だけ種類を返す（それ以外は null）。`dedicatedOpKind` は3つ全部を見分けるだけ。 */
+  const ownKind = (rec: { target?: string; handler?: string } | null | undefined): DedicatedOpKind | null => {
+    const k = dedicatedOpKind(rec)
+    return k && (!deps.kinds || deps.kinds.includes(k)) ? k : null
+  }
   let stopped = false
   let latest: ProjectOpsSnapshotShape | null = null
   let ackedUpTo = -Infinity
@@ -705,7 +748,7 @@ export function watchDedicatedOps(deps: {
 
     // 走っているもの
     const run = s.running ?? null
-    const runKind = dedicatedOpKind(run)
+    const runKind = ownKind(run)
     deps.onRunning(
       run && runKind ? { running: { kind: runKind, record: run }, other: null }
         : run ? { running: null, other: { op: run.op, targetLabel: isKnownPublishTarget(run.target) ? PUBLISH_TARGET_LABEL[run.target] : null } }
@@ -716,7 +759,7 @@ export function watchDedicatedOps(deps: {
     const unseen = unseenOf(s)
     const fresh: DedicatedFinished[] = []
     for (const rec of unseen) {
-      const kind = dedicatedOpKind(rec)
+      const kind = ownKind(rec)
       if (!kind) continue // 別の持ち場の結果。出さない（ack にも巻き込まれない・下の isShown が false）
       if (isLocalRecord(rec, kind) || delivered.has(rec.startedAt)) continue
       delivered.add(rec.startedAt)
@@ -725,7 +768,7 @@ export function watchDedicatedOps(deps: {
 
     if (fresh.length > 0) deps.onFinished(fresh) // 画面に渡してから ack する（見せる前に「見た」にしない）
     const ackUpTo = ackUpToFor(unseen, rec => {
-      const kind = dedicatedOpKind(rec)
+      const kind = ownKind(rec)
       if (!kind) return false // 別の持ち場の結果は、出していない
       if (!isVisible()) return false // 隠れているタブの画面は、結果を持っていても、利用者はまだ見ていない
       // この画面が始めた操作は、出し終えるまで「見た」ではない（出し終える前に閉じたら、開き直して記録から出す）。

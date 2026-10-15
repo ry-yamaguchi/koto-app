@@ -86,7 +86,7 @@ async function searchBrave(key: string, query: string): Promise<SearchResult[]> 
     signal: AbortSignal.timeout(15000),
   })
   if (res.status === 401 || res.status === 403) throw new Error('Brave検索のAPIキーが無効です（認証情報画面で確認してください）')
-  if (res.status === 429) throw new Error('Brave検索の利用制限に達しました（無料クレジットは毎月$5＝約1,000回）')
+  if (res.status === 429) throw new Error('Brave検索の利用制限に達しました（無料クレジットは毎月$5で、約1,000回です）')
   if (!res.ok) throw new Error(`Brave検索に失敗しました（HTTP ${res.status}）`)
   const data: any = await res.json()
   return (data.web?.results ?? []).slice(0, 5).map((r: any) => ({

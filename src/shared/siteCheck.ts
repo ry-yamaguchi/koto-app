@@ -328,7 +328,7 @@ export function siteIssueNote(kind: SiteIssueKind, detail: string): string {
     case 'heavy':
       // **どうすればよいかまで書く。** 画像を軽くする道具は Koto にも AI にも無い。
       return `大きすぎます（${detail}）。読み込みに時間がかかるので、`
-        + '小さい画像を用意して、チャットに落として【📁 画像を使う】から差し替えてください'
+        + '小さい画像を用意して、チャットにドラッグ＆ドロップし、【📁 画像を使う】から差し替えてください'
   }
 }
 

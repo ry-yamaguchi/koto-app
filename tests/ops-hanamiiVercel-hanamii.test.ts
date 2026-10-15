@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 //      url は記録されず古い鍵が残った。いまは main の hanamii:publish が新しい版の READY を確かめるまで返らず、
 //      url の記録も鍵の片づけも main が行う。**画面がやると二重に片づけることになる**——やっていないことを固定する。
 //   ② 公開の結果の言い分け: 動いたと確かめた／確かめられていない／起動に失敗した。
-//      **確かめていないことを「動いた」と言わない**（ok は「依頼が受け付けられた」の意味）。
+//      **確かめていないことを「起動した」と言わない**（ok は「依頼が受け付けられた」の意味）。
 //   ③ 破棄: 進み具合・結果・残ったもの（月額が続く）が、閉じて開き直しても出る。消えたあとの画面側の後始末。
 //
 // 偽の main は**本物の記録・鍵**（src/main/projectOps.ts・projectLock.ts）の上に作ってある（tests/ops-hanamiiVercel-harness.ts）。
@@ -64,13 +64,13 @@ const published = () => {
 }
 const READY = { ok: true, projectId: PROJECT_ID, deploymentId: 'dpl_test1', deployState: 'ready', readyState: 'READY', url: 'https://app-test.example.test' }
 
-describe('HanamiiPanel: 画面はもう READY を待たない・鍵を片づけない（main がやる）', () => {
-  it('★★★ 公開が終わっても、setInterval を使わず、古い鍵の片づけ（cleanUpKeys）を呼ばない', async () => {
+describe('HanamiiPanel: 画面はもう READY を待たない・アクセスキーを削除しない（main がやる）', () => {
+  it('★★★ 公開が終わっても、setInterval を使わず、古いアクセスキーの削除（cleanUpKeys）を呼ばない', async () => {
     published()
     // main が古い鍵を片づけ切れなかったときだけ、互換の項目が返り値に残る。**それでも画面は片づけない**。
     world.publishReply = {
       ...READY, storagePermissionId: 'perm_test_1', storageProjectName: 'koto-app-hanamii',
-      warnings: ['保存場所の古い鍵を片づけられませんでした（新しい版が動いていることは確かめられています）。'],
+      warnings: ['保存場所の古いアクセスキーを削除できませんでした（新しいバージョンの起動は確認できています）。'],
     }
     const screen = open()
     await settle()
@@ -79,19 +79,21 @@ describe('HanamiiPanel: 画面はもう READY を待たない・鍵を片づけ�
     expect(world.calls.hanamiiPublish).toHaveLength(1)
 
     expect(world.calls.setInterval, '画面が READY を待つ setInterval を持っている（main と二重に片づけることになる）').toBe(0)
-    expect(world.calls.cleanUpKeys, '画面が古い鍵を片づけている（main の片づけと二重）').toBe(0)
+    expect(world.calls.cleanUpKeys, '画面が古いアクセスキーを削除している（main の削除と二重）').toBe(0)
     // main が片づけ切れなかったことは、警告として見える
-    expect(screen.has('保存場所の古い鍵を片づけられませんでした')).toBe(true)
+    expect(screen.has('保存場所の古いアクセスキーを削除できませんでした')).toBe(true)
   })
 
-  it('★★ 動いたと確かめた公開: 見出しと URL が出る。状態を取り直して、公開済みの表示になる', async () => {
+  it('★★ 起動を確かめた公開: 見出しと URL が出る。状態を取り直して、公開済みの表示になる', async () => {
     published()
     world.publishReply = { ...READY }
     const screen = open()
     await settle()
     screen.button('🚀 公開する')!.click()
     await settle()
-    expect(screen.has('✅ 公開できました。新しい版が動いたことを確かめました。')).toBe(true)
+    expect(screen.has('✅ 公開できました。新しいバージョンが起動したことを確かめました。')).toBe(true)
+    // 0.6.21（作者の決定 2026-10-01）: 「動いた」は「起動した」、「版」は「バージョン」に揃えた。直す前の言い方は戻さない
+    expect(screen.has('新しい版が動いた')).toBe(false)
     expect(screen.has('https://app-test.example.test')).toBe(true)
     expect(screen.has('状態: ✅ 公開済み')).toBe(true)
     expect(world.calls.setInterval).toBe(0)
@@ -114,53 +116,54 @@ describe('HanamiiPanel: 画面はもう READY を待たない・鍵を片づけ�
 
     const again = open()
     await settle()
-    expect(again.has('✅ 公開できました。新しい版が動いたことを確かめました。')).toBe(true)
+    expect(again.has('✅ 公開できました。新しいバージョンが起動したことを確かめました。')).toBe(true)
     expect(again.button('🗑 この公開を破棄する'), '公開できたのに、開き直した画面が破棄の入口を出していない').toBeDefined()
   })
 })
 
-describe('HanamiiPanel: 公開の結果の言い分け（確かめていないことを「動いた」と言わない）', () => {
-  it('★★★ 待つ時間のうちに動かなかった（pending）: 「動いたとは確かめられていません」と警告。成功の見出しを出さない', async () => {
+describe('HanamiiPanel: 公開の結果の言い分け（確かめていないことを「起動した」と言わない）', () => {
+  it('★★★ 待つ時間のうちに起動しなかった（pending）: 「起動したとは確かめられていません」と警告。成功の見出しを出さない', async () => {
     published()
     world.publishReply = {
       ok: true, projectId: PROJECT_ID, deploymentId: 'dpl_test1', deployState: 'pending', readyState: 'BUILDING',
-      warnings: ['HANAMII の新しい版が、待った時間（約5分）のうちには動きませんでした（状態: BUILDING）。まだ動いていません。'],
+      warnings: ['HANAMII の新しいバージョンが、待った時間（約5分）のうちには起動しませんでした（状態: BUILDING）。まだ起動していません。'],
     }
     const screen = open()
     await settle()
     screen.button('🚀 公開する')!.click()
     await settle()
-    expect(screen.has('公開の依頼は受け付けられましたが、新しい版が動いたとは確かめられていません')).toBe(true)
-    expect(screen.has('まだ動いていません')).toBe(true)
-    expect(screen.has('公開できました。新しい版が動いたことを確かめました'), '確かめていないのに「動いた」と言っている').toBe(false)
+    expect(screen.has('公開の依頼は受け付けられましたが、新しいバージョンが起動したとは確かめられていません')).toBe(true)
+    expect(screen.has('まだ起動していません')).toBe(true)
+    expect(screen.has('まだ動いていません')).toBe(false) // 0.6.21: 直す前の言い方は戻さない
+    expect(screen.has('公開できました。新しいバージョンが起動したことを確かめました'), '確かめていないのに「起動した」と言っている').toBe(false)
   })
 
-  it('★★★ 確かめられなかった（unknown）も、「動いた」と言わない', async () => {
+  it('★★★ 確かめられなかった（unknown）も、「起動した」と言わない', async () => {
     published()
     world.publishReply = {
       ok: true, projectId: PROJECT_ID, deploymentId: 'dpl_test1', deployState: 'unknown',
-      warnings: ['新しい版が動いたかを確かめられませんでした（通信に失敗しました）。'],
+      warnings: ['新しいバージョンが起動したかを確かめられませんでした（通信に失敗しました）。'],
     }
     const screen = open()
     await settle()
     screen.button('🚀 公開する')!.click()
     await settle()
-    expect(screen.has('新しい版が動いたとは確かめられていません')).toBe(true)
-    expect(screen.has('新しい版が動いたかを確かめられませんでした')).toBe(true)
-    expect(screen.has('公開できました。新しい版が動いたことを確かめました')).toBe(false)
+    expect(screen.has('新しいバージョンが起動したとは確かめられていません')).toBe(true)
+    expect(screen.has('新しいバージョンが起動したかを確かめられませんでした')).toBe(true)
+    expect(screen.has('公開できました。新しいバージョンが起動したことを確かめました')).toBe(false)
   })
 
-  it('★★★ 新しい版が起動に失敗した（deployState: error・IPC の ok は true のまま）: 失敗として出る。AI に相談できる', async () => {
+  it('★★★ 新しいバージョンが起動に失敗した（deployState: error・IPC の ok は true のまま）: 失敗として出る。AI に相談できる', async () => {
     published()
     world.publishReply = {
       ok: true, projectId: PROJECT_ID, deploymentId: 'dpl_test1', deployState: 'error', readyState: 'ERROR', errorCode: 'BUILD_FAILED',
-      message: 'HANAMII が新しい版を起動できませんでした（エラーコード: BUILD_FAILED）。HANAMII の管理画面でログを確かめてください。',
+      message: 'HANAMII が新しいバージョンを起動できませんでした（エラーコード: BUILD_FAILED）。HANAMII の管理画面でログを確かめてください。',
     }
     const screen = open()
     await settle()
     screen.button('🚀 公開する')!.click()
     await settle()
-    expect(screen.count('HANAMII が新しい版を起動できませんでした'), '失敗の理由が出ていない／二重に出ている').toBe(1)
+    expect(screen.count('HANAMII が新しいバージョンを起動できませんでした'), '失敗の理由が出ていない／二重に出ている').toBe(1)
     expect(screen.has('AIに相談する')).toBe(true)
     expect(screen.has('公開できました'), '起動に失敗したのに成功と言っている').toBe(false)
     expect(screen.has('公開の依頼が受け付けられました'), '起動に失敗したのに「受け付けられた」だけを見出しにしている').toBe(false)
@@ -199,12 +202,12 @@ describe('HanamiiPanel: 公開の結果の言い分け（確かめていない�
 
   it('★★ koto-data を差し替えた知らせ（executed）は、成功の知らせとして出す。🤖 AIに相談する は付けない', async () => {
     published()
-    world.publishReply = { ...READY, executed: ['koto-data.js を新しい版へ差し替えました'] }
+    world.publishReply = { ...READY, executed: ['koto-data.js を新しいバージョンへ差し替えました'] }
     const screen = open()
     await settle()
     screen.button('🚀 公開する')!.click()
     await settle()
-    expect(screen.count('koto-data.js を新しい版へ差し替えました'), '差し替えの知らせが出ていない／二重に出ている').toBe(1)
+    expect(screen.count('koto-data.js を新しいバージョンへ差し替えました'), '差し替えの知らせが出ていない／二重に出ている').toBe(1)
     expect(screen.has('AIに相談する'), '成功の知らせに、失敗の相談ボタンが出ている').toBe(false)
   })
 
@@ -251,14 +254,14 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
   it('★★★ 破棄が終わると「破棄しました」と、片づけた内容・残った知らせが出る。設定の projectId と公開記録を片づける', async () => {
     world.teardownReply = {
       ok: true, appDeleted: true,
-      executed: ['保存場所『koto-data-test』を片づけました — 中のデータごと削除', '⚠️ 鍵を1件だけ無効にできませんでした'],
+      executed: ['保存場所『koto-data-test』のデータを削除しました — 中のデータごと削除', '⚠️ アクセスキーを1件だけ無効にできませんでした'],
     }
     const screen = await startTeardownFromPanel()
     await settle()
 
     expect(screen.count('✅ 破棄しました。')).toBe(1)
-    expect(screen.has('保存場所『koto-data-test』を片づけました')).toBe(true)
-    expect(screen.count('⚠️ 鍵を1件だけ無効にできませんでした'), '残った知らせが出ていない／二重に出ている').toBe(1)
+    expect(screen.has('保存場所『koto-data-test』のデータを削除しました')).toBe(true)
+    expect(screen.count('⚠️ アクセスキーを1件だけ無効にできませんでした'), '残った知らせが出ていない／二重に出ている').toBe(1)
     expect(world.calls.hanamiiTeardown).toEqual([[PROJECT_ID, DIR]])
     // 設定の projectId・公開記録の片づけは **main が済ませる**（hanamii:teardown）。画面は書かない
     // （画面が書くと、記録の再生で、そのあとに公開し直した新しい公開の記録まで消える・下の ★★★ の再生のテスト）
@@ -309,7 +312,7 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     // 窓の再読み込みなどで、破棄を頼んだ画面が失われた状況: main の本体を直接走らせる。
     // 設定の片づけは main が済ませている（偽の main も本物と同じく、鍵の中で記録を片づける）。
     published()
-    world.teardownReply = { ok: true, appDeleted: true, executed: ['保存場所『koto-data-test』を片づけました'] }
+    world.teardownReply = { ok: true, appDeleted: true, executed: ['保存場所『koto-data-test』のデータを削除しました'] }
     await world.api.hanamii.teardown(PROJECT_ID, 'test-only-placeholder-token', DIR)
     expect(world.meta.publish.hanamii.projectId, '前提: main が記録を片づけている').toBeNull()
     expect(world.meta.publish.targets.hanamii, '前提: main が公開記録を片づけている').toBeUndefined()
@@ -317,7 +320,7 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     const screen = open()
     await settle()
     expect(screen.has('✅ 破棄しました。')).toBe(true)
-    expect(screen.has('保存場所『koto-data-test』を片づけました')).toBe(true)
+    expect(screen.has('保存場所『koto-data-test』のデータを削除しました')).toBe(true)
     expect(screen.button(CONFIRM), '破棄が終わったのに、破棄の入口が残っている').toBeUndefined()
     // 開き直した画面は、記録を書かない（再生された古い破棄の結果で、いまの記録を消さないため）
     expect(world.calls.forgetTarget, '開き直した画面が公開記録を消している').toEqual([])
@@ -346,13 +349,14 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     published()
     world.teardownReply = {
       ok: false, appDeleted: true, executed: [], remainingBucket: 'koto-data-test', remainingBuckets: ['koto-data-test'],
-      message: '保存場所を片づけられませんでした（消すまで月額が続きます）: 通信に失敗しました\n保存場所『koto-data-test』が残っています（消すまで月額が続きます）。',
+      message: '保存場所を削除できませんでした（消すまで月額が続きます）: 通信に失敗しました\n保存場所『koto-data-test』が残っています（消すまで月額が続きます）。',
     }
     await world.api.hanamii.teardown(PROJECT_ID, 'test-only-placeholder-token', DIR)
 
     const screen = open()
     await settle()
-    expect(screen.has('HANAMII のプロジェクトは削除しました。ただし、保存場所は片づけられませんでした')).toBe(true)
+    expect(screen.has('HANAMII のプロジェクトは削除しました。ただし、保存場所は削除できませんでした')).toBe(true)
+    expect(screen.has('保存場所は片づけられませんでした')).toBe(false) // 0.6.21: 「片づける」は「削除」に揃えた。直す前の言い方は戻さない
     expect(screen.has('消すまで月額が続きます'), '残ったものの月額が続くことを見逃している').toBe(true)
     expect(screen.has('AIに相談する')).toBe(true)
     expect(screen.has('✅ 破棄しました。')).toBe(false)
@@ -405,7 +409,7 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     world.publishReply = { ...READY, projectId: 'prj_new' }
     screen.button('🚀 公開する')!.click()
     await settle()
-    expect(screen.has('✅ 公開できました。新しい版が動いたことを確かめました。'), '前提: 公開し直せている').toBe(true)
+    expect(screen.has('✅ 公開できました。新しいバージョンが起動したことを確かめました。'), '前提: 公開し直せている').toBe(true)
     // 前提: F がまだ見られていないので、R1・R2 は「見た」にされていない（＝開き直すと再生される）
     expect(getOps(DIR).earlier.length + (getOps(DIR).last ? 1 : 0), '前提: 見られていない記録が残っている（再生される）').toBeGreaterThanOrEqual(3)
 

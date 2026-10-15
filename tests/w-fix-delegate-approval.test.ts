@@ -128,7 +128,8 @@ describe('W-18: delegate_implementation の書き込みも「✋ 毎回確認」
     const r = await p
     expect(fs.readFileSync(path.join(writeRoot, 'index.html'), 'utf8')).toBe('<html>ok</html>')
     expect(onFileWritten).toHaveBeenCalledWith('public/index.html')
-    expect(text(r)).toContain('委譲が完了しました')
+    expect(text(r)).toContain('任せた実装が完了しました')
+    expect(text(r)).not.toContain('委譲が完了しました') // 0.6.21: 直す前の言い方は戻さない
     expect(listPending()).toEqual([])
   })
 
@@ -143,7 +144,7 @@ describe('W-18: delegate_implementation の書き込みも「✋ 毎回確認」
     expect(fs.existsSync(path.join(projectDir, '.sakuraide-backup'))).toBe(false) // 書いていないので退避もしない
     expect(onFileWritten).not.toHaveBeenCalled()
     expect(text(r)).toContain(writeDenialMessage('write_file', JSON.stringify({ path: 'sub/dir/index.html' })))
-    expect(text(r)).not.toContain('委譲が完了しました')
+    expect(text(r)).not.toContain('任せた実装が完了しました')
     // 断られても AI Engine には依頼して費用が出ている。記録は残す。
     expect(onDelegated).toHaveBeenCalledWith({ model: expect.any(String), promptTokens: 11, completionTokens: 22 })
   })
@@ -155,7 +156,8 @@ describe('W-18: delegate_implementation の書き込みも「✋ 毎回確認」
     expect(watch.asked()).toBe(false)
     expect(listPending()).toEqual([])
     expect(fs.readFileSync(path.join(writeRoot, 'index.html'), 'utf8')).toBe('<html>auto</html>')
-    expect(text(r)).toContain('委譲が完了しました')
+    expect(text(r)).toContain('任せた実装が完了しました')
+    expect(text(r)).not.toContain('委譲が完了しました') // 0.6.21: 直す前の言い方は戻さない
   })
 
   it('★★ 守るパスは、毎回確認でもおまかせでも、聞かずに拒否して何も書かない（同じ回の他のファイルも書かない）', async () => {

@@ -63,5 +63,5 @@ export function foldBuildMode(mode: BuildMode): boolean {
  * （tests/appRunFolding.test.ts の変異試験(c): この配列から「保存場所」を落とすと検知する）。
  */
 export function specSummaryPrimaryKeys(): readonly string[] {
-  return ['公開名', '起動のしかた', '保存場所', '期限']
+  return ['公開名', '最小スケール', '保存場所', '期限']
 }

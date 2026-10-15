@@ -193,6 +193,49 @@ export function searchInProjectFs(
   }
 }
 
+/**
+ * `fs:publishedRecords` の実体（ハンドラはこれを呼ぶだけ。tests/publishedRecords.test.ts が実フォルダで駆動する）。
+ * ワークスペース直下の各プロジェクトから、公開の記録（.sakuraide.json の publish と
+ * .sakura-cloud/state.json）を**読むだけ**で集める。
+ *
+ * `metaUpdatedAtMs`（2026-10-06）: そのプロジェクトの .sakuraide.json の更新時刻（ミリ秒）。
+ * 専有型の手順2が「前のプロジェクトで使ったサービスプリンシパルID」を新しい順に並べるために使う
+ * （記録に時刻の項目が無いプロジェクトでも並べられる）。.sakuraide.json が無い・stat できないときは null。
+ * 追加しただけの項目で、既存の呼び出し側（📡 公開したもの一覧など）の読み方は変わらない。
+ */
+export function publishedRecordsFs(workspaceDir: string): {
+  ok: boolean
+  projects: { dir: string; name: string; publish: unknown; apprunState: unknown; metaUpdatedAtMs: number | null }[]
+  message?: string
+} {
+  try {
+    if (!workspaceDir || !fs.existsSync(workspaceDir)) return { ok: true, projects: [] }
+    const projects: { dir: string; name: string; publish: unknown; apprunState: unknown; metaUpdatedAtMs: number | null }[] = []
+    for (const e of fs.readdirSync(workspaceDir, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue
+      const dir = path.join(workspaceDir, e.name)
+      const metaPath = path.join(dir, '.sakuraide.json')
+      let meta: any = null
+      try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) } catch { /* メタ無し・壊れている */ }
+      let metaUpdatedAtMs: number | null = null
+      try { metaUpdatedAtMs = fs.statSync(metaPath).mtimeMs } catch { /* メタ無し */ }
+      let apprunState: unknown = null
+      try { apprunState = JSON.parse(fs.readFileSync(path.join(dir, '.sakura-cloud', 'state.json'), 'utf-8')) } catch { /* 無し */ }
+      if (!meta && !apprunState) continue // 公開に関係しないフォルダは載せない
+      projects.push({
+        dir,
+        name: typeof meta?.name === 'string' && meta.name ? meta.name : e.name,
+        publish: meta?.publish ?? null,
+        apprunState,
+        metaUpdatedAtMs,
+      })
+    }
+    return { ok: true, projects }
+  } catch (e: any) {
+    return { ok: false, projects: [], message: e?.message ?? String(e) }
+  }
+}
+
 export function registerFsHandlers(deps: IpcDeps) {
   // File system IPC
   ipcMain.handle('fs:readFile', async (_, filePath: string) => {
@@ -378,35 +421,12 @@ export function registerFsHandlers(deps: IpcDeps) {
   ipcMain.handle('fs:searchInProject', async (_, projectDir: string, query: string, pathPattern?: string) =>
     searchInProjectFs(projectDir, query, pathPattern))
 
-  // プロジェクトの最終変更時刻（③公開の「公開状況」表示で、公開後にコードが変わっていないかの判定に使う）。
+  // プロジェクトの最終変更時刻（【公開】の「公開状況」表示で、公開後にコードが変わっていないかの判定に使う）。
   // 「📡 公開したもの一覧」（PublishedListModal）用: ワークスペース配下の各プロジェクトから
   // 公開記録だけを集めて返す。**これは Koto がローカルに持つ記録であって、各サービスの現在の状態ではない**
   // （サービス側で削除されていても記録は残る。呼び出し側UIでその旨を明示すること）。
   // APIキー・ネットワークを一切使わないため、サービス側の障害中でも参照できる（この機能の主目的・2026-07-31）。
-  ipcMain.handle('fs:publishedRecords', async (_, workspaceDir: string) => {
-    try {
-      if (!workspaceDir || !fs.existsSync(workspaceDir)) return { ok: true, projects: [] }
-      const projects: { dir: string; name: string; publish: unknown; apprunState: unknown }[] = []
-      for (const e of fs.readdirSync(workspaceDir, { withFileTypes: true })) {
-        if (!e.isDirectory() || e.name.startsWith('.')) continue
-        const dir = path.join(workspaceDir, e.name)
-        let meta: any = null
-        try { meta = JSON.parse(fs.readFileSync(path.join(dir, '.sakuraide.json'), 'utf-8')) } catch { /* メタ無し・壊れている */ }
-        let apprunState: unknown = null
-        try { apprunState = JSON.parse(fs.readFileSync(path.join(dir, '.sakura-cloud', 'state.json'), 'utf-8')) } catch { /* 無し */ }
-        if (!meta && !apprunState) continue // 公開に関係しないフォルダは載せない
-        projects.push({
-          dir,
-          name: typeof meta?.name === 'string' && meta.name ? meta.name : e.name,
-          publish: meta?.publish ?? null,
-          apprunState,
-        })
-      }
-      return { ok: true, projects }
-    } catch (e: any) {
-      return { ok: false, projects: [], message: e?.message ?? String(e) }
-    }
-  })
+  ipcMain.handle('fs:publishedRecords', async (_, workspaceDir: string) => publishedRecordsFs(workspaceDir))
 
   // envDetect.ts の SKIP_DIRS と同等の除外＋ルートの .sakuraide.json 自体は対象外（メタ書き込みを「コード変更」と誤認しないため）。
   // 上限 2000 ファイル・深さ 8（envDetect と同じ防御）。

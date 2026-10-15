@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNote } from '../src/shared/teardownSupport'
 import { teardownRemovesStorage, teardownDataNoteFor, teardownDataNoteForAll } from '../src/shared/teardownSupport'
+import { STORAGE_TEARDOWN_PROGRESS, storageTeardownDoneLine } from '../src/shared/teardownSupport'
 import type { PublishTargetKind } from '../src/renderer/publishStatus'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// 2026-08-09 Ryosuke の指摘で、破棄の導線を「③公開」以外にも増やした
+// 2026-08-09 Ryosuke の指摘で、破棄の導線を「公開」以外にも増やした
 // （📡 公開したもの一覧・プロジェクト削除時）。公開先は5つあるが破棄の口は3つしかないため、
 // ここを間違えると「押しても何も起きないボタン」が生まれる。
 
@@ -63,20 +64,20 @@ describe('破棄で何が消えるか', () => {
     expect(teardownScopeNote('sakura-apprun')).not.toContain('コンテナレジストリ') // 直す前の形
   })
 
-  // 専有型は「アプリだけ消える」。クラスタ・LB は月額が続くので、⑥で別に消すことを必ず伝える
-  it('★ AppRun 専有型は、アプリ（全バージョン）だけ消え、クラスタ・LB は⑥で別に消すと書く', () => {
+  // 2026-10-08（作者の決定）: 専有型の 📡 の 🗑 は手順6と同じ「すべて削除」。「アプリだけ消える」という文は無くなった。
+  // 専有型の確認の文は dedicatedTeardownFlow.ts の buildDedicatedTeardownConfirm の1か所が作る（tests/dedicatedTeardownEntries.test.ts）ので、
+  // ここ（teardownScopeNote）には専有型の文を持たない。
+  it('★ AppRun 専有型は、ここに文を持たない。「アプリだけ」「クラスタ・ロードバランサは残ります」「手順6から」は戻らない', () => {
     const note = teardownScopeNote('sakura-apprun-dedicated')
-    expect(note).toContain('全バージョン')
-    expect(note).toContain('クラスタ')
-    expect(note).toContain('ロードバランサ')
-    expect(note).toContain('⑥')
-    expect(note).toContain('課金が続きます')
-    expect(note).not.toBe(teardownScopeNote('sakura-apprun')) // 共用型の文を使い回さない
+    expect(note).toBe('')
+    for (const gone of ['アプリ（全バージョン）を削除します', 'アプリだけ', 'クラスタ・ロードバランサは残ります', '消すときは専有型タブの手順6から']) {
+      expect(note).not.toContain(gone)
+    }
   })
 
-  it('破棄できる公開先には必ず説明がある', () => {
+  it('破棄できる公開先には必ず説明がある（専有型は確認の文を別の1か所が作るので、ここは空）', () => {
     for (const t of ALL) {
-      if (teardownSupport(t) === 'supported') expect(teardownScopeNote(t).length).toBeGreaterThan(0)
+      if (teardownSupport(t) === 'supported' && t !== 'sakura-apprun-dedicated') expect(teardownScopeNote(t).length).toBeGreaterThan(0)
     }
   })
 })
@@ -136,8 +137,9 @@ describe('保存場所のデータについての案内', () => {
 
 // ── 2026-09-24 検分の指摘7: 📡 公開したもの一覧の確認が「保存場所のデータも消えます」と嘘をつく ──
 //
-// 📡 の「🗑 破棄」は、専有型では apprunDedicated:teardownApp（appOnly）＝**アプリだけ**を消し、
-// 保存場所へは1件も要求を出さない（tests/apprunDedicatedStorageTeardown.test.ts が固定）。
+// 2026-10-08 より前、📡 の「🗑 破棄」は、専有型では**アプリだけ**を消し、
+// 保存場所へは1件も要求を出さなかった。いまは手順6と同じ「すべて削除」（保存場所まで片づける。
+// tests/apprunDedicatedStorageTeardown.test.ts・tests/dedicatedTeardownEntries.test.ts が固定）。
 // それなのに「保存場所〇〇にある、このプロジェクトのデータも削除します…保存場所そのものも
 // 削除して月額を止めます」と出していた。利用者は「データも保存場所も消えて月額も止まった」と
 // 受け取るが、実際は**どちらも残る**＝いちばん気づけない形の課金残り。
@@ -153,34 +155,34 @@ describe('保存場所のデータについての案内', () => {
 // **この判定が true と言う公開先は、実際に削除の要求を出すことを振る舞いのテストで固定する**:
 //   - hanamii … tests/hanamiiStorageTeardown.test.ts（偽の保存場所に実際に流して、
 //               どの要求が出たか・出なかったかを見る）
-//   - sakura-apprun-dedicated（'full'）… tests/apprunDedicatedStorageTeardown.test.ts
+//   - sakura-apprun-dedicated（'full' も 'list' も）… tests/apprunDedicatedStorageTeardown.test.ts・tests/dedicatedTeardownEntries.test.ts
 
 describe('破棄が保存場所まで片づけるか（指摘7・2026-09-25 に HANAMII を実物へ合わせた）', () => {
   const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
 
-  it('★★ 📡 一覧からの破棄で保存場所まで片づけるのは、共用型 AppRun と HANAMII だけ', () => {
+  it('★★ 📡 一覧からの破棄で保存場所まで片づけるのは、共用型 AppRun・HANAMII・専有型の3つだけ', () => {
     // 片づける側（実際に削除の要求を出すことを、それぞれの振る舞いのテストが固定している）
     expect(teardownRemovesStorage('sakura-apprun', 'list')).toBe(true)
     expect(teardownRemovesStorage('hanamii', 'list')).toBe(true)
-    // 専有型の 📡 は appOnly ＝アプリだけ
-    expect(teardownRemovesStorage('sakura-apprun-dedicated', 'list')).toBe(false)
+    // 専有型の 📡 は 2026-10-08 から手順6と同じ「すべて削除」（保存場所まで片づける）。アプリだけ、ではない
+    expect(teardownRemovesStorage('sakura-apprun-dedicated', 'list')).toBe(true)
     // **破棄の口すら無い公開先を「片づけます」側に入れない。**
     // `!== 'sakura-apprun-dedicated'` のような除外で書くと、ここが黙って true に落ちる。
     expect(teardownRemovesStorage('vercel', 'list')).toBe(false)
     expect(teardownRemovesStorage('sakura-rental', 'list')).toBe(false)
   })
 
-  it('★★ 専有型タブの⑥（すべて削除する）は保存場所まで片づける', () => {
+  it('★★ 専有型タブの手順6（すべて削除する）は保存場所まで片づける', () => {
     expect(teardownRemovesStorage('sakura-apprun-dedicated', 'full')).toBe(true)
   })
 
   // ── 2026-09-25 検分の指摘25: 直した行の隣に、同じ形の包括的 true が残っていた ──────
   // 'list' 側は公開先を書き下したのに、'full' 側は `if (scope === 'full') return true` で
-  // **target を一度も見ていなかった**。'full' を持つのは専有型タブの⑥だけなので実害は
+  // **target を一度も見ていなかった**。'full' を持つのは専有型タブの手順6だけなので実害は
   // 出ていなかったが、`teardownDataNoteFor({ target: 'vercel', scope: 'full', … })` は
   // 「保存場所そのものも削除して月額を止めます」と言い切る。
   // **'list' で閉じたはずの穴（公開先を足すと黙って true に落ちる）が、隣に残っていた。**
-  it('★★ ⑥（full）を持つのは専有型だけ。ほかの公開先は full でも片づけない', () => {
+  it('★★ 手順6（full）を持つのは専有型だけ。ほかの公開先は full でも片づけない', () => {
     for (const t of ALL) {
       if (t === 'sakura-apprun-dedicated') continue
       expect(teardownRemovesStorage(t, 'full'), `${t} が full で「片づけます」側に落ちている`).toBe(false)
@@ -190,16 +192,14 @@ describe('破棄が保存場所まで片づけるか（指摘7・2026-09-25 に 
     expect(teardownDataNoteFor({ target: 'vercel', scope: 'full', placement: PLACEMENT })).not.toContain('月額を止めます')
   })
 
-  it('★★ 📡 から専有型を破棄するときは「消えます」と言わず、「残ります」と言う', () => {
+  it('★★ 📡 から専有型を破棄するときも、手順6と同じ文で「保存場所のデータも削除します」と言う（実際にそうする）', () => {
     const note = teardownDataNoteFor({ target: 'sakura-apprun-dedicated', scope: 'list', placement: PLACEMENT })
     expect(note).toContain('koto-data-x')
-    expect(note).toContain('残ります')
-    expect(note).toContain('月額が続きます')
-    // すぐ上の teardownScopeNote（アプリだけ）と矛盾しないこと。
-    expect(note).not.toContain('も削除します')
-    expect(note).not.toContain('月額を止めます')
-    // どこから消せるかを必ず添える（「できません」だけで放り出さない）。
-    expect(note).toContain('⑥')
+    expect(note).toContain('も削除します')
+    expect(note).toBe(teardownDataNoteFor({ target: 'sakura-apprun-dedicated', scope: 'full', placement: PLACEMENT }))
+    // 「残ります」「月額が続きます」（アプリだけの口だった頃の文）は戻らない
+    expect(note).not.toContain('残ります（消すまで月額が続きます）')
+    expect(note).not.toContain('手順6')
   })
 
   it('★★ 保存場所まで片づける破棄では、従来どおり teardownDataNote と同じ文を出す', () => {
@@ -214,14 +214,12 @@ describe('破棄が保存場所まで片づけるか（指摘7・2026-09-25 に 
   })
 
   // 「片づけません」と言うときに、**無い導線へ案内しない**（manualTeardownGuide の Vercel と同じ轍）。
-  it('★ 片づけない破棄の案内は、公開先ごとに出し分ける（専有型にだけ⑥と言う）', () => {
-    const dedicated = teardownDataNoteFor({ target: 'sakura-apprun-dedicated', scope: 'list', placement: PLACEMENT })
-    expect(dedicated).toContain('専有型タブの⑥')
-    // 専有型以外が false 側へ来ても、専有型の⑥へ案内しない（そこには何も無い）。
+  // 2026-10-08: 専有型はどの入口でも片づけるので、この枝へ来るのは破棄の口が別にある公開先だけ。専有型の手順6へは案内しない。
+  it('★ 片づけない破棄の案内は、コントロールパネルへ。専有型の手順6へは案内しない（そこには何も無い）', () => {
     const other = teardownDataNoteFor({ target: 'vercel', scope: 'list', placement: PLACEMENT })
     expect(other).toContain('残ります')
     expect(other).toContain('月額が続きます')
-    expect(other).not.toContain('⑥')
+    expect(other).not.toContain('手順6')
     expect(other).toContain('コントロールパネル') // どこから消せるかは必ず添える
   })
 
@@ -287,12 +285,21 @@ describe('確認画面の 💾 は、消す保存場所を全部名指しする�
   })
 
   it('★★ 2件あれば、2件とも名前が出る（片づけないほう＝残るものを全部言う）', () => {
-    const note = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'list', placements: [A, B] })
+    const note = teardownDataNoteForAll({ target: 'vercel', scope: 'list', placements: [A, B] })
     expect(note).toContain('koto-data-x')
     expect(note).toContain('koto-data-y')
     expect(note).toContain('残ります')
     expect(note).toContain('月額が続きます')
-    expect(note).toContain('⑥') // どこから消せるかは公開先ごとに出し分ける
+    expect(note).toContain('コントロールパネル') // どこから消せるか
+    expect(note).not.toContain('手順6')
+  })
+
+  it('★★ 専有型は 📡 から押しても、2件とも名前が出て「削除します」と言う（手順6と同じ文）', () => {
+    const list = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'list', placements: [A, B] })
+    expect(list).toContain('koto-data-x')
+    expect(list).toContain('koto-data-y')
+    expect(list).toContain('も削除します')
+    expect(list).toBe(teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'full', placements: [A, B] }))
   })
 
   it('★★ 1件のときは、これまでとまったく同じ文（文言を二重管理しない）', () => {
@@ -326,7 +333,7 @@ describe('確認画面の 💾 は、消す保存場所を全部名指しする�
 // `hanamii:teardown` の `projectDir` は**任意の引数**なので、渡し忘れても型検査は通る
 // （掟10「任意の引数で機能を繋ぐと、渡し忘れても誰も気づかない」＝2026-08-13 と同じ形）。
 // 渡さないと main は保存場所へ1件も要求を出さないまま `ok:true` を返す。しかも:
-//   ・③公開（HanamiiPanel）は、そのあと公開の記録を消す＝📡 一覧の 🗑 の行ごと消える
+//   ・【公開】（HanamiiPanel）は、そのあと公開の記録を消す＝📡 一覧の 🗑 の行ごと消える
 //   ・プロジェクト削除（Sidebar）は、そのあと**フォルダごとゴミ箱へ移す**＝バケットの
 //     唯一の記録（.sakura-cloud/env.json）も消える＝**Koto から二度と消せない**
 // なので**3つとも数えて**固定する。片づけの振る舞いは tests/hanamiiStorageTeardown.test.ts。
@@ -334,7 +341,7 @@ describe('確認画面の 💾 は、消す保存場所を全部名指しする�
 describe('HANAMII の破棄の入口は3つとも projectDir を渡す（指摘1・2）', () => {
   const CALLERS: { name: string; file: string; call: string; old: string }[] = [
     {
-      name: '③公開の「🗑 この公開を破棄する」（HanamiiPanel）',
+      name: '【公開】の「🗑 この公開を破棄する」（HanamiiPanel）',
       file: '../src/renderer/components/HanamiiPanel.tsx',
       call: 'window.electronAPI.hanamii.teardown(projectId, token, projectDir)',
       old: 'window.electronAPI.hanamii.teardown(projectId, token)',
@@ -374,7 +381,7 @@ describe('HANAMII の破棄の入口は3つとも projectDir を渡す（指摘1
   // ── データが消えることを、言わずに押させない（掟5・掟10）──────────────────
   // 3つとも同じ口（保存場所まで片づける）を通るようになったので、**確認の文も揃える**。
   // **出し方まで見る**（掟10「ファイルのどこかにあるだけでは、行を消しても通る」）:
-  //   ①その行を出す条件（`… && (`）と ②実際に出している文（`💾 {…}`）の両方を確かめる。
+  //   (1)その行を出す条件（`… && (`）と (2)実際に出している文（`💾 {…}`）の両方を確かめる。
   it('★★ 3つの確認画面とも、保存場所のことを teardownDataNoteForAll（全件）で出す', () => {
     const shows: { file: string; call: string }[] = [
       { file: '../src/renderer/components/HanamiiPanel.tsx', call: "teardownDataNoteForAll({ target: 'hanamii', scope: 'list', placements })" },
@@ -403,15 +410,15 @@ describe('HANAMII の破棄の入口は3つとも projectDir を渡す（指摘1
     const src = raw
       .replace(/\/\*[\s\S]*?\*\//g, '')   // ブロックコメント（JSX の {/* … */} もこれで落ちる）
       .replace(/^[ \t]*\/\/.*$/gm, '')     // 行コメント
-    // ①出す公開先の選び方（一元定義に通す）
+    // (1)出す公開先の選び方（一元定義に通す）
     expect(src, '💾 を出す公開先を一元定義（teardownSupport/teardownRemovesStorage）で選んでいない')
       .toContain(".filter(t => teardownSupport(t) === 'supported' && teardownRemovesStorage(t, 'list'))")
-    // ②文の組み立て（公開先ごと・全件）
+    // (2)文の組み立て（公開先ごと・全件）
     expect(src, '公開先ごとに teardownDataNoteForAll（全件）を通していない')
       .toContain("teardownDataNoteForAll({ target: t, scope: 'list', placements: pendingPlacements })")
-    // ③実際に 💾 の行として出している
+    // (3)実際に 💾 の行として出している
     expect(src, '💾 の行を実際に出していない').toContain('💾 {PUBLISH_TARGET_LABEL[x.t]}: {x.note}')
-    // ④直す前の形（HANAMII 決め打ち）が戻っていないか
+    // (4)直す前の形（HANAMII 決め打ち）が戻っていないか
     expect(src, "公開先の決め打ち（pendingPublish.includes('hanamii')）が残っている")
       .not.toContain("pendingPublish.includes('hanamii')")
     expect(src, '💾 の行が HANAMII 決め打ちのまま残っている')
@@ -422,13 +429,15 @@ describe('HANAMII の破棄の入口は3つとも projectDir を渡す（指摘1
   it('★★ 共用型 AppRun は 💾 を出す側に入る（Sidebar のフィルタが拾う公開先）', () => {
     const shown = (['sakura-apprun', 'sakura-apprun-dedicated', 'hanamii', 'vercel', 'sakura-rental'] as PublishTargetKind[])
       .filter(t => teardownSupport(t) === 'supported' && teardownRemovesStorage(t, 'list'))
-    expect(shown, '共用型 AppRun がデータの注意書きから漏れている').toEqual(['sakura-apprun', 'hanamii'])
+    // 専有型も入る（2026-10-08 から 'list' でも保存場所まで片づける）。ただしこの 💾 の行はプロジェクト削除の「公開も一緒に破棄する」の
+    // 枝にあり、専有型が残っていれば削除そのものを止める（blocksProjectDeleteFor）ので、専有型の行は実際には出ない。
+    expect(shown, '共用型 AppRun がデータの注意書きから漏れている').toEqual(['sakura-apprun', 'sakura-apprun-dedicated', 'hanamii'])
   })
 
   // ── 破棄の確認に出す一覧は「全件」（前の巡回で見送られた指摘37）──────────────────
   // main は `storage:placement` で `placements`（全件）を返す。画面が `placement`（先頭1件）
   // しか読まないと、名前が一度も出なかった保存場所とデータまで消える（掟10）。
-  it('★★ 📡 一覧と ③公開の破棄確認は、placements（全件）を読む', () => {
+  it('★★ 📡 一覧と 【公開】の破棄確認は、placements（全件）を読む', () => {
     const files = [
       '../src/renderer/components/PublishedListModal.tsx',
       '../src/renderer/components/HanamiiPanel.tsx',
@@ -460,5 +469,25 @@ describe('画面に出る文に Markdown 記法を混ぜない（指摘26）', (
       .replace(/^[ \t]*\/\/.*$/gm, '')     // 行コメント
     const lines = src.split('\n').filter(l => l.includes('**'))
     expect(lines, `画面に ** がそのまま出る: ${lines.join(' / ')}`).toEqual([])
+  })
+})
+
+
+// ── 専有型と HANAMII の「保存場所のデータを削除」の文は、同じ関数から作る（0.6.21・検分）──────────
+// 前は同じ文字列を2か所に別々に書いていた。片方だけ直すと、双子の文が食い違う
+// （モックの返事を固定するテストは、実装の文字を読まないので気づけない）。
+describe('保存場所の削除の進み具合・完了の1行は、専有型と HANAMII で同じ関数から出る', () => {
+  it('文の形（「保存場所を削除」とは言わない。note が「保存場所は残します」と続く回と矛盾するため）', () => {
+    expect(STORAGE_TEARDOWN_PROGRESS).toBe('🗄️ 保存場所のデータを削除しています…')
+    expect(storageTeardownDoneLine('koto-x', '保存場所は残します')).toBe('保存場所『koto-x』のデータを削除しました — 保存場所は残します')
+  })
+
+  it.each(['../src/main/ipc/apprunDedicated.ts', '../src/main/ipc/hanamii.ts'])('%s は共通の定数・関数を使い、同じ文を直書きしていない', (rel) => {
+    const src = readFileSync(join(__dirname, rel), 'utf8')
+    // 専有型は 2026-10-07 から、文はそのままに段の内部名（teardown.storage）を添えて渡す。定数から引くことは変わらない。
+    expect(src).toMatch(/progress\(STORAGE_TEARDOWN_PROGRESS[,)]/)
+    expect(src).toContain('storageTeardownDoneLine(b.bucket, b.note)')
+    expect(src).not.toContain("progress('🗄️ 保存場所")
+    expect(src).not.toContain('のデータを削除しました — ${b.note}')
   })
 })

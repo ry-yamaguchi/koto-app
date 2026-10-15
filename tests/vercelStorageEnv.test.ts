@@ -21,6 +21,8 @@ const h = vi.hoisted(() => ({
   issuedNames: [] as string[],
   deletedPermissions: [] as string[],
   permissions: [] as { id: string; displayName: string }[],
+  /** 削除に失敗させる鍵の ID（2026-10-07: 失敗の件数を数えることの固定）。 */
+  failDelete: new Set<string>(),
 }))
 
 /** 発行される鍵（**実キーは使わない**・掟4）。 */
@@ -50,7 +52,7 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
       siteInfo: () => SITE,
       async issueKey(_bucket: string, displayName: string) { h.issuedNames.push(displayName); return ISSUED },
       async listPermissions() { return h.permissions },
-      async deletePermission(id: string) { h.deletedPermissions.push(id) },
+      async deletePermission(id: string) { if (h.failDelete.has(id)) throw new Error('消せませんでした（テスト）'); h.deletedPermissions.push(id) },
       async dispose() { /* 一時キーは使っていない */ },
     }),
   }
@@ -91,6 +93,7 @@ beforeEach(() => {
   h.issuedNames = []
   h.deletedPermissions = []
   h.permissions = []
+  h.failDelete = new Set()
   sent = []
   envStatuses = [200]
   envCalls = 0
@@ -384,6 +387,18 @@ describe('Vercel: ほかの公開先の鍵を消さない', () => {
     ]
     await cleanUpOldKeysFor({ projectName: 'myapp', target: 'apprun', keepId: 'p-apprun-now' })
     expect(h.deletedPermissions).toEqual(['p-apprun-old'])
+  })
+
+  it('★ 1件ずつの失敗は飲み込むが、消せなかった件数は返す（時間の記録に入れるかの判断に使う・2026-10-07）', async () => {
+    h.permissions = [
+      { id: 'p-old-1', displayName: permissionNameFor('myapp', 'apprun') },
+      { id: 'p-old-2', displayName: permissionNameFor('myapp', 'apprun') },
+      { id: 'p-now', displayName: permissionNameFor('myapp', 'apprun') },
+    ]
+    h.failDelete = new Set(['p-old-2'])
+    const r = await cleanUpOldKeysFor({ projectName: 'myapp', target: 'apprun', keepId: 'p-now' })
+    expect(r).toEqual({ deleted: 1, failed: 1 })
+    expect(h.deletedPermissions).toEqual(['p-old-1'])
   })
 
   it('★ 発行する鍵の名前が、ほかの公開先と重ならない', async () => {

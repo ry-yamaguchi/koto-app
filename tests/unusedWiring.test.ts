@@ -272,16 +272,16 @@ describe('UI: 4パネルへの埋め込み（SecurityCheckSection の隣・同�
       unused: '<UnusedFilesSection projectDir={projectDir} />',
     },
     'src/renderer/components/AppRunPanel.tsx': {
-      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="④" />',
-      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="⑤" />',
+      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順4" />',
+      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="手順5" />',
     },
     'src/renderer/components/HanamiiPanel.tsx': {
-      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="③" />',
-      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="④" />',
+      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順3" />',
+      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="手順4" />',
     },
     'src/renderer/components/VercelPanel.tsx': {
-      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="②" />',
-      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="③" />',
+      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順2" />',
+      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="手順3" />',
     },
   }
 
@@ -306,23 +306,31 @@ describe('UI: 4パネルへの埋め込み（SecurityCheckSection の隣・同�
   })
 })
 
-describe('UI: 公開・破棄まわりの見出し番号（2026-09-04 付番。指摘Aで①②③に続きをずらした）', () => {
-  it('AppRunPanel: ⑥ 公開・破棄（旧「④ 公開・破棄」は残っていない）', () => {
+describe('UI: 公開・破棄まわりの見出し番号（2026-09-04 付番。指摘Aで手順1・2・3に続きをずらした）', () => {
+  it('AppRunPanel: 手順6 公開・破棄（旧「手順4 公開・破棄」は残っていない）', () => {
     const s = raw('src/renderer/components/AppRunPanel.tsx')
-    expect(s).toContain('⑥ 公開・破棄')
-    expect(s).not.toContain('④ 公開・破棄')
+    expect(s).toContain('手順6 公開・破棄')
+    expect(s).not.toContain('手順4 公開・破棄')
   })
 
-  it('HanamiiPanel: ⑤ 公開（旧「③ 公開」は残っていない）', () => {
+  it('HanamiiPanel: 手順5 公開（旧「手順3 公開」は残っていない）', () => {
     const s = raw('src/renderer/components/HanamiiPanel.tsx')
-    expect(s).toContain('⑤ 公開')
-    expect(s).not.toContain('③ 公開')
+    expect(s).toContain('手順5 公開')
+    expect(s).not.toContain('手順3 公開')
   })
 
-  it('VercelPanel: ④ 公開（旧「② 公開」は残っていない）', () => {
+  it('VercelPanel: 手順4 公開（旧「手順2 公開」は残っていない）', () => {
     const s = raw('src/renderer/components/VercelPanel.tsx')
-    expect(s).toContain('④ 公開')
-    expect(s).not.toContain('② 公開')
+    expect(s).toContain('手順4 公開')
+    expect(s).not.toContain('手順2 公開')
+  })
+
+  it('3つのパネルとも、見出し番号（stepNo）に丸数字を使っていない（2026-10-07・作者の決定: 「手順N」）', () => {
+    for (const f of ['AppRunPanel', 'HanamiiPanel', 'VercelPanel']) {
+      const s = raw(`src/renderer/components/${f}.tsx`)
+      expect(s, `${f} の stepNo に丸数字が戻っている`).not.toMatch(/stepNo="[①-⑳]"/)
+      expect(s, `${f} の stepNo が「手順N」になっていない`).toMatch(/stepNo="手順\d+"/)
+    }
   })
 })
 
@@ -347,7 +355,7 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     expect(s).not.toContain('静的サイトではないため')
     expect(s).toContain('いまは確認できません（プロジェクトが選ばれていない可能性があります）')
     expect(s).toContain('⚠️')
-    // 0件のときの表示: ③事前チェック（AppRunPanel.tsx）・④セキュリティチェックと同じ
+    // 0件のときの表示: 手順3 事前チェック（AppRunPanel.tsx）・手順4 セキュリティチェックと同じ
     // 「全部✅→1行に畳む」表記に揃えた（判断6・2026-09-11、foldUnused）。
     expect(s).toContain('✅ 問題なし（内訳を見る）')
     // W-112（2026-09-27 決定・案1）: 「全部使われています」の断言ではなく、控えめな言い方にする
@@ -356,7 +364,8 @@ describe('UnusedFilesSection: 掟5（UIの文法）', () => {
     expect(s).toContain('🧹 使われていないファイルの確認')
     // 対象外のときは移動ボタンを出さない（対象が無いので押せる必要が無い）。
     // ボタンの描画条件が supported を含むことで固定する（対象外では出ない）。
-    expect(s).toContain('素材置き場へ移動')
+    expect(s).toContain('素材フォルダへ移動')
+    expect(s).not.toContain('素材置き場へ移動') // 0.6.21: 直す前の言い方は戻さない
     expect(s).toContain('{supported && unused.length > 0 && (')
   })
 

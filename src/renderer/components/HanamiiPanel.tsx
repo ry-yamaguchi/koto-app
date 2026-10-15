@@ -231,7 +231,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   }, [projectDir])
 
   // ── 保存場所を用意した直後に読み直す（2026-09-25 検分の指摘20）──────────────
-  // 「保存場所を用意する」（StorageNotice）は同じ③公開モーダルの中にあり、押すと
+  // 「保存場所を用意する」（StorageNotice）は同じ【公開】モーダルの中にあり、押すと
   // `sakura:storage-prepared` を出す。ところがこのパネルはそれを聞いていなかったので、
   // 用意した直後に公開すると `placement` が null のまま＝下の公開の引数が
   // `withStorage: withStorage && !!placement` で **false** になり、
@@ -291,7 +291,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         setHcPath(typeof h.healthCheck.path === 'string' && h.healthCheck.path ? h.healthCheck.path : '/')
       }
 
-      // トークン選択の優先順位: ①メタ保存の tokenId → ②ストアの使用中 → ③先頭
+      // トークン選択の優先順位: (1)メタ保存の tokenId → (2)ストアの使用中 → (3)先頭
       const chosen = await loadTokenList(h?.tokenId ?? null)
       if (cancelled) return
       const tk = chosen ? await getHanamiiTokenById(chosen) : await getHanamiiToken()
@@ -612,9 +612,9 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         )}
       </div>
 
-      {/* ① APIトークン（AccessKeySection に統一・判断8） */}
+      {/* 手順1 APIトークン（AccessKeySection に統一・判断8） */}
       <AccessKeySection
-        stepNo="①"
+        stepNo="手順1"
         serviceTitle="HANAMII"
         keyLabel="APIトークン"
         registered={!!token}
@@ -640,10 +640,10 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         )}
       </AccessKeySection>
 
-      {/* ② ワークスペース */}
+      {/* 手順2 ワークスペース */}
       {token && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-2">
-          <p className="text-sm font-semibold text-ink">② ワークスペース</p>
+          <p className="text-sm font-semibold text-ink">手順2 ワークスペース</p>
           {workspaces === null ? (
             <p className="text-xs text-ink-muted">取得中…</p>
           ) : workspaces.length === 0 ? (
@@ -669,11 +669,11 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         <section className="rounded-xl border border-line-soft bg-surface p-4 space-y-2">
           <p className="text-sm font-semibold text-ink-secondary">環境変数（任意）</p>
           <p className="text-[11px] text-ink-muted leading-relaxed">
-            アプリに渡すキーと値。APIキーなど秘密の値は「シークレット」に。シークレットは端末に保存されないため、公開のたびに入力が必要です。
+            アプリに渡すキーと値。APIキーなどは「シークレット」にしてください。シークレットは端末に保存されないため、公開のたびに入力が必要です。
           </p>
           {detectedKeys.filter(k => !envs.some(e => e.key.trim() === k)).length > 0 && (
             <div className="space-y-1">
-              <p className="text-[11px] text-ink-muted">コードから検出（クリックで追加。🔒は秘密の候補）:</p>
+              <p className="text-[11px] text-ink-muted">コードから検出（クリックで追加。🔒はシークレットの候補）:</p>
               <div className="flex flex-wrap gap-1.5">
                 {detectedKeys.filter(k => !envs.some(e => e.key.trim() === k)).map(k => (
                   <button
@@ -709,7 +709,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
                       checked={e.secret}
                       onChange={ev => setEnvs(prev => prev.map((x, j) => j === i ? { ...x, secret: ev.target.checked } : x))}
                     />
-                    秘密
+                    シークレット
                   </label>
                   <button
                     onClick={() => setEnvs(prev => prev.filter((_, j) => j !== i))}
@@ -756,16 +756,16 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         </section>
       )}
 
-      {/* ③ セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
-      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="③" />
+      {/* 手順3 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順3" />
 
-      {/* ④ 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
-      <UnusedFilesSection projectDir={projectDir} stepNo="④" />
+      {/* 手順4 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
+      <UnusedFilesSection projectDir={projectDir} stepNo="手順4" />
 
-      {/* ⑤ 公開 */}
+      {/* 手順5 公開 */}
       {token && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-          <p className="text-sm font-semibold text-ink">⑤ 公開</p>
+          <p className="text-sm font-semibold text-ink">手順5 公開</p>
           <div>
             <label className="text-[11px] font-medium text-ink-secondary">公開名（半角英数字とハイフン・任意）</label>
             <input
@@ -796,11 +796,11 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
                   className="mt-0.5 accent-sakura"
                 />
                 <span className="text-[11px] text-ink-secondary leading-relaxed">
-                  <span className="text-ink font-medium">💾 データの保存を持っていく</span>
+                  <span className="text-ink font-medium">💾 このプロジェクトの保存場所を使う</span>
                   <br />
                   保存場所 <span className="font-mono">{placement.bucket}</span>
                   {placement.prefix && <span className="font-mono"> / {placement.prefix}</span>}
-                  {' '}を読み書きできるようにします（公開のたびに新しい鍵を発行します）。
+                  {' '}を読み書きできるようにします（公開のたびに新しいアクセスキーを発行します）。
                   <b className="text-ink">このプロジェクトのほかの公開先（AppRun など）</b>と同じデータを使うので、
                   どちらかで消したものは、もう一方からも消えます。
                 </span>
@@ -1151,14 +1151,14 @@ function HanamiiOpResult({ rec, demoted }: { rec: ProjectOpRecordShape; demoted:
   let title = ''
   if (isDelete) {
     if (res.ok) title = '✅ 破棄しました。'
-    else if (res.extra?.appDeleted === true) failure = `HANAMII のプロジェクトは削除しました。ただし、保存場所は片づけられませんでした: ${res.message ?? '原因不明'}`
+    else if (res.extra?.appDeleted === true) failure = `HANAMII のプロジェクトは削除しました。ただし、保存場所は削除できませんでした: ${res.message ?? '原因不明'}`
     else failure = res.message ?? '削除に失敗しました'
   } else if (!res.ok) {
     failure = res.message ?? '公開に失敗しました'
   } else if (deployState === 'ready') {
-    title = '✅ 公開できました。新しい版が動いたことを確かめました。'
+    title = '✅ 公開できました。新しいバージョンが起動したことを確かめました。'
   } else if (deployState === 'pending' || deployState === 'unknown') {
-    title = '⚠️ 公開の依頼は受け付けられましたが、新しい版が動いたとは確かめられていません。'
+    title = '⚠️ 公開の依頼は受け付けられましたが、新しいバージョンが起動したとは確かめられていません。'
   } else {
     title = '✅ 公開の依頼が受け付けられました。'
   }

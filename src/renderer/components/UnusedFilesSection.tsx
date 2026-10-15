@@ -14,7 +14,7 @@ import { useConfirm } from '../useConfirm'
 //
 // **移動するのは AI ではなく Koto の機能。** 利用者が一覧を確認して押すと、
 // 素材置き場（MATERIALS_DIR）へ移す。移す前に 🕘 履歴へ退避してから動かすので、押しても戻せる。
-// stepNo: 呼び出し元の画面の番号体系に乗せるための見出し番号（例 '⑤'）。
+// stepNo: 呼び出し元の画面の番号体系に乗せるための見出し番号（例 '手順5'）。
 // 渡されなければ従来どおり番号なし（PublishModal は番号体系を持たない画面のため未指定・2026-09-04 Ryosuke 指摘）。
 export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir: string; stepNo?: string }) {
   const [supported, setSupported] = useState(true)
@@ -96,7 +96,7 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
           ⚠️ いまは確認できません（プロジェクトが選ばれていない可能性があります）。
         </p>
       ) : foldUnused({ supported, unused }) ? (
-        // ③事前チェック（AppRunPanel.tsx）・④セキュリティチェックと同じ「全部✅→1行に畳む」
+        // 手順3 事前チェック（AppRunPanel.tsx）・手順4 セキュリティチェックと同じ「全部✅→1行に畳む」
         // 型を横展開する（判断6・2026-09-11。判断は foldUnused に一元化・掟10）。
         <details className="text-xs">
           <summary className="cursor-pointer select-none text-ink-secondary hover:text-ink">
@@ -117,7 +117,7 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
             </p>
           )}
           <p className="text-[11px] text-ink-muted leading-relaxed">
-            どのページ・コードからも名前が参照されていないファイルです。素材置き場（公開されません）へ移動できます。🕘 元に戻すで戻せます
+            どのページ・コードからも名前が参照されていないファイルです。「素材（公開しません）」フォルダへ移動できます。🕘 元に戻すで戻せます
           </p>
           <ul className="text-xs text-ink-secondary space-y-0.5 max-h-40 overflow-y-auto select-text">
             {unused.map(f => <li key={f}>・{f}</li>)}
@@ -130,7 +130,7 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
           onClick={() => { void move() }}
           disabled={moving}
           className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
-        >{moving ? '移動しています…' : '素材置き場へ移動'}</button>
+        >{moving ? '移動しています…' : '素材フォルダへ移動'}</button>
       )}
       {confirmElement}
     </section>

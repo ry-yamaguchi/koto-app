@@ -3,8 +3,8 @@
 // ── 持ち主が main へ移った（この段の変更）─────────────────────────────
 // 判定ロジック・TTL・種（seed）は src/shared/modelLearning.ts の純関数（store を引数に取る形）
 // へ移した。記録の持ち主（読み書き・永続化）は main（src/main/learningStore.ts・
-// userData/learning.json）へ移り、ここは①その写し（src/renderer/learningMirror.ts）を渡して
-// 判定するだけ ②書き込みは写しを楽観更新してから main（learning:record 等）へ fire-and-forget
+// userData/learning.json）へ移り、ここは(1)その写し（src/renderer/learningMirror.ts）を渡して
+// 判定するだけ (2)書き込みは写しを楽観更新してから main（learning:record 等）へ fire-and-forget
 // で送るだけ、の薄い層になった。**localStorage はもう読み書きしない**。
 //
 // **公開シグネチャ（呼び出し側から見た形）は移設前と変えていない。** ChatPanel.tsx の

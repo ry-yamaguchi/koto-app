@@ -171,7 +171,10 @@ describe('作れたと決めつけない', () => {
     api.createBucket = async () => ({ status: 409, text: 'Conflict' }) // 409 を「成功」と読んだ状態を再現
     api.listBuckets = async () => []
     const a = makeStorageAdapter(api, SITE, s3)
-    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('一覧に現れません')
+    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('一覧に見つかりません')
+    // 0.6.21（作者の決定 2026-10-01）: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
+    const err = await a.ensureBucket('koto-data-x').catch((e: any) => e)
+    expect(String(err?.message)).not.toContain('現れません')
     // 次に何をすればよいかを添える
     await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('別の名前')
     // **応答をそのまま添える**（これが無いと次も原因が分からない）
@@ -183,6 +186,6 @@ describe('作れたと決めつけない', () => {
     api.createBucket = async () => ({ status: 409, text: '' })
     api.listBuckets = async () => [{ name: 'よその保存場所' }]
     const a = makeStorageAdapter(api, SITE, s3)
-    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('一覧に現れません')
+    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('一覧に見つかりません')
   })
 })

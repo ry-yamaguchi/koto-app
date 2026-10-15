@@ -404,16 +404,18 @@ describe('専有型（sakura-apprun-dedicated）', () => {
 describe('公開したもの一覧からも片づけられる', () => {
   const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf-8')
 
-  it('一覧に「記録を片づける」がある', () => {
+  it('一覧に「一覧から削除」がある', () => {
     const src = read('src/renderer/components/PublishedListModal.tsx')
-    expect(src).toContain('記録を片づける')
+    expect(src).toContain('一覧から削除')
+    // 0.6.21（作者の決定 2026-10-01）: 「記録を片づける」は「一覧から削除」に揃えた。直す前の言い方は戻さない
+    expect(src).not.toContain('記録を片づける')
     expect(src).toContain('clearPublishRecord')
   })
 
   it('★ 実体は消えないと、押す前に伝える', () => {
     const src = read('src/renderer/components/PublishedListModal.tsx')
     // W-93（2026-09-27 決定・案2）: 押したボタンと確定ボタンを同じ言い方に揃える
-    expect(src).toContain('記録を片づける（公開したものは残ります）')
+    expect(src).toContain('一覧から削除（公開したものは残ります）')
   })
 
   it('★ 判断は1つ（同じ処理を二度書かない）', () => {

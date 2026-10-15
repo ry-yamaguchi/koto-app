@@ -231,14 +231,16 @@ interface Window {
         truncated: boolean
         message?: string
       }>
-      // プロジェクトの最終変更時刻（③公開の「公開状況」で、公開後にコードが変わっていないかの判定に使う）
+      // プロジェクトの最終変更時刻（【公開】の「公開状況」で、公開後にコードが変わっていないかの判定に使う）
       latestChangeAt(projectDir: string): Promise<{ ok: boolean; latest: string | null; files: number; message?: string }>
       /** 「📡 公開したもの一覧」用: ワークスペース配下の全プロジェクトの公開記録（ローカルの記録であり、
        *  各サービスの現在の状態ではない）。publish は .sakuraide.json の publish、apprunState は
-       *  .sakura-cloud/state.json（AppRunのレガシー救済用）。 */
+       *  .sakura-cloud/state.json（AppRunのレガシー救済用）。
+       *  metaUpdatedAtMs は .sakuraide.json の更新時刻（ミリ秒・無ければ null）。専有型の手順2が
+       *  「前のプロジェクトで使ったサービスプリンシパルID」を新しい順に並べるために使う（2026-10-06）。 */
       publishedRecords(workspaceDir: string): Promise<{
         ok: boolean
-        projects: { dir: string; name: string; publish: unknown; apprunState: unknown }[]
+        projects: { dir: string; name: string; publish: unknown; apprunState: unknown; metaUpdatedAtMs?: number | null }[]
         message?: string
       }>
       /**
@@ -409,7 +411,7 @@ interface Window {
          * 保存場所は用意できたが、**目印（.koto-keep）を置けなかった**ときの知らせ。
          * 置けたときは入らない。**画面は必ずこれを出すこと**——目印が無いと、まだ何も
          * 保存していないプロジェクトはバケットの一覧に現れず、同じ保存場所を共有する別の
-         * プロジェクトを⑥で破棄したときに**巻き込まれて消える**（2026-09-25 検分の指摘9・14）。
+         * プロジェクトを手順6で破棄したときに**巻き込まれて消える**（2026-09-25 検分の指摘9・14）。
          */
         markerNote?: string
         message?: string
@@ -719,8 +721,8 @@ interface Window {
 
     /**
      * プロジェクトごとの「いま走っている操作」と「終わった操作」の記録（main のメモリ上・
-     * src/main/projectOps.ts）。公開・破棄・作成の9本（共用型 apply／teardown・HANAMII publish／teardown・
-     * Vercel publish・専有型 create／teardown／publishApp／teardownApp）が**自動で**記録される。
+     * src/main/projectOps.ts）。公開・破棄・作成の8本（共用型 apply／teardown・HANAMII publish／teardown・
+     * Vercel publish・専有型 create／teardown／publishApp）が**自動で**記録される。
      * **Koto を終了すると消える**（処理も止まるため）。
      *
      * 画面の使い方: 開いたとき `get`。`running` があれば進み具合を出す。`last`（と `earlier`）があれば
@@ -735,6 +737,15 @@ interface Window {
       ack(projectDir: string, upToStartedAt?: number): Promise<{ ok: true; acked: number } | { ok: false; message: string }>
       /** 記録が変わるたび（始まった・進んだ・終わった・見たことにした）届く。購読解除関数を返す。 */
       onChanged(cb: (p: { projectDir: string } & ProjectOpsSnapshotShape) => void): () => void
+    }
+
+    /**
+     * 段ごとの目安（どこにどれくらい時間がかかったか・2026-10-07）。キーは段の内部名（shared/stageTiming.ts の STAGE）で、
+     * **目安のある段だけ**入っている（この Mac で測れた段は最近5回の中央値・測れていない段は開発時の実測・どちらも無い段は無い）。
+     * 画面は値を `readEstimate`（shared/stageEstimate.ts）で読んでから `estimateText` で文にする。読み取りだけ。
+     */
+    stageTiming: {
+      estimates(): Promise<Record<string, import('../shared/stageEstimate').StageEstimate>>
     }
 
     vercel: {
@@ -801,7 +812,7 @@ interface Window {
       // 保存済みの name/user/password を読み戻す（未保存なら null）
       loadKey(): Promise<{ name: string; user: string; password: string } | null>
     }
-    // さくらのVPS 公開機能 V1a（①接続の2ルート）。方式B: 秘密鍵・パスワードは中央ストア（認証情報）／
+    // さくらのVPS 公開機能 V1a（手順1 接続の2ルート）。方式B: 秘密鍵・パスワードは中央ストア（認証情報）／
     // renderer側stateから渡す（main には保存しない）。AIチャットのツールには一切公開しない（docs/vps-plan.md §2.5）。
     vps: {
       generateKeypair(): Promise<{ ok: boolean; publicKey?: string; privateKey?: string; message?: string }>
@@ -817,13 +828,13 @@ interface Window {
       // 鍵認証の疎通確認（testConnection）が取れた後にだけ呼ぶこと（締め出し防止・順序保証）。
       hardenSshd(host: string, port: number, user: string, privateKey: string, fingerprint: string): Promise<{ ok: boolean; message?: string }>
     }
-    // さくらのAppRun 専有型（roadmap #23）。段階①（下調べ・GETのみ）に加え、
-    // 段階②「作る」＋④「破棄」を持つ。
+    // さくらのAppRun 専有型（roadmap #23）。段階1（下調べ・GETのみ）に加え、
+    // 段階2「作る」＋段階4「破棄」を持つ。
     // auth は cloud.loadKey() 等で読んだ token/secret をそのまま渡す（方式B・main には保存しない）。
     apprunDedicated: {
       // 接続テスト（roadmap #35）＝共用型 cloud.testConnection と同じ「チェックリスト」の形。
       // (1) 専有型API 参照（制限・プラン） (2) コンテナレジストリ 一覧 (3) 請求（コスト）参照。
-      // W-38（2026-09-27 決定）: 専有型はすでに⑧でアプリを公開でき、公開にレジストリの権限が要るため、
+      // W-38（2026-09-27 決定）: 専有型はすでに手順8でアプリを公開でき、公開にレジストリの権限が要るため、
       // 共用型と同じくここでも確かめる（以前の「まだ確認しない」注記は消した）。
       testConnection(auth: { token: string; secret: string }): Promise<{
         ok: boolean
@@ -840,9 +851,9 @@ interface Window {
         lb: { ok: true; data: unknown } | { ok: false; message: string; detail?: string }
       }>
       clusters(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
-      // GET /zone（さくらのクラウドのゾーン一覧。roadmap #28）。⑤のゾーン選択式化に使う。GETのみ。
+      // GET /zone（さくらのクラウドのゾーン一覧。roadmap #28）。手順5のゾーン選択式化に使う。GETのみ。
       zones(auth: { token: string; secret: string }): Promise<{ ok: true; data: unknown } | { ok: false; message: string; detail?: string }>
-      // 段階②「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
+      // 段階2「作る」: クラスタ→ASG→LB の順で作り、各段の成功直後に .sakuraide.json へ記録する。
       // 同意（consentedAt）が記録に無ければ main 側が API を一度も呼ばずに中止する。
       // opts.confirmed は「確認ダイアログを通ったか」の印（2026-09-10 レビューの修理・A）。
       // confirmed !== true なら main 側は API を一切呼ばず stage:'consent' で中止する。
@@ -863,8 +874,11 @@ interface Window {
         clusterID?: string | null
         asgID?: string | null
         loadBalancerID?: string | null
+        // 段ごとの所要時間と合計（2026-10-07・「かかった時間を見る」に出す）。段を渡さなかった・早く止まったときは無い。
+        // 閉じて開き直したときは projectOps の記録（result.extra.stageTimings）から同じ形で出す。
+        stageTimings?: import('../shared/stageTiming').StageTimings
       }>
-      // 段階④「破棄」: 記録にある ID だけを アプリ→LB→ASG→クラスタ の順で削除する
+      // 段階4「破棄」: 記録にある ID だけを アプリ→LB→ASG→クラスタ の順で削除する
       // （B・2026-09-17でコメントを実装（apprunDedicatedApply.ts teardownFlow）に合わせて訂正。
       // 以前は「LB→ASG→クラスタ」と書いていたが、実装はアプリの段が先頭にある）。
       // opts.confirmed は上と同じ意味。
@@ -880,11 +894,13 @@ interface Window {
         inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
         // 2026-09-24 検分の指摘4・9・13: 計算資源（アプリ・LB・ASG・クラスタ）は消し切れたか。
         // 保存場所だけが失敗すると ok は false だが、アプリは消えている。公開記録を片づけるかは
-        // ok ではなくこちらで判断する（shouldClearPublishRecord）。
+        // ok ではなくこちらで判断する（main の shouldForgetPublishRecord。画面は消さない）。
         appDeleted?: boolean
         // 片づけたが、バケットごとは消さなかった保存場所（残れば月額も続く）。共用型 cloud.teardown の keptBucketName と同じ事実。
         keptBucketName?: string
         keptBucketNames?: string[]
+        // 段ごとの所要時間と合計（2026-10-07・create と同じ）。
+        stageTimings?: import('../shared/stageTiming').StageTimings
       }>
       // #39: 破棄の進捗メッセージ購読（「〜の削除を待っています（N分経過）…」を30秒ごとに1回）。
       // 戻り値の関数を呼ぶと購読解除。
@@ -893,7 +909,7 @@ interface Window {
       // 形は上部の ApprunDedicatedRecordShape（D-4 でアプリの記録 applicationID 等が増えた）。
       state(projectDir: string): Promise<ApprunDedicatedRecordShape>
       /**
-       * #38「⑦ ログ・メトリクス」: 専有型はクラスタ単位ではなく**プロジェクト単位**
+       * #38「手順7 ログ・メトリクス」: 専有型はクラスタ単位ではなく**プロジェクト単位**
        * （resource_id を送らない・5-12実測）。6 variant（logs 3・metrics 3）それぞれの
        * 接続状況と、logs/metrics ごとの `action`（共用型 cloud.telemetryStatus と同じ形。
        * 'none'＝全部繋がっている／'route'＝置き場はあるので繋ぐだけ／'ask'＝置き場が無く
@@ -919,7 +935,7 @@ interface Window {
       enableTelemetry(auth: { token: string; secret: string }, kind: 'logs' | 'metrics', opts?: { consented?: boolean }): Promise<
         { ok: true } | { ok: false; needsConsent?: boolean; message?: string; detail?: string }
       >
-      // ── ⑧「アプリを公開する」（D-4）────────────────────────────────────────
+      // ── 手順8「アプリを公開する」（D-4）────────────────────────────────────────
       /**
        * 前提を1回で返す（GET のみ・何も作らない）。hasLetsEncryptEmail は記録に clusterID があり auth が
        * 使えるときだけ確かめ、取れなければ null（画面は null を false と同じに扱いメール欄を出す）。
@@ -930,7 +946,7 @@ interface Window {
         | { ok: false; message: string }
       >
       /**
-       * ⑧「🔄 IP を取り直す」（D-5・2026-09-16）: 記録の clusterID/asgID/loadBalancerID で LB ノードの一覧を
+       * 手順8「🔄 IP を取り直す」（D-5・2026-09-16）: 記録の clusterID/asgID/loadBalancerID で LB ノードの一覧を
        * 1回引き、DNS の A レコードに向ける**素の IP**（`59.106.222.212/24` → `59.106.222.212`）を記録
        * （lbAddresses）して返す。GET と記録の書き込みだけ・何も作らない・待たない。空なら記録は触らず
        * ok:false（「まだ付いていません」）。ノードのアドレスは付くまで数分かかることがある（5-13）。
@@ -940,9 +956,9 @@ interface Window {
         | { ok: false; message: string }
       >
       /**
-       * ⑧「🔎 公開先と https を確かめる」（O-1・2026-09-17）: 記録のホスト名へ実際に繋ぎ、
+       * 手順8「🔎 公開先と https を確かめる」（O-1・2026-09-17）: 記録のホスト名へ実際に繋ぎ、
        * ドメインの向き先・証明書・ブラウザで開けるか・アプリの応答の**4つを別々に**調べる
-       * （DNS を設定したあとに押す。⑧の公開直後の確認は DNS を向ける前に走るので、そちらには
+       * （DNS を設定したあとに押す。手順8の公開直後の確認は DNS を向ける前に走るので、そちらには
        * 足せない＝時間軸が違う）。**読むだけ・何も作らない・鍵は要らない。**
        * lines は画面にそのまま並べる行（判断は shared/publishVerify.ts の siteCheckLines）。
        */
@@ -999,18 +1015,8 @@ interface Window {
         warnings?: string[]
         detail?: string
         hint?: 'reset-registry'
-      }>
-      /**
-       * 📡 一覧の「破棄」: 専有型のアプリ（全バージョン）だけを消す（LB/ASG/クラスタには触らない）。
-       * 戻り値は teardown と同じ形（アプリの段なので remaining/inProgress は applicationID が主）。
-       * 公開記録の削除は呼び出し側（📡 一覧の clearPublishRecord）の責務＝共用型と同じ。
-       */
-      teardownApp(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }): Promise<{
-        ok: boolean
-        executed: string[]
-        message: string
-        remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
-        inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
+        // 段ごとの所要時間と合計（2026-10-07・create と同じ）。
+        stageTimings?: import('../shared/stageTiming').StageTimings
       }>
       /** 公開の進捗メッセージ購読（onTeardownProgress と同じ形）。戻り値の関数を呼ぶと購読解除。 */
       onPublishProgress(cb: (msg: string) => void): () => void

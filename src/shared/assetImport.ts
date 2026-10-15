@@ -122,7 +122,7 @@ export function useImageHint(count: number): string {
  */
 export function tellAiAboutAsset(relPath: string, purpose: AssetPurpose): string {
   return purpose === 'material'
-    ? `画像を「${relPath}」に置きました。これは素材の置き場で、公開はされません。`
+    ? `画像を「${relPath}」に置きました。これは素材フォルダの中なので、公開はされません。`
       + '使いたくなったら、アプリで使う場所へ移してください。'
     // ── 書き方の講義をさせない（2026-08-19 実機・Ryosuke 指摘）──────────────
     // 以前はここで「ページから参照するときの正しい書き方も教えてください」と

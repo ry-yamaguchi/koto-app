@@ -4,12 +4,12 @@ import { join } from 'node:path'
 import { foldSecurity, foldUnused, foldBuildMode, specSummaryPrimaryKeys } from '../src/renderer/appRunFolding'
 
 // 委譲仕様 UX-D・判断6: 共用型 AppRunPanel.tsx の折りたたみ判断を一元化する。
-// 既存の型は③「事前チェック」の `preflight.checks.every(c => c.status === 'ok')`
-// （全部✅なら <details> で1行に畳む）。これと同じ型を④セキュリティチェック・
-// ⑤未使用ファイル・ビルド方式のトグル・②公開の設定の要約へ横展開した（新しいUI部品は作らない）。
+// 既存の型は手順3「事前チェック」の `preflight.checks.every(c => c.status === 'ok')`
+// （全部✅なら <details> で1行に畳む）。これと同じ型を手順4 セキュリティチェック・
+// 手順5 未使用ファイル・ビルド方式のトグル・手順2 公開の設定の要約へ横展開した（新しいUI部品は作らない）。
 // 判断そのものは src/renderer/appRunFolding.ts に集約してあり（掟10）、ここで固定する。
 
-describe('foldSecurity: ④セキュリティチェックを1行に畳んでよいか', () => {
+describe('foldSecurity: 手順4 セキュリティチェックを1行に畳んでよいか', () => {
   it('全部✅（verdict: ok）→ 畳む', () => {
     expect(foldSecurity({ verdict: 'ok' })).toBe(true)
   })
@@ -25,7 +25,7 @@ describe('foldSecurity: ④セキュリティチェックを1行に畳んでよ�
   })
 })
 
-describe('foldUnused: ⑤未使用ファイルの節を1行に畳んでよいか', () => {
+describe('foldUnused: 手順5 未使用ファイルの節を1行に畳んでよいか', () => {
   it('全部✅（0件）→ 畳む', () => {
     expect(foldUnused({ supported: true, unused: [] })).toBe(true)
   })
@@ -54,9 +54,11 @@ describe('foldBuildMode: ビルド方式の節を畳んでよいか', () => {
   })
 })
 
-describe('specSummaryPrimaryKeys: ②公開の設定で常時表示する項目とその順序', () => {
-  it('公開名・起動のしかた・保存場所・期限の4項目を、この順で返す', () => {
-    expect(specSummaryPrimaryKeys()).toEqual(['公開名', '起動のしかた', '保存場所', '期限'])
+describe('specSummaryPrimaryKeys: 手順2 公開の設定で常時表示する項目とその順序', () => {
+  it('公開名・最小スケール・保存場所・期限の4項目を、この順で返す', () => {
+    expect(specSummaryPrimaryKeys()).toEqual(['公開名', '最小スケール', '保存場所', '期限'])
+    // 0.6.21（作者の決定 2026-10-01）: 「起動のしかた」は「最小スケール」に揃えた。直す前の言い方は戻さない
+    expect(specSummaryPrimaryKeys()).not.toContain('起動のしかた')
   })
 })
 
@@ -102,7 +104,7 @@ describe('配線: 各コンポーネントは appRunFolding.ts の純関数を�
     expect(block).toContain('詳細: ビルド方式（標準）')
   })
 
-  it('②公開の設定（SpecSummary）: 常時表示は4項目、残り（実行環境・地域・サービス設定）は「詳細を見る」の <details> に入れる', () => {
+  it('手順2 公開の設定（SpecSummary）: 常時表示は4項目、残り（実行環境・地域・サービス設定）は「詳細を見る」の <details> に入れる', () => {
     const p = panel()
     const fnAt = p.indexOf('function SpecSummary(')
     expect(fnAt).toBeGreaterThan(0)
@@ -151,8 +153,9 @@ describe('配線: 各コンポーネントは appRunFolding.ts の純関数を�
     expect(p.slice(costSectionAt, costAt)).toContain('border-line-soft')
     expect(p.slice(costAt - 80, costAt + 20)).toContain('text-ink-secondary')
 
-    // 番号付きの節（例: ③事前チェック）の見た目は変えていない。
-    const step3At = p.indexOf('③ 事前チェック')
+    // 番号付きの節（例: 手順3 事前チェック）の見た目は変えていない。
+    const step3At = p.indexOf('手順3 事前チェック')
+    expect(p, '旧い丸数字の見出しが戻っている').not.toContain('③ 事前チェック')
     expect(step3At).toBeGreaterThan(0)
     const step3SectionAt = p.lastIndexOf('<section', step3At)
     expect(p.slice(step3SectionAt, step3At)).toContain('border-line')

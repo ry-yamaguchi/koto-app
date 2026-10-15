@@ -355,7 +355,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   // プロジェクトへ集まる）。実際の書き込み・エディタ表示は App.tsx の applyAiFile（onApplyFile）に委ねる。
   const handleApplyFile = useCallback(async (relPath: string, content: string) => {
     if (!onApplyFile) return
-    if (!chatWorkspace || !activeId) throw new Error('会話の置き場が準備できていません。少し待ってからもう一度お試しください')
+    if (!chatWorkspace || !activeId) throw new Error('会話の保存先がまだ準備できていません。少し待ってからもう一度お試しください')
     const ws = await getWorkspaceDir()
     const r = await window.electronAPI.appSessions.ensureProject(chatWorkspace, activeId, ws, activeSession?.title ?? '新しい会話')
     if (!r.ok || !r.projectDir) throw new Error(r.message ?? '保存用のプロジェクトを用意できませんでした')
@@ -642,7 +642,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                             {msg.role === 'assistant' && msg.thinking && (
                               <ThinkingBlock text={msg.thinking} live={isLoading && i === activeSession.messages.length - 1} />
                             )}
-                            {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={handleApplyFile} applyHint="この会話専用のプロジェクト（プロジェクトを置くフォルダの中）に保存します。編集・実行・公開は、画面上部の切替で IDE モードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
+                            {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={handleApplyFile} applyHint="この会話専用のプロジェクト（プロジェクトを置くフォルダの中）に保存します。編集・実行・公開は、画面上部の切替で IDEモードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
                             {/* #31: Claudeが使えないときの「さくらのAI Engineに切り替えて続ける」提案ボタン。 */}
                             {msg.offerAiEngineFallback && (
                               <button
