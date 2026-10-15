@@ -7,34 +7,38 @@ import { manualTeardownGuide } from '../src/shared/teardownSupport'
 // ── W-43（同）: セキュリティチェックの説明は「全部」と言い切らず、使い方ガイドと同じ「原則すべて…名前を出します」──
 //
 // 既存の teardownSupport.test.ts は 'koto-'・'_vercel'・'オブジェクトストレージ'・'コントロールパネル' の
-// toContain だけで、①② の番号分けも「Vercel のプロジェクトを削除」も見ていなかった。旧文に戻しても
+// toContain だけで、(1)(2) の番号分けも「Vercel のプロジェクトを削除」も見ていなかった。旧文に戻しても
 // 全部通ってしまう（検分の変異で確認）。manualTeardownGuide は純関数なので、文面を直に固定する。
 
-describe('W-79: manualTeardownGuide(vercel) は①②で分け、削除するものを取り違えさせない', () => {
+describe('W-79: manualTeardownGuide(vercel) は(1)(2)で分け、削除するものを取り違えさせない', () => {
   const g = manualTeardownGuide('vercel')
 
-  it('★ ①は Vercel のダッシュボードで「Vercel のプロジェクトを削除」', () => {
-    const i1 = g.indexOf('①')
+  it('★ (1)は Vercel のダッシュボードで「Vercel のプロジェクトを削除」', () => {
+    const i1 = g.indexOf('(1)')
     expect(i1).toBeGreaterThanOrEqual(0)
-    const step1 = g.slice(i1, g.indexOf('②'))
+    const step1 = g.slice(i1, g.indexOf('(2)'))
     expect(step1).toContain('Vercel のダッシュボード')
     expect(step1).toContain('Vercel のプロジェクトを削除')
   })
 
-  it('★ ②はさくらのクラウドのコントロールパネルで鍵を削除し、括弧は「オブジェクトストレージのパーミッション」', () => {
-    const i2 = g.indexOf('②')
+  it('★ (2)はさくらのクラウドのコントロールパネルで、オブジェクトストレージのパーミッションを削除する（アクセスキーも一緒に無効になる）', () => {
+    const i2 = g.indexOf('(2)')
     expect(i2).toBeGreaterThanOrEqual(0)
     const step2 = g.slice(i2)
     expect(step2).toContain('さくらのクラウドのコントロールパネル')
     expect(step2).toContain('koto-<プロジェクト名>_vercel')
     expect(step2).toContain('を削除')
-    expect(step2).toContain('（オブジェクトストレージのパーミッション）')
+    expect(step2).toContain('オブジェクトストレージのパーミッション「koto-<プロジェクト名>_vercel」を削除')
+    expect(step2).toContain('アプリ用のアクセスキーも一緒に無効になります')
+    // 0.6.21: 「鍵」のたとえは使わない（直す前は「鍵「koto-…」を削除（オブジェクトストレージのパーミッション）」）
+    expect(step2).not.toContain('鍵')
   })
 
-  it('★ ①が②より先にあり、番号は2つだけ（3つ目を勝手に増やさない）', () => {
-    expect(g.indexOf('①')).toBeLessThan(g.indexOf('②'))
-    expect(g).not.toContain('③')
-    expect(g.match(/[①②③④⑤]/g)).toHaveLength(2)
+  it('★ (1)が(2)より先にあり、番号は2つだけ（3つ目を勝手に増やさない）', () => {
+    expect(g.indexOf('(1)')).toBeLessThan(g.indexOf('(2)'))
+    expect(g).not.toContain('(3)')
+    expect(g.match(/\(\d\)/g)).toHaveLength(2)
+    expect(g, '丸数字が戻っている（2026-10-07・作者の決定: 列挙は (1) (2)）').not.toMatch(/[①-⑳]/)
   })
 
   it('Koto からは消せないと先に断る', () => {

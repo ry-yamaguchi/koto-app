@@ -125,7 +125,7 @@ export function shouldOfferMigration(plan: MigratePlan): boolean {
 export function migrateNotice(plan: MigratePlan): string {
   const n = plan.move.length
   return [
-    `このプロジェクトの形を新しくします。`,
+    `このプロジェクトのフォルダ構成を新しくします。`,
     ``,
     `**「${PUBLISH_DIR_LABEL}」フォルダを作り、${n}件をその中へ移します。**`,
     `どれが公開されるのかが、ひと目で分かるようになります。`,
@@ -139,9 +139,9 @@ export function migrateNotice(plan: MigratePlan): string {
 
 /** 終わったあとに伝える文面。**黙って終わらせない**。 */
 export function migrateDone(plan: MigratePlan): string {
-  if (plan.move.length === 0) return `「${PUBLISH_DIR_LABEL}」フォルダを作りました。ここに入れたものがサーバーへ行きます。`
+  if (plan.move.length === 0) return `「${PUBLISH_DIR_LABEL}」フォルダを作りました。ここに入れたものが、そのまま公開されます。`
   return `「${PUBLISH_DIR_LABEL}」へ${plan.move.length}件を移しました（${plan.move.join(' / ')}）。`
-    + `\nここに入れたものが、そのままサーバーへ行きます。元に戻すときは 🕘 履歴から。`
+    + `\nここに入れたものが、そのまま公開されます。元に戻すときは 🕘 履歴から。`
 }
 
 /** 失敗したときに伝える文面。**途中で止めて戻したことを必ず言う**。 */

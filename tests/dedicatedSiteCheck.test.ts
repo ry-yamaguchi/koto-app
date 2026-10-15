@@ -141,9 +141,10 @@ describe('runSiteCheck: 4つの軸を1回だけ調べる（偽物を差し込む
   it('★★ 記録の IP が空なら、DNS は no-record（mismatch にも、引けなかった unknown にも倒さない）', async () => {
     const r = await runSiteCheck({ host: HOST, recorded: [] }, deps())
     expect(r.dns).toBe('no-record')
-    // 原因を「この端末」のせいにしない。次の一手（先に IP を取り直す）を書く（検分・2026-09-17）
+    // 原因を「この端末」のせいにしない。次の一手（先に IP を再取得する）を書く（検分・2026-09-17）
     expect(r.lines[0]).not.toContain('この端末から調べられませんでした')
-    expect(r.lines[0]).toContain('🔄 IP を取り直す')
+    expect(r.lines[0]).toContain('🔄 IP を再取得')
+    expect(r.lines[0]).not.toContain('取り直す') // 0.6.21: 「取り直す」は「再取得」に揃えた。直す前の言い方は戻さない
   })
 
   it('★ 根（/）への問い合わせはキャッシュに騙されない形（毎回違う問い合わせ）', async () => {

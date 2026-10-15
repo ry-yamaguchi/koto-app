@@ -35,7 +35,6 @@ vi.mock('../src/main/cloud/apprunDedicatedApply', async (importOriginal) => {
 
 import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated'
 import { shouldForgetPublishRecord } from '../src/main/cloud/apprunDedicatedApply'
-import { shouldClearPublishRecord } from '../src/renderer/apprunDedicatedActions'
 import { writeApprunDedicatedRecordFs, writePublishRecordFs, readApprunDedicatedFs } from '../src/main/publishMetaFs'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 
@@ -46,15 +45,15 @@ const EVENT = { sender: { send: () => {} } }
 const teardown = (dir: string) => h.handlers.get('apprunDedicated:teardown')!(EVENT, dir, AUTH, { confirmed: true })
 
 let dirs: string[] = []
-function newProject(opts: { app: boolean; brokenEnv?: boolean } = { app: true }): string {
+function newProject(opts: { app: boolean; brokenEnv?: boolean; row?: boolean } = { app: true }): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-ops-dedicated-td-'))
   dirs.push(dir)
   writeApprunDedicatedRecordFs(dir, {
     clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1',
     ...(opts.app ? { applicationID: 'app1', applicationName: 'myapp', activeVersion: 1 } : {}),
   })
-  // 📡 一覧が読む公開記録。専有型のほかに Vercel もある（消してよいのは専有型だけ）。
-  writePublishRecordFs(dir, 'sakura-apprun-dedicated', { publishedAt: '2026-09-28T00:00:00.000Z', url: 'https://app.example.com/' })
+  // 📡 一覧が読む公開記録。専有型のほかに Vercel もある（消してよいのは専有型だけ）。`row:false` は専有型の行が無いプロジェクト。
+  if (opts.row !== false) writePublishRecordFs(dir, 'sakura-apprun-dedicated', { publishedAt: '2026-09-28T00:00:00.000Z', url: 'https://app.example.com/' })
   writePublishRecordFs(dir, 'vercel', { publishedAt: '2026-09-27T00:00:00.000Z', url: 'https://myapp.vercel.app/' })
   if (opts.brokenEnv) {
     // 保存場所の設定が読めない＝計算資源は消えたが、保存場所の片づけには進めない（ok:false・appDeleted:true）
@@ -111,12 +110,70 @@ describe('★★★ ⑥の破棄が済んだら、公開記録（📡 一覧）�
     expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel'])
   })
 
-  it('★★ ⑧で公開していなかった（記録に applicationID が無い）: 公開記録には触れない', async () => {
-    const dir = newProject({ app: false })
+  it('★★ 専有型の行（公開記録）が無かった: 触れない（行を作りも、ほかの公開先を消しもしない）', async () => {
+    const dir = newProject({ app: false, row: false })
     h.teardown = async () => ({ ok: true, executed: [], message: '', remaining: {} })
 
     const r = await teardown(dir)
     expect(r.ok).toBe(true)
+    expect(targetsOf(dir)).toEqual(['vercel'])
+  })
+
+  // 2026-10-08 検分: 「破棄前に applicationID があったか」で決めていたため、途中で止まった削除を押し直して全部消せても、
+  // 2回目は applicationID が無く（1回目でアプリが消えて記録から外れた）、行が永久に残った（幽霊の行）。
+  // 今は「破棄前に行（公開記録）があったか」で決める。次の2つは、その幽霊の行が消えること。
+  it('★★★ 幽霊の行（公開記録はあるが、記録に applicationID が無い）を、全部消せた回に消す（途中で止まった削除の押し直し）', async () => {
+    const dir = newProject({ app: false }) // 行あり・applicationID なし＝1回目でアプリが消えたあとの記録
+    h.teardown = async () => ({ ok: true, executed: ['クラスタ『c1』を削除しました'], message: '', remaining: {} })
+
+    const r = await teardown(dir)
+    expect(r.ok).toBe(true)
+    expect(targetsOf(dir)).toEqual(['vercel'])
+  })
+
+  // 2026-10-08 検分 D: 行（publish.targets の専有型の記録）に日時（publishedAt）が無い——{ url } だけ——のときも、一覧は
+  // 「公開済み（日時不明）」の行を出す。main が「行があったか」を publishedAt で見ると、日時の無い行は永久に外れない。
+  // 偽 client（teardownFlow の偽物）に流して、実際の .sakuraide.json で見る。
+  const rowWithoutDate = (d: string) => {
+    const meta = metaOf(d)
+    meta.publish.targets['sakura-apprun-dedicated'] = { url: 'https://app.example.com/' } // publishedAt なし
+    fs.writeFileSync(path.join(d, '.sakuraide.json'), JSON.stringify(meta, null, 2), 'utf-8')
+  }
+
+  it('★★★ 日時の無い行（{ url } だけ）も、全部消せた回に main が外す。ほかの公開先の行は残る', async () => {
+    const dir = newProject({ app: true })
+    rowWithoutDate(dir)
+    expect(metaOf(dir).publish.targets['sakura-apprun-dedicated'].publishedAt).toBeUndefined()
+    h.teardown = deletesApp({ ok: true, executed: ['アプリケーション『app1』を削除しました（消えたことを確認）'], message: '', remaining: {} })
+
+    const r = await teardown(dir)
+    expect(r.ok).toBe(true)
+    expect(targetsOf(dir), '日時の無い行が残っている（幽霊の行になる）').toEqual(['vercel'])
+    expect(metaOf(dir).publish.targets.vercel.url).toBe('https://myapp.vercel.app/')
+  })
+
+  it('★★ 日時の無い行でも、途中で止まったなら残す（押し直す 🗑 を残す）。アプリが消えて保存場所だけ失敗した回は外す', async () => {
+    const stopped = newProject({ app: true })
+    rowWithoutDate(stopped)
+    h.teardown = async () => ({ ok: false, executed: [], message: 'ロードバランサの削除に失敗しました', remaining: { applicationID: 'app1', loadBalancerID: 'l1' } })
+    expect((await teardown(stopped)).ok).toBe(false)
+    expect(targetsOf(stopped)).toEqual(['sakura-apprun-dedicated', 'vercel'])
+
+    const storageOnly = newProject({ app: true, brokenEnv: true })
+    rowWithoutDate(storageOnly)
+    h.teardown = deletesApp({ ok: true, executed: ['アプリケーション『app1』を削除しました'], message: '', remaining: {} })
+    const r = await teardown(storageOnly)
+    expect(r.ok).toBe(false)
+    expect(r.appDeleted).toBe(true)
+    expect(targetsOf(storageOnly)).toEqual(['vercel'])
+  })
+
+  it('★★ 押し直しでもまた途中で止まったなら、行は残す（押し直す 🗑 を残す）', async () => {
+    const dir = newProject({ app: false })
+    h.teardown = async () => ({ ok: false, executed: [], message: 'ロードバランサの削除に失敗しました', remaining: { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' } })
+
+    const r = await teardown(dir)
+    expect(r.ok).toBe(false)
     expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel'])
   })
 
@@ -134,17 +191,72 @@ describe('★★★ ⑥の破棄が済んだら、公開記録（📡 一覧）�
   })
 })
 
-describe('画面の規則（shouldClearPublishRecord）と main の規則（shouldForgetPublishRecord）は食い違わない', () => {
-  const cases: Array<{ hadApplicationID: boolean; result: { ok: boolean; appDeleted?: boolean } | null | undefined }> = []
-  for (const hadApplicationID of [true, false]) {
-    for (const result of [null, undefined, { ok: true }, { ok: false }, { ok: true, appDeleted: false }, { ok: false, appDeleted: true }, { ok: false, appDeleted: false }, { ok: true, appDeleted: true }]) {
-      cases.push({ hadApplicationID, result })
-    }
+// ── 2026-10-08 検分: env.json が JSON としては読めるが、スペックの検証に通らないとき ───────────────────────────────
+// 確認画面の `storage:placement`（loadCloudSpec）は投げて「保存場所の設定を読めない」と言うのに、破棄の本体は readSpec
+// （検証に通らないと null＝「保存場所を使っていない」）で読んでいたため、保存場所に触れないまま成功を返し、前回の削除で立てた
+// 「保存場所が残っている」印（storageLeftoverBucket）まで下ろしていた。資源の記録は空になるので手順6のボタンも出ず、Koto から
+// 押し直せないまま保存場所の月額が続く。いまは画面と main が同じ読み方（loadCloudSpec）なので、どちらも「読めない」と言い、印は残る。
+describe('★★★ 検証に通らない env.json: 「保存場所を使っていない」と読まない。印を下ろさず、削除していないことを言う', () => {
+  const brokenSpec = (d: string, text: string) => {
+    fs.mkdirSync(path.join(d, '.sakura-cloud'), { recursive: true })
+    fs.writeFileSync(path.join(d, '.sakura-cloud', 'env.json'), text, 'utf-8')
   }
-  it('同じ入力なら同じ答え（16通り）', () => {
-    expect(cases).toHaveLength(16)
-    for (const c of cases) {
-      expect(shouldForgetPublishRecord(c), JSON.stringify(c)).toBe(shouldClearPublishRecord(c))
+
+  it.each([
+    ['空のオブジェクト', '{}'],
+    ['name だけ', JSON.stringify({ name: 'myapp' })],
+    ['version が 0', JSON.stringify({ version: 0, name: 'myapp' })],
+  ])('%s: 全部消せた回でも ok:false・appDeleted:true。「保存場所は削除していません」と言い、残った印は下ろさない', async (_label, text) => {
+    const dir = newProject({ app: false })
+    writeApprunDedicatedRecordFs(dir, { storageLeftoverBucket: 'koto-data-x' })
+    brokenSpec(dir, text)
+    h.teardown = async () => ({ ok: true, executed: ['クラスタ『c1』を削除しました'], message: '', remaining: {} })
+
+    const r = await teardown(dir)
+    expect(r.ok).toBe(false)
+    expect(r.appDeleted).toBe(true)
+    expect(r.message).toContain('保存場所の設定を読めないため、保存場所は削除していません')
+    // HANAMII と同じく、月額が続くことと、どこで確かめて消すかを添える（検分2巡目）
+    expect(r.message).toContain('消すまで月額が続きます')
+    expect(r.message).toContain('コントロールパネル（オブジェクトストレージ）で、残っている保存場所を確かめて削除してください')
+    expect(readApprunDedicatedFs(dir).storageLeftoverBucket).toBe('koto-data-x') // 直す前: 下ろして ok:true
+  })
+
+  it('対照: env.json が無い（保存場所を使っていない）なら、これまでどおり成功し、残った印は下ろす', async () => {
+    const dir = newProject({ app: false })
+    writeApprunDedicatedRecordFs(dir, { storageLeftoverBucket: 'koto-data-x' })
+    h.teardown = async () => ({ ok: true, executed: ['クラスタ『c1』を削除しました'], message: '', remaining: {} })
+
+    const r = await teardown(dir)
+    expect(r.ok).toBe(true)
+    expect(readApprunDedicatedFs(dir).storageLeftoverBucket).toBeFalsy()
+  })
+})
+
+describe('公開記録を片づける規則は main の shouldForgetPublishRecord の1つだけ（2026-10-08: 画面の同じ規則は消した）', () => {
+  // 以前は画面（shouldClearPublishRecord）にも同じ規則があり、真理値表で一致を固定していた。画面は消さなくなったので、
+  // 規則そのものを書き下して固定する（手順6からも 📡 の 🗑 からも、この規則だけが働く）。
+  // 2026-10-08 検分: 第1項は「破棄前に applicationID があったか」ではなく「破棄前に公開記録（行）があったか」。
+  const TABLE: Array<[boolean, { ok: boolean; appDeleted?: boolean } | null | undefined, boolean]> = [
+    // 行があった: アプリが実際に消えたか（appDeleted。無ければ ok）で決める
+    [true, null, false], [true, undefined, false],
+    [true, { ok: true }, true], [true, { ok: false }, false],
+    [true, { ok: true, appDeleted: false }, false], [true, { ok: false, appDeleted: true }, true],
+    [true, { ok: false, appDeleted: false }, false], [true, { ok: true, appDeleted: true }, true],
+    // 行が無かった: 消す公開記録が無いので何もしない
+    [false, null, false], [false, undefined, false], [false, { ok: true }, false], [false, { ok: false }, false],
+    [false, { ok: true, appDeleted: false }, false], [false, { ok: false, appDeleted: true }, false],
+    [false, { ok: false, appDeleted: false }, false], [false, { ok: true, appDeleted: true }, false],
+  ]
+  it('16通りの答えを書き下して固定する', () => {
+    expect(TABLE).toHaveLength(16)
+    for (const [hadPublishRecord, result, expected] of TABLE) {
+      expect(shouldForgetPublishRecord({ hadPublishRecord, result }), JSON.stringify({ hadPublishRecord, result })).toBe(expected)
     }
+  })
+
+  it('画面側の同じ規則（shouldClearPublishRecord）は無い', async () => {
+    const actions = await import('../src/renderer/apprunDedicatedActions')
+    expect((actions as Record<string, unknown>).shouldClearPublishRecord).toBeUndefined()
   })
 })

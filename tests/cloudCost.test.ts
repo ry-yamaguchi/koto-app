@@ -272,12 +272,15 @@ describe('想定される費用の3行（costSummaryLines）', () => {
     expect(withBucket).toContain('使っています')
   })
 
-  it('アプリ本体行: 「すぐ返す」だと待機中も料金がかかることを伝え、いまの設定が分かる', () => {
+  it('アプリ本体行: 「常時起動」だと待機中も料金がかかることを伝え、いまの設定が分かる', () => {
     const cold = costSummaryLines({ hasBucket: false, scaleMin: 0 })[2]
     const warm = costSummaryLines({ hasBucket: false, scaleMin: 1 })[2]
-    expect(cold).toContain('すぐ返す')
+    expect(cold).toContain('常時起動')
     expect(cold).toContain('最初のアクセスが遅くてもよい')
-    expect(warm).toContain('すぐ返す')
+    expect(warm).toContain('常時起動')
+    // 0.6.21（作者の決定 2026-10-01）: 「すぐ返す」は「常時起動」に揃えた。直す前の言い方は戻さない
+    expect(cold).not.toContain('すぐ返す')
+    expect(warm).not.toContain('すぐ返す')
     expect(cold).not.toBe(warm)
   })
 

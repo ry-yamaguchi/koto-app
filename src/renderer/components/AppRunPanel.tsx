@@ -26,7 +26,7 @@ import { publishButtonLabel } from '../../shared/publishLabels'
 import { watchProjectOps, unseenOf, readUnseenOps, ackShown, normDir, isSharedTypeOp, type OpsWatch } from '../projectOpsView'
 import { warningLine, clockText } from '../../shared/opsText'
 // D-13 F（2026-09-16）: README・使い方ガイドは「共用型も専有型も同じです」と書いているのに、
-// 「アプリが書いたデータは残らない」の注意を出していたのは専有型の⑧だけだった。
+// 「アプリが書いたデータは残らない」の注意を出していたのは専有型の手順8だけだった。
 // **既定で推奨される共用型（大多数が通る道）にも出す。** 文言は複製せず、専有型と同じ
 // 純関数（shared/publishLabels.ts の ephemeralDataNote）を呼ぶ（掟10）。
 import { ephemeralDataNote } from '../../shared/publishLabels'
@@ -179,10 +179,10 @@ type Confirm =
 
 /** 破棄に成功したら公開記録からも取り除く（「📡 公開したもの一覧」に幽霊を残さない・2026-08-06）。 */
 // 記録の掃除は publishRecord.ts に一本化した（2026-08-09）。破棄の導線が
-// ③公開の各パネル・📡 公開したもの一覧・プロジェクト削除の3系統に増えたため。
+// 【公開】の各パネル・📡 公開したもの一覧・プロジェクト削除の3系統に増えたため。
 const clearAppRunPublishRecord = (projectDir: string) => clearPublishRecord(projectDir, 'sakura-apprun')
 
-// ── 閉じて開き直しても、進み具合と結果が続きから見える（2026-09-29・作者の決定 ②）────────────
+// ── 閉じて開き直しても、進み具合と結果が続きから見える（2026-09-29・作者の決定 (2)）────────────
 //
 // 公開・破棄の本体は main の1回の IPC で最後まで進み、記録も main が書く。だから**ダイアログを閉じても
 // 処理は止まらない**。失われていたのは画面の表示だけだった——進み具合・結果・警告（「保存場所が残ったので
@@ -217,7 +217,7 @@ export type PanelOpResult = {
   warnings?: string[]
   /**
    * 開き直して読んだ結果にだけ付く見出し（「公開の結果（12:34に終わりました）」）。
-   * 付いていれば「前に終わった操作の結果」。画面のいちばん上に出す（⑥まで下りないと見逃す）。
+   * 付いていれば「前に終わった操作の結果」。画面のいちばん上に出す（手順6まで下りないと見逃す）。
    */
   caption?: string
   /** 「🤖 AIに相談する」の定型文に使う種類（開き直した結果は記録の op から決める）。 */
@@ -272,7 +272,7 @@ export function progressTextOf(rec: ProjectOpRecordShape): string {
 
 /** 別の公開先の操作が走っているときの1行（詳細は出さない）。ボタンを押せない理由も添える。 */
 export function foreignBusyNote(rec: { op?: string } | null | undefined): string {
-  return `このプロジェクトでは別の操作（${rec?.op ?? '処理'}）が進んでいます。終わるまで、この画面の公開・破棄・片づけは押せません。`
+  return `このプロジェクトでは別の操作（${rec?.op ?? '処理'}）が進んでいます。終わるまで、この画面の公開・破棄・古いイメージの削除は押せません。`
 }
 
 // 操作の呼び名（この画面のボタンの言葉に合わせる。main の記録は '削除'・'公開'・'作成'）
@@ -429,7 +429,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [busy, setBusy] = useState(false) // apply/teardown 実行中
   /**
-   * 「起動のしかた」がさくら側と食い違い、公開を止めて聞いているとき（2026-09-10・案②）。
+   * 「起動のしかた」がさくら側と食い違い、公開を止めて聞いているとき（2026-09-10・案2）。
    * **失敗ではない**ので opResult（⚠️の失敗表示）には載せず、選択カードを別に出す。
    */
   const [scaleAsk, setScaleAsk] = useState<{ recorded: number; actual: number; confirmed: boolean } | null>(null)
@@ -462,7 +462,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       } catch { /* 読めなくても公開はできる */ }
     }
     void load()
-    // **この画面を開いたあとに用意されることがある**（同じ③公開の中の案内から）。
+    // **この画面を開いたあとに用意されることがある**（同じ【公開】の中の案内から）。
     // 取り直さないと、費用の表示も破棄の案内も保存場所を知らないままになる（2026-08-14）
     const onPrepared = () => { void load() }
     window.addEventListener('sakura:storage-prepared', onPrepared)
@@ -508,7 +508,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     const head = files.slice(0, 8).map(f => `・${f}`).join('\n')
     const more = files.length > 8 ? `\n・ほか ${files.length - 8} 件` : ''
     const ok = await confirmDialog({
-      title: '古いイメージをゴミ箱へ移します',
+      title: '使っていない画像をゴミ箱へ移します',
       body: `どこからも使われていない画像 ${files.length} 件をゴミ箱へ移します。\n\n${head}${more}\n\n`
         + '完全には消えません（Finder のゴミ箱から戻せます）。よろしいですか？',
       confirmLabel: 'ゴミ箱へ移す',
@@ -542,12 +542,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   }
 
   /**
-   * ③「🔍 公開前に確かめる」— 手で確かめたいときのボタン（判断5・2026-09-11）。
+   * 手順3「🔍 公開前に確かめる」— 手で確かめたいときのボタン（判断5・2026-09-11）。
    *
    * 以前は「公開できるか確かめる」（preflight）と「何が作られるか確認」（plan）の
    * 2つのボタンに分かれていたが、**同じことをするのに2回押させていた**。1つに統合し、
    * 押すと preflight → plan の順で確かめ、どちらも今までどおり表示する。
-   * 接続テスト（①）はここに含めない（キー登録前から独立して試したいため・既存のまま）。
+   * 接続テスト（手順1）はここに含めない（キー登録前から独立して試したいため・既存のまま）。
    */
   const checkBeforePublish = async () => {
     await runPreflight()
@@ -564,7 +564,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   // 構築中の進捗メッセージ（最新行）。apply 中だけ表示する。
   const [progress, setProgress] = useState<string | null>(null)
 
-  // ── 閉じて開き直したときの続き（2026-09-29・作者の決定 ②・上の説明を参照）──────────────────
+  // ── 閉じて開き直したときの続き（2026-09-29・作者の決定 (2)・上の説明を参照）──────────────────
   // main が持つ処理の記録の写し（開いたとき get・開いている間は onChanged で置き換える）。null は未取得。
   const [ops, setOps] = useState<ProjectOpsSnapshotShape | null>(null)
   // 開き直して読んだ結果のうち、いちばん新しいもの（opResult に入る）より前のもの。警告を上書きで見逃さない。
@@ -610,7 +610,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   // 公開URL（デプロイ済みのとき）
   const [appUrl, setAppUrl] = useState<string | null>(null)
   const [urlLoading, setUrlLoading] = useState(false)
-  // ⑨ ロールバック節（RollbackSection）を、公開が成功するたびに取り直させる印（roadmap #32）。
+  // 手順9 ロールバック節（RollbackSection）を、公開が成功するたびに取り直させる印（roadmap #32）。
   const [trafficRefreshSignal, setTrafficRefreshSignal] = useState(0)
   // コスト実額
   const [cost, setCost] = useState<{ amountYen?: number; asOf?: string; message?: string } | null>(null)
@@ -957,11 +957,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   // ── 構築（適用）: 先に公開前チェック（preflight）→ プランを出してから確認ダイアログ ──
   //
   // ── なぜ preflight を先に呼ぶか（判断5・利用者目線レビュー・2026-09-11）───────────
-  // 以前はここで plan だけを取り直しており、③「公開できるか確かめる」を別に押さない限り
+  // 以前はここで plan だけを取り直しており、手順3「公開できるか確かめる」を別に押さない限り
   // ng（確実に失敗する）が分からなかった。「押す → 数分待つ → 分からないエラー」を防ぐため、
   // 押した瞬間にここで確認する。止めるかどうかの判断は shouldBlockPublish（純関数・
   // src/renderer/publishGate.ts）に切り出してあり、ここでは呼ぶだけにする（掟10）。
-  // 止まったときは、③の結果表示（親切カード・fixボタン）がそのまま案内を担う——
+  // 止まったときは、手順3の結果表示（親切カード・fixボタン）がそのまま案内を担う——
   // ここで新しいエラー表示は作らない。
   const startApply = async () => {
     clearResults()
@@ -1009,7 +1009,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     const endActivity = beginActivity('公開処理', { closeWarning: PUBLISH_CLOSE_WARNING })
     try {
       const r = await window.electronAPI.cloud.apply(projectDir, applyOpts)
-      // ── 起動のしかたが食い違い、止めて聞いているとき（2026-09-10・案②）────────
+      // ── 起動のしかたが食い違い、止めて聞いているとき（2026-09-10・案2）────────
       // **失敗としてではなく選択カードを出す**（掟5）。PATCH はまだ呼ばれていない
       // ので、opResult（⚠️失敗の表示）には載せず、プランの取り直し等もしない。
       if (r.needsScaleDecision) {
@@ -1039,7 +1039,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         // （破棄の確認画面・費用案内が誤った名前を出し続ける。2026-09-08 検分で指摘）。
         refreshRegistryName()
         window.dispatchEvent(new Event('sakura-meta-changed'))
-        // ⑨ ロールバック節も取り直す（固定・解除の直後の見え方を反映するため）。
+        // 手順9 ロールバック節も取り直す（固定・解除の直後の見え方を反映するため）。
         setTrafficRefreshSignal(n => n + 1)
         // ── 公開直後、実際に配分を読み直して確かめる（roadmap #32）──────────────
         // 公開し直せば固定は解除されるはず（buildPatchBody が常に
@@ -1137,7 +1137,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         return
       }
       if (r.plan.remove.length === 0) {
-        setOpResult({ ok: true, message: '片づける古いイメージはありませんでした。' })
+        setOpResult({ ok: true, message: '削除できる古いイメージはありませんでした。' })
         return
       }
       setConfirm({
@@ -1156,12 +1156,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     // 片づけは main の記録（projectOps）に載らない。閉じて開き直しても結果が続きから見えるよう、
     // 始まりと終わりをこの画面のプロセスの中に残す（beginCleanupJob の説明）。
     const finishJob = beginCleanupJob(projectDir)
-    let shown: PanelOpResult = { ok: false, message: '片づけられませんでした。' }
+    let shown: PanelOpResult = { ok: false, message: '削除できませんでした。' }
     try {
       const r = await window.electronAPI.cloud.cleanupImages(projectDir, { confirmed: true, keep })
       shown = {
         ok: r.ok,
-        message: r.message ?? (r.ok ? '片づけました。' : '片づけられませんでした。'),
+        message: r.message ?? (r.ok ? '削除しました。' : '削除できませんでした。'),
         ...(r.detail ? { detail: r.detail } : {}),
       }
       setOpResult(shown)
@@ -1274,7 +1274,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     for (const id of shownRef.current) seenRef.current.add(id)
   }, [visible])
 
-  // 写しが変わるたび: ①走っていた操作が終わったなら表示を取り直す ②まだ見ていない結果を出す
+  // 写しが変わるたび: (1)走っていた操作が終わったなら表示を取り直す (2)まだ見ていない結果を出す
   useEffect(() => {
     if (!ops) return
     const view = viewOfOps(ops)
@@ -1294,7 +1294,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   useEffect(() => {
     const consume = () => {
       const c = takeFinishedCleanup(projectDir)
-      if (c) promoteRestored([{ ...c.result, kind: '公開', caption: `古いイメージの片づけの結果（${clockText(c.finishedAt)}に終わりました）` }])
+      if (c) promoteRestored([{ ...c.result, kind: '公開', caption: `古いイメージの削除の結果（${clockText(c.finishedAt)}に終わりました）` }])
     }
     consume()
     return watchCleanup(projectDir, () => { consume(); bumpCleanup(n => n + 1) })
@@ -1378,14 +1378,14 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     )
   }
 
-  // ── 起動のしかたが、さくら側と Koto の設定で食い違ったとき（2026-09-10・案②） ──
+  // ── 起動のしかたが、さくら側と Koto の設定で食い違ったとき（2026-09-10・案2） ──
   // **失敗ではなく選択カード**（掟5: 番号付きの選択肢・確認）。PATCH はまだ呼ばれていない。
   if (scaleAsk) {
     return (
       <div className="space-y-3">
         <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-2">
           <p className="text-sm font-semibold text-ink">
-            起動のしかたが違います。さくら側:『{scaleLabel(scaleAsk.actual)}』／Koto の設定:『{scaleLabel(scaleAsk.recorded)}』
+            最小スケールの設定が違います。さくら側:『{scaleLabel(scaleAsk.actual)}』／Koto の設定:『{scaleLabel(scaleAsk.recorded)}』
           </p>
           <p className="text-xs text-ink-muted leading-relaxed">
             さくらのコントロールパネルで直接変更したか、以前の公開が反映されていない可能性があります。どちらの設定で公開するか選んでください。
@@ -1402,12 +1402,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             onClick={() => doApply(nextApplyOpts({ confirmed: scaleAsk.confirmed }, 'koto'))}
             disabled={busy}
             className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-          >① Koto の設定で公開する</button>
+          >(1) Koto の設定で公開する</button>
           <button
             onClick={() => doApply(nextApplyOpts({ confirmed: scaleAsk.confirmed }, 'sakura'))}
             disabled={busy}
             className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-semibold hover:border-sakura disabled:opacity-40"
-          >② さくら側の設定を Koto に取り込んで公開する</button>
+          >(2) さくら側の設定を Koto に取り込んで公開する</button>
           <button
             onClick={() => setScaleAsk(null)}
             disabled={busy}
@@ -1441,10 +1441,10 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         )}
       </div>
 
-      {/* ── 閉じて開き直したときの続き（2026-09-29・作者の決定 ②）──────────────────────────
+      {/* ── 閉じて開き直したときの続き（2026-09-29・作者の決定 (2)）──────────────────────────
           走っていれば進み具合、終わっていれば結果と警告を、**開いてすぐ目に入るここ**へ出す
-          （⑥まで下りないと見逃す。結果は、閉じる・次の操作を始めるまで「見ていない」のまま残る）。
-          この画面が動かしている最中の進み具合は、従来どおり⑥に出る（二重に出さない）。 */}
+          （手順6まで下りないと見逃す。結果は、閉じる・次の操作を始めるまで「見ていない」のまま残る）。
+          この画面が動かしている最中の進み具合は、従来どおり手順6に出る（二重に出さない）。 */}
       {opsView.runningOwn && !busy && (
         <div className="rounded-xl border border-brand-yellow/70 bg-surface p-3 flex items-start gap-2">
           <span className="inline-block w-3.5 h-3.5 mt-0.5 border-2 border-sakura border-t-transparent rounded-full animate-spin flex-none" />
@@ -1459,7 +1459,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         <div className="rounded-xl border border-brand-yellow/70 bg-surface p-3 flex items-start gap-2">
           <span className="inline-block w-3.5 h-3.5 mt-0.5 border-2 border-sakura border-t-transparent rounded-full animate-spin flex-none" />
           <div className="min-w-0 space-y-0.5">
-            <p className="text-xs font-semibold text-ink">古いイメージの片づけが進んでいます</p>
+            <p className="text-xs font-semibold text-ink">古いイメージの削除が進んでいます</p>
             <p className="text-[11px] text-ink-muted leading-relaxed">終わると、結果がここに出ます。</p>
           </div>
         </div>
@@ -1488,10 +1488,10 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         </div>
       )}
 
-      {/* ① APIキー（AccessKeySection に統一・判断8。入力は「認証情報」に一本化。
+      {/* 手順1 APIキー（AccessKeySection に統一・判断8。入力は「認証情報」に一本化。
           ここは状態表示と接続テストのみ） */}
       <AccessKeySection
-        stepNo="①"
+        stepNo="手順1"
         serviceTitle="さくらのクラウド"
         keyLabel="APIキー"
         registered={keyReady}
@@ -1548,10 +1548,10 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         )}
       </AccessKeySection>
 
-      {/* ② 公開の設定（env.json） */}
+      {/* 手順2 公開の設定（env.json） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">② 公開の設定</p>
+          <p className="text-sm font-semibold text-ink">手順2 公開の設定</p>
           <button
             onClick={loadEnv}
             disabled={envLoading}
@@ -1606,10 +1606,10 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         </ul>
       </details>
 
-      {/* ③ 事前チェック（実行前の差分プレビュー＝plan/dry-run） */}
+      {/* 手順3 事前チェック（実行前の差分プレビュー＝plan/dry-run） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <p className="text-sm font-semibold text-ink">③ 事前チェック</p>
+          <p className="text-sm font-semibold text-ink">手順3 事前チェック</p>
           {/* 「公開できるか確かめる」「何が作られるか確認」の2ボタンを1つに統合（判断5・
               2026-09-11）。押すと preflight → plan の順で確かめ、どちらも今までどおり表示する。 */}
           <button
@@ -1713,7 +1713,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                           onClick={() => void cleanUnusedImages(c.unusedFiles!)}
                           disabled={trashing}
                           className="bg-elevated border border-line text-ink rounded-lg px-3 py-1.5 text-xs font-semibold hover:border-sakura disabled:opacity-40"
-                        >{trashing ? '片づけています…' : `🗑 使っていない画像をゴミ箱へ（${c.unusedFiles!.length}件）`}</button>
+                        >{trashing ? 'ゴミ箱へ移しています…' : `🗑 使っていない画像をゴミ箱へ（${c.unusedFiles!.length}件）`}</button>
                         <span className="ml-2 text-[11px] text-ink-muted">完全には消えません（ゴミ箱から戻せます）</span>
                       </span>
                     )}
@@ -1737,15 +1737,15 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         {plan && <PlanView plan={plan} />}
       </section>
 
-      {/* ④ セキュリティチェック（事前チェックの次・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
-      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="④" />
+      {/* 手順4 セキュリティチェック（事前チェックの次・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順4" />
 
-      {/* ⑤ 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
-      <UnusedFilesSection projectDir={projectDir} stepNo="⑤" />
+      {/* 手順5 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
+      <UnusedFilesSection projectDir={projectDir} stepNo="手順5" />
 
-      {/* ⑥ 公開・破棄（apply / teardown） */}
+      {/* 手順6 公開・破棄（apply / teardown） */}
       <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-        <p className="text-sm font-semibold text-ink">⑥ 公開・破棄</p>
+        <p className="text-sm font-semibold text-ink">手順6 公開・破棄</p>
 
         {/* ビルド方式の切替（プロジェクトからビルドするとき）。
             既定（標準）のときは畳む・Docker を選んでいるときは展開したまま（判断6・
@@ -1769,7 +1769,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
               <p className="text-[11px] text-ink-muted">
                 {isDockerMode
                   ? 'あなたの Dockerfile を Docker でビルドします（RUN 等が使えます／Docker の導入が必要）。'
-                  : 'Koto に入っている組み立て機能で「土台＋あなたのファイル」を組み立てます（Docker 不要・準備ゼロ）。'}
+                  : 'Koto に内蔵のビルド機能で、ベースイメージにあなたのファイルを加えてイメージをビルドします（Docker 不要・準備ゼロ）。'}
               </p>
             </div>
           </details>
@@ -1802,8 +1802,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
           「公開する」は事前チェックを表示して確認してから実行します。「破棄する」はデータの保存場所も含めて削除する場合があります。
         </p>
         {/* D-13 F（2026-09-16）: 公開する**前に**読める位置（保存場所の注意のすぐ下・公開ボタンの近く）に、
-            データが残らないことを出す。文言は専有型の⑧と同じ関数から出し、複製しない（掟10）。
-            体裁は専有型の⑧と同じ（本文と同じ大きさ・太字。いちばん取り返しがつかない注意を、
+            データが残らないことを出す。文言は専有型の手順8と同じ関数から出し、複製しない（掟10）。
+            体裁は専有型の手順8と同じ（本文と同じ大きさ・太字。いちばん取り返しがつかない注意を、
             いちばん小さく薄い字に置かない・2026-09-16 検分）。 */}
         <p className="text-xs font-semibold text-ink-secondary leading-relaxed">{ephemeralDataNote()}</p>
         {/* ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）──────────────────
@@ -1817,7 +1817,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             disabled={cleaning || blocked || !keyReady}
             title="レジストリに残っている過去のイメージを調べます（押しただけでは何も消えません）"
             className="text-[11px] text-ink-muted hover:text-sakura hover:underline disabled:opacity-40"
-          >{cleaning ? '調べています…' : '🧹 古いイメージを片づける…'}</button>
+          >{cleaning ? '調べています…' : '🧹 古いイメージを削除する…'}</button>
         )}
         {needsPrereqs && !prereqsOk && (
           <p className="text-[11px] text-brand-yellow leading-relaxed">
@@ -1888,7 +1888,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
               onClick={askCleanupImages}
               disabled={cleaning || blocked}
               className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
-            >{cleaning ? '調べています…' : '🧹 古いイメージを片づける'}</button>
+            >{cleaning ? '調べています…' : '🧹 古いイメージを削除する'}</button>
             <p className="text-[11px] text-ink-muted leading-relaxed">
               押すと、消えるものの一覧が出ます。そこで確かめてから実行できます。
               いま公開しているものと、直近{opResult.staleImages.keep}件は残ります。
@@ -2016,11 +2016,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         )}
       </section>
 
-      {/* ⑦ 限定公開（アクセス制限／IP制限）- デプロイ済みのときだけ表示（番号は2026-09-04 付番） */}
+      {/* 手順7 限定公開（アクセス制限／IP制限）- デプロイ済みのときだけ表示（番号は2026-09-04 付番） */}
       {appUrl && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-ink">⑦ 限定公開（アクセス制限）</p>
+            <p className="text-sm font-semibold text-ink">手順7 限定公開（アクセス制限）</p>
             <button
               onClick={refreshAccessLimit}
               disabled={limitLoading}
@@ -2132,12 +2132,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         </section>
       )}
 
-      {/* ⑧ ログ・メトリクス（roadmap #30・さくらの開発者の助言「ログとメトリクスは有効にしてて
+      {/* 手順8 ログ・メトリクス（roadmap #30・さくらの開発者の助言「ログとメトリクスは有効にしてて
           欲しい」）- デプロイ済みのときだけ表示。判断・部品はログ・メトリクスで共通
           （TelemetryNotice・掟10）、隣に並べて出す。 */}
       {appUrl && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-          <p className="text-sm font-semibold text-ink">⑧ ログ・メトリクス</p>
+          <p className="text-sm font-semibold text-ink">手順8 ログ・メトリクス</p>
           <p className="text-[11px] text-ink-muted leading-relaxed">
             動かなかったときの原因調査（ログ）や、負荷状況の確認（メトリクス）に使えます。
             さくらのモニタリングスイートに保存されます。
@@ -2149,9 +2149,9 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         </section>
       )}
 
-      {/* ⑨ 公開したものを前のバージョンに戻す（roadmap #32・ロールバック）- 公開済みのときだけ表示。
+      {/* 手順9 公開したものを前のバージョンに戻す（roadmap #32・ロールバック）- 公開済みのときだけ表示。
           プロジェクト側の「🕘 履歴（前の状態に戻す）」（ファイルのスナップショット）とは別物。 */}
-      {appUrl && <RollbackSection projectDir={projectDir} refreshSignal={trafficRefreshSignal} stepNo="⑨" />}
+      {appUrl && <RollbackSection projectDir={projectDir} refreshSignal={trafficRefreshSignal} stepNo="手順9" />}
 
       {/* コスト（直近の確定請求額をベストエフォートで取得・表示のみ）。番号の無い補助の節
           （判断6・利用者目線レビュー・2026-09-11）: 🌐 公開URL と同じく薄い見た目にする。 */}
@@ -2295,7 +2295,7 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
                     onClick={() => onSetScale('warm')}
                     disabled={savingScale}
                     className={`px-2.5 py-1 rounded border ${display === 'warm' ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}
-                  >すぐ返す（常時動かす）</button>
+                  >常時起動（すぐ応答する）</button>
                   {savingScale && <span className="text-ink-muted self-center">保存中…</span>}
                 </div>
                 <p className="text-[11px] text-ink-muted leading-relaxed">
@@ -2439,7 +2439,7 @@ function StoppedResultView({ result }: { result: PanelOpResult }) {
   return (
     <div className="rounded-xl border border-brand-yellow/60 bg-overlay p-3 space-y-1.5">
       <CaptionLine caption={result.caption} />
-      <p className="text-xs font-semibold text-brand-yellow">⏸ 起動のしかたを選ぶ段階で止まりました</p>
+      <p className="text-xs font-semibold text-brand-yellow">⏸ 最小スケールを選ぶ段階で止まりました</p>
       <WarningsBlock warnings={result.warnings} />
       {result.message && (
         <p className="text-xs text-ink-secondary leading-relaxed break-all select-text whitespace-pre-wrap">{result.message}</p>
@@ -2564,7 +2564,7 @@ function PrereqChecklist({
     ok ? <span className="text-brand-green font-semibold">✓</span> : <span className="text-brand-red font-semibold">✗</span>
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-2">
-      <p className="text-[11px] font-semibold text-ink-secondary">{isDocker ? '公開するための前提（エキスパート＝Docker使用）' : '公開するための前提（Docker は不要です）'}</p>
+      <p className="text-[11px] font-semibold text-ink-secondary">{isDocker ? '公開するための前提（ビルド方式はエキスパートで、Docker を使います）' : '公開するための前提（Docker は不要です）'}</p>
       <ul className="space-y-1.5 text-xs">
         {isDocker ? (
           <>
@@ -2583,7 +2583,7 @@ function PrereqChecklist({
           <li className="flex items-center gap-2 flex-wrap">
             {mark(!!prereqs?.builder)}
             <span className="text-ink">内蔵ビルダー</span>
-            <span className="text-ink-muted">Koto に入っている組み立て機能（Docker のインストールは不要）</span>
+            <span className="text-ink-muted">Koto に内蔵のビルド機能（Docker のインストールは不要）</span>
           </li>
         )}
         <li className="flex items-center gap-2 flex-wrap">
@@ -2780,7 +2780,7 @@ function ConfirmDialog({
               ))}
             </ul>
             <p className="text-[11px] text-ink-muted leading-relaxed">
-              直近{keep}件は、公開したものを前の版に戻したいときのために残します。
+              直近{keep}件は、公開したものを前のバージョンに戻したいときのために残します。
             </p>
           </div>
         </div>
@@ -2800,7 +2800,7 @@ function ConfirmDialog({
             onClick={onCleanupImages}
             disabled={busy}
             className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-          >{busy ? '片づけています…' : '理解した上で消す'}</button>
+          >{busy ? '削除しています…' : '理解した上で消す'}</button>
         </div>
       </div>
     )

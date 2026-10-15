@@ -56,9 +56,9 @@ export default function OnboardingModal({ onSetApiKey, onClose, onCreateProject,
               AIと一緒にWebサイトやアプリを作り、さくらインターネットのサービスでそのまま公開できるアプリです。
             </p>
             <ul className="text-sm text-ink-secondary space-y-2 text-left bg-surface border border-line rounded-xl p-4 mb-6">
-              <li>① 作る（AIに日本語で依頼）</li>
-              <li>② 試す（ワンクリックで動作確認）</li>
-              <li>③ 公開（さくらのサーバへ）</li>
+              <li>作る（AIに日本語で依頼）</li>
+              <li>試す（ワンクリックで動作確認）</li>
+              <li>公開（さくらのサーバへ）</li>
             </ul>
             <p className="text-[11px] text-ink-muted mb-4">
               Koto は個人開発の非公式ツールです（さくらインターネットの製品ではありません）。

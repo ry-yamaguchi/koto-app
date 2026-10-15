@@ -131,7 +131,7 @@ export default function App() {
     setTermExec(prev => ({ cmd, seq: (prev?.seq ?? 0) + 1 }))
   }, [])
 
-  // 実行中プロセスへ Ctrl+C を送る（②試すで起動したサーバーの停止用）
+  // 実行中プロセスへ Ctrl+C を送る（【試す】で起動したサーバーの停止用）
   const stopInTerminal = useCallback(() => {
     setShowTerminal(true)
     setTermExec(prev => ({ cmd: '\x03', seq: (prev?.seq ?? 0) + 1 }))
@@ -164,7 +164,7 @@ export default function App() {
     window.dispatchEvent(new CustomEvent('sakura-target-changed', { detail: { target: newTarget } }))
   }, [currentDir])
 
-  // ワークフローバー「① 作る」→ AIチャットへフォーカス
+  // ワークフローバー「作る」→ AIチャットへフォーカス
   const focusChat = useCallback(() => {
     setShowChat(true)
     // ChatPanel 側がこのイベントで入力欄にフォーカスする
@@ -190,7 +190,7 @@ export default function App() {
   // 使われないため、非同期プライムで足りる（learningMirror.ts のコメント参照）。
   // 予算設定・利用実績の写し（B'-3d-1b）も同じ理由で並べて作る（usageMirror.ts のコメント参照）。
   // ゾーン一覧（roadmap #28）も同様に起動時へ寄せる: 専有型・共用型どちらの画面でも
-  // ③を押さずに（＝起動直後から）選べるようにするため。失敗しても起動は止めない
+  // 【公開】を押さずに（＝起動直後から）選べるようにするため。失敗しても起動は止めない
   // （zonesCache.ts の primeZonesCache のコメント参照）。
   useEffect(() => { primeLearningMirror(); primeUsageMirror(); primeZonesCache() }, [])
 
@@ -458,7 +458,7 @@ export default function App() {
   const activeFileObj = openFiles.find(f => f.path === activeFile) ?? null
   const anyDirty = openFiles.some(f => f.isDirty)
 
-  // ── ③ 前回の状態を復元（マウント時に1回）。タブはプロジェクト（フォルダ）ごとに保存する ──
+  // ── (3) 前回の状態を復元（マウント時に1回）。タブはプロジェクト（フォルダ）ごとに保存する ──
   const [restored, setRestored] = useState(false)
   // いま openFiles がどのプロジェクトのものか。切替中の誤保存を避けるために保持する。
   const loadedDirRef = useRef<string | null>(null)
@@ -561,7 +561,7 @@ export default function App() {
     }))
   }, [openFiles, activeFile, currentDir, restored])
 
-  // ── ② オートセーブ（編集停止から1.5秒後に未保存を保存） ──
+  // ── (2) オートセーブ（編集停止から1.5秒後に未保存を保存） ──
   const autosaveTimer = useRef<number | undefined>(undefined)
   useEffect(() => {
     const dirty = openFiles.filter(f => f.isDirty)
@@ -607,12 +607,12 @@ export default function App() {
     return () => window.removeEventListener('sakura:open-file', onOpen)
   }, [openFile])
 
-  // ── ① 未保存状態をメインへ通知（終了時の警告に使う） ──
+  // ── (1) 未保存状態をメインへ通知（終了時の警告に使う） ──
   useEffect(() => {
     window.electronAPI.win.setDirty(anyDirty)
   }, [anyDirty])
 
-  // ── ①「保存して終了」選択時：全保存してから終了 ──
+  // ── (1)「保存して終了」選択時：全保存してから終了 ──
   useEffect(() => {
     return window.electronAPI.win.onSaveAll(async () => {
       const dirty = openFiles.filter(f => f.isDirty)
@@ -716,8 +716,8 @@ export default function App() {
               <div className="absolute inset-0 z-30 flex items-center justify-center bg-base/60 pointer-events-none">
                 <span className="text-sm font-semibold text-sakura bg-surface border border-sakura rounded-xl px-4 py-2">
                   {overTree
-                    ? '📥 ここに落とすと、プロジェクトに取り込みます'
-                    : '🖼 ここに落とすと、AIに見せます（そのあと「📁 画像を使う」でプロジェクトにも入れられます）'}
+                    ? '📥 ここにドロップすると、プロジェクトに取り込みます'
+                    : '🖼 ここにドロップすると、チャットに添付します（そのあと「📁 画像を使う」でプロジェクトにも入れられます）'}
                 </span>
               </div>
             )}
@@ -788,7 +788,7 @@ export default function App() {
                         // **プロジェクトの形が変わった。** ファイル一覧だけでなく、
                         // 各画面が持っている「根」も取り直させる（treeRefresh を合図に使う）。
                         // これを忘れると、移行後も古い場所を見たままになる
-                        //（2026-08-20 実機: 「② 試す」が実行方法を見つけられなくなった）。
+                        //（2026-08-20 実機: 「試す」が実行方法を見つけられなくなった）。
                         setTreeRefresh(n => n + 1)
                       }} />
                   </div>

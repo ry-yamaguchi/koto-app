@@ -17,6 +17,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 //     チェックの有無に関わらずプロジェクト削除そのものを止める（先に専有型タブの⑥で片づけさせる）。
 //     2026-09-27 の再検分で、公開記録（publish.targets）だけでは (a)📡一覧でアプリだけ
 //     破棄した後 (b)クラスタだけ作ってまだ公開していない、の2つを見落とすと指摘され、
+//     （(a) のアプリだけを消す口は 2026-10-08 に廃止した。(a) の状態は、削除が途中で止まって記録だけ外れた場合の保険として残す）
 //     クラスタ・ASG・LB の資源ID（publish.apprunDedicated）も見るよう拡張した。
 //  D. W-59: cleanRemoteError（remoteError.ts・認証情報の接続テストと共通の1つ）。ipcRenderer.invoke が付ける
 //     英語の頭「Error invoking remote method '…': Error: 」を取り除く。
@@ -289,10 +290,9 @@ describe('blocksProjectDeleteFor（W-69）: 専有型が残っている間はプ
 
   // ── 2026-09-27 再検分の指摘3: publish.targets だけでは足りない2つの穴 ──────────────
   // クラスタ・ASG・LB の ID は publish.targets とは別の場所（publish.apprunDedicated）にある。
-  it('(a) 📡一覧でアプリだけ破棄した後（pendingPublish は空だが、クラスタの記録が残っている）でも true', () => {
-    // apprunDedicated.teardownApp は publish.targets からは消すが、クラスタ・ASG・LB の
-    // 記録には触らない（PublishedListModal.tsx の破棄後の文言「クラスタ・ロードバランサ…は
-    // 残っています」のとおり）。この状態を偽のAPI応答（state()の戻り値）で再現する。
+  it('(a) 公開記録（publish.targets）は外れたが、クラスタの記録が残っている（pendingPublish は空）ときも true', () => {
+    // 以前は 📡 一覧のアプリだけを消す口（廃止）がこの状態を作った。いまは、削除が途中で止まったあとに公開記録だけが外れた場合の保険。
+    // 記録が残っているものを置き去りにしてフォルダを消せば、月額を Koto から止められなくなる。この状態を偽のAPI応答（state()の戻り値）で再現する。
     expect(blocksProjectDeleteFor([], { clusterID: 'cluster-1', asgID: 'asg-1', loadBalancerID: 'lb-1' })).toBe(true)
   })
 
@@ -332,7 +332,15 @@ describe('Sidebar.tsx の配線（W-69・2026-09-27再検分）: pendingDedicate
   })
 
   it('確認ダイアログの赤字ブロックは、pendingPublish が空でも blocksProjectDeleteFor が true なら出る（(b)のケースで見せる文が無いままにしない）', () => {
-    expect(sidebarSrc).toContain("{(pendingPublish.length > 0 || blocksProjectDeleteFor(pendingPublish, pendingDedicated)) && (")
+    // 2026-10-08 検分: 公開の記録を読めなかったときの注意（publishUnreadable）も、同じ箱の中に単独で出る
+    expect(sidebarSrc).toContain("{(pendingPublish.length > 0 || publishUnreadable || blocksProjectDeleteFor(pendingPublish, pendingDedicated)) && (")
+  })
+
+  // 2026-10-08 検分: 資源の記録が空で公開記録だけが残っている行（幽霊の行）では、案内先の手順6の削除ボタンが出ない。
+  // 行き止まりにしないよう、出口（📡 の「一覧から削除」）も、止める文（確認のダイアログと、削除を押したときの警告）の両方に添える。
+  it('止める文（赤字と警告ダイアログ）は、手順6のボタンが出ないとき（公開の記録だけ残っている）の出口として「一覧から削除」を案内する', () => {
+    const hint = '専有型タブに手順6の削除ボタンが出ていないとき（削除するものの記録が無く、公開の記録だけが残っているとき）は、📡 公開したもの一覧の「一覧から削除」で、その行を消してください。'
+    expect(sidebarSrc.split(hint).length - 1, '赤字と警告ダイアログの2か所').toBe(2)
   })
 
   it('専有型の行には、もう teardownScopeNote（「…削除します」）を出さない（W-69再検分の指摘2: 同じ枠で「削除できません」と矛盾していた）', () => {

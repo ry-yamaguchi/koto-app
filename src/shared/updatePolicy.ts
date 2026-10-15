@@ -79,11 +79,11 @@ export function shouldCheckOnStartup(opts: { isPackaged: boolean; enabled: boole
 export function updateStatusText(state: UpdateState): string {
   switch (state.kind) {
     case 'idle': return ''
-    case 'checking': return '新しい版があるか確認しています…'
-    case 'available': return `新しい版 ${state.version} が見つかりました。ダウンロードしています…`
-    case 'downloading': return `新しい版 ${state.version} をダウンロードしています…（${Math.round(state.percent)}%）`
-    case 'downloaded': return `新しい版 ${state.version} の準備ができました。次に Koto を起動したときに切り替わります。`
-    case 'none': return 'お使いの版が最新です。'
+    case 'checking': return '新しいバージョンがあるか確認しています…'
+    case 'available': return `新しいバージョン ${state.version} が見つかりました。ダウンロードしています…`
+    case 'downloading': return `新しいバージョン ${state.version} をダウンロードしています…（${Math.round(state.percent)}%）`
+    case 'downloaded': return `新しいバージョン ${state.version} の準備ができました。次に Koto を起動したときに切り替わります。`
+    case 'none': return 'お使いのバージョンは最新です。'
     case 'error': return `更新を確認できませんでした: ${state.message}`
   }
 }

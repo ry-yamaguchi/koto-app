@@ -597,9 +597,9 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
 
   // ── B-1a: 画面の更新を「main が当てた結果の押し出し」1本にする ─────────────────────
   //
-  // 以前は2経路あった: ①renderer発の書き換え（client.apply が「画面へ即時反映」と「ops送信」の
-  // 両方をやる）②main のターンの出来事（chatTurn.start の onEvent が「見ているものが何か」を
-  // 確かめずに当てる）。②はターン中にプロジェクトを切り替えると、走っているターンの吹き出しが
+  // 以前は2経路あった: (1)renderer発の書き換え（client.apply が「画面へ即時反映」と「ops送信」の
+  // 両方をやる）(2)main のターンの出来事（chatTurn.start の onEvent が「見ているものが何か」を
+  // 確かめずに当てる）。(2)はターン中にプロジェクトを切り替えると、走っているターンの吹き出しが
   // 切り替え先の画面に誤配されていた（保存自体は convStore が projectDir 別に正しく持つので、
   // 壊れるのは見た目だけ）。
   //
@@ -664,12 +664,12 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       // pendingNewProjectRef／モジュール退避が持っているので、aiRoot が解決した再評価
       // （deps の aiRoot 変化）でここへ戻ってくる。退避の消費より前に返ること（消費すると失われる）。
       if (aiRoot?.dir !== projectDir) return
-      // データの出どころは2つ: ①イベントで直接受け取り済みのもの（pendingNewProjectRef）
-      // ②イベントを取りこぼした場合の救済（newProjectRequest.ts のモジュール退避。「初めてのプロジェクト
+      // データの出どころは2つ: (1)イベントで直接受け取り済みのもの（pendingNewProjectRef）
+      // (2)イベントを取りこぼした場合の救済（newProjectRequest.ts のモジュール退避。「初めてのプロジェクト
       //   作成」では ChatPanel がまだマウントされておらずイベントの受け手が無いため、これが唯一の頼り）。
-      // ⚠️ モジュール退避（②）は**必ず消費する**（2026-08-28 実機で発覚）。①（イベント経由の ref）で
-      // 送れたときに②の写しが残っていると、ChatPanel の再マウント（モード切替）で二重送信ガードの
-      // ref が消えたあと、②を拾って**同じ依頼をもう一度送ってしまう**（実機: 新規作成の23分後、
+      // ⚠️ モジュール退避（(2)）は**必ず消費する**（2026-08-28 実機で発覚）。(1)（イベント経由の ref）で
+      // 送れたときに(2)の写しが残っていると、ChatPanel の再マウント（モード切替）で二重送信ガードの
+      // ref が消えたあと、(2)を拾って**同じ依頼をもう一度送ってしまう**（実機: 新規作成の23分後、
       // チャットモードから戻った瞬間に kickoff が再送され、AI が初期生成をやり直した）。
       const fromStash = takeNewProjectRequest(projectDir)
       const prompt = pendingNewProjectRef.current?.dir === projectDir
@@ -720,14 +720,14 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' })
   }, [messages, isLoading])
 
-  // ワークフローバー「① 作る」から入力欄へフォーカス
+  // ワークフローバー「作る」から入力欄へフォーカス
   useEffect(() => {
     const h = () => textareaRef.current?.focus()
     window.addEventListener('sakura:focus-chat', h)
     return () => window.removeEventListener('sakura:focus-chat', h)
   }, [])
 
-  // 画面のどこかから「AIに頼む」を押されたとき（例: ③公開の「データが消えてしまいます」）。
+  // 画面のどこかから「AIに頼む」を押されたとき（例: 【公開】の「データが消えてしまいます」）。
   // **文面を入れてフォーカスするところまで**にし、送信は押さない。
   // 何を頼むのかを読んでから送れるようにする（勝手に送るとAIが動き出して費用も発生する）。
   useEffect(() => {
@@ -823,7 +823,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
             kind: 'append',
             msg: {
               role: 'assistant',
-              content: `✅ 公開先を「${label}」に変更しました。この公開先には公開済みの実績があります${when ? `（${when} 公開）` : ''}。今のコードのままで再公開できます（③公開から）。${staleNote}`,
+              content: `✅ 公開先を「${label}」に変更しました。この公開先には公開済みの実績があります${when ? `（${when} 公開）` : ''}。今のコードのままで再公開できます（【公開】から）。${staleNote}`,
             },
           })
           return

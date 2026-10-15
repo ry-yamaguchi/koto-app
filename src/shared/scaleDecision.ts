@@ -46,7 +46,7 @@ export function judgeScale(input: { recorded: number; actual: number | null; dec
     return {
       kind: 'proceed',
       min: recorded,
-      note: `さくら側の起動のしかたを確認できませんでした。Koto の設定（${scaleLabel(recorded)}）で公開します`,
+      note: `さくら側の最小スケールを確認できませんでした。Koto の設定（${scaleLabel(recorded)}）で公開します`,
     }
   }
   if (actual === recorded) {
@@ -59,8 +59,8 @@ export function judgeScale(input: { recorded: number; actual: number | null; dec
 
 /**
  * scaleLabel — min から画面の言葉を作る。
- * `AppRunPanel.tsx` の `scaleDisplay` と同じ言葉（0＝最初のアクセスが遅くてもよい・1以上＝すぐ返す）。
+ * `AppRunPanel.tsx` の `scaleDisplay` と同じ言葉（0＝最初のアクセスが遅くてもよい・1以上＝常時起動）。
  */
 export function scaleLabel(min: number): string {
-  return min >= 1 ? 'すぐ返す（常時動かす）' : '最初のアクセスが遅くてもよい（安い）'
+  return min >= 1 ? '常時起動（すぐ応答する）' : '最初のアクセスが遅くてもよい（安い）'
 }

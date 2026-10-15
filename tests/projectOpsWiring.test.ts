@@ -55,11 +55,11 @@ describe('IPC の3点セット（掟6）: projectOps:get / projectOps:ack / proj
   })
 })
 
-describe('進捗の送り口は1つ（progressReporter）: renderer へ進捗を送っていた5本は、送り口をこれに通している', () => {
-  // 進捗を event.sender.send で送っていた5本（cloud:apply・vercel:publish・専有型の teardown／publishApp／teardownApp）が、
+describe('進捗の送り口は1つ（progressReporter）: renderer へ進捗を送っていた4本は、送り口をこれに通している', () => {
+  // 進捗を event.sender.send で送っていた4本（cloud:apply・vercel:publish・専有型の teardown／publishApp）が、
   // 直接 send せず progressReporter を通す（記録の更新と renderer への通知を1か所に）。直接 send に戻ると、
   // 画面は進み具合を読めなくなる（記録が更新されない）。
-  // cloud.ts には鍵の外の cloud:cleanupImages があり、あれは記録の対象外（9本に入らない）なので、ハンドラごとに切り出して見る。
+  // cloud.ts には鍵の外の cloud:cleanupImages があり、あれは記録の対象外（8本に入らない）なので、ハンドラごとに切り出して見る。
   const blockOf = (file: string, channel: string): string => {
     const src = codeOnly(read(file))
     const at = src.indexOf(`ipcMain.handle('${channel}'`)
@@ -72,7 +72,6 @@ describe('進捗の送り口は1つ（progressReporter）: renderer へ進捗を
     ['src/main/ipc/vercel.ts', 'vercel:publish', "progressReporter(projectDir, m => event.sender.send('vercel:progress', m))"],
     ['src/main/ipc/apprunDedicated.ts', 'apprunDedicated:teardown', "progressReporter(projectDir, msg => event.sender.send('apprunDedicated:teardown-progress', msg))"],
     ['src/main/ipc/apprunDedicated.ts', 'apprunDedicated:publishApp', "progressReporter(projectDir, msg => event.sender.send('apprunDedicated:publish-progress', msg))"],
-    ['src/main/ipc/apprunDedicated.ts', 'apprunDedicated:teardownApp', "progressReporter(projectDir, msg => event.sender.send('apprunDedicated:teardown-progress', msg))"],
   ]
   for (const [file, channel, call] of SENDERS) {
     it(`${channel}: 進捗は ${call.slice(0, 40)}… を通し、直接 send しない`, () => {

@@ -182,7 +182,9 @@ describe('dataLayerUpdateLine: 素のテキストで出す', () => {
     const untouched = dataLayerUpdateLine({ ok: true, file: 'koto-data.js', needsUpdate: true })
     expect(untouched).toContain('そのままにしました')
     expect(untouched).toContain('Koto に相談してください')
-    expect(dataLayerUpdateLine({ ok: true, file: 'koto-data.js', replaced: true })).toContain('新しい版に差し替えました')
+    const replaced = dataLayerUpdateLine({ ok: true, file: 'koto-data.js', replaced: true })
+    expect(replaced).toContain('新しいバージョンに差し替えました')
+    expect(replaced).not.toContain('新しい版に') // 0.6.21（作者の決定 2026-10-01）: 「版」（バージョンの意味）は「バージョン」に揃えた。直す前の言い方は戻さない
   })
 
   it('★ ソースの決まり（Markdown を使わない）と実物が一致している', () => {

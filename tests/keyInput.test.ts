@@ -95,7 +95,7 @@ describe('📚 資料の置き場所と文言', () => {
 
   it('「このプロジェクトで使う」は資料ダイアログから外し、行き先を案内する', () => {
     const s = read('src/renderer/components/KnowledgeModal.tsx')
-    expect(s).not.toContain('④ このプロジェクトで使う')
+    expect(s).not.toContain('手順4 このプロジェクトで使う')
     expect(s).not.toContain('このプロジェクトのチャットで資料を使う\n')
     // **機能が消えたと思わせない**（W-84・2026-09-27 決定: 実物の場所どおりに言い換え）
     expect(s).toContain('チャットの入力欄のすぐ上の「📚 資料を使う／使わない」')
@@ -139,9 +139,10 @@ describe('📚 資料の置き場所と文言', () => {
   it('資料の画面は「追加 → 一覧 → 検索」の順で番号が振ってある', () => {
     const s = read('src/renderer/components/KnowledgeModal.tsx')
     const at = (needle: string) => s.indexOf(needle)
-    expect(at('① 資料を追加')).toBeGreaterThan(0)
-    expect(at('② 登録済みの資料')).toBeGreaterThan(at('① 資料を追加'))
-    expect(at('③ 資料を検索')).toBeGreaterThan(at('② 登録済みの資料'))
+    expect(at('手順1 資料を追加')).toBeGreaterThan(0)
+    expect(at('手順2 登録済みの資料')).toBeGreaterThan(at('手順1 資料を追加'))
+    expect(at('手順3 資料を検索')).toBeGreaterThan(at('手順2 登録済みの資料'))
+    expect(s, '旧い丸数字の見出しが戻っている').not.toMatch(/[①-⑳] (資料を追加|登録済みの資料|資料を検索)/)
   })
 
   // 目的は「登録した資料がちゃんと引けるか」の確認。回答だけでは分からない。

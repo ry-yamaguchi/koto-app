@@ -66,7 +66,7 @@ export const REGISTRY_EXTRA_GIB_YEN = 22
 export function costSummaryLines(opts: {
   /** このプロジェクトが保存場所を使っているか（現在の状態を1行に添えるだけで、行の有無は変えない）。 */
   hasBucket: boolean
-  /** いまの「起動のしかた」（`service.scale.min`）。1以上なら「すぐ返す」。 */
+  /** いまの「最小スケール」（`service.scale.min`）。1以上なら「常時起動」。 */
   scaleMin: number
   /** テスト用（既定は `REGISTRY_MONTHLY_YEN`）。数字をハードコードに戻すと変わってしまう変異を検知する。 */
   registryYen?: number
@@ -76,12 +76,12 @@ export function costSummaryLines(opts: {
   const registryYen = opts.registryYen ?? REGISTRY_MONTHLY_YEN
   const bucketYen = opts.bucketYen ?? BUCKET_MONTHLY_YEN
   const usingScaleLabel = opts.scaleMin >= 1
-    ? '（いまの設定は「すぐ返す」です）'
+    ? '（いまの設定は「常時起動」です）'
     : '（いまの設定は「最初のアクセスが遅くてもよい」です）'
   return [
     `コンテナレジストリ 月額${registryYen}円（公開したアプリを消しても残る）`,
     `データの保存場所 月額${bucketYen}円（使う場合${opts.hasBucket ? '・このプロジェクトは使っています' : ''}）`,
-    `アプリ本体: 使った分だけ。『すぐ返す』にすると待機中も料金${usingScaleLabel}`,
+    `アプリ本体: 使った分だけ。『常時起動』にすると待機中も料金${usingScaleLabel}`,
   ]
 }
 
@@ -116,7 +116,7 @@ export function ongoingCostNotice(opts: {
   const dedicated = opts.bucket && !opts.bucket.shared ? opts.bucket : null
   const total = REGISTRY_MONTHLY_YEN + (dedicated ? BUCKET_MONTHLY_YEN : 0)
 
-  const items = [`イメージの置き場（コンテナレジストリ${opts.registryName ? `『${opts.registryName}』` : ''}）`]
+  const items = [`コンテナレジストリ${opts.registryName ? `『${opts.registryName}』` : ''}`]
   if (dedicated) items.push(`データの保存場所『${dedicated.name}』`)
 
   let out = `月額${total}円（税込）がかかり続けます。内訳: ${items.join('と')}。`
@@ -138,7 +138,7 @@ export function registryCostNotice(registryName: string | null): string {
   const name = registryName ? `『${registryName}』` : ''
   // 金額を文頭に置く。枠の中の小さな文字なので、読み飛ばされても最初の一行で額が目に入るようにする。
   return `月額${REGISTRY_MONTHLY_YEN}円（税込・ストレージ${REGISTRY_INCLUDED_STORAGE_GIB}GiBまで）がかかり続けます。`
-    + `イメージの置き場としてコンテナレジストリ${name}を使っているためです。`
+    + `イメージの保存先としてコンテナレジストリ${name}を使っているためです。`
     + `使い終わったら「🗑 破棄する」で削除してください（AppRunアプリを消すだけでは止まりません）。`
 }
 
@@ -186,7 +186,7 @@ export function registryDeleteDefault(opts: { registryName: string | null; adopt
 export function projectDeleteRegistryNote(opts: { registryName: string | null; adopted: boolean }): string | null {
   if (!opts.registryName) return null
   if (!opts.adopted) return null
-  return `イメージの置き場（コンテナレジストリ）『${opts.registryName}』は残します`
+  return `コンテナレジストリ『${opts.registryName}』は残します`
     + '（Koto が作ったものではなく、ほかのアプリのイメージも入っている可能性があるためです）。'
     + `月額${REGISTRY_MONTHLY_YEN}円（税込）は続きます。要らなければ、`
     + 'さくらのクラウドのコントロールパネルで削除してください。'
@@ -194,7 +194,7 @@ export function projectDeleteRegistryNote(opts: { registryName: string | null; a
 
 /** 借り物の置き場であることの断り（既定を外した理由を、その場で言う）。 */
 export function adoptedRegistryNote(registryName: string | null): string {
-  return `この置き場${registryName ? `『${registryName}』` : ''}は Koto が作ったものではありません`
+  return `このコンテナレジストリ${registryName ? `『${registryName}』` : ''}は Koto が作ったものではありません`
     + '（引き継いだときに、もとからあったものをそのまま使っています）。'
     + 'ほかのアプリのイメージも入っている場合、消すとそれらが動かなくなります。'
     + `消してよいと分かっているときだけ、チェックを入れてください（月額${REGISTRY_MONTHLY_YEN}円・税込が止まります）。`

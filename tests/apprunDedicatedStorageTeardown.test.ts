@@ -84,7 +84,7 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
         async issueKey() { h.storageCalls.push('issueKey'); return ISSUED },
         async listPermissions() {
           h.storageCalls.push('listPermissions')
-          if (h.listPermissionsThrows) throw new Error('鍵の一覧を取得できませんでした（テスト）')
+          if (h.listPermissionsThrows) throw new Error('パーミッションの一覧を取得できませんでした（テスト）')
           return h.permissions
         },
         async dispose() { h.storageCalls.push('dispose') },
@@ -105,13 +105,12 @@ vi.mock('../src/main/cloud/apprunDedicatedApply', async (importOriginal) => {
 
 import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
-import { writeApprunDedicatedRecordFs, readApprunDedicatedFs } from '../src/main/publishMetaFs'
+import { writeApprunDedicatedRecordFs, readApprunDedicatedFs, writePublishRecordFs } from '../src/main/publishMetaFs'
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { BUCKET_MONTHLY_YEN, teardownRemainingWarnings } from '../src/shared/cloudCost'
 
 registerApprunDedicatedHandlers({} as any)
 const teardown = h.handlers.get('apprunDedicated:teardown')!
-const teardownApp = h.handlers.get('apprunDedicated:teardownApp')!
 
 const EVENT = { sender: { send: () => {} } }
 const AUTH = { token: 'tok', secret: 'sec' }
@@ -375,13 +374,15 @@ describe('⑥の破棄: 保存場所の鍵を無効にする', () => {
     ])
   })
 
-  it('鍵を無効にできなかったら黙らない。記録も残す（辿れない鍵を作らない）', async () => {
+  it('アクセスキーを無効にできなかったら黙らない。記録も残す（辿れないアクセスキーを作らない）', async () => {
     setupProject({ permissionId: 'perm-live' })
     h.revokeThrows = true
     const { result } = await runTeardown()
 
     expect(result.ok).toBe(true) // 保存場所そのものは片づいている
-    expect(result.executed.some((e: string) => e.includes('鍵を無効にできませんでした'))).toBe(true)
+    expect(result.executed.some((e: string) => e.includes('アクセスキーを無効にできませんでした'))).toBe(true)
+    // 0.6.21（作者の決定 2026-10-01）: 「鍵」は「アクセスキー」に揃えた。直す前の言い方は戻さない
+    expect(result.executed.some((e: string) => e.includes('鍵を無効'))).toBe(false)
     expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBe('perm-live')
   })
 })
@@ -389,24 +390,29 @@ describe('⑥の破棄: 保存場所の鍵を無効にする', () => {
 // ── 4. 触ってはいけないもの（掟11 環境の独立） ─────────────────────────────────
 
 describe('保存場所に触らない経路', () => {
-  it('★★ 📡 公開したもの一覧から「アプリだけ」を破棄したときは、保存場所へ1件も要求を出さない', async () => {
+  it('★★ アプリだけを消す口（apprunDedicated:teardownApp）は無い。📡 の 🗑 も手順6と同じ apprunDedicated:teardown を呼ぶ（2026-10-08）', () => {
+    expect(h.handlers.has('apprunDedicated:teardownApp')).toBe(false)
+    expect(h.handlers.has('apprunDedicated:teardown')).toBe(true)
+  })
+
+  it('★★ 📡 の 🗑 と同じ呼び出し（アプリあり）: アプリ → クラスタが消えたあと、保存場所のデータ・鍵まで片づける（アプリだけで止まらない）', async () => {
     setupProject({ permissionId: 'perm-live', applicationID: 'app1' })
-    const calls: string[] = []
-    h.baseUrl = await listen(routedServer({
+    h.keys = [`${PREFIX}a.txt`]
+    const { result, calls } = await runTeardown({
       'GET /applications/app1': { status: 200, body: { application: { applicationID: 'app1', name: 'myapp', clusterID: 'c1', activeVersion: null } } },
       'GET /applications/app1/containers': { status: 200, body: { nodes: [] } },
       'DELETE /applications/app1': { status: 204, body: {} },
       'GET /applications?clusterID=c1&maxItems=20': { status: 200, body: { applications: [] } },
-    }, calls))
-    const result = await teardownApp(EVENT, projectDir, AUTH, { confirmed: true })
+      ...clusterGoneRoutes(),
+    })
 
     expect(result.ok).toBe(true)
-    expect(h.storageCalls).toEqual([]) // 接続すらしない
-    expect(h.deletedKeys).toEqual([])
-    expect(h.deletedBuckets).toEqual([])
-    expect(h.deletedPermissions).toEqual([])
-    // 鍵の記録も残る（アプリは消えても、クラスタと保存場所はわざと残す操作）
-    expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBe('perm-live')
+    expect(calls.filter(c => c.startsWith('DELETE '))).toEqual(['DELETE /applications/app1', 'DELETE /clusters/c1'])
+    // 保存場所まで片づけた（以前の「アプリだけ」の口は、保存場所へ接続すらしなかった）
+    expect(h.deletedKeys).toEqual([`${PREFIX}a.txt`])
+    expect(h.deletedBuckets).toEqual([BUCKET])
+    expect(h.deletedPermissions).toEqual(['perm-live'])
+    expect(readApprunDedicatedFs(projectDir).storagePermissionId ?? null).toBeNull()
   })
 
   it('★ 保存場所を使っていないプロジェクトでは、保存場所へ1件も要求を出さない', async () => {
@@ -437,6 +443,76 @@ describe('保存場所に触らない経路', () => {
     expect(result.ok).toBe(false)
     expect(calls).toEqual([])
     expect(h.storageCalls).toEqual([])
+  })
+})
+
+// ── 4b. 幽霊の行（2026-10-08 検分の指摘）──────────────────────────────────────────
+// 資源の記録（アプリ・LB・ASG・クラスタの ID）は空で、公開記録（📡 の行）だけが残っている行。📡 の専有型の行は公開記録がある限り
+// 🗑 を出す（手順6のボタンのように、記録が空なら隠す条件が無い）ので、その行の 🗑 が `apprunDedicated:teardown` に届く。
+// teardownFlow は「記録がありません」で ok:true を返す——そのまま保存場所の片づけへ進むと、**何を消すか名指しできないまま**
+// プロジェクトの保存場所のデータ（ほかの公開先が使っているものを含む）と鍵が消え、しかも行は残って押すたびに繰り返された。
+// いまは: 消すものが記録に無い（資源のIDが無く、前回の保存場所の残りの印も無い）なら保存場所には触れず、行だけを外す。
+
+describe('幽霊の行（資源の記録が空・公開記録だけ残っている）の 🗑', () => {
+  const targetsOfDir = (): string[] => {
+    const meta = JSON.parse(fs.readFileSync(path.join(projectDir, '.sakuraide.json'), 'utf-8'))
+    return Object.keys(meta?.publish?.targets ?? {}).sort()
+  }
+  /** 保存場所の設定（同意済み）はあるが、専有型の資源の記録は空。公開記録は専有型のほかに、共用型 AppRun もある。 */
+  function setupGhost() {
+    const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
+    spec.persistence = { objectStorage: [CONSENTED_BUCKET] }
+    fs.mkdirSync(path.join(projectDir, '.sakura-cloud'), { recursive: true })
+    fs.writeFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
+    writePublishRecordFs(projectDir, 'sakura-apprun-dedicated', { publishedAt: '2026-09-28T00:00:00.000Z', url: 'https://app.example.com/' })
+    writePublishRecordFs(projectDir, 'sakura-apprun', { publishedAt: '2026-09-27T00:00:00.000Z', url: 'https://shared.example.com/' })
+  }
+
+  it('★★★ 保存場所へは1本も要求を出さない（接続すらしない）。さくらへの要求も0本。データ・バケット・鍵は消えない', async () => {
+    setupGhost()
+    h.keys = [`${PREFIX}db.sqlite`, `${PREFIX}shared-app-data.sqlite`]
+    const { result, calls } = await runTeardown({})
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('記録がありません')
+    expect(calls).toEqual([])
+    expect(h.storageCalls).toEqual([]) // connect も listAllKeys も deleteKeys も deleteBucket も無い
+    expect(h.deletedKeys).toEqual([])
+    expect(h.deletedBuckets).toEqual([])
+    expect(h.deletedPermissions).toEqual([])
+    // env.json の保存場所の記録もそのまま
+    expect(readObjectStorage().map((p: any) => p.bucket)).toEqual([BUCKET])
+  })
+
+  it('★★ 専有型の行（公開記録）だけが外れる。共用型 AppRun の行は残る（旧 📡 の「幽霊を消す出口」と同じ救済）', async () => {
+    setupGhost()
+    expect(targetsOfDir()).toEqual(['sakura-apprun', 'sakura-apprun-dedicated'])
+    const { result } = await runTeardown({})
+
+    expect(result.ok).toBe(true)
+    expect(targetsOfDir()).toEqual(['sakura-apprun'])
+  })
+
+  it('★★ 確認ダイアログを通っていなければ（confirmed:false）、行も外さない・保存場所にも触れない', async () => {
+    setupGhost()
+    h.baseUrl = await listen(routedServer({}, []))
+    const result = await teardown(EVENT, projectDir, AUTH, { confirmed: false })
+
+    expect(result.ok).toBe(false)
+    expect(h.storageCalls).toEqual([])
+    expect(targetsOfDir()).toEqual(['sakura-apprun', 'sakura-apprun-dedicated'])
+  })
+
+  it('★ 前回の保存場所の残りの印（storageLeftoverBucket）がある行は「消すものがある」＝保存場所の片づけまで進む（押し直せる）', async () => {
+    setupGhost()
+    writeApprunDedicatedRecordFs(projectDir, { storageLeftoverBucket: BUCKET })
+    h.keys = [`${PREFIX}a.txt`]
+    const { result } = await runTeardown({})
+
+    expect(result.ok).toBe(true)
+    expect(h.deletedKeys).toEqual([`${PREFIX}a.txt`])
+    expect(h.deletedBuckets).toEqual([BUCKET])
+    expect(targetsOfDir()).toEqual(['sakura-apprun']) // 全部消せたので行も外れる
   })
 })
 
@@ -604,16 +680,18 @@ describe('⑥の破棄: 古い鍵も含めてまとめて無効にする', () =>
     const { result } = await runTeardown()
 
     expect(result.ok).toBe(true) // 保存場所そのものは片づいている
-    expect(result.executed.some((e: string) => e.includes('鍵を1件、無効にできませんでした'))).toBe(true)
+    expect(result.executed.some((e: string) => e.includes('アクセスキーを1件、無効にできませんでした'))).toBe(true)
+    expect(result.executed.some((e: string) => e.includes('鍵を1件'))).toBe(false) // 0.6.21: 直す前の言い方は戻さない
   })
 
-  it('★ 鍵の一覧が引けなくても、破棄そのものは失敗にしない（保存場所は既に片づいている）', async () => {
+  it('★ アクセスキーの一覧が引けなくても、破棄そのものは失敗にしない（保存場所は既に片づいている）', async () => {
     setupProject({ permissionId: 'perm-live' })
     h.listPermissionsThrows = true
     const { result } = await runTeardown()
 
     expect(result.ok).toBe(true)
-    expect(result.executed.some((e: string) => e.includes('鍵の一覧を取得できなかった'))).toBe(true)
+    expect(result.executed.some((e: string) => e.includes('パーミッション（アクセスキー）の一覧を取得できなかった'))).toBe(true)
+    expect(result.executed.some((e: string) => e.includes('保存場所の鍵の一覧'))).toBe(false) // 0.6.21: 直す前の言い方は戻さない
     // 一覧が引けないので現役が分からない＝記録の鍵のIDは残す（辿れない鍵を作らない）。
     expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBe('perm-live')
   })

@@ -4,7 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import {
   markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs,
-  readApprunDedicatedFs, writeApprunDedicatedRecordFs,
+  readApprunDedicatedFs, writeApprunDedicatedRecordFs, hasPublishRecordFs,
 } from '../src/main/publishMetaFs'
 
 // roadmap #20: src/main/publishMetaFs.ts（publishMeta.ts の純関数を使って
@@ -158,5 +158,45 @@ describe('writeApprunDedicatedRecordFs: 戻り値は書き込めたかどうか�
     } finally {
       fs.chmodSync(projectDir, 0o700)
     }
+  })
+})
+
+// 2026-10-08 検分 D: hasPublishRecordFs（📡 一覧の行＝publish.targets[target] があるか）には直接の試験が無かった。
+// 専有型の破棄で main が行を外すかどうか（shouldForgetPublishRecord の第1項「破棄前に行があったか」）はこの判定で決まる。
+// 一覧は `targets[t]` が真なら行を作る（renderer の buildPublishStatusRows と同じ見方）。日時（publishedAt）が無くても
+// 「公開済み（日時不明）」の行として出る——判定を publishedAt に変えると、日時の無い行が永久に残る（外れない幽霊の行）。
+describe('hasPublishRecordFs: 一覧の行があるか（日時が無くても、行があれば true）', () => {
+  const writeTargets = (targets: unknown) => fs.writeFileSync(metaPath(), JSON.stringify({ publish: { targets } }))
+
+  it('★★ publishedAt の無い行（{ url } だけ）でも true——一覧は「公開済み（日時不明）」の行として出すので、行はある', () => {
+    writeTargets({ 'sakura-apprun-dedicated': { url: 'https://app.example.com/' } })
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(true)
+  })
+
+  it('★ 日時もある普通の行は true。中身が空のオブジェクトの行も true（一覧は targets[t] が真なら行を作る）', () => {
+    writeTargets({ 'sakura-apprun-dedicated': { publishedAt: '2026-09-28T00:00:00.000Z', url: 'https://app.example.com/' } })
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(true)
+    writeTargets({ 'sakura-apprun-dedicated': {} })
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(true)
+  })
+
+  it('★ その公開先の行が無ければ false（ほかの公開先の行は数えない。値が null・false でも行ではない）', () => {
+    writeTargets({ vercel: { publishedAt: 't', url: 'u' } })
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(false)
+    expect(hasPublishRecordFs(projectDir, 'vercel')).toBe(true)
+    writeTargets({ 'sakura-apprun-dedicated': null })
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(false)
+    writeTargets({})
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(false)
+  })
+
+  it('記録ファイルが無い・壊れている・publish が無いなら false（投げない・ファイルも作らない）', () => {
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(false)
+    expect(fs.existsSync(metaPath())).toBe(false)
+    fs.writeFileSync(metaPath(), '{ 壊れた')
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(false)
+    fs.writeFileSync(metaPath(), JSON.stringify({ name: 'x' }))
+    expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(false)
+    expect(fs.readFileSync(metaPath(), 'utf-8')).toBe(JSON.stringify({ name: 'x' })) // 書き換えていない
   })
 })

@@ -83,7 +83,9 @@ describe('落とせる場所', () => {
   it('★ 画面全体で受け取る', () => {
     const app = read('src/renderer/App.tsx')
     expect(app).toContain("sakura:attach-images")
-    expect(app).toContain('ここに落とすと、AIに見せます')
+    expect(app).toContain('ここにドロップすると、チャットに添付します')
+    // 0.6.21: 「落とす」は「ドロップ」に揃えた。直す前の言い方は戻さない
+    expect(app).not.toContain('ここに落とすと')
   })
 
   it('★ ファイル一覧に落としたときは、そちらの動きが優先される', () => {
@@ -221,7 +223,7 @@ describe('保存したあとの案内', () => {
   // 案内し続けた（「【アプリで使う（公開されます）】を選び、そのまま送信してください」）。
   // 指示を直しても、古い会話を続けている限り再発する。真似るなと明示する。
   it('★★ 古い案内が履歴に残っていても真似させない', () => {
-    expect(IDE_CONTEXT).toContain('古い版のものです')
+    expect(IDE_CONTEXT).toContain('古いバージョンのものです')
   })
 })
 

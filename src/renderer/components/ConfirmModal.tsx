@@ -2,11 +2,11 @@
 //
 // ── なぜ要るか ────────────────────────────────────────────────────────
 // 掟5「破壊操作は必ず確認ダイアログ」は、これまで2つの流儀が混在していた:
-//   ① AppRunPanel.tsx の🗑破棄確認（赤枠・自前のモーダル）
-//   ② window.confirm（RollbackSection・Sidebar のファイル移動・専有型⑤⑥ 等）
+//   (1) AppRunPanel.tsx の🗑破棄確認（赤枠・自前のモーダル）
+//   (2) window.confirm（RollbackSection・Sidebar のファイル移動・専有型の手順5・6 等）
 // window.confirm はブラウザ標準のダイアログで、Koto の見た目（テーマ・フォント・
 // select-text＋コピー可能なエラー文言）に乗らず、ライトモードでの見え方も統一できない。
-// ここに①の見た目（rounded-xl border border-brand-red/70 bg-surface p-4・本文
+// ここに(1)の見た目（rounded-xl border border-brand-red/70 bg-surface p-4・本文
 // select-text・「やめる」／実行の2ボタン）を一般化し、以後はこれだけを使う
 // （2026-09-11 CLAUDE.md 掟5 改定）。
 //

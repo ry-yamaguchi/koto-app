@@ -168,7 +168,7 @@ export class ObjectStorageClient {
       display_name: displayName,
       bucket_controls: [{ bucket_name: bucket, can_read: true, can_write: true }],
     })
-    if (!perm.ok) throw new Error(`権限を作れませんでした（HTTP ${perm.status}）: ${perm.text.slice(0, 200)}`)
+    if (!perm.ok) throw new Error(`パーミッションを作れませんでした（HTTP ${perm.status}）: ${perm.text.slice(0, 200)}`)
     const permissionId = String((perm.data as any)?.data?.id ?? '')
 
     const key = await this.api('POST', `${siteId}/v2/permissions/${encodeURIComponent(permissionId)}/keys`)
@@ -189,7 +189,7 @@ export class ObjectStorageClient {
    */
   async listPermissions(siteId: string): Promise<{ id: string; displayName: string }[]> {
     const r = await this.api('GET', `${siteId}/v2/permissions`)
-    if (!r.ok) throw new Error(`鍵の一覧を取得できませんでした（HTTP ${r.status}）`)
+    if (!r.ok) throw new Error(`パーミッションの一覧を取得できませんでした（HTTP ${r.status}）`)
     return parsePermissions(r.data)
   }
 
@@ -197,7 +197,7 @@ export class ObjectStorageClient {
   async deletePermission(siteId: string, permissionId: string): Promise<void> {
     const r = await this.api('DELETE', `${siteId}/v2/permissions/${encodeURIComponent(permissionId)}`)
     if (!r.ok && r.status !== 404) {
-      throw new Error(`権限を削除できませんでした（HTTP ${r.status}）`)
+      throw new Error(`パーミッションを削除できませんでした（HTTP ${r.status}）`)
     }
   }
 }

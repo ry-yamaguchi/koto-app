@@ -127,9 +127,11 @@ describe('W-61: storageCostNote の「専用」側は、設定画面の文脈に
 })
 
 describe('W-13/W-15: cloudCost.ts の保存場所・コンテナレジストリの呼び名', () => {
-  it('projectDeleteRegistryNote は「イメージの置き場（コンテナレジストリ）」と併記する', () => {
+  it('projectDeleteRegistryNote は「コンテナレジストリ」と言い、「イメージの置き場」というたとえは使わない', () => {
     const note = projectDeleteRegistryNote({ registryName: 'reg1', adopted: true })
-    expect(note).toContain('イメージの置き場（コンテナレジストリ）')
+    expect(note).toContain('コンテナレジストリ『reg1』は残します')
+    // 0.6.21（作者の決定 2026-10-01）: 「イメージの置き場（コンテナレジストリ）」は「コンテナレジストリ」だけにした
+    expect(note).not.toContain('イメージの置き場')
   })
 
   it('teardownTargets の保存場所の行は「バケット（データ）」ではなく実物に合う言い方になっている', () => {
@@ -164,7 +166,7 @@ describe('W-64/W-78/W-13: importProject.ts の案内文', () => {
     expect(joined).not.toContain('設定は控えます')
   })
 
-  it('AppRun を引き継ぐとき、イメージの置き場にコンテナレジストリを併記する（W-13）', () => {
+  it('AppRun を引き継ぐとき、「コンテナレジストリ」と言い、「イメージの置き場」というたとえは使わない（W-13 → 0.6.21）', () => {
     const notes = importPlanNotes({
       target: 'sakura-apprun',
       publishDirLabel: 'public',
@@ -172,7 +174,8 @@ describe('W-64/W-78/W-13: importProject.ts の案内文', () => {
       adopt: { blocker: null, reusesRegistry: false, specName: 'myapp', appName: 'myapp', warnings: [] } as any,
     })
     const joined = notes.join('\n')
-    expect(joined).toContain('イメージの置き場（コンテナレジストリ）')
+    expect(joined).toContain('コンテナレジストリが1つ増えるため')
+    expect(joined).not.toContain('イメージの置き場')
   })
 
   it('履歴の起点ができたとき、「何をしても、ここへ戻せます」と言い切らず、50件で消えることを添える（W-64）', () => {

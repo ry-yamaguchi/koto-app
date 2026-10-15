@@ -42,32 +42,12 @@ export const APPRUN_DEDICATED_API_BASE = 'https://secure.sakura.ad.jp/cloud/api/
  */
 const CLUSTERS_MAX_ITEMS = 20
 
-// ── さくら側の待ち時間の目安（実測にもとづく・目安の数字はこの1か所だけ）──────────────────
-//
-// 進み具合の文（⑥の削除待ち・⑧の IP 待ち）に「どのくらい待つのか」を添えるための材料。
-// **出典は docs/apprun-dedicated-plan.md の実測**（2026-09-29 作者の決定で画面に出す）:
-//   ・5-11（2026-09-10 実測・1回）: ロードバランサの DELETE は 204 を返しても、実体は一覧に
-//     `deleting:true` で残り続け、消えるまで**およそ9分**（23:35 頃に 204 → 23:44 頃に消滅）。
-//     2026-09-16 の実機で⑥全体（アプリ→LB→ASG→クラスタ）も約9分・手動介入なしで通った（LB 単体の時間は測っていない）。
-//   ・5-13（2026-09-16 実測・1回）: クラスタを作った約2分後は LB ノードのアドレスが空で、
-//     数分後に付いていた（付くまでの時間は測っていない＝数字にせず「数分後」とだけ言う）。
-//
-// **根拠の範囲を越えない**（2026-09-30 検分の指摘4）: 実測は1〜2回で、さくら側の都合で変わりうる。
-// だから文は「実測では〜でした」と**起きたこと**を言い、「ふつう〜かかります」と一般化して言い切らない
-// （前の文は「さくら側でふつうおよそ9分かかります」だった——少数回の観測を「ふつう」と言い、「かかります」と約束していた）。
-// 末尾に「（目安です）」を添える。ここに無い資源（ASG・クラスタの削除）は個別に測っていないので目安を出さない。
-/** ロードバランサの削除にかかった分数（実測 5-11）。目安の数字はここだけ。 */
-export const LB_DELETE_MEASURED_MINUTES = 9
-/** 進み具合に添える一文（句点なし）。 */
-export function lbDeleteEstimateNote(): string {
-  return `実測ではおよそ${LB_DELETE_MEASURED_MINUTES}分でした（目安です）`
-}
-/** クラスタを作ってから、LB ノードのアドレスがまだ空だった時点の分数（実測 5-13）。付くまでの分数は測っていない。 */
-export const LB_ADDRESS_EMPTY_AFTER_MINUTES = 2
-/** 進み具合に添える一文（句点なし）。 */
-export function lbAddressEstimateNote(): string {
-  return `実測では、クラスタを作った約${LB_ADDRESS_EMPTY_AFTER_MINUTES}分後はまだ空で、数分後に付いていました（目安です）`
-}
+// ── さくら側の待ち時間の目安は、ここには置かない（2026-10-07 作者の決定）──────────────────────────
+// 以前はここに「LB の削除はおよそ9分」「IP が付くまで数分」と、進み具合の文に焼き込む一文（lbDeleteEstimateNote・
+// lbAddressEstimateNote）を持っていた。目安は**段の内部名から引く仕組み**に一本化した:
+//   ・shared/stageTiming.ts … 段の内部名と画面に出す名前
+//   ・shared/stageEstimate.ts … この Mac で測れたら最近5回の中央値・それまでは開発時の実測（DEV_MEASURES。出典の日付つき）
+// 数字を2か所に持たない（掟10）。進み具合の文には目安を入れない。
 
 /**
  * 成功時はレスポンスのJSON（型は呼び出し側で解釈する）、失敗時は生の応答本文を message に載せる。
@@ -303,15 +283,15 @@ export async function getApplication(auth: CloudCredentials, applicationID: stri
 /**
  * GET /applications/{applicationID}/containers — いま動いているコンテナの様子（D-8・2026-09-16）。
  *
- * 成功応答は `{ nodes: [ { containersStats: [ { state, status, image } ], desired, … } ] }`
- * （原本 ListApplicationContainersResponse・ApplicationCurrentContainer。読むのは
- * src/shared/apprunDedicatedShapes.ts の readContainerStates）。
+ * 成功応答は `{ nodes: [ { nodeID, containersStats: null | { collectedAtSec, containers: [ { id, image, state, status, cpuUsagePercent,
+ * applicationID, applicationVersion } ] }, desired: null | { containers: [...] } } ] }`
+ * （原本 ListApplicationContainersResponse・WorkerNodeContainerPlacement・ApplicationCurrentContainers。
+ * 2026-10-08 に原本そのものを取得して確かめた。読むのは src/shared/apprunDedicatedShapes.ts の readContainerStates）。
+ * ⚠️ 最初の版は containersStats を配列と決めて読んでいて、本物の応答は常に「読めない」になっていた。実際の応答はまだ誰も見ていない
+ * （読み方の注意は apprunDedicatedShapes.ts を参照）。
  *
- * **maxItems は付けない。** 5-1 の表（原本 v1.4.0 から抽出した「maxItems が必須の一覧系**8本**」）に
- * このエンドポイントは含まれていない。原本そのものはこの環境からは引けない（ネットワークへ出ない）ため、
- * **必須かどうかは未確認**——掟1のとおり、確かめられない数値を推測で付けることはしない
- * （付けて 400 になるより、付けずに 400 になったほうが原因が分かる。呼び出し側は失敗しても
- * warnings に1行残して続行する）。
+ * **maxItems は付けない。** 原本のこのエンドポイント（operationId: listApplicationContainers）のパラメータは path の
+ * applicationID だけで、maxItems は無い（2026-10-08 に原本で確認。5-1 の「maxItems が必須の一覧系8本」にも含まれない）。
  *
  * **GET のみ。** ここでは何も作らない・消さない。
  */

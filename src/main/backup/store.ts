@@ -271,7 +271,7 @@ export function restoreToSnapshot(projectDir: string, snapshotId: string): Resto
     }
     const plan = computeRestorePlanTo(all, snapshotId)
 
-    // ① 現状を退避する新スナップショットを先に作る（戻す操作自体も取り消せるように）
+    // (1) 現状を退避する新スナップショットを先に作る（戻す操作自体も取り消せるように）
     const existsMap: Record<string, boolean> = {}
     for (const step of plan) {
       existsMap[step.path] = fs.existsSync(confineToProject(projectDir, step.path))
@@ -296,7 +296,7 @@ export function restoreToSnapshot(projectDir: string, snapshotId: string): Resto
     }
     writeManifest(preDir, preManifest)
 
-    // ② 復元計画に従って書き戻す/削除する。
+    // (2) 復元計画に従って書き戻す/削除する。
     //    1ファイルの失敗（退避ファイルが消えている等）で全体を止めず、失敗分だけ報告する
     //    （途中で例外を投げると「半分だけ戻った」状態になり、しかも何が戻ったか分からなくなる）。
     const restored: string[] = []

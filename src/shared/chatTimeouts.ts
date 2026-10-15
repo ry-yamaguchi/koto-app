@@ -134,7 +134,7 @@ export function streamTimeoutMessage(kind: StreamTimeoutKind): string {
     // 解除されているので、120秒・240秒はこの人には一度も関係していない（engine.ts の
     // 'first-silent'）。「返事を始めかけた」のような**画面に現れない出来事**の言葉は使わず、
     // 見えたとおり（つながった／でも何も出ない）で書く。
-    return `⏱ AIにはつながりましたが、返事が1文字も届かないまま${sec(STREAM_IDLE_TIMEOUT_MS)}秒たったため、ここで打ち切りました。`
+    return `⏱ AIには接続できましたが、返事が1文字も届かないまま${sec(STREAM_IDLE_TIMEOUT_MS)}秒たったため、ここで打ち切りました。`
       + 'まだ何も届いていないので、残っている内容はありません。'
       + '混み合っているだけのことも多いので、もう一度お試しください。'
   }
@@ -142,12 +142,12 @@ export function streamTimeoutMessage(kind: StreamTimeoutKind): string {
     + 'ここで打ち切りました。途中までの内容はそのまま残しています。もう一度お試しください。'
 }
 
-/** 🗂 まとめ作りが時間切れで終わったときに画面へ出す文（利用者向けの日本語）。
+/** 🗂 まとめの作成が時間切れで終わったときに画面へ出す文（利用者向けの日本語）。
  *
  *  手動の【🗂 まとめる】は、この文をそのまま吹き出しに出す（useAiChat.ts）。
  *  直す前は openai の 'Request timed out.' が英語のまま画面に出ていた（検分の指摘1）。 */
 export function compactTimeoutMessage(): string {
-  return `⏱ 🗂 まとめ作りが${sec(NON_STREAM_TIMEOUT_MS)}秒×${NON_STREAM_MAX_RETRIES + 1}回`
+  return `⏱ 🗂 まとめの作成が${sec(NON_STREAM_TIMEOUT_MS)}秒×${NON_STREAM_MAX_RETRIES + 1}回`
     + `（合計およそ${sec(NON_STREAM_TIMEOUT_MS * (NON_STREAM_MAX_RETRIES + 1))}秒）試しても終わらなかったため、いったん中止しました。`
     + '混み合っているだけのことも多いので、もう一度お試しください。'
 }
@@ -155,6 +155,6 @@ export function compactTimeoutMessage(): string {
 /** delegate_implementation が時間切れで終わったときに、AI（Claude）へ返す文。
  *  ツールの戻り値はそのまま画面にも出るので、利用者向けの日本語で書く（検分の指摘4）。 */
 export function delegateTimeoutMessage(): string {
-  return `エラー: 委譲先のAIからの返事が${sec(DELEGATE_TIMEOUT_MS)}秒×${DELEGATE_MAX_RETRIES + 1}回試しても`
-    + '返ってこなかったため、委譲を打ち切りました。タスクを小さく分けて再度お試しください。'
+  return `エラー: 作業を任せたAIからの返事が${sec(DELEGATE_TIMEOUT_MS)}秒×${DELEGATE_MAX_RETRIES + 1}回試しても`
+    + '返ってこなかったため、任せた作業を打ち切りました。タスクを小さく分けて再度お試しください。'
 }

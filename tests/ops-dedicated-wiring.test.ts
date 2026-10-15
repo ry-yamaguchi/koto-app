@@ -12,6 +12,9 @@ import { join } from 'node:path'
 const ROOT = join(__dirname, '..')
 const panel = readFileSync(join(ROOT, 'src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf-8')
 const actions = readFileSync(join(ROOT, 'src/renderer/apprunDedicatedActions.ts'), 'utf-8')
+// 2026-10-08: 手順6の進み具合・結果の見た目と、進み具合の文の選び方は、📡 の行と共有する部品・関数へ移した。
+const teardownView = readFileSync(join(ROOT, 'src/renderer/components/DedicatedTeardownView.tsx'), 'utf-8')
+const flow = readFileSync(join(ROOT, 'src/renderer/dedicatedTeardownFlow.ts'), 'utf-8')
 
 const count = (src: string, needle: string) => src.split(needle).length - 1
 const between = (src: string, from: string, to: string) => {
@@ -35,7 +38,7 @@ describe('記録を読む部品を、開いたとき付け・閉じたとき外�
     expect(effect).toContain("{ create: [], teardown: [], publish: [] }")
   })
 
-  it('★★ 終わった結果は、⑤⑥⑧それぞれの既存の結果欄（state）へ入り、警告は知らせに集める', () => {
+  it('★★ 終わった結果は、手順5・6・8それぞれの既存の結果欄（state）へ入り、警告は知らせに集める', () => {
     const block = between(panel, 'onFinished: finished => {', '} catch { /* preload 未注入')
     expect(block).toContain('setCreateResult(resumedCreateResult(f.record)); setTeardownResult(null)')
     expect(block).toContain('setTeardownResult(resumedTeardownResult(f.record))')
@@ -64,9 +67,20 @@ describe('記録を読む部品を、開いたとき付け・閉じたとき外�
 describe('この画面が始める操作は beginLocal〜endLocal で囲む（結果を二重に出さず、出し終えたら ack される）', () => {
   const cases: Array<{ kind: string; ipc: string; setter: string }> = [
     { kind: 'create', ipc: 'window.electronAPI.apprunDedicated.create(projectDir, auth, s, opts)', setter: 'setCreating(false)' },
-    { kind: 'teardown', ipc: 'window.electronAPI.apprunDedicated.teardown(projectDir, auth, opts)', setter: 'setTearingDown(false)' },
+    // 手順6の IPC は、📡 の行と共有する流れ（dedicatedTeardownFlow.ts）が呼ぶ。画面（onStart）が beginLocal し、流れが onStart を IPC の前に呼ぶ
+    // （順序は下の別のテストと tests/dedicatedTeardownEntries.test.ts が固定している）。
+    { kind: 'teardown', ipc: "setResumedNotes(n => ({ ...n, teardown: [] }))", setter: 'setTearingDown(false)' },
     { kind: 'publish', ipc: 'window.electronAPI.apprunDedicated.publishApp(projectDir, auth, i, opts)', setter: 'setPublishing(false)' },
   ]
+  it('★ 手順6: 共有の流れは onStart（beginLocal）を、キーの読み込み・IPC より前に呼ぶ', () => {
+    const at = flow.indexOf('teardown: async (opts) => {')
+    expect(at).toBeGreaterThan(-1)
+    const block = flow.slice(at, at + 400)
+    expect(block.indexOf('deps.onStart?.()')).toBeGreaterThan(-1)
+    expect(block.indexOf('deps.onStart?.()')).toBeLessThan(block.indexOf('await deps.loadKey()'))
+    expect(block.indexOf('await deps.loadKey()')).toBeLessThan(block.indexOf('deps.teardown(projectDir, auth, opts)'))
+  })
+
   for (const c of cases) {
     it(`${c.kind}: IPC を呼ぶ前に beginLocal・finally で endLocal`, () => {
       expect(count(panel, `opsWatchRef.current?.beginLocal('${c.kind}')`)).toBe(1)
@@ -99,7 +113,9 @@ describe('走っているか・進み具合は「この画面が始めたもの�
   })
 
   it('★ 進み具合の文は、走っている記録があればそれ（開き直した画面）・無ければ従来の進捗', () => {
-    expect(panel).toContain("const teardownProgress = runningKind === 'teardown' ? opProgressText(runningRecord) : teardownProgressLocal")
+    // 手順6の進み具合の文の選び方は、📡 の行と同じ関数（dedicatedTeardownFlow.ts の teardownProgressText）
+    expect(panel).toContain("const teardownProgress = teardownProgressText({ runningKind, runningRecord, local: teardownProgressLocal })")
+    expect(flow).toContain("return s.runningKind === 'teardown' ? opProgressText(s.runningRecord) : s.local")
     expect(panel).toContain("const publishProgress = runningKind === 'publish' ? opProgressText(runningRecord) : publishProgressLocal")
     expect(panel).toContain("const createProgress = runningKind === 'create' ? opProgressText(runningRecord) : ''")
     // 従来の進捗の購読（この画面が始めた操作の分）は残している
@@ -107,45 +123,54 @@ describe('走っているか・進み具合は「この画面が始めたもの�
     expect(panel).toContain('window.electronAPI.apprunDedicated.onTeardownProgress((msg) => setTeardownProgress(msg))')
   })
 
-  it('★★ ⑥の節は、走っている間は記録が空でも出し続ける（消し切って保存場所を片づけている最中も進み具合を出す）', () => {
+  it('★★ 手順6の節は、走っている間は記録が空でも出し続ける（消し切って保存場所を片づけている最中も進み具合を出す）', () => {
     const call = between(panel, 'const showTeardownButton = shouldShowTeardownButton({', '  })')
     expect(call).toContain("running: runningKind === 'teardown',")
-    expect(call).toContain('hasAnyResource,')
-    expect(call).toContain('storageLeftoverBucket: apprunState?.storageLeftoverBucket,')
+    // 2026-10-08 検分 E: 記録（state の中身）ごと渡す。「消すものがあるか」の判断は dedicatedTeardownHasWork の1つ（📡 の 🗑 と同じ）
+    expect(call).toContain('record: apprunState,')
+    expect(call).not.toContain('hasAnyResource,')
+    expect(call).not.toContain('storageLeftoverBucket: apprunState?.storageLeftoverBucket,')
   })
 })
 
 describe('各節に、進み具合・結果に添える知らせを出す', () => {
-  it('⑤⑥⑧の結果欄の直前に、その操作の知らせ（警告）を出す', () => {
+  it('手順5・6・8の結果欄の直前に、その操作の知らせ（警告）を出す', () => {
     expect(count(panel, '<ResumedNotesView notes={resumedNotes.create} />')).toBe(1)
-    expect(count(panel, '<ResumedNotesView notes={resumedNotes.teardown} />')).toBe(1)
+    // 手順6の知らせと結果は 📡 の行と共有する部品（DedicatedTeardownResultView）が描く。知らせは結果欄の直前。
+    expect(count(panel, 'notes={resumedNotes.teardown}')).toBe(1)
+    expect(count(teardownView, '<ResumedNotesView notes={notes} />')).toBe(1)
     expect(count(panel, '<ResumedNotesView notes={resumedNotes.publish} />')).toBe(1)
     expect(panel.indexOf('<ResumedNotesView notes={resumedNotes.create} />')).toBeLessThan(panel.indexOf('{shouldShowCreateResult(createResult, apprunState) && createResult && ('))
-    expect(panel.indexOf('<ResumedNotesView notes={resumedNotes.teardown} />')).toBeLessThan(panel.indexOf('{shouldShowTeardownResult(teardownResult) && teardownResult && ('))
+    expect(teardownView.indexOf('<ResumedNotesView notes={notes} />')).toBeLessThan(teardownView.indexOf('{shouldShowTeardownResult(result) && result && ('))
     expect(panel.indexOf('<ResumedNotesView notes={resumedNotes.publish} />')).toBeLessThan(panel.indexOf('{publishResult && ('))
   })
 
-  it('★★ ⑤の結果欄は「記録が空のとき」の枝の外にある（作成が終わって記録ができても、開き直したあとでも消えない）', () => {
+  it('★★ 手順5の結果欄は「記録が空のとき」の枝の外にある（作成が終わって記録ができても、開き直したあとでも消えない）', () => {
     const at = panel.indexOf('{shouldShowCreateResult(createResult, apprunState) && createResult && (')
     expect(at).toBeGreaterThan(-1)
-    // ⑤の節の先頭から結果欄までの間で、「記録が空のとき」の枝（<>…</>）が閉じている
-    const head = panel.lastIndexOf('⑤ クラスタを作る */}', at)
+    // 手順5の節の先頭から結果欄までの間で、「記録が空のとき」の枝（<>…</>）が閉じている
+    const head = panel.lastIndexOf('手順5 クラスタを作る */}', at)
     expect(head).toBeGreaterThan(-1)
     const before = panel.slice(head, at)
-    expect(before).toContain('作られたものの記録があります。作り直すには、まず⑥で破棄してください。')
+    expect(before).toContain('作られたものの記録があります。作り直すには、まず手順6で削除してください。')
+    expect(before).not.toContain('まず手順6で破棄してください') // 0.6.21: 手順6の呼び方は見出し（手順6 作ったものを削除する）に揃えた。直す前の言い方は戻さない
+    expect(before).not.toContain('まず⑥で削除してください') // 旧い丸数字の案内（2026-10-07・作者の決定）
     expect(before).toContain('          </>\n        )}\n')
     // 枝の外に出した結果欄の直前で、この節の枝は1つも開いていない
     expect(before.lastIndexOf('</>')).toBeGreaterThan(before.lastIndexOf('<>'))
   })
 
-  it('⑤の進み具合・⑥⑧の経過と、閉じても進むことの一文（Koto を終了すると止まる、も同じ定義から）', () => {
+  it('手順5の進み具合・手順6・8の経過と、閉じても進むことの一文（Koto を終了すると止まる、も同じ定義から）', () => {
     expect(panel).toContain("{creating && runningKind === 'create' && (")
-    expect(panel).toContain("{tearingDown && runningKind === 'teardown' && runningRecord && (")
     expect(panel).toContain("{runningKind === 'publish' && runningRecord && (")
-    // 経過（始まってから約N分）は⑤⑥⑧の3か所
-    expect(count(panel, 'opElapsedText(runningRecord.startedAt, nowMs)')).toBe(3)
+    // 手順6の経過と一文は、📡 の行と共有する部品（DedicatedTeardownProgress）が出す
+    expect(teardownView).toContain('{recorded && runningRecord && (')
+    expect(teardownView).toContain("const recorded = runningKind === 'teardown' && !!runningRecord")
+    expect(count(teardownView, 'opElapsedText(runningRecord.startedAt, nowMs)')).toBe(1)
+    expect(teardownView).toContain('この画面を閉じても、削除は最後まで進みます。{PUBLISH_QUIT_STOPS}')
+    // 経過（始まってから約N分）は手順5・8がパネルに、手順6が共有の部品に1か所ずつ
+    expect(count(panel, 'opElapsedText(runningRecord.startedAt, nowMs)')).toBe(2)
     expect(panel).toContain('import { PUBLISH_QUIT_STOPS } from')
-    expect(panel).toContain('この画面を閉じても、削除は最後まで進みます。{PUBLISH_QUIT_STOPS}')
   })
 
   it('別の操作が走っているときは、詳細を出さず1行だけ（掟11）', () => {
@@ -162,7 +187,7 @@ describe('画面に出す文の作法（掟5・掟8）', () => {
       expect(src).not.toContain('Claude Code')
     }
     // 知らせ・進み具合を描く部品は素のテキスト（** や ` を文に入れない）
-    const notes = between(panel, 'function RunningLines(', '// 失敗メッセージの表示ブロック')
+    const notes = panel.slice(panel.indexOf('function RunningLines('))
     expect(notes).not.toMatch(/\*\*[^/]/)
   })
 })
@@ -179,8 +204,8 @@ describe('隠れているタブのパネルは、結果を「見た」と伝え�
   })
 })
 
-describe('⑧の節が描かれないときも、⑧の結果の知らせは出す', () => {
-  it('★★ ⑧の節（shouldShowPublishSection）の外に、節が無いときだけ出す知らせがある（結果の一言つき）', () => {
+describe('手順8の節が描かれないときも、手順8の結果の知らせは出す', () => {
+  it('★★ 手順8の節（shouldShowPublishSection）の外に、節が無いときだけ出す知らせがある（結果の一言つき）', () => {
     expect(count(panel, '{!shouldShowPublishSection(apprunState) && <ResumedNotesView notes={resumedNotes.publish} withMessage />}')).toBe(1)
     // 節の中の知らせは、これまでどおり（二重にしない: 節が描かれるときは、外のほうは出ない）
     expect(count(panel, '<ResumedNotesView notes={resumedNotes.publish} />')).toBe(1)

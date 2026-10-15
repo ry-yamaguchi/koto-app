@@ -1,4 +1,4 @@
-// runPlan.ts — 「② 試す」の実行方法の判定（純粋ロジック・Vitest対象）。
+// runPlan.ts — 「試す」の実行方法の判定（純粋ロジック・Vitest対象）。
 //
 // ── なぜ切り出したか（2026-09-01 Ryosuke の調査依頼）─────────────────────
 // 従来の判定は WorkflowBar.tsx の handleRun に埋め込まれ、**静的ファイル優先**
@@ -77,7 +77,7 @@ async function needsInstall(io: RunPlanIo): Promise<boolean> {
   return false
 }
 
-/** 優先順位順にファイルの実体を確認し、「② 試す」の実行方法を決める。 */
+/** 優先順位順にファイルの実体を確認し、「試す」の実行方法を決める。 */
 export async function planRun(io: RunPlanIo): Promise<RunPlan> {
   // 1〜4. サーバーの実体（アプリ）を最優先
   if (await io.exists('server.js')) return { kind: 'node-server', needsInstall: await needsInstall(io) }

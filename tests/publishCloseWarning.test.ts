@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import {
-  PUBLISH_CLOSE_WARNING, PUBLISH_CLOSE_NOTE, PUBLISH_QUIT_STOPS, PUBLISH_STOP_NOTE_MAIN_RECORD,
+  PUBLISH_CLOSE_WARNING, PUBLISH_CLOSE_NOTE, PUBLISH_QUIT_STOPS, PUBLISH_STOP_NOTE_MAIN_RECORD, PUBLISH_CLOSE_CONFIRM_LABEL,
 } from '../src/renderer/activity'
 
 // 窓を閉じるときの警告（公開・作成・破棄の全部で**1つの文**）の配線と中身を固定する。
@@ -42,7 +42,10 @@ describe('公開3パネル: beginActivity に PUBLISH_CLOSE_WARNING を渡して
 describe('main.ts: close ダイアログの文言差し替え（#14）', () => {
   it('buttons/detail が closeBlockingConfirm/closeBlockingDetail を優先し、旧形の detail 組み立てには戻っていない', () => {
     const src = stripped('src/main/main.ts')
-    expect(src).toContain("buttons: [closeBlockingConfirm || '中断して終了', 'キャンセル'],")
+    expect(src).toContain("buttons: [closeBlockingConfirm || '中断してウィンドウを閉じる', 'キャンセル'],")
+    // 2026-10-08 検分 H の双子: closeWarning を渡さない処理のフォールバックのボタン名も、実際の動き（ウィンドウが閉じるだけ・Koto は終了しない）どおり。
+    // 旧い名前「中断して終了」は、アプリが終了するように読めた
+    expect(src).not.toContain("'中断して終了'")
     expect(src).toContain('detail: closeBlockingDetail || ')
     expect(src).not.toContain('detail: `${closeBlockingLabel')
   })
@@ -55,13 +58,16 @@ describe('activity.ts: PUBLISH_CLOSE_WARNING の文言（事実と合ってい�
     expect(raw('src/renderer/activity.ts')).not.toContain("'公開処理が進行中です。公開そのものは裏で最後まで進みますが、いま閉じると結果の表示が失われ、公開の記録も Koto に残りません。よろしいですか？'")
   })
 
-  it('★ 窓を閉じても続くこと・開き直すと結果が出ること・Koto を終了すると止まること、の3つを言う', () => {
+  it('★ ウィンドウを閉じても続くこと・開き直すと結果が出ること・Koto を終了すると止まること、の3つを言う', () => {
     const d = PUBLISH_CLOSE_WARNING.detail
-    expect(d).toContain('Koto の窓を閉じても、処理は裏で最後まで進み')
+    expect(d).toContain('Koto のウィンドウを閉じても、処理はバックグラウンドで最後まで進み')
+    // 0.6.21: 「窓」「裏で」は「ウィンドウ」「バックグラウンドで」に揃えた。直す前の言い方は戻さない
+    expect(d).not.toContain('窓')
+    expect(d).not.toContain('裏で')
     expect(d).toContain('作ったものの記録は Koto が残します')
     // 2026-09-30 検分: 結果は main の処理の記録（projectOps）が持つので、窓を開き直して公開の画面を開けば出る。
     // 以前の「結果（成功か失敗か）は画面に出なくなります」は事実と逆になった
-    expect(d).toContain('窓を開き直して公開の画面を開けば、進み具合と結果（成功か失敗か）が出ます')
+    expect(d).toContain('ウィンドウを開き直して公開の画面を開けば、進み具合と結果（成功か失敗か）が出ます')
     expect(d).not.toContain('画面に出なくなります')
     // 課金の歯止め: 終了すると記録が残らないことがある＝⑥で破棄できなくなりうる、という一文を落とさない
     expect(d).toContain('Koto 自体を終了すると、処理は途中で止まり、作られたものが記録に残らないことがあります')
@@ -72,6 +78,40 @@ describe('activity.ts: PUBLISH_CLOSE_WARNING の文言（事実と合ってい�
     expect(PUBLISH_CLOSE_NOTE).toContain(PUBLISH_QUIT_STOPS)
     expect(PUBLISH_CLOSE_WARNING.detail).toContain(PUBLISH_QUIT_STOPS)
     expect(PUBLISH_STOP_NOTE_MAIN_RECORD).toContain(PUBLISH_QUIT_STOPS)
+  })
+
+  // 2026-10-08 検分 H: 確認ボタンの名前は、押したときの実際の動きどおり。以前の「閉じて終了」は、押せば Koto が終了して処理も止まるように読めたが、
+  // main の close ハンドラがするのは `mainWindow.close()` だけ（アプリは終了せず、処理は裏で続く）。
+  it('★★★ 確認ボタンは「ウィンドウを閉じる（処理は続きます）」。旧い名前「閉じて終了」には戻らない', () => {
+    expect(PUBLISH_CLOSE_WARNING.confirmLabel).toBe('ウィンドウを閉じる（処理は続きます）')
+    expect(PUBLISH_CLOSE_WARNING.confirmLabel).toBe(PUBLISH_CLOSE_CONFIRM_LABEL)
+    expect(PUBLISH_CLOSE_WARNING.confirmLabel).not.toContain('閉じて終了')
+    expect(PUBLISH_CLOSE_WARNING.confirmLabel).not.toContain('終了')
+    expect(PUBLISH_CLOSE_WARNING.confirmLabel).not.toContain('窓') // 0.6.21: 窓 → ウィンドウ
+    expect(stripped('src/renderer/activity.ts')).not.toContain("'閉じて終了'")
+  })
+
+  it('★★ ボタンの名前は本文と食い違わない（本文は「ウィンドウを閉じても、処理はバックグラウンドで最後まで進み」）。Koto 自体を終了すると止まる、は本文が別に言う', () => {
+    expect(PUBLISH_CLOSE_WARNING.detail).toContain('ウィンドウを閉じても、処理はバックグラウンドで最後まで進み')
+    expect(PUBLISH_CLOSE_WARNING.confirmLabel).toContain('ウィンドウを閉じる')
+    expect(PUBLISH_CLOSE_WARNING.confirmLabel).toContain('処理は続きます')
+    expect(PUBLISH_CLOSE_WARNING.detail).toContain(PUBLISH_QUIT_STOPS)
+  })
+
+  it('★★ ボタンが約束する動き（ウィンドウだけ閉じる・Koto は終了しない）を main の close ハンドラが実際にしている: 確認のあとに app.quit() を呼ばない', () => {
+    const main = stripped('src/main/main.ts')
+    const from = main.indexOf("mainWindow.on('close', async (e) => {")
+    const to = main.indexOf('if (!hasUnsavedChanges) return', from)
+    expect(from).toBeGreaterThan(0)
+    expect(to).toBeGreaterThan(from)
+    const block = main.slice(from, to)
+    // 確認に応じたあとにすることは、実行中の印を下ろして、そのウィンドウを閉じ直すだけ
+    expect(block).toContain('closeBlockingBusy = false')
+    expect(block).toContain('mainWindow!.close()')
+    expect(block).not.toContain('app.quit(')
+    expect(block).not.toContain('forceQuit = true')
+    // macOS は最後のウィンドウを閉じてもアプリを終了しない（処理が続く前提）
+    expect(main).toContain("app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })")
   })
 
   it('⑧の画面の一文は、画面を閉じても進むこと・⑥で破棄できることを言う（専有型だけの案内）', () => {
@@ -98,20 +138,21 @@ describe('警告文は1つだけ: closeWarning を渡す呼び出しは、すべ
   const code = (f: string) => fs.readFileSync(f, 'utf-8').split('\n')
     .filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n')
 
-  it('★ closeWarning の渡し先は、書き下した6か所（共用型・HANAMII・Vercel・専有型の作成/破棄/公開）だけで、どれも PUBLISH_CLOSE_WARNING', () => {
+  it('★ closeWarning の渡し先は、書き下した6か所（共用型・HANAMII・Vercel・専有型の作成/公開・専有型の削除の流れ）だけで、どれも PUBLISH_CLOSE_WARNING', () => {
     const hits: string[] = []
     for (const f of files) {
       for (const m of code(f).matchAll(/closeWarning:\s*([A-Za-z_]+)/g)) {
         hits.push(`${path.relative(ROOT, f)} -> ${m[1]}`)
       }
     }
+    // 専有型の削除は、手順6も 📡 の 🗑 も dedicatedTeardownFlow.ts の runDedicatedTeardown が警告つきで活動レジストリへ載せる（2026-10-08）。
     expect(hits.sort()).toEqual([
-      'src/renderer/components/AppRunDedicatedPanel.tsx -> PUBLISH_CLOSE_WARNING',
       'src/renderer/components/AppRunDedicatedPanel.tsx -> PUBLISH_CLOSE_WARNING',
       'src/renderer/components/AppRunDedicatedPanel.tsx -> PUBLISH_CLOSE_WARNING',
       'src/renderer/components/AppRunPanel.tsx -> PUBLISH_CLOSE_WARNING',
       'src/renderer/components/HanamiiPanel.tsx -> PUBLISH_CLOSE_WARNING',
       'src/renderer/components/VercelPanel.tsx -> PUBLISH_CLOSE_WARNING',
+      'src/renderer/dedicatedTeardownFlow.ts -> PUBLISH_CLOSE_WARNING',
     ])
   })
 
@@ -121,11 +162,15 @@ describe('警告文は1つだけ: closeWarning を渡す呼び出しは、すべ
     }
   })
 
-  it('専有型: 作成・破棄・公開のどれも、beginActivity に PUBLISH_CLOSE_WARNING を渡す', () => {
+  it('専有型: 作成・公開は画面から、削除は共有の流れ（runDedicatedTeardown）から、beginActivity に PUBLISH_CLOSE_WARNING を渡す', () => {
     const src = stripped('src/renderer/components/AppRunDedicatedPanel.tsx')
     expect(src).toContain("beginActivity('専有型クラスタの作成', { closeWarning: PUBLISH_CLOSE_WARNING })")
-    expect(src).toContain("beginActivity('専有型クラスタの破棄', { closeWarning: PUBLISH_CLOSE_WARNING })")
     expect(src).toContain("beginActivity('専有型アプリの公開', { closeWarning: PUBLISH_CLOSE_WARNING })")
+    // 削除: 画面は beginActivity を流れへ渡すだけ。警告の文は流れが付ける（手順6と 📡 で同じ1か所）。
+    expect(src).not.toContain("beginActivity('専有型クラスタの削除'")
+    const flow = stripped('src/renderer/dedicatedTeardownFlow.ts')
+    expect(flow).toContain("export const DEDICATED_TEARDOWN_ACTIVITY_LABEL = '専有型クラスタの削除'")
+    expect(flow).toContain('deps.beginActivity(DEDICATED_TEARDOWN_ACTIVITY_LABEL, { closeWarning: PUBLISH_CLOSE_WARNING })')
     // ⑧の画面の一文も同じ定義から引く（2か所で別々に書かない・掟10）
     expect(src).toContain('export const PUBLISH_STOP_NOTE = PUBLISH_STOP_NOTE_MAIN_RECORD')
   })

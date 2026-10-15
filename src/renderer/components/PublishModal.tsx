@@ -14,6 +14,12 @@ import AppRunDedicatedPanel from './AppRunDedicatedPanel'
 import { resolvePublishRoot } from '../publishRootRenderer'
 // 記録を読む・「見た」と伝える・誰の持ち場か決める・警告と時刻の文にする、は共通の1か所（掟10・2026-09-30 検分の指摘2）。
 import { watchProjectOps, sendAck, unseenOf, visiblePanelShows, holdsWarning, type OpsWatch } from '../projectOpsView'
+// どこにどれくらい時間がかかったか（2026-10-07）: 走っている枠には待っている段の目安、終わった枠には「かかった時間を見る」。
+// 持ち場の画面が出さない記録（別の公開先を見ているときの専有型の削除・作成・公開など。📡 一覧の専有型の 🗑 も手順6と同じ記録）はここへ出る。
+// 目安の決め方・時間の文は shared の純関数、見た目は別の部品（専有型パネルと同じもの）。
+import StageEstimate from './StageEstimate'
+import StageTimingDetails from './StageTimingDetails'
+import { readStageTimings } from '../../shared/stageTiming'
 import { warningLine } from '../../shared/opsText'
 
 // 「🚀 公開」モーダル：
@@ -22,7 +28,7 @@ import { warningLine } from '../../shared/opsText'
 // - 公開コマンドをIDE内ターミナルへ流して実行（進行が見える・パスワードも入力できる）
 
 // sakura-vps は targetProfiles.COMING_SOON_TARGETS に残したまま（新規プロジェクトの公開先
-// 選択やワークフローバーの切替では出さない。①接続（VpsPanel）まではこの画面から到達できる）。
+// 選択やワークフローバーの切替では出さない。手順1 接続（VpsPanel）まではこの画面から到達できる）。
 // sakura-apprun-dedicated も COMING_SOON_TARGETS に残したまま（同上）だが、この画面では
 // 「📦 さくらのAppRun」の1行から選んだ後、共用型/専有型のタブで切り替えて到達する（roadmap #24）。
 // クラスタの作成・破棄はできるが、アプリケーションの公開（独自ドメイン）はまだ実装していない。
@@ -70,7 +76,7 @@ interface Props {
 const NAME_OK = /^[A-Za-z0-9][A-Za-z0-9.-]*$/
 
 // ── 処理の記録（main のメモリ上・window.electronAPI.projectOps）を画面に出すための小さな道具 ──────
-// （2026-09-29・作者の決定 ①②。記録の本体は src/main/projectOps.ts。ここに型や意味を複製しない。）
+// （2026-09-29・作者の決定 (1)(2)。記録の本体は src/main/projectOps.ts。ここに型や意味を複製しない。）
 
 /** 「聞き直す」間隔。既存の3秒のポーリングと共用する（走っているかを、開いている間も聞き直す）。 */
 const OPS_POLL_MS = 3000
@@ -104,11 +110,11 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   const [target, setTarget] = useState<Target | null>(null)
   const [loaded, setLoaded] = useState(false)
   // 共用型／専有型のタブは、以前は三項演算子で出し分けていたため、行き来するたびに
-  // パネルが丸ごと作り直され、⑦ログ・メトリクス（GET 6本）と⑧を取り直したうえ、
-  // ③「🔍 調べる」の結果（limits/plans/clusters/conn）が state ごと消えていた
+  // パネルが丸ごと作り直され、手順7 ログ・メトリクス（GET 6本）と手順8を取り直したうえ、
+  // 手順3「🔍 調べる」の結果（limits/plans/clusters/conn）が state ごと消えていた
   // （2026-09-23 検分の指摘5）。一度開いたパネルは**外さずに CSS で隠す**ことで、
   // 戻ってきたときに取り直さない。まだ一度も開いていないパネルは描かない——専有型は
-  // 上級者向けなので、使わない利用者に⑦の GET 6本を払わせないため。
+  // 上級者向けなので、使わない利用者に手順7の GET 6本を払わせないため。
   const [mountedApprunTabs, setMountedApprunTabs] = useState<Partial<Record<'sakura-apprun' | 'sakura-apprun-dedicated', true>>>({})
   useEffect(() => {
     if (target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') {
@@ -126,7 +132,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   const [copied, setCopied] = useState(false)
   const [running, setRunning] = useState(false)
   const [busy, setBusy] = useState(false)
-  // 公開状況一覧（③公開 冒頭の「このプロジェクトの公開状況」ボックス用）。プロジェクトの最終変更時刻は1回だけ取得する。
+  // 公開状況一覧（【公開】冒頭の「このプロジェクトの公開状況」ボックス用）。プロジェクトの最終変更時刻は1回だけ取得する。
   const [latestChangeAt, setLatestChangeAt] = useState<string | null>(null)
   const [apprunLegacy, setApprunLegacy] = useState<{ createdAt: string | null } | null>(null)
 
@@ -180,7 +186,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   // ── 処理の記録（projectOps）: 走っている操作・終わってまだ見られていない結果 ──────────────────────
   // 公開・破棄・作成の本体は main の1回の IPC で最後まで進む。この画面を閉じても止まらない。
   // 失われていたのは**画面の表示だけ**（進み具合・結果・「月額が続きます」のような警告）なので、
-  // 開いたときに main の記録を読んで続きを出す（作者の決定 ①②・2026-09-29）。
+  // 開いたときに main の記録を読んで続きを出す（作者の決定 (1)(2)・2026-09-29）。
   // 記録は projectDir ごと（掟11）。走っているのが別の公開先の操作でも、このプロジェクトの鍵は1つなので
   // 見せる（どの公開先の何かは文に書く）。
   const [opsRunning, setOpsRunning] = useState<ProjectOpRecordShape | null>(null)
@@ -226,10 +232,10 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   // 誰の持ち場かは共通の visiblePanelShows（projectOpsView.ts の1か所）。読み込み前（公開先が決まる前）は出さない。
   //
   // ⚠️ ただし**警告つきの結果は、目の前の画面が出していても、ここにも出す**（2026-09-30 検分の指摘）。各パネルは結果を
-  // 公開ボタンのずっと下（①〜④の下・⑥⑧の節の中）に出すので、スクロールせずに閉じると、見せたことにならないのに
+  // 公開ボタンのずっと下（手順1〜4の下・手順6・8の節の中）に出すので、スクロールせずに閉じると、見せたことにならないのに
   // 「見た」と伝えて、月額が続く警告が二度と出なくなった。警告つきの記録は、パネルは「見た」と伝えず
   // （ackUpToFor が止める）、**ここで「結果を確認しました」を押されたときにだけ**見たことにする
-  // （作者の決定 ②「閉じて開き直しても、『確認しました』を押すまで出る」）。
+  // （作者の決定 (2)「閉じて開き直しても、『確認しました』を押すまで出る」）。
   const topRunning = loaded && opsRunning && !visiblePanelShows(target, opsRunning) ? opsRunning : null
   const topResults = loaded
     ? heldResults.filter(r => holdsWarning(r) || (!visiblePanelShows(target, r) && !seenInPanel.current.has(r.startedAt)))
@@ -250,7 +256,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
 
   // 何かが走っているか。main の記録（projectOps）か、既存の runningOp のどちらかが「走っている」と言えば走っている。
   const opRunning = opsRunning !== null || runningOp !== null
-  // 走っている間は、**画面の外のクリックでは閉じない**（作者の決定 ①・2026-09-29）。✗ は押せば閉じる。
+  // 走っている間は、**画面の外のクリックでは閉じない**（作者の決定 (1)・2026-09-29）。✗ は押せば閉じる。
   // レンタルサーバの公開（ターミナルで進む）は main の記録に載らない（withProjectLock を通らない）ので対象外:
   // 進みはこの画面の外のターミナルにあり、閉じても隠れるものがない。むしろ画面の外をクリックして
   // ターミナルを見る、が自然な動きなので、閉じられないようにしない。
@@ -315,7 +321,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   // （src/renderer/projectMeta.ts）。以前は、この画面を開いたときに読んだ `meta`（古い写し）で
   // .sakuraide.json 全体を書き戻していた。開いている間に main が書いた記録
   // （専有型の資源ID publish.apprunDedicated・publish.targets・HANAMII の projectId）が**消え**、
-  // 専有型のクラスタの記録が消えると⑥で破棄できず、月額の課金が止められなくなる（掟10）。
+  // 専有型のクラスタの記録が消えると手順6で破棄できず、月額の課金が止められなくなる（掟10）。
   // 書いたあとは、ディスクの実際の内容と「いま走っているか」をまとめて取り直して、この画面の表示用の写しを更新する。
   const saveMeta = async (patch: Partial<Meta>) => {
     const snap = await mergeProjectMetaThenLoad(projectDir, patch as Record<string, unknown>)
@@ -345,11 +351,11 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
       // **公開の根（root）の中身が、そのまま公開Webルート（~/www）へ行く。**
       //
       // ⚠️ 2026-09-23 検分で見つけた2つの穴を、ここで同時に塞いでいる。
-      //   ① `public/` がある構成は `--exclude='.DS_Store'` しか付けておらず、
+      //   (1) `public/` がある構成は `--exclude='.DS_Store'` しか付けておらず、
       //      一元定義（shared/publishExclude.ts）を通っていなかった。今回の実機の
       //      `public/.koto-data/`（利用者が入力した予定・連絡先）が ~/www へ丸ごと上がり、
       //      `https://<アカウント>.sakura.ne.jp/.koto-data/…` として誰でも読める状態になる。
-      //   ② その行の同期元が `public/` のままだった。root は `public/` があればその中を指すので、
+      //   (2) その行の同期元が `public/` のままだった。root は `public/` があればその中を指すので、
       //      `cd <project>/public && rsync public/` ＝ 存在しない `public/public/` を指していた
       //      （根を public/ へ寄せた 2026-08-20 の変更の取りこぼし）。
       // 根そのものを送るのだから、**どちらの構成でも `./` でよい**。
@@ -383,7 +389,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
         <div className="flex items-center justify-between gap-3 mb-1">
           <h2 className="text-lg font-bold text-ink">🚀 公開</h2>
           {/* ✗ の近くに、見える形で出す（title だけにしない）。走っている間、✗ は押せば閉じるが、
-              閉じても処理は止まらないことを、押す前に伝える（作者の決定 ①）。 */}
+              閉じても処理は止まらないことを、押す前に伝える（作者の決定 (1)）。 */}
           <div className="flex items-center gap-2 min-w-0">
             {opRunning && (
               <span className="text-[11px] text-ink-secondary text-right leading-snug">閉じても処理は最後まで進みます</span>
@@ -405,7 +411,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
         </div>
 
         {/* 終わった結果（まだ見られていないもの）。**閉じて開き直しても、「確認しました」を押すまで出る**
-            （作者の決定 ②）。警告（「保存場所が残ったので月額が続きます」など）は黄色の枠で出し、見逃させない。
+            （作者の決定 (2)）。警告（「保存場所が残ったので月額が続きます」など）は黄色の枠で出し、見逃させない。
             画面（公開先未選択／各パネル）によらず、このモーダルを開いている間は常に見せる。 */}
         {topResults.length > 0 && (
           <OpFinishedCards records={topResults} onAcknowledge={acknowledgeResults} />
@@ -444,7 +450,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
         {/* 公開先を選んだら「データの保存」について知らせる（2026-08-13）。
             **公開先ごとに答えが変わる**ので、ここに置く。レンタルサーバならファイルが
             残るので費用は要らない。コンテナ系では消えるので保存場所が要る。
-            sakura-vps は①接続のみで、アプリケーションの公開（データを伴う公開）の実装が無いため対象外。
+            sakura-vps は手順1 接続のみで、アプリケーションの公開（データを伴う公開）の実装が無いため対象外。
             sakura-apprun-dedicated は共用型と同じコンテナ系として出す（storageNeed.ts の PublishTarget に
             含まれ、targetKeepsData=false。D-3・2026-09-11 Ryosuke 決定）。
             target の型は公開先の一覧をここに書き写さず、上の条件で絞った結果（Target から 'sakura-vps' を
@@ -589,7 +595,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
               >
                 <p className="text-sm font-semibold text-ink">🖥 さくらのVPS <span className="text-[11px] font-normal text-brand-yellow">（開発中・現在は接続確認のみ）</span></p>
-                <p className="text-xs text-ink-muted mt-0.5">自由度の高い仮想サーバ。②初期セットアップ・③公開はまだ実装中で、このバージョンでは①接続（鍵認証で安全に繋がる）までです。</p>
+                <p className="text-xs text-ink-muted mt-0.5">自由度の高い仮想サーバ。手順2 初期セットアップ・手順3 公開はまだ実装中で、このバージョンでは手順1 接続（鍵認証で安全に接続できるようにする）までです。</p>
               </button>
             </div>
           </div>
@@ -665,7 +671,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <VercelPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} />
           </div>
         ) : target === 'sakura-vps' ? (
-          // ── さくらのVPS（V1a・①接続のみ。自己完結フロー） ──
+          // ── さくらのVPS（V1a・手順1 接続のみ。自己完結フロー） ──
           <div className="space-y-3">
             <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
             <VpsPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} />
@@ -692,9 +698,9 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             </div>
             {/* タブ直下にあった専有型の費用・提供範囲の注意は、AppRunDedicatedPanel.tsx の
                 パネル冒頭に一本化した（判断4・利用者目線レビュー・2026-09-11。以前はここ・
-                パネル冒頭・④冒頭の3か所にほぼ同文で出ていた）。 */}
+                パネル冒頭・手順4冒頭の3か所にほぼ同文で出ていた）。 */}
             {/* 出し分けは hidden（表示）だけで行い、パネルは外さない（指摘5）。
-                三項演算子に戻すと、タブを行き来するたびに③の調査結果が消えて⑦を取り直す。 */}
+                三項演算子に戻すと、タブを行き来するたびに手順3の調査結果が消えて手順7を取り直す。 */}
             {mountedApprunTabs['sakura-apprun'] && (
               <div className={target === 'sakura-apprun' ? undefined : 'hidden'}>
                 <AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun'} />
@@ -731,6 +737,7 @@ function OpRunningCard({ rec }: { rec: ProjectOpRecordShape }) {
     <div className="rounded-xl border border-line bg-surface p-4 mb-4 space-y-2" role="status">
       <p className="text-sm text-ink leading-relaxed">{`⏳ ${opTargetName(rec)}の${rec.op}が進んでいます`}</p>
       <OpProgressLines rec={rec} />
+      <StageEstimate stage={rec.progress?.stage} />
       <p className="text-[11px] text-ink-muted leading-relaxed">この画面を閉じても処理は進みますが、Koto を終了すると途中で止まります。</p>
     </div>
   )
@@ -758,7 +765,7 @@ function OpFinishedCard({ rec }: { rec: ProjectOpRecordShape }) {
   const title = !r
     ? `⚠️ ${what}は終わりましたが、結果を読み取れませんでした`
     : !r.ok
-      ? `⚠️ ${what}は、うまくいきませんでした`
+      ? `⚠️ ${what}に失敗しました`
       : warnings.length > 0
         ? `⚠️ ${what}は終わりましたが、確認が必要なことがあります`
         : `✅ ${what}が終わりました`
@@ -789,6 +796,7 @@ function OpFinishedCard({ rec }: { rec: ProjectOpRecordShape }) {
           <pre className="mt-1 whitespace-pre-wrap break-all select-text">{r.detail}</pre>
         </details>
       )}
+      <StageTimingDetails timings={readStageTimings(r?.extra?.stageTimings)} />
       {needsAttention && (
         <div className="flex justify-end">
           <CopyTextButton text={[title, r?.message ?? '', ...warnings].filter(Boolean).join('\n')} />
@@ -833,9 +841,9 @@ function PublishStatusBox({ publish, latestChangeAt, apprunLegacy, onForget }: {
         <span className="text-ink-secondary">管理画面</span>から辿れます。
       </p>
       <p className="text-[11px] text-ink-muted leading-relaxed">
-        <span className="text-ink-secondary">記録を片づける</span>のは、この一覧から消すだけです
+        <span className="text-ink-secondary">一覧から削除</span>は、この一覧に残っている記録を消すだけです
         （<b className="text-ink">公開したもの自体は消えません</b>）。公開をやめるときは、先に各公開先で止めてください
-        （さくらのAppRun 共用型・HANAMII は「🗑 破棄」、専有型は専有型タブの⑥「すべて削除する」。レンタルサーバ・Vercel は管理画面で消します）。
+        （さくらのAppRun 共用型・HANAMII は「🗑 破棄」、専有型は専有型タブの手順6「すべて削除する」。レンタルサーバ・Vercel は管理画面で消します）。
       </p>
       <ul className="space-y-1.5">
         {rows.map(row => {
@@ -870,7 +878,7 @@ function PublishStatusBox({ publish, latestChangeAt, apprunLegacy, onForget }: {
                       <button
                         onClick={async () => { await onForget(row.target); setConfirming(null) }}
                         className="text-brand-red hover:underline font-semibold"
-                      >記録を片づける（公開したものは残ります）</button>
+                      >一覧から削除（公開したものは残ります）</button>
                       {'　'}
                       <button onClick={() => setConfirming(null)} className="text-ink-muted hover:underline">やめる</button>
                     </>
@@ -881,7 +889,7 @@ function PublishStatusBox({ publish, latestChangeAt, apprunLegacy, onForget }: {
                         onClick={() => setConfirming(row.target)}
                         title="記録だけを消します。公開したもの自体は消えません"
                         className="text-ink-muted hover:text-brand-red hover:underline"
-                      >記録を片づける</button>
+                      >一覧から削除</button>
                     </>
                   )
                 )}
@@ -908,11 +916,11 @@ function FirstTimeGuide({ title, children }: { title: string; children: React.Re
   )
 }
 
-// 「つまずいたら」FAQ。各項目は [質問, 回答] のタプル。
+// 「よくある質問」（FAQ）。各項目は [質問, 回答] のタプル。
 function GuideFaq({ items }: { items: [string, string][] }) {
   return (
     <div className="pt-1">
-      <p className="text-[11px] font-semibold text-ink-secondary mb-1">つまずいたら</p>
+      <p className="text-[11px] font-semibold text-ink-secondary mb-1">よくある質問</p>
       <ul className="space-y-1.5">
         {items.map(([q, a], i) => (
           <li key={i} className="text-[11px] text-ink-muted leading-relaxed">

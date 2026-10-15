@@ -1,4 +1,4 @@
-// さくらのVPS 公開機能 V1a（①接続の2ルート）の IPC（vps:*）。
+// さくらのVPS 公開機能 V1a（手順1 接続の2ルート）の IPC（vps:*）。
 // 方式B（掟4）: 秘密鍵・パスワードはすべて renderer から引数で受け取る。main には一切保存しない。
 // AIチャットのツール（aiTools.ts）にはここのハンドラを一切公開しない（docs/vps-plan.md §2.5）。
 import { ipcMain } from 'electron'
@@ -37,8 +37,8 @@ export function registerVpsHandlers(_deps: IpcDeps) {
     if (!isValidHost(host)) return { ok: false, message: 'ホスト名/IPの形式が不正です' }
     if (!isValidPort(port)) return { ok: false, message: 'ポート番号が不正です（1〜65535）' }
     if (!isValidUsername(user)) return { ok: false, message: 'ユーザー名の形式が不正です' }
-    if (!privateKey) return { ok: false, message: '秘密鍵がありません（先に「① 鍵を生成」してください）' }
-    if (!fingerprint) return { ok: false, message: 'ホスト鍵の指紋が未確認です（先にホスト鍵を確認してください）' }
+    if (!privateKey) return { ok: false, message: '秘密鍵がありません（先に「🔑 鍵を生成する」を押してください）' }
+    if (!fingerprint) return { ok: false, message: 'ホスト鍵のフィンガープリントが未確認です（先にホスト鍵を確認してください）' }
     const r = await runSsh({ host, port, user, privateKey, knownHostFingerprint: fingerprint, command: 'echo koto-vps-ok' })
     if (!r.ok) return r
     const okEcho = (r.stdout ?? '').includes('koto-vps-ok')
@@ -50,7 +50,7 @@ export function registerVpsHandlers(_deps: IpcDeps) {
     if (!isValidPort(port)) return { ok: false, message: 'ポート番号が不正です（1〜65535）' }
     if (!isValidUsername(user)) return { ok: false, message: '接続ユーザー名の形式が不正です' }
     if (!password) return { ok: false, message: 'パスワードが未入力です' }
-    if (!isValidPublicKey(publicKey)) return { ok: false, message: '公開鍵の形式が不正です（先に「① 鍵を生成」してください）' }
+    if (!isValidPublicKey(publicKey)) return { ok: false, message: '公開鍵の形式が不正です（先に「🔑 鍵を生成する」を押してください）' }
     let commands: string[]
     try {
       commands = buildInstallKeyCommands({ publicKey, adminUser: ADMIN_USER, deployUser: DEPLOY_USER })
@@ -64,7 +64,7 @@ export function registerVpsHandlers(_deps: IpcDeps) {
     if (!isValidPort(port)) return { ok: false, message: 'ポート番号が不正です（1〜65535）' }
     if (!isValidUsername(user)) return { ok: false, message: 'ユーザー名の形式が不正です' }
     if (!privateKey) return { ok: false, message: '秘密鍵がありません' }
-    if (!fingerprint) return { ok: false, message: 'ホスト鍵の指紋が未確認です' }
+    if (!fingerprint) return { ok: false, message: 'ホスト鍵のフィンガープリントが未確認です' }
     const commands = buildHardenSshdCommands()
     return runSsh({ host, port, user, privateKey, knownHostFingerprint: fingerprint, command: commands.join('\n') })
   })

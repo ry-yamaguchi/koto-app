@@ -179,7 +179,7 @@ export function buildEnvVarsBody(
  * そのまま画面やログへ流すと秘密が漏れる（掟4）。ここは HTTP の状態だけを見て文を決める。
  */
 export function vercelEnvErrorMessage(status: number, opts: { alreadyPublished?: boolean } = {}): string {
-  const head = 'データの保存に使う設定を Vercel へ渡せませんでした'
+  const head = 'データの保存に使う環境変数を Vercel に登録できませんでした'
   // **初回の公開では「中止しました」が嘘になる**（2026-09-24 検分の指摘14）。
   // 初回は Vercel 側にプロジェクトが無く、公開のあとに置き直す。その置き直しが失敗しても
   // 公開そのものは済んでいるので、末尾だけを差し替える（理由と直し方は共通で出す）。
@@ -194,7 +194,7 @@ export function vercelEnvErrorMessage(status: number, opts: { alreadyPublished?:
     return `${head}——Vercel が混み合っています（HTTP ${status}）。少し時間をおいてから、もう一度お試しください。\n${tail}`
   }
   return `${head}（HTTP ${status}）。少し時間をおいてから、もう一度お試しください。`
-    + '何度も続くときは、Vercel の管理画面で同じ名前の設定が編集できるかをご確認ください。\n' + tail
+    + '何度も続くときは、Vercel の管理画面で同じ名前の環境変数が編集できるかをご確認ください。\n' + tail
 }
 
 /** デプロイ作成/取得応答から抽出した情報。 */

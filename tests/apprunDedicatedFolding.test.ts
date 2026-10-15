@@ -9,9 +9,9 @@ import {
 } from '../src/renderer/components/AppRunDedicatedPanel'
 
 // 委譲仕様 UX-D・判断7: 専有型 AppRunDedicatedPanel.tsx を初心者向けに畳む。
-// ②サービスプリンシパルの手順を「詳しい手順を見る」に畳み、⑤の詳細設定
+// 手順2 サービスプリンシパルの手順を「詳しい手順を見る」に畳み、手順5の詳細設定
 // （ポート・ノード数）を「詳細設定（ふつうは変えなくてよい）」に畳む。
-// F-1（2026-09-16）: ⑤にあった Let's Encrypt メール欄は⑧に一本化して削除したため、
+// F-1（2026-09-16）: 手順5にあった Let's Encrypt メール欄は手順8に一本化して削除したため、
 // ここでの「畳む対象」からも外した。
 // formError（1本の早期return文字列。初期状態からいきなり出る・欄側の警告と二重に出る）を
 // computeDedicatedFormErrors（欄ごとの判定）＋ visibleFormErrors（touched/submitted による
@@ -41,7 +41,7 @@ describe('computeDedicatedFormErrors: 欄ごとに独立して判定する', () 
 
   it('サービスプリンシパルIDが空なら resourceId にエラー', () => {
     expect(computeDedicatedFormErrors({ ...VALID_INPUT, resourceId: '' }).resourceId)
-      .toBe('②でサービスプリンシパルIDを入力してください')
+      .toBe('手順2でサービスプリンシパルIDを入力してください')
   })
 
   it('ポート0件・範囲外・予約ポートで ports にエラー', () => {
@@ -156,45 +156,53 @@ describe('visibleFormErrors: 初期状態→空／触った後→その項目だ
 // electron に依存するため import できず、ソースを読んで確かめる
 // （tests/apprunDedicatedWiring.test.ts と同じ流儀）。
 const panel = readFileSync(join(__dirname, '..', 'src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf-8')
+// 2026-10-07: 手順2の節（入力欄・(A)/(B)・説明）は巨大ファイルの決まりで ServicePrincipalSection.tsx へ切り出した。
+// 手順2の畳み方はそちらを読んで固定する（toContain は持ち主の spSection 1つへ。not.toContain は戻りうる両方 spAll へ）。
+const spSection = readFileSync(join(__dirname, '..', 'src/renderer/components/ServicePrincipalSection.tsx'), 'utf-8')
+const spAll = panel + '\n' + spSection
 
-describe('②: サービスプリンシパルの手順を「詳しい手順を見る」の <details> に畳む', () => {
-  it('既定で見えるのは入力欄と1行の説明だけ。手順A/Bは <details> の中', () => {
-    const sectionAt = panel.indexOf('{/* ② サービスプリンシパルの用意')
+describe('手順2: サービスプリンシパルの手順を「詳しい手順を見る」の <details> に畳む', () => {
+  it('既定で見えるのは入力欄と1行の説明だけ。(A)/(B)は <details> の中', () => {
+    // 手順2の節は ServicePrincipalSection.tsx のコンポーネント本体。その <section> から終わりまでを見る
+    const sectionAt = spSection.indexOf('<section className="rounded-xl border border-line bg-surface p-4 space-y-3">')
     expect(sectionAt).toBeGreaterThan(0)
-    const sectionEnd = panel.indexOf('{/* ③ 使えるプランと制限', sectionAt)
-    expect(sectionEnd).toBeGreaterThan(sectionAt)
-    const block = panel.slice(sectionAt, sectionEnd)
+    const block = spSection.slice(sectionAt)
+    // パネルは、手順1の節のあと・手順3の節の前に、その節を置いている（番号の並びを崩していない）
+    const placeAt = panel.indexOf('<ServicePrincipalSection sp={sp}')
+    expect(placeAt).toBeGreaterThan(panel.indexOf('<AccessKeySection'))
+    expect(placeAt).toBeLessThan(panel.indexOf('{/* 手順3 使えるプランと制限'))
 
     const labelAt = block.indexOf('サービスプリンシパルのリソースID（12桁）')
     const detailsAt = block.indexOf('<details')
     // 直前の説明コメントにも「詳しい手順を見る」の語が出るため、<details> より後の
     // 出現（実際の <summary> 要素）を探す。
     const summaryAt = block.indexOf('詳しい手順を見る', detailsAt)
-    const stepAAt = block.indexOf('手順A: サービスプリンシパルを作る', summaryAt)
-    const stepBAt = block.indexOf('手順B: そのサービスプリンシパルにロールを付ける', stepAAt)
+    const stepAAt = block.indexOf('(A) サービスプリンシパルを作る', summaryAt)
+    const stepBAt = block.indexOf('(B) そのサービスプリンシパルにロールを付ける', stepAAt)
 
     expect(labelAt).toBeGreaterThan(-1)
     expect(detailsAt).toBeGreaterThan(labelAt) // 入力欄が <details> より先（常時表示）
     expect(summaryAt).toBeGreaterThan(detailsAt)
-    expect(stepAAt).toBeGreaterThan(summaryAt) // 手順A/Bは <details> の中
+    expect(stepAAt).toBeGreaterThan(summaryAt) // (A)/(B)は <details> の中
     expect(stepBAt).toBeGreaterThan(stepAAt)
 
     // 既定で見える1行の説明。
     expect(block).toContain('コントロールパネルで一度だけ作ります。作り方は「詳しい手順を見る」。')
   })
 
-  it('既存の内容（コントロールパネルのリンク・ロール欄のコピーボタン・実在確認できない旨）は残っている', () => {
-    expect(panel).toContain('href={CONTROL_PANEL_URL}')
-    expect(panel).toContain('<CopyButton text={ROLE_TEXT}')
-    expect(panel).toContain('実在するかどうかはここでは確認できません')
+  it('既存の内容（コントロールパネルのリンク・ロール欄のコピーボタン・存在確認できない旨）は残っている', () => {
+    expect(spSection).toContain('href={CONTROL_PANEL_URL}')
+    expect(spSection).toContain('<CopyButton text={ROLE_TEXT}')
+    expect(spSection).toContain('存在するかどうかはここでは確認できません')
+    expect(spAll).not.toContain('実在するかどうかはここでは確認できません') // 0.6.21（作者の決定 2026-10-01）: 「実在確認」は「存在確認」に揃えた。直す前の言い方は戻さない
   })
 })
 
-describe('⑤: 詳細設定（ポート・ノード数）を <details> に畳む', () => {
+describe('手順5: 詳細設定（ポート・ノード数）を <details> に畳む', () => {
   it('既定で見えるのはクラスタ名・ゾーン・ワーカプラン・ロードバランサプラン・構成図・作成ボタン', () => {
-    const at = panel.indexOf('{/* ⑤ クラスタを作る */}')
+    const at = panel.indexOf('{/* 手順5 クラスタを作る */}')
     expect(at).toBeGreaterThan(0)
-    const end = panel.indexOf('{/* ⑥ 作ったものを壊す')
+    const end = panel.indexOf('{/* 手順6 作ったものを壊す')
     const block = panel.slice(at, end)
 
     const clusterNameAt = block.indexOf('クラスタ名（1〜20文字')
@@ -228,8 +236,8 @@ describe('⑤: 詳細設定（ポート・ノード数）を <details> に畳む
     expect(block).toContain('既定のままで作れます。ポートは 80/443、ノード数は最小1・最大1。')
   })
 
-  // F-1（2026-09-16）: ⑤の Let's Encrypt メール欄は削除した（⑧に一本化）。
-  it('⑤に Let\'s Encrypt メール欄は無い（⑧に一本化。F-1）', () => {
+  // F-1（2026-09-16）: 手順5の Let's Encrypt メール欄は削除した（手順8に一本化）。
+  it('手順5に Let\'s Encrypt メール欄は無い（手順8に一本化。F-1）', () => {
     expect(panel).not.toContain('Let&apos;s Encrypt 用メール')
   })
 
@@ -250,7 +258,7 @@ describe('⑤: 詳細設定（ポート・ノード数）を <details> に畳む
   })
 })
 
-describe('④formErrorの二重表示: ワーカ/ロードバランサプランの警告は欄側だけに出し、全体側からは外す', () => {
+describe('手順4 formErrorの二重表示: ワーカ/ロードバランサプランの警告は欄側だけに出し、全体側からは外す', () => {
   it('generalErrors の描画は workerPlan / lbPlan を除外している', () => {
     const at = panel.indexOf('generalErrors.map(')
     expect(at).toBeGreaterThan(0)
@@ -266,7 +274,7 @@ describe('パネル冒頭の注意文（UX-C で一本化したもの）は残�
   it('alwaysOnChargeText（常時課金の1文）が引き続き冒頭にある', () => {
     const at = panel.indexOf('📦 さくらのAppRun 専有型')
     expect(at).toBeGreaterThan(0)
-    // UX-E（判断8）: ①は AccessKeySection.tsx に一元化され、'① APIキー' という
+    // UX-E（判断8）: 手順1は AccessKeySection.tsx に一元化され、'手順1 APIキー' という
     // 文字列は（コメントを除けば）panel.tsx の JSX には直接出てこなくなった。
     // <AccessKeySection の出現位置を境界にする。
     const end = panel.indexOf('<AccessKeySection', at)

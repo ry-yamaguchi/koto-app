@@ -260,7 +260,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
     })
     // **最後の砦。** 秘密でない側に秘密が紛れていないか確かめる
     if (containsSecretEnv(publicVars)) {
-      return '内部エラー: 秘密でない設定に秘密が混ざっています。公開を中止しました。'
+      return '内部エラー: シークレットではない環境変数にシークレットが混ざっています。公開を中止しました。'
     }
     runtimeEnv = [
       ...publicVars.map(v => ({ key: v.name, value: v.value })),
@@ -287,7 +287,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
           // 鍵は発行済みで、まだどの版にも載っていない＝ここで取り消す（2026-09-25 検分）
           if (problem) return await stopped(problem)
         } catch (e: any) {
-          return await stopped(`保存場所の鍵を用意できませんでした: ${e?.message ?? e}`)
+          return await stopped(`保存場所のアクセスキーを用意できませんでした: ${e?.message ?? e}`)
         }
       }
       if (a.type === 'create') {
@@ -364,7 +364,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
           // **PATCH を呼んでいない＝どの版にも載っていない**ので、いま発行した鍵は取り消す
           // （選び直して押し直すたびに、使われない鍵が1本ずつ増えていた・2026-09-25 検分）。
           return await stopped(
-            '起動のしかたが、さくら側と Koto の設定で違います。どちらで公開するか選んでください。',
+            '最小スケールが、さくら側と Koto の設定で違います。どちらで公開するか選んでください。',
             { needsScaleDecision: { appId: id, recorded: judged.recorded, actual: judged.actual } },
           )
         }

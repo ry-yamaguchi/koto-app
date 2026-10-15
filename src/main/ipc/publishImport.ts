@@ -133,7 +133,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
         }
         const tree = await c.getDeploymentFiles(args.id)
         if (!tree.ok) {
-          return { ok: false, message: `この公開からは中身を取り出せませんでした（HTTP ${tree.status}）。` }
+          return { ok: false, message: `この公開からはファイルを取得できませんでした（HTTP ${tree.status}）。` }
         }
         const flat = flattenVercelTree(Array.isArray(tree.data) ? tree.data as any : (tree.data as any)?.files)
         const { files, stripped } = stripSingleRoot(flat)
@@ -193,7 +193,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
         const c = new VercelClient({ token: args.token, teamId: args.teamId })
         notify(e, '公開されているファイルの一覧を調べています…')
         const tree = await c.getDeploymentFiles(args.id)
-        if (!tree.ok) return { ok: false, message: `中身を取り出せませんでした（HTTP ${tree.status}）` }
+        if (!tree.ok) return { ok: false, message: `ファイルを取得できませんでした（HTTP ${tree.status}）` }
         const flat = flattenVercelTree(Array.isArray(tree.data) ? tree.data as any : (tree.data as any)?.files)
         const { files, stripped } = stripSingleRoot(flat)
         if (!files.length) return { ok: false, message: '取り出せるファイルがありませんでした。' }
@@ -213,7 +213,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
           fs.writeFileSync(abs, Buffer.from(b64, 'base64'))
           written.push(rel)
         }
-        notify(e, '🕘 いつでも戻れるように、いまの状態を控えています…')
+        notify(e, '🕘 いつでも戻れるように、いまの状態を履歴に保存しています…')
         const origin = makeHistoryOrigin(args.destDir, written)
         return { ok: true, fileCount: written.length, failed, stripped, ...origin }
       }
@@ -231,7 +231,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
         return { ok: false, message: 'コンテナレジストリの認証情報が見つかりません（認証情報の画面でご確認ください）。' }
       }
       const crane = cranePath()
-      if (!crane || !fs.existsSync(crane)) return { ok: false, message: 'イメージを取り出す道具（crane）が見つかりません。' }
+      if (!crane || !fs.existsSync(crane)) return { ok: false, message: '内蔵ビルダー（crane）が見つかりません。' }
 
       notify(e, 'コンテナレジストリへ接続しています…')
       await run(crane, ['auth', 'login', ref.server, '-u', reg.user, '-p', reg.password])
@@ -246,7 +246,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       const root = pickImageContentRoot(names)
       if (!root) {
         fs.rmSync(tarPath, { force: true })
-        return { ok: false, message: 'イメージの中に、公開されている中身の場所が見つかりませんでした。' }
+        return { ok: false, message: 'イメージの中に、公開用のファイルが入ったフォルダが見つかりませんでした。' }
       }
 
       notify(e, '取り込んでいます…')
@@ -254,7 +254,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       fs.rmSync(tarPath, { force: true })
 
       const rels = importedRelPathsFromTar(names, root, PUBLISH_DIR)
-      notify(e, '🕘 いつでも戻れるように、いまの状態を控えています…')
+      notify(e, '🕘 いつでも戻れるように、いまの状態を履歴に保存しています…')
       const origin = makeHistoryOrigin(args.destDir, rels)
 
       // ── 引き継ぐ（選んだときだけ）────────────────────────────────────

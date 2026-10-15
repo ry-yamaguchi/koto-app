@@ -48,7 +48,7 @@ function sitePrompt(siteType: string, target: TargetId): string {
     p +=
       `\n【公開先: さくらのAppRun】\n` +
       `- nginx:alpine で静的サイトを配信する Dockerfile を含める（ポート8080で待ち受け、linux/amd64）\n` +
-      `- .dockerignore を含める（公開は Koto の【③公開】→さくらのAppRun が自動で行うため deploy.sh は不要）`
+      `- .dockerignore を含める（公開は Koto の【公開】→さくらのAppRun が自動で行うため deploy.sh は不要）`
   }
   return p
 }
@@ -73,7 +73,7 @@ function targetPrompt(target: TargetId): string {
         `- コンテナをサーバレス実行する環境。必ず Dockerfile を含め、コンテナ化する\n` +
         `- アプリは環境変数 PORT（既定 8080）で待ち受ける。0.0.0.0 でリッスンする\n` +
         `- Dockerfile は linux/amd64 前提。.dockerignore も含める\n` +
-        `- README.md に公開手順（Koto の【③公開】→さくらのAppRun から、Docker不要でそのまま公開）を日本語で書く\n` +
+        `- README.md に公開手順（Koto の【公開】→さくらのAppRun から、Docker不要でそのまま公開）を日本語で書く\n` +
         `- ヘルスチェック用に /healthz を用意する。スタックは要望に合わせて選んでよい（Node/Python等）`
       )
     case 'hanamii':
@@ -84,7 +84,7 @@ function targetPrompt(target: TargetId): string {
         `- アプリは環境変数 PORT（既定 8080）で待ち受ける。0.0.0.0 でリッスンする\n` +
         `- Dockerfile を含める場合は必ず「EXPOSE 8080」を書く（HANAMII は待ち受けポートを EXPOSE で判定する）\n` +
         `- 永続データはコンテナ内のローカルファイルに保存しない（再起動で消える前提）\n` +
-        `- README.md に公開手順（Koto の【③公開】→ HANAMII から公開）を日本語で書く`
+        `- README.md に公開手順（Koto の【公開】→ HANAMII から公開）を日本語で書く`
       )
     case 'sakura-vps':
       return `\n\n【公開先: さくらのVPS】サーバ内で完結する構成にし、起動方法・systemd例・必要パッケージをREADMEに日本語で記載する。`
@@ -126,12 +126,12 @@ export function buildNewProjectRequest(args: NewProjectRequestArgs): string | nu
   const whatLine =
     kind === 'site'
       ? `作るもの: Webサイト（${SITE_TYPES.find(s => s.id === siteType)?.label ?? siteType ?? ''}）`
-      : `作るもの: アプリ（ベース: ${templateLabel ?? ''}${templateHint ? `／${templateHint}` : ''}）`
+      : `作るもの: アプリ（使う技術: ${templateLabel ?? ''}${templateHint ? `／${templateHint}` : ''}）`
 
   const wantLine =
     kind === 'site'
       ? `要望: ${desc || '特になし。種別に合った標準的な構成でよい。'}`
-      : `要望: ${desc || '特になし。ベースに沿った最小限の雛形でよい。'}`
+      : `要望: ${desc || '特になし。使う技術に沿った最小限の雛形でよい。'}`
 
   const stackGuide = kind === 'site' ? sitePrompt(siteType ?? 'lp', t) : targetPrompt(t)
 

@@ -77,7 +77,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
     return () => window.removeEventListener('sakura-usage-changed', refresh)
   }, [])
 
-  // 所見6: 「チャットの頭脳」セクション用。Claudeキーの有無は StatusBar.tsx の claudeActive 判定パターンを
+  // 所見6: 「使う AI」セクション用。Claudeキーの有無は StatusBar.tsx の claudeActive 判定パターンを
   // 踏襲し、getAnthropicToken() を 'sakura:credentials-changed' 購読で再判定する。
   // アプリの更新。状態は main から流れてくる（購読は下の useEffect）。
   const [update, setUpdate] = useState<UpdateState>({ kind: 'idle' })
@@ -309,7 +309,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               >更新を確認</button>
             </div>
             <p className={`text-xs leading-relaxed select-text ${shouldHighlight(update) ? 'text-sakura font-medium' : 'text-ink-secondary'}`}>
-              {updateStatusText(update) || `お使いの版: ${appVersion}`}
+              {updateStatusText(update) || `現在のバージョン: ${appVersion}`}
             </p>
             {shouldHighlight(update) && (
               <div className="mt-2 space-y-1">
@@ -356,22 +356,22 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               思考を常に開いたままにする
             </label>
             <p className="mt-1.5 text-[11px] text-ink-muted leading-relaxed">
-              考えているモデル（Kimi K2.7 など）は、答えを書き始めるまでの考えを表示できます。
-              既定では考えている間だけ開き、書き終わると自動で畳みます。オンにすると畳まずに残します。
+              推論型のモデル（Kimi K2.7 など）は、回答を書き始める前の思考を表示できます。
+              既定では思考している間だけ開き、書き終わると自動で畳みます。オンにすると畳まずに残します。
               ※ 思考を出さないモデルでは表示されません。
               <strong className="font-medium text-ink-secondary">思考は英語で書かれることがあります</strong>
               （モデルが内部で使う言葉のため。回答そのものは日本語です）。
             </p>
           </div>
 
-          {/* 所見6: チャットの頭脳（Claude / さくらのAI Engine）。両方のキーが登録済みのときだけ切替を出す。
+          {/* 所見6: 使う AI（Claude / さくらのAI Engine）。両方のキーが登録済みのときだけ切替を出す。
               W-19（2026-09-27決定・別案＋案5）: 見出しは、切替を出す（＝両方のキーがある）ときだけ
-              「IDE の AI（頭脳）」にする。片方だけのときは、そのキーで動いていると文で言い切っている
-              ので「チャットの頭脳」のままでも混同は起きない（書き換えは両方のキーがあるときに限る）。 */}
+              「IDEモードで使う AI」にする（2026-10-01: 「頭脳」を「使う AI」へ）。片方だけのときは、そのキーで動いていると文で言い切っている
+              ので「使う AI」のままでも混同は起きない（書き換えは両方のキーがあるときに限る）。 */}
           {(hasClaudeKey || hasAiEngineKey) && (
             <div className="bg-surface border border-line rounded-xl p-4">
               <div className="text-xs font-semibold text-ink-secondary mb-2">
-                {hasClaudeKey && hasAiEngineKey ? 'IDE の AI（頭脳）' : 'チャットの頭脳'}
+                {hasClaudeKey && hasAiEngineKey ? 'IDEモードで使う AI' : '使う AI'}
               </div>
               {hasClaudeKey && hasAiEngineKey ? (
                 <>
@@ -447,7 +447,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
             {chatDesc && <p className="mt-1 text-sm text-ink-secondary">{chatDesc}</p>}
             <p className="mt-1 text-[11px] text-ink-muted">
               チャットモードの会話で使います。会話ごとに個別変更もできます。
-              Claudeの頭脳モードは、プロジェクトを開いた画面（IDEモード）でのみ使えます。
+              Claudeモードは、プロジェクトを開いた画面（IDEモード）でのみ使えます。
             </p>
           </div>
 

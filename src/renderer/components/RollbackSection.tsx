@@ -5,7 +5,7 @@ import type { SwitchDeps, SwitchRequest } from '../rollbackSwitch'
 import { useConfirm } from '../useConfirm'
 
 // RollbackSection — 公開したものを前のバージョンに戻す（roadmap #32）。stepNo は
-// 呼び出し元の番号体系に乗せるための見出し番号（AppRunPanel.tsx から "⑨" を渡す。
+// 呼び出し元の番号体系に乗せるための見出し番号（AppRunPanel.tsx から "手順9" を渡す。
 // SecurityCheckSection / UnusedFilesSection と同じ作法）。
 //
 // さくらの開発者から「トラフィックの割り当てを変えることでロールバックができる」と

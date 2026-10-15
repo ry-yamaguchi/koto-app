@@ -397,11 +397,11 @@ export function loginPathFailureReason(): string | null {
   return loginPathFailure
 }
 
-/** 「入っているはずの道具が見つからない」に添える、原因の見当（D）。
+/** 「入っているはずのツールが見つからない」に添える、原因の見当（D）。
  *  PATH の取得に失敗していないときは**空文字**（余計なことを言わない）。 */
 export const LOGIN_PATH_NOT_FOUND_HINT =
-  'なお、Koto の起動時に、お使いのシェルの設定から PATH（道具の置き場所の一覧）を読み取れませんでした。'
-  + 'そのために、入っている道具が見つかっていない可能性があります。Koto を一度終了してから開き直すと直ることがあります。'
+  'なお、Koto の起動時に、お使いのシェルの設定から PATH（コマンドを探すフォルダの一覧）を読み取れませんでした。'
+  + 'そのため、インストール済みのツールが見つからない可能性があります。Koto を一度終了してから開き直すと直ることがあります。'
 
 export function loginPathHintForMissingTool(): string {
   return loginPathFailure ? LOGIN_PATH_NOT_FOUND_HINT : ''

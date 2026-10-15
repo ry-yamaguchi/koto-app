@@ -1,6 +1,6 @@
 // projectOps.ts — プロジェクトごとの「いま走っている操作」と「終わった操作」の記録（メモリ上）。
 //
-// ── なぜ要るか（2026-09-29・作者の決定 ①②）────────────────────────────────
+// ── なぜ要るか（2026-09-29・作者の決定 (1)(2)）────────────────────────────────
 // 公開・破棄・作成の本体は main の1回の IPC で最後まで進み、記録（.sakuraide.json）も main が書く。
 // だから**処理中にダイアログを閉じても処理は止まらない**。失われていたのは**画面の表示だけ**——
 // 進み具合・結果・警告（「保存場所が残ったので月額が続きます」など）は、窓が持っている React の状態にしか
@@ -15,10 +15,20 @@
 // 進み具合も、各ハンドラが renderer へ送っていた進捗の送り口を `progressReporter` 1つに通し、
 // そこで記録も更新する。
 //
+// ── 段ごとの所要時間（2026-10-07・作者の問い「どこにどれくらいの時間がかかっているか」）──────────────
+// 進み具合の送り口に、任意の `stage`（段の**内部名**。shared/stageTiming.ts の STAGE）を渡せる。ハンドラが段の切り替わりで渡すと、
+// ここが段ごとの開始・終了の時刻をメモリに持ち、操作が終わったとき**段ごとの所要時間と合計**を結果の
+// `extra.stageTimings` に載せる（画面は「かかった時間を見る」に出す）。**画面に出す文は変えない**（段は文とは別に渡す）。
+// うまくいった操作の、終わった段の所要時間だけは、main が Koto の保存領域へ追記する（`setStageTimingSink`・
+// main/stageTimingStore.ts。ここはファイルに触らない）。**ただし「ふつうにやったらこれだけかかる」の測定になっていない段
+// （flow が `unmeasured` の印を付けたもの。IP が付かなかった・前回の続きだった・既に消えていた…）は、時間は結果に載せても保存しない**
+// （`ok:true` は「時間を測れた」の証拠ではない）。**段を渡さないハンドラは、これまでどおり**（時間は載らない・保存しない）。
+//
 // ── 持たないもの ────────────────────────────────────────────────────────────
 // ・**ファイルには書かない。** Koto を終了すると処理も止まる（main の1 invoke は窓では止まらないが、
 //   プロセスが終われば止まる）ので、終了をまたいで「走っている」を持ち越す意味が無い
 //   （持ち越すと、止まった処理を「走っている」と言い続ける）。
+//   （例外は段の所要時間の保存だけ。上の sink を通って main の別の部品〔stageTimingStore.ts〕が書く。ここは書かない。）
 // ・**秘密を入れない（掟4）。** 引数のトークン・キーは記録しない。結果は**許可した項目だけ**を写し
 //   （下の EXTRA_KEYS）、文字列は必ず `scrub` を通す（呼び出し側が渡した秘密の完全一致＋
 //   `redactSecrets` の形による除去）。秘密っぽい名前のキーは値ごと落とす。
@@ -31,6 +41,7 @@ import { teardownRemainingWarnings } from '../shared/cloudCost'
 // 印の定義は shared/opsText.ts の1か所（画面が「⚠️」を付け足すかの判断も同じ定義を使う）。
 import { hasWarnMark } from '../shared/opsText'
 import type { PublishTargetKind } from '../shared/publishMeta'
+import { buildStageTimings, isStageIdShape, type StageMark, type StageTimings, type StageTimingRow } from '../shared/stageTiming'
 
 /** いま走っている操作（画面に出す日本語そのもの）。 */
 export type ProjectOp = '作成' | '削除' | '公開'
@@ -45,13 +56,18 @@ export type OpTarget = PublishTargetKind | 'unknown'
 export type OpMeta = {
   /** どの公開先か。 */
   target: OpTarget
-  /** どの IPC か（'cloud:apply' など）。同じ「削除」でも⑥（全部）と📡（アプリだけ）を見分けるのに使う。 */
+  /** どの IPC か（'cloud:apply' など）。同じ「削除」でも作成・公開と見分けるのに使う（専有型は手順6も📡の🗑も同じ apprunDedicated:teardown）。 */
   handler: string
   /**
    * この操作が引数で受け取った秘密（トークン・キー）。**記録に載る文字列から完全一致で伏せる。**
    * 記録には入れない（ここで渡すだけ）。
    */
   secrets?: ReadonlyArray<string | null | undefined>
+  /**
+   * この操作のゾーン（分かるとき）。段の所要時間を保存するとき、日付・Koto の版と一緒に記録する（目安はゾーンで分けない）。
+   * 画面の記録（ProjectOpRecord）には入れない。
+   */
+  zone?: string | null
 }
 
 export type OpProgress = {
@@ -64,6 +80,11 @@ export type OpProgress = {
   total?: number
   /** 更新した時刻（epoch ミリ秒）。 */
   at: number
+  /**
+   * いまの段の内部名（段を渡したハンドラだけ。shared/stageTiming.ts の STAGE）。画面は**文ではなくこれ**で
+   * 「いま待っている段」を見分け、その段の目安を出す。
+   */
+  stage?: string
 }
 
 export type OpResult = {
@@ -118,7 +139,13 @@ export type ProjectOpsSnapshot = {
 
 // ── 記録の保管 ────────────────────────────────────────────────────────────
 
-type Live = { record: ProjectOpRecord; secrets: string[] }
+/** 段に入ってから出るまで。`endedAt` が無いものが「いまの段」。 */
+type OpenSegment = { stage: string; startedAt: number; endedAt?: number }
+type Live = {
+  record: ProjectOpRecord; secrets: string[]; zone: string | null; segments: OpenSegment[]
+  /** 時間は結果に載せるが、保存はしない段（`StageMark.unmeasured`。理由は shared/stageTiming.ts）。 */
+  unmeasured: Set<string>
+}
 
 /** projectDir（正規化）→ いま走っている操作。**これが鍵そのもの**（1つ入っていれば、そのプロジェクトは使用中）。 */
 const live = new Map<string, Live>()
@@ -131,6 +158,28 @@ const unseen = new Map<string, ProjectOpRecord[]>()
 const MAX_UNSEEN = 5
 let lastStartedAt = 0
 let listener: ((projectDir: string, snapshot: ProjectOpsSnapshot) => void) | null = null
+
+/** うまくいった操作が終わったとき、段の所要時間を渡す先（1つだけ）。 */
+export type StageTimingSinkEntry = {
+  op: ProjectOp
+  target: OpTarget
+  handler: string
+  /** 終わった時刻（epoch ミリ秒）。 */
+  finishedAt: number
+  zone: string | null
+  stages: StageTimingRow[]
+}
+let stageSink: ((entry: StageTimingSinkEntry) => void) | null = null
+
+/**
+ * 段の所要時間を保存する口を1つだけ持つ（ipc/stageTiming.ts が main/stageTimingStore.ts へ配線する）。null で外す。
+ * **呼ばれるのは、うまくいった（ok:true の）操作で、保存してよい段が1つ以上あるときだけ**。失敗した操作は保存しない。
+ * 渡す段からは、flow が `unmeasured` の印を付けた段（IP が付かなかった・前回の続きだった・既に消えていた…。shared/stageTiming.ts の
+ * `StageMark`）を除く。
+ */
+export function setStageTimingSink(fn: ((entry: StageTimingSinkEntry) => void) | null): void {
+  stageSink = fn
+}
 
 /**
  * 同じフォルダを指す別の書き方（末尾の `/`・`..`）を同じ鍵にする。
@@ -172,6 +221,31 @@ export function runningOpName(projectDir: string): ProjectOp | undefined {
   return live.get(keyOf(projectDir))?.record.op
 }
 
+/** いま走っている操作 1 件の写し（終了の確認が読む。quitGuard.ts）。 */
+export type RunningOpInfo = {
+  /** 正規化した projectDir（`keyOf` の形）。 */
+  projectDir: string
+  op: ProjectOp
+  target: OpTarget
+}
+
+/**
+ * いま main の中で走っている操作の一覧（開始順）。**メモリの記録を読むだけで、何も書かない。**
+ *
+ * なぜ要るか（2026-10-10・0.6.21-rc.1 の実機）: Koto を終了すると処理は途中で止まる。終了の前に聞く判断は、
+ * 以前は画面が `win:busy` で登録した印だけを見ていた。その印は、(1)「ウィンドウを閉じる」で消え、
+ * (2) 開き直したウィンドウでは、その処理を映す画面を開くまで誰も登録せず、(3) ウィンドウが無いときの ⌘Q は
+ * そもそもウィンドウの close を通らない——どの道でも、**main では処理が走っているのに警告なしで終了できた**。
+ * 画面の登録を当てにせず、「走っているか」の正（鍵と同じ記録）を直接読む。
+ */
+export function listRunningOps(): RunningOpInfo[] {
+  const out: RunningOpInfo[] = []
+  for (const [projectDir, entry] of live) {
+    out.push({ projectDir, op: entry.record.op, target: entry.record.target })
+  }
+  return out
+}
+
 /** 画面が読む答え（写し）。走っているもの・まだ見られていない結果。 */
 export function getOps(projectDir: string): ProjectOpsSnapshot {
   return snapshotOf(keyOf(projectDir))
@@ -205,6 +279,9 @@ export function beginOp(projectDir: string, op: ProjectOp, meta: OpMeta | undefi
   const secrets = (meta?.secrets ?? []).filter((s): s is string => typeof s === 'string' && s.length >= MIN_SECRET_LENGTH)
   live.set(key, {
     secrets,
+    zone: typeof meta?.zone === 'string' && meta.zone ? meta.zone : null,
+    segments: [],
+    unmeasured: new Set<string>(),
     record: {
       op,
       target: meta?.target ?? 'unknown',
@@ -218,20 +295,47 @@ export function beginOp(projectDir: string, op: ProjectOp, meta: OpMeta | undefi
   notify(key)
 }
 
+/** 進み具合に添えるもの。`stage` は段の内部名（shared/stageTiming.ts の STAGE）。 */
+export type ProgressExtra = { detail?: string; step?: number; total?: number; stage?: string }
+
+/** いまの段（入っていて、まだ出ていない区間）。 */
+function openSegment(entry: Live): OpenSegment | null {
+  const last = entry.segments[entry.segments.length - 1]
+  return last && last.endedAt === undefined ? last : null
+}
+
+/**
+ * 段を切り替える（同じ段のままなら何もしない）。いまの段を閉じ、新しい段を開く。
+ * **形の合わない名前は無視する**（記録に変な文字列を入れない）。戻り値は切り替えたか。
+ */
+function switchStage(entry: Live, stage: string, now: number): boolean {
+  if (!isStageIdShape(stage)) return false
+  const cur = openSegment(entry)
+  if (cur?.stage === stage) return false
+  if (cur) cur.endedAt = Math.max(now, cur.startedAt)
+  entry.segments.push({ stage, startedAt: now })
+  return true
+}
+
 /**
  * 進み具合を更新する。走っていなければ何もしない（鍵の外から呼ばれても、別の操作の記録を汚さない）。
  * ハンドラは直接これを呼ばず、`progressReporter` を通す。
+ * `extra.stage` を渡すと、その段へ切り替わった時刻を記録する（文はこれまでどおり）。渡さなければ、いまの段のまま。
  */
 export function reportProgress(
-  projectDir: string, message: string, extra?: { detail?: string; step?: number; total?: number },
+  projectDir: string, message: string, extra?: ProgressExtra,
 ): void {
   const key = keyOf(projectDir)
   const entry = live.get(key)
   if (!entry) return
+  const now = Math.max(Date.now(), entry.record.startedAt)
+  if (typeof extra?.stage === 'string') switchStage(entry, extra.stage, now)
+  const cur = openSegment(entry)
   const progress: OpProgress = {
     label: scrub(message, entry.secrets),
     detail: extra?.detail ? scrub(extra.detail, entry.secrets) : '',
-    at: Math.max(Date.now(), entry.record.startedAt),
+    at: now,
+    ...(cur ? { stage: cur.stage } : {}),
   }
   if (Number.isFinite(extra?.step) && Number.isFinite(extra?.total) && (extra!.total as number) >= 1) {
     progress.step = extra!.step
@@ -242,12 +346,30 @@ export function reportProgress(
 }
 
 /**
+ * 段だけを切り替える（**画面に出す文は変えない**）。文を出さない段の切り替わり（待ちの前・API を順に呼ぶ区切り）に使う。
+ * 走っていなければ何もしない。同じ段のままなら何もしない（通知も出さない）。
+ * `mark.unmeasured` を渡すと、その段は**時間を結果に載せるが保存しない**（印は段の切り替えとは別に効く＝同じ段のままでも付く。
+ * 理由と付ける場面は shared/stageTiming.ts の `StageMark`）。
+ */
+export function reportStage(projectDir: string, stage: string, mark?: StageMark): void {
+  const key = keyOf(projectDir)
+  const entry = live.get(key)
+  if (!entry) return
+  const now = Math.max(Date.now(), entry.record.startedAt)
+  if (mark?.unmeasured === true && isStageIdShape(stage)) entry.unmeasured.add(stage)
+  if (!switchStage(entry, stage, now)) return
+  entry.record.progress = { ...entry.record.progress, stage }
+  notify(key)
+}
+
+/**
  * 進捗の送り口（**各ハンドラの進捗はこの1つを通す**）。
  * 記録を更新し、`send` があればこれまでどおり renderer へも送る（ウィンドウが閉じていても落ちない）。
+ * **送るのは文だけ**（段の内部名は画面へ送らない。画面は記録の progress.stage から読む）。
  */
 export function progressReporter(
   projectDir: string, send?: (message: string) => void,
-): (message: string, extra?: { detail?: string; step?: number; total?: number }) => void {
+): (message: string, extra?: ProgressExtra) => void {
   return (message, extra) => {
     reportProgress(projectDir, message, extra)
     if (send) {
@@ -256,19 +378,25 @@ export function progressReporter(
   }
 }
 
+/** 段の切り替わりだけを記録する送り口（`reportStage` の束ね）。各 flow の `onStage` に渡す。 */
+export function stageReporter(projectDir: string): (stage: string, mark?: StageMark) => void {
+  return (stage, mark) => reportStage(projectDir, stage, mark)
+}
+
 /**
  * 鍵を手放すとき（withProjectLock の finally）だけ呼ぶ。**必ず先に鍵を外す**——記録の組み立てで
  * 何が起きても「二度と押せない」を作らない。
  */
-export function finishOp(projectDir: string, outcome: { value: unknown } | { error: unknown }): void {
+export function finishOp(projectDir: string, outcome: { value: unknown } | { error: unknown }): StageTimings | undefined {
   const key = keyOf(projectDir)
   const entry = live.get(key)
-  if (!entry) return
+  if (!entry) return undefined
   live.delete(key)
   const rec = entry.record
   rec.running = false
   // startedAt は同じ時刻に始まった操作でも増やしてある（識別子を兼ねる）ので、終わりがそれより前にならないよう揃える。
-  rec.finishedAt = Math.max(Date.now(), rec.startedAt)
+  const finishedAt = Math.max(Date.now(), rec.startedAt)
+  rec.finishedAt = finishedAt
   rec.seen = false
   try {
     rec.result = 'value' in outcome
@@ -277,8 +405,35 @@ export function finishOp(projectDir: string, outcome: { value: unknown } | { err
   } catch {
     rec.result = { ok: false, message: '結果を記録できませんでした', lines: [], warnings: [], extra: {} }
   }
+  // 段ごとの所要時間（段を渡したハンドラだけ）。いまの段は、ここで閉じる。結果の extra へ載せる。
+  let timings: StageTimings | undefined
+  try {
+    const cur = openSegment(entry)
+    if (cur) cur.endedAt = Math.max(finishedAt, cur.startedAt)
+    const built = buildStageTimings(
+      entry.segments.map(s => ({ stage: s.stage, startedAt: s.startedAt, endedAt: s.endedAt ?? finishedAt })),
+      rec.startedAt, finishedAt,
+    )
+    if (built) { timings = built; rec.result.extra.stageTimings = built }
+  } catch { /* 時間の計算で結果を落とさない */ }
   unseen.set(key, capUnseen([...(unseen.get(key) ?? []), rec]))
   notify(key)
+  // うまくいった操作の、終わった段の所要時間だけを保存する（失敗した回は目安に混ぜない）。
+  // **`ok:true` は「時間を測れた」の証拠ではない**（2026-10-07 検分）: IP が付かないまま待ち切った・応答を確かめられなかった・
+  // 前回の続きで残りだけ待った・既に消えていた…でも ok:true で終わる。そうした段は flow が `unmeasured` の印を付けて
+  // おり、**その段だけ**保存から外す（同じ操作のほかの段は保存する）。時間そのものは結果に載せたまま。
+  if (timings && rec.result?.ok === true && stageSink) {
+    const measured = timings.stages.filter(r => !entry.unmeasured.has(r.stage)).map(r => ({ stage: r.stage, ms: r.ms }))
+    if (measured.length > 0) {
+      try {
+        stageSink({
+          op: rec.op, target: rec.target, handler: rec.handler, finishedAt, zone: entry.zone,
+          stages: measured,
+        })
+      } catch { /* 保存の失敗で操作の結果を変えない */ }
+    }
+  }
+  return timings
 }
 
 /** 警告も失敗も無い、ただの成功の記録か（上限で押し出すとき、真っ先に捨ててよいもの）。 */
@@ -292,9 +447,9 @@ function isPlainSuccess(rec: ProjectOpRecord): boolean {
  * 単純に古いものから捨てると、利用者がまだ「確認しました」を押していない警告（月額が続く・まだ動いていない…）が、
  * その後に別の公開先の操作が何度か終わっただけで、main から黙って消える（記録を読んで出す画面は、消えた警告を
  * 二度と出せない）。だから:
- *   ① 新しく足した記録（末尾）は捨てない——いま終わった操作の結果を、その画面が読めなくなるため
- *   ② それ以外のうち、**警告も失敗も無い成功の記録**を、古いものから先に捨てる
- *   ③ ②が無いとき（全部が警告つき・失敗）だけ、いちばん古いものを捨てる（無限に溜めない）
+ *   (1) 新しく足した記録（末尾）は捨てない——いま終わった操作の結果を、その画面が読めなくなるため
+ *   (2) それ以外のうち、**警告も失敗も無い成功の記録**を、古いものから先に捨てる
+ *   (3) (2)が無いとき（全部が警告つき・失敗）だけ、いちばん古いものを捨てる（無限に溜めない）
  */
 export function capUnseen(list: readonly ProjectOpRecord[]): ProjectOpRecord[] {
   const out = [...list]
@@ -311,6 +466,7 @@ export function resetProjectOpsForTests(): void {
   live.clear()
   unseen.clear()
   listener = null
+  stageSink = null
   lastStartedAt = 0
 }
 
@@ -321,7 +477,7 @@ const MIN_SECRET_LENGTH = 6
 const MAX_TEXT = 4000
 
 /**
- * 文字列から秘密を伏せる。①呼び出し側が渡した秘密の**完全一致** ②`redactSecrets` の形（トークン・鍵・
+ * 文字列から秘密を伏せる。(1)呼び出し側が渡した秘密の**完全一致** (2)`redactSecrets` の形（トークン・鍵・
  * URL の資格情報など）。長すぎるものは切る。
  */
 export function scrub(text: string, secrets: readonly string[] = []): string {
@@ -360,6 +516,8 @@ function cleanValue(x: unknown, secrets: readonly string[], depth = 0): unknown 
  * 結果の `extra` に写してよい項目（各ハンドラの返り値の、画面が判断に使う材料）。**ここに無い名前は写さない**
  * ——返り値に新しい項目が足されても、確かめずに記録へ流れ込まない（許可リスト方式）。
  * `storagePermissionId` は入れない（鍵の識別子であり、画面に出す理由が無い）。
+ * `stageTimings`（段ごとの所要時間）もここには入れない——返り値から写すものではなく、**projectOps 自身が測って**
+ * `finishOp` が載せる（返り値に同名の項目があっても写さない。測っていないものを記録に載せない）。
  */
 const EXTRA_KEYS = [
   'stage', 'hint', 'pending', 'logUrl', 'askAi',
@@ -427,7 +585,7 @@ export function summarizeResult(value: unknown, secrets: readonly string[] = [])
   } else if (v.ok !== true && v.remaining && typeof v.remaining === 'object') {
     const names = remainingNames(v.remaining as Record<string, unknown>)
     if (names.length > 0) {
-      addWarning(`残っています＝課金が続きます。コントロールパネルから直接削除することもできます: ${names.join('・')}`)
+      addWarning(`削除できずに残っているものがあります。残っている間は課金が続きます。コントロールパネルから直接削除することもできます: ${names.join('・')}`)
     }
   }
 

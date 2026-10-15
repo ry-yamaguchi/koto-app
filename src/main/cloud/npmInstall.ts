@@ -242,7 +242,7 @@ export async function installDependencies(
     const hint = loginPathHintForMissingTool()
     return {
       ok: false, nativeBlocked: [], log: '',
-      message: 'このアプリはライブラリを使っていますが、それを用意する道具（npm）が見つかりませんでした。'
+      message: 'このアプリはライブラリを使っていますが、インストールに使うツール（npm）が見つかりませんでした。'
         + 'Node.js をインストールしてから、もう一度お試しください。'
         + (hint ? `\n${hint}` : ''),
     }
@@ -274,7 +274,7 @@ export async function installDependencies(
     return {
       ok: false, nativeBlocked: [], log,
       message: 'ライブラリを用意できませんでした。package.json に書かれた名前が正しいか、'
-        + 'インターネットに繋がっているかを確かめてください。',
+        + 'インターネットに接続できているかを確かめてください。',
     }
   }
 

@@ -524,34 +524,37 @@ describe('AppRun 専有型: 公開が途中で止まったとき、いま発行�
 // 鍵の発行はさくらへの要求（認証情報の復号とアダプタの接続を含む）で数秒止まることがあり、
 // 片づけも同じ。専有型の公開は各段の頭で1回ずつ進捗を出す作りなので、ここだけ無言にしない。
 
-describe('AppRun 専有型: 鍵の用意と片づけを画面に伝える', () => {
-  it('★ 鍵を用意する前と、古い鍵を片づける前に、進捗を出す', async () => {
+describe('AppRun 専有型: アクセスキーの用意と削除を画面に伝える', () => {
+  it('★ アクセスキーを用意する前と、古いアクセスキーを削除する前に、進捗を出す', async () => {
     setupProject()
     h.permissions = [{ id: 'perm-old-dedicated', displayName: 'koto-myapp_apprun-dedicated' }]
     await runPublish()
 
-    expect(progressMsgs).toContain('🔑 保存場所の鍵を用意しています…')
-    expect(progressMsgs).toContain('🧹 保存場所の古い鍵を片づけています…')
-    // 鍵の用意は「イメージの組み立て」より前（渡せないと分かったら push の前に止める）
-    expect(progressMsgs.indexOf('🔑 保存場所の鍵を用意しています…'))
-      .toBeLessThan(progressMsgs.indexOf('🧹 保存場所の古い鍵を片づけています…'))
+    expect(progressMsgs).toContain('🔑 保存場所のアクセスキーを用意しています…')
+    expect(progressMsgs).toContain('🧹 保存場所の古いアクセスキーを削除しています…')
+    // 0.6.21（作者の決定 2026-10-01）: 「鍵」は「アクセスキー」、「片づける」は「削除」に揃えた。直す前の言い方は戻さない
+    expect(progressMsgs.join('\n')).not.toContain('保存場所の鍵')
+    expect(progressMsgs.join('\n')).not.toContain('古い鍵')
+    // アクセスキーの用意は「イメージのビルド」より前（渡せないと分かったら push の前に止める）
+    expect(progressMsgs.indexOf('🔑 保存場所のアクセスキーを用意しています…'))
+      .toBeLessThan(progressMsgs.indexOf('🧹 保存場所の古いアクセスキーを削除しています…'))
   })
 
-  it('保存場所を使っていないときは、鍵の話を出さない', async () => {
+  it('保存場所を使っていないときは、アクセスキーの話を出さない', async () => {
     setupProject({ storage: false })
     await runPublish()
 
-    expect(progressMsgs).not.toContain('🔑 保存場所の鍵を用意しています…')
-    expect(progressMsgs).not.toContain('🧹 保存場所の古い鍵を片づけています…')
+    expect(progressMsgs).not.toContain('🔑 保存場所のアクセスキーを用意しています…')
+    expect(progressMsgs).not.toContain('🧹 保存場所の古いアクセスキーを削除しています…')
   })
 
-  it('アプリが応答していないときは、片づけの進捗も出ない（そもそも片づけない）', async () => {
+  it('アプリが応答していないときは、削除の進捗も出ない（そもそも削除しない）', async () => {
     setupProject()
     h.probeStatus = 503
     await runPublish()
 
-    expect(progressMsgs).toContain('🔑 保存場所の鍵を用意しています…')
-    expect(progressMsgs).not.toContain('🧹 保存場所の古い鍵を片づけています…')
+    expect(progressMsgs).toContain('🔑 保存場所のアクセスキーを用意しています…')
+    expect(progressMsgs).not.toContain('🧹 保存場所の古いアクセスキーを削除しています…')
   })
 })
 

@@ -456,7 +456,7 @@ export async function stageAndTar(
   if (!r.ok) {
     // 失敗時はこの tmp を片付けてから throw（呼び出し側へは tmp パスを返さない）。
     try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
-    throw new Error(`ファイル層の作成に失敗しました: ${summarizeStderr(r.stderr)}`)
+    throw new Error(`イメージのレイヤー（公開するファイル）の作成に失敗しました: ${summarizeStderr(r.stderr)}`)
   }
   return layer
 }

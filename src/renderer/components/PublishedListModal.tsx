@@ -9,6 +9,11 @@ import { buildPublishedIndex, groupPublishedByTarget, type PublishedEntry, type 
 import { teardownSupport, manualTeardownGuide, teardownScopeNote, teardownDataNoteForAll } from '../../shared/teardownSupport'
 import { registryDeleteHelp, registryDeleteLabel, registryDeleteDefault, adoptedRegistryNote, registryUnknownNotice, teardownRemainingWarnings, urlChangesOnTeardownNotice } from '../../shared/cloudCost'
 import { getHanamiiToken } from './CredentialsModal'
+// 専有型の 🗑 破棄は、専有型タブの手順6と同じ「すべて削除」の流れ（2026-10-08・作者の決定）。流れ・確認の文・進み具合・結果は
+// 手順6と同じ部品（dedicatedTeardownFlow.ts・DedicatedTeardownView.tsx）。この一覧は押せる場所と、行・結果の置き場だけを持つ。
+import DedicatedTeardownRow from './DedicatedTeardownRow'
+import { DedicatedTeardownResultView } from './DedicatedTeardownView'
+import type { DedicatedTeardownOutcome } from '../hooks/useDedicatedTeardown'
 
 // 「📡 公開したもの一覧」モーダル（表示メニューから開く・2026-07-31 ユーザー要望）。
 //
@@ -22,6 +27,12 @@ import { getHanamiiToken } from './CredentialsModal'
  * URL は複製せず、唯一の定義 PUBLISH_TARGET_CONSOLE（publishStatus.ts）を使う（掟10）。
  * Record<PublishTargetKind, string> なので、種類を足したときの足し忘れは tsc が検知する。
  */
+/**
+ * 専有型の削除で、アプリ・ロードバランサ・オートスケーリンググループ・クラスタは消えたが、保存場所だけが片づかなかったとき。
+ * アプリが消えた時点で公開の記録（＝この一覧の行）は main が外すので、行はもう無い。押し直せる場所（手順6）を教える。
+ */
+const LIST_STORAGE_RETRY_HINT = '保存場所だけが残った場合、この行は一覧から消えます。もう一度削除するには、下の「このプロジェクトを開く」から専有型タブの手順6「すべて削除する」を押してください（残った保存場所だけを削除します）。'
+
 const CONSOLE_LABEL: Record<PublishTargetKind, string> = {
   hanamii: 'HANAMII の管理画面',
   'sakura-apprun': 'さくらのクラウド コントロールパネル',
@@ -45,6 +56,11 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
   const [busyKey, setBusyKey] = useState<string | null>(null)
   /** 破棄の結果（成功・失敗とも画面に残す）。 */
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
+  /**
+   * 専有型の 🗑（＝手順6と同じ「すべて削除」）の結果。**行の外**（一覧の上）に出す——削除が成功すると main が公開の記録を消し、
+   * 行が一覧から消えるため、結果を行に持たせると見えなくなる。閉じて開き直したときに記録から読み戻した結果も、ここに入る。
+   */
+  const [dedicatedOutcome, setDedicatedOutcome] = useState<{ entry: PublishedEntry; outcome: DedicatedTeardownOutcome } | null>(null)
   /** AppRun の破棄でコンテナレジストリも消すか（既定 true＝月額課金を止める側）。 */
   const [deleteRegistry, setDeleteRegistry] = useState(true)
   /**
@@ -75,6 +91,12 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
       setConfirmPlacements(all.map(p => ({ bucket: p.bucket, prefix: p.prefix, shared: p.shared })))
     } catch { /* 読めなくても破棄はできる（消えるものが増えるわけではない） */ }
   }
+
+  /**
+   * 一覧からそのプロジェクトを開く。**行の「プロジェクトを開く」も、結果欄の「このプロジェクトを開く」も、この1つの処理**
+   * （App.tsx が currentDir を切り替え、この一覧は閉じる）。
+   */
+  const openProject = (dir: string) => { onOpenProject(dir); onClose() }
 
   /** 記録だけを片づける確認中の行（**実体は消えない**ので、必ず1枚挟む）。 */
   const [forgetting, setForgetting] = useState<string | null>(null)
@@ -132,8 +154,10 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
   }, [])
 
   // ── 一覧から破棄する（2026-08-09 Ryosuke の要望）──────────────────────
-  // これまでは「プロジェクトを開く → ③公開 → 該当パネル → 破棄」と辿る必要があり、
+  // これまでは「プロジェクトを開く → 【公開】 → 該当パネル → 破棄」と辿る必要があり、
   // プロジェクトを消したあとは辿りようが無かった。ここから直接止められるようにする。
+  // **専有型はここを通らない**（2026-10-08）。専有型の行は DedicatedTeardownRow が、専有型タブの手順6と同じ流れで
+  // 確認 → 削除 → 進み具合 → 結果までを行う（アプリだけを消す口は廃止した）。ここは共用型 AppRun と HANAMII。
   const runTeardown = async (e: PublishedEntry) => {
     const key = `${e.dir}-${e.target}`
     setConfirm(null); setBusyKey(key); setResult(null)
@@ -153,9 +177,9 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
         const effectiveDeleteRegistry = !!e.registryName && deleteRegistry
         r = await window.electronAPI.cloud.teardown(e.dir, { confirmed: true, deleteRegistry: effectiveDeleteRegistry })
         if (r.ok) {
-          // レジストリを残したなら、結果でも「課金は続く」と念を押す（③公開の破棄と同じ扱い）。
+          // レジストリを残したなら、結果でも「課金は続く」と念を押す（【公開】の破棄と同じ扱い）。
           // 保存場所は破棄しても残ることがある（3段構え）。残ったなら課金も続く
-          // 警告は、選択ではなく main が返した事実から作る（③公開の破棄の結果・処理の記録と同じ関数・2026-09-30 検分の指摘6）
+          // 警告は、選択ではなく main が返した事実から作る（【公開】の破棄の結果・処理の記録と同じ関数・2026-09-30 検分の指摘6）
           const warn = teardownRemainingWarnings(r).join('\n')
           if (warn) {
             try { await clearPublishRecord(e.dir, e.target) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ }
@@ -163,42 +187,6 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
             await reload()
             return
           }
-        }
-      } else if (e.target === 'sakura-apprun-dedicated') {
-        // 専有型（D-3→D-4・2026-09-15）: アプリ（全バージョン）**だけ**を消す口（main の
-        // teardownFlow(..., { appOnly: true })＝IPC apprunDedicated:teardownApp）。上の確認画面が
-        // 約束した「アプリ（全バージョン）だけ。クラスタ・LB は専有型タブの⑥で」（teardownScopeNote）と一致させる。
-        // ⚠️ 共用型の cloud.teardown に相乗りさせない（共用型のアプリ＋コンテナレジストリを消す口で、
-        // 専有型のアプリには効かない）。
-        // ⚠️ 専有型タブ⑥の apprunDedicated.teardown も呼ばない（記録にあるものをアプリ→LB→ASG→クラスタの
-        // 順に**全部**消す口で、この確認画面の約束と合わない）。
-        // 方式B（掟4）: キーは renderer が読んで引数で渡す。main は保存しない。
-        const auth = await window.electronAPI.cloud.loadKey()
-        if (!auth || !auth.token || !auth.secret) {
-          setResult({ ok: false, text: 'さくらのクラウドの API キーが未登録です。「認証情報」で登録してから、もう一度お試しください。' })
-          return
-        }
-        // confirmed:true は上の確認オーバーレイ（🗑 理解した上で破棄する）を通った印（'sakura-apprun' と同じ）。
-        r = await window.electronAPI.apprunDedicated.teardownApp(e.dir, auth, { confirmed: true })
-        // #39 と同じ: 削除は受け付けられたが消えるまで待ち切れなかった（timeout）ときは inProgress が立つ。
-        // main の文言は専有型タブ向け（「⑥をもう一度」）なので、この一覧では 🗑 の押し直しを案内する。
-        // 記録は消さない（消えたのを確かめてから消す＝押し直せば main が続きを確かめる）。
-        if (!r.ok && 'inProgress' in r && r.inProgress) {
-          setResult({ ok: false, text: 'アプリの削除を受け付けましたが、まだ削除中です。しばらくしてから、もう一度 🗑 を押してください（消えたのを確かめるまで記録は残します）。' })
-          return
-        }
-        // レジストリ（イメージ）はこの口では消さない（専有型の記録にレジストリ名が無い・publishedIndex.ts）。
-        // 残っていれば課金が続くので、成功時の文にその旨を添える（共通の後段では『破棄しました。』だけ）。
-        if (r.ok) {
-          try { await clearPublishRecord(e.dir, e.target) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ }
-          setResult({
-            ok: true,
-            text: `${e.projectName}（${e.label}）を破棄しました。\n`
-              + 'クラスタ・ロードバランサと、コンテナレジストリのイメージは残っています（消すまで課金が続きます）。'
-              + 'クラスタごと不要なら、「プロジェクトを開く」→ 専有型タブの⑥で破棄してください。',
-          })
-          await reload()
-          return
         }
       } else if (e.target === 'hanamii') {
         if (!e.hanamiiProjectId) {
@@ -223,14 +211,14 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
         // 作られない）。専有型の「まだ削除中」の枝（すぐ上）と同じ作法に揃える——
         // **消えたのを確かめるまで記録は残す。** main 側も、2度目の破棄で HANAMII が 404
         //（もう無い）を返したら保存場所の片づけだけを続けるようにしてある。
-        // 片づけを諦めたときは、この行の「記録を片づける」で一覧から消せる。
+        // 片づけを諦めたときは、この行の「一覧から削除」で一覧から消せる。
         if (!r.ok && r.appDeleted) {
           setResult({
             ok: false,
             text: `${e.projectName}（${e.label}）の HANAMII のプロジェクトは削除しました。\n`
-              + `ただし、保存場所は片づけられませんでした（消すまで月額が続きます）: ${r.message ?? '原因不明'}`
+              + `ただし、保存場所の削除は完了しませんでした（消すまで月額が続きます）: ${r.message ?? '原因不明'}`
               + ((r.executed ?? []).length > 0 ? `\n${(r.executed ?? []).join('\n')}` : '')
-              + '\n片づけ残りがあるので、この一覧には記録を残しています（🗑 を押し直すと、保存場所の片づけだけをやり直します）。',
+              + '\n削除できなかったものがあるため、この一覧には記録を残しています（🗑 を押し直すと、保存場所の削除だけをやり直します）。',
           })
           await reload()
           return
@@ -269,6 +257,73 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
 
   const total = groups?.reduce((n, g) => n + g.entries.length, 0) ?? 0
 
+  /**
+   * 一覧の1行。**行の見た目はここだけが持つ**（共用型・HANAMII・専有型で同じ）。違うのは 🗑 のボタンと、行の下に出すもの
+   * （専有型の削除中の進み具合）だけ——それは呼び出し側が渡す。
+   * `rowBusy` はこの行の削除が走っているか（専有型だけ）。走っている間は「一覧から削除」も押せない——削除の最中に公開の記録だけを
+   * 消すと、途中で止まったとき 🗑 で押し直せなくなり、行が消えたあとは一覧の実行中の印も戻らない。
+   */
+  const renderRow = (e: PublishedEntry, teardownButton: React.ReactNode, below: React.ReactNode, rowBusy = false) => (
+    <div className="border-t border-line pt-1.5 first:border-t-0 first:pt-0 space-y-1.5">
+      <div className="flex items-center gap-2 text-xs">
+        <div className="min-w-0 flex-1">
+          <div className="text-ink truncate" title={e.dir}>{e.projectName}</div>
+          <div className="text-ink-muted truncate">
+            {e.dateUnknown ? '公開済み（日時不明）' : `${formatPublishedAt(e.publishedAt) ?? ''} 公開`}
+            {e.url ? <span className="ml-1.5 select-text">{e.url}</span> : null}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 flex-none">
+          {e.url && (
+            <>
+              <a
+                href={e.url}
+                className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura whitespace-nowrap"
+                title={e.url}
+              >サイトを開く ↗</a>
+              <CopyButton text={e.url} title="公開URLをコピー" />
+            </>
+          )}
+          <button
+            onClick={() => openProject(e.dir)}
+            className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura whitespace-nowrap"
+            title={e.dir}
+          >プロジェクトを開く</button>
+          {/* ここから直接止められるようにする（2026-08-09 Ryosuke の要望）。 */}
+          {teardownButton}
+          {/* ── 記録だけを片づける（2026-08-15 Ryosuke 指摘）──────────────
+              キーを失くした・向こうで消した等で**破棄できない**ことがある。
+              そのとき記録だけが残り続け、この一覧に幽霊が並ぶ。
+              **実体は消えない**ので、押す前にそう伝える。 */}
+          {forgetting === `${e.dir}-${e.target}` ? (
+            <>
+              <button
+                onClick={async () => {
+                  try { await clearPublishRecord(e.dir, e.target) } finally { setForgetting(null); await reload() }
+                }}
+                disabled={rowBusy}
+                className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 disabled:opacity-40 whitespace-nowrap"
+                title="この一覧から消すだけです。公開したもの自体は消えません"
+              >一覧から削除（公開したものは残ります）</button>
+              <button
+                onClick={() => setForgetting(null)}
+                className="text-[11px] text-ink-muted hover:text-ink whitespace-nowrap"
+              >やめる</button>
+            </>
+          ) : (
+            <button
+              onClick={() => setForgetting(`${e.dir}-${e.target}`)}
+              disabled={rowBusy}
+              className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura disabled:opacity-40 whitespace-nowrap"
+              title="記録だけを消します。公開したもの自体は消えません（先に「破棄」してください）"
+            >一覧から削除</button>
+          )}
+        </div>
+      </div>
+      {below}
+    </div>
+  )
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <div
@@ -306,7 +361,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
             {!inventory && !checking && (
               <p className="text-[11px] text-ink-muted leading-relaxed">
                 この一覧（上）は Koto の記録です。<b className="text-ink">記録に無いものは出ません。</b>
-                別のパソコンで作ったものや、手で作ったものが残っていると、気づかないまま費用がかかり続けます。
+                別のパソコンで作ったものや、コントロールパネルから手動で作ったものが残っていると、気づかないまま費用がかかり続けます。
               </p>
             )}
             {inventory && !inventory.ok && (
@@ -345,7 +400,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                           {r.project
                             ? <>プロジェクト『{r.project}』／{costNote(r)}</>
                             : <span className="text-brand-yellow">
-                                このパソコンの Koto には心当たりがありません（{costNote(r)}）。
+                                このパソコンの Koto の記録にありません（{costNote(r)}）。
                                 心当たりが無ければ、コントロールパネルで削除できます
                               </span>}
                         </span>
@@ -368,6 +423,18 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
             </div>
           )}
 
+          {/* 専有型の 🗑（＝手順6と同じ「すべて削除」）の結果。手順6の結果欄と同じ部品（2026-10-08）。行が消えても残る。 */}
+          {dedicatedOutcome && (
+            <div className="rounded-xl border border-line bg-surface p-4 space-y-1.5 text-xs leading-relaxed" data-dedicated-outcome>
+              <p className="font-semibold text-ink">{dedicatedOutcome.entry.projectName}（{dedicatedOutcome.entry.label}）</p>
+              <DedicatedTeardownResultView
+                result={dedicatedOutcome.outcome.result} notes={dedicatedOutcome.outcome.notes} retryHint="この一覧の 🗑 破棄"
+                storageRetryHint={LIST_STORAGE_RETRY_HINT}
+                storageRetryAction={{ label: 'このプロジェクトを開く', onClick: () => openProject(dedicatedOutcome.entry.dir) }}
+              />
+            </div>
+          )}
+
           {groups === null && <div className="text-xs text-ink-muted">読み込んでいます…</div>}
 
           {error && (
@@ -378,7 +445,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
 
           {groups !== null && total === 0 && !error && (
             <div className="rounded-xl border border-line bg-surface p-4 text-xs text-ink-secondary leading-relaxed">
-              公開の記録がまだありません。③公開から公開すると、ここに記録が残ります。
+              公開の記録がまだありません。【公開】から公開すると、ここに記録が残ります。
               <div className="mt-1 text-ink-muted">
                 ※ 別のパソコンや各サービスの管理画面から公開したものは、Koto には記録が残らないため表示されません。
               </div>
@@ -404,70 +471,45 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 <p className="text-[11px] text-ink-muted leading-relaxed mb-2">ℹ️ {manualTeardownGuide(g.target)}</p>
               )}
               <div className="space-y-1.5">
-                {g.entries.map((e, i) => (
-                  <div key={`${e.dir}-${e.target}-${i}`} className="flex items-center gap-2 text-xs border-t border-line pt-1.5 first:border-t-0 first:pt-0">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-ink truncate" title={e.dir}>{e.projectName}</div>
-                      <div className="text-ink-muted truncate">
-                        {e.dateUnknown ? '公開済み（日時不明）' : `${formatPublishedAt(e.publishedAt) ?? ''} 公開`}
-                        {e.url ? <span className="ml-1.5 select-text">{e.url}</span> : null}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1 flex-none">
-                      {e.url && (
-                        <>
-                          <a
-                            href={e.url}
-                            className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura whitespace-nowrap"
-                            title={e.url}
-                          >サイトを開く ↗</a>
-                          <CopyButton text={e.url} title="公開URLをコピー" />
-                        </>
-                      )}
-                      <button
-                        onClick={() => { onOpenProject(e.dir); onClose() }}
-                        className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura whitespace-nowrap"
-                        title={e.dir}
-                      >プロジェクトを開く</button>
-                      {/* ここから直接止められるようにする（2026-08-09 Ryosuke の要望）。
-                          破棄の口が無い公開先には出さず、下の案内に回す。押しても何も起きない
-                          ボタンを並べない（判定は shared/teardownSupport.ts に一元化）。 */}
-                      {teardownSupport(e.target) === 'supported' && (
-                        <button
-                          onClick={() => { void askConfirm(e) }}
-                          disabled={busyKey !== null}
-                          className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 disabled:opacity-40 whitespace-nowrap"
-                          title="公開を止めて、作られたものを削除します"
-                        >{busyKey === `${e.dir}-${e.target}` ? '破棄中…' : '🗑 破棄'}</button>
-                      )}
-                      {/* ── 記録だけを片づける（2026-08-15 Ryosuke 指摘）──────────────
-                          キーを失くした・向こうで消した等で**破棄できない**ことがある。
-                          そのとき記録だけが残り続け、この一覧に幽霊が並ぶ。
-                          **実体は消えない**ので、押す前にそう伝える。 */}
-                      {forgetting === `${e.dir}-${e.target}` ? (
-                        <>
-                          <button
-                            onClick={async () => {
-                              try { await clearPublishRecord(e.dir, e.target) } finally { setForgetting(null); await reload() }
-                            }}
-                            className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 whitespace-nowrap"
-                            title="この一覧から消すだけです。公開したもの自体は消えません"
-                          >記録を片づける（公開したものは残ります）</button>
-                          <button
-                            onClick={() => setForgetting(null)}
-                            className="text-[11px] text-ink-muted hover:text-ink whitespace-nowrap"
-                          >やめる</button>
-                        </>
-                      ) : (
-                        <button
-                          onClick={() => setForgetting(`${e.dir}-${e.target}`)}
-                          className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura whitespace-nowrap"
-                          title="記録だけを消します。公開したもの自体は消えません（先に「破棄」してください）"
-                        >記録を片づける</button>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                {g.entries.map((e, i) => {
+                  const rowKey = `${e.dir}-${e.target}`
+                  // 専有型の行は状態を持つ部品（フック状態・開いている確認ダイアログ）なので、**添字を含めない**キーにする。
+                  // 添字入りだと、上の行が消えた（別の削除の成功後の再読み込み・「一覧から削除」）とき下の行の添字が変わって
+                  // 作り直され、確認ダイアログが消え、記録の結果を二度出して直前の結果欄を上書きする（2026-10-08 検分）。
+                  // 同じ dir・target の行は一覧に1つしか出ない。ほかの行は状態を持たないので従来のまま。
+                  const key = e.target === 'sakura-apprun-dedicated' ? rowKey : `${rowKey}-${i}`
+                  // 破棄の口が無い公開先には出さず、下の案内に回す。押しても何も起きないボタンを並べない
+                  // （判定は shared/teardownSupport.ts に一元化）。
+                  const supported = teardownSupport(e.target) === 'supported'
+                  // 専有型は DedicatedTeardownRow（専有型タブの手順6と同じ「すべて削除」）。ほかは従来どおり確認 → runTeardown。
+                  if (e.target === 'sakura-apprun-dedicated' && supported) {
+                    return (
+                      <DedicatedTeardownRow
+                        key={key}
+                        entry={e}
+                        blocked={busyKey !== null && busyKey !== rowKey}
+                        onBusyChange={busy => {
+                          setBusyKey(prev => (busy ? rowKey : (prev === rowKey ? null : prev)))
+                          // 新しい削除が始まった（あるいは走っているのを見つけた）ら、前の結果は片づける。
+                          if (busy) { setResult(null); setDedicatedOutcome(null) }
+                        }}
+                        onOutcome={(entry, outcome) => { setResult(null); setDedicatedOutcome({ entry, outcome }) }}
+                        onFinished={() => reload()}
+                        render={({ button, below, busy }) => renderRow(e, button, below, busy)}
+                      />
+                    )
+                  }
+                  const genericButton = supported ? (
+                    <button
+                      onClick={() => { void askConfirm(e) }}
+                      disabled={busyKey !== null}
+                      className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 disabled:opacity-40 whitespace-nowrap"
+                      title="公開を止めて、作られたものを削除します"
+                    >{busyKey === rowKey ? '破棄中…' : '🗑 破棄'}</button>
+                  ) : null
+                  // Fragment（行の div を一覧の直下に置く。first: の枠線の効き方が、行ごとに変わらないように）
+                  return <React.Fragment key={key}>{renderRow(e, genericButton, null)}</React.Fragment>
+                })}
               </div>
             </div>
           ))}
@@ -477,7 +519,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
           <button onClick={onClose} className="text-xs border border-line rounded-lg px-3 py-1.5 text-ink-secondary hover:text-ink hover:border-sakura">閉じる</button>
         </div>
 
-        {/* 破棄の確認（破壊操作は必ず1枚挟む・掟5）。③公開の破棄画面と同じことを伝える。 */}
+        {/* 破棄の確認（破壊操作は必ず1枚挟む・掟5）。【公開】の破棄画面と同じことを伝える。 */}
         {confirm && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 rounded-2xl" onClick={() => setConfirm(null)}>
             <div className="bg-base border border-brand-red/70 rounded-xl shadow-xl w-[26rem] max-w-[88vw] p-4 space-y-2" onClick={ev => ev.stopPropagation()}>
@@ -486,11 +528,10 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 <b className="text-ink">{confirm.projectName}</b>（{confirm.label}）<br />
                 {teardownScopeNote(confirm.target)}この操作は元に戻せません。
               </p>
-              {/* 2026-09-24 検分の指摘7: 専有型の「🗑 破棄」は apprunDedicated:teardownApp（appOnly）＝
-                  **アプリだけ**を消し、保存場所へは1件も要求を出さない。それなのに
-                  「保存場所のデータも削除します…月額を止めます」と出していた（すぐ上の
-                  teardownScopeNote は『アプリだけ』と言っており、同じダイアログの中で矛盾していた）。
-                  出し分けの判断は shared/teardownSupport.ts の純関数に置き、⑥の確認も同じ関数を通す。 */}
+              {/* 2026-09-24 検分の指摘7: 確認が言う「保存場所のデータも削除します」と、実物がすることを揃える。
+                  出し分けの判断は shared/teardownSupport.ts の純関数に置く。
+                  この確認は共用型 AppRun と HANAMII の 🗑 の確認。**専有型の 🗑 は、この確認を通らず**、
+                  専有型タブの手順6と同じ確認（ConfirmModal・buildDedicatedTeardownConfirm）を出す（2026-10-08）。 */}
               {/* 2026-09-25 検分の指摘5: **全件（placements）で組み立てる。** 先頭1件だけで
                   組み立てると、名前が一度も出なかった保存場所とデータまで消える。 */}
               {teardownDataNoteForAll({ target: confirm.target, scope: 'list', placements: confirmPlacements }) && (
@@ -502,11 +543,11 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 🔗 {urlChangesOnTeardownNotice()}
               </p>
 
-              {/* AppRun はコンテナレジストリの月額課金が絡むので、③公開の破棄画面と同じ情報を出す。
+              {/* AppRun はコンテナレジストリの月額課金が絡むので、【公開】の破棄画面と同じ情報を出す。
                   **名前を見せることが安全装置**（v0.2.94: 心当たりのない名前ならやめられる）なので、
                   置き場所が変わっても同じ判断ができるようにする。記録が無ければ削除できない。
-                  専有型（'sakura-apprun-dedicated'）は**意図して対象外**（共用型のみ）: 専有型の記録に
-                  レジストリがあるかは未確認のため、D-4 で実物（publishedIndex の記録）を見てから決める。 */}
+                  専有型（'sakura-apprun-dedicated'）はこの確認を通らない（上の説明。専有型の削除の確認は
+                  手順6と同じ1つの関数が作る）ので、ここに専有型の分岐は要らない。 */}
               {confirm.target === 'sakura-apprun' && (
                 confirm.registryName ? (
                   <div className="rounded-lg border border-line bg-surface p-2.5 space-y-1">
@@ -519,7 +560,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                       />
                       <span className="text-xs text-ink font-medium">{registryDeleteLabel(confirm.registryName)}</span>
                     </label>
-                    {/* 借り物のときは、既定を外した理由をその場で言う（③公開の破棄画面と同じ） */}
+                    {/* 借り物のときは、既定を外した理由をその場で言う（【公開】の破棄画面と同じ） */}
                     {confirm.registryAdopted && (
                       <p className="text-[11px] text-brand-red leading-relaxed pl-5 select-text">⚠️ {adoptedRegistryNote(confirm.registryName)}</p>
                     )}

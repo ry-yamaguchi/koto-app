@@ -11,7 +11,7 @@ export interface TargetProfile {
   summary: string
   recommended: string[]
   donts: string[]
-  // IDE の ③公開 から自動公開（ワンクリックでのアップロード／デプロイ）に対応しているか
+  // IDE の【公開】から自動公開（ワンクリックでのアップロード／デプロイ）に対応しているか
   autoPublish: boolean
   // 公式サービスサイト（トップに近い安定URL）。UIでは補助的な参考リンクとしてのみ使う。
   serviceUrl?: string
@@ -81,7 +81,7 @@ export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
     id: 'sakura-apprun-dedicated',
     label: 'さくらのAppRun 専有型',
     summary:
-      '仮想サーバレベルで専有するAppRun。独自ドメイン・プライベートネットワーク接続・TCPなど共用型より自由度が高い一方、常時課金（最小構成でも月2万円超）でクラスタ／ASG／アプリ／バージョンの4階層を自分で構成する上級者向けサービス。IDEからクラスタの作成・破棄はできるが、アプリケーションの公開（独自ドメインでの利用）にはまだ対応していない。',
+      '仮想サーバレベルで専有するAppRun。独自ドメイン・プライベートネットワーク接続・TCPなど共用型より自由度が高い一方、常時課金（最小構成でも月2万円超）でクラスタ／ASG／アプリ／バージョンの4階層を自分で構成する上級者向けサービス。IDEからクラスタの作成・削除はできるが、アプリケーションの公開（独自ドメインでの利用）にはまだ対応していない。',
     recommended: [
       '独自ドメインや高可用性が必要な中〜大規模なシステム向け',
       '常時課金（動いていなくても課金される）であることを理解したうえで選ぶ',
@@ -165,7 +165,7 @@ export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
     ],
     donts: [
       'ポートをlistenする常駐サーバは動かない',
-      'データの保存をブラウザ側のコードから直接呼ばない（Nodeの部品なので動かない）',
+      'データの保存をブラウザ側のコードから直接呼ばない（Node.js 用のモジュールなので動かない）',
       'アプリ自体を国内で動かしたい要件では他の公開先を選ぶ',
     ],
     autoPublish: true,
@@ -193,7 +193,7 @@ export function getTargetProfile(target?: string): TargetProfile {
   return TARGET_PROFILES.local
 }
 
-/** その公開先が ③公開 からの自動公開に対応しているか。 */
+/** その公開先が【公開】からの自動公開に対応しているか。 */
 export function isAutoPublishTarget(target?: string): boolean {
   return getTargetProfile(target).autoPublish
 }

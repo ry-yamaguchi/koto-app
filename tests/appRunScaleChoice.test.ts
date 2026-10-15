@@ -65,7 +65,8 @@ const panel = readFileSync(join(__dirname, '..', 'src/renderer/components/AppRun
 describe('AppRunPanel.tsx: ②公開の設定に、最小スケールを選べる2択が出ている', () => {
   it('2つの選択肢の文言がある', () => {
     expect(panel).toContain('最初のアクセスが遅くてもよい（既定・安い）')
-    expect(panel).toContain('すぐ返す（常時動かす）')
+    expect(panel).toContain('常時起動（すぐ応答する）')
+    expect(panel).not.toContain('すぐ返す（常時動かす）') // 0.6.21: 直す前の言い方は戻さない
   })
 
   it('onSetScale は cold/warm の2値のみで呼ばれる（保存する値は今までどおり2値）', () => {

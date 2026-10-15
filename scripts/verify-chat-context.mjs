@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// チャットモードのAIが「存在しないUI（② 試す等）を案内せず、IDEモードへ誘導するか」の検証。
+// チャットモードのAIが「存在しないUI（【試す】等）を案内せず、IDEモードへ誘導するか」の検証。
 // アプリ本体と同じ CHAT_CONTEXT（src/renderer/aiContext.ts）を実APIに送って応答を判定する。
 //
 // 使い方:
@@ -65,7 +65,7 @@ const ok = (label, cond, detail = '') => {
 ok('CHAT_CONTEXT が読み込める', typeof CHAT_CONTEXT === 'string' && CHAT_CONTEXT.length > 100)
 ok('CHAT_CONTEXT にUI非存在の明示がある', CHAT_CONTEXT.includes('ありません'))
 ok('CHAT_CONTEXT にIDEモードへの誘導指示がある', CHAT_CONTEXT.includes('IDE モード') || CHAT_CONTEXT.includes('IDEモード'))
-ok('IDE_CONTEXT は従来どおり【② 試す】へ誘導する', IDE_CONTEXT.includes('② 試す'))
+ok('IDE_CONTEXT は従来どおり【試す】へ誘導する', IDE_CONTEXT.includes('【試す】'))
 
 // 実APIチェック：問題が起きたのと同じシナリオを再現
 const key = await getKey()
@@ -80,8 +80,8 @@ try {
   )
   console.log('--- AIの応答 ---\n' + reply + '\n----------------\n')
   ok('応答がIDEモードへ誘導している', /IDE\s*モード|IDEに切り替え|IDE に切り替え/.test(reply))
-  ok('「② 試す」ボタンの操作を指示していない', !/【?②\s*試す】?(ボタン)?で/.test(reply))
-  ok('「③ 公開」ボタンの操作を指示していない', !/【?③\s*公開】?(ボタン)?で/.test(reply) || /IDEモードでは/.test(reply))
+  ok('「試す」ボタンの操作を指示していない', !/【?(?:②\s*)?試す】?(ボタン)?で/.test(reply))
+  ok('「公開」ボタンの操作を指示していない', !/【?(?:③\s*)?公開】?(ボタン)?で/.test(reply) || /IDEモードでは/.test(reply))
 } catch (e) {
   ok('実APIでの応答確認', false, e.message)
 }

@@ -149,7 +149,7 @@ export async function scanHostKey(host: string, port: number): Promise<{ ok: boo
   }
   const fp = await runProcess('ssh-keygen', ['-lf', '/dev/stdin'], { input: `${line}\n`, timeoutMs: 5000 })
   const m = /(SHA256:[A-Za-z0-9+/]+)/.exec(fp.stdout)
-  if (!m) return { ok: false, message: 'ホスト鍵の指紋を計算できませんでした' }
+  if (!m) return { ok: false, message: 'ホスト鍵のフィンガープリントを計算できませんでした' }
   return { ok: true, fingerprint: m[1], keyLine: line }
 }
 
@@ -185,7 +185,7 @@ export async function runSsh(opts: RunSshOpts): Promise<{ ok: boolean; stdout?: 
   if (!isValidPort(port)) return { ok: false, message: 'ポート番号が不正です（1〜65535）' }
   if (!isValidUsername(user)) return { ok: false, message: 'ユーザー名の形式が不正です' }
   if (!privateKey) return { ok: false, message: '秘密鍵が指定されていません' }
-  if (!knownHostFingerprint) return { ok: false, message: 'ホスト鍵の指紋が指定されていません（先にホスト鍵を確認してください）' }
+  if (!knownHostFingerprint) return { ok: false, message: 'ホスト鍵のフィンガープリントが指定されていません（先にホスト鍵を確認してください）' }
 
   const scan = await scanHostKey(host, port)
   if (!scan.ok || !scan.keyLine || !scan.fingerprint) {
@@ -194,7 +194,7 @@ export async function runSsh(opts: RunSshOpts): Promise<{ ok: boolean; stdout?: 
   if (scan.fingerprint !== knownHostFingerprint) {
     return {
       ok: false,
-      message: `⚠️ ホスト鍵の指紋が記録済みの値と一致しません（記録済み: ${knownHostFingerprint} / 今回: ${scan.fingerprint}）。サーバが再構築された可能性のほか、通信が乗っ取られている（中間者攻撃）可能性もあるため、心当たりがなければ接続を中断してください。`,
+      message: `⚠️ ホスト鍵のフィンガープリントが記録済みの値と一致しません（記録済み: ${knownHostFingerprint} / 今回: ${scan.fingerprint}）。サーバが再構築された可能性のほか、通信が乗っ取られている（中間者攻撃）可能性もあるため、心当たりがなければ接続を中断してください。`,
     }
   }
 

@@ -32,10 +32,11 @@ describe('公開中の進捗が、利用者に見えるところに出る', () =
 
   it('main 側は、公開の各段を進捗として送っている', () => {
     const ipc = readFileSync(join(__dirname, '..', 'src', 'main', 'ipc', 'cloud.ts'), 'utf-8')
-    // 「イメージを組み立てています」の段は D-2a で cloud/imagePublish.ts の
-    // prepareAppImage へ切り出した（ipc/cloud.ts はそれを呼ぶだけ・文言は変えていない）。
+    // 「イメージをビルドしています」の段は D-2a で cloud/imagePublish.ts の
+    // prepareAppImage へ切り出した（ipc/cloud.ts はそれを呼ぶだけ）。0.6.21 で「組み立て」を「ビルド」に揃えた。
     const imagePublish = readFileSync(join(__dirname, '..', 'src', 'main', 'cloud', 'imagePublish.ts'), 'utf-8')
-    expect(imagePublish).toContain('イメージを組み立てています')
+    expect(imagePublish).toContain('イメージをビルドしています')
+    expect(imagePublish).not.toContain('イメージを組み立てています')
     for (const step of ['AppRun に反映しています', 'アプリが動いているか確かめています']) {
       expect(ipc).toContain(step)
     }

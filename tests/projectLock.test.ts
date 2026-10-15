@@ -118,9 +118,10 @@ describe('IPC の配線: 作成・破棄・公開のすべてが歯止めを通�
     expect(ipc).toContain("withProjectLock(projectDir, '公開'")
   })
 
-  it('★ 破棄は2か所（⑥の全部・📡のアプリだけ）とも歯止めを通る', () => {
+  it('★ 破棄は1か所（手順6も 📡 の 🗑 も同じ apprunDedicated:teardown）。その1か所が歯止めを通る。アプリだけを消す口は無い', () => {
     const hits = ipc.split("withProjectLock(projectDir, '削除'").length - 1
-    expect(hits).toBe(2)
+    expect(hits).toBe(1)
+    expect(ipc).not.toContain("ipcMain.handle('apprunDedicated:teardownApp'")
   })
 
   it('★ 断ったときは projectBusyMessage を使う（文面を書き散らさない）', () => {

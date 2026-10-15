@@ -173,8 +173,8 @@ export function gitSourceHint(detail: unknown): string | null {
   if (!gs || typeof gs !== 'object') return null
   const repo = [gs.org ?? gs.owner, gs.repo].filter(Boolean).join('/')
   const branch = gs.ref ?? gs.branch
-  const where = repo ? `${repo}${branch ? `（${branch}）` : ''}` : 'つないである リポジトリ'
-  return `これは ${where} から公開されています。Vercel には組み立てたあとのものしかないので、`
+  const where = repo ? `${repo}${branch ? `（${branch}）` : ''}` : '連携している Git リポジトリ'
+  return `これは ${where} から公開されています。Vercel にはビルド後のファイルしかないので、`
     + `**元のファイルはそちらから取ってください**（そのほうが、直せる形のまま手に入ります）。`
 }
 
@@ -202,7 +202,7 @@ export function vercelCandidates(deployments: readonly any[]): ImportCandidate[]
         at: at ? new Date(at).toISOString() : null,
         note: [slug ? `${slug} のプロジェクト` : '', state && state !== 'READY' ? `状態: ${state}` : '']
           .filter(Boolean).join(' / '),
-        ...(state && state !== 'READY' ? { blocked: '公開が完了していないため引き取れません' } : {}),
+        ...(state && state !== 'READY' ? { blocked: '公開が完了していないため、インポートできません' } : {}),
       }
     })
 }

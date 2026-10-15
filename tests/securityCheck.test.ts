@@ -370,9 +370,12 @@ describe('セキュリティチェックの配線', () => {
   // 渡し、番号体系の無い PublishModal（公開先選択）は渡さない（現状維持）。
   // 呼び出しの形ごと一意に指す（掟10: 「どこかにある」だけでは直し忘れを捕まえられない）。
   it('公開フローの4経路すべてに 🛡 節が居る（AppRun・Vercel・HANAMII・レンタル）', () => {
-    expect(read('src/renderer/components/AppRunPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="④" />')
-    expect(read('src/renderer/components/HanamiiPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="③" />')
-    expect(read('src/renderer/components/VercelPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="②" />')
+    expect(read('src/renderer/components/AppRunPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順4" />')
+    expect(read('src/renderer/components/HanamiiPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順3" />')
+    expect(read('src/renderer/components/VercelPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順2" />')
+    for (const f of ['AppRunPanel', 'HanamiiPanel', 'VercelPanel']) {
+      expect(read(`src/renderer/components/${f}.tsx`), `${f} の stepNo に丸数字が戻っている`).not.toMatch(/stepNo="[①-⑳]"/)
+    }
     // PublishModal は番号体系の無い画面のため stepNo を渡さない（現状維持）
     expect(read('src/renderer/components/PublishModal.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />')
     expect(read('src/renderer/components/PublishModal.tsx')).not.toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo=')
@@ -409,23 +412,23 @@ describe('セキュリティチェックの配線', () => {
   it('★ 確認中は「中止する」を画面に出し、受け取った中断関数を呼ぶ', () => {
     const s = read('src/renderer/components/SecurityCheckSection.tsx')
 
-    // ① 押したときの動きが、受け取った中断関数を実際に呼ぶ形であること
+    // (1) 押したときの動きが、受け取った中断関数を実際に呼ぶ形であること
     expect(s).toContain('function stop() {')
     expect(s).toContain('abortRef.current?.()')
 
-    // ② ボタンが stop に繋がっていること（別の関数へ繋ぎ替わったら落ちる）
+    // (2) ボタンが stop に繋がっていること（別の関数へ繋ぎ替わったら落ちる）
     const btn = s.indexOf('onClick={stop}')
     expect(btn).toBeGreaterThan(-1)
-    // ③ そのボタンは「確認中のときだけ」出す条件の中に居る（押せない時に出さない）
+    // (3) そのボタンは「確認中のときだけ」出す条件の中に居る（押せない時に出さない）
     const guard = s.lastIndexOf('{checking && (', btn)
     expect(guard).toBeGreaterThan(-1)
     expect(s.slice(guard, btn)).not.toContain('</button>') // 別のボタンを挟んでいない
-    // ④ 文言は素のテキスト・日本語（掟5）。利用者が「中止」と読める語であること
+    // (4) 文言は素のテキスト・日本語（掟5）。利用者が「中止」と読める語であること
     const label = s.slice(btn, s.indexOf('</button>', btn))
     expect(label).toContain('中止する')
     expect(label).toContain('中止しています…')
 
-    // ⑤ 中断関数を useState で持たない。useState は関数を「更新関数」と解釈して
+    // (5) 中断関数を useState で持たない。useState は関数を「更新関数」と解釈して
     //    **その場で呼ぶ**ので、押していないのに中止が走る（いちばん見つけにくい形）
     expect(s).toContain('const abortRef = useRef<(() => void) | null>(null)')
     expect(s).not.toContain('setAbort(abort)')
@@ -775,12 +778,13 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
     const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: [] })
     expect(m.verdict).toBe('warn')
     expect(m.report.split('\n')[0]).toBe('判定: 要確認')
-    expect(m.report).toContain('dump.sql: 公開するとデータの中身が丸見えになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください')
+    expect(m.report).toContain('dump.sql: 公開するとデータの中身を誰でも見られるようになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください')
+    expect(m.report).not.toContain('丸見え') // 0.6.21: 直す前の言い方は戻さない
   })
 
   it('複数件の dataLike は1行にまとめる', () => {
     const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql', 'backup.zip'], others: [] })
-    expect(m.report).toContain('dump.sql、backup.zip: 公開するとデータの中身が丸見えになる種類のファイルです')
+    expect(m.report).toContain('dump.sql、backup.zip: 公開するとデータの中身を誰でも見られるようになる種類のファイルです')
   })
 
   it('固定文は指摘欄の先頭（AIの指摘より前）に入る', () => {
@@ -890,7 +894,7 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
   it('AIが未実施（skip）でも、dataLike があれば機械的な理由で「要確認」にする', () => {
     const m = mergeCheckResults([], { files: 0, batches: 0, skipped: [], dataLike: ['dump.sql'], others: [] })
     expect(m.verdict).toBe('warn')
-    expect(m.report).toContain('dump.sql: 公開するとデータの中身が丸見えになる種類のファイルです')
+    expect(m.report).toContain('dump.sql: 公開するとデータの中身を誰でも見られるようになる種類のファイルです')
   })
 
   it('AIが未実施で、機械的な理由（dataLike・truncated）も無ければ、従来どおり skip のまま', () => {
@@ -911,7 +915,7 @@ describe('AIの利用量を使う場面の一覧', () => {
     // D-14（2026-09-16）: 見出しは「AIの利用量を使うところ」（「利用量を使う」は主述が合わない）
     // から「AIの利用量がかかる場面」へ直した。固定するのは**一覧が在ること**なので、新しい文言で見る。
     expect(g).toContain('AIの利用量がかかる場面')
-    for (const scene of ['AIチャット（① 作る）', '画像を読む', '最初のあいさつ', '🗂 まとめ', '🛡 簡易セキュリティチェック', '公開先を変えたときの確認']) {
+    for (const scene of ['AIチャット（作る）', '画像を読む', '最初のあいさつ', '🗂 まとめ', '🛡 簡易セキュリティチェック', '公開先を変えたときの確認']) {
       expect(g).toContain(scene)
     }
   })

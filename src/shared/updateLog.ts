@@ -30,18 +30,18 @@ export function redactSecrets(text: string): string {
   // 鍵の本体がそのまま残る（テストで実際に捕まえた）。
   // 具体的な形のものから順に落とし、いちばん粗いルールを最後に置く。
   return String(text ?? '')
-    // ① 秘密鍵は丸ごと（複数行にまたがるので最初に）
+    // (1) 秘密鍵は丸ごと（複数行にまたがるので最初に）
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '***')
-    // ② 形だけで秘密と分かるもの（前後がどうであれ落とす）
+    // (2) 形だけで秘密と分かるもの（前後がどうであれ落とす）
     .replace(/gh[pousr]_[A-Za-z0-9]{16,}/g, '***')
     .replace(/github_pat_[A-Za-z0-9_]{20,}/g, '***')
     .replace(/sk-ant-[A-Za-z0-9_-]{16,}/g, '***')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi, '$1***')
-    // ③ URL に埋め込まれた資格情報 https://user:pass@host → https://***@host
+    // (3) URL に埋め込まれた資格情報 https://user:pass@host → https://***@host
     //    `[^/\s]+` を**貪欲に**取る。パスワードに @ が入っていると（p@ssw0rd）
     //    最初の @ で切れて後半が残ってしまう（テストで実際に捕まえた）。
     .replace(/(https?:\/\/)[^/\s]+@/gi, '$1***@')
-    // ④ 名前つきのパラメータ（?token=… / "api_key": "…"）。いちばん粗いので最後
+    // (4) 名前つきのパラメータ（?token=… / "api_key": "…"）。いちばん粗いので最後
     .replace(/((?:access_|api[-_]?|auth|private[-_]?)?(?:token|key|secret|password|passwd|pwd)["'\s]*[:=]["'\s]*)([^\s"'&,}]{8,})/gi, '$1***')
 }
 

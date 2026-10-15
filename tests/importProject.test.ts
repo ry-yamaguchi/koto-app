@@ -76,7 +76,7 @@ describe('インポートの記録（.sakuraide.json）', () => {
     expect(meta.publish.targets).toBeUndefined()
   })
 
-  it('undecided: 公開先を決めない（③公開の画面で決める）', () => {
+  it('undecided: 公開先を決めない（【公開】の画面で決める）', () => {
     const meta = vercelMeta('undecided')
     expect(meta.publish).toBeUndefined()
     expect(meta.importedFrom.intent).toBe('undecided')
@@ -164,7 +164,8 @@ describe('インポートする前に見せる「このあと起きること」'
       target: 'vercel', publishDirLabel: '公開されるもの', fileCount: 1,
       publishName: 'landingtest', intent: 'undecided',
     })
-    expect(notes.some(n => n.includes('③公開の画面で決めます'))).toBe(true)
+    expect(notes.some(n => n.includes('【公開】の画面で決めます'))).toBe(true)
+    expect(notes.some(n => n.includes('③公開の画面で決めます')), '旧い丸数字の呼び方が戻っている').toBe(false)
     expect(notes.some(n => n.includes('そのまま残ります'))).toBe(true)
   })
 
@@ -179,17 +180,20 @@ describe('インポートする前に見せる「このあと起きること」'
   })
 
   // ⚠️ 知らずに公開すると**動かないものが出る**。押す前に必ず出す。
-  it('AppRun: 秘密は取り戻せないことを、鍵の名前つきで言う', () => {
+  it('AppRun: シークレット環境変数は取り戻せないことを、キーの名前つきで言う', () => {
     const notes = importPlanNotes({
       target: 'sakura-apprun', publishDirLabel: '公開されるもの',
       image: 'sample-app.sakuracr.jp/sample-app:v1', secretKeys: ['DB_PASSWORD', 'API_KEY'],
     })
-    expect(notes.some(n => n.includes('秘密の値') && n.includes('DB_PASSWORD') && n.includes('入れ直して'))).toBe(true)
+    expect(notes.some(n => n.includes('シークレット環境変数') && n.includes('DB_PASSWORD') && n.includes('入れ直して'))).toBe(true)
+    // 0.6.21（作者の決定 2026-10-01）: 「秘密の値」は「シークレット（環境変数）」に揃えた。直す前の言い方は戻さない
+    expect(notes.some(n => n.includes('秘密の値'))).toBe(false)
     expect(notes.some(n => n.includes('sample-app.sakuracr.jp/sample-app:v1'))).toBe(true)
   })
 
-  it('AppRun: 秘密が無ければ、入れ直しの話はしない', () => {
+  it('AppRun: シークレットが無ければ、入れ直しの話はしない', () => {
     const notes = importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの', secretKeys: [] })
+    expect(notes.some(n => n.includes('シークレット環境変数'))).toBe(false)
     expect(notes.some(n => n.includes('秘密の値'))).toBe(false)
   })
 
@@ -214,7 +218,8 @@ describe('インポートする前に見せる「このあと起きること」'
   it('AppRun: 目的を選ぶまでは、公開したときの話をしない', () => {
     const notes = importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの' })
     // 取り出しの事実は出す
-    expect(notes.some(n => n.includes('組み立てる前のファイルは戻りません'))).toBe(true)
+    expect(notes.some(n => n.includes('ビルド前のファイル（ソース）は戻りません'))).toBe(true)
+    expect(notes.some(n => n.includes('組み立て'))).toBe(false) // 0.6.21: 「組み立て」は「ビルド」に揃えた。直す前の言い方は戻さない
     // 結末は出さない（どちらの結末も）
     expect(notes.some(n => n.includes('アドレス（URL）が変わります'))).toBe(false)
     expect(notes.some(n => n.includes('アドレス（URL）は変わりません'))).toBe(false)
@@ -225,7 +230,7 @@ describe('インポートする前に見せる「このあと起きること」'
   // 引き継ぐと URL も月額も変わらない代わりに、**間違えたときに壊れるのは本物**になる。
   const ADOPT = {
     canAdopt: true, blocker: null, specName: 'landingtest', appName: 'landingtest',
-    reusesRegistry: true, warnings: ['⚠️ 秘密の値…', '引き継ぐと、Koto の「破棄」は…'],
+    reusesRegistry: true, warnings: ['⚠️ シークレット環境変数の値…', '引き継ぐと、Koto の「破棄」は…'],
   }
 
   it('AppRun: 引き継ぐなら、URL が変わらないことと月額が増えないことを言う', () => {
@@ -279,7 +284,8 @@ describe('インポートする前に見せる「このあと起きること」'
     const notes = importPlanNotes({
       target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'update', adopt: ADOPT,
     })
-    expect(notes.some(n => n.includes('健康診断の場所') && n.includes('そのまま引き継ぎます'))).toBe(true)
+    expect(notes.some(n => n.includes('ヘルスチェックのパス') && n.includes('そのまま引き継ぎます'))).toBe(true)
+    expect(notes.some(n => n.includes('健康診断'))).toBe(false) // 0.6.21: 直す前の言い方は戻さない
   })
 
   it('どちらでも「公開先には何も作らず、何も消さない」を言う', () => {
@@ -361,7 +367,7 @@ describe('インポートしたことを AI に伝える', () => {
     expect(c).toContain('「landingtest」が**置き換わります**')
     // AppRun の話を混ぜない
     expect(c).not.toContain('別の新しいアプリ')
-    expect(c).not.toContain('組み立てたあとの状態')
+    expect(c).not.toContain('ビルドしたあとの状態')
   })
 
   // ── 利用者の目的を決めつけない（2026-08-24 Ryosuke 指摘）───────────────
@@ -416,26 +422,29 @@ describe('インポートしたことを AI に伝える', () => {
   it('生成物は、作り直さず・元のソースの有無を確かめる、と行き先まで書く', () => {
     const c = importedContext(vercel)
     expect(c).toContain('作り直さず、必要な箇所だけ慎重に直します')
-    expect(c).toContain('組み立て前のソースはお持ちですか')
+    expect(c).toContain('ビルド前のソースはお持ちですか')
+    expect(c).not.toContain('組み立て前のソース') // 0.6.21: 直す前の言い方は戻さない
   })
 
   it('node_modules は「触るな」ではなく、どこを直せばよいかを書く', () => {
     const c = importedContext({ ...apprun })
-    expect(c).toContain('組み立て直しで消える')
+    expect(c).toContain('ビルドし直すと消える')
+    expect(c).not.toContain('組み立て直し') // 0.6.21: 直す前の言い方は戻さない
     expect(c).toContain('`package.json` と自分のソース')
   })
 
-  it('AppRun: 組み立て後であること・生成物を触らせないことを伝える', () => {
+  it('AppRun: ビルド後であること・生成物を触らせないことを伝える', () => {
     const c = importedContext(apprun)
-    expect(c).toContain('組み立てたあとの状態')
+    expect(c).toContain('ビルドしたあとの状態')
+    expect(c).not.toContain('組み立てたあとの状態') // 0.6.21: 直す前の言い方は戻さない
     expect(c).toContain('node_modules')
     expect(c).not.toContain('置き換わります')
   })
 
   // 秘密が無いことを知らないと、AI は「動かない」原因に辿り着けない。
-  it('AppRun: 秘密の値が手元に無いことを、鍵の名前つきで伝える', () => {
+  it('AppRun: シークレット環境変数の値が手元に無いことを、キーの名前つきで伝える', () => {
     const c = importedContext(apprun)
-    expect(c).toContain('DB_PASSWORD, API_KEY')
+    expect(c).toContain('シークレット環境変数（DB_PASSWORD, API_KEY）')
     expect(c).toContain('手元に値がありません')
     // 勝手に .env を作らせない（作っても値が無いので、動かない原因が増えるだけ）
     expect(c).toContain('`.env` を勝手に作らず')
@@ -464,7 +473,8 @@ describe('インポートしたことを AI に伝える', () => {
     expect(c).toContain('そのアプリが、このプロジェクトの内容で更新されます')
     expect(c).not.toContain('そのアプリ自体が置き換わります')
     expect(c).toContain('公開のアドレスは変わりません')
-    expect(c).toContain('公開＝本番の差し替え')
+    expect(c).toContain('公開すると、本番の内容が差し替わります')
+    expect(c).not.toContain('公開＝本番の差し替え') // 0.6.21: 「＝」のメモ書きは文にした。直す前の言い方は戻さない
     expect(c).toContain('「破棄」は**本物のアプリを消します**')
     // 引き継いだのに「アドレスが変わります」を言わない（逆のことを両方言わない）
     expect(c).not.toContain('公開のアドレス（URL）が変わります')
@@ -523,7 +533,7 @@ describe('文言の強調', () => {
     const notes = [
       ...importPlanNotes({
         target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'update', publishName: 'landingtest',
-        adopt: { canAdopt: true, blocker: null, specName: 'landingtest', appName: 'landingtest', reusesRegistry: true, warnings: ['⚠️ 秘密の値**は**戻りません'] },
+        adopt: { canAdopt: true, blocker: null, specName: 'landingtest', appName: 'landingtest', reusesRegistry: true, warnings: ['⚠️ シークレット環境変数の値**は**戻りません'] },
       }),
       ...importPlanNotes({ target: 'sakura-apprun', publishDirLabel: '公開されるもの', intent: 'fork' }),
       ...importPlanNotes({ target: 'vercel', publishDirLabel: '公開されるもの', intent: 'update', publishName: 'x' }),

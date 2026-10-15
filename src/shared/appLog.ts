@@ -71,7 +71,7 @@ export const DEDICATED_PUBLISHER = 'apprun-dedicated'
 /**
  * 専有型の variant 一覧（6件。実測 docs/apprun-dedicated-plan.md 5-12）。
  *
- * label は 6件とも 2026-09-10 の実測（`scripts/probe-monitoring-suite.mjs` ⑥ `GET /publishers/` の出力）どおり。
+ * label は 6件とも 2026-09-10 の実測（`scripts/probe-monitoring-suite.mjs` の6番目の出力 `GET /publishers/`）どおり。
  * 「コンテナーメトリクス」「ロードバランサーアクセスログ」の長音は実物の表記（docs/apprun-dedicated-plan.md 5-12）。
  */
 export const DEDICATED_VARIANTS: { kind: TelemetryKind; name: string; label: string }[] = [
@@ -240,15 +240,15 @@ export function hasProjectRouting(data: unknown, publisherCode: string, variant:
   )
 }
 
-// ── F-1 B-1（2026-09-16）: ⑦「ログ・メトリクス」を1行に畳んでよいか ──────────────────
-// Ryosuke さんの指摘: ①〜⑧はクラスタごとの手順だが⑦だけプロジェクト全体の設定で、番号の
+// ── F-1 B-1（2026-09-16）: 手順7「ログ・メトリクス」を1行に畳んでよいか ──────────────────
+// Ryosuke さんの指摘: 手順1〜8はクラスタごとの手順だが手順7だけプロジェクト全体の設定で、番号の
 // 並びに混ざると「クラスタを作るのに必要な手順」に見える。繋がったあとは✅が6行、常に出ており、
-// 隣の⑥の赤い警告の重みを薄める。**すべて繋がっていて、かつ行動（ボタン）が要らないときだけ**
+// 隣の手順6の赤い警告の重みを薄める。**すべて繋がっていて、かつ行動（ボタン）が要らないときだけ**
 // 1行に畳む。1つでも未接続がある、またはボタン（route/ask）が出るときは、行動が要るので
 // 畳まない（隠さない）。
 
 /**
- * ⑦の一覧を `<details>`（閉じた状態）に畳んでよいか（純関数）。
+ * 手順7の一覧を `<details>`（閉じた状態）に畳んでよいか（純関数）。
  * `variants` が空（一覧をまだ取れていない）のときは畳まない（呼び出し側は元々この関数を
  * telemetryVariants/telemetryActions が両方揃っているときにしか呼ばない想定だが、
  * 安全側に倒す）。

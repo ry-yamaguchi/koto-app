@@ -177,9 +177,9 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
 
   return (
     <div className="space-y-4">
-      {/* ① 検索 */}
+      {/* 手順1 検索 */}
       <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-        <h3 className="text-sm font-semibold text-ink">① Webページを検索する</h3>
+        <h3 className="text-sm font-semibold text-ink">手順1 Webページを検索する</h3>
 
         {searchConfig === undefined ? (
           <p className="text-sm text-ink-secondary py-2">確認中…</p>
@@ -248,10 +248,10 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
         )}
       </div>
 
-      {/* ② プレビュー */}
+      {/* 手順2 プレビュー */}
       {pages.length > 0 && (
         <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-          <h3 className="text-sm font-semibold text-ink">② 取得結果を確認する</h3>
+          <h3 className="text-sm font-semibold text-ink">手順2 取得結果を確認する</h3>
           <ul className="divide-y divide-line">
             {pages.map(p => (
               <li key={p.url} className="py-2.5 space-y-1.5">
@@ -280,10 +280,10 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
         </div>
       )}
 
-      {/* ③ アップロード */}
+      {/* 手順3 アップロード */}
       {okPages.length > 0 && (
         <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-          <h3 className="text-sm font-semibold text-ink">③ 資料として登録する</h3>
+          <h3 className="text-sm font-semibold text-ink">手順3 資料として登録する</h3>
           <div>
             <label className="text-[11px] font-medium text-ink-secondary">タグ（任意・カンマ区切り）</label>
             <input
@@ -302,7 +302,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
             <button
               onClick={openKnowledgeDir}
               className="flex-none text-xs text-ink-secondary border border-line rounded-md px-2 py-1 hover:border-sakura"
-            >控えフォルダを開く</button>
+            >保存先フォルダを開く</button>
           </div>
           {uploadNotice && (
             <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all">{uploadNotice}</p>

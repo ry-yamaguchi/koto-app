@@ -12,7 +12,7 @@ import type { ApprunDedicatedAppSpec } from '../src/shared/apprunDedicatedApp'
 // D-7: verify 段（公開のあと、アプリが応答しているか）。確認の処理は opts.probeMarker で差し替える。
 import { verifyDelaysMs, type DedicatedProbe } from '../src/shared/publishVerify'
 
-// roadmap #23 段階③⑤（D-2b-1）。tests/apprunDedicatedApply.test.ts と同じ方針で、ローカルに
+// roadmap #23 段階(3)(5)（D-2b-1）。tests/apprunDedicatedApply.test.ts と同じ方針で、ローカルに
 // 本物の http サーバを立てて実物のクライアントに対して確かめる（fetch はモックしない・実APIへは出ない）。
 
 let server: Server | null = null
@@ -75,7 +75,7 @@ const quietProbe = async (): Promise<DedicatedProbe> => ({ reached: true, status
 const CONFIRMED = { confirmed: true as const, probeMarker: quietProbe, sleep: async () => {} }
 const NOT_CONFIRMED = { confirmed: false as const }
 
-/** ⑤で既に作られたクラスタ・ASG・LBの記録（publishAppFlow の前提）。 */
+/** 手順5で既に作られたクラスタ・ASG・LBの記録（publishAppFlow の前提）。 */
 function recordCluster() {
   writeApprunDedicatedRecordFs(projectDir, { clusterID: 'cluster-x', asgID: 'asg-y', loadBalancerID: 'lb-z' })
 }
@@ -95,7 +95,7 @@ function makeInput(overrides: Partial<PublishAppInput> = {}): PublishAppInput {
 
 /**
  * lets-encrypt 済み・80/http・443/https も揃ったクラスタ応答（このテストファイルの既定シナリオ）。
- * A（2026-09-17）: ⑧が公開ポートを確かめるようになったため、既定シナリオは「揃っている」クラスタに
+ * A（2026-09-17）: 手順8が公開ポートを確かめるようになったため、既定シナリオは「揃っている」クラスタに
  * する（揃っていないクラスタを個別に確かめるテストは、下の CLUSTER_LE_TRUE_NO_PORTS 等を使う）。
  */
 const CLUSTER_LE_TRUE: Route = {
@@ -227,10 +227,11 @@ describe("publishAppFlow: 5. Let's Encrypt のメールが無ければ止め、�
     expect(r.ok).toBe(false)
     expect(r.stage).toBe('lets-encrypt')
     expect(calls).toEqual(['GET /clusters/cluster-x'])
-    // 案内先は⑧のメール欄（⑧が出る状態では⑤の入力欄は畳まれて無い。README・usage-guide・⑤の説明文と同じ）。
-    expect(r.message).toContain('⑧')
+    // 案内先は手順8のメール欄（手順8が出る状態では手順5の入力欄は畳まれて無い。README・usage-guide・手順5の説明文と同じ）。
+    expect(r.message).toContain('手順8')
     expect(r.message).toContain('メール欄')
-    expect(r.message).not.toContain('⑤')
+    expect(r.message).not.toContain('手順5')
+    expect(r.message, '案内に丸数字が戻っている（2026-10-07・作者の決定）').not.toMatch(/[①-⑳]/)
   })
 
   it('hasLetsEncryptEmail:null（分からない）でも false と同じ扱いで止める', async () => {
@@ -242,8 +243,9 @@ describe("publishAppFlow: 5. Let's Encrypt のメールが無ければ止め、�
     const r = await publishAppFlow(AUTH, projectDir, makeInput(), CONFIRMED, baseUrl)
     expect(r.ok).toBe(false)
     expect(r.stage).toBe('lets-encrypt')
-    expect(r.message).toContain('⑧')
-    expect(r.message).not.toContain('⑤')
+    expect(r.message).toContain('手順8')
+    expect(r.message).not.toContain('手順5')
+    expect(r.message, '案内に丸数字が戻っている（2026-10-07・作者の決定）').not.toMatch(/[①-⑳]/)
   })
 
   it('hasLetsEncryptEmail:false だが letsEncryptEmail 指定あり → PATCH してから確かめ、先へ進む', async () => {
@@ -288,10 +290,10 @@ describe("publishAppFlow: 5. Let's Encrypt のメールが無ければ止め、�
   })
 })
 
-// ── A（2026-09-17）: ⑧の公開の流れが、実際に載せるクラスタの公開ポートを確かめる ─────────────
-// ⑤の入力検査（80/http・443/https が無ければクラスタを作れない）を通り抜けた古いクラスタ・
+// ── A（2026-09-17）: 手順8の公開の流れが、実際に載せるクラスタの公開ポートを確かめる ─────────────
+// 手順5の入力検査（80/http・443/https が無ければクラスタを作れない）を通り抜けた古いクラスタ・
 // あとからコントロールパネルでポートを消したクラスタ・作成が途中で失敗し名前で探して記録された
-// クラスタでは、⑧が一度もポートを確かめないまま「✅ 公開しました」を出していた（専有型は
+// クラスタでは、手順8が一度もポートを確かめないまま「✅ 公開しました」を出していた（専有型は
 // useLetsEncrypt:true・loadBalancerPort:443 固定なので、80/http が無ければ証明書は永久に出ない）。
 
 describe('publishAppFlow: A. クラスタの公開ポート（80/http・443/https）を確かめる（新規API呼び出しは無し）', () => {
@@ -771,7 +773,7 @@ describe('publishAppFlow: 11. 正常系の呼び出し順を固定する（掟10
 
 // ── B（2026-09-17）: 公開が途中で失敗しても、記録の hosts は前の値のまま ─────────────────────
 // 4段目（record）が hosts/appPort 等を新しい値へ先に書いていたため、後段（version-create 等）で
-// 失敗すると「未公開の新しいホスト名」だけが記録に残り、⑧が緑字で「公開中: https://（新しい・
+// 失敗すると「未公開の新しいホスト名」だけが記録に残り、手順8が緑字で「公開中: https://（新しい・
 // 未公開のホスト名）/」と誤表示していた。実際に効く（＝反映される）のは版なので、いまは
 // 9段目（activate の一致確認が通ったあと）でまとめて書く。
 
@@ -831,7 +833,7 @@ describe('publishAppFlow: B. hosts 等は「実際に効く」9段目（activate
 
 // ── 12. D-5（2026-09-16 実測）: lb-address 段は「素の IP」にし、空なら 10 秒おき・最長 3 分まで取り直す ──
 //
-// 実測: クラスタ作成の約2分後の⑧では load_balancer_nodes のアドレスが空で「見つかりませんでした」、
+// 実測: クラスタ作成の約2分後の手順8では load_balancer_nodes のアドレスが空で「見つかりませんでした」、
 // 数分後の probe では `59.106.222.212/24`（ネットマスク付き）が付いていた。sleep は偽物を注入し、
 // 実際には1ミリ秒も待たずにループの動きを確かめる（waitUntilGone と同じ方針・#39）。
 
@@ -848,7 +850,7 @@ function routesUntilLbAddress(lbNodes: Route | Route[]): Record<string, Route | 
   }
 }
 
-describe('publishAppFlow: 12. lb-address 段は空なら待って取り直し、取れた IP は素の IP（D-5）', () => {
+describe('publishAppFlow: 12. lb-address 段は空なら待って再取得し、取れた IP は素の IP（D-5）', () => {
   it('★(a) 1回目は空・2回目で `59.106.222.212/24` が付く → sleep(10000) が1回呼ばれ、記録・応答・message は素の IP', async () => {
     recordCluster()
     const calls: string[] = []
@@ -870,8 +872,9 @@ describe('publishAppFlow: 12. lb-address 段は空なら待って取り直し、
     expect(r.warnings ?? []).toEqual([])
     expect(r.verify).toBe('responding')
     // 待っている間の進捗（画面向け）
-    // 2026-09-29: 実測（5-13）にもとづく目安を添える。断定しない言い方（「ふつう」）。
-    expect(progress).toContain('ロードバランサの IP が付くのを待っています（10秒経過）。実測では、クラスタを作った約2分後はまだ空で、数分後に付いていました（目安です）。')
+    // 2026-10-07: 文に目安は入れない（目安は段の内部名 publish.lb-address から引く仕組みに一本化・shared/stageEstimate.ts）。
+    expect(progress).toContain('ロードバランサの IP が付くのを待っています（10秒経過）…')
+    for (const m of progress) expect(m, '進み具合の文に目安が焼き込まれている').not.toMatch(/実測|目安|およそ/)
   })
 
   it('★(b) 最後まで空 → 3分（10秒×18回）待ってから諦め、従来の warning。記録の lbAddresses は残さない', async () => {
@@ -887,10 +890,11 @@ describe('publishAppFlow: 12. lb-address 段は空なら待って取り直し、
     expect(calls.filter(c => c === LB_NODES_KEY).length).toBe(19) // 初回 + 18回の取り直し
     expect(r.lbAddresses).toBeUndefined()
     expect(r.warnings?.some(w => w.includes('ロードバランサノードのアドレスが見つかりませんでした'))).toBe(true)
-    expect(r.message).toContain('IP を取り直す')
+    expect(r.message).toContain('IP を再取得')
+    expect(r.message).not.toContain('取り直す') // 0.6.21（作者の決定 2026-10-01）: 「取り直す」は「再取得」に揃えた。直す前の言い方は戻さない
     // B（D-19）: 確認できなかったので記録に IP は残らない（前の値が無い場合は null が書かれる）。
     expect(readApprunDedicatedFs(projectDir).lbAddresses ?? null).toBeNull()
-    expect(progress[progress.length - 2]).toBe('ロードバランサの IP が付くのを待っています（3分経過）。実測では、クラスタを作った約2分後はまだ空で、数分後に付いていました（目安です）。') // 最後は「完了しました」
+    expect(progress[progress.length - 2]).toBe('ロードバランサの IP が付くのを待っています（3分経過）…') // 最後は「完了しました」
   })
 
   it('★(c) 取れた IP に `/` が含まれない（`IP/24` を `/` ごと A レコードに案内しない）', async () => {
@@ -936,7 +940,7 @@ describe('publishAppFlow: 12. lb-address 段は空なら待って取り直し、
 //
 // 直す前の lb-address 段は「**取れたときだけ**記録に書く」だった。取れなかったときに前の値を
 // 消していないので、**前のクラスタの IP が記録に残っていれば、それを現在の IP として画面に出す**。
-// ⑧はそれを「DNS の A レコードをこの IP に向けてください」と案内するので、利用者は
+// 手順8はそれを「DNS の A レコードをこの IP に向けてください」と案内するので、利用者は
 // **間違った先へ DNS を向ける**ことになる。記録の `lbAddresses` は「いまのクラスタの
 // ロードバランサの IP」であって、前のクラスタのものが残ってよい理由は無い。
 
@@ -959,7 +963,8 @@ describe('publishAppFlow: 12-2. 確かめられなかった IP は記録から�
     expect(r.lbAddresses).toBeUndefined() // 応答にも載せない
     // ★ ここが残ると、画面は前のクラスタの IP を「DNS の A レコード」として出し続ける
     expect(readApprunDedicatedFs(projectDir).lbAddresses ?? null).toBeNull()
-    expect(r.message).toContain('IP を取り直す')
+    expect(r.message).toContain('IP を再取得')
+    expect(r.message).not.toContain('取り直す') // 0.6.21（作者の決定 2026-10-01）: 「取り直す」は「再取得」に揃えた。直す前の言い方は戻さない
   })
 
   it('★★ 前の IP がある状態で、取得そのものが失敗（HTTP 500）→ 記録の lbAddresses が消える', async () => {
@@ -1001,7 +1006,7 @@ describe('publishAppFlow: 12-2. 確かめられなかった IP は記録から�
   })
 })
 
-// ── 13. refreshLbAddresses（⑧「🔄 IP を取り直す」・D-5）: GET 1回＋記録。何も作らない・待たない ──
+// ── 13. refreshLbAddresses（手順8「🔄 IP を再取得」・D-5）: GET 1回＋記録。何も作らない・待たない ──
 
 describe('refreshLbAddresses: 記録の ID で LB ノードを1回引き、素の IP を記録して返す（D-5）', () => {
   it('★ 実測の形（`59.106.222.212/24`）→ ok:true・lbAddresses は素の IP・記録にも書く・GET は1回だけ', async () => {
@@ -1019,7 +1024,7 @@ describe('refreshLbAddresses: 記録の ID で LB ノードを1回引き、素�
     const baseUrl = await listen(routedServer({ [LB_NODES_KEY]: LB_NODES_ONE }, calls))
     const r = await refreshLbAddresses(AUTH, projectDir, baseUrl)
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.message).toContain('⑤でクラスタを作ってから')
+    if (!r.ok) expect(r.message).toContain('手順5でクラスタを作ってから')
     expect(calls).toEqual([])
   })
 
@@ -1173,8 +1178,8 @@ describe('publishAppFlow: 14. 公開のあと、アプリが応答している�
     expect(r.verify).toBe('responding') // ← 直す前は undefined（確認そのものをとばしていた）
     expect(probes.length).toBe(1)
     expect(probes[0].path.startsWith('/?t=')).toBe(true) // 目印ではなく根へ当てる
-    // **とばしていないので、「とばしました」の1行は出ない**
-    expect((r.warnings ?? []).some(w => w.includes('確認をとばしました'))).toBe(false)
+    // **スキップしていないので、「スキップしました」の1行は出ない**
+    expect((r.warnings ?? []).some(w => w.includes('応答の確認をスキップしました'))).toBe(false)
   })
 
   it('★★(f) 静的配信でも版が分からなければ、目印と比べようが無いので根へ当てる（推測で ok にしない）', async () => {
@@ -1214,7 +1219,7 @@ describe('publishAppFlow: 14. 公開のあと、アプリが応答している�
   // 名乗る**（D-7 でいちばん最初に直した欠陥）が、別の道から戻ってきた形である。
   // README・使い方ガイドは「確かめられないときは、確認をとばしたことをお知らせします」と
   // 約束しているので、**約束のほうを実装で固定する**（掟9・掟10）。
-  it('★★(A) IP が1つも取れていないとき、verify は付かず、warnings に「とばした」旨が1行ある（D-14 A）', async () => {
+  it('★★(A) IP が1つも取れていないとき、verify は付かず、warnings に「スキップした」旨が1行ある（D-14 A）', async () => {
     recordCluster()
     const calls: string[] = []
     const probes: ProbeArgs[] = []
@@ -1226,11 +1231,12 @@ describe('publishAppFlow: 14. 公開のあと、アプリが応答している�
     expect(r.ok).toBe(true)
     expect(r.verify).toBeUndefined()
     expect(probes).toEqual([])
-    // 「とばした」旨がちょうど1行あること（無言で通り過ぎない）
-    const skipped = (r.warnings ?? []).filter(w => w.includes('確認をとばしました'))
+    // 「スキップした」旨がちょうど1行あること（無言で通り過ぎない）
+    const skipped = (r.warnings ?? []).filter(w => w.includes('応答の確認をスキップしました'))
     expect(skipped.length).toBe(1)
-    // どちらの理由でとばしたのかが分かること（像の作りの話と取り違えない）
-    expect(skipped[0]).toContain('ロードバランサの IP が取れなかったため')
+    // どちらの理由でスキップしたのかが分かること（像の作りの話と取り違えない）
+    expect(skipped[0]).toContain('ロードバランサの IP を取得できなかったため')
+    expect(skipped[0]).not.toContain('とばし') // 0.6.21: 「とばす」は「スキップ」に揃えた。直す前の言い方は戻さない
     expect(skipped[0]).not.toContain('応答の確認の対象外')
   })
 
@@ -1433,9 +1439,10 @@ describe('publishAppFlow: 14-2. Node の像は根（/）へ当てて応答を確
     }, baseUrl)
     expect(r.verify).toBeUndefined()
     expect(probes).toEqual([])
-    const skipped = (r.warnings ?? []).filter(w => w.includes('確認をとばしました'))
+    const skipped = (r.warnings ?? []).filter(w => w.includes('応答の確認をスキップしました'))
     expect(skipped.length).toBe(1)
-    expect(skipped[0]).toContain('ロードバランサの IP が取れなかったため')
+    expect(skipped[0]).toContain('ロードバランサの IP を取得できなかったため')
+    expect(skipped[0]).not.toContain('とばし') // 0.6.21: 「とばす」は「スキップ」に揃えた。直す前の言い方は戻さない
     // 直す前の理由（像の作り）では、もうとばさない
     expect(skipped[0]).not.toContain('応答の確認の対象外')
   })
@@ -1592,19 +1599,34 @@ describe('probeMarkerOverHttps: 本番が実際に送る要求の形（D-7・仕
 // verify が `no-backend`（503）のとき、Koto は「ランタイムログを見てください」としか言えなかった。
 // **いまのコンテナの様子が分かれば、ログを開く前に「動いていない」と気づける。**
 //
-// 歯止めは3つ: ①`no-backend` のときだけ引く（`ok` のときは引かない＝余計な GET を足さない）
-// ②引けなくても `ok:true` のまま続く（確認の道具であって公開の条件ではない）
-// ③0件（1つも動いていない）と「引けなかった」を区別する（前者だけ containerStates が付く）。
+// 歯止めは3つ: (1)`no-backend` のときだけ引く（`ok` のときは引かない＝余計な GET を足さない）
+// (2)引けなくても `ok:true` のまま続く（確認の道具であって公開の条件ではない）
+// (3)0件（1つも動いていない）と「引けなかった」を区別する（前者だけ containerStates が付く）。
 
 const CONTAINERS_KEY = 'GET /applications/app-1/containers'
 
-/** 原本 ListApplicationContainersResponse の形（nodes[].containersStats[]・desired）。 */
+/**
+ * 原本 ListApplicationContainersResponse（OpenAPI v1.4.0）の形: nodes[] の各要素は nodeID・containersStats・desired が必須で、
+ * containersStats は `{ collectedAtSec, containers: [...] }` のオブジェクト（か null）。containers の各要素は
+ * id・image・state・status・cpuUsagePercent・applicationID・applicationVersion が必須（2026-10-08 に原本そのものを取得して写した）。
+ * ⚠️ 実際の応答はまだ誰も見ていない。ここは原本のスキーマ／example の形（実機で生の応答を見たら実測へ差し替える）。
+ * （以前ここにあった「nodes[].containersStats[]・desired」の配列の形は、原本の形ではなかった。旧い配列の形は tests/apprunDedicatedShapes.test.ts が「読めるなら読む」として別に固定している。）
+ */
 const CONTAINERS_ONE: Route = {
   status: 200,
   body: {
     nodes: [{
-      workerNodeID: 'wn-1', desired: 1,
-      containersStats: [{ state: 'CrashLoopBackOff', status: 'restarting', image: 'jp1.sakuracr.jp/example/myapp2:v1' }],
+      nodeID: 'b7e6a1c2-3f4d-4e2a-9b1a-2c3d4e5f6a7b',
+      containersStats: {
+        collectedAtSec: 1721203200,
+        containers: [{
+          id: 'container-1', image: 'jp1.sakuracr.jp/example/myapp2:v1', state: 'restarting', status: 'Restarting (1) 5 seconds ago', cpuUsagePercent: 0,
+          applicationID: 'f47ac10b-58cc-4372-a567-0e02b2c3d479', applicationVersion: 1,
+        }],
+      },
+      desired: {
+        containers: [{ applicationID: 'f47ac10b-58cc-4372-a567-0e02b2c3d479', applicationVersion: 1, cpuMillis: 500, memoryMB: 512, image: 'jp1.sakuracr.jp/example/myapp2:v1' }],
+      },
     }],
   },
 }
@@ -1624,7 +1646,7 @@ describe('publishAppFlow: 16. コンテナの様子は no-backend のときだ�
     expect(r.verify).toBe('no-backend')
     expect(r.ok).toBe(true)
     // **原本の値のまま**（日本語へ言い換えない）
-    expect(r.containerStates).toEqual([{ state: 'CrashLoopBackOff', status: 'restarting' }])
+    expect(r.containerStates).toEqual([{ state: 'restarting', status: 'Restarting (1) 5 seconds ago' }])
     expect(calls.filter(c => c === CONTAINERS_KEY).length).toBe(1) // 1回だけ
     expect(r.warnings ?? []).toEqual([])
   })
@@ -1660,7 +1682,7 @@ describe('publishAppFlow: 16. コンテナの様子は no-backend のときだ�
     expect(r.verify).toBe('no-backend')
     expect(r.containerStates).toBeUndefined() // 「引けなかった」を0件に倒さない
     expect(r.warnings ?? []).toEqual(
-      expect.arrayContaining([expect.stringContaining('コンテナの様子を取得できませんでした')]),
+      expect.arrayContaining([expect.stringContaining('コンテナの状態を取得できませんでした')]),
     )
   })
 
@@ -1669,7 +1691,7 @@ describe('publishAppFlow: 16. コンテナの様子は no-backend のときだ�
     const calls: string[] = []
     const probes: ProbeArgs[] = []
     const baseUrl = await listen(routedServer(
-      { ...routesUntilLbAddress(LB_NODES_ONE), [CONTAINERS_KEY]: { status: 200, body: { nodes: [{ desired: 1, containersStats: [] }] } } }, calls,
+      { ...routesUntilLbAddress(LB_NODES_ONE), [CONTAINERS_KEY]: { status: 200, body: { nodes: [{ nodeID: 'wn-1', containersStats: { collectedAtSec: 1721203200, containers: [] }, desired: { containers: [] } }] } } }, calls,
     ))
     const r = await publishAppFlow(AUTH, projectDir, verifiableInput(), {
       confirmed: true, sleep: fakeSleep([]),
@@ -1688,7 +1710,7 @@ describe('publishAppFlow: 16. コンテナの様子は no-backend のときだ�
     const probes: ProbeArgs[] = []
     // ノードに containersStats のキーが無い＝原本の形として読めない応答
     const baseUrl = await listen(routedServer(
-      { ...routesUntilLbAddress(LB_NODES_ONE), [CONTAINERS_KEY]: { status: 200, body: { nodes: [{ workerNodeID: 'wn-1', desired: 1 }] } } }, calls,
+      { ...routesUntilLbAddress(LB_NODES_ONE), [CONTAINERS_KEY]: { status: 200, body: { nodes: [{ nodeID: 'wn-1', desired: null }] } } }, calls,
     ))
     const r = await publishAppFlow(AUTH, projectDir, verifiableInput(), {
       confirmed: true, sleep: fakeSleep([]),
@@ -1697,8 +1719,59 @@ describe('publishAppFlow: 16. コンテナの様子は no-backend のときだ�
     expect(r.ok).toBe(true) // 公開そのものは止めない
     expect(r.stage).toBe('done')
     expect(r.containerStates).toBeUndefined() // ← ここが [] に戻ったら「未確認」を「0件」と言い切っている
+    // 2026-10-08: 読み取れなかった理由は、応答の形が悪いと決めつけない（以前の「応答の形式が想定と違うため」は、違っていた Koto の読み方を応答のせいにしていた）
     expect(r.warnings ?? []).toEqual(
-      expect.arrayContaining([expect.stringContaining('コンテナの様子を取得できませんでした')]),
+      expect.arrayContaining([expect.stringContaining('コンテナの状態を読み取れませんでした（応答にまだコンテナの情報が無いか、Koto の読み方が応答と合っていない可能性があります）')]),
     )
+    expect((r.warnings ?? []).join('\n')).not.toContain('応答の形式が想定と違う')
+  })
+
+  // 2026-10-08 検分 I（R6-2）: 原本の form（containersStats が { collectedAtSec, containers } のオブジェクト）が、手順8のコンテナ表示に載る。
+  // 直す前は本物の応答が常に「読めない」になり、手順8のコンテナ表示は一度も出なかった（実際の応答はまだ誰も見ていない）。
+  it('★★★(f) 原本の example の形（containersStats がオブジェクト）で返ってきたら、containerStates に載る（warnings は空）', async () => {
+    recordCluster()
+    const calls: string[] = []
+    const probes: ProbeArgs[] = []
+    const original: Route = {
+      status: 200,
+      body: {
+        nodes: [{
+          nodeID: 'b7e6a1c2-3f4d-4e2a-9b1a-2c3d4e5f6a7b',
+          containersStats: {
+            collectedAtSec: 1721203200,
+            containers: [{
+              id: 'container-1', image: 'nginx:latest', state: 'restarting', status: 'Restarting (1) 10 seconds ago', cpuUsagePercent: 12.5,
+              applicationID: 'f47ac10b-58cc-4372-a567-0e02b2c3d479', applicationVersion: 2,
+            }],
+          },
+          desired: { containers: [] },
+        }],
+      },
+    }
+    const baseUrl = await listen(routedServer({ ...routesUntilLbAddress(LB_NODES_ONE), [CONTAINERS_KEY]: original }, calls))
+    const r = await publishAppFlow(AUTH, projectDir, verifiableInput(), {
+      confirmed: true, sleep: fakeSleep([]),
+      probeMarker: fakeProbe([{ reached: true, status: 503, body: 'no available server' }], probes),
+    }, baseUrl)
+    expect(r.verify).toBe('no-backend')
+    expect(r.containerStates).toEqual([{ state: 'restarting', status: 'Restarting (1) 10 seconds ago' }])
+    expect(r.warnings ?? []).toEqual([])
+  })
+
+  it('★★(g) 原本の形で containersStats が null のノードだけ（まだ回収されていない）なら、0件に倒さず containerStates を付けない・warnings に読み取れなかった旨', async () => {
+    recordCluster()
+    const calls: string[] = []
+    const probes: ProbeArgs[] = []
+    const baseUrl = await listen(routedServer({
+      ...routesUntilLbAddress(LB_NODES_ONE),
+      [CONTAINERS_KEY]: { status: 200, body: { nodes: [{ nodeID: 'n0', containersStats: null, desired: { containers: [] } }] } },
+    }, calls))
+    const r = await publishAppFlow(AUTH, projectDir, verifiableInput(), {
+      confirmed: true, sleep: fakeSleep([]),
+      probeMarker: fakeProbe([{ reached: true, status: 503, body: 'no available server' }], probes),
+    }, baseUrl)
+    expect(r.ok).toBe(true)
+    expect(r.containerStates).toBeUndefined()
+    expect(r.warnings ?? []).toEqual(expect.arrayContaining([expect.stringContaining('コンテナの状態を読み取れませんでした')]))
   })
 })

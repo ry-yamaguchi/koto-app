@@ -283,9 +283,10 @@ describe('RollbackSection.tsx: 固定の警告・解除ボタン・確認ダイ�
   })
 })
 
-describe('AppRunPanel.tsx: ⑨ RollbackSection は公開済み（appUrl）のときだけ表示', () => {
-  it('appUrl && <RollbackSection ... stepNo="⑨" /> の形で埋め込まれている', () => {
-    expect(panel).toContain('{appUrl && <RollbackSection projectDir={projectDir} refreshSignal={trafficRefreshSignal} stepNo="⑨" />}')
+describe('AppRunPanel.tsx: 手順9 RollbackSection は公開済み（appUrl）のときだけ表示', () => {
+  it('appUrl && <RollbackSection ... stepNo="手順9" /> の形で埋め込まれている', () => {
+    expect(panel).toContain('{appUrl && <RollbackSection projectDir={projectDir} refreshSignal={trafficRefreshSignal} stepNo="手順9" />}')
+    expect(panel, '旧い丸数字の見出し番号が戻っている').not.toContain('stepNo="⑨"')
   })
 
   // ★変異試験③: 「まだ固定されています」の分岐を消す（例: 条件の頭に `false &&` を足して

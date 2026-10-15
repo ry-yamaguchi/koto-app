@@ -1,4 +1,4 @@
-// apprunDedicatedAppApply.ts — さくらのAppRun 専有型「アプリを公開する」（roadmap #23 ⑤・D-2b-1）の
+// apprunDedicatedAppApply.ts — さくらのAppRun 専有型「アプリを公開する」（roadmap #23 (5)・D-2b-1）の
 // main 側の純関数フロー。createClusterFlow（apprunDedicatedApply.ts）と同じ型・同じ流儀:
 //   - 各段の失敗は `stage` と生の message で止める（確認できないことを成功にしない）。
 //   - POST でIDが取れた時点で、確認（GET）を待たずに記録する（2026-08-14「成功と読んだ応答は
@@ -6,10 +6,10 @@
 //   - `opts.confirmed !== true` なら、API を一切呼ばずに中止する（掟10の3点セット）。
 //
 // **この段では作らない・扱わない**: クラスタ・ASG・ロードバランサ自体の作成/削除
-// （apprunDedicatedApply.ts の createClusterFlow/teardownFlow の役目）。ここは、既に⑤で
+// （apprunDedicatedApply.ts の createClusterFlow/teardownFlow の役目）。ここは、既に手順5で
 // 作られたクラスタの上に「アプリケーション」を1つ公開する段取りだけを持つ。
 //
-// **D-2b-2 の範囲（今回は触らない）**: teardownFlow 先頭のアプリ削除・`appOnly`。
+// **D-2b-2 の範囲（今回は触らない）**: teardownFlow 先頭のアプリ削除。
 //
 // 依存（複製しない・掟10）:
 //   - src/main/cloud/apprunDedicated.ts の getCluster/patchClusterLoadBalancer/listApplications/
@@ -32,7 +32,7 @@ import type { CloudCredentials } from './auth'
 import {
   getCluster, patchClusterLoadBalancer, listApplications, createApplication, getApplication,
   updateApplication, listApplicationVersions, createApplicationVersion, deleteApplicationVersion,
-  listLoadBalancerNodes, listApplicationContainers, lbAddressEstimateNote,
+  listLoadBalancerNodes, listApplicationContainers,
 } from './apprunDedicated'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import {
@@ -45,6 +45,8 @@ import {
   type ApprunDedicatedAppSpec,
 } from '../../shared/apprunDedicatedApp'
 import { DEFAULT_KEEP } from '../../shared/imageRetention'
+// 段の内部名（どこにどれくらい時間がかかったかを記録するための名前。定義は shared/stageTiming.ts の1か所・2026-10-07）。
+import { STAGE, type StageMark, UNMEASURED } from '../../shared/stageTiming'
 import {
   verifyDelaysMs, dedicatedVerifyMode, dedicatedProbePath, judgeDedicatedProbeBy, dedicatedVerifySettled,
   type DedicatedProbe, type DedicatedVerifyOutcome,
@@ -52,7 +54,7 @@ import {
 
 // ── 入力・出力の形 ────────────────────────────────────────────────────
 
-/** publishAppFlow への入力。spec は⑤の入力欄そのまま（apprunDedicatedApp.ts）。 */
+/** publishAppFlow への入力。spec は手順5の入力欄そのまま（apprunDedicatedApp.ts）。 */
 export type PublishAppInput = {
   spec: ApprunDedicatedAppSpec
   /** push 済みのコンテナイメージの参照（タグ付きref）。 */
@@ -132,6 +134,8 @@ export type PublishAppResult = {
    * 0件（＝1つも動いていない）と区別するため。値は原本のまま（画面は containerStateSummary で描く）。
    * **「引けなかった」には、HTTP が 200 でも応答が原本の形でなかった場合を含む**
    * （`readContainerStates` が null。分からないものを0件として出さない）。
+   * 2026-10-08: 読み方を原本の形（`containersStats` は `{ collectedAtSec, containers }` のオブジェクトか null）に直した。
+   * それまでは本物の応答が常に null になり、ここは付かなかった（実際の応答はまだ誰も見ていない）。
    */
   containerStates?: { state: string; status: string }[]
   /** 失敗ではないが利用者に伝えるべきこと（世代掃除・LBアドレス取得の失敗等）。公開自体は成功している。 */
@@ -142,10 +146,29 @@ function fail(stage: PublishAppStage, message: string, extra?: Partial<PublishAp
   return { ok: false, stage, message, ...extra }
 }
 
+/** 「この段の時間は保存しない」の印（`PublishAppFlowOpts.onStage` の第2引数。理由は shared/stageTiming.ts の `StageMark`）。 */
+// UNMEASURED は shared/stageTiming.ts の1か所で定義（掟10）
+
 export type PublishAppFlowOpts = {
   confirmed: boolean
   /** 各段の頭と、lb-address 段の待ちの間に呼ばれる進捗（画面向け）。省略可。 */
   progress?: (msg: string) => void
+  /**
+   * 段の切り替わりを知らせる口（2026-10-07・どこにどれくらい時間がかかったかの記録）。**画面に出す文は変えない**
+   * ——進み具合の文とは別に、段の内部名（shared/stageTiming.ts の STAGE.publish*）だけを渡す。省略可。
+   * 渡す段: 公開前の確認 → アプリとバージョン → 古いバージョンの削除 → IP 待ち → 応答の確認 → コンテナの確認。
+   * （その前のイメージの段・準備の段と、あとの古いアクセスキーの削除は、呼び出し側の IPC が渡す。）
+   *
+   * **第2引数 `{ unmeasured: true }` は「この段の時間は、ふつうにやったらこれだけかかる、の測定になっていない」の印**
+   * （shared/stageTiming.ts の `StageMark`。時間は結果に載せるが保存しない・2026-10-07 検分の指摘）。`ok:true` は
+   * 「時間を測れた」の証拠ではない——次の段は、公開が `ok:true` で終わっても、こうして印を付ける:
+   *   ・IP 待ち: IP が付かないまま待ち切った（3 分の上限）／取得に失敗した（HTTP エラー）
+   *   ・古いバージョンの削除: 一覧の取得か削除が失敗した（警告つきで続行）
+   *   ・応答の確認: 応答を確かめられなかった（503・404・502・つながらない…。`dedicatedVerifySettled` が false）。
+   *     応答しないときは、再試行の待ちを全部使った時間になる
+   *   ・コンテナの確認: 応答の確認が 503 のときだけ入る段（応答していない回にしか現れない）
+   */
+  onStage?: (stage: string, mark?: StageMark) => void
   /**
    * lb-address 段のポーリング間隔（既定 10 秒）。テストで短縮せず、代わりに `sleep` を偽物にする
    * （apprunDedicatedApply.ts の TeardownFlowOpts と同じ流儀・#39）。
@@ -168,7 +191,7 @@ export type PublishAppFlowOpts = {
   probeMarker?: (args: { ip: string; host: string; path: string; timeoutMs: number }) => Promise<DedicatedProbe>
 }
 
-// lb-address 段の待ち（D-5・2026-09-16 実測）: クラスタ作成の約2分後の⑧では LB ノードのアドレスが
+// lb-address 段の待ち（D-5・2026-09-16 実測）: クラスタ作成の約2分後の手順8では LB ノードのアドレスが
 // まだ空で「見つかりませんでした」になり、数分後の probe では付いていた。**ノードのアドレスが付くまでに
 // 時間がかかる**ので、空なら 10 秒おきに最長 3 分まで取り直す。それでも空なら従来の warning。
 const LB_ADDRESS_DEFAULT_INTERVAL_MS = 10 * 1000
@@ -190,12 +213,12 @@ const VERIFY_BODY_LIMIT = 4096
  * `node:https` の `request` を使う（掟10の例外ではなく、`fetch` では書けない要件）。
  *
  * ── なぜ証明書の検証を切る（rejectUnauthorized:false）のか ─────────────────
- * ①DNS がまだ向いていない間、クラスタが出しているのは `CN=TRAEFIK DEFAULT CERT` の
+ * (1)DNS がまだ向いていない間、クラスタが出しているのは `CN=TRAEFIK DEFAULT CERT` の
  *   **仮証明書**だけである（Let's Encrypt は DNS が向いてから HTTP-01 で発行される）。
  *   検証を入れると、公開直後は必ず失敗し、**確認そのものが成立しない**。
- * ②宛先の IP は、Koto 自身がさくらの API から取った値（`lbAddresses`）であって、
+ * (2)宛先の IP は、Koto 自身がさくらの API から取った値（`lbAddresses`）であって、
  *   外から与えられた宛先ではない。
- * ③送るのは**秘密を含まない GET 1本**だけである。
+ * (3)送るのは**秘密を含まない GET 1本**だけである。
  * **秘密（トークン・Cookie・本文）は絶対に送らない。** ヘッダは `Host` だけ、本文は無し。
  */
 export function probeMarkerOverHttps(
@@ -237,8 +260,8 @@ function formatLbWaitElapsed(ms: number): string {
 }
 
 // ── A（2026-09-17）: クラスタの公開ポート（80/http・443/https）が欠けているときの文言 ──────
-// ⑤の入力検査（AppRunDedicatedPanel.tsx の errors.ports）と語調を揃えるが、ここに出る時点で
-// クラスタは既にある（⑤の詳細設定ではなく、コントロールパネルでの直し方を案内する）。
+// 手順5の入力検査（AppRunDedicatedPanel.tsx の errors.ports）と語調を揃えるが、ここに出る時点で
+// クラスタは既にある（手順5の詳細設定ではなく、コントロールパネルでの直し方を案内する）。
 function formatPortNames(missing: { port: number; protocol: string }[]): string {
   return missing.map(p => `${p.port}（${p.protocol}）`).join('・')
 }
@@ -271,6 +294,7 @@ export async function publishAppFlow(
   opts: PublishAppFlowOpts, baseUrl?: string,
 ): Promise<PublishAppResult> {
   const progress = (msg: string) => opts.progress?.(msg)
+  const stage = (id: string, mark?: StageMark) => opts.onStage?.(id, mark)
   // 失敗ではないが利用者に伝えるべきこと（5段目のポート未確認・世代掃除・LBアドレス取得の失敗等）。
   // 5段目から使うため、ここで宣言する（以前は cleanup 段の直前で宣言していた）。
   const warnings: string[] = []
@@ -281,16 +305,17 @@ export async function publishAppFlow(
   }
 
   // 2. no-cluster: 記録にクラスタ・ASG・LBが揃っていなければ、そもそも公開できる土台が無い。
+  stage(STAGE.publishCheck)
   progress('クラスタの記録を確認しています…')
   const record = readApprunDedicatedFs(projectDir)
   const clusterID = record.clusterID ?? null
   const asgID = record.asgID ?? null
   const loadBalancerID = record.loadBalancerID ?? null
   if (!clusterID || !asgID || !loadBalancerID) {
-    return fail('no-cluster', '⑤でクラスタを作ってから、アプリを公開してください。')
+    return fail('no-cluster', '手順5でクラスタを作ってから、アプリを公開してください。')
   }
 
-  // 3. invalid: ⑤の入力を検証する（validateAppSpec が「最後の砦」）。
+  // 3. invalid: 手順5の入力を検証する（validateAppSpec が「最後の砦」）。
   progress('入力を確認しています…')
   const validation = validateAppSpec(input.spec)
   if (!validation.ok) {
@@ -336,9 +361,9 @@ export async function publishAppFlow(
   // null（分からない）も false と同じ扱いにする（掟10「分からないものを都合よく倒さない」）。
   if (readHasLetsEncryptEmail(clusterRes.data) !== true) {
     if (!input.letsEncryptEmail) {
-      // ⑧が出る状態（クラスタあり）では⑤の入力欄は畳まれて無いので、案内先は⑧のメール欄
-      //（README・usage-guide・⑤の説明文と同じ）。
-      return fail('lets-encrypt', "⑧の Let's Encrypt のメール欄に入力してから、アプリを公開してください。")
+      // 手順8が出る状態（クラスタあり）では手順5の入力欄は畳まれて無いので、案内先は手順8のメール欄
+      //（README・usage-guide・手順5の説明文と同じ）。
+      return fail('lets-encrypt', "手順8の Let's Encrypt のメール欄に入力してから、アプリを公開してください。")
     }
     const patchRes = await patchClusterLoadBalancer(auth, clusterID, buildLetsEncryptPatchBody(input.letsEncryptEmail), baseUrl)
     if (!patchRes.ok) {
@@ -369,6 +394,7 @@ export async function publishAppFlow(
   // 6. app-lookup: 記録にIDがあれば実在確認（404なら記録から外して新規へ）。無ければ、
   //   同名アプリが無いかを一覧で確かめる——**同名がある＝別プロジェクトのアプリかもしれない
   //   ので再利用しない**（name-taken）。
+  stage(STAGE.publishApp) // ここから有効化の記録まで（アプリの確認・作成・バージョンの作成・有効化）が1つの段
   progress('アプリケーションを確認しています…')
   let applicationID: string | null = record.applicationID ?? null
   if (applicationID) {
@@ -478,18 +504,25 @@ export async function publishAppFlow(
   }
 
   // 10. cleanup: 古いバージョンを掃除する。**失敗しても続行**（公開そのものは成功している）。
-  progress('古いバージョンを片付けています…')
+  stage(STAGE.publishCleanup)
+  progress('古いバージョンを削除しています…')
   const versionsRes = await listApplicationVersions(auth, appID, undefined, baseUrl)
+  let cleanupFailed = false
   if (!versionsRes.ok) {
-    warnings.push(`古いバージョンの一覧を取得できませんでした（掃除をスキップしました）: ${versionsRes.message}`)
+    cleanupFailed = true
+    warnings.push(`古いバージョンの一覧を取得できませんでした（古いバージョンの削除は行いませんでした）: ${versionsRes.message}`)
   } else {
     const rows = readVersionRows(versionsRes.data)
     const toDelete = versionsToDelete(rows, version, DEFAULT_KEEP)
     for (const v of toDelete) {
       const delRes = await deleteApplicationVersion(auth, appID, v, baseUrl)
-      if (!delRes.ok) warnings.push(`バージョン『${v}』の削除に失敗しました: ${delRes.message}`)
+      if (!delRes.ok) {
+        cleanupFailed = true
+        warnings.push(`バージョン『${v}』の削除に失敗しました: ${delRes.message}`)
+      }
     }
   }
+  if (cleanupFailed) stage(STAGE.publishCleanup, UNMEASURED) // 失敗した呼び出しの時間は、掃除にかかる時間の測定ではない
 
   // 11. lb-address: DNSのAレコードに案内するIPを集める。**取れなくても続行**（公開は成功している）。
   //   アドレスは素の IP（bareIp。`59.106.222.212/24` → `59.106.222.212`）。応答が ok で空なら
@@ -500,12 +533,13 @@ export async function publishAppFlow(
   //
   // ── B（D-19・2026-09-16）: **確かめられなかった IP を、現在のものとして残さない** ──────
   // 直す前は「取れたときだけ記録に書く」だったので、**取れなかったときに前の値がそのまま残った**。
-  // 記録の `lbAddresses` は「いまのクラスタのロードバランサの IP」であり、画面（⑧）はそれを
+  // 記録の `lbAddresses` は「いまのクラスタのロードバランサの IP」であり、画面（手順8）はそれを
   // 「DNS の A レコード」として出す。前のクラスタの IP が残っていれば、利用者は**間違った先へ
   // DNS を向ける**——公開できたつもりで、他人の IP かもしれない先を指すことになる。
   // そこで、この段で**確認できなかったとき（HTTP 失敗・時間切れ）は記録を null にする**。
   // 画面は既にその形を持っている（「IP がまだ取れていません」＋「🔄 IP を取り直す」）。
   // 「分からない」を「前の値」で埋めない（掟1・掟10の `unknown-read-as-ok` と同じ形）。
+  stage(STAGE.publishLbAddress)
   progress('ロードバランサのアドレスを取得しています…')
   const intervalMs = opts.intervalMs ?? LB_ADDRESS_DEFAULT_INTERVAL_MS
   const timeoutMs = opts.timeoutMs ?? LB_ADDRESS_DEFAULT_TIMEOUT_MS
@@ -516,32 +550,38 @@ export async function publishAppFlow(
   // 見せない）。**消せなかったこと自体も黙らせない**——記録に嘘が残ったまま画面に出るため。
   const clearRecordedLbAddresses = () => {
     if (!writeApprunDedicatedRecordFs(projectDir, { lbAddresses: null })) {
-      warnings.push('ロードバランサの IP を確認できませんでしたが、記録から古い IP を消せませんでした。⑧に出ている IP は古い可能性があります（「🔄 IP を取り直す」で確かめてください）。')
+      warnings.push('ロードバランサの IP を確認できませんでしたが、記録から古い IP を消せませんでした。手順8に出ている IP は古い可能性があります（「🔄 IP を再取得」で確かめてください）。')
     }
   }
   for (;;) {
     const lbNodesRes = await listLoadBalancerNodes(auth, clusterID, asgID, loadBalancerID, undefined, baseUrl)
     if (!lbNodesRes.ok) {
       warnings.push(`ロードバランサノードのアドレスを取得できませんでした: ${lbNodesRes.message}`)
+      stage(STAGE.publishLbAddress, UNMEASURED) // 取得に失敗した（IP が付くまでの時間は測れていない）
       clearRecordedLbAddresses()
       break
     }
     lbAddresses = collectBareLbAddresses(lbNodesRes.data)
     if (lbAddresses.length > 0) {
+      // 最初の問い合わせで付いていた（再公開など・待っていない）回は、IP が付くまでの時間の測定ではない。
+      // 保存すると数ミリ秒の値が中央値を引き下げ、目安が「数秒」になる（2026-10-07 検分2巡目）
+      if (lbElapsedMs === 0) stage(STAGE.publishLbAddress, UNMEASURED)
       if (!writeApprunDedicatedRecordFs(projectDir, { lbAddresses })) {
         warnings.push('ロードバランサノードのアドレスを記録できませんでした。')
       }
       break
     }
     if (lbElapsedMs >= timeoutMs) {
-      warnings.push('ロードバランサノードのアドレスが見つかりませんでした。IP が付くまで数分かかることがあります。⑧の「🔄 IP を取り直す」で取り直せます。')
+      warnings.push('ロードバランサノードのアドレスが見つかりませんでした。IP が付くまで数分かかることがあります。数分待ってから、手順8の「🔄 IP を再取得」を押してください。')
+      stage(STAGE.publishLbAddress, UNMEASURED) // 付かないまま上限（3 分）まで待った（付くまでの時間は測れていない）
       clearRecordedLbAddresses()
       break
     }
     await sleep(intervalMs)
     lbElapsedMs += intervalMs
-    // 目安は lbAddressEstimateNote（apprunDedicated.ts・実測 5-13）から引く。「実測では〜でした」と起きたことを言い、断定しない。
-    progress(`ロードバランサの IP が付くのを待っています（${formatLbWaitElapsed(lbElapsedMs)}）。${lbAddressEstimateNote()}。`)
+    // 文に目安は入れない（2026-10-07 作者の決定）。目安は段の内部名（publish.lb-address）から引く仕組み
+    // （shared/stageEstimate.ts）に一本化し、画面が待っている段の横に出す。
+    progress(`ロードバランサの IP が付くのを待っています（${formatLbWaitElapsed(lbElapsedMs)}）…`)
   }
 
   // 12. verify: **「公開しました」と言う前に、アプリが本当に応答しているかを確かめる**（D-7）。
@@ -574,6 +614,7 @@ export async function publishAppFlow(
   const markerTag = String(input.buildTag ?? '').trim()
   if (lbAddresses.length > 0 && spec.host) {
     const mode = dedicatedVerifyMode(input.runtimeKind, markerTag)
+    stage(STAGE.publishVerify) // とばしたとき（else）は段を作らない（0秒の段が目安を引き下げないように）
     progress('🩺 アプリが応答するか確かめています…')
     // F（D-7b・検分の指摘）: この段全体を try/catch で囲む。probe が例外を投げると、
     // 元は publishAppFlow ごと throw し、呼び出し側（IPC）の catch で { ok:false, stage:'invalid' }
@@ -605,6 +646,10 @@ export async function publishAppFlow(
       verify = 'unreachable'
       warnings.push(`応答の確認中にエラーが発生したため、確認できませんでした（公開自体は完了しています）: ${e?.message ?? String(e)}`)
     }
+    // 応答を確かめられなかったとき（503・404・502・つながらない…）は、再試行の待ちを全部使った時間になる。
+    // 「アプリが応答するまでの時間」の測定ではない＝保存しない（結果の「かかった時間を見る」には出る）。
+    // 判断は、同じ公開の古いアクセスキーの片づけ（ipc/apprunDedicated.ts）と同じ `dedicatedVerifySettled`。
+    if (!dedicatedVerifySettled(verify)) stage(STAGE.publishVerify, UNMEASURED)
   } else {
     // ── D-14 A（2026-09-16 の検分）: **黙ってとばさない** ────────────────────────
     // ここは「当てに行く先が無い」入口。IP が取れなかった／ホスト名が無いときは
@@ -613,8 +658,8 @@ export async function publishAppFlow(
     // **どちらの理由でとばしたのか**を1行残す。
     // D-19 以降、**とばす道はここしか無い**（像の種類ではとばさない）。
     warnings.push(lbAddresses.length === 0
-      ? 'ロードバランサの IP が取れなかったため、応答の確認をとばしました（当てに行く先が分からないためです）。⑧の「🔄 IP を取り直す」で IP を取り直し、公開先を開いて表示されるかご自身で確かめてください。'
-      : 'ホスト名が分からないため、応答の確認をとばしました。公開先を開いて、表示されるかご自身で確かめてください。')
+      ? 'ロードバランサの IP を取得できなかったため、応答の確認をスキップしました（確認する宛先が分からないためです）。手順8の「🔄 IP を再取得」を押したうえで、公開先を開いて表示されるかご自身で確かめてください。'
+      : 'ホスト名が分からないため、応答の確認をスキップしました。公開先を開いて、表示されるかご自身で確かめてください。')
   }
 
   // 12.5 containers: **応答していないと分かったときだけ**、いまのコンテナの様子を1回引く（D-8）。
@@ -631,7 +676,9 @@ export async function publishAppFlow(
   // 誘導しないため、ここは 503 のときだけにしておく（掟1）。
   let containerStates: { state: string; status: string }[] | undefined
   if (verify === 'no-backend') {
-    progress('コンテナの様子を確認しています…')
+    // この段に入るのは応答の確認が 503 のとき（＝応答していない回）だけ。ふつうの公開の測定にならないので、保存しない。
+    stage(STAGE.publishContainers, UNMEASURED)
+    progress('コンテナの状態を確認しています…')
     try {
       const containersRes = await listApplicationContainers(auth, appID, baseUrl)
       if (containersRes.ok) {
@@ -643,13 +690,15 @@ export async function publishAppFlow(
         if (states) {
           containerStates = states
         } else {
-          warnings.push('コンテナの様子を取得できませんでした: 応答の形が原本と違うため読み取れませんでした。')
+          // 読み取れなかったのは Koto の読み方が応答と合っていないことがある（2026-10-08 検分 I: 以前の文は「応答の形式が想定と違う」と、
+          // 違っていたのが応答のほうのように書いていた。実際に違っていたのは Koto の読み方で、原本の形に直した）。
+          warnings.push('コンテナの状態を読み取れませんでした（応答にまだコンテナの情報が無いか、Koto の読み方が応答と合っていない可能性があります）。')
         }
       } else {
-        warnings.push(`コンテナの様子を取得できませんでした: ${containersRes.message}`)
+        warnings.push(`コンテナの状態を取得できませんでした: ${containersRes.message}`)
       }
     } catch (e: any) {
-      warnings.push(`コンテナの様子を取得できませんでした: ${e?.message ?? String(e)}`)
+      warnings.push(`コンテナの状態を取得できませんでした: ${e?.message ?? String(e)}`)
     }
   }
 
@@ -657,7 +706,7 @@ export async function publishAppFlow(
   progress('完了しました')
   const message = lbAddresses.length > 0
     ? `公開しました。DNS の A レコードを次の IP に向けてください: ${lbAddresses.join(', ')}`
-    : '公開しました。ロードバランサのアドレスを取得できなかったため、⑧の「🔄 IP を取り直す」で取り直すか、コントロールパネルで確認してから DNS の A レコードを向けてください。'
+    : '公開しました。ロードバランサのアドレスを取得できなかったため、手順8の「🔄 IP を再取得」を押すか、コントロールパネルで確認してから DNS の A レコードを向けてください。'
 
   return {
     // D-7: verify が `ok` でなくても `ok:true` のまま返す（公開の手続き自体は通っているため）。
@@ -671,7 +720,7 @@ export async function publishAppFlow(
   }
 }
 
-// ── ⑧「🔄 IP を取り直す」（D-5）────────────────────────────────────────────────
+// ── 手順8「🔄 IP を取り直す」（D-5）────────────────────────────────────────────────
 //
 // 公開の lb-address 段で IP が空のまま終わったとき（付くまで数分かかる・5-13）に、画面から
 // LB ノードの一覧だけを引き直して、素の IP を記録（`lbAddresses`）へ書く。GET が 1 回と記録の
@@ -692,7 +741,7 @@ export async function refreshLbAddresses(
   const asgID = record.asgID ?? null
   const loadBalancerID = record.loadBalancerID ?? null
   if (!clusterID || !asgID || !loadBalancerID) {
-    return { ok: false, message: '⑤でクラスタを作ってから、IP を取り直してください。' }
+    return { ok: false, message: '手順5でクラスタを作ってから、IP を再取得してください。' }
   }
   const lbNodesRes = await listLoadBalancerNodes(auth, clusterID, asgID, loadBalancerID, undefined, baseUrl)
   if (!lbNodesRes.ok) {
@@ -700,7 +749,7 @@ export async function refreshLbAddresses(
   }
   const lbAddresses = collectBareLbAddresses(lbNodesRes.data)
   if (lbAddresses.length === 0) {
-    return { ok: false, message: 'ロードバランサの IP がまだ付いていません。数分待ってから、もう一度「🔄 IP を取り直す」を押してください。' }
+    return { ok: false, message: 'ロードバランサの IP がまだ付いていません。数分待ってから、もう一度「🔄 IP を再取得」を押してください。' }
   }
   if (!writeApprunDedicatedRecordFs(projectDir, { lbAddresses })) {
     return { ok: false, message: `IP は取れました（${lbAddresses.join(', ')}）が、記録ファイル（.sakuraide.json）に書き込めませんでした。フォルダの権限を確認してください。` }

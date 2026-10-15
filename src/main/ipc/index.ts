@@ -16,6 +16,7 @@ import { registerVercelHandlers } from './vercel'
 import { registerPublishImportHandlers } from './publishImport'
 import { registerPublishMetaHandlers } from './publishMeta'
 import { registerProjectOpsHandlers } from './projectOps'
+import { registerStageTimingHandlers } from './stageTiming'
 import { registerVpsHandlers } from './vps'
 import { registerRagHandlers } from './rag'
 import { registerTermHandlers } from './term'
@@ -52,6 +53,7 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerPublishImportHandlers(deps)
   registerPublishMetaHandlers()
   registerProjectOpsHandlers(deps)
+  registerStageTimingHandlers()
   registerVpsHandlers(deps)
   registerRagHandlers(deps)
   registerTermHandlers(deps)

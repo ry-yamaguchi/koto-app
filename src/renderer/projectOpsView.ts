@@ -24,10 +24,10 @@
 //
 // ── 警告つきの記録は、パネルは「見た」と伝えない（2026-09-30 検分）─────────────────────────────
 //   「見逃してはいけない知らせ」（月額が続く・まだ動いていない・確かめていない…）を持つ記録は、パネルが結果の欄へ**出した**だけでは
-//   見たことにならない。パネルは公開ボタンのずっと下（①〜④の下・⑥⑧の節の中）に結果を出すので、利用者がスクロールせずに閉じると、
+//   見たことにならない。パネルは公開ボタンのずっと下（手順1〜4の下・手順6・8の節の中）に結果を出すので、利用者がスクロールせずに閉じると、
 //   出した瞬間に main へ「見た」と伝えたぶん、二度と出なくなった。隠れているタブのパネルが持っていた分も同じ。
 //   だから警告つきの記録は、**利用者が上部の「結果を確認しました」を押したとき**（PublishModal）にだけ見たことにする
-//   （作者の決定 ②「閉じて開き直しても、『確認しました』を押すまで出る」）。パネルの ack の範囲を決めるここ（ackUpToFor）で、
+//   （作者の決定 (2)「閉じて開き直しても、『確認しました』を押すまで出る」）。パネルの ack の範囲を決めるここ（ackUpToFor）で、
 //   警告つきの記録を必ず止める——各画面が別々に除外を書くと、1つの画面だけ抜けて警告が黙って消える。
 //   警告の無い記録（成功・警告の無い失敗）は、これまでどおり、パネルが出したら見たことにする。
 //
@@ -44,8 +44,10 @@ type OwnedRecord = { target?: string; handler?: string } | null | undefined
 export const DEDICATED_TARGET = 'sakura-apprun-dedicated'
 
 /**
- * 専有型のパネル（⑤作成・⑥すべて削除・⑧公開）が受け持つ IPC と、その種類。
- * 📡 一覧の「アプリだけ破棄」（apprunDedicated:teardownApp）は**含めない**——一覧の持ち場で、パネルは出さない。
+ * 専有型のパネル（手順5 作成・手順6 すべて削除・手順8 公開）が受け持つ IPC と、その種類。
+ * 2026-10-08 から、📡 一覧の専有型の「🗑 破棄」も手順6と**同じ** apprunDedicated:teardown（アプリだけを消す口は廃止した）。
+ * どちらの画面から始めた削除も記録は同じなので、どちらの画面でも進み具合と結果を読める（📡 の行は削除だけを受け持つ・
+ * `watchDedicatedOps` の `kinds`）。
  * `dedicatedOpKind`（apprunDedicatedActions.ts）はこの表を引く（複製しない）。
  */
 export const DEDICATED_PANEL_HANDLERS: Readonly<Record<string, 'create' | 'teardown' | 'publish'>> = Object.freeze({
@@ -60,7 +62,7 @@ export const isHanamiiOp = (r: OwnedRecord): boolean => !!r && r.target === 'han
 export const isVercelOp = (r: OwnedRecord): boolean => !!r && r.target === 'vercel'
 /** さくらのAppRun 共用型の画面（AppRunPanel）の記録か。専有型は別のパネル。 */
 export const isSharedTypeOp = (r: OwnedRecord): boolean => !!r && r.target === 'sakura-apprun'
-/** 専有型の画面（AppRunDedicatedPanel）の⑤⑥⑧の記録か。 */
+/** 専有型の画面（AppRunDedicatedPanel）の手順5・6・8の記録か。 */
 export const isDedicatedPanelOp = (r: OwnedRecord): boolean =>
   !!r && r.target === DEDICATED_TARGET && typeof r.handler === 'string'
   && Object.prototype.hasOwnProperty.call(DEDICATED_PANEL_HANDLERS, r.handler)

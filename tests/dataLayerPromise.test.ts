@@ -58,8 +58,8 @@ describe('AI への説明文が、Koto の実物と合っている', () => {
 
 // ── 実物のアプリが壊れていた4つの形を、説明文で塞ぐ（2026-09-24）──────────
 // docs/storage-options.md の調査で、公開中のアプリ（ScheduleAPP）が4つの形で
-// 壊れていた: ①全件を1レコードに詰める ②変更のたび全件を PUT ③インスタンスが
-// 増えて互いに上書き ④remove を import しているのに一度も呼ばず、消した件が復活。
+// 壊れていた: (1)全件を1レコードに詰める (2)変更のたび全件を PUT (3)インスタンスが
+// 増えて互いに上書き (4)remove を import しているのに一度も呼ばず、消した件が復活。
 // **AI への説明文が、この4つを一度も止めていなかった。**
 describe('AI への説明文が、実物で起きた壊れ方を止めている', () => {
   it('★ 全件を1レコードに詰めさせない（今回の事故の原因）', () => {
@@ -95,10 +95,10 @@ describe('AI への説明文が、実物で起きた壊れ方を止めている'
 // ── 約束が、いちばん通る道でも守られているか（2026-09-23 検分）────────────
 //
 // 説明文は「koto-data のファイルは Koto が用意します」と言い切っている。
-// ところが置く入口は、③公開の「保存場所を用意する」と「AIに書き直してもらう」の
-// 2つだけだった。利用者が ① 作る で「問い合わせを保存して」と頼むと、AI はこの
+// ところが置く入口は、【公開】の「保存場所を用意する」と「AIに書き直してもらう」の
+// 2つだけだった。利用者が「作る」で「問い合わせを保存して」と頼むと、AI はこの
 // 説明文どおり koto-data を使うコードを書くが、その時点ではどちらのファイルも無い。
-// そのまま ② 試す を押すと `Cannot find module './koto-data.cjs'` で起動しない。
+// そのまま「試す」を押すと `Cannot find module './koto-data.cjs'` で起動しない。
 //
 // **今回の事故とまったく同じ形（存在しないファイルからの読み込み）が、入口を
 // 変えて残っていた。** 走らせる／公開する直前にも必ず通すこと。
@@ -119,10 +119,10 @@ describe('「Koto が用意します」の約束が、実行と公開の直前�
     return i
   }
 
-  // ★ いちばん通る道（① 作る → すぐ ② 試す）
-  it('② 試す は、走らせる直前に koto-data を用意する', () => {
+  // ★ いちばん通る道（「作る」→ すぐ「試す」）
+  it('「試す」は、走らせる直前に koto-data を用意する', () => {
     const src = read('src/renderer/components/WorkflowBar.tsx')
-    const ensure = at(src, 'await api.storage.ensureLayer(projectDir)', '② 試す で ensureLayer を通していない')
+    const ensure = at(src, 'await api.storage.ensureLayer(projectDir)', '「試す」で ensureLayer を通していない')
     // **handleRun の中で、実行方法を決めるより前**であること（位置まで縛る）
     const handleRun = at(src, 'async function handleRun()', 'handleRun が見つからない')
     const plan = at(src, 'const plan = await planRun(', '実行方法を決める処理（planRun）が見つからない')
@@ -164,7 +164,7 @@ describe('「Koto が用意します」の約束が、実行と公開の直前�
     expect(ensure, 'ファイルを集めたあとに koto-data を置いている').toBeLessThan(collect)
   })
 
-  // ★ 専有型の AppRun（⑧）。**ここだけ数え上げから漏れていた**（2026-09-25 検分・指摘#34）。
+  // ★ 専有型の AppRun（手順8）。**ここだけ数え上げから漏れていた**（2026-09-25 検分・指摘#34）。
   //   振る舞いは tests/dedicatedDataLayer.test.ts が実行で固定しているが、「経路を数え上げる」
   //   見張りは、**6つ目の公開先が増えたときに抜けを拾う唯一の場所**なので1件だけ古い数のまま
   //   残していた。ここに並べておけば、次に足りない経路が出たときにこの describe で見つかる。
@@ -177,7 +177,7 @@ describe('「Koto が用意します」の約束が、実行と公開の直前�
     expect(ensure, '像を組み立てたあとに koto-data を置いている（像には入らない）').toBeLessThan(image)
   })
 
-  // ★ 数え上げそのもの。**公開先は5つ（＋② 試す）**。増えたらここで気づく
+  // ★ 数え上げそのもの。**公開先は5つ（＋「試す」）**。増えたらここで気づく
   it('★ 公開の経路を、1つも落とさずに数え上げている', () => {
     const ROUTES: readonly { rel: string; needle: string }[] = [
       { rel: 'src/main/ipc/cloud.ts', needle: 'ensureDataLayer(resolvePublishRoot(projectDir), projectDir)' },           // 共用型 AppRun
@@ -185,7 +185,7 @@ describe('「Koto が用意します」の約束が、実行と公開の直前�
       { rel: 'src/main/ipc/hanamii.ts', needle: 'ensureDataLayer(root, projectDir)' },                                   // HANAMII
       { rel: 'src/main/ipc/vercel.ts', needle: 'ensureDataLayer(resolvePublishRoot(projectDir), projectDir)' },          // Vercel
       { rel: 'src/renderer/components/PublishModal.tsx', needle: 'await window.electronAPI.storage.ensureLayer(projectDir)' }, // レンタルサーバ
-      { rel: 'src/renderer/components/WorkflowBar.tsx', needle: 'await api.storage.ensureLayer(projectDir)' },           // ② 試す
+      { rel: 'src/renderer/components/WorkflowBar.tsx', needle: 'await api.storage.ensureLayer(projectDir)' },           // 「試す」
     ]
     for (const { rel, needle } of ROUTES) {
       at(read(rel), needle, `${rel} で koto-data を用意していない（この経路だけ約束が守られない）`)
@@ -199,18 +199,19 @@ describe('「Koto が用意します」の約束が、実行と公開の直前�
 
   // ★ いつ置くのかを書く（条件を付けずに言い切ると、また守れない約束になる）
   it('いつ置くのかを、実物どおりに書いている', () => {
-    expect(IDE_CONTEXT).toContain('「② 試す」「③ 公開」を押した直前に')
+    expect(IDE_CONTEXT).toContain('「試す」「公開」を押した直前に')
+    expect(IDE_CONTEXT, '旧い丸数字の呼び方が戻っている').not.toContain('「② 試す」「③ 公開」を押した直前に')
   })
 })
 
 // ── AI への説明文と、テンプレートの説明が食い違わない（2026-09-24 検分）────
 //
-// ① list の例が limit と where/sort を1つにまとめていた。AI は例を丸ごと真似るので、
+// (1) list の例が limit と where/sort を1つにまとめていた。AI は例を丸ごと真似るので、
 //    limit を付けているのに全件読みへ落ちるコードが量産される（テンプレート冒頭は
 //    「where や sort を指定すると、limit を付けていても全件を読みます」と書いてある）。
-// ② id の話が1行も無かった。自分で決めた id が1件でも混ざると、そのコレクションは
+// (2) id の話が1行も無かった。自分で決めた id が1件でも混ざると、そのコレクションは
 //    limit を付けても速くならない。しかも動作は正しいままなので誰も気づけない。
-// ③ save が返したレコードを使い続けることを言っていなかった。読んだ写しを持ち回して
+// (3) save が返したレコードを使い続けることを言っていなかった。読んだ写しを持ち回して
 //    保存し直すと、2回目から断られる（公開中のアプリが、まさにその形だった）。
 describe('AI への説明文が、速くならない書き方を止めている', () => {
   it('★ 速くしたいときの例と、絞り込みの例を分けている', () => {

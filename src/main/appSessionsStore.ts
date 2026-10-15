@@ -29,7 +29,7 @@ import { applyConversationOps, flushConversations, dropConversation } from './ch
  * の入口で呼ぶ。
  */
 function assertValidWorkspaceDir(dir: unknown): asserts dir is string {
-  if (!isValidWorkspaceDir(dir)) throw new Error('不正なワークスペースパスです')
+  if (!isValidWorkspaceDir(dir)) throw new Error('プロジェクトを置くフォルダの指定が正しくありません')
 }
 
 export type AppSessionMeta = {
@@ -316,7 +316,7 @@ export function ensureSessionProject(
     assertValidWorkspaceDir(workspaceDir)
     assertValidWorkspaceDir(projectWorkspaceDir)
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? '不正なワークスペースパスです' }
+    return { ok: false, message: e?.message ?? 'プロジェクトを置くフォルダの指定が正しくありません' }
   }
   if (!isValidSessionId(id)) return { ok: false, message: '不正な会話IDです' }
 

@@ -84,8 +84,8 @@ describe('目印を置けなかった知らせ（markerNote）を、画面まで
   })
 
   it('★★ 用意そのものに失敗したときは、main の理由をそのまま出す（黙らない）', () => {
-    const lines = storagePrepareLines({ ok: false, message: '保存場所『x』が一覧に現れません。' })
-    expect(lines.error).toBe('保存場所『x』が一覧に現れません。')
+    const lines = storagePrepareLines({ ok: false, message: '保存場所『x』が一覧に見つかりません。' })
+    expect(lines.error).toBe('保存場所『x』が一覧に見つかりません。')
     expect(lines.done).toBe('')
     expect(lines.warn).toBe('')
   })
@@ -212,8 +212,9 @@ describe('ensureLayer を呼ぶ経路は、どちらも「覚える側」を通�
 
     // ② そのあと「一緒に移してもらう」で実際に差し替わったら、その場で書き換わる
     const replaced = rememberLayerLine(PROJECT, { ok: true, placed: true, file: 'koto-data.cjs', replaced: true } as any)
-    expect(replaced).toContain('新しい版に差し替えました')
-    expect(readDataLayerLine(PROJECT)).toContain('新しい版に差し替えました')
+    expect(replaced).toContain('新しいバージョンに差し替えました')
+    expect(readDataLayerLine(PROJECT)).toContain('新しいバージョンに差し替えました')
+    expect(replaced).not.toContain('新しい版に') // 0.6.21（作者の決定 2026-10-01）: 「版」（バージョンの意味）は「バージョン」に揃えた。直す前の言い方は戻さない
     expect(readDataLayerLine(PROJECT)).not.toContain('そのままにしました')
 
     // ③ 言うことが無くなったら消す（古い話を出し続けない）

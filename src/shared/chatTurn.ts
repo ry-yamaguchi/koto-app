@@ -107,7 +107,7 @@ export type TurnHelpers = {
   unexecutedToolWarning(sawMarkup: boolean, usedTools: boolean, currentModel?: string): string | null
   claimsFileChange(text: string): boolean
   unexecutedChangeWarning(claims: boolean, wrote: boolean, currentModel?: string): string | null
-  /** 直前の返事と同一の案内段落（②試す等の定型文）を取り除く（2026-08-30・aiToolsCore.ts）。 */
+  /** 直前の返事と同一の案内段落（【試す】等の定型文）を取り除く（2026-08-30・aiToolsCore.ts）。 */
   stripRepeatedGuidance(content: string, prevAssistant: string | null | undefined): string
   // ⚠️ 仕様書は (name, argsJson) の2引数としていたが、実体（aiTools.ts）は
   // isToolArgsComplete(args) の1引数。呼び出し側（tc.function?.arguments のみ渡す）に合わせた。
@@ -816,8 +816,8 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           // （removeLast で返答を消す＋「いますぐ変更を実行して」と命じる）は、
           // 誤検知のとき**本物の答えを消し**、さらに**頼まれていない書き込みの
           // でっち上げ**を誘発した（モデルは命令に従って text.txt へ追記した）。
-          // だから守りを非破壊にする: ①返答は消さない（下に確認中の印を添える）
-          // ②指示に「変更が不要なら実行せず、その旨を答える」逃げ道を用意する。
+          // だから守りを非破壊にする: (1)返答は消さない（下に確認中の印を添える）
+          // (2)指示に「変更が不要なら実行せず、その旨を答える」逃げ道を用意する。
           // 真陽性（嘘の完了報告）への効き目は変わらない——促されて書けば実行され、
           // 書かなければ下の unexecutedChangeWarning が従来どおり本文に付く。
           if (ports.h.claimsFileChange(r.content) && !wroteFiles && !askedToActuallyWrite
@@ -845,7 +845,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
             })
             continue
           }
-          // 直前の返事と同一の案内定型文（②試す等）は取り除く（2026-08-30 実機・Ryosuke 指摘:
+          // 直前の返事と同一の案内定型文（【試す】等）は取り除く（2026-08-30 実機・Ryosuke 指摘:
           // プロンプトの「連続で繰り返さない」指示を Kimi K2.7 が無視して毎ターン付けてきた。
           // 判定はコードで＝stripToolMarkup と同じ発想。h.stripRepeatedGuidance のコメント参照）。
           const shown = ports.h.stripRepeatedGuidance(r.content, prevAssistantContent)

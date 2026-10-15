@@ -259,9 +259,9 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
         )}
       </div>
 
-      {/* ① トークン（AccessKeySection に統一・判断8） */}
+      {/* 手順1 トークン（AccessKeySection に統一・判断8） */}
       <AccessKeySection
-        stepNo="①"
+        stepNo="手順1"
         serviceTitle="Vercel"
         keyLabel="トークン"
         registered={!!token}
@@ -293,13 +293,13 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
       {/* 🔰 初めて公開する方へ */}
       {token && <VercelFirstTimeGuide />}
 
-      {/* ② セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
-      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="②" />
+      {/* 手順2 セキュリティチェック（公開の前に・2026-08-21 Ryosuke 指定。番号は2026-09-04 付番） */}
+      <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順2" />
 
-      {/* ③ 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
-      <UnusedFilesSection projectDir={projectDir} stepNo="③" />
+      {/* 手順3 未使用ファイルの検出＋片づけ（roadmap #18。番号は2026-09-04 付番） */}
+      <UnusedFilesSection projectDir={projectDir} stepNo="手順3" />
 
-      {/* ④ 公開 */}
+      {/* 手順4 公開 */}
         {/* 公開できるかの確認。**駄目なものには「どうすればよいか」まで書く**
             （AppRun の cloud:preflight と同じ流儀・2026-08-15） */}
         {preflight && (
@@ -344,7 +344,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
 
       {token && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
-          <p className="text-sm font-semibold text-ink">④ 公開</p>
+          <p className="text-sm font-semibold text-ink">手順4 公開</p>
           <div>
             <label className="text-[11px] font-medium text-ink-secondary">公開名（半角英数字とハイフン・任意）</label>
             <input

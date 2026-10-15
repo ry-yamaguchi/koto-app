@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { runCreate, runTeardown, runPublishApp, shouldShowCreateResult, shouldShowTeardownResult, shouldShowPublishSection } from '../src/renderer/apprunDedicatedActions'
 import { panelBusy, panelBusyReason } from '../src/renderer/apprunDedicatedActions'
 import { teardownConfirmMessage } from '../src/renderer/apprunDedicatedActions'
-import { shouldShowTeardownButton, storageLeftoverNote, shouldClearPublishRecord } from '../src/renderer/apprunDedicatedActions'
+import { shouldShowTeardownButton, storageLeftoverNote } from '../src/renderer/apprunDedicatedActions'
 import { teardownDataNote, teardownDataNoteForAll } from '../src/shared/teardownSupport'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 // apprunDedicatedActions.test.ts — AppRunDedicatedPanel.tsx の「確認→IPC」を、React/DOM から
@@ -164,13 +164,13 @@ describe('runTeardown: confirm を通らなければ teardown は一切呼ばれ
 
 // ── B-2（2026-09-10 実機・Ryosuke さん指摘「消した後の表示が変」） ──────────────────────
 //
-// 破棄（⑥）が成功して記録（apprunState）が空になったのに、⑤の節に古い「✅ 作成できました」
-// （前回の createResult）がそのまま出続けていた。かつ、⑥の結果表示自体も「記録がある間だけ」
+// 破棄（手順6）が成功して記録（apprunState）が空になったのに、手順5の節に古い「✅ 作成できました」
+// （前回の createResult）がそのまま出続けていた。かつ、手順6の結果表示自体も「記録がある間だけ」
 // 描く節の中にあったため、破棄が完了した瞬間に自分の「✅ すべて削除しました」も一緒に消えていた。
 // shouldShowCreateResult / shouldShowTeardownResult は、この2つの表示判断を React/DOM から
 // 切り離した純関数として固定する（掟10）。
 
-describe('shouldShowCreateResult: ⑤の結果ブロックを出すか', () => {
+describe('shouldShowCreateResult: 手順5の結果ブロックを出すか', () => {
   it('createResult が無ければ出さない', () => {
     expect(shouldShowCreateResult(null, { clusterID: 'c1' })).toBe(false)
     expect(shouldShowCreateResult(undefined, { clusterID: 'c1' })).toBe(false)
@@ -196,13 +196,13 @@ describe('shouldShowCreateResult: ⑤の結果ブロックを出すか', () => {
   })
 })
 
-describe('shouldShowTeardownResult: ⑥の結果ブロックを出すか', () => {
+describe('shouldShowTeardownResult: 手順6の結果ブロックを出すか', () => {
   it('teardownResult が無ければ出さない', () => {
     expect(shouldShowTeardownResult(null)).toBe(false)
     expect(shouldShowTeardownResult(undefined)).toBe(false)
   })
 
-  it('teardownResult があれば、ok/ng を問わず常に出す（⑥の節＝hasAnyResourceの有無に関係なく。記録が空になっても結果自体は隠さない）', () => {
+  it('teardownResult があれば、ok/ng を問わず常に出す（手順6の節＝hasAnyResourceの有無に関係なく。記録が空になっても結果自体は隠さない）', () => {
     expect(shouldShowTeardownResult({ ok: true, executed: [], message: 'ok', remaining: {} })).toBe(true)
     expect(shouldShowTeardownResult({ ok: false, executed: [], message: 'ng', remaining: {} })).toBe(true)
     // inProgress で止まったときも同様（値の形そのものは見ない＝「今の値をそのまま出すか」だけを判定する）。
@@ -210,7 +210,7 @@ describe('shouldShowTeardownResult: ⑥の結果ブロックを出すか', () =>
   })
 })
 
-// ── D-4（2026-09-15）: ⑧「アプリを公開する」──────────────────────────────────────
+// ── D-4（2026-09-15）: 手順8「アプリを公開する」──────────────────────────────────────
 // runCreate と同じ形の歯止め（confirm が false なら publish を一度も呼ばない）を、偽の
 // confirm/publish/activity の**呼び出し回数**で固定する（文字列一致ではない・掟10）。
 // 変異(a)「confirm を見ずに publish を呼ぶ」は「confirm=false → publish 0回」のケースが検知する。
@@ -291,7 +291,7 @@ describe('runPublishApp: confirm を通らなければ publish は一切呼ば�
 
 // 変異(c)「記録が無くても true」は null/undefined/{} → false のケースが検知する。
 // OR（1つでもあれば）に書き換える変異は「一部欠け → false」のケースが検知する。
-describe('shouldShowPublishSection: ⑧の節はクラスタ・ASG・LB の3つが揃っているときだけ出す', () => {
+describe('shouldShowPublishSection: 手順8の節はクラスタ・ASG・LB の3つが揃っているときだけ出す', () => {
   it('記録が無ければ出さない（null / undefined / 空）', () => {
     expect(shouldShowPublishSection(null)).toBe(false)
     expect(shouldShowPublishSection(undefined)).toBe(false)
@@ -299,7 +299,7 @@ describe('shouldShowPublishSection: ⑧の節はクラスタ・ASG・LB の3つ�
     expect(shouldShowPublishSection({ clusterID: null, asgID: null, loadBalancerID: null })).toBe(false)
   })
 
-  it('一部だけ（⑤の途中で止まった状態）では出さない（shouldShowCreateResult の OR とは違う・AND）', () => {
+  it('一部だけ（手順5の途中で止まった状態）では出さない（shouldShowCreateResult の OR とは違う・AND）', () => {
     expect(shouldShowPublishSection({ clusterID: 'c1' })).toBe(false)
     expect(shouldShowPublishSection({ clusterID: 'c1', asgID: 'a1' })).toBe(false)
     expect(shouldShowPublishSection({ asgID: 'a1', loadBalancerID: 'l1' })).toBe(false)
@@ -311,9 +311,9 @@ describe('shouldShowPublishSection: ⑧の節はクラスタ・ASG・LB の3つ�
   })
 })
 
-// ── H-1（2026-09-17）: ⑤⑥⑦⑧ を同時に走らせない ────────────────────────────────
-// 横断点検（6視点）のうち4つが独立に同じ欠陥へ収束した。⑥の破棄は実測で約9分かかり、
-// そのあいだ⑧「公開する」が押せていた。割り込むと記録が交錯し、applicationID があるのに
+// ── H-1（2026-09-17）: 手順5・6・7・8 を同時に走らせない ────────────────────────────────
+// 横断点検（6視点）のうち4つが独立に同じ欠陥へ収束した。手順6の破棄は実測で約9分かかり、
+// そのあいだ手順8「公開する」が押せていた。割り込むと記録が交錯し、applicationID があるのに
 // clusterID が無い状態になって **Koto からは二度と消せない**（課金が止まらない）。
 
 describe('panelBusy: この節で何かが走っているか', () => {
@@ -337,9 +337,12 @@ describe('panelBusy: この節で何かが走っているか', () => {
 
 describe('panelBusyReason: 押せない理由を名指しする', () => {
   it('★ 理由の分からない無効化にしない（何が走っているかを書く）', () => {
-    expect(panelBusyReason({ tearingDown: true })).toContain('⑥')
-    expect(panelBusyReason({ publishing: true })).toContain('⑧')
-    expect(panelBusyReason({ creating: true })).toContain('⑤')
+    expect(panelBusyReason({ tearingDown: true })).toContain('手順6')
+    expect(panelBusyReason({ publishing: true })).toContain('手順8')
+    expect(panelBusyReason({ creating: true })).toContain('手順5')
+    for (const reason of [panelBusyReason({ tearingDown: true }), panelBusyReason({ publishing: true }), panelBusyReason({ creating: true })]) {
+      expect(reason, '案内に丸数字が戻っている（2026-10-07・作者の決定）').not.toMatch(/[①-⑳]/)
+    }
   })
 
   it('何も走っていなければ空文字（画面は何も出さない）', () => {
@@ -356,28 +359,28 @@ function codeOnlyPanel(src: string): string {
     .join('\n')
 }
 
-describe('画面の配線: ⑤⑥⑦⑧ の操作はすべて panelBusy で止まる', () => {
+describe('画面の配線: 手順5・6・7・8 の操作はすべて panelBusy で止まる', () => {
   const panel = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf8'))
   const BUSY = 'panelBusy({ creating, tearingDown, publishing, lbRefreshing })'
 
-  it('★ ⑧の公開ボタンが、破棄の最中でも無効になる（今回の穴そのもの）', () => {
+  it('★ 手順8の公開ボタンが、破棄の最中でも無効になる（今回の穴そのもの）', () => {
     expect(panel).toContain(`disabled={publishErrors.length > 0 || ${BUSY}}`)
     // 直す前の形（publishing しか見ない）を禁じる。
     expect(panel).not.toContain('disabled={publishErrors.length > 0 || publishing}')
   })
 
-  it('★ ⑥の破棄ボタンが、公開の最中でも無効になる（逆向き）', () => {
+  it('★ 手順6の破棄ボタンが、公開の最中でも無効になる（逆向き）', () => {
     expect(panel).toContain(`disabled={${BUSY}}`)
     expect(panel).not.toContain('disabled={tearingDown}')
   })
 
-  it('★ ⑤の作成ボタン・IP の取り直しも同じ判定を通る', () => {
+  it('★ 手順5の作成ボタン・IP の取り直しも同じ判定を通る', () => {
     expect(panel).toContain(`disabled={hasErrors || ${BUSY}}`)
     expect(panel).not.toContain('disabled={hasErrors || creating}')
     expect(panel).not.toContain('disabled={lbRefreshing}')
   })
 
-  it('★ ⑦のつなぐボタンも同じ判定を通る', () => {
+  it('★ 手順7のつなぐボタンも同じ判定を通る', () => {
     expect(panel).toContain(`disabled={telemetryBusyKind === kind || ${BUSY}}`)
     expect(panel).not.toContain('disabled={telemetryBusyKind === kind || tearingDown}')
   })
@@ -393,13 +396,13 @@ describe('画面の配線: ⑤⑥⑦⑧ の操作はすべて panelBusy で止�
   })
 })
 
-// ── ⑥の確認ダイアログの文面（2026-09-24 Ryosuke 決定「①は案2・一貫性が重要」）────────────
+// ── 手順6の確認ダイアログの文面（2026-09-24 Ryosuke 決定「(1)は案2・一貫性が重要」）────────────
 //
-// 案2 では⑥の破棄で**利用者のデータが実際に消える**。それを名指ししない確認は嘘になる。
+// 案2 では手順6の破棄で**利用者のデータが実際に消える**。それを名指ししない確認は嘘になる。
 // 以前の文面は「次を削除します: アプリ…・クラスタ…／この操作は元に戻せません。
 // 消さない限り課金が続きます。」で、**保存場所が一覧に入っていなかった。**
 
-describe('⑥の確認ダイアログ: 保存場所を名指しする（案2）', () => {
+describe('手順6の確認ダイアログ: 保存場所を名指しする（案2）', () => {
   const TARGETS = ['アプリ『myapp』', 'ロードバランサ『lb-z』', 'クラスタ『cluster-x』']
   const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
 
@@ -455,14 +458,14 @@ describe('⑥の確認ダイアログ: 保存場所を名指しする（案2）'
   })
 })
 
-// ── ⑥の確認ダイアログ: 消える保存場所を**全件**名指しする（2026-09-25 検分の指摘15・V6）──
+// ── 手順6の確認ダイアログ: 消える保存場所を**全件**名指しする（2026-09-25 検分の指摘15・V6）──
 //
-// ⑥の破棄は `teardownStorageForProject` が env.json の同意済みの保存場所を**全件**片づける。
+// 手順6の破棄は `teardownStorageForProject` が env.json の同意済みの保存場所を**全件**片づける。
 // ところが確認の本文は `storage:placement` の先頭1件だけで組み立てていたので、2件ある状態では
 // 『A』しか出ないまま、**名前が一度も出なかった『B』とその中のデータまで消えた**。
 // 元に戻せない削除を、名指ししないまま実行させてはいけない（掟10「お金・破壊の歯止め」）。
 
-describe('⑥の確認ダイアログ: 保存場所が2件あるとき、両方を名指しする（指摘15）', () => {
+describe('手順6の確認ダイアログ: 保存場所が2件あるとき、両方を名指しする（指摘15）', () => {
   const TARGETS = ['クラスタ『cluster-x』']
   const A = { bucket: 'koto-data-a', prefix: 'projects/myapp/', shared: true }
   const B = { bucket: 'koto-data-b', prefix: 'projects/myapp/', shared: true }
@@ -536,34 +539,52 @@ describe('⑥の確認ダイアログ: 保存場所が2件あるとき、両方�
   })
 })
 
-describe('⑥の確認ダイアログ: 画面が純関数を通している（組み立て直していない）', () => {
+describe('手順6の確認ダイアログ: 画面は文を組み立てず、共有の1つの関数（buildDedicatedTeardownConfirm）を通す', () => {
   const panel = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf8'))
+  const flow = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/dedicatedTeardownFlow.ts'), 'utf8'))
 
-  it('★ doTeardown は teardownConfirmMessage に placements（全件）と teardownDataNoteForAll を渡す', () => {
-    // 2026-09-24 検分の指摘7: 「保存場所まで片づけるか」の判断は shared の純関数に置き、
-    // 📡 一覧（scope:'list'）と⑥（scope:'full'）の両方がそこを通る。
-    // 2026-09-25 検分の指摘15: ⑥は保存場所を**全件**片づけるので、確認の本文も全件（placements）。
+  it('★ 確認の文を作るのは dedicatedTeardownFlow.ts の1か所。teardownConfirmMessage に placements（全件）と teardownDataNoteForAll を渡す', () => {
+    // 2026-09-24 検分の指摘7: 「保存場所まで片づけるか」の判断は shared の純関数に置く。専有型の削除は
+    // 2026-10-08 から、手順6も 📡 の 🗑 も scope:'full'（保存場所まで片づける）。
+    // 2026-09-25 検分の指摘15: 保存場所は**全件**片づけるので、確認の本文も全件（placements）。
     // **呼び出しの形ごと**見る（'placements,' だけを探すと、ほかの行にも当たって素通りする）。
-    expect(panel).toContain(`const confirmMessage = teardownConfirmMessage({
-      targets,
-      placements,
-      dataNote: teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'full', placements }),
-      otherTargets,
-    })`)
+    expect(flow).toContain(`const body = teardownConfirmMessage({
+    targets: dedicatedTeardownTargets(facts.record),
+    placements: facts.placements,
+    dataNote: teardownDataNoteForAll({ target: DEDICATED, scope: 'full', placements: facts.placements }),
+    otherTargets: facts.otherTargets,
+    waitNote: lbWaitNote(facts.record, facts.lbEstimateLine) ?? undefined,
+  })`)
     // 先頭1件だけを渡す形へ戻っていないこと（この行が戻ると『B』が名指しされないまま消える）
-    expect(panel).not.toContain("dataNote: teardownDataNoteFor({ target: 'sakura-apprun-dedicated', scope: 'full', placement }),")
-    expect(panel).not.toContain('const placement = placements[0]')
-    // 2026-09-24 検分の指摘2: 巻き添えになる公開先の名前は、公開記録を読むだけで足りる。
-    expect(panel).toContain('const otherTargets = (await readPublishTargets(projectDir).catch(() => []))')
-    expect(panel).toContain('otherTargets,')
-    // 直す前の文面が残っていない（画面の中で組み立て直すと、テストが効かなくなる）
-    expect(panel).not.toContain('この操作は元に戻せません。消さない限り課金が続きます。よろしいですか？')
+    expect(flow).not.toContain("teardownDataNoteFor({ target")
+    expect(flow).not.toContain('placements[0]')
+    // 2026-09-24 検分の指摘2: 巻き添えになる公開先の名前は、公開記録を読むだけで足りる（材料の読み方も共有）。
+    // 2026-10-08 検分 A: 読めなかったら**投げる**版（空に倒す readPublishTargets に戻すと、「ほかの公開先の記録を読めなかった」注意が本物の口では立たない）。
+    expect(flow).toContain("otherTargets: async dir => (await readPublishTargetsOrThrow(dir)).filter(t => t !== DEDICATED).map(t => PUBLISH_TARGET_LABEL[t]),")
+    expect(flow).not.toContain('(await readPublishTargets(dir))')
+    expect(flow).not.toContain("import { readPublishTargets } from './publishRecord'")
+    // 画面（パネル）には確認の文を組み立てる処理が無い（組み立て直すと、📡 と食い違う）。
+    expect(panel).not.toContain('teardownConfirmMessage(')
+    expect(panel).not.toContain('teardownDataNoteForAll(')
+    expect(panel).not.toContain('readPublishTargets(')
+    expect(panel).toContain('runDedicatedTeardown(projectDir, electronTeardownDeps(projectDir, {')
+    // 直す前の文面が残っていない
+    expect(flow).not.toContain('この操作は元に戻せません。消さない限り課金が続きます。よろしいですか？')
+  })
+
+  it('★ teardownConfirmMessage の呼び出しは src 全体で dedicatedTeardownFlow.ts の1か所だけ（確認の文を作る関数は1つ）', () => {
+    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => {
+      const f = join(dir, e.name)
+      return e.isDirectory() ? walk(f) : /\.(ts|tsx)$/.test(e.name) ? [f] : []
+    })
+    const holders = walk(join(__dirname, '../src')).filter(f => codeOnlyPanel(readFileSync(f, 'utf8')).includes('teardownConfirmMessage({'))
+    expect(holders.map(f => f.split('/src/')[1])).toEqual(['renderer/dedicatedTeardownFlow.ts'])
   })
 })
 
-// ── 2026-09-24 検分の指摘1・2・4: ⑥を押し直せるか／巻き添えを言うか／幽霊を残さないか ────────
+// ── 2026-09-24 検分の指摘1・2・4: 手順6を押し直せるか／巻き添えを言うか／幽霊を残さないか ────────
 
-describe('⑥の確認ダイアログ: 保存場所を共有しているほかの公開先を名指しする（指摘2）', () => {
+describe('手順6の確認ダイアログ: 保存場所を共有しているほかの公開先を名指しする（指摘2）', () => {
   const TARGETS = ['クラスタ『cluster-x』']
   const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
 
@@ -593,19 +614,27 @@ describe('⑥の確認ダイアログ: 保存場所を共有しているほか�
   })
 })
 
-describe('⑥「すべて削除する」を押し直せるか（指摘1）', () => {
+describe('手順6「すべて削除する」を押し直せるか（指摘1）', () => {
   it('★★ 計算資源が空でも、保存場所だけ残っていればボタンを出す', () => {
-    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: 'koto-data-x' })).toBe(true)
+    expect(shouldShowTeardownButton({ record: { storageLeftoverBucket: 'koto-data-x' } })).toBe(true)
   })
 
   it('★★ 計算資源も保存場所も無ければ出さない（押しても何も起きないボタンを作らない）', () => {
-    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: null })).toBe(false)
-    expect(shouldShowTeardownButton({ hasAnyResource: false })).toBe(false)
-    expect(shouldShowTeardownButton({ hasAnyResource: false, storageLeftoverBucket: '' })).toBe(false)
+    expect(shouldShowTeardownButton({ record: { storageLeftoverBucket: null } })).toBe(false)
+    expect(shouldShowTeardownButton({ record: {} })).toBe(false)
+    expect(shouldShowTeardownButton({ record: null })).toBe(false)
+    expect(shouldShowTeardownButton({})).toBe(false)
+    expect(shouldShowTeardownButton({ record: { storageLeftoverBucket: '' } })).toBe(false)
   })
 
   it('★ 計算資源があれば従来どおり出す', () => {
-    expect(shouldShowTeardownButton({ hasAnyResource: true, storageLeftoverBucket: null })).toBe(true)
+    expect(shouldShowTeardownButton({ record: { clusterID: 'c1', storageLeftoverBucket: null } })).toBe(true)
+  })
+
+  // 2026-10-08 検分 E: 手順6のボタンは、📡 の 🗑 が破壊の確認を出す判断（dedicatedTeardownHasWork）と同じ1つ。
+  // アプリのID だけの記録も「消すもの」に数える（以前は手順6だけが クラスタ・ASG・LB の3つで判断していた）。
+  it('★★ アプリのIDだけの記録でも出す（📡 の 🗑 と同じ判断）', () => {
+    expect(shouldShowTeardownButton({ record: { applicationID: 'app1' } })).toBe(true)
   })
 
   it('★★ 残っているバケット名と「もう一度押すと片づく」ことを言う', () => {
@@ -618,26 +647,5 @@ describe('⑥「すべて削除する」を押し直せるか（指摘1）', () 
   })
 })
 
-describe('破棄のあとに公開記録を片づけるか（指摘4・9・13）', () => {
-  it('★★ 保存場所だけ失敗しても、アプリが消えていれば公開記録を片づける（📡の幽霊を防ぐ）', () => {
-    expect(shouldClearPublishRecord({
-      hadApplicationID: true, result: { ok: false, appDeleted: true },
-    })).toBe(true)
-  })
-
-  it('★★ 計算資源の削除が途中で止まったら片づけない（アプリはまだ生きている）', () => {
-    expect(shouldClearPublishRecord({
-      hadApplicationID: true, result: { ok: false, appDeleted: false },
-    })).toBe(false)
-  })
-
-  it('★ そもそもアプリを公開していなければ呼ばない', () => {
-    expect(shouldClearPublishRecord({ hadApplicationID: false, result: { ok: true, appDeleted: true } })).toBe(false)
-    expect(shouldClearPublishRecord({ hadApplicationID: true, result: null })).toBe(false)
-  })
-
-  it('★ appDeleted を持たない古い応答では ok に倒す（従来どおりの振る舞い）', () => {
-    expect(shouldClearPublishRecord({ hadApplicationID: true, result: { ok: true } })).toBe(true)
-    expect(shouldClearPublishRecord({ hadApplicationID: true, result: { ok: false } })).toBe(false)
-  })
-})
+// 破棄のあとに公開記録（publish.targets）を片づけるかの判断（指摘4・9・13）は、2026-10-08 から画面には無い。
+// main の apprunDedicated:teardown の1か所（shouldForgetPublishRecord）。真理値表は tests/ops-dedicated-teardown.test.ts。

@@ -45,9 +45,9 @@ const sign = env.KOTO_SIGN === '1' && hasCreds
 if (env.KOTO_SIGN === '1' && !sign) {
   // 「署名したつもりで未署名のものを配る」のがいちばん危ないので、黙って続行しない。
   console.error('❌ KOTO_SIGN=1 ですが、公証の資格情報がありません。次のいずれかを設定してください:')
-  console.error('   ① APPLE_KEYCHAIN_PROFILE（推奨。notarytool store-credentials で作る）')
-  console.error('   ② APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER')
-  console.error('   ③ APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID')
+  console.error('   (1) APPLE_KEYCHAIN_PROFILE（推奨。notarytool store-credentials で作る）')
+  console.error('   (2) APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER')
+  console.error('   (3) APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID')
   process.exit(1)
 }
 

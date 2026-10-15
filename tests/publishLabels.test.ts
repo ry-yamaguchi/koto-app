@@ -79,7 +79,9 @@ describe('publishHeadline: ⑧の公開結果の見出し（純関数・D-7）',
   it('★★ no-backend（503＝アプリが応答していない）なら、「公開しました」と言わず警告に倒す', () => {
     const h = publishHeadline('no-backend')
     expect(h.tone).toBe('warn')
-    expect(h.text).toBe('⚠️ 公開の手続きは通りましたが、アプリがまだ応答していません')
+    expect(h.text).toBe('⚠️ 公開の処理は完了しましたが、アプリがまだ応答していません')
+    // 0.6.21（作者の決定 2026-10-01）: 「手続きは通りました」は「処理は完了しました」に揃えた。直す前の言い方は戻さない
+    expect(h.text).not.toContain('手続き')
     expect(h.text).not.toContain('✅')
   })
 
@@ -133,9 +135,9 @@ describe('showDnsGuidanceExpanded: DNS の案内を最初から開いてよい�
 })
 
 // ── containerStateSummary（D-8・2026-09-16 実機）────────────────────────────────
-// verify が no-backend のときに引いた「いまのコンテナの様子」を1行にする。
+// verify が no-backend のときに引いた「いまのコンテナの状態」を1行にする。
 // **状態の文字列は原本の値のまま出す**（勝手に日本語へ言い換えない・掟1。全ての値を実測していない）。
-describe('containerStateSummary: いまのコンテナの様子（純関数・D-8）', () => {
+describe('containerStateSummary: いまのコンテナの状態（純関数・D-8）', () => {
   it('★0件なら「コンテナが1つも動いていません。」（空文字を返さない＝何も出ないと事故に戻る）', () => {
     expect(containerStateSummary([])).toBe('コンテナが1つも動いていません。')
   })
@@ -145,22 +147,24 @@ describe('containerStateSummary: いまのコンテナの様子（純関数・D-
   // と同じ形。呼び出し側（publishAppFlow）は引けなければ containerStates を付けないので本来
   // ここへは来ないが、**間違って渡されたときにも嘘を言わない**ことを固定する。
   it('★★ 配列でない（＝引けていない）なら「1つも動いていません」と言い切らない', () => {
-    expect(containerStateSummary(null)).toBe('いまのコンテナの様子を読み取れませんでした（何台動いているかは分かりません）。')
-    expect(containerStateSummary(undefined)).toBe('いまのコンテナの様子を読み取れませんでした（何台動いているかは分かりません）。')
+    expect(containerStateSummary(null)).toBe('いまのコンテナの状態を読み取れませんでした（何台動いているかは分かりません）。')
+    expect(containerStateSummary(undefined)).toBe('いまのコンテナの状態を読み取れませんでした（何台動いているかは分かりません）。')
     expect(containerStateSummary(null)).not.toContain('1つも動いていません')
     expect(containerStateSummary(undefined)).not.toContain('1つも動いていません')
     // **「分からない」ことがその場で読めること。**「取得できませんでした」だけだと0件と同じに
     // 読まれうる（2026-09-16 の是正）。直す前の文面に戻っていないことも見る。
     expect(containerStateSummary(null)).toContain('分かりません')
-    expect(containerStateSummary(null)).not.toBe('いまのコンテナの様子は取得できませんでした。')
+    expect(containerStateSummary(null)).not.toBe('いまのコンテナの状態は取得できませんでした。')
     // 理由（応答の形が違う／HTTP が失敗した）までは断定しない——渡された null がどちらかは
     // この関数からは分からない。理由は呼び出し側が warnings に残す（掟1）。
     expect(containerStateSummary(null)).not.toContain('形')
   })
 
-  it('1件なら「いまのコンテナの様子: state（status）」', () => {
+  it('1件なら「いまのコンテナの状態: state（status）」', () => {
     expect(containerStateSummary([{ state: 'running', status: 'healthy' }]))
-      .toBe('いまのコンテナの様子: running（healthy）')
+      .toBe('いまのコンテナの状態: running（healthy）')
+    // 0.6.21: 「様子」は「状態」に揃えた。直す前の言い方は戻さない
+    expect(containerStateSummary([{ state: 'running', status: 'healthy' }])).not.toContain('様子')
   })
 
   it('★状態の文字列は原本の値のまま（日本語へ言い換えない）', () => {
@@ -176,7 +180,7 @@ describe('containerStateSummary: いまのコンテナの様子（純関数・D-
     expect(containerStateSummary([
       { state: 'running', status: 'healthy' },
       { state: 'CrashLoopBackOff', status: 'restarting' },
-    ])).toBe('いまのコンテナの様子: running（healthy）・CrashLoopBackOff（restarting）')
+    ])).toBe('いまのコンテナの状態: running（healthy）・CrashLoopBackOff（restarting）')
   })
 
   it('複数（同じ状態）は「× 台数」にまとめる（台数が多いときに読めなくなるため）', () => {
@@ -184,7 +188,7 @@ describe('containerStateSummary: いまのコンテナの様子（純関数・D-
       { state: 'running', status: 'healthy' },
       { state: 'running', status: 'healthy' },
       { state: 'running', status: 'healthy' },
-    ])).toBe('いまのコンテナの様子: running（healthy） × 3')
+    ])).toBe('いまのコンテナの状態: running（healthy） × 3')
   })
 })
 

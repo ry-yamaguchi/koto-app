@@ -154,7 +154,7 @@ describe('W-18: AI Engine の応答待ちの最中に ⏹ → 応答が返って
       expect(onDelegated).toHaveBeenCalledWith({ model: expect.any(String), promptTokens: 11, completionTokens: 22 })
       expect(text(r)).toContain('停止')
       expect(text(r)).toContain('index.html')
-      expect(text(r)).not.toContain('委譲が完了しました')
+      expect(text(r)).not.toContain('任せた実装が完了しました')
     })
   }
 
@@ -169,7 +169,8 @@ describe('W-18: AI Engine の応答待ちの最中に ⏹ → 応答が返って
     answerApproval(listPending()[0].id, true)
     const r = await p
     expect(fs.readFileSync(path.join(writeRoot, 'index.html'), 'utf8')).toBe('OK')
-    expect(text(r)).toContain('委譲が完了しました')
+    expect(text(r)).toContain('任せた実装が完了しました')
+    expect(text(r)).not.toContain('委譲が完了しました') // 0.6.21: 直す前の言い方は戻さない
   })
 })
 

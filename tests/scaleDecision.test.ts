@@ -63,8 +63,10 @@ describe('scaleLabel: AppRunPanel の scaleDisplay と同じ言葉', () => {
   it('0 → 最初のアクセスが遅くてもよい（安い）', () => {
     expect(scaleLabel(0)).toBe('最初のアクセスが遅くてもよい（安い）')
   })
-  it('1以上 → すぐ返す（常時動かす）', () => {
-    expect(scaleLabel(1)).toBe('すぐ返す（常時動かす）')
-    expect(scaleLabel(10)).toBe('すぐ返す（常時動かす）')
+  it('1以上 → 常時起動（すぐ応答する）', () => {
+    expect(scaleLabel(1)).toBe('常時起動（すぐ応答する）')
+    expect(scaleLabel(10)).toBe('常時起動（すぐ応答する）')
+    // 0.6.21: 「すぐ返す（常時動かす）」は「常時起動（すぐ応答する）」に揃えた。直す前の言い方は戻さない
+    expect(scaleLabel(1)).not.toContain('すぐ返す')
   })
 })

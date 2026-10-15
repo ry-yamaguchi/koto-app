@@ -13,7 +13,7 @@
 // ── B'-3b（2026-08-28）─────────────────────────────────────────────
 // runEngineTurn のループ本体は main プロセス（src/main/chat/turnRunner.ts）へ移した。
 // send() は window.electronAPI.chatTurn.start() を呼ぶだけになり、renderer は
-// ①出来事（emit）を受けて画面に当てる ②main からの問い合わせ（ask）に答える、の2役だけになる。
+// (1)出来事（emit）を受けて画面に当てる (2)main からの問い合わせ（ask）に答える、の2役だけになる。
 // ask の振り分けは src/renderer/chatTurnBridge.ts の dispatchAsk（buildPorts の実装をそのまま
 // handlers として使う・二重実装しない）。runCompact（compactNow が使う）と buildPorts（handlers
 // の元・compactNow が使う）は今日も renderer に残る。
@@ -680,7 +680,7 @@ export function useAiChat(args: UseAiChatArgs) {
       if (!apiKey) return
 
       // AI Engine のループは main で走る（B'-3b）。renderer は
-      // ①出来事を受けて emit する ②問い合わせ（ask）に答える、の2役だけ。
+      // (1)出来事を受けて emit する (2)問い合わせ（ask）に答える、の2役だけ。
       const spec: EngineTurnSpec = {
         rawText, images, assetBlock, apiKey, model, models, maxRounds, toolsProjectDir, convDir,
         errorPrefix, twoStageVision, routedModel, hasRag: !!buildRagBlock, turnOpts, snapshotId, snapshotLabel,

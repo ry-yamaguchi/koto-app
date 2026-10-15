@@ -65,7 +65,9 @@ describe('さくら側の実物と突き合わせる', () => {
     const orphan = rows.find(r => r.id === 'zzzz-9999')
     expect(orphan).toBeDefined()
     expect(orphan!.project).toBeNull()
-    expect(orphan!.note).toContain('心当たりがありません')
+    expect(orphan!.note).toContain('このパソコンの Koto の記録にありません')
+    // 0.6.21（作者の決定 2026-10-01）: Koto が主語の「心当たりがありません」は「記録にありません」に揃えた。直す前の言い方は戻さない
+    expect(orphan!.note).not.toContain('心当たりがありません')
   })
 
   it('★ 名前が似ているだけで引き取らない（利用者のものを乗っ取らない）', () => {
@@ -101,7 +103,8 @@ describe('費用', () => {
   it('★ 実額はコントロールパネルで確かめてもらう（按分できないため）', () => {
     const t = totalNotice(rows)
     expect(t).toContain('935')
-    expect(t).toContain('心当たりがありません')
+    expect(t).toContain('Koto の記録にありません')
+    expect(t).not.toContain('心当たりがありません') // 0.6.21: 直す前の言い方は戻さない
     expect(t).toContain('コントロールパネル')
   })
 
@@ -110,7 +113,9 @@ describe('費用', () => {
   })
 
   it('画面に出す名前は日本語', () => {
-    expect(kindLabel('registry')).toBe('イメージの置き場（コンテナレジストリ）')
+    expect(kindLabel('registry')).toBe('コンテナレジストリ')
+    // 0.6.21（作者の決定 2026-10-01）: 前置きの「イメージの置き場」は外した。直す前の言い方は戻さない
+    expect(kindLabel('registry')).not.toContain('イメージの置き場')
     expect(kindLabel('bucket')).toBe('データの保存場所')
   })
 })
@@ -125,14 +130,14 @@ describe('costNote: apprun-app は金額を書かず、min_scale から状態だ
     expect(costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: 0 })).toBe('従量（待機中はほぼゼロ）')
   })
 
-  it('★ min≥1 → 常時動く設定（料金がかかり続けます）。金額は書かない', () => {
+  it('★ min≥1 → 常時起動の設定（料金がかかり続けます）。金額は書かない', () => {
     const note = costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: 1 })
-    expect(note).toBe('常時動く設定（料金がかかり続けます）')
+    expect(note).toBe('常時起動の設定（料金がかかり続けます）')
     expect(note).not.toMatch(/[\d,]+\s*円/)
   })
 
-  it('min=5 でも同じ扱い（1以上はすべて「常時動く」）', () => {
-    expect(costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: 5 })).toBe('常時動く設定（料金がかかり続けます）')
+  it('min=5 でも同じ扱い（1以上はすべて「常時起動」）', () => {
+    expect(costNote({ kind: 'apprun-app', monthlyYen: 0, scaleMin: 5 })).toBe('常時起動の設定（料金がかかり続けます）')
   })
 
   it('★ min が読み取れない（null）ときは「不明」。0 に倒さない', () => {
@@ -156,11 +161,13 @@ describe('buildInventory: apprun-app の行に scaleMin が乗る', () => {
   const actualUnknown = [{ kind: 'apprun-app' as const, id: 'app-1111-aaaa', name: 'data-test', scaleMin: null }]
   const records = parseLocalRecords(projects)
 
-  it('★ min≥1 のアプリの note は「常時動く設定」になる（記録があるプロジェクトでも）', () => {
+  it('★ min≥1 のアプリの note は「常時起動の設定」になる（記録があるプロジェクトでも）', () => {
     const rows = buildInventory({ actual: actualWarm, records })
     const row = rows.find(r => r.id === 'app-1111-aaaa')!
     expect(row.scaleMin).toBe(1)
-    expect(row.note).toContain('常時動く設定')
+    expect(row.note).toContain('常時起動の設定')
+    // 0.6.21（検分）: 設定画面の「常時起動（すぐ応答する）」と同じ呼び名にそろえた。旧「常時動く設定」は戻さない
+    expect(row.note).not.toContain('常時動く')
     expect(row.note).toContain('料金がかかり続けます')
     expect(row.note).not.toMatch(/[\d,]+\s*円/)
   })
@@ -236,10 +243,11 @@ describe('棚卸しが画面まで届いている', () => {
   it('★ 引けなかったものを、黙って0件にしない', () => {
     const body = inventoryHandlerBody()
     expect(body).toContain('partial')
-    // 4種類（アプリ・イメージの置き場・データの保存場所・専有型のクラスタ）それぞれの
+    // 4種類（アプリ・コンテナレジストリ・データの保存場所・専有型のクラスタ）それぞれの
     // 失敗が、それぞれ名指しで failed に積まれること（1つに丸めない）。
     expect(body).toContain("failed.push('公開したアプリ')")
-    expect(body).toContain("failed.push('イメージの置き場（コンテナレジストリ）')")
+    expect(body).toContain("failed.push('コンテナレジストリ')")
+    expect(body).not.toContain("failed.push('イメージの置き場") // 0.6.21: 直す前の言い方は戻さない
     expect(body).toContain("failed.push('データの保存場所')")
     expect(body).toContain("failed.push('専有型のクラスタ')")
     expect(read('src/renderer/components/PublishedListModal.tsx')).toContain('この一覧に出ていない')
@@ -265,7 +273,8 @@ describe('棚卸しが画面まで届いている', () => {
 
   it('心当たりの無いものは、行き先まで示す', () => {
     const modal = read('src/renderer/components/PublishedListModal.tsx')
-    expect(modal).toContain('心当たりがありません')
+    expect(modal).toContain('このパソコンの Koto の記録にありません')
+    expect(modal).not.toContain('心当たりがありません') // 0.6.21: 直す前の言い方は戻さない（利用者に向けた「心当たりが無ければ」は残す）
     expect(modal).toContain('コントロールパネル')
   })
 
@@ -353,7 +362,8 @@ describe('専有型のクラスタ（dedicated-cluster）が棚卸しに出る',
       records,
     })
     expect(rows[0].project).toBeNull()
-    expect(rows[0].note).toContain('心当たりがありません')
+    expect(rows[0].note).toContain('Koto の記録にありません')
+    expect(rows[0].note).not.toContain('心当たりがありません') // 0.6.21: 直す前の言い方は戻さない
   })
 
   it('種類の並びに dedicated-cluster が入っている（apprun-app → registry → bucket → dedicated-cluster）', () => {

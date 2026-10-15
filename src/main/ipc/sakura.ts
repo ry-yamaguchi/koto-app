@@ -79,9 +79,9 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
   //
   // ⚠️ renderer から `sakura.chat` を呼ぶ口は**2つある**（2026-09-25 検分の指摘6）。
   // 足すときは、増やしたぶんも必ず onStart を渡すこと（`grep -rn 'electronAPI.sakura.chat(' src`）:
-  //   ① src/renderer/hooks/useAiChat.ts の chatOnce（🗂 まとめ作り）
-  //   ② src/renderer/securityCheck.ts の runSecurityCheck（公開前セキュリティチェック）
-  // 指摘4 を直したとき配線したのは①だけで、②は onStart を渡さないまま残っていた
+  //   (1) src/renderer/hooks/useAiChat.ts の chatOnce（🗂 まとめ作り）
+  //   (2) src/renderer/securityCheck.ts の runSecurityCheck（公開前セキュリティチェック）
+  // 指摘4 を直したとき配線したのは(1)だけで、(2)は onStart を渡さないまま残っていた
   // （＝「片方だけ直る」の5度目を作りかけた）。onStart は任意の引数なので、
   // **渡し忘れても型検査は通る**。増えたら数え直す。
   const activeChats = new Map<string, { abort: () => void }>()

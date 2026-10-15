@@ -168,13 +168,14 @@ describe('保存場所を破棄する（★実際にデータが消える経路�
 
   it('★★ 鍵を無効にできなかったら、state.meta に ID を残す（辿れない鍵を作らない）', async () => {
     const { client, calls } = fakeStorage(MINE)
-    client.deletePermission = async () => { throw new Error('鍵を無効にできません') }
+    client.deletePermission = async () => { throw new Error('アクセスキーを無効にできません') }
     const state: EnvState = { ...emptyState('myapp', 'sakura-apprun'), meta: { storagePermissionId: 'perm-old' } }
     const r = await applyPlan({ plan: planOf('delete'), spec: specWith(false), state, client: noCloud, storage: client, confirmed: true })
     expect(r.ok).toBe(true) // 保存場所そのものは片づいている
     expect(calls.deletedPermissions).toEqual([])   // 消えていない
     expect(r.state.meta?.storagePermissionId).toBe('perm-old') // だから記録は残す
-    expect(r.skipped.join()).toContain('鍵を無効にできませんでした')
+    expect(r.skipped.join()).toContain('アクセスキーを無効にできませんでした')
+    expect(r.skipped.join()).not.toContain('鍵を無効') // 0.6.21: 「鍵」は「アクセスキー」に揃えた。直す前の言い方は戻さない
   })
 })
 

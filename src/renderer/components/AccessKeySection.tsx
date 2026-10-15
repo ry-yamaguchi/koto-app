@@ -2,11 +2,11 @@ import type { ReactNode } from 'react'
 import ConnectionChecklist, { type ConnectionCheckItem } from './ConnectionChecklist'
 
 // AccessKeySection.tsx — 公開先パネル4つ（AppRun 共用型・専有型・HANAMII・Vercel）の
-// ①「キー」節を1つの見た目に揃える（委譲仕様 UX-E・判断8）。
+// 手順1「キー」節を1つの見た目に揃える（委譲仕様 UX-E・判断8）。
 //
 // ── これまでの重複（UX-E 着手前に確認した事実）──────────────────────────────
-// AppRun 共用型（AppRunPanel.tsx）の①APIキー・🔌接続テスト・ConnectionChecklist と、
-// 専有型（AppRunDedicatedPanel.tsx）の①は**ほぼ同文の複製**だった。HANAMII・Vercel も
+// AppRun 共用型（AppRunPanel.tsx）の手順1 APIキー・🔌接続テスト・ConnectionChecklist と、
+// 専有型（AppRunDedicatedPanel.tsx）の手順1は**ほぼ同文の複製**だった。HANAMII・Vercel も
 // 「認証情報に登録済み／認証情報を開く」「認証情報を開いて登録」という、
 // 共用型・専有型とは違う言い回しを別々に持っていた（掟10違反：定義が4箇所に散っていた）。
 //
@@ -34,7 +34,7 @@ export interface AccessKeyTest {
 }
 
 export interface AccessKeySectionProps {
-  /** 「①」等、見出しに付ける番号。 */
+  /** 「手順1」等、見出しに付ける番号。 */
   stepNo: string
   /** サービス名（例「さくらのクラウド」「HANAMII」「Vercel」）。 */
   serviceTitle: string
@@ -114,7 +114,7 @@ export default function AccessKeySection({
           <span className="flex-1 text-xs text-right">
             {test.state === 'ok' && (
               <span className="text-brand-green font-semibold">
-                {test.checks && test.checks.length > 0 ? '✅ すべて確認できました' : '✅ 通じました'}
+                {test.checks && test.checks.length > 0 ? '✅ すべて確認できました' : '✅ 接続できました'}
               </span>
             )}
             {test.state === 'ng' && (
@@ -144,7 +144,7 @@ export default function AccessKeySection({
  * 確認していないことを確認できたと言わない（言い過ぎない）ための純粋な文言判定。
  */
 function ngSummary(checks?: ConnectionCheckItem[]): string {
-  if (!checks || checks.length === 0) return '⚠️ 通じませんでした'
+  if (!checks || checks.length === 0) return '⚠️ 接続できませんでした'
   const allFailed = checks.every(c => !c.ok)
   return allFailed ? '⚠️ すべての項目で確認できませんでした' : '⚠️ 一部の権限が確認できませんでした'
 }

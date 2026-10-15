@@ -85,15 +85,15 @@ export function monthlyYenFor(kind: ResourceKind): number {
  *
  * `apprun-app` は従量課金なので、いくら分かっても金額は書かない
  * （使い方によって変わる。確かめていない数字を書かない・掟1）。
- * その代わり、min_scale から「止まる／常時動く／分からない」だけを伝える。
+ * その代わり、min_scale から「止まる／常時起動／分からない」だけを伝える。
  * **min_scale が読み取れないときは「不明」とし、0 に倒さない**
  * （倒すと、常時課金しているアプリを「課金なし」に見せてしまう。2026-09-09 検分で発見）。
  */
 export function costNote(row: { kind: ResourceKind; monthlyYen: number; scaleMin?: number | null }): string {
   if (row.kind === 'apprun-app') {
     const min = row.scaleMin ?? null
-    if (min === null) return '不明（常時動く設定かどうか判断できません）'
-    if (min >= 1) return '常時動く設定（料金がかかり続けます）'
+    if (min === null) return '不明（常時起動の設定かどうか判断できません）'
+    if (min >= 1) return '常時起動の設定（料金がかかり続けます）'
     return '従量（待機中はほぼゼロ）'
   }
   // 専有型のクラスタは常時課金（プラン契約）だが、金額はプラン次第で分からない。
@@ -104,7 +104,7 @@ export function costNote(row: { kind: ResourceKind; monthlyYen: number; scaleMin
 
 const KIND_LABEL: Record<ResourceKind, string> = {
   'apprun-app': '公開したアプリ',
-  registry: 'イメージの置き場（コンテナレジストリ）',
+  registry: 'コンテナレジストリ',
   bucket: 'データの保存場所',
   'dedicated-cluster': '専有型のクラスタ',
 }
@@ -181,7 +181,7 @@ export function buildInventory(opts: {
         dir: owner ? owner.dir : null,
         monthlyYen,
         scaleMin,
-        note: owner ? status : `${status}。**このパソコンの Koto には心当たりがありません**`,
+        note: owner ? status : `${status}。**このパソコンの Koto の記録にありません**`,
       }
     })
 }
@@ -229,10 +229,10 @@ export function totalNotice(rows: readonly InventoryRow[]): string {
   const head = total > 0
     ? `いま分かっているだけで、月額 ${total.toLocaleString()}円（税込）がかかり続けます。`
     : ongoingUnknown
-      ? '月額として金額が分かるものはありませんが、常時動く設定のアプリなどがあり、費用がかかり続けている可能性があります。'
+      ? '月額として金額が分かるものはありませんが、常時起動の設定のアプリなどがあり、費用がかかり続けている可能性があります。'
       : '月額でかかり続けるものは見つかりませんでした。'
   const tail = unknown > 0
-    ? `${head}うち ${unknown}件は、このパソコンの Koto に心当たりがありません（別のパソコンで作ったか、手で作ったものかもしれません）。`
+    ? `${head}うち ${unknown}件は、このパソコンの Koto の記録にありません（別のパソコンで作ったか、手動で作ったものかもしれません）。`
     : head
   return `${tail}アプリの実行料金は使った分だけなので、実際の請求はさくらのコントロールパネルでご確認ください。`
 }

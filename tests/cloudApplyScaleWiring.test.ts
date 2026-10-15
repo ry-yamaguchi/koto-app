@@ -90,11 +90,13 @@ describe('cloud:saveEnv と cloud:apply の env.json 書き込みは、同じ関
   })
 })
 
-describe('preflight（cloud:preflight）に「起動のしかた」の項目がある', () => {
+describe('preflight（cloud:preflight）に「最小スケール」の項目がある', () => {
   it("mine（記録にある自分のアプリID）があるときだけ確認する", () => {
     const at = cloud.indexOf("ipcMain.handle('cloud:preflight'")
     expect(at).toBeGreaterThan(0)
-    const scaleAt = cloud.indexOf("add('scale', '起動のしかた'", at)
+    const scaleAt = cloud.indexOf("add('scale', '最小スケール'", at)
+    // 0.6.21（作者の決定 2026-10-01）: 「起動のしかた」は「最小スケール」に揃えた。直す前の言い方は戻さない
+    expect(cloud).not.toContain("add('scale', '起動のしかた'")
     expect(scaleAt).toBeGreaterThan(at)
     // mine を使ったガードが、scale の確認より前にある
     const mineAt = cloud.indexOf('const mine = state.resources.find', at)
@@ -103,7 +105,7 @@ describe('preflight（cloud:preflight）に「起動のしかた」の項目が�
   })
 
   it('一致・食い違い・確認できないの3通りを warn/ok で出す（止めない。ng にしない）', () => {
-    const at = cloud.indexOf("add('scale', '起動のしかた'")
+    const at = cloud.indexOf("add('scale', '最小スケール'")
     const end = cloud.indexOf("// 保存場所が**実在するか**", at)
     const block = cloud.slice(at, end)
     expect(block).not.toContain("'ng'")

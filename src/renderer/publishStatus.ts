@@ -5,7 +5,7 @@
 
 // 'sakura-apprun-dedicated' は さくらのAppRun 専有型（roadmap #23・D-3、2026-09-11 Ryosuke 決定）。
 // 表示・一覧・破棄・費用は共用型（'sakura-apprun'）と同じ扱いを基本にし、専有型固有の違い
-// （破棄の範囲＝アプリのみ・クラスタは専有型タブの⑥）は src/shared/teardownSupport.ts に書く。
+// （破棄は手順6と 📡 の 🗑 のどちらも「すべて削除」＝アプリ・LB・ASG・クラスタ＋保存場所）は src/shared/teardownSupport.ts に書く。
 export type PublishTargetKind = 'hanamii' | 'sakura-apprun' | 'sakura-apprun-dedicated' | 'sakura-rental' | 'vercel'
 
 // 公開先ごとの表示ラベル（PublishModal・各パネルの表記に合わせる）。

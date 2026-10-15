@@ -41,26 +41,28 @@ function projectWithDeps(): string {
 }
 
 describe('stageAndTar: 断る理由が、そのまま利用者への文面になる', () => {
-  it('★★ お使いのパソコン用しか無いときは、その理由が出る（「組み立てが必要」ではない）', async () => {
+  it('★★ お使いのパソコン用しか無いときは、その理由が出る（「ビルドが必要」ではない）', async () => {
     blocked.push({ name: 'bcrypt', reason: 'macho-only' })
 
     await expect(stageAndTar(projectWithDeps())).rejects.toThrow(
-      /お使いのパソコン用の部品しか入っていません/)
-    await expect(stageAndTar(projectWithDeps())).rejects.not.toThrow(/組み立てが必要/)
+      /お使いのパソコン（macOS）用のネイティブモジュールしか入っていません/)
+    await expect(stageAndTar(projectWithDeps())).rejects.not.toThrow(/ビルドが必要/)
+    // 0.6.21（作者の決定 2026-10-01）: 「部品」は「ネイティブモジュール」に揃えた。直す前の言い方は戻さない
+    await expect(stageAndTar(projectWithDeps())).rejects.not.toThrow(/部品/)
   })
 
   it('★★ 公開先とは別の種類の Linux 用のときは、その理由が出る', async () => {
     blocked.push({ name: '@img/sharp-linux-x64', reason: 'other-linux' })
 
     await expect(stageAndTar(projectWithDeps())).rejects.toThrow(
-      /公開先とは別の種類の Linux 用の部品です/)
+      /公開先とは別の種類の Linux 用のネイティブモジュールです/)
   })
 
-  it('★★ 組み立てられていないときは、これまでどおりの文面が出る', async () => {
+  it('★★ ビルドされていないときは、これまでどおりの文面が出る', async () => {
     blocked.push({ name: 'better-sqlite3', reason: 'needs-build' })
 
     await expect(stageAndTar(projectWithDeps())).rejects.toThrow(
-      /パソコンごとに組み立てが必要な部品を含んでいます/)
+      /OS ごとにビルドが必要なネイティブモジュールを含んでいます/)
   })
 
   it('★★ 理由が混ざっても、ライブラリごとに正しい理由が付く', async () => {
@@ -70,11 +72,11 @@ describe('stageAndTar: 断る理由が、そのまま利用者への文面にな
     let message = ''
     try { await stageAndTar(projectWithDeps()) } catch (e) { message = (e as Error).message }
 
-    const build = message.split('\n').find(l => l.includes('組み立てが必要')) ?? ''
+    const build = message.split('\n').find(l => l.includes('ビルドが必要')) ?? ''
     expect(build).toContain('better-sqlite3')
-    expect(build, 'お使いのパソコン用しか無いライブラリに「組み立てが必要」と言っている')
+    expect(build, 'お使いのパソコン用しか無いライブラリに「ビルドが必要」と言っている')
       .not.toContain('only-mac')
-    expect(message).toContain('お使いのパソコン用の部品しか入っていません')
+    expect(message).toContain('お使いのパソコン（macOS）用のネイティブモジュールしか入っていません')
   })
 
   it('★ 持っていけないものが無ければ、層はできる（止めすぎていない）', async () => {

@@ -155,13 +155,17 @@ describe('AppRunDedicatedPanel.tsx / ⑤⑥: createResult・teardownResult そ�
     )
   })
 
-  it('⑥ teardownResult は !teardownResult.ok のときだけボタンを出す（kind:破棄）', () => {
-    const at = dedicatedPanel.indexOf('<ErrorBlock msg={teardownResult.message} />')
+  it('⑥ 手順6の結果は !result.ok のときだけボタンを出す（kind:破棄）。結果欄は 📡 の行と共有する部品で、パネルが onAskAi を渡す', () => {
+    // 2026-10-08: 手順6の結果欄は DedicatedTeardownResultView（📡 の行と同じ部品）へ移した。
+    const view = read('src/renderer/components/DedicatedTeardownView.tsx')
+    const at = view.indexOf('<ErrorBlock msg={result.message} />')
     expect(at).toBeGreaterThan(-1)
-    const block = dedicatedPanel.slice(at, at + 500)
-    expect(block).toContain('{!teardownResult.ok && (')
+    const block = view.slice(at, at + 700)
+    expect(block).toContain('{!result.ok && onAskAi && (')
     expect(block).toContain(
-      "const text = askAiAboutFailure('破棄', 'さくらのAppRun（専有型）', teardownResult.message ?? '失敗しました')"
+      "onAskAi(askAiAboutFailure('破棄', 'さくらのAppRun（専有型）', result.message ?? '失敗しました'))"
     )
+    // 手順6は「🤖 AIに相談する」を出す（onAskAi を渡す）。
+    expect(dedicatedPanel).toContain("onAskAi={text => window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text } }))}")
   })
 })

@@ -8,8 +8,8 @@
 // さくらの API には証明書の状態を読む手段が無い（原本で確認済み。読めるのは「メールを
 // 設定したか」だけ）ので、**Koto が自分で繋いで確かめる**しかない。
 //
-// ── ⑧の verify（公開直後の確認）には足さない ─────────────────────────────────
-// ⑧の verify は **DNS を向ける前**に走る。宛先はロードバランサの IP で、ホスト名は SNI に
+// ── 手順8の verify（公開直後の確認）には足さない ─────────────────────────────────
+// 手順8の verify は **DNS を向ける前**に走る。宛先はロードバランサの IP で、ホスト名は SNI に
 // 載せるだけ・証明書の検証は意図的に無効にしてある（apprunDedicatedAppApply.ts の
 // probeMarkerOverHttps）。その時点で正式な証明書は存在し得ないので、そこに証明書の検査を
 // 足すと必ず失敗し、意味のない警告が出続ける。**証明書は「DNS を向けたあと」のもので、
@@ -35,7 +35,7 @@ import {
 
 // ── 時間切れ（1つが固まっても全体が返る）────────────────────────────────────
 // 4つの軸は**同時に**調べるので、この確認全体の上限はおよそ 10 秒である。
-// 10 秒は⑧の verify 段（VERIFY_TIMEOUT_MS）と同じ値に揃えた——同じ相手（同じロードバランサ）
+// 10 秒は手順8の verify 段（VERIFY_TIMEOUT_MS）と同じ値に揃えた——同じ相手（同じロードバランサ）
 // への1本の問い合わせに、確かめ方ごとに違う我慢の長さを持たせる理由が無い（掟10）。
 // DNS だけは手元（または近くの）リゾルバへの問い合わせで、これに 10 秒かかるなら引けないのと
 // 同じなので 5 秒で切る。
@@ -234,7 +234,7 @@ export async function runSiteCheck(
     dns: judgeDnsMatch(resolved, recorded),
     cert: judgePeerCertificate(cert, host, now()),
     httpsOpen,
-    // 根（`/`）の翻訳は⑧と同じ judgeDedicatedRootProbe を使う（新しい判定を書かない・掟10）。
+    // 根（`/`）の翻訳は手順8と同じ judgeDedicatedRootProbe を使う（新しい判定を書かない・掟10）。
     app: probe ? judgeDedicatedRootProbe(probe) : null,
   }
   return {
@@ -252,7 +252,7 @@ export async function checkDedicatedSite(projectDir: string, deps: SiteCheckDeps
   const record = readApprunDedicatedFs(projectDir)
   const host = (record.hosts ?? []).map(h => String(h ?? '').trim()).find(Boolean) ?? ''
   if (!host) {
-    return { ok: false, message: 'まだアプリを公開していません。⑧で公開してから、もう一度お試しください。' }
+    return { ok: false, message: 'まだアプリを公開していません。手順8で公開してから、もう一度お試しください。' }
   }
   const recorded = (record.lbAddresses ?? []).map(s => String(s ?? '').trim()).filter(Boolean)
   return { ok: true, ...(await runSiteCheck({ host, recorded }, deps)) }

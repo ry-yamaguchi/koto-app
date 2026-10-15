@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// D-4「⑧ アプリを公開する」の IPC 3点セット（掟6: main / preload / global.d.ts）と、
+// D-4「手順8 アプリを公開する」の IPC 3点セット（掟6: main / preload / global.d.ts）と、
 // handler の歯止め（掟10: confirmed は isConfirmed(opts) から渡し、固定 true を書かない）を固定する。
 //
 // electron に依存するファイルは import できないので、ソースを読んで配線を確かめる
@@ -43,11 +43,12 @@ function handlerBlock(channel: string): string {
   return ipc.slice(at, end)
 }
 
-describe('main: apprunDedicated:appStatus / publishApp / teardownApp の3つを登録している（D-4）', () => {
-  it('3つの ipcMain.handle がある', () => {
+describe('main: apprunDedicated:appStatus / publishApp の2つを登録している（D-4）。アプリだけを消す teardownApp は無い（2026-10-08）', () => {
+  it('2つの ipcMain.handle がある。teardownApp の handle は無い', () => {
     expect(ipc).toContain("ipcMain.handle('apprunDedicated:appStatus'")
     expect(ipc).toContain("ipcMain.handle('apprunDedicated:publishApp'")
-    expect(ipc).toContain("ipcMain.handle('apprunDedicated:teardownApp'")
+    expect(ipc).not.toContain("ipcMain.handle('apprunDedicated:teardownApp'")
+    expect(ipc).not.toContain('appOnly')
   })
 
   it('publishApp の進捗は event.sender.send で apprunDedicated:publish-progress を流す（teardown-progress と同じ形）', () => {
@@ -70,7 +71,8 @@ describe('main: publishApp の歯止め（掟10）', () => {
 
   it('★ confirmed は isConfirmed(opts) から渡す（呼び出し行の exact 一致）。固定 true はファイル全体に無い（変異b）', () => {
     expect(block).toContain('const result = await publishAppFlow(auth, projectDir, {')
-    expect(block).toContain('}, { confirmed: isConfirmed(opts), progress })')
+    // 2026-10-07: 段の切り替わり（どこにどれくらい時間がかかったか）を記録へ渡す onStage が増えた。
+    expect(block).toContain('}, { confirmed: isConfirmed(opts), progress, onStage })')
     expect(ipc).not.toContain('confirmed: true')
   })
 
@@ -110,7 +112,8 @@ describe('main: publishApp の歯止め（掟10）', () => {
   })
 
   it('env.json が無ければ stage:invalid で案内する（仕様書 D-4 1-3 の文言）', () => {
-    expect(block).toContain("if (!spec) return { ok: false, stage: 'invalid', message: '公開の設定がありません。⑧の「公開の設定を作る」を押してから、もう一度お試しください' }")
+    expect(block).toContain("if (!spec) return { ok: false, stage: 'invalid', message: '公開の設定がありません。手順8の「公開の設定を作る」を押してから、もう一度お試しください' }")
+    expect(block, '旧い丸数字の案内が戻っている').not.toContain('⑧の「公開の設定を作る」')
   })
 
   it('形の検査 isAppPublishInput は host: string／cpu・memory・fixedScale: 整数／任意の2項目は undefined か string', () => {
@@ -122,19 +125,17 @@ describe('main: publishApp の歯止め（掟10）', () => {
   })
 })
 
-describe('main: teardownApp は teardownFlow の appOnly を confirmed 付きで呼ぶ', () => {
-  it('★ 呼び出し行の exact 一致（confirmed は isConfirmed(opts) から・appOnly: true）', () => {
-    const block = handlerBlock('apprunDedicated:teardownApp')
-    // H-1（2026-09-17）: 破棄と公開を同時に走らせないため、本体は withProjectLock に包まれた。
-    expect(block).toContain("withProjectLock(projectDir, '削除', () =>")
-    expect(block).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, appOnly: true })')
-    // 📡 一覧の「アプリだけ破棄」は、保存場所に一切触らない（2026-09-24・案2）。
-    // 実際に要求が1件も出ないことは tests/apprunDedicatedStorageTeardown.test.ts が偽 client で固定する。
-    expect(block).not.toContain('teardownProjectStorage')
-    // ⑥（全部破棄）の呼び出しは appOnly を付けない（付くと、クラスタが消えずに課金が続く）
+describe('main: 破棄の入口は apprunDedicated:teardown の1つ（手順6も 📡 の 🗑 も同じ）。confirmed 付きで teardownFlow を呼ぶ', () => {
+  it('★ 呼び出し行の exact 一致（confirmed は isConfirmed(opts) から）。アプリだけの印（appOnly）は付かない', () => {
     const full = handlerBlock('apprunDedicated:teardown')
-    expect(full).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress })')
+    // H-1（2026-09-17）: 破棄と公開を同時に走らせないため、本体は withProjectLock に包まれた。
+    expect(full).toContain("withProjectLock(projectDir, '削除', async () => {")
+    expect(full).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, onStage })')
     expect(full).not.toContain('appOnly')
+    // 破棄は保存場所の片づけまで通る（アプリだけで止まると、クラスタが消えずに課金が続く）
+    expect(full).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage)')
+    // 公開記録（📡 一覧の行）を片づけるのは main のここだけ（画面は消さない）
+    expect(full).toContain("forgetPublishTargetFs(projectDir, 'sakura-apprun-dedicated')")
   })
 })
 
@@ -154,13 +155,14 @@ describe('main: appStatus は GET のみ（clusterID と auth があるときだ
   })
 })
 
-describe('preload: electronAPI.apprunDedicated.{appStatus,publishApp,teardownApp,onPublishProgress} を公開している', () => {
-  it('4項目の行が exact にある', () => {
+describe('preload: electronAPI.apprunDedicated.{appStatus,publishApp,onPublishProgress} を公開している。teardownApp は無い', () => {
+  it('3項目の行が exact にある', () => {
     expect(preload).toContain("appStatus: (projectDir: string, auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:appStatus', projectDir, auth)")
     expect(preload).toContain("publishApp: (projectDir: string, auth: { token: string; secret: string }, input: AppPublishInput, opts?: { confirmed?: boolean }) =>")
     expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:publishApp', projectDir, auth, input, opts)")
-    expect(preload).toContain("teardownApp: (projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }) =>")
-    expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:teardownApp', projectDir, auth, opts)")
+    // アプリだけを消す口は無い（3点セットのうち preload）
+    expect(preload).not.toContain('teardownApp')
+    expect(preload).not.toContain("'apprunDedicated:teardownApp'")
     expect(preload).toContain("onPublishProgress: (cb: (msg: string) => void) => {")
     expect(preload).toContain("ipcRenderer.on('apprunDedicated:publish-progress', handler)")
     expect(preload).toContain("ipcRenderer.removeListener('apprunDedicated:publish-progress', handler)")
@@ -172,12 +174,12 @@ describe('preload: electronAPI.apprunDedicated.{appStatus,publishApp,teardownApp
   })
 })
 
-describe('global.d.ts: Window.electronAPI.apprunDedicated の型に4項目がある（import 0行のまま）', () => {
-  it('4つのシグネチャ', () => {
+describe('global.d.ts: Window.electronAPI.apprunDedicated の型に3項目がある（import 0行のまま）。teardownApp は無い', () => {
+  it('3つのシグネチャ', () => {
     expect(globalDts).toContain('appStatus(projectDir: string, auth: { token: string; secret: string }): Promise<')
     expect(globalDts).toContain('| { ok: true; hasLetsEncryptEmail: boolean | null; envReady: boolean; port: number | null; envCount: number; record: ApprunDedicatedRecordShape }')
     expect(globalDts).toContain('publishApp(projectDir: string, auth: { token: string; secret: string }, input: {')
-    expect(globalDts).toContain('teardownApp(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }): Promise<{')
+    expect(globalDts).not.toContain('teardownApp(projectDir: string')
     expect(globalDts).toContain('onPublishProgress(cb: (msg: string) => void): () => void')
   })
 
@@ -197,10 +199,10 @@ describe('global.d.ts: Window.electronAPI.apprunDedicated の型に4項目があ
     expect(appApply).toContain("| 'storage' | 'done'")
   })
 
-  it('teardownApp の remaining/inProgress に applicationID がある', () => {
-    const at = globalDts.indexOf('teardownApp(projectDir: string')
-    const block = globalDts.slice(at, globalDts.indexOf('onPublishProgress(cb:', at))
-    expect(block).toContain('remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }')
+  it('teardown の remaining/inProgress に applicationID がある（アプリの段で止まったとき、どのアプリが残ったか画面に出せる）', () => {
+    const at = globalDts.indexOf('teardown(projectDir: string')
+    const block = globalDts.slice(at, globalDts.indexOf('onTeardownProgress(cb:', at))
+    expect(block).toContain('remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string; storageBucket?: string }')
     expect(block).toContain('inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }')
   })
 
@@ -226,11 +228,11 @@ describe('PublishAppStage に image がある（画面の Record<PublishAppStage
   })
 })
 
-// ── D-5（2026-09-16）: ⑧「🔄 IP を取り直す」の IPC 3点セット apprunDedicated:lbAddresses ──────────
+// ── D-5（2026-09-16）: 手順8「🔄 IP を取り直す」の IPC 3点セット apprunDedicated:lbAddresses ──────────
 // 判断（記録の ID で GET 1回・素の IP を記録・空なら上書きしない）は cloud/apprunDedicatedAppApply.ts の
 // refreshLbAddresses に一元化してあり、その振る舞いは tests/apprunDedicatedAppApply.test.ts が偽サーバで固定する。
 // ここは「main / preload / global.d.ts の3点が揃い、handler が形の検査のあと refreshLbAddresses に委譲する」を固定する。
-describe('IPC 3点セット（掟6）: apprunDedicated:lbAddresses（⑧「🔄 IP を取り直す」・D-5）', () => {
+describe('IPC 3点セット（掟6）: apprunDedicated:lbAddresses（手順8「🔄 IP を取り直す」・D-5）', () => {
   it('main: ipcMain.handle があり、projectDir と auth の形を検査してから refreshLbAddresses(auth, projectDir) を返す', () => {
     const block = handlerBlock('apprunDedicated:lbAddresses')
     expect(block).toContain("ipcMain.handle('apprunDedicated:lbAddresses', async (_, projectDir: unknown, auth: unknown) => {")
@@ -276,17 +278,17 @@ describe('IPC 3点セット（掟6）: apprunDedicated:lbAddresses（⑧「🔄 
   })
 })
 
-// ── O-1（2026-09-17）: ⑧「🔎 公開先と https を確かめる」の IPC 3点セット apprunDedicated:checkSite ──
+// ── O-1（2026-09-17）: 手順8「🔎 公開先と https を確かめる」の IPC 3点セット apprunDedicated:checkSite ──
 //
 // 2026-09-16〜17 の観測: 証明書が一度も発行されていないのに「✅ 公開しました」と出していた
 // （Koto は証明書を一度も見ていなかった）。さくらの API には証明書の状態を読む手段が無いので、
-// main が実際に繋いで確かめる。**⑧の公開直後の確認（verify）には足せない**——あれは DNS を
+// main が実際に繋いで確かめる。**手順8の公開直後の確認（verify）には足せない**——あれは DNS を
 // 向ける前に走り、その時点では仮の証明書しか存在し得ない（時間軸が違う）。別の口にしてある。
 //
 // 判断（4つの軸の決め方・画面に出す行）は shared/publishVerify.ts の純関数にあり、
 // tests/publishVerify.test.ts が固定する。繋いで読む側は tests/dedicatedSiteCheck.test.ts が
 // 偽物を差し込んで固定する。ここは「3点が揃い、handler が形の検査のあと委譲する」を固定する。
-describe('IPC 3点セット（掟6）: apprunDedicated:checkSite（⑧「🔎 公開先と https を確かめる」・O-1）', () => {
+describe('IPC 3点セット（掟6）: apprunDedicated:checkSite（手順8「🔎 公開先と https を確かめる」・O-1）', () => {
   it('★★ main: ipcMain.handle があり、projectDir の形を検査してから checkDedicatedSite(projectDir) を返す', () => {
     const block = handlerBlock('apprunDedicated:checkSite')
     expect(block).toContain("ipcMain.handle('apprunDedicated:checkSite', async (_, projectDir: unknown) => {")
@@ -327,7 +329,7 @@ describe('IPC 3点セット（掟6）: apprunDedicated:checkSite（⑧「🔎 �
   })
 
   it('★★★ 既にある probeMarkerOverHttps のオプションのキーが増えていない（証明書の読み取りは別の関数である固定）', () => {
-    // ⑧の verify 段は DNS を向ける前に走る＝正式な証明書は存在し得ない。そこへ証明書の検査を
+    // 手順8の verify 段は DNS を向ける前に走る＝正式な証明書は存在し得ない。そこへ証明書の検査を
     // 混ぜると、必ず失敗して意味のない警告が出続ける。**別の関数・別のボタンにしてある。**
     const appApplyCode = codeOnly(appApply)
     const at = appApplyCode.indexOf('export function probeMarkerOverHttps(')
@@ -345,7 +347,7 @@ describe('IPC 3点セット（掟6）: apprunDedicated:checkSite（⑧「🔎 �
     expect(codeOnly(appApply)).not.toContain('getPeerCertificate')
   })
 
-  it('★★ 画面: 確かめるボタンが panelBusy を通る（⑤⑥⑦⑧が走っている間は押せない）', () => {
+  it('★★ 画面: 確かめるボタンが panelBusy を通る（手順5・6・7・8が走っている間は押せない）', () => {
     const panelSrc = readFileSync(join(__dirname, '..', 'src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf-8')
     const panel = panelSrc
       .split('\n')
