@@ -123,9 +123,9 @@ export function streamTimeoutMessage(kind: StreamTimeoutKind): string {
     // この文はあいさつの生成（ChatPanel.tsx の greetLoading）でも出るが、そこでは
     // 経過秒が一度も描画されない（elapsedSec は emit の loading:true でしか動かない）。
     // **画面に無いものを「出ていた」と言わない。**
-    return '⏱ AIからの返事が1文字も始まらないまま待ち時間の上限に達したため、この問い合わせを打ち切りました。'
-      + `返事が始まるのを待てるのは${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS)}秒×${STREAM_MAX_RETRIES + 1}回`
-      + `（合計およそ${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS * (STREAM_MAX_RETRIES + 1))}秒）までです。`
+    return '⏱ AIからの返事が1文字も始まらないまま、'
+      + `待ち時間の上限（${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS)}秒×${STREAM_MAX_RETRIES + 1}回`
+      + `・合計およそ${sec(STREAM_FIRST_CHUNK_TIMEOUT_MS * (STREAM_MAX_RETRIES + 1))}秒）に達したため、この問い合わせを打ち切りました。`
       + '混み合っているだけのことも多いので、もう一度お試しください。'
   }
   if (kind === 'first-silent') {
@@ -135,7 +135,6 @@ export function streamTimeoutMessage(kind: StreamTimeoutKind): string {
     // 'first-silent'）。「返事を始めかけた」のような**画面に現れない出来事**の言葉は使わず、
     // 見えたとおり（つながった／でも何も出ない）で書く。
     return `⏱ AIには接続できましたが、返事が1文字も届かないまま${sec(STREAM_IDLE_TIMEOUT_MS)}秒たったため、ここで打ち切りました。`
-      + 'まだ何も届いていないので、残っている内容はありません。'
       + '混み合っているだけのことも多いので、もう一度お試しください。'
   }
   return `⏱ AIの返事が途中で${sec(STREAM_IDLE_TIMEOUT_MS)}秒以上止まったため、`

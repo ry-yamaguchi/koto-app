@@ -213,7 +213,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
           fs.writeFileSync(abs, Buffer.from(b64, 'base64'))
           written.push(rel)
         }
-        notify(e, '🕘 いつでも戻れるように、いまの状態を履歴に保存しています…')
+        notify(e, '🕘 いまの状態を履歴に保存しています…')
         const origin = makeHistoryOrigin(args.destDir, written)
         return { ok: true, fileCount: written.length, failed, stripped, ...origin }
       }
@@ -254,7 +254,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       fs.rmSync(tarPath, { force: true })
 
       const rels = importedRelPathsFromTar(names, root, PUBLISH_DIR)
-      notify(e, '🕘 いつでも戻れるように、いまの状態を履歴に保存しています…')
+      notify(e, '🕘 いまの状態を履歴に保存しています…')
       const origin = makeHistoryOrigin(args.destDir, rels)
 
       // ── 引き継ぐ（選んだときだけ）────────────────────────────────────

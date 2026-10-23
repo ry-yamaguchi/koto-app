@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { stoppedWhenText } from '../src/shared/inFlightOps'
+import { STAGE_TIMING_STOPPED_WORDS } from '../src/shared/stageTiming'
 
 // ── 「どこにどれくらい時間がかかったか」の配線（2026-10-07）─────────────────────────────────────
 // 振る舞い（段の記録・保存・目安・双子の値）は stageTimingRecord / stageTimingHandlers / stageTimingFlows / stageEstimate が
@@ -21,8 +23,11 @@ const SRC = walk('src')
 
 const panel = read('src/renderer/components/AppRunDedicatedPanel.tsx')
 const modal = read('src/renderer/components/PublishModal.tsx')
-// 2026-10-08: 手順6の進み具合・結果の見た目は、📡 の行と共有する別の部品へ移した（DedicatedTeardownView.tsx）。
-const teardownView = read('src/renderer/components/DedicatedTeardownView.tsx')
+// 2026-10-08: 手順6の進み具合・結果の見た目は、📡 の行と共有する別の部品へ移した。
+// 0.6.22 3B-5・3B-6a: 📡 の行も手順6も、共通の部品（TeardownProgress・TeardownResultView）に替わった。手順6の節は DedicatedTeardownSection.tsx。
+const teardownProgress = read('src/renderer/components/teardown/TeardownProgress.tsx')
+const teardownResult = read('src/renderer/components/teardown/TeardownResultView.tsx')
+const teardownSection = read('src/renderer/components/DedicatedTeardownSection.tsx')
 const actions = read('src/renderer/apprunDedicatedActions.ts')
 
 describe('IPC の3点セット（掟6）: stageTiming:estimates は main・preload・global.d.ts が揃っている', () => {
@@ -64,6 +69,10 @@ describe('IPC の3点セット（掟6）: stageTiming:estimates は main・prelo
 
 describe('専有型のハンドラは、段の切り替わりを記録へ渡し、結果に時間を載せる', () => {
   const ipc = read('src/main/ipc/apprunDedicated.ts')
+  // 削除は 0.6.22 段階3B-1 から、仕様書（ipc/apprunDedicatedTeardown.ts）と共通の骨（cloud/teardownShell.ts）に載った。
+  // 段の送り口（stageReporter）・進み具合の送り口・段の時間を返り値へ載せる・ゾーンを渡す、は骨が持ち、仕様書は ctx から flow へ渡す。
+  const td = code(read('src/main/ipc/apprunDedicatedTeardown.ts'))
+  const shell = code(read('src/main/cloud/teardownShell.ts'))
   const block = (channel: string) => {
     const a = ipc.indexOf(`ipcMain.handle('${channel}'`)
     expect(a, `${channel} が無い`).toBeGreaterThan(-1)
@@ -71,28 +80,34 @@ describe('専有型のハンドラは、段の切り替わりを記録へ渡し�
     return ipc.slice(a, b > 0 ? b : undefined)
   }
 
-  it('★ 3本とも stageReporter を作り、flow の onStage へ渡す（渡し忘れると時間が測れない）。アプリだけを消す teardownApp は無い', () => {
+  it('★ 3本とも stageReporter を作り、flow の onStage へ渡す（渡し忘れると時間が測れない）。削除の stageReporter は骨が作り、仕様書が ctx から渡す。アプリだけを消す teardownApp は無い', () => {
     expect(block('apprunDedicated:create')).toContain('const onStage = stageReporter(projectDir)')
     expect(block('apprunDedicated:create')).toContain('createClusterFlow(auth, projectDir, spec, { confirmed: isConfirmed(opts), onStage })')
-    expect(block('apprunDedicated:teardown')).toContain('const onStage = stageReporter(projectDir)')
-    expect(block('apprunDedicated:teardown')).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, onStage })')
+    // 削除: 骨の ctx が段の送り口を持ち、仕様書の run が teardownFlow の onStage へ渡す（渡し忘れると時間が測れない）
+    expect(shell).toContain('onStage: stageReporter(projectDir),')
+    expect(td).toContain('const { projectDir, auth, progress, onStage } = ctx')
+    expect(td).toContain('teardownFlow(auth, projectDir, { confirmed: true, progress, onStage })')
     expect(block('apprunDedicated:publishApp')).toContain('const onStage = stageReporter(projectDir)')
     expect(block('apprunDedicated:publishApp')).toContain('}, { confirmed: isConfirmed(opts), progress, onStage })')
     expect(ipc).not.toContain("ipcMain.handle('apprunDedicated:teardownApp'")
+    expect(td).not.toContain('teardownApp')
   })
 
-  it('★ 3本とも、返り値に段の時間を載せる（withStageTimings）。鍵の戻り値の stageTimings を渡す', () => {
-    for (const ch of ['apprunDedicated:create', 'apprunDedicated:teardown']) {
-      expect(block(ch), ch).toMatch(/withStageTimings\(r\.value, r\.stageTimings\)/)
-    }
+  it('★ 3本とも、返り値に段の時間を載せる（作成・公開は withStageTimings・削除は骨）。鍵の戻り値の stageTimings を渡す', () => {
+    expect(block('apprunDedicated:create')).toMatch(/withStageTimings\(r\.value, r\.stageTimings\)/)
     expect(block('apprunDedicated:publishApp')).toContain('withStageTimings(locked.value, locked.stageTimings)')
+    // 削除: 骨が鍵の戻り値の stageTimings を返り値へ載せる（記録の extra.stageTimings と同じ値）
+    expect(shell).toContain('return locked.stageTimings ? { ...locked.value, stageTimings: locked.stageTimings } : locked.value')
   })
 
-  it('★ ゾーンを記録のために渡す（作成は入力の spec.zone・ほかは記録のゾーン）', () => {
+  it('★ ゾーンを記録のために渡す（作成は入力の spec.zone・削除は仕様書の zoneOf から骨が・公開は記録のゾーン）', () => {
     expect(block('apprunDedicated:create')).toContain('zone: spec.zone')
-    for (const ch of ['apprunDedicated:teardown', 'apprunDedicated:publishApp']) {
-      expect(block(ch), ch).toContain('zone: recordedZone(projectDir)')
-    }
+    expect(block('apprunDedicated:publishApp')).toContain('zone: recordedZone(projectDir)')
+    // 削除: 関数を値で渡さず包む（循環した require で undefined のまま渡って、ゾーンが黙って記録されなくなる形を避ける）。
+    // 振る舞いは tests/dedicatedTeardownShell.test.ts の C-7 が固定している。
+    expect(td).toContain('zoneOf: dir => recordedZone(dir),')
+    expect(td).not.toContain('zoneOf: recordedZone')
+    expect(shell).toContain("{ target: spec.target, handler: spec.handler, secrets: spec.secretsOf(auth), zone }")
   })
 
   it('公開の準備・イメージ・古いアクセスキーの段は IPC が渡す（順序: 準備 → … → イメージ → publishAppFlow）', () => {
@@ -112,12 +127,14 @@ describe('専有型のハンドラは、段の切り替わりを記録へ渡し�
   })
 
   it('保存場所の段は、文（STORAGE_TEARDOWN_PROGRESS）に段の内部名を添えて渡す。手順6も 📡 の 🗑 も同じ破棄の道（apprunDedicated:teardown）を通る', () => {
-    expect(ipc).toContain('progress(STORAGE_TEARDOWN_PROGRESS, { stage: STAGE.teardownStorage })')
-    expect(block('apprunDedicated:teardown')).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage)')
+    expect(td).toContain('progress(STORAGE_TEARDOWN_PROGRESS, { stage: STAGE.teardownStorage })')
+    expect(td).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage)')
+    expect(ipc).not.toContain('STORAGE_TEARDOWN_PROGRESS')
   })
 
   it('★ 画面へ送る進捗は文だけ（event.sender.send へ渡すのは msg。段の内部名を送らない）', () => {
-    expect(count(ipc, "msg => event.sender.send('apprunDedicated:teardown-progress', msg)")).toBe(1)
+    expect(count(td, "msg => event.sender.send('apprunDedicated:teardown-progress', msg)")).toBe(1)
+    expect(count(ipc, "msg => event.sender.send('apprunDedicated:teardown-progress', msg)")).toBe(0)
     expect(count(ipc, "msg => event.sender.send('apprunDedicated:publish-progress', msg)")).toBe(1)
   })
 
@@ -132,37 +149,44 @@ describe('画面: 結果の下の「かかった時間を見る」と、待っ�
   it('★ 手順5・6・8の結果の下に、同じ部品を置く（その場の結果も、記録から出す結果も、同じ stageTimings を渡す＝双子）', () => {
     expect(panel).toContain("import StageTimingDetails from './StageTimingDetails'")
     expect(panel).toContain('<StageTimingDetails timings={createResult.stageTimings} />')
-    // 手順6の結果は 📡 の行と共有する部品（DedicatedTeardownResultView）が描く。その中に同じ部品を置く。
-    expect(teardownView).toContain('<StageTimingDetails timings={result.stageTimings} />')
-    expect(count(teardownView, '<StageTimingDetails')).toBe(1)
-    expect(panel).toContain('<DedicatedTeardownResultView')
+    // 手順6の結果は 📡 の行と共有する部品（TeardownResultView）が描く（手順6の節が置く）。その中に同じ部品を置く。
+    expect(teardownResult).toContain('<StageTimingDetails timings={view.stageTimings} />')
+    expect(count(teardownResult, '<StageTimingDetails')).toBe(1)
+    expect(teardownSection).toContain('<TeardownResultView')
     expect(panel).toContain('<StageTimingDetails timings={publishResult.stageTimings} />')
     expect(count(panel, '<StageTimingDetails')).toBe(2)
-    // 結果の state は、その場の結果（outcome.result）も、記録から読み戻した結果（resumed*）も同じ state へ入る
+    // 結果の state は、その場の結果（outcome.result・手順6は onDone の view）も、記録から読み戻した結果（resumed*）も同じ state へ入る
     expect(panel).toContain('setCreateResult(outcome.result)')
-    expect(panel).toContain('setTeardownResult(outcome.result)')
+    expect(panel).toContain('setTeardownView(view)')
     expect(panel).toContain('setPublishResult(outcome.result)')
     expect(panel).toContain('setCreateResult(resumedCreateResult(f.record))')
-    expect(panel).toContain('setTeardownResult(resumedTeardownResult(f.record))')
+    expect(panel).toContain("setTeardownView(resumedTeardownView('sakura-apprun-dedicated', f.record.result))")
     expect(panel).toContain('setPublishResult(resumedPublishResult(f.record))')
   })
 
-  it('★★ 記録から読み戻す3つ（resumedCreateResult・resumedTeardownResult・resumedPublishResult）が、すべて stageTimings を足す', () => {
-    expect(count(actions, '...timingsPart(ex),')).toBe(3)
+  it('★★ 記録から読み戻す3つ（手順5・8の resumedCreateResult・resumedPublishResult と、削除の共通の resumedTeardownView）が、すべて stageTimings を足す', () => {
+    // 手順5・8: 専有型のパネルの部品。手順6の削除は 0.6.22 段階3B-7 から、3つの公開先で共通の resumedTeardownView（shared/teardownResult.ts）の1つ。
+    expect(count(actions, '...timingsPart(ex),')).toBe(2)
     expect(actions).toContain("import { readStageTimings } from '../shared/stageTiming'")
-    for (const fn of ['resumedCreateResult', 'resumedTeardownResult', 'resumedPublishResult']) {
+    for (const fn of ['resumedCreateResult', 'resumedPublishResult']) {
       const a = actions.indexOf(`export function ${fn}(`)
+      expect(a, fn).toBeGreaterThan(-1)
       const b = actions.indexOf('\n}\n', a)
       expect(actions.slice(a, b), fn).toContain('...timingsPart(ex),')
     }
+    expect(actions).not.toContain('export function resumedTeardownResult(')
+    const shared = read('src/shared/teardownResult.ts')
+    expect(shared).toContain('export function resumedTeardownView(')
+    expect(count(shared, 'stageTimings: readStageTimings(x.stageTimings),')).toBe(1)
   })
 
   it('★ 待っている段の目安は、記録の progress.stage（内部名）で引く。画面に出す文では見分けない', () => {
     expect(panel).toContain("import StageEstimate from './StageEstimate'")
     expect(panel).toContain('stage={runningRecord?.progress?.stage}') // 手順5（RunningLines）
-    // 手順6は 📡 の行と共有する部品（DedicatedTeardownProgress）が、記録の progress.stage で目安を引く。
-    expect(teardownView).toContain("{runningKind === 'teardown' && <StageEstimate stage={runningRecord?.progress?.stage} />}")
-    expect(panel).toContain('<DedicatedTeardownProgress progress={teardownProgress} runningKind={runningKind} runningRecord={runningRecord} nowMs={nowMs} />')
+    // 手順6は 📡 の行と共有する部品（TeardownProgress）が、記録の progress.stage で目安を引く。手順6の節がそれを置く。
+    expect(teardownProgress).toContain('{running && <StageEstimate stage={runningRecord?.progress?.stage} />}')
+    expect(teardownSection).toContain('<TeardownProgress')
+    expect(teardownSection).toContain('running={running} runningRecord={runningRecord} nowMs={nowMs}')
     expect(panel).toContain("{runningKind === 'publish' && <StageEstimate stage={runningRecord?.progress?.stage} />}")
     // 目安のために文を照合する関数・文字列をパネルに足していない
     expect(code(panel)).not.toMatch(/startsWith\('(ロードバランサの削除を待っています|ロードバランサの IP が付くのを待っています)[^']*'\)[^\n]*(estimate|目安)/)
@@ -237,6 +261,23 @@ describe('使い方ガイド・README に、目安と「かかった時間を見
     expect(readme).toContain('最近5回の中央値')
     expect(readme).toContain('外へは送りません')
   })
+
+  // 途中で止まった回（設計書 10.13.14 の3）。画面の言い回しは実物の定数から引く（文書だけが別の言い方をしない）。
+  it('★ README・使い方ガイド: 止まった回の段と時間も並べて出す／合計は止まっていた間を除く／目安に入れない／止まった削除は1回お知らせする', () => {
+    const notice = stoppedWhenText(undefined) // 「Koto の終了で止まりました」
+    expect(notice).toBe('Koto の終了で止まりました')
+    for (const [name, doc] of [['README.md', read('README.md')], ['docs/usage-guide.html', read('docs/usage-guide.html')]] as const) {
+      expect(doc, name).toContain('削除の途中で Koto を終了して止まったとき')
+      expect(doc, name).toContain('（または待ち切れずに止まったとき）')
+      expect(doc, name).toContain('止まった回のステップと時間も')
+      expect(doc, name).toContain('止まっていた間を除いて')
+      expect(doc, name).toContain('止まった回の時間は、目安には入れません')
+      expect(doc, name).toContain(`「${notice}」と`)
+      expect(doc, name).toContain('1回お知らせ')
+    }
+    // 合計の行の名前の「止まっていた間を除く」は、画面の定数と同じ言い回し
+    expect(STAGE_TIMING_STOPPED_WORDS.totalWithStopped).toContain('止まっていた間を除く')
+  })
 })
 
 
@@ -246,7 +287,7 @@ describe('★ 測らない印 UNMEASURED は shared/stageTiming.ts の1か所だ
   const read = (p: string): string => require('node:fs').readFileSync(require('node:path').join(__dirname, '..', p), 'utf-8')
   it('定義は shared にあり、各 flow と IPC は自前で作らない', () => {
     expect(read('src/shared/stageTiming.ts')).toContain('export const UNMEASURED: StageMark = Object.freeze({ unmeasured: true })')
-    for (const p of ['src/main/cloud/apprunDedicatedApply.ts', 'src/main/cloud/apprunDedicatedAppApply.ts', 'src/main/ipc/apprunDedicated.ts']) {
+    for (const p of ['src/main/cloud/apprunDedicatedApply.ts', 'src/main/cloud/apprunDedicatedAppApply.ts', 'src/main/ipc/apprunDedicated.ts', 'src/main/ipc/apprunDedicatedTeardown.ts']) {
       const src = read(p)
       expect(src, p).not.toContain('const UNMEASURED')
       expect(src, p).not.toContain('{ unmeasured: true })')

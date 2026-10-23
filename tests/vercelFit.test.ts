@@ -75,7 +75,9 @@ describe('公開する前の確認（Vercel）', () => {
     const checks = judgeVercelFit({ packageJson: { dependencies: { next: '15' } }, listens: [], usesData: ['app.js'], hasStorage: true, hasFiles: true })
     const storage = checks.find(c => c.id === 'storage')!
     // ブラウザでは動かない（koto-data は Node の部品）。**どこから呼べばよいかまで書く。**
-    expect(storage.note).toContain('ブラウザからは使えません')
+    // 2026-10-09 画面の文を短くする（T156）: 「ページの中（ブラウザ側）から直接呼んでいると動きません」の言い直しを削り、「ブラウザ側（ページの中）からは使えません」に1つにまとめた。
+    expect(storage.note).toContain('ブラウザ側（ページの中）からは使えません')
+    expect(storage.note).not.toContain('直接呼んでいると動きません')
     expect(storage.note).toContain('サーバーレス関数')
     expect(storage.note).toContain('中から呼んでください')
     // 利用者向けの文。画面には素のテキストとして出る（Markdown 記法を使わない）

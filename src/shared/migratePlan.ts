@@ -125,8 +125,6 @@ export function shouldOfferMigration(plan: MigratePlan): boolean {
 export function migrateNotice(plan: MigratePlan): string {
   const n = plan.move.length
   return [
-    `このプロジェクトのフォルダ構成を新しくします。`,
-    ``,
     `**「${PUBLISH_DIR_LABEL}」フォルダを作り、${n}件をその中へ移します。**`,
     `どれが公開されるのかが、ひと目で分かるようになります。`,
     ``,

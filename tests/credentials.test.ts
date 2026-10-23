@@ -62,7 +62,9 @@ describe('groupServices（SERVICES を3グループへ分ける純関数・UX-A�
 
   it('各グループの見出し直下の1行案内: first/perTargetにはあり、auto（折りたたみ）には無い', () => {
     expect(CREDENTIAL_GROUP_DESCRIPTION.first).toBe('これだけで作る・試すまでできます')
-    expect(CREDENTIAL_GROUP_DESCRIPTION.perTarget).toBe('公開先・Claude・Web検索など、使うものだけ登録すれば十分です')
+    // 2026-10-09 画面の文を短くする（T195）: 見出し（使うものだけ）が言っていることは、案内で繰り返さない。
+    expect(CREDENTIAL_GROUP_DESCRIPTION.perTarget).toBe('公開先・Claude・Web検索など')
+    expect(CREDENTIAL_GROUP_DESCRIPTION.perTarget).not.toContain('使うものだけ')
     expect(CREDENTIAL_GROUP_DESCRIPTION.auto).toBeUndefined()
   })
 })

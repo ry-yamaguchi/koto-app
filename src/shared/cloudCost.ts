@@ -16,6 +16,7 @@
 //   https://manual.sakura.ad.jp/cloud/payment/server-charge.html（課金対象期間）
 //
 // 金額はサービス側の改定で変わり得るため、**1箇所だけに書く**（画面の文言はここを参照する）。
+import { bucketNamesText } from './teardownSupport'
 
 /** コンテナレジストリの月額（税込・円）。2026-08-06 時点の公表値。 */
 export const REGISTRY_MONTHLY_YEN = 220
@@ -147,57 +148,133 @@ export function registryDeleteLabel(registryName: string | null): string {
   return `コンテナレジストリ${registryName ? `『${registryName}』` : ''}も削除する`
 }
 
-export function registryDeleteHelp(deleteIt: boolean): string {
-  return deleteIt
-    ? `月額${REGISTRY_MONTHLY_YEN}円（税込）の課金が止まります。中の登録済みイメージも消えます。`
+/**
+ * 破棄の確認に出す、レジストリ削除チェックの説明（チェックの状態ごと）。
+ *
+ * 外したときの月額と「後で消す場合は削除して」は、**このプロジェクトだけのレジストリ**（`registryIsOnlyThisProjects`）にだけ言う
+ * （2026-10-19）。借りたもの・作ったか分からないもの・ほかのプロジェクトが使っているものには、そのどちらも言わない: 言われたとおり消すと、
+ * ほかのアプリが動かなくなる。**言わないときは空の文字列を返す**（「レジストリは残ります。」は、チェックの名前「…も削除する」を言い直すだけ。
+ * 残す理由と月額は、その上の注意〔`registryChoiceNote`〕が言っている）。描く側（ConfirmModal）は空の説明を出さない。`onlyThisProjects` は**必ず渡す**
+ * （省略できる形にすると、渡し忘れても型が通り、借り物にも「後で消す場合は」と言う）。
+ */
+export function registryDeleteHelp(deleteIt: boolean, onlyThisProjects: boolean): string {
+  if (deleteIt) {
+    return `月額${REGISTRY_MONTHLY_YEN}円（税込）の課金が止まります。中の登録済みイメージも消えます。`
       + `心当たりのない名前のときはチェックを外してください。`
-    : `レジストリは残ります。月額${REGISTRY_MONTHLY_YEN}円（税込）の課金は続きます。`
+  }
+  return onlyThisProjects
+    ? `レジストリは残ります。月額${REGISTRY_MONTHLY_YEN}円（税込）の課金は続きます。`
       + `後で消す場合は、さくらのクラウドのコントロールパネルから削除してください。`
+    : ''
 }
 
 /**
- * 「置き場も削除する」の**最初の状態**を決める（純関数）。
+ * コンテナレジストリを、このプロジェクトのために Koto が作ったか（記録 `meta.registryAdopted` の読み）。
  *
- * ── なぜ借り物だけ外すのか（2026-08-25・AppRun の引き継ぎ）──────────────────
- * 既定はオン。残すと月220円が止まらないからで、**Koto が作った置き場ならそれで正しい**
- * （そのプロジェクト専用なので、消して困る人がいない）。
+ *   owned   … Koto がこのプロジェクトのために作った（記録が `false`）
+ *   adopted … もとからあったものを借りている（記録が `true`。引き継ぎ・記録の無いプロジェクトの公開）
+ *   unknown … 分からない（記録に印が無い・型が違う）
  *
- * だが引き継ぎでは、**利用者が前から持っていた置き場**をそのまま使う。そこに
- * 別のアプリのイメージが入っていることがあり（コントロールパネルで作った人は
- * 1つにまとめがち）、消すと**それらのアプリが動かなくなる**。
- * 消したい人は自分で入れられるので、**借り物のときだけ外しておく。**
+ * **分からないものを「Koto が作った」と読まない**（2026-10-19）。接続情報は Koto 全体で1つなので、
+ * 記録の無いプロジェクトが公開すると、ほかのプロジェクトが作ったレジストリを使う。
+ * 以前は「印が無い＝Koto が作った」と読んだため、そのレジストリを既定で消す確認が出ていた。
+ * 記録を読む口は、どこもこの関数に通す（印の読みを複製しない）。
  */
-export function registryDeleteDefault(opts: { registryName: string | null; adopted: boolean }): boolean {
+export type RegistryOrigin = 'owned' | 'adopted' | 'unknown'
+
+export function registryOriginOf(registryAdopted: unknown): RegistryOrigin {
+  if (registryAdopted === false) return 'owned'
+  if (registryAdopted === true) return 'adopted'
+  return 'unknown'
+}
+
+/** 画面が受け取った値が3つのどれかか（形の違う応答を「分からない」に倒さず、読めなかったと扱うために使う）。 */
+export function isRegistryOrigin(x: unknown): x is RegistryOrigin {
+  return x === 'owned' || x === 'adopted' || x === 'unknown'
+}
+
+/**
+ * 「置き場も削除する」の**最初の状態**を決める（純関数）。**既定でオンにするのは、`owned` で、ほかに使うプロジェクトが無いものだけ。**
+ *
+ * ── なぜそれだけなのか（2026-08-25・AppRun の引き継ぎ／2026-10-19）────────────────
+ * 既定はオン。残すと月220円が止まらないからで、**Koto がそのプロジェクトのために作った置き場なら
+ * それで正しい**（専用なので、消して困る人がいない）。
+ *
+ * だが借りた置き場（`adopted`）や、作ったか分からない置き場（`unknown`）には、
+ * **別のアプリのイメージが入っていることがある**（引き継ぎ・コントロールパネルで作った人は1つに
+ * まとめがち／接続情報は Koto 全体で1つなので、記録の無いプロジェクトはほかのプロジェクトの置き場を使う）。
+ * 消すと**それらのアプリが動かなくなる**。消したい人は自分で入れられるので、**外しておく。**
+ *
+ * **作った側（`owned`）も、ほかのプロジェクトが借りていれば外す**（`otherUsers` は、同じ置き場を記録しているほかのプロジェクトの数）。
+ * 借りる側を直しても、借りられた側から消せば同じ害（借りている全アプリのイメージが消える）が起きる。入口が逆なだけ。
+ * `otherUsers` は**必ず渡す**（省略できる形にしない。渡し忘れても型が通り、数えないまま既定オンになる）。
+ * 0 とちょうど等しいときだけオン。数でない値（NaN など）は「分からない」なのでオフ。
+ */
+export function registryDeleteDefault(opts: { registryName: string | null; origin: RegistryOrigin; otherUsers: number }): boolean {
+  return registryIsOnlyThisProjects(opts)
+}
+
+/**
+ * このコンテナレジストリは、このプロジェクトだけのものか（Koto がこのプロジェクトのために作り〔`owned`〕、ほかのプロジェクトが使っていない）。
+ * 名前が無ければ、レジストリの記録が無いので false。`otherUsers` は 0 とちょうど等しいときだけ（数でない値は「分からない」なので false）。
+ *
+ * **この判断を使う所は2つ**: 破棄の確認の「置き場も削除する」の既定オン（registryDeleteDefault）と、プロジェクトの削除で「公開も一緒に破棄する」を外した
+ * ときの「コンテナレジストリの月額が続きます」の文（2026-10-19、0.6.22-rc.1 の実機。共用型の行があるだけで言っていた）。
+ * 後者は、借りたもの・作ったか分からないもの・ほかが使っているもの・記録が無いものには言わない。その月額は、このプロジェクトを破棄しなくても
+ * このプロジェクトの話ではない、または分からないため。「このプロジェクトだけのレジストリ」を2つ書かない。
+ */
+export function registryIsOnlyThisProjects(opts: { registryName: string | null; origin: RegistryOrigin; otherUsers: number }): boolean {
   if (!opts.registryName) return false
-  return !opts.adopted
+  return opts.origin === 'owned' && opts.otherUsers === 0
 }
 
-/**
- * プロジェクトごと削除するときに、イメージの置き場がどうなるかの断り（純関数）。
- *
- * ── なぜ要るか（2026-08-25 Ryosuke の問いで見つけた）─────────────────────
- * プロジェクト削除は**破棄の3つめの導線**で、置き場を消すかどうかの選択肢が無い。
- * 選ばせないなら、**何が起きるかは必ず書く**。書かないと、
- * 「消えると思っていなかったものが消える」「止まると思っていた課金が続く」の
- * どちらかが黙って起きる。
- *
- * 消さないときだけ文を返す（消すときは「公開も一緒に破棄する」の説明で足りる）。
- */
-export function projectDeleteRegistryNote(opts: { registryName: string | null; adopted: boolean }): string | null {
-  if (!opts.registryName) return null
-  if (!opts.adopted) return null
-  return `コンテナレジストリ『${opts.registryName}』は残します`
-    + '（Koto が作ったものではなく、ほかのアプリのイメージも入っている可能性があるためです）。'
-    + `月額${REGISTRY_MONTHLY_YEN}円（税込）は続きます。要らなければ、`
-    + 'さくらのクラウドのコントロールパネルで削除してください。'
-}
-
-/** 借り物の置き場であることの断り（既定を外した理由を、その場で言う）。 */
+/** 借り物の置き場であることの断り（既定を外した理由を、その場で言う）。引き継ぎも、記録の無いプロジェクトの公開で借りたものも、この文。 */
 export function adoptedRegistryNote(registryName: string | null): string {
-  return `このコンテナレジストリ${registryName ? `『${registryName}』` : ''}は Koto が作ったものではありません`
-    + '（引き継いだときに、もとからあったものをそのまま使っています）。'
+  return `このコンテナレジストリ${registryName ? `『${registryName}』` : ''}は、このプロジェクトのために作ったものではありません。`
     + 'ほかのアプリのイメージも入っている場合、消すとそれらが動かなくなります。'
     + `消してよいと分かっているときだけ、チェックを入れてください（月額${REGISTRY_MONTHLY_YEN}円・税込が止まります）。`
+}
+
+/** 作ったか分からない置き場の断り（既定を外した理由を、その場で言う）。 */
+export function unknownOriginRegistryNote(registryName: string | null): string {
+  return `このコンテナレジストリ${registryName ? `『${registryName}』` : ''}を、このプロジェクトのために作ったか分かりません。`
+    + 'ほかのアプリも使っている場合、消すとそれらが動かなくなります。'
+    + `消してよいと分かっているときだけ、チェックを入れてください（月額${REGISTRY_MONTHLY_YEN}円・税込が止まります）。`
+}
+
+/** 既定を外した理由（作ったか借りたかだけで決まるもの）。Koto が作ったもの（`owned`）は、これだけでは既定がオンなので、言うことが無い。 */
+export function registryOriginNote(origin: RegistryOrigin, registryName: string | null): string | null {
+  if (origin === 'adopted') return adoptedRegistryNote(registryName)
+  if (origin === 'unknown') return unknownOriginRegistryNote(registryName)
+  return null
+}
+
+/**
+ * ほかのプロジェクトの名前を、確認の文に収まる形にする。2件まではそのまま、3件以上は先頭の1件と件数（「reminder ほか3件」）。
+ * 名前を出すのは、利用者が「消して困る相手」を見分けるため。件数だけでは、心当たりのあるプロジェクトか分からない。
+ */
+export function otherProjectsText(names: readonly string[]): string {
+  if (names.length <= 2) return names.join('・')
+  return `${names[0]} ほか${names.length - 1}件`
+}
+
+/**
+ * ほかのプロジェクトが同じ置き場を使っているときの断り（既定を外した理由を、その場で言う）。
+ * 作った側（`owned`）にも、借りた側にも、同じ文を出す。**使っている相手が分かっている**ので、「入っている場合」と推測では言わない。
+ */
+export function sharedRegistryNote(registryName: string | null, users: readonly string[]): string {
+  return `ほかのプロジェクト（${otherProjectsText(users)}）も、このコンテナレジストリ${registryName ? `『${registryName}』` : ''}を使っています。`
+    + '消すと、それらのアプリが動かなくなります。'
+    + `消してよいと分かっているときだけ、チェックを入れてください（月額${REGISTRY_MONTHLY_YEN}円・税込が止まります）。`
+}
+
+/**
+ * 「置き場も削除する」の既定を外した理由。ほかのプロジェクトが使っていると分かっていれば、それを言う（作った・借りたより強い事実で、
+ * 消すと何が起きるかをそのまま言える）。いなければ、作ったか借りたかの断り（`owned` は言うことが無いので null）。
+ */
+export function registryChoiceNote(opts: { origin: RegistryOrigin; registryName: string | null; users: readonly string[] }): string | null {
+  if (opts.users.length > 0) return sharedRegistryNote(opts.registryName, opts.users)
+  return registryOriginNote(opts.origin, opts.registryName)
 }
 
 /**
@@ -227,16 +304,6 @@ export function urlChangesOnTeardownNotice(): string {
     + `いま公開しているURLを誰かに伝えている場合は、届かなくなります。`
 }
 
-/** 破棄で消えるものの一覧（画面表示用）。レジストリを外したときは並びから消える。 */
-export function teardownTargets(opts: { hasBucket: boolean; deleteRegistry: boolean; registryName: string | null }): string[] {
-  const out = ['AppRun アプリ']
-  if (opts.deleteRegistry) {
-    out.push(`コンテナレジストリ${opts.registryName ? `『${opts.registryName}』` : ''}（push用ユーザー・登録済みイメージごと）`)
-  }
-  if (opts.hasBucket) out.push('保存場所にある、このプロジェクトのデータ（くわしくは下の💾）')
-  return out
-}
-
 /**
  * 破棄後に「まだ課金が続くもの」があるかの注意文。無ければ null。
  *
@@ -245,6 +312,14 @@ export function teardownTargets(opts: { hasBucket: boolean; deleteRegistry: bool
  * 自分で置いたファイルがある場合。src/shared/objectStorage.ts の3段構え）。
  * つまり「破棄したのに月額495円が続く」が正常な結果として起こりうる。
  * **それを黙っていると、消したつもりの費用が請求書に出続ける。**
+ *
+ * ── 「後で消す場合は削除して」は、消してよいものにだけ言う（2026-10-19・双子）──────────────────
+ * 月額は、残したものすべてについて言う（お金は削らない）。だが「後で消す場合は削除して」と言ってよいのは、**このプロジェクトだけのもの**だけ。
+ *   ・コンテナレジストリ … 呼び手（`teardownRemainingWarnings`）が `registryIsOnlyThisProjects` で決める。ここへ `deleteRegistry: false` で渡すのは
+ *     このプロジェクトだけのレジストリだけ（借りたもの・ほかが使うものは、月額の合計に入れず、別の一文 `keptSharedRegistryNote` で言う）。
+ *   ・保存場所 … 残した理由で言い分ける。ほかのプロジェクトも使っている保存場所を、言われたとおり消すと、そのプロジェクトのデータも消える
+ *     （プロジェクトの削除の結果〔projectDeletePlan.ts の PROJECT_DELETE_REVIEW_TAIL〕も「消さないでください」と言っている）。
+ *     理由が分からない保存場所は、分からない側（消す前に確かめる）に倒す。
  */
 export function remainingCostWarning(opts: {
   deleteRegistry: boolean
@@ -257,10 +332,15 @@ export function remainingCostWarning(opts: {
    * 月額が黙って続く**（objectStorage の検分の指摘5と同じ形）。
    */
   keptBucketNames?: readonly string[] | null
+  /** 残った保存場所のうち、**ほかのプロジェクトも使っているため残した**もの（`teardownPlanFor` の `keptReasons.usedByOthers`）。消すと、そのプロジェクトのデータも消える。 */
+  keptBucketsUsedByOthers?: readonly string[] | null
+  /** 残った保存場所のうち、**Koto が作ったのではないファイルがあるため残した**もの（`keptReasons.ownFiles`）。消す前に中身を確かめる。どちらの印も無い保存場所は、理由が分からない扱い。 */
+  keptBucketsWithOwnFiles?: readonly string[] | null
 }): string | null {
   const parts: string[] = []
   let total = 0
-  if (!opts.deleteRegistry) {
+  const registryKept = !opts.deleteRegistry
+  if (registryKept) {
     total += REGISTRY_MONTHLY_YEN
     parts.push(`コンテナレジストリ${opts.registryName ? `『${opts.registryName}』` : ''}`)
   }
@@ -268,12 +348,75 @@ export function remainingCostWarning(opts: {
     .filter((n): n is string => typeof n === 'string' && n !== '')))
   if (keptBuckets.length > 0) {
     total += BUCKET_MONTHLY_YEN * keptBuckets.length
-    parts.push(`データの保存場所${keptBuckets.map(n => `『${n}』`).join('')}`)
+    parts.push(`データの保存場所${bucketNamesText(keptBuckets)}`)
   }
   if (parts.length === 0) return null
+  const head = `⚠️ ${parts.join('と')}は残るため、月額${total}円（税込）の課金は続きます。`
+
+  // どう扱ってよいかは、残した理由ごとに1文。同じ理由の保存場所は1つにまとめる。
+  const usedByOthers = new Set(opts.keptBucketsUsedByOthers ?? [])
+  const withOwnFiles = new Set(opts.keptBucketsWithOwnFiles ?? [])
+  const whyOf = (b: string): KeptBucketWhy => (usedByOthers.has(b) ? 'usedByOthers' : withOwnFiles.has(b) ? 'ownFiles' : 'unknown')
+  const groups = KEPT_BUCKET_WHY_ORDER
+    .map(why => ({ why, names: keptBuckets.filter(b => whyOf(b) === why) }))
+    .filter(g => g.names.length > 0)
+  // 保存場所の文は、保存場所が1種類の理由だけで、レジストリの文も無いときは、主語（上の文が言った保存場所）を省く。それ以外は名前を言う。
+  const named = registryKept || groups.length > 1
+  const tails: string[] = []
   // 「どこで消せるか」を必ず添える（2026-09-11 利用者目線レビュー）。📡 公開したもの一覧では
   // 破棄で記録の行が消えるため、この一文が片づけ先を知る唯一の手がかりになる。
-  return `⚠️ ${parts.join('と')}は残るため、月額${total}円（税込）の課金は続きます。後で消す場合は、さくらのクラウドのコントロールパネルから削除してください。`
+  if (registryKept) {
+    tails.push(`${groups.length > 0 ? 'コンテナレジストリを' : ''}後で消す場合は、さくらのクラウドのコントロールパネルから削除してください。`)
+  }
+  for (const g of groups) tails.push(keptBucketTail(g.why, named ? `データの保存場所${bucketNamesText(g.names)}` : null))
+  return head + tails.join('')
+}
+
+/** 残した保存場所の、残した理由。 */
+type KeptBucketWhy = 'usedByOthers' | 'ownFiles' | 'unknown'
+const KEPT_BUCKET_WHY_ORDER: readonly KeptBucketWhy[] = ['usedByOthers', 'ownFiles', 'unknown']
+
+/**
+ * 残した保存場所について、理由ごとの1文（`subject` が null なら主語を省く）。**事実だけを言い、「ため残しました」とは言わない**
+ * （上の文が「残るため、月額…」と言うので、「残」が3回重なる。緑の行も理由を言わない・2026-10-19 検分）。
+ *   ・usedByOthers … ほかのプロジェクトも使っている。確かめたのは「ほかのプロジェクトのデータがある」ことだけ（アプリがあるか・動いているかは見ていない）。
+ *     だから消すと起きることは「そのプロジェクトのデータも消える」と言う（「アプリが止まる」とは言い切らない）。「後で消す場合は」と言わない
+ *   ・ownFiles … 利用者のファイル。消すかどうかは利用者が決める。中身を確かめてから
+ *   ・unknown … 理由が返り値で分からない。消す前に、使っているプロジェクトが無いか確かめてもらう
+ */
+function keptBucketTail(why: KeptBucketWhy, subject: string | null): string {
+  switch (why) {
+    case 'usedByOthers':
+      return `${subject ? `${subject}は、` : ''}ほかのプロジェクトも使っています。消すと、そのプロジェクトのデータも消えます。`
+    case 'ownFiles':
+      return `${subject ? `${subject}には、` : ''}Koto が作ったのではないファイルがあります。消す前に、さくらのクラウドのコントロールパネルで中身を確かめてください。`
+    case 'unknown':
+      return `${subject ? `${subject}は、` : ''}消す前に、さくらのクラウドのコントロールパネルで、使っているプロジェクトが無いか確かめてください。`
+  }
+}
+
+/**
+ * 残したコンテナレジストリが**このプロジェクトだけのものでない**ときの、結果の一文（月額の合計に入れず、「後で消す場合は」も言わない）。
+ *
+ * 借りたもの・作ったか分からないもの・ほかのプロジェクトが使っているものは、言われたとおり消すと、ほかのアプリが動かなくなる。
+ * だから「残しました」と、確かめた事実だけを言う（2026-10-19・双子。確認の既定・削除の画面は `registryIsOnlyThisProjects` で出し分けているのに、
+ * 結果の警告だけが一律に「後で消す場合は」と言っていた）。
+ * **残した理由は言わない**（「…ため、残しました」としない）。残すかどうかを決めたのは Koto の判断とは限らない: 利用者がチェックを外した回も、
+ * 確認のあとで記録が変わって削除を見送った回も、この文が出る。理由を言うと、実際の理由と食い違う。
+ * `users` は、同じレジストリを使っているほかのプロジェクト（`null` は、調べられなかった＝分からない）。
+ *
+ * **月額は、このプロジェクトのものかもしれない回だけ言う**（お金は削らない）。作ったか分からない（0.3.43 より前に Koto が作ったものも、記録に印が無いのでここに入る）回と、
+ * 作った（owned）が借り手を調べられなかった回。借りたもの・ほかのプロジェクトが使っていると分かっているものは、月額が続くのはこのプロジェクトの話ではないので、言わない。
+ * 並びは強い順: 使っているプロジェクトが分かっている > 借りたもの > 作ったか分からない > 作ったが借り手を調べられなかった。
+ */
+export function keptSharedRegistryNote(opts: { registryName: string | null; origin: RegistryOrigin; users: readonly string[] | null }): string {
+  const name = opts.registryName ? `『${opts.registryName}』` : ''
+  const kept = `⚠️ コンテナレジストリ${name}は残しました`
+  if (opts.users && opts.users.length > 0) return `${kept}。ほかのプロジェクト（${otherProjectsText(opts.users)}）も使っています。`
+  if (opts.origin === 'adopted') return `${kept}。このプロジェクトのために作ったものではありません。`
+  const money = `（月額${REGISTRY_MONTHLY_YEN}円・税込は続きます）`
+  if (opts.origin === 'unknown') return `${kept}${money}。このプロジェクトのために作ったか分かりません。ほかのアプリも使っていることがあります。`
+  return `${kept}${money}。ほかのプロジェクトが使っていないか確かめられませんでした。`
 }
 
 /**
@@ -285,26 +428,45 @@ export function remainingCostWarning(opts: {
  * 破棄が途中で失敗した回や、記録にレジストリ名が無い回に、その場では月額が続くと言うのに、
  * 開き直すと警告が消えた。
  *   ・keptBucketName … 破棄したのに残った保存場所
+ *   ・keptBucketsUsedByOthers／keptBucketsWithOwnFiles … 残した保存場所の理由（無ければ、理由が分からない扱い）
  *   ・keptRegistryName … 利用者が「残す」と選んだ、コンテナレジストリの名前
+ *   ・keptRegistryOrigin／keptRegistryUsers … そのレジストリの由来（Koto が作った／借りた／分からない）と、使っているほかのプロジェクト。
+ *     **どちらかが欠けていれば、このプロジェクトだけのものとは言わない**（`registryIsOnlyThisProjects`。分からない側に倒す）。
+ *     このプロジェクトだけのもの（Koto が作り、ほかが使っていない）を残した回だけ、月額と「後で消す場合は」を言う（2026-10-19・双子）。
+ *     それ以外は月額の合計に入れず、`keptSharedRegistryNote` の一文
  *   ・keptRegistryUnnamed … 「残す」と選んだが、記録に名前が無い。**残っているとは確かめられていない**ので、
  *     「残る」と断定せず、確認の画面と同じ文（registryUnknownNotice）で言う
- * 名前のあるもの（レジストリ・保存場所）は合算して1つの警告にする（月額の合計を出すため）。
+ * 名前のあるもの（このプロジェクトだけのレジストリ・保存場所）は合算して1つの警告にする（月額の合計を出すため）。
  */
 export function teardownRemainingWarnings(r: {
   keptBucketName?: string | null
   /** 残った保存場所が複数あるときの全部（HANAMII・専有型）。`keptBucketName` と重なる名前は1つと数える。 */
   keptBucketNames?: readonly string[] | null
+  keptBucketsUsedByOthers?: readonly string[] | null
+  keptBucketsWithOwnFiles?: readonly string[] | null
   keptRegistryName?: string | null
+  /** 残したレジストリの由来。無い・3つのどれでもない値は「分からない」。 */
+  keptRegistryOrigin?: RegistryOrigin | null
+  /** 残したレジストリを使っている、ほかのプロジェクト。無い（調べられなかった・旧い返り値）ときは null＝分からない。 */
+  keptRegistryUsers?: readonly string[] | null
   keptRegistryUnnamed?: boolean
 }): string[] {
   const out: string[] = []
+  const registryName = r.keptRegistryName || null
+  const origin: RegistryOrigin = isRegistryOrigin(r.keptRegistryOrigin) ? r.keptRegistryOrigin : 'unknown'
+  const users = Array.isArray(r.keptRegistryUsers) ? r.keptRegistryUsers : null
+  const ownRegistry = registryName !== null
+    && registryIsOnlyThisProjects({ registryName, origin, otherUsers: users ? users.length : Number.NaN })
   const named = remainingCostWarning({
-    deleteRegistry: !r.keptRegistryName,
-    registryName: r.keptRegistryName || null,
+    deleteRegistry: !ownRegistry,
+    registryName: ownRegistry ? registryName : null,
     keptBucketName: r.keptBucketName || null,
     keptBucketNames: r.keptBucketNames ?? null,
+    keptBucketsUsedByOthers: r.keptBucketsUsedByOthers ?? null,
+    keptBucketsWithOwnFiles: r.keptBucketsWithOwnFiles ?? null,
   })
   if (named) out.push(named)
-  if (r.keptRegistryUnnamed === true && !r.keptRegistryName) out.push(`⚠️ ${registryUnknownNotice()}`)
+  if (registryName && !ownRegistry) out.push(keptSharedRegistryNote({ registryName, origin, users }))
+  if (r.keptRegistryUnnamed === true && !registryName) out.push(`⚠️ ${registryUnknownNotice()}`)
   return out
 }

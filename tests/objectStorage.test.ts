@@ -6,7 +6,7 @@ import {
   storageEnvVars, containsSecretEnv, usesDataLayer, writesFilesDirectly, fileWriteLines, consentedBuckets, keepStorageFromDisk,
   moduleKindOf, dataLayerFileFor, moduleKindOfExtension, moduleKindForDataLayer,
   DATA_LAYER_FILE, DATA_LAYER_FILE_CJS,
-  type StoragePlacement,
+  type StoragePlacement, type BucketRecordUsers,
 } from '../src/shared/objectStorage'
 
 // 2026-08-13。公開したアプリに永続データを持たせる（S-1）。
@@ -142,6 +142,9 @@ describe('オブジェクトのキー（プレフィックスの外へ出さな�
   })
 })
 
+/** 記録を読んだ結果、ほかに使っているプロジェクトはいなかった（既存の試験は、キーの一覧だけで決まる判断を見る）。 */
+const NONE: BucketRecordUsers = { known: true, users: [] }
+
 describe('破棄で何を消すか（★いちばん危ない判断）', () => {
   const shared: StoragePlacement = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
   const dedicated: StoragePlacement = { bucket: 'koto-myapp', prefix: 'projects/myapp/', shared: false }
@@ -151,60 +154,147 @@ describe('破棄で何を消すか（★いちばん危ない判断）', () => {
   // ★ Ryosuke 指摘（2026-08-13）。利用者が自分でファイルを置いていることがある。
   // それを Koto が消しては絶対にいけない
   it('Koto が作ったのではないファイルがあれば、バケットを消さない', () => {
-    const t = teardownPlanFor(shared, [...MINE, 'わたしの大事な資料.pdf'])
+    const t = teardownPlanFor(shared, [...MINE, 'わたしの大事な資料.pdf'], NONE)
     expect(t.deleteBucket).toBe(false)
-    expect(t.note).toContain('Koto が作ったのではない')
+    expect(t.keptReasons).toEqual({ ownFiles: true, usedByOthers: false })
   })
 
   it('専用バケットでも、利用者のファイルがあれば消さない', () => {
-    const t = teardownPlanFor(dedicated, [...MINE, 'backup/2026.zip'])
+    const t = teardownPlanFor(dedicated, [...MINE, 'backup/2026.zip'], NONE)
     expect(t.deleteBucket).toBe(false)
   })
 
   // 既存のバケットを利用者が指定した場合、中身は全部「利用者のもの」になる
   it('Koto の場所の外しか無いバケットは消さない', () => {
-    expect(teardownPlanFor(dedicated, ['a.txt', 'b/c.txt']).deleteBucket).toBe(false)
+    expect(teardownPlanFor(dedicated, ['a.txt', 'b/c.txt'], NONE).deleteBucket).toBe(false)
   })
 
   it('ほかに使っているプロジェクトがあれば、共有バケットは消さない', () => {
-    const t = teardownPlanFor(shared, [...MINE, ...OTHERS])
+    const t = teardownPlanFor(shared, [...MINE, ...OTHERS], NONE)
     expect(t.deleteBucket).toBe(false)
     expect(t.deletePrefix).toBe('projects/myapp/')
-    expect(t.note).toContain('2件')
+    expect(t.keptReasons).toEqual({ ownFiles: false, usedByOthers: true })
   })
 
   // 誰も使っていない共有バケットを残すと、月495円がかかり続ける
   it('自分だけなら、共有バケットも消せる', () => {
-    const t = teardownPlanFor(shared, MINE)
+    const t = teardownPlanFor(shared, MINE, NONE)
     expect(t.deleteBucket).toBe(true)
     expect(t.note).toContain('課金')
   })
 
   it('専用バケットは、Koto の分だけなら消してよい', () => {
-    const t = teardownPlanFor(dedicated, MINE)
+    const t = teardownPlanFor(dedicated, MINE, NONE)
     expect(t.deleteBucket).toBe(true)
     expect(t.note).toContain('失われ')
   })
 
   // 「利用者のデータあり」は「ほかのプロジェクトあり」より優先して伝える
   it('利用者のファイルの判定を、ほかのプロジェクトより先に見る', () => {
-    const t = teardownPlanFor(shared, [...MINE, ...OTHERS, 'メモ.txt'])
+    const t = teardownPlanFor(shared, [...MINE, ...OTHERS, 'メモ.txt'], NONE)
     expect(t.deleteBucket).toBe(false)
-    expect(t.note).toContain('Koto が作ったのではない')
+    expect(t.keptReasons).toEqual({ ownFiles: true, usedByOthers: true })
+  })
+
+  // 残す回の note は「保存場所は残します。」だけ（2026-10-19 検分）。理由・月額・次の操作は、結果の黄色の文が1か所で言う。
+  // 緑の ✅ の行にも言うと、同じことを2回言い、しかも食い違った（ほかのプロジェクトも使う保存場所に、緑の行だけが「削除してください」と言っていた）。
+  it('★★★ 残す回の note は短い1文。理由・月額・「削除してください」を言わない（利用者のファイルだけ・ほかのプロジェクトだけ・両方の3通りとも同じ）', () => {
+    const NOTE = '保存場所は残します。'
+    for (const keys of [[...MINE, 'わたしの大事な資料.pdf'], [...MINE, ...OTHERS], [...MINE, ...OTHERS, 'メモ.txt']]) {
+      for (const p of [shared, dedicated]) {
+        const t = teardownPlanFor(p, keys, NONE)
+        expect(t.deleteBucket).toBe(false)
+        expect(t.note, `${p.bucket} ${keys.length}件`).toBe(NOTE)
+      }
+    }
+  })
+
+  // 結果の警告が「後で消す場合は削除して」と言ってよいかを決める材料（2026-10-19・双子）。残さない回（バケットごと消す）には付かない。
+  it('★★★ 残す理由の事実を返す: 利用者のファイル／ほかのプロジェクトが使っている／両方。バケットごと消す回は付けない', () => {
+    expect(teardownPlanFor(shared, [...MINE, 'わたしの大事な資料.pdf'], NONE).keptReasons).toEqual({ ownFiles: true, usedByOthers: false })
+    expect(teardownPlanFor(dedicated, [...MINE, 'backup/2026.zip'], NONE).keptReasons).toEqual({ ownFiles: true, usedByOthers: false })
+    expect(teardownPlanFor(shared, [...MINE, ...OTHERS], NONE).keptReasons).toEqual({ ownFiles: false, usedByOthers: true })
+    // 判断（バケットを残す）は利用者のファイルが先でも、事実は両方を返す
+    expect(teardownPlanFor(shared, [...MINE, ...OTHERS, 'メモ.txt'], NONE).keptReasons).toEqual({ ownFiles: true, usedByOthers: true })
+    for (const p of [shared, dedicated]) expect(teardownPlanFor(p, MINE, NONE).keptReasons, p.bucket).toBeUndefined()
+    expect(teardownPlanFor(shared, [], NONE).keptReasons).toBeUndefined()
   })
 
   it('どの場合も、このプロジェクトのデータは消す', () => {
     for (const keys of [MINE, [...MINE, ...OTHERS], [...MINE, 'x.txt'], []]) {
-      expect(teardownPlanFor(shared, keys).deletePrefix).toBe('projects/myapp/')
+      expect(teardownPlanFor(shared, keys, NONE).deletePrefix).toBe('projects/myapp/')
     }
   })
 
   it('説明に Markdown 記法を混ぜない', () => {
     for (const keys of [MINE, [...MINE, ...OTHERS], [...MINE, 'x.txt']]) {
       for (const p of [shared, dedicated]) {
-        expect(teardownPlanFor(p, keys).note).not.toMatch(/\*\*|__|`/)
+        expect(teardownPlanFor(p, keys, NONE).note).not.toMatch(/\*\*|__|`/)
       }
     }
+  })
+
+  // ── ほかのプロジェクトの記録（2026-10-21 実機: 一覧に出ない利用者を、別のプロジェクトの削除がバケットごと消した）──────────
+  describe('★★★ ほかのプロジェクトの記録から分かった利用者', () => {
+    const NOTE = '保存場所は残します。'
+    const USED: BucketRecordUsers = { known: true, users: ['rc1-shared'] }
+    const UNKNOWN: BucketRecordUsers = { known: false }
+
+    it('★★★ 実機の再現: キーには自分の prefix しか無いが、記録に使っているプロジェクトがいれば、バケットを消さない（このプロジェクトの prefix だけ消す）', () => {
+      for (const p of [shared, dedicated]) {
+        const t = teardownPlanFor(p, MINE, USED)
+        expect(t.deleteBucket, p.bucket).toBe(false)
+        expect(t.deletePrefix).toBe('projects/myapp/')
+        expect(t.keptReasons).toEqual({ ownFiles: false, usedByOthers: true })
+        expect(t.note).toBe(NOTE)
+      }
+    })
+
+    it('★★★ 記録を読めなかった（わからない）なら、バケットを消さない。「ほかのプロジェクトも使っている」とは言わない（使っているとは確かめていない）', () => {
+      for (const p of [shared, dedicated]) {
+        const t = teardownPlanFor(p, MINE, UNKNOWN)
+        expect(t.deleteBucket, p.bucket).toBe(false)
+        expect(t.deletePrefix).toBe('projects/myapp/')
+        expect(t.keptReasons).toEqual({ ownFiles: false, usedByOthers: false })
+        expect(t.note).toBe(NOTE)
+      }
+    })
+
+    it('★★★ 記録の利用者を渡し忘れても（undefined）、わからない扱い＝消さない（渡し忘れが「いない」に倒れない）', () => {
+      for (const p of [shared, dedicated]) {
+        const t = (teardownPlanFor as any)(p, MINE)
+        expect(t.deleteBucket, p.bucket).toBe(false)
+        expect(t.keptReasons).toEqual({ ownFiles: false, usedByOthers: false })
+      }
+    })
+
+    it('記録に利用者がいて、利用者のファイルもある → 両方の事実を返す。記録に利用者がいて、キーにもいる → 使われている', () => {
+      expect(teardownPlanFor(shared, [...MINE, 'メモ.txt'], USED).keptReasons).toEqual({ ownFiles: true, usedByOthers: true })
+      expect(teardownPlanFor(shared, [...MINE, ...OTHERS], USED).keptReasons).toEqual({ ownFiles: false, usedByOthers: true })
+      // わからないが、利用者のファイルがある → ファイルの事実だけ（使っているとは言わない）
+      expect(teardownPlanFor(shared, [...MINE, 'メモ.txt'], UNKNOWN).keptReasons).toEqual({ ownFiles: true, usedByOthers: false })
+    })
+
+    it('★ キーに別のプロジェクトがいれば、記録が「わからない」でも「使っている」と言える（キーで確かめた）', () => {
+      const t = teardownPlanFor(shared, [...MINE, ...OTHERS], UNKNOWN)
+      expect(t.deleteBucket).toBe(false)
+      expect(t.keptReasons).toEqual({ ownFiles: false, usedByOthers: true })
+    })
+
+    it('記録も読めて誰もいないと確かめられた回だけ、バケットごと消す（共有・専用とも）', () => {
+      expect(teardownPlanFor(shared, MINE, NONE).deleteBucket).toBe(true)
+      expect(teardownPlanFor(dedicated, MINE, NONE).deleteBucket).toBe(true)
+    })
+
+    // 緑の行は「✅ 保存場所『X』のデータを削除しました — {note}」。消した回の note は過去形で事実を言う
+    // （以前は共有の枝が「あわせて削除できます」と、実際は消したのに提案の形で言っていた）
+    it('★★ バケットごと消した回の note は、消したことを過去形で言い、勧める形（できます・します）にしない', () => {
+      const s = teardownPlanFor(shared, MINE, NONE)
+      const d = teardownPlanFor(dedicated, MINE, NONE)
+      expect(s.note).toBe('保存場所ごと削除しました。月額の課金も止まります。')
+      expect(d.note).toBe('このプロジェクト専用の保存場所ごと削除しました。中のデータはすべて失われ、月額の課金も止まります。')
+      for (const t of [s, d]) expect(t.note).not.toMatch(/削除できます|削除します|ほかにありません/)
+    })
   })
 })
 
@@ -238,15 +328,14 @@ describe('「まだ何も書いていないプロジェクト」を見落とさ�
   it('★ 目印があれば、ほかのプロジェクトを破棄してもバケットは残る', () => {
     const plan = teardownPlanFor(
       { bucket: 'b', prefix: 'projects/b/', shared: true } as any,
-      [keepMarkerKey('projects/a/'), 'projects/b/x.json'],
-    )
+      [keepMarkerKey('projects/a/'), 'projects/b/x.json'], NONE)
     expect(plan.deleteBucket).toBe(false)
   })
 
   it('★（対） 目印が無いと、用意しただけのプロジェクトを巻き込んでバケットごと消える', () => {
     const plan = teardownPlanFor(
       { bucket: 'b', prefix: 'projects/b/', shared: true } as any,
-      ['projects/b/x.json'], // A は用意しただけ＝一覧に出てこない
+      ['projects/b/x.json'], NONE, // A は用意しただけ＝一覧に出てこない（記録にも誰もいないと確かめられたときだけ、巻き込んで消える）
     )
     expect(plan.deleteBucket).toBe(true)
   })

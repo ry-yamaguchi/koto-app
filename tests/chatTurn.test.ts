@@ -509,7 +509,31 @@ describe('runEngineTurn', () => {
     // 2回目も書かなければ、最終本文に警告が付く
     const finalReplace = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast' && typeof e.ev.msg.content === 'string' && e.ev.msg.content.startsWith('index.html を修正しました'))
     expect(finalReplace).toBeTruthy()
-    expect(finalReplace.ev.msg.content).toContain('実際には書き込みが行われていません')
+    expect(finalReplace.ev.msg.content).toContain('ファイルは書き換えられていません')
+  })
+
+  // 11a'. 単独チャット（toolsProjectDir=null）では、AI はファイルを書けない。「作成しました」は
+  // 返事の中の文章のことなので、促しも注意書きも出さない（2026-10-14 実機・0.6.21-rc.2:
+  // 「お店の紹介文を考えて」への返事に「書き込みが行われていません」が付いた）。
+  it('単独チャットでは「作成しました」に注意書きを付けない: 1回で終了・返事はそのまま', async () => {
+    const reply = '紹介文をいくつか作成しました。\n\n### パターン1\n肉の旨味を、心ゆくまで。'
+    const { ports, log } = makePorts({ stream: [{ content: reply, toolCalls: null }] })
+    await runEngineTurn(makeSpec({ toolsProjectDir: null, convDir: '/conv' }), ports)
+    expect(log.some((e) => e.tag === 'emit' && e.ev.kind === 'status' && e.ev.value === '実際に変更が必要か確かめています…')).toBe(false)
+    expect(log.filter((e) => e.tag === 'chatStream').length).toBe(1)
+    const msgs = replayMessages(log)
+    const last = msgs[msgs.length - 1]
+    expect(last.content).toBe(reply)
+  })
+
+  // 同じ返事でも、プロジェクトを開いた会話（書き込みのツールを渡す）では従来どおり守りが働く
+  // （上の変更で IDE 側の守りまで外していないことの対）。
+  it('IDE の会話では同じ返事に、促しのあと注意書きが付く', async () => {
+    const reply = '紹介文をいくつか作成しました。'
+    const { ports, log } = makePorts({ stream: [{ content: reply, toolCalls: null }, { content: reply, toolCalls: null }] })
+    await runEngineTurn(makeSpec(), ports)
+    const msgs = replayMessages(log)
+    expect(msgs[msgs.length - 1].content).toContain('ファイルは書き換えられていません')
   })
 
   // 11b. 誤検知の発生源対策（2026-08-30 実機・v0.4.5）: 完了表現が**過去のターンの話**

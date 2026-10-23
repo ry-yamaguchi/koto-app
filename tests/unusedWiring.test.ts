@@ -222,7 +222,8 @@ describe('moveFilesToFs: 守りの配線（isProtectedWritePath を移動元・�
 
   it('dest で移動先の置き場（MATERIALS_DIR / PUBLISH_DIR）を切り替えている（手で並べ直していない）', () => {
     const src = stripped('src/main/ipc/unused.ts')
-    expect(src).toContain("import { PUBLISH_DIR, backupRelPath } from '../../shared/publishRoot'")
+    // 2026-10-09 画面の文を短くする（T043）: 履歴の見出しに PUBLISH_DIR_LABEL（「公開されるもの（public）」）を使うため import が増えた。
+    expect(src).toContain("import { PUBLISH_DIR, PUBLISH_DIR_LABEL, backupRelPath } from '../../shared/publishRoot'")
     expect(src).toContain("const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR")
   })
 

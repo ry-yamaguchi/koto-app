@@ -46,6 +46,8 @@ export default function StorageSettings() {
     try {
       const r = await window.electronAPI.storage.createBucket(newName.trim())
       if (!r.ok) { setError(r.message ?? '作れませんでした'); return }
+      // 【公開】を開いたままでも、作った保存場所が「どこに保存しますか」に出るよう、隣の部品へ知らせる
+      window.dispatchEvent(new CustomEvent('sakura:storage-buckets-changed'))
       setNewName('')
       await load()
     } finally { setCreating(false) }

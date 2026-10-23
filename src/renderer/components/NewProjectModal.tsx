@@ -42,7 +42,7 @@ interface GenFile { path: string; content: string }
 // 2つを分けているのは、画面の言葉を変えても AI に渡す技術の指定は変わらないようにするため。
 const TEMPLATES = [
   // 0.6.21（作者 2026-10-03）:「空」→「指定しない」。新規作成の「📄 空のプロジェクト」と、同じ画面で「空」が2つの意味にならないように
-  { id: 'blank', label: '指定しない', hint: '最小構成（README のみ）', uiHint: '迷ったらこれで大丈夫です' },
+  { id: 'blank', label: '指定しない', hint: '最小構成（README のみ）' },
   { id: 'web', label: 'Web', hint: 'HTML / CSS / JS の静的サイト', uiHint: 'ふつうのホームページ' },
   { id: 'react', label: 'React', hint: 'Vite + React + TypeScript', uiHint: '画面の多いアプリ' },
   { id: 'python', label: 'Python', hint: 'main.py + requirements.txt', uiHint: '計算・処理が中心' },
@@ -63,18 +63,18 @@ const KINDS: { id: KindId; label: string; hint: string }[] = [
 // 公開先の選択肢。準備中の target（VPS/クラウド）は targetProfiles.isAvailableTarget で除外して表示しない。
 // group で「さくらインターネットのサービス」と「その他の公開先」に分けて表示する（【公開】ダイアログと同じ方針・W-80）。
 const TARGETS: { id: TargetId; label: string; hint: string; group: 'sakura' | 'other' }[] = [
-  { id: 'local', label: 'あとで決める（おすすめ）', hint: 'まずは手元で作って試せます。公開先はあとから選べます', group: 'sakura' },
-  { id: 'sakura-rental', label: 'さくらのレンタルサーバ', hint: 'ホームページ向け。さくらのレンタルサーバで公開', group: 'sakura' },
-  { id: 'sakura-apprun', label: 'さくらのAppRun', hint: 'プログラムが動くアプリ向け。さくらのAppRunで公開', group: 'sakura' },
+  { id: 'local', label: 'あとで決める（おすすめ）', hint: 'まずは手元で作って試せます', group: 'sakura' },
+  { id: 'sakura-rental', label: 'さくらのレンタルサーバ', hint: 'ホームページ向け', group: 'sakura' },
+  { id: 'sakura-apprun', label: 'さくらのAppRun', hint: 'プログラムが動くアプリ向け', group: 'sakura' },
   { id: 'sakura-vps', label: 'さくらのVPS', hint: '上級者向け。サーバ内で完結する構成', group: 'sakura' },
   { id: 'sakura-cloud', label: 'さくらのクラウド', hint: '上級者向け。クラウドサービス前提', group: 'sakura' },
   // 補足の「公開サービス」は W-108 が退けた別案の言葉（W-1直し漏れ・2026-09-27再検分の指摘）。
   // ラベルの「クラウドサービス」と揃え、全画面で同じ呼び名にする（W-108・W-118・W-28決定）。
-  { id: 'hanamii', label: 'HANAMII（国産のクラウドサービス）', hint: '国産のクラウドサービス。サイトもアプリも置けます', group: 'other' },
+  { id: 'hanamii', label: 'HANAMII（国産のクラウドサービス）', hint: 'サイトもアプリも置けます', group: 'other' },
   // 「データは国内」は条件つき（データの保存を使う場合だけ）。条件なしで言い切ると、
   // 保存場所を用意していないプロジェクトでは事実と違う（W-28・W-29・2026-09-27再検分の指摘）。
   // PublishModal.tsx の同じ説明と同じ言い方に揃える。
-  { id: 'vercel', label: 'Vercel（海外のクラウドサービス）', hint: 'Webサイト向けの海外のクラウドサービス。動くのは国外です。データの保存を使う場合、データは日本国内に置かれます', group: 'other' },
+  { id: 'vercel', label: 'Vercel（海外のクラウドサービス）', hint: 'Webサイト向け。動くのは国外です。データの保存を使う場合、データは日本国内に置かれます', group: 'other' },
 ]
 
 // 公開先のグループ表示順とタイトル（PublishModal と同じ文言）
@@ -95,7 +95,7 @@ const FIXED_STACK_TARGETS: TargetId[] = ['sakura-rental', 'sakura-apprun']
  * ままで、すぐ下の説明「ファイルは作成しません」と逆のことを言っていた。
  */
 export function newProjectHeaderNote(kind: KindId, hasKey: boolean): string {
-  if (kind === 'blank') return '空で始めます。あとからチャットで頼めます'
+  if (kind === 'blank') return '空で始めます'
   return hasKey ? '作成後、チャットでAIが初期ファイルを作ります' : 'フォルダと雛形を作成します'
 }
 
@@ -156,17 +156,15 @@ function guideFile(name: string): GenFile {
     content:
       `# ${name} へようこそ 🌸\n\n` +
       `## 現在の状態\n\n` +
-      `さくらのAI Engine または Claude の **APIキーが未設定** のため、AIへの接続を行っていません。\n\n` +
-      `そのため、**AIによるアプリ開発・詳細なフォルダ構成の生成は行っていません。**\n` +
-      `現在あるのは、選択した技術の**最小限の雛形ファイル**のみです。\n\n` +
+      `APIキーが未設定のため、AIによる開発は行っていません。` +
+      `現在あるのは、選択した技術の最小限の雛形ファイルだけです。\n\n` +
       `## 次のステップ\n\n` +
       `1. **APIキーを登録する**\n` +
       `   - メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）を開き、さくらのAI Engine または Claude のAPIキーを入力\n` +
       `   - さくらのAI Engineのキーは [さくらのAI Engine](https://ai.sakura.ad.jp/) で取得できます\n` +
       `   - Claudeのキーは [Claude Console](https://platform.claude.com) で取得できます\n` +
       `2. **AIに開発を依頼する**\n` +
-      `   - キー登録後、チャットで「このプロジェクトに〇〇を実装して」と依頼するとコードを生成します\n` +
-      `3. もう一度「新規プロジェクト」から作り直すこともできます\n\n` +
+      `   - キー登録後、チャットで「このプロジェクトに〇〇を実装して」と依頼するとコードを生成します\n\n` +
       `---\n*このファイルは削除して構いません。*\n`,
   }
 }
@@ -514,10 +512,7 @@ docker run -p 8080:8080 ${name}
 
 ## 公開手順（さくらのAppRun）
 
-このプロジェクトは **Koto の【公開】→「さくらのAppRun」** からそのまま公開できます。
-Docker のインストールやコントロールパネルでの操作は不要です。Koto が自動で
-コンテナをビルドし、コンテナレジストリの作成・イメージの登録・アプリの作成・
-公開URLの発行まで行います（ポートは 8080）。
+Docker のインストールやコントロールパネルでの操作は不要です。Koto がビルドから、コンテナレジストリとアプリの作成、公開URLの発行までを自動で行います。
 
 1. 画面上部の【公開】を開く
 2. 公開先で「さくらのAppRun」を選ぶ
@@ -930,7 +925,6 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
                 {parentDir ?? '読み込み中...'}
               </span>
             </div>
-            <p className="mt-1 text-[11px] text-ink-muted">プロジェクトはこのフォルダの配下に作成されます</p>
           </div>
 
           {/* 作り方（新しく作る／すでに公開しているものから作る）。
@@ -1025,7 +1019,6 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
                     key={s.id}
                     onClick={() => setSiteType(s.id)}
                     disabled={busy}
-                    title={s.hint}
                     className={`px-3 py-2 rounded-lg text-xs font-medium border text-left transition-colors disabled:opacity-50 ${
                       siteType === s.id
                         ? 'sakura-gradient text-white border-transparent'
@@ -1043,8 +1036,8 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           {/* まっさら選択時の案内（公開先・要望欄は出さない＝何も決めずに空で始める） */}
           {kind === 'blank' && (
             <div className="text-xs text-ink-secondary bg-surface border border-line rounded-lg px-3 py-2.5 leading-relaxed">
-              📄 <b className="text-ink">空のプロジェクト</b>を作ります。ファイルは作成しません。<br />
-              作りたいものが決まったら、あとから<b className="text-ink">AIチャット</b>で「〇〇を作って」と頼めばそこから作れます。公開先も後で選べます。
+              ファイルは作成しません。<br />
+              作りたいものが決まったら、あとから<b className="text-ink">AIチャット</b>で「〇〇を作って」と頼んでください。公開先も後で選べます。
             </div>
           )}
 
@@ -1064,7 +1057,6 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
                         key={t.id}
                         onClick={() => setTarget(t.id)}
                         disabled={busy}
-                        title={t.hint}
                         className={`px-3 py-2 rounded-lg text-xs font-medium border text-left transition-colors disabled:opacity-50 ${
                           target === t.id
                             ? 'sakura-gradient text-white border-transparent'
@@ -1092,14 +1084,14 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
               <p className="mt-1.5 text-[11px] text-sakura leading-relaxed">
                 {kind === 'site'
                   ? <>静的サイトを public/ 構成で生成し、<b>🚀 公開→さくらのレンタルサーバ</b> から公開できます。</>
-                  : <>PHP とデータベース（MySQL）の構成で生成し、<b>🚀 公開→さくらのレンタルサーバ</b> から公開できます（ここで選んだ技術は使いません）。データベースの作成はコントロールパネルで別に必要です。</>}
+                  : <>PHP とデータベース（MySQL）の構成で生成し、<b>🚀 公開→さくらのレンタルサーバ</b> から公開できます。データベースの作成はコントロールパネルで別に必要です。</>}
               </p>
             )}
             {target === 'sakura-apprun' && (
               <p className="mt-1.5 text-[11px] text-sakura leading-relaxed">
                 {kind === 'site'
                   ? <>静的サイトとして生成し、<b>【公開】→さくらのAppRun</b> からそのまま公開できます。</>
-                  : <>【公開】→<b>さくらのAppRun</b> から、そのまま公開できる形で作ります（ここで選んだ技術は使わず、AppRun 向けの形になります）。</>}
+                  : <>【公開】→<b>さくらのAppRun</b> から、そのまま公開できる形で作ります。</>}
               </p>
             )}
             {(() => {
@@ -1122,7 +1114,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
                 指摘）。見出し自体を「ベース」→「使う技術」に変えた理由（何を選んでも通じない）が
                 この一言にも当てはまる。AppRun 側の説明文と同じ言い回しに揃える。 */}
             <label className="text-xs font-semibold text-ink-secondary">
-              使う技術（わからなければ「指定しない」のままで大丈夫です） {FIXED_STACK_TARGETS.includes(target) && <span className="text-ink-muted font-normal">（ここで選んだ技術は使いません）</span>}
+              使う技術（わからなければ「指定しない」のまま） {FIXED_STACK_TARGETS.includes(target) && <span className="text-ink-muted font-normal">（ここで選んだ技術は使いません）</span>}
             </label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {TEMPLATES.map(t => (
@@ -1222,7 +1214,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           {!apiKey && !claudeKey && !busy && kind !== 'blank' && (
             <div className="text-xs text-ink-secondary bg-surface border border-line rounded-lg px-3 py-2 leading-relaxed">
               ⚠️ APIキーが未設定のため、<b className="text-ink">フォルダと最小限の雛形のみ</b>作成します。
-              AIによるアプリ開発は行いません。キーは後から登録できます。
+              キーは後から登録できます。
             </div>
           )}
 

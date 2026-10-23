@@ -65,8 +65,8 @@ const publishInMain = () => world.api.vercel.publish(DIR, { token: TOKEN, name: 
 
 const FIRST_TIME_NOTICE = '公開できました。データの保存に使う設定を Vercel へ渡しました（今回の公開にはまだ反映されていません）。'
   + 'もう一度「公開する」を押すと、データの保存が使えるようになります。'
-const NO_STORAGE_NOTICE = '保存場所をまだ用意していないため、このアプリのデータは残りません'
-  + '（公開のたびに、アプリに入力されたデータが消えます）。「保存場所を用意する」から用意してから、もう一度「公開する」を押してください。'
+const NO_STORAGE_NOTICE = '保存場所をまだ用意していないため、このアプリに入力されたデータは残りません。'
+  + '「保存場所を用意する」から用意してから、もう一度「公開する」を押してください。'
 
 /** 押された「AI に聞く」が AI へ送る文を1つ受け取る。 */
 function captureAskAi(): { texts: string[]; stop: () => void } {
@@ -95,7 +95,9 @@ describe('VercelPanel: 公開の結果の notice（次にすべきこと）を�
 
     const screen = open()
     await settle()
-    expect(screen.has('このアプリのデータは残りません'), '失うものの警告を見逃している').toBe(true)
+    // 2026-10-09 画面の文を短くする（T190）: 文は「このアプリに入力されたデータは残りません。」の1文になった（括弧の言い直しを削った）。
+    expect(screen.has('このアプリに入力されたデータは残りません'), '失うものの警告を見逃している').toBe(true)
+    expect(screen.has('公開のたびに、アプリに入力されたデータが消えます'), '削った括弧の言い直しが戻っている').toBe(false)
   })
 
   it('★★★ notice は「成功のお知らせ」の枠で出す。失敗の相談ボタン（AIに相談する）は付けず、次にすべきことを聞くボタンを付ける', async () => {

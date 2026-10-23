@@ -12,27 +12,24 @@ import { runPublishApp, shouldShowPublishSection } from '../apprunDedicatedActio
 // H-1（2026-09-17）: 手順5・6・7・8 を同時に走らせないための判定（純関数）。上の import 行は
 // tests/apprunDedicatedWiring.test.ts が文字列で固定しているため、別行で足す。
 import { panelBusy, panelBusyReason } from '../apprunDedicatedActions'
-// 手順6の「何が残るか」の約束（保存場所の💾の行）。共用型・📡 一覧と同じ shared の一元定義を使う（掟10）。
-import { teardownDataNoteFor } from '../../shared/teardownSupport'
 // 2026-09-24 検分（指摘1）: 手順6を押し直せるようにする判定。上の import 行はテストが文字列で固定しているため別行で足す。
-import { shouldShowTeardownButton, shouldShowTeardownList, storageLeftoverNote } from '../apprunDedicatedActions'
-// 2026-10-08（作者の決定）: 手順6「すべて削除する」と 📡 公開したもの一覧の「🗑 破棄」は、**同じ流れ**（確認 → 実行 → 進み具合 → 結果）。
-// 流れは dedicatedTeardownFlow.ts（確認の文・材料の読み方・確認 → 実行・進み具合の文の選び方）、見た目は DedicatedTeardownView.tsx。
-// 公開の記録（publish.targets）の片づけは画面では行わない——main の apprunDedicated:teardown の1か所（shouldForgetPublishRecord）。
-import {
-  runDedicatedTeardown, electronTeardownDeps, teardownProgressText, notifyDedicatedTeardownFinished,
-} from '../dedicatedTeardownFlow'
-import { DedicatedTeardownProgress, DedicatedTeardownResultView } from './DedicatedTeardownView'
+import { shouldShowTeardownButton } from '../apprunDedicatedActions'
+// 手順6の節（見た目・「すべて削除する」の流れ・保存場所の💾の行）は DedicatedTeardownSection.tsx へ切り出した（0.6.22 段階3B-6a。巨大ファイルの決まり）。
+// 2026-10-08（作者の決定）: 手順6「すべて削除する」と 📡 公開したもの一覧の「🗑 削除」は、**同じ流れ**（確認 → 実行 → 進み具合 → 結果）で、
+// 3つの公開先と同じ共通の部品（teardown/flow.ts・targets/dedicated.ts）を通る。公開の記録（publish.targets）の片づけは画面では行わない
+// ——main の apprunDedicated:teardown の1か所（shouldForgetPublishRecord）。画面がするのは、結果を置くことと、記録の取り直しだけ。
+import DedicatedTeardownSection from './DedicatedTeardownSection'
+import { notifyTeardownFinished } from '../teardown/flow'
+import { resumedTeardownView, type TeardownView } from '../../shared/teardownResult'
 import { ErrorBlock, ResumedNotesView } from './DedicatedOpsParts'
 // 2026-09-29（作者の決定 (1)(2)）: 公開のダイアログを閉じて開き直したとき、手順5・6・8の進み具合と結果（警告を含む）を
 // 続きから出す。記録は main が持つ（window.electronAPI.projectOps）。読み方・出し方の判断は純関数と
-// watchDedicatedOps（apprunDedicatedActions.ts）に集め、画面は付け外しして届いたものを置くだけ（掟10）。
-// 上の import 行は wiring テストが文字列で固定しているため、別行で足す。
-import {
-  watchDedicatedOps, resumedCreateResult, resumedTeardownResult, resumedPublishResult, resumedNoteOf, addResumedNotes,
-  opProgressText, opElapsedText, otherOpNote,
-  type DedicatedOpsWatch, type DedicatedRunningView, type DedicatedResumedNote, type DedicatedOpKind,
-} from '../apprunDedicatedActions'
+// watchDedicatedOps（apprunDedicatedActions.ts）に集め、見張りの付け外しは useDedicatedOpsWatch（0.6.22 段階3B-6a。巨大ファイルの決まり）が持つ。
+// 画面は届いたものを置くだけ（掟10）。上の import 行は wiring テストが文字列で固定しているため、別行で足す。
+import { resumedCreateResult, resumedPublishResult, otherOpNote, type DedicatedOpKind } from '../apprunDedicatedActions'
+import { useDedicatedOpsWatch } from '../hooks/useDedicatedOpsWatch'
+// 進み具合の一文・経過の文は処理の記録の読み方の共通の置き場の1つ（0.6.22 段階3B-3。手順5・6・8と 📡 の行が同じこれを通る）。
+import { opProgressText, opElapsedText } from '../projectOpsView'
 // C（2026-09-24）: 手順3「🔍 調べる」を自動にする。手順3は GET だけ（何も作らず・何も変えない）なので、
 // 認証情報が揃った時点でこちらから取りに行く。判断は純関数と「もう取りに行ったか」の記憶に集約し、
 // 画面は呼ぶだけ（掟10）。上の import 行はテストが文字列で固定しているため、別行で足す。
@@ -192,7 +189,7 @@ export type DedicatedFormTouched = Partial<Record<DedicatedFormField, boolean>>
  * ── どこに出すか（2026-09-24 検分の指摘9・13 で整理）──────────────────────
  * 出し先は**2つだけ**で、同じ文が同時に2か所へ出ないようにする:
  * (1) 欄のすぐ下（フィールド側）——ワーカプラン／ロードバランサプランだけが持つ、
- *     「既定は選んでいません（料金表に無いプランのため自動では選べませんでした）」という
+ *     「料金表に無いプランのため、自動では選べませんでした」という
  *     **理由の説明**。⚠️ の一覧とは役割が違うので残す。
  * (2) 手順5のボタンの下の「押せない理由」（createBlockedReason）——**押せない理由の唯一の置き場**。
  *     ここには全欄を並べる（並べないと「あと○つ」と数が合わない）。
@@ -227,11 +224,11 @@ export function computeDedicatedFormErrors(input: {
     // かかり続ける。作らせてから気づかせるコストの方が、ここで止めるコストより高い。
     const missing = missingRequiredPorts(input.ports)
     if (missing.length === 2) {
-      errors.ports = '公開ポートに「80（http）」と「443（https）」の両方が必要です。80は独自ドメインの証明書（https）を自動で受け取るために、443はアプリへのアクセス（https）に使います。詳細設定で足してください。'
+      errors.ports = '公開ポートに「80（http）」と「443（https）」の両方が必要です。詳細設定で足してください。'
     } else if (missing.some(m => m.port === 80)) {
-      errors.ports = '公開ポートに「80（http）」が必要です。独自ドメインの証明書（https）を自動で受け取るために使います。詳細設定で足してください。'
+      errors.ports = '公開ポートに「80（http）」が必要です。詳細設定で足してください。'
     } else if (missing.some(m => m.port === 443)) {
-      errors.ports = '公開ポートに「443（https）」が必要です。アプリへのアクセスに使います。詳細設定で足してください。'
+      errors.ports = '公開ポートに「443（https）」が必要です。詳細設定で足してください。'
     }
   }
 
@@ -330,15 +327,15 @@ export function createBlockedReason(
   if (!revealItems) {
     return {
       kind: 'input', tone: 'info',
-      heading: '「クラスタを作成する」は、入力がそろうと押せます。',
-      headline: `あと${missing.length}つ、入力が足りません（上の欄を埋めてください）。`,
+      heading: `「クラスタを作成する」は、あと${missing.length}つ入力すると押せます。`,
+      headline: '', // 見出しが件数まで言うので、本文は出さない（同じことを2行で言わない）
       items: [],
     }
   }
   return {
     kind: 'input', tone: 'warn',
-    heading: '⚠️ 「クラスタを作成する」を押すには、あと少し入力が要ります。',
-    headline: `あと${missing.length}つ、入力が足りません。`,
+    heading: `⚠️ 「クラスタを作成する」を押すには、あと${missing.length}つ入力が要ります。`,
+    headline: '', // 見出しが件数まで言うので、本文は出さない（同じことを2行で言わない）
     items: missing,
   }
 }
@@ -538,14 +535,14 @@ export function minimumCostText(plans: {
  */
 export function priceUnselectedText(plansFetched?: boolean): string {
   if (plansFetched === true) {
-    return '月額はまだ出せません（プランが選ばれていないため）。上の「ワーカプラン」「ロードバランサプラン」を選ぶと出せます。'
+    return '月額はまだ出せません。上の「ワーカプラン」「ロードバランサプラン」を選ぶと出せます。'
   }
   if (plansFetched === false) {
     // C（2026-09-24）: 手順3は自動で取りに行く。次の一手は「待つ（取れなければ手順3でやり直す）」であって
     // 「押す」ではない——押させる前提の文をここにも残さない。
-    return '月額はまだ出せません（プランをまだ取得していないため）。手順3でプランを取得できたら出せます。'
+    return '月額はまだ出せません。手順3でプランを取得できたら出せます。'
   }
-  return '月額はまだ出せません（プランが選ばれていないため）。手順3でプランを取得できたら、ワーカとロードバランサのプランを選ぶと出せます。'
+  return '月額はまだ出せません。手順3でプランを取得できたら、ワーカとロードバランサのプランを選ぶと出せます。'
 }
 
 /**
@@ -771,7 +768,7 @@ export type PublishProgressView = {
 
 // 2026-09-30 検分: 以前は「このまま開いたままお待ちください」だった。この画面を閉じても公開は最後まで進み、開き直すと
 // 進み具合と結果が出る（処理の記録）ので、開いたまま待つ必要は無い。同じ枠の stopNote（下）と食い違っていた。
-export const PUBLISH_WAIT_NOTE = '⏳ 数分かかることがあります。開いたまま待たなくても、公開は進みます。'
+export const PUBLISH_WAIT_NOTE = '⏳ 数分かかることがあります。'
 // 2026-09-24 検分の指摘4・7・10: 直す前は「途中で閉じても公開そのものは最後まで進みますが、
 // 結果…が見られなくなります」とだけ書いており、**何を閉じる話なのか**が無かった。同じ公開中に
 // Koto を閉じようとすると出る警告は「公開の記録も Koto に残りません」と言うため、同じ画面で
@@ -787,7 +784,7 @@ export function publishProgressView(message: string | null | undefined): Publish
   return {
     heading: '⏳ 公開しています',
     stageLabel,
-    stepText: index >= 0 ? `ステップ ${index + 1}／${PUBLISH_PROGRESS_STEPS.length}（進み方によってはスキップするステップもあります）` : null,
+    stepText: index >= 0 ? `ステップ ${index + 1}／${PUBLISH_PROGRESS_STEPS.length}。スキップするステップもあります` : null,
     detail,
     waitNote: PUBLISH_WAIT_NOTE,
     stopNote: PUBLISH_STOP_NOTE,
@@ -817,7 +814,7 @@ export function computePublishFormErrors(input: PublishFormInput): string[] {
   if (!host) errors.push('ホスト名を入力してください（例: app.example.com）')
   else if (!HOSTNAME_PATTERN.test(host)) errors.push('ホスト名は小文字の英数字・ハイフン・ドットで指定してください（例: app.example.com）')
   const email = input.email.trim()
-  if (input.needsEmail && !email) errors.push('Let\'s Encrypt のメールアドレスを入力してください（証明書の発行に必要です）')
+  if (input.needsEmail && !email) errors.push('Let\'s Encrypt のメールアドレスを入力してください')
   // F-1 A-3（2026-09-16）: 必須でなくても、値を入れたなら最低限の形は確かめる（isLikelyEmail・ゆるい判定）。
   else if (email && !isLikelyEmail(email)) errors.push('Let\'s Encrypt のメールアドレスの形を確認してください（例: you@example.com）')
   if (!Number.isInteger(input.cpu) || input.cpu < 100 || input.cpu > 64000) errors.push('mCPU は 100〜64000 の整数で指定してください')
@@ -887,10 +884,6 @@ export type TeardownSummaryRecord = {
   workerServiceClassPath?: string | null
   lbServiceClassPath?: string | null
   createdAt?: string | null
-  // D-4（2026-09-15）: 手順8で公開したアプリ。applicationID があるときだけ末尾に「先に削除」の行を足す。
-  applicationID?: string | null
-  applicationName?: string | null
-  activeVersion?: number | null
 } | null | undefined
 
 export type TeardownSummaryPlans = {
@@ -937,19 +930,15 @@ export function buildTeardownSummary(record: TeardownSummaryRecord, plans: Teard
     )
     lines.push(`月額目安: ${price.text}`)
   }
-  // D-4（2026-09-15）: 手順8で公開したアプリがあれば末尾に1行（main の teardownFlow はアプリ→LB→ASG→クラスタの順に消す）。
-  // 無ければ行自体を足さない（既存の行数・並びを変えない）。
-  if (r.applicationID) {
-    lines.push(`アプリ『${r.applicationName ?? r.applicationID}』（バージョン ${r.activeVersion ?? TEARDOWN_SUMMARY_UNKNOWN}）→ 先に削除`)
-  }
+  // アプリの行は足さない（0.6.22 段階3B-6b・T022）。同じ節の「消すものの一覧」が、削除の順（アプリ→LB→ASG→クラスタ）の先頭に
+  // アプリ名とバージョンを出す（DedicatedTeardownSection.tsx）。同じ節にアプリ名とバージョンが2回出ていた。
   return { lines }
 }
 
 export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, visible: panelVisible = true }: Props) {
   const metaPath = `${projectDir}/.sakuraide.json`
-  // タブが目の前に出ているか（この関数の中には、入力欄の「表示するエラー」も `visible` の名前で居るので、別名で持つ）。
-  const panelVisibleRef = useRef(panelVisible)
-  panelVisibleRef.current = panelVisible
+  // `panelVisible` は、タブが目の前に出ているか（この関数の中には、入力欄の「表示するエラー」も `visible` の名前で居るので、別名で持つ）。
+  // 記録の見張り（下の useDedicatedOpsWatch）へ渡す。
 
   const readMeta = useCallback(async (): Promise<any> => {
     try { return JSON.parse(await window.electronAPI.fs.readFile(metaPath)) } catch { return {} }
@@ -1001,7 +990,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
   // どちらか片方だけに置くと取りこぼす。
   const genRef = useRef(0)
 
-  // 手順6の破棄が終わって notifyDedicatedTeardownFinished（dedicatedTeardownFlow.ts）が 'sakura-meta-changed' を飛ばすと、
+  // 手順6の破棄が終わって notifyTeardownFinished（teardown/flow.ts）が 'sakura-meta-changed' を飛ばすと、
   // この画面自身の購読（onMetaChanged）が refreshApprunState/refreshAppStatus を走らせる。
   // 破棄の側は順序を保つために同じ2つを await で取り直しているので、そのままだと
   // GET /clusters/{id} が二重に飛ぶ（2026-09-23 検分の指摘6-3）。await する側に寄せ、
@@ -1275,12 +1264,22 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
   // 手順5の作成・手順6のすべて削除・手順8の公開の本体は main の1回の IPC で最後まで進む。この画面（ダイアログ）を閉じても止まらない。
   // 失われていたのは表示だけ（進み具合・結果・「保存場所が残ったので月額が続きます」のような警告）なので、
   // 開いたとき main の記録（window.electronAPI.projectOps）を読み、走っていれば進み具合を、終わっていれば
-  // 結果と警告を、手順5・6・8の各節へ出す。読む部品は watchDedicatedOps（apprunDedicatedActions.ts・振る舞いをテストで固定）。
+  // 結果と警告を、手順5・6・8の各節へ出す。読む部品は watchDedicatedOps（apprunDedicatedActions.ts・振る舞いをテストで固定）で、
+  // 付け外しは useDedicatedOpsWatch（hooks/useDedicatedOpsWatch.ts）。画面が渡すのは「結果が届いたとき」の置き場だけ。
   // **別のプロジェクト・別の公開先の記録は出さない**（掟11。別の操作が走っているときは1行の案内だけ）。
-  // 状態はここ（先頭）で持ち、付け外し（useEffect）は setCreateResult 等が揃った下で行う。
-  const [opsRunning, setOpsRunning] = useState<DedicatedRunningView>({ running: null, other: null })
-  const [resumedNotes, setResumedNotes] = useState<Record<DedicatedOpKind, DedicatedResumedNote[]>>({ create: [], teardown: [], publish: [] })
-  const opsWatchRef = useRef<DedicatedOpsWatch | null>(null)
+  // 結果の置き場（setCreateResult 等）はこの下で宣言する。届くのは描画のあとなので、宣言の前に呼ばれることはない。
+  const { opsRunning, resumedNotes, setResumedNotes, opsWatchRef } = useDedicatedOpsWatch(projectDir, panelVisible, finished => {
+    for (const f of finished) {
+      if (f.kind === 'create') {
+        // 新しい手順5が終わったら手順6の古い結果は消す（doCreate と同じ。B-2）。
+        setCreateResult(resumedCreateResult(f.record)); setTeardownView(null)
+      } else if (f.kind === 'teardown') {
+        setTeardownView(resumedTeardownView('sakura-apprun-dedicated', f.record.result))
+      } else {
+        setPublishResult(resumedPublishResult(f.record))
+      }
+    }
+  })
   const runningKind: DedicatedOpKind | null = opsRunning.running?.kind ?? null
   // 「始まってから約N分」を進めるための時計（走っているあいだだけ15秒ごとに動く）。
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -1328,46 +1327,11 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
     }
   }, [projectDir])
   const appRecord = appStatus?.record ?? null
-  // 手順6「いまの構成と月額目安」に渡す記録: apprunState にアプリ系の欄を appStatus.record から補う。
-  const teardownSummaryRecord = {
-    ...(apprunState ?? {}),
-    applicationID: appRecord?.applicationID ?? null,
-    applicationName: appRecord?.applicationName ?? null,
-    activeVersion: appRecord?.activeVersion ?? null,
-  }
+  // 手順6「いまの構成と月額目安」に渡す記録（名前・ゾーン・プラン・作成日時。アプリの行は無い＝T022）。
+  const teardownSummaryRecord = apprunState
 
-  /**
-   * このプロジェクトの保存場所（用意していなければ0件）。2026-09-24。
-   *
-   * **手順6の確認ダイアログに名前を出すために要る。** 案2（共用型と同じにする）では、
-   * 手順6の破棄で保存場所の中身も消える。名指ししない確認は嘘になる（掟5）。
-   * 読み方は共用型 AppRunPanel.tsx とまったく同じ（storage:placement・`sakura:storage-prepared`）。
-   *
-   * ── 1件ではなく全件を持つ（2026-09-25 検分の指摘23・37）──────────────────
-   * 手順6は `teardownStorageForProject` を通って**同意済みの保存場所を全件**片づけるのに、
-   * ここは `r.placement`（先頭1件）しか読んでいなかった。確認には『A』しか出ないのに
-   * 『B』とその中のデータまで消える——**元に戻せない削除を、名指ししないまま実行させない**。
-   */
-  // **先頭1件（placements[0]）の別名は置かない。** 置いてあると、次に文面を書く人が
-  // また1件だけで組み立てる（2026-09-25 検分の指摘15 がまさにそれだった）。
-  const [placements, setPlacements] = useState<{ bucket: string; prefix: string; shared: boolean }[]>([])
-  useEffect(() => {
-    let alive = true
-    const load = async () => {
-      try {
-        const r = await window.electronAPI.storage.placement(projectDir)
-        // placements は main が必ず返す。古い形しか返らなかったときのために placement 1件へ
-        // 落ちる道も残す——**黙って0件にしない**（消えるものが隠れる）。
-        if (alive && r.ok) setPlacements(r.placements ?? (r.placement ? [r.placement] : []))
-      } catch { /* 読めなくても公開・破棄そのものはできる */ }
-    }
-    void load()
-    // この画面を開いたあとに用意されることがある（【公開】の案内から）。取り直さないと、
-    // 手順6の確認が保存場所を知らないまま「消えません」と受け取れる文面になる。
-    const onPrepared = () => { void load() }
-    window.addEventListener('sakura:storage-prepared', onPrepared)
-    return () => { alive = false; window.removeEventListener('sakura:storage-prepared', onPrepared) }
-  }, [projectDir])
+  // このプロジェクトの保存場所（手順6の確認・💾の行に名前を出す材料）は、手順6の節（DedicatedTeardownSection.tsx）が自分で読む
+  // （0.6.22 段階3B-6a。読み方は共用型 AppRunPanel.tsx と同じ storage:placement・`sakura:storage-prepared`）。
 
   // ── 手順5 クラスタを作る ────────────────────────────────────────
   const [clusterName, setClusterName] = useState('')
@@ -1475,20 +1439,21 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
   // 初期表示から赤字を並べない（判断7・2026-09-11／2026-09-24 検分の指摘5）。
   const revealCreateItems = submitted || Object.keys(touched).length > 0
 
-  // 手順5・6の「確認→IPC」本体は apprunDedicatedActions.ts の純関数（runCreate/runTeardown）に
-  // 切り出してある（2026-09-10 レビューの修理・J・rollbackSwitch.ts と同型）。ここ（doCreate/
-  // doTeardown）はそれを呼ぶ薄い皮——confirm に ConfirmModal の答えを、activity に
+  // 手順5の「確認→IPC」本体は apprunDedicatedActions.ts の純関数（runCreate）に
+  // 切り出してある（2026-09-10 レビューの修理・J・rollbackSwitch.ts と同型）。ここ（doCreate）は
+  // それを呼ぶ薄い皮——confirm に ConfirmModal の答えを、activity に
   // beginActivity（src/renderer/activity.ts）を注入するだけで、「確認が false なら
-  // create/teardown を一度も呼ばない」「実行中は必ず活動レジストリへ計上する」歯止め自体は
-  // ここには無い（tests/apprunDedicatedActions.test.ts が偽 confirm/create/teardown/activity で
-  // 固定する。K・2026-09-10 レビューの修理・バッチ3——共用型の公開処理と同じく、作成・破棄の
+  // create を一度も呼ばない」「実行中は必ず活動レジストリへ計上する」歯止め自体は
+  // ここには無い（tests/apprunDedicatedActions.test.ts が偽 confirm/create/activity で
+  // 固定する。K・2026-09-10 レビューの修理・バッチ3——共用型の公開処理と同じく、作成の
   // 実行中は main の isBusy を立て、自動更新の「いますぐ再起動」が作業中を拒否できるようにする）。
+  // 手順6の削除は節（DedicatedTeardownSection.tsx）が共通の流れ（teardown/flow.ts の runTeardownFlow）で行う。
   //
   // ── window.confirm → ConfirmModal（判断9・2026-09-11）─────────────────────
-  // runCreate/runTeardown は `deps.confirm(message)` を**同期の boolean**として扱う
+  // runCreate は `deps.confirm(message)` を**同期の boolean**として扱う
   // （apprunDedicatedActions.ts の歯止めロジックは変更しない・掟10）。ConfirmModal は
   // React の状態更新とクリック待ちを伴うため本質的に非同期——そこで確認そのものは
-  // ここで `await confirm(...)` として**先に**済ませ、runCreate/runTeardown へは
+  // ここで `await confirm(...)` として**先に**済ませ、runCreate へは
   // 「もう確定した答え」を返すだけの同期関数（`() => ok`）を渡す。
   const { confirm, element: confirmElement } = useConfirm()
 
@@ -1513,8 +1478,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
           activity: { begin: () => beginActivity('専有型クラスタの作成', { closeWarning: PUBLISH_CLOSE_WARNING }) },
           create: async (s, opts) => {
             // B-2（2026-09-10実機）: 新しい手順5の作成を始めたら、手順6の古い結果表示は消す
-            // （shouldShowTeardownResult は teardownResult の有無だけを見るため、消す責務はここ）。
-            setCreating(true); setCreateResult(null); setTeardownResult(null)
+            // （shouldShowTeardownResult は teardownView の有無だけを見るため、消す責務はここ）。
+            setCreating(true); setCreateResult(null); setTeardownView(null)
             // この画面が始めた操作: 結果は下（setCreateResult）で自分が出すので、記録のほうを二重に出さない。
             opsWatchRef.current?.beginLocal('create')
             setResumedNotes(n => ({ ...n, create: [], teardown: [] }))
@@ -1547,50 +1512,35 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
   }
 
   // ── 手順6 作ったものを削除する（破棄） ───────────────────────────────
+  // 節の見た目・「すべて削除する」の流れ（確認 → 実行 → 進み具合）・保存場所の💾の行は DedicatedTeardownSection.tsx（0.6.22 段階3B-6a）。
+  // 画面（ここ）が持つのは、結果と実行中の印と、節へ渡す2つの口（onStart・onDone）だけ。
   const [tearingDownLocal, setTearingDown] = useState(false)
-  const [teardownResult, setTeardownResult] = useState<Awaited<ReturnType<Window['electronAPI']['apprunDedicated']['teardown']>> | null>(null)
-  // #39: 各段が一覧から消えるまで待つ間の進捗（「〜の削除を待っています（N分経過）…」）。
-  // 実行中（tearingDown）だけ表示する（doTeardown の外へ漏らさない・掟11）。
-  const [teardownProgressLocal, setTeardownProgress] = useState<string | null>(null)
-  useEffect(() => {
-    const unsubscribe = window.electronAPI.apprunDedicated.onTeardownProgress((msg) => setTeardownProgress(msg))
-    return () => { unsubscribe() }
-  }, [])
+  // 結果（この画面が始めた削除の返り値も、閉じて開き直したときの記録から読んだ結果も、同じ TeardownView）。
+  const [teardownView, setTeardownView] = useState<TeardownView | null>(null)
 
-  const doTeardown = async () => {
-    if (panelBusy({ creating, tearingDown, publishing, lbRefreshing })) return
+  /** 確認に「削除する」と答えたあと、実行が始まる直前（節が呼ぶ）。IPC を呼ぶ前に「この画面が始めた」と記録の見張りへ伝える。 */
+  const onTeardownStart = () => {
+    setTearingDown(true); setTeardownView(null)
+    opsWatchRef.current?.beginLocal('teardown')
+    setResumedNotes(n => ({ ...n, teardown: [] }))
+  }
+  /** 削除が終わった（節が呼ぶ）。`stale` は、待っている間にプロジェクトが切り替わった回（前のプロジェクトの結果を入れない）。 */
+  const onTeardownDone = async (view: TeardownView, stale: boolean) => {
     try {
-      // 2026-10-08（作者の決定）: 確認 → 実行は 📡 公開したもの一覧の「🗑 破棄」と**同じ1つの流れ**（runDedicatedTeardown）。
-      // 確認の文（消えるもの・保存場所のデータ・ほかの公開先・課金が止まること・ロードバランサの削除にかかる時間）は
-      // buildDedicatedTeardownConfirm が作り、材料は押した時点の main の記録から読む（画面の写しはいつでも古い）。
-      // 文面をここで組み立て直さない。W-117: ConfirmModal は danger のとき自分で「⚠️ 」を付ける（ここでは付けない）。
-      // 0.6.21: 手順6は見出し・ボタン・確認・進み具合・結果まで「削除」で揃える（1回の流れの中で名前を変えない）。
-      const outcome = await runDedicatedTeardown(projectDir, electronTeardownDeps(projectDir, {
-        confirm,
-        keyMissingMessage: 'さくらのクラウドAPIキーが未登録です。手順1で登録してください。',
-        // 実行が始まる直前（確認のあと）。IPC を呼ぶ前に「この画面が始めた」と記録の監視へ伝える。
-        onStart: () => {
-          setTearingDown(true); setTeardownResult(null); setTeardownProgress(null)
-          opsWatchRef.current?.beginLocal('teardown')
-          setResumedNotes(n => ({ ...n, teardown: [] }))
-        },
-      }))
-      if (outcome.cancelled) return
-      setTeardownResult(outcome.result)
+      if (stale) return
+      setTeardownView(view)
       // 公開記録（publish.targets）は**画面では消さない**（2026-10-08）。main の apprunDedicated:teardown が、
-      // アプリが消えたと分かった時に1回だけ消している（📡 の 🗑 から押しても同じ1か所）。
+      // 保存場所まで片づいた回に1回だけ消している（📡 の 🗑 から押しても同じ1か所）。
       // 画面がするのは、開いている画面への知らせと、記録の取り直しだけ。通知はこの画面の購読（onMetaChanged）も
       // 受けて同じ2つを走らせる。取り直しは下の await 側に寄せるので、その間は購読を黙らせる（指摘6-3）。
       selfMetaRefreshRef.current = true
       try {
-        notifyDedicatedTeardownFinished()
+        notifyTeardownFinished()
         await refreshApprunState()
         await refreshAppStatus() // アプリの記録（applicationID 等）も消えているので取り直す
       } finally {
         selfMetaRefreshRef.current = false
       }
-    } catch (e: any) {
-      setTeardownResult({ ok: false, executed: [], message: e?.message ?? String(e), remaining: {} })
     } finally {
       setTearingDown(false)
       opsWatchRef.current?.endLocal('teardown')
@@ -1625,45 +1575,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
   const publishing = publishingLocal || runningKind === 'publish'
   const runningRecord = opsRunning.running?.record ?? null
   const createProgress = runningKind === 'create' ? opProgressText(runningRecord) : ''
-  const teardownProgress = teardownProgressText({ runningKind, runningRecord, local: teardownProgressLocal })
   const publishProgress = runningKind === 'publish' ? opProgressText(runningRecord) : publishProgressLocal
-
-  // 記録を読む・押し出しを受ける（開いたとき1回・開いている間は押し出し）。外すと何も届かない。
-  useEffect(() => {
-    setOpsRunning({ running: null, other: null })
-    setResumedNotes({ create: [], teardown: [], publish: [] })
-    let watch: DedicatedOpsWatch | null = null
-    try {
-      watch = watchDedicatedOps({
-        api: window.electronAPI.projectOps,
-        projectDir,
-        onRunning: setOpsRunning,
-        // 隠れているタブのパネルは、結果を持っていても「見た」と伝えない（目の前に出たら、visibilityChanged で伝える）。
-        isVisible: () => panelVisibleRef.current,
-        // 終わって、まだ見られていない結果。生きている結果と同じ欄で出し、警告は結果欄の上に集める。
-        onFinished: finished => {
-          for (const f of finished) {
-            if (f.kind === 'create') {
-              // 新しい手順5が終わったら手順6の古い結果は消す（doCreate と同じ。B-2）。
-              setCreateResult(resumedCreateResult(f.record)); setTeardownResult(null)
-            } else if (f.kind === 'teardown') {
-              setTeardownResult(resumedTeardownResult(f.record))
-            } else {
-              setPublishResult(resumedPublishResult(f.record))
-            }
-          }
-          setResumedNotes(prev => addResumedNotes(prev, finished.map(resumedNoteOf)))
-          // 記録（作られたもの・公開の記録）が変わっている。開いている画面（この画面・一覧・ステータスバー）へ知らせる。
-          window.dispatchEvent(new Event('sakura-meta-changed'))
-        },
-      })
-    } catch { /* preload 未注入（テスト環境等）。記録が読めなくても、この画面が始めた操作は従来どおり動く */ }
-    opsWatchRef.current = watch
-    return () => { watch?.stop(); if (opsWatchRef.current === watch) opsWatchRef.current = null }
-  }, [projectDir])
-
-  // タブが隠れた・また目の前に出た。出たら、隠れている間に画面へ渡した結果を、ここで「見た」と伝える。
-  useEffect(() => { opsWatchRef.current?.visibilityChanged() }, [panelVisible])
 
   // 走っているあいだだけ、「始まってから約N分」を進める。
   const runningStartedAt = runningRecord?.startedAt ?? null
@@ -1974,7 +1886,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
   }, [refreshKey, refreshCloudKeys, refreshTelemetry, refreshAppStatus])
 
   // D-4: 📡 公開したもの一覧から専有型を破棄する（＝手順6と同じ「すべて削除」。2026-10-08 から）と、終わったときに
-  // 'sakura-meta-changed' が発火する（dedicatedTeardownFlow.ts の notifyDedicatedTeardownFinished）。この画面の
+  // 'sakura-meta-changed' が発火する（teardown/flow.ts の notifyTeardownFinished）。この画面の
   // 「公開中: …」（appStatus.record）と手順6のアプリ行を古いまま残さないよう、記録（apprunState）とアプリの状態を
   // 取り直す（この画面自身の saveMeta も同じイベントを発火するが、取り直すだけなので害は無い）。
   useEffect(() => {
@@ -1989,7 +1901,6 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
   }, [refreshApprunState, refreshAppStatus])
 
   const selectedKeyId = activeKeyId ?? cloudKeys[0]?.id ?? null
-  const selectedKeyLabel = cloudKeys.find(k => k.id === selectedKeyId)?.label ?? '（未選択）'
   const keyReady = hasKey === true
 
   // ── 手順3の自動取得（C・2026-09-24）────────────────────────────────────
@@ -2049,8 +1960,8 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
           共用型（さくらのAppRun）は使った分だけの従量課金ですが、専有型は日額・月額の固定費です。
         </p>
         <p className="text-xs text-ink-muted leading-relaxed">
-          仮想サーバレベルで専有するAppRun。独自ドメインが使えますが、4階層の構成が必要な上級者向けサービスです。
-          <b className="text-ink">クラスタの作成・削除（手順5・6）と、アプリケーションの公開（手順8・独自ドメインが必要）まで行えます。</b>
+          仮想サーバレベルで専有するAppRun。独自ドメインが使えますが、上級者向けのサービスです。
+          クラスタの作成・削除（手順5・6）と、アプリケーションの公開（手順8・独自ドメインが必要）まで行えます。
         </p>
         <p className="text-[11px] text-ink-muted">
           <a href={OFFICIAL_PRICE_URL} className="hover:underline">🌐 公式サイトを見る ↗</a>
@@ -2084,7 +1995,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
           message: connMsg,
         }}
       >
-        {cloudKeys.length > 0 ? (
+        {cloudKeys.length > 0 && (
           <div className="space-y-1">
             <label className="text-[11px] font-medium text-ink-secondary">この操作に使うキー</label>
             <select
@@ -2094,12 +2005,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
             >
               {cloudKeys.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
             </select>
-            <p className="text-[11px] text-ink-secondary">使用中のキー: <span className="font-medium text-ink">{selectedKeyLabel}</span></p>
           </div>
-        ) : (
-          <p className="text-[11px] text-brand-yellow leading-relaxed">
-            まだクラウドのキーが登録されていません。「認証情報」でアクセストークン／シークレットを登録してください。
-          </p>
         )}
         {/* 専有型と共用型は「同じキー（さくらのクラウド）」を使う。接続テストの結果は
             従来どおりタブごと（このタブの conn/connMsg/connChecks は共用型とは別の状態）。 */}
@@ -2128,13 +2034,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
             >{checking ? '調べています…' : investigateLabel}</button>
           )}
         </div>
-        <p className="text-[11px] text-ink-muted leading-relaxed">制限・プラン・既存クラスタの件数をAPIから取得します（何も作らず、何も変更しません）。APIキーを登録すると自動で取得します。</p>
-        {checking && !checkError && (
-          <p className="text-[11px] text-ink-secondary leading-relaxed">調べています…</p>
-        )}
-        {hasKey === false && (
-          <p className="text-[11px] text-ink-muted leading-relaxed">手順1でさくらのクラウドAPIキーを登録すると、ここに取得した内容が出ます。</p>
-        )}
+        <p className="text-[11px] text-ink-muted leading-relaxed">APIキーを登録すると、制限・プラン・既存クラスタの件数を自動で取得します（何も作らず、何も変更しません）。</p>
 
         {checkError && (
           <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all select-text">{checkError}</p>
@@ -2228,7 +2128,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
         </div>
         <p className="text-[11px] text-ink-muted leading-relaxed">
           ロードバランサも同じ料金表が使われます（1コア/2GB・2コア/2GBの2プランのみ提供）。
-          税込・2026-09時点の<a href={OFFICIAL_PRICE_URL} className="text-sakura hover:underline">公式ページ</a>の値です。価格は変わることがあります。最新は公式ページでご確認ください。
+          税込・2026-09時点の<a href={OFFICIAL_PRICE_URL} className="text-sakura hover:underline">公式ページ</a>の値です。最新は公式ページでご確認ください。
         </p>
         {/* D-13 K: 金額を出せないときに文の断片をはめ込むと「…表示されますかかります。」という
             壊れた日本語になっていた（2026-09-16 実機で観測）。判断は純関数 minimumCostText に
@@ -2278,10 +2178,6 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
           </p>
         ) : (
           <>
-            <p className="text-[11px] text-ink-muted leading-relaxed rounded-lg border border-line bg-overlay px-3 py-2">
-              🔌 ネットワークは共有セグメントに接続します（スイッチやIPプールの指定は要りません）。
-            </p>
-
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-ink-secondary">クラスタ名（1〜20文字・英数字と _ -）</label>
               <input
@@ -2299,7 +2195,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
             <details className="rounded-lg border border-line bg-overlay p-3 space-y-3">
               <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">詳細設定（ふつうは変えなくてよい）</summary>
               <p className="text-[11px] text-ink-muted leading-relaxed">
-                既定のままで作れます。ポートは 80/443、ノード数は最小1・最大1。
+                既定は、ポートが 80/443、ノード数が最小1・最大1です。
               </p>
 
               <div className="space-y-1">
@@ -2381,7 +2277,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                   はっきり区別する。手順3を押した後なのに「押すと選べます」という嘘を出さない。 */}
               {zones === null && !zonesError ? (
                 <p className="text-[11px] text-ink-muted leading-relaxed">
-                  自由入力です。ゾーンの一覧は手順3が自動で取得します（取得できたら選べるようになります）。
+                  自由入力です。手順3がゾーンの一覧を自動で取得すると、選べるようになります。
                 </p>
               ) : zonesError ? (
                 <p className="text-[11px] text-brand-yellow leading-relaxed">
@@ -2389,7 +2285,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                 </p>
               ) : zoneSelectable ? (
                 <p className="text-[11px] text-ink-muted leading-relaxed">
-                  さくらのクラウドのゾーン一覧から選びます。専有型がすべてのゾーンに対応しているかは未確認なので、
+                  専有型がすべてのゾーンに対応しているかは未確認です。
                   作成に失敗したら別のゾーンをお試しください（失敗しても、その時点では何も作られません）。
                 </p>
               ) : (
@@ -2415,7 +2311,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                   </select>
                   {!selectedWorkerPath && (
                     <p className="text-[11px] text-brand-yellow leading-relaxed">
-                      ⚠️ プランを選んでください（既定は選んでいません。料金表に無いプランのため自動では選べませんでした）
+                      ⚠️ プランを選んでください（料金表に無いプランのため、自動では選べませんでした）
                     </p>
                   )}
                 </>
@@ -2441,7 +2337,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                   </select>
                   {!selectedLbPath && (
                     <p className="text-[11px] text-brand-yellow leading-relaxed">
-                      ⚠️ プランを選んでください（既定は選んでいません。料金表に無いプランのため自動では選べませんでした）
+                      ⚠️ プランを選んでください（料金表に無いプランのため、自動では選べませんでした）
                     </p>
                   )}
                 </>
@@ -2471,7 +2367,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
               onClick={() => { setSubmitted(true); void doCreate() }}
               disabled={hasErrors || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
               className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-            >{creating ? 'クラスタ→オートスケーリンググループ→ロードバランサの順で作成しています…' : 'クラスタを作成する'}</button>
+            >{creating ? 'クラスタを作成しています…' : 'クラスタを作成する'}</button>
             {/* 手順2のサービスプリンシパルIDを記録に残せなかったとき（作成は止めない。手順2の欄の下と同じ知らせ） */}
             {idSaveWarning}
 
@@ -2486,7 +2382,9 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                   : 'text-xs font-medium text-ink-secondary leading-relaxed'}>
                   {createBlocked.heading}
                 </p>
-                <p className="text-[11px] text-ink-secondary leading-relaxed">{createBlocked.headline}</p>
+                {createBlocked.headline && (
+                  <p className="text-[11px] text-ink-secondary leading-relaxed">{createBlocked.headline}</p>
+                )}
                 {createBlocked.items.length > 0 && (
                   <ul className="text-[11px] text-ink-secondary space-y-0.5 pl-1">
                     {createBlocked.items.map((msg, i) => (<li key={i}>・{msg}</li>))}
@@ -2545,76 +2443,26 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       {/* 手順6 作ったものを削除する（破棄）。
           B-2（2026-09-10実機・Ryosuke さん指摘）: 破棄が完了して記録（apprunState）が空になっても、
           結果（「✅ すべて削除しました」）は消さない——節のガードを hasAnyResource だけに
-          頼らず、shouldShowTeardownResult（apprunDedicatedActions.ts・掟10）も見る。 */}
-      {(showTeardownButton || shouldShowTeardownResult(teardownResult)) && (
-        <section className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-3">
-          <p className="text-sm font-semibold text-ink">手順6 作ったものを削除する</p>
-
-          {showTeardownButton && (
-            <>
-              <p className="text-xs font-semibold text-brand-red leading-relaxed">
-                ⚠️ 消さない限り課金が続きます。この操作は元に戻せません。
-              </p>
-              {/* 2026-09-24 検分の指摘1: 計算資源が消えたあとに保存場所だけが残ったときも、
-                  手順6を押し直して片づけられるようにする（窓を開き直しても記録から復元できる）。 */}
-              {storageLeftoverNote(apprunState?.storageLeftoverBucket) && (
-                <p className="text-xs font-semibold text-brand-red leading-relaxed select-text">
-                  🗄️ {storageLeftoverNote(apprunState?.storageLeftoverBucket)}
-                </p>
-              )}
-              {/* 2026-09-24（案2）: 保存場所を使っているなら、押す前にデータのことも言う
-                  （共用型 AppRunPanel.tsx の破棄画面と同じ一元定義・同じ見た目）。 */}
-              {/* 2026-09-25 検分の指摘23・37: 消える保存場所は全件を並べる（1件も隠さない）。 */}
-              {placements.map((p, i) => (
-                <p key={`${p.bucket}-${i}`} className="text-xs text-brand-red leading-relaxed select-text">💾 {teardownDataNoteFor({ target: 'sakura-apprun-dedicated', scope: 'full', placement: p })}</p>
-              ))}
-              {hasAnyResource && (
-                /* 3b: いまの構成と月額目安（利用者目線レビュー・判断不要）。計算は複製せず
-                   priceSummary の結果をそのまま使う（buildTeardownSummary・掟10）。クラスタの情報が材料なので、
-                   クラスタ・ASG・LB のどれかがあるときだけ。 */
-                <div className="rounded-lg border border-line bg-overlay p-3 space-y-0.5">
-                  <p className="text-[11px] font-semibold text-ink-secondary">いまの構成と月額目安</p>
-                  {buildTeardownSummary(teardownSummaryRecord, { worker: workerPlans, lb: lbPlans }).lines.map((line, i) => (
-                    <p key={i} className="text-xs text-ink-secondary select-text">{line}</p>
-                  ))}
-                </div>
-              )}
-              {/* 何を消すかの一覧。ボタンと同じ判断（shouldShowTeardownList・dedicatedTeardownHasWork から保存場所の印だけを除く）で出す
-                  ——アプリのIDだけの記録でも、ボタンがあるのに一覧が無い、にしない（2026-10-08 検分）。アプリの行は
-                  appStatus（APIキーが要る）が無くても、記録（apprunState）から出す。 */}
-              {shouldShowTeardownList(apprunState) && (
-                <ul className="text-xs text-ink-secondary leading-relaxed list-disc pl-5">
-                  {(appRecord?.applicationID ?? apprunState?.applicationID) && (
-                    <li>アプリ『{appRecord?.applicationName ?? apprunState?.applicationName ?? appRecord?.applicationID ?? apprunState?.applicationID}』（バージョン {appRecord?.activeVersion ?? apprunState?.activeVersion ?? '不明'}）</li>
-                  )}
-                  {apprunState?.loadBalancerID && <li>ロードバランサ『{apprunState.loadBalancerID}』</li>}
-                  {apprunState?.asgID && <li>オートスケーリンググループ『{apprunState.asgID}』</li>}
-                  {apprunState?.clusterID && <li>クラスタ『{apprunState.clusterID}』</li>}
-                </ul>
-              )}
-              <button
-                onClick={doTeardown}
-                disabled={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
-                className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-              >{tearingDown ? '削除しています…' : 'すべて削除する'}</button>
-              {/* 進み具合（#39 の待ちの文・待っている段の目安・始まってからの時間・閉じても進むこと）。
-                  📡 の行と同じ部品（2026-10-08）。 */}
-              {tearingDown && (
-                <DedicatedTeardownProgress progress={teardownProgress} runningKind={runningKind} runningRecord={runningRecord} nowMs={nowMs} />
-              )}
-            </>
-          )}
-
-          {/* 閉じて開き直したとき（2026-09-29）の知らせ（警告）と、結果（すべて削除しました／削除中です／残っているもの）。
-              📡 の行の結果と同じ部品（2026-10-08）。入口ごとに違うのは、押し直す場所の呼び方（手順6）と、
-              失敗のときの「🤖 AIに相談する」を出すかだけ。 */}
-          <DedicatedTeardownResultView
-            result={teardownResult}
-            notes={resumedNotes.teardown}
-            retryHint="手順6"
-            onAskAi={text => window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text } }))}
-          />
-        </section>
+          頼らず、shouldShowTeardownResult（apprunDedicatedActions.ts・掟10）も見る。
+          節の中身（見た目・「すべて削除する」の流れ・保存場所の💾の行）は DedicatedTeardownSection.tsx（0.6.22 段階3B-6a）。
+          「いまの構成と月額目安」の行だけは、パネルが持つ buildTeardownSummary（priceSummary・PlanRow を呼ぶ）で作って渡す。 */}
+      {(showTeardownButton || shouldShowTeardownResult(teardownView)) && (
+        <DedicatedTeardownSection
+          projectDir={projectDir}
+          locked={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
+          showButton={showTeardownButton}
+          tearingDown={tearingDown}
+          running={runningKind === 'teardown'}
+          runningRecord={runningRecord}
+          nowMs={nowMs}
+          apprunState={apprunState}
+          appRecord={appRecord}
+          summaryLines={hasAnyResource ? buildTeardownSummary(teardownSummaryRecord, { worker: workerPlans, lb: lbPlans }).lines : []}
+          view={teardownView}
+          notes={resumedNotes.teardown}
+          onStart={onTeardownStart}
+          onDone={onTeardownDone}
+        />
       )}
 
       {/* 手順7 ログ・メトリクス（#38・roadmap #38。プロジェクト単位のログ・メトリクス。共用型
@@ -2813,12 +2661,12 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                 </div>
               ) : (
                 appStatus.hasLetsEncryptEmail === true && (
-                  <p className="text-[11px] text-brand-green leading-relaxed">✅ Let&apos;s Encrypt のメールは設定済みです（アドレスそのものはここには表示できません）。</p>
+                  <p className="text-[11px] text-brand-green leading-relaxed">✅ Let&apos;s Encrypt のメールは設定済みです。</p>
                 )
               )}
               <details className="rounded-lg border border-line bg-overlay p-3">
                 <summary className="cursor-pointer select-none text-xs font-semibold text-ink-secondary hover:text-ink">詳細設定（ふつうは変えなくてよい）</summary>
-                <p className="text-[11px] text-ink-muted leading-relaxed mt-1">既定のままで公開できます。1台構成でも更新できるよう、既定は小さめです。</p>
+                <p className="text-[11px] text-ink-muted leading-relaxed mt-1">1台構成でも更新できるよう、既定は小さめです。</p>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <label className="text-[11px] text-ink-secondary">mCPU</label>
                   <input

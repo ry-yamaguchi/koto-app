@@ -68,7 +68,12 @@ describe('二重起動を、相手が名乗らなくても止める', () => {
     expect(main).toContain('findOtherKoto')
     // 判断をログに残すため、鍵の取得は変数へ受けている（2026-08-19）
     expect(main).toMatch(/const gotLock = app\.requestSingleInstanceLock\(\)/)
-    expect(main).toMatch(/if \(!gotLock \|\| anotherKotoIsRunning\(\)\)/)
+    // 鍵を取れたときだけ・1回だけ見に行く（以前は `if (!gotLock || anotherKotoIsRunning())`。起動時の読み戻しの条件を1つにするため、結果を変数に受ける）
+    expect(main).toMatch(/const otherKotoRunning = gotLock && anotherKotoIsRunning\(\)/)
+    expect(main).toMatch(/const isPrimaryInstance = gotLock && !otherKotoRunning/)
+    expect(main).toMatch(/if \(!isPrimaryInstance\) \{\s*app\.whenReady\(\)\.then\(warnAlreadyRunningAndQuit\)/)
+    expect((main.match(/&& anotherKotoIsRunning\(\)/g) ?? []).length).toBe(1) // 呼び出しは1か所だけ
+    expect(main).not.toMatch(/\|\| anotherKotoIsRunning\(\)/) // 鍵が取れなかったときにも呼ぶ形（直す前）に戻していない
   })
 
   it('★ 読めなければ通す（起動できなくなるほうが害が大きい）', () => {

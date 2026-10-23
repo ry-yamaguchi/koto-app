@@ -91,13 +91,22 @@ describe('★★★ ⑥の破棄が済んだら、公開記録（📡 一覧）�
     expect(readApprunDedicatedFs(dir).clusterID).toBe('c1')
   })
 
-  it('★★ アプリは消えたが、保存場所の片づけだけが失敗した（ok:false・appDeleted:true）: 公開記録は消す（存在しないアプリを一覧に残さない）', async () => {
+  // V9（D1=1・0.6.22 段階3B-1）: 以前は「アプリが消えたら行を外す」（appDeleted ?? ok）で、保存場所だけ残っても行が消え、
+  // 残った保存場所は手順6から消すしかなかった。いまは保存場所まで片づく（ok）まで行を残す＝📡 の行の 🗑 を押し直せる。
+  it('★★ アプリは消えたが、保存場所の片づけだけが失敗した（ok:false・appDeleted:true）: 公開記録は残す（V9。押し直せる）。押し直して全部片づくと消える', async () => {
     const dir = newProject({ app: true, brokenEnv: true })
     h.teardown = deletesApp({ ok: true, executed: ['アプリケーション『app1』を削除しました'], message: '', remaining: {} })
 
     const r = await teardown(dir)
     expect(r.ok).toBe(false) // 保存場所の設定を読めない
     expect(r.appDeleted).toBe(true)
+    expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel']) // 直す前: ['vercel']（行が消えていた）
+
+    // 保存場所の設定を直して（ここでは env.json を外して「保存場所を使っていない」にして）押し直すと、全部片づいて行が消える
+    fs.rmSync(path.join(dir, '.sakura-cloud', 'env.json'))
+    h.teardown = async () => ({ ok: true, executed: [], message: '', remaining: {} })
+    const again = await teardown(dir)
+    expect(again.ok).toBe(true)
     expect(targetsOf(dir)).toEqual(['vercel'])
   })
 
@@ -152,7 +161,7 @@ describe('★★★ ⑥の破棄が済んだら、公開記録（📡 一覧）�
     expect(metaOf(dir).publish.targets.vercel.url).toBe('https://myapp.vercel.app/')
   })
 
-  it('★★ 日時の無い行でも、途中で止まったなら残す（押し直す 🗑 を残す）。アプリが消えて保存場所だけ失敗した回は外す', async () => {
+  it('★★ 日時の無い行でも、途中で止まったなら残す（押し直す 🗑 を残す）。アプリが消えて保存場所だけ失敗した回も残す（V9）', async () => {
     const stopped = newProject({ app: true })
     rowWithoutDate(stopped)
     h.teardown = async () => ({ ok: false, executed: [], message: 'ロードバランサの削除に失敗しました', remaining: { applicationID: 'app1', loadBalancerID: 'l1' } })
@@ -165,7 +174,7 @@ describe('★★★ ⑥の破棄が済んだら、公開記録（📡 一覧）�
     const r = await teardown(storageOnly)
     expect(r.ok).toBe(false)
     expect(r.appDeleted).toBe(true)
-    expect(targetsOf(storageOnly)).toEqual(['vercel'])
+    expect(targetsOf(storageOnly)).toEqual(['sakura-apprun-dedicated', 'vercel']) // 直す前: ['vercel']
   })
 
   it('★★ 押し直しでもまた途中で止まったなら、行は残す（押し直す 🗑 を残す）', async () => {
@@ -238,10 +247,10 @@ describe('公開記録を片づける規則は main の shouldForgetPublishRecor
   // 規則そのものを書き下して固定する（手順6からも 📡 の 🗑 からも、この規則だけが働く）。
   // 2026-10-08 検分: 第1項は「破棄前に applicationID があったか」ではなく「破棄前に公開記録（行）があったか」。
   const TABLE: Array<[boolean, { ok: boolean; appDeleted?: boolean } | null | undefined, boolean]> = [
-    // 行があった: アプリが実際に消えたか（appDeleted。無ければ ok）で決める
+    // 行があった: 保存場所まで片づいたか（ok）だけで決める。appDeleted は見ない（V9・D1=1。以前は appDeleted ?? ok）
     [true, null, false], [true, undefined, false],
     [true, { ok: true }, true], [true, { ok: false }, false],
-    [true, { ok: true, appDeleted: false }, false], [true, { ok: false, appDeleted: true }, true],
+    [true, { ok: true, appDeleted: false }, true], [true, { ok: false, appDeleted: true }, false],
     [true, { ok: false, appDeleted: false }, false], [true, { ok: true, appDeleted: true }, true],
     // 行が無かった: 消す公開記録が無いので何もしない
     [false, null, false], [false, undefined, false], [false, { ok: true }, false], [false, { ok: false }, false],

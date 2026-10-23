@@ -44,11 +44,32 @@ export function formatCheckRecord(rec: CheckRecord | null | undefined): string |
     : `前回の確認: ${when} ⚠️ 要確認（修正の提案あり）`
 }
 
+/**
+ * 結果の文の1かたまり。**AI が書いた行（ai: true）と、Koto が組み立てた行（ai: false）を分けて持つ**。
+ * Koto の行にはファイル名が入る。AI の文と同じに解釈すると、名前の中の ** や ` が太字・コードになり、
+ * 実在しない名前に見える。画面は ai: true だけを太字・箇条書きに描き、ai: false は文字のまま出す。
+ */
+export interface ReportPart {
+  text: string
+  ai: boolean
+}
+
 export interface SecurityCheckResult {
   verdict: 'ok' | 'warn' | 'skip' // 問題なし / 要確認 / チェック未実施
+  /** 全文（コピー・「AIに修正させる」に渡す元の文）。parts を改行でつないだもの。 */
   report: string
+  /**
+   * report を AI の行と Koto の行に分けたもの（画面で描き分ける用）。
+   * 無いとき（Koto が返す一言だけの結果）は、report 全体を Koto の文として扱う（reportParts）。
+   */
+  parts?: ReportPart[]
   /** どちらとして検査したか（skip のときは無い）。 */
   mode?: CheckMode
+}
+
+/** 画面に描くための分け方。parts が無ければ report 全体を Koto の文（解釈しない）として返す。 */
+export function reportParts(result: { report: string; parts?: readonly ReportPart[] }): ReportPart[] {
+  return result.parts && result.parts.length ? [...result.parts] : [{ text: result.report, ai: false }]
 }
 
 // ── 全部を見る（2026-08-21 rc.5 の設計見直し・Ryosuke 指摘）──────────────
@@ -294,7 +315,7 @@ export function mergeCheckResults(
     /** ファイル一覧そのものが打ち切られていたか（fs:projectFilesInfo の truncated）。あれば要確認に倒す。 */
     truncated?: boolean
   },
-): { verdict: 'ok' | 'warn' | 'skip'; report: string } {
+): { verdict: 'ok' | 'warn' | 'skip'; report: string; parts: ReportPart[] } {
   const dataLike = info.dataLike ?? []
   const assets = info.assets ?? []
   const others = info.others ?? []
@@ -307,7 +328,9 @@ export function mergeCheckResults(
   const verdict: 'ok' | 'warn' | 'skip' = forceWarn ? 'warn' : aiVerdict
 
   if (verdict === 'skip') {
-    return { verdict, report: results[0]?.report ?? 'チェックを実施できませんでした。' }
+    // 実施できなかった理由は Koto が書いた文（失敗の理由には外部の応答の文が入りうる）。解釈しない
+    const text = results[0]?.report ?? 'チェックを実施できませんでした。'
+    return { verdict, report: text, parts: [{ text, ai: false }] }
   }
 
   // AIが未実施（機械的な理由だけで要確認に格上げされた）ときは、AIの本文を混ぜない
@@ -334,7 +357,7 @@ export function mergeCheckResults(
     ? [`${capList(dataLike, DATA_LIKE_NOTE_LIMIT).join('、')}: 公開するとデータの中身を誰でも見られるようになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください`]
     : []
   const truncatedNote = truncated
-    ? ['※ ファイルが多いため一覧は途中までです。チェックも全体の一部にとどまります']
+    ? ['※ ファイルが多いため、チェックは一部のファイルにとどまります']
     : []
   // assets は名指ししない（画像等の存在は雑音になる。件数だけ伝える。2026-09-03 案1）
   const assetsNote = assets.length
@@ -347,10 +370,13 @@ export function mergeCheckResults(
   const uncheckedNote = others.length
     ? [`※ 中身を確認できない種類のファイルです（名前だけで判定しました）: ${capList(others, UNCHECKED_NOTE_LIMIT).join(', ')}`]
     : []
-  return {
-    verdict,
-    report: [head, ...(note ? [note] : []), ...skipNote, ...dataLikeNote, ...lines, ...truncatedNote, ...assetsNote, ...uncheckedNote].join('\n'),
-  }
+  // 並びは「Koto の行 → AI の行 → Koto の行」。AI の行（lines）だけが ai: true
+  const parts: ReportPart[] = [
+    { text: [head, ...(note ? [note] : []), ...skipNote, ...dataLikeNote].join('\n'), ai: false },
+    { text: lines.join('\n'), ai: true },
+    { text: [...truncatedNote, ...assetsNote, ...uncheckedNote].join('\n'), ai: false },
+  ].filter(p => p.text)
+  return { verdict, report: parts.map(p => p.text).join('\n'), parts }
 }
 
 /**
@@ -612,7 +638,7 @@ export async function runSecurityCheck(
       const report = raw ? extractCheckReport(raw) : null
       results.push(report
         ? { verdict: judgeVerdict(report), report }
-        : { verdict: 'skip', report: 'AIの応答から判定を読み取れませんでした（AI が考える途中の文章が長くなりすぎて、判定まで書けなかった可能性があります）。もう一度お試しください。' })
+        : { verdict: 'skip', report: 'AIの応答から判定を読み取れませんでした。もう一度お試しください。' })
     } catch (e: any) {
       // 中止で切れた通信は「失敗」として数えない（押した本人に失敗を報告しない）。
       if (stopped) break

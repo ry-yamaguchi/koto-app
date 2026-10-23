@@ -155,7 +155,7 @@ describe('★★★ HANAMII: 1回目が終わったあと、古い画面（proje
     const before = [...reqs]
     const refused = await publish(dir)
     expect(refused.ok).toBe(false)
-    expect(refused.message).toBe(projectBusyMessage('公開'))
+    expect(refused.message).toBe(projectBusyMessage('公開', 'hanamii'))
     expect(reqs).toEqual(before)
 
     // 1回目が終わる。プロジェクトが1つ作られ、main が記録へ projectId を書く

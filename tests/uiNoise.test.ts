@@ -44,7 +44,10 @@ describe('② 古いイメージの案内は溜まってから', () => {
     // 公開のたびのカードからは外し、確認ダイアログへ移した
     const card = panel.slice(panel.indexOf('🧹 古いイメージが残っています'), panel.indexOf('🧹 古いイメージが残っています') + 600)
     expect(card).not.toContain('REGISTRY_MONTHLY_YEN')
-    const dialog = panel.slice(panel.indexOf('過去の公開のイメージを消します'), panel.indexOf('過去の公開のイメージを消します') + 600)
+    // 2026-10-09 画面の文を短くする（T065）: 目印の文は「コンテナレジストリに残っている、過去の公開のイメージを消します。」から「コンテナレジストリから消します。」に替わった。
+    const dialogAt = panel.indexOf('コンテナレジストリから消します。元に戻せません。')
+    expect(dialogAt).toBeGreaterThan(0)
+    const dialog = panel.slice(dialogAt, dialogAt + 600)
     expect(dialog).toContain('REGISTRY_MONTHLY_YEN')
   })
 })

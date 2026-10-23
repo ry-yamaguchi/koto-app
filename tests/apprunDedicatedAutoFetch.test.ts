@@ -13,8 +13,10 @@ import {
   forgetInvestigated,
   type InvestigateSnapshot,
 } from '../src/renderer/apprunDedicatedAutoFetch'
-// 「作る操作は自動にならない」を**振る舞いで**固定するため、手順5・6の歯止めそのものを呼ぶ（掟10）。
-import { runCreate, runTeardown } from '../src/renderer/apprunDedicatedActions'
+// 「作る操作・壊す操作は自動にならない」を**振る舞いで**固定するため、手順5の歯止め（runCreate）と、手順6・📡 の 🗑 の共通の流れ（runTeardownFlow）そのものを呼ぶ（掟10）。
+import { runCreate } from '../src/renderer/apprunDedicatedActions'
+import { runTeardownFlow } from '../src/renderer/teardown/flow'
+import { dedicatedTeardownSpec } from '../src/renderer/teardown/targets/dedicated'
 
 // C（2026-09-17 Ryosuke さん指摘／2026-09-24 再指摘）:
 // 「調べるボタンの機能はkotoが勝手に取得して利用する形にすればよいのではないか？
@@ -230,7 +232,7 @@ describe('C: 画面の配線（自動で投げる・失敗したときだけボ�
 
 describe('C: 自動にしたのは「何も作らず、何も変えない」取得だけ（課金の歯止めは変えない）', () => {
   it('★ 手順3の説明は「何も作らず、何も変更しません」のまま（自動になっても意味が変わらない）', () => {
-    expect(panel).toContain('制限・プラン・既存クラスタの件数をAPIから取得します（何も作らず、何も変更しません）。')
+    expect(panel).toContain('APIキーを登録すると、制限・プラン・既存クラスタの件数を自動で取得します（何も作らず、何も変更しません）。')
   })
 
   it('★ 常時課金の一文・手順4の同意の記録は変わっていない', () => {
@@ -255,16 +257,20 @@ describe('C: 自動にしたのは「何も作らず、何も変えない」取�
     expect(calls, '同意していないのに作りに行った').toEqual([])
   })
 
-  it('★ 壊す操作も自動にならない: 確認が no なら teardown は一度も呼ばれない', async () => {
+  it('★ 壊す操作も自動にならない: 確認が no なら、さくらへの要求（invoke）はもちろん、キーの読み込みも活動の登録も一度も起きない（振る舞いで固定）', async () => {
     const calls: string[] = []
-    const outcome = await runTeardown(
-      { confirmMessage: '次を削除します' },
-      {
-        confirm: () => false,
-        activity: { begin: () => { calls.push('begin'); return () => calls.push('end') } },
-        teardown: async () => { calls.push('teardown'); return { ok: true } },
-      },
-    )
+    const outcome = await runTeardownFlow('/p', dedicatedTeardownSpec, {
+      loadFacts: async () => ({
+        projectName: 'p', record: { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1' }, placements: [], placementsUnreadable: false,
+        placementsUnreadableCause: null, otherTargets: [], otherTargetsUnreadable: false, waitNote: null,
+      }),
+      confirm: async () => false,
+      loadAuth: async () => { calls.push('loadAuth'); return { token: 't', secret: 's' } },
+      invoke: async () => { calls.push('invoke'); return { ok: true, executed: [], message: '', remaining: {} } },
+      beginActivity: () => { calls.push('begin'); return () => { calls.push('end') } },
+      onStart: () => { calls.push('onStart') },
+      keyMissingMessage: 'キーが未登録です（テスト）',
+    })
     expect(outcome).toEqual({ cancelled: true })
     expect(calls, '同意していないのに壊しに行った').toEqual([])
   })

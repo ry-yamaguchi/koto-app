@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { storageNeedForScan, memorySitesFor, memorySitesNotWarned, shouldOfferStorage, STORAGE_PORTABLE_NOTE, type PublishTarget, type StorageNeed } from '../../shared/storageNeed'
 import {
   askAiRewritePlan, rewriteCheckLine, rewriteCheckDone, storageNoticeHeadline, describeWriteSite,
@@ -11,9 +11,10 @@ import {
   LEFTOVER_DATA_SKIP_LABEL, LEFTOVER_DATA_SKIP_NOTE,
   LEFTOVER_DATA_ASK_AI_NOTE, LEFTOVER_DATA_SKIP_LATER_NOTE, type LeftoverDataFile,
 } from '../../shared/leftoverData'
-import type { FileWriteSite } from '../../shared/objectStorage'
+import { BUCKET_NAME_REUSE_RULE, type FileWriteSite } from '../../shared/objectStorage'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
 import { getStorageMode } from './StorageSettings'
+import { NEW_BUCKET, canPrepare, createBucketListController, emptyBucketList, placementMissing, type BucketListController, type BucketListState } from '../storageChoice'
 
 // StorageNotice — 【公開】で、公開先を選んだときに「データの保存」について知らせる。
 //
@@ -39,8 +40,8 @@ import { getStorageMode } from './StorageSettings'
 
 type Placement = { bucket: string; prefix: string; shared: boolean }
 
-/** 「新しく作る」を表す選択肢。既存の名前と区別する。 */
-const NEW_BUCKET = '\u0000new'
+/** 記録の読み1回分の印（読み始めに取る）。当ててよいかは `placementReadIsCurrent` が見る。 */
+type PlacementRead = { gen: number; dir: string; seq: number }
 
 // 「💾 いま入っているデータをどうしますか」に答えたかどうかを覚えておく（プロジェクトごと）。
 // **選んだあとは出し直さない**（毎回聞かれると鬱陶しい）。覚えられなくても動きは同じで、
@@ -265,9 +266,74 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
    * 初期値をここで読むので、【公開】を開き直した最初の描画から出る。
    */
   const [dataLayerLine, setDataLayerLine] = useState(() => readDataLayerLine(projectDir))
-  /** いまある保存場所の名前。**すでにあるものを選べば費用は増えない。** */
-  const [buckets, setBuckets] = useState<string[]>([])
-  const [chosen, setChosen] = useState<string>(NEW_BUCKET)
+  /**
+   * 保存場所の一覧と、どれを選んでいるか。**すでにあるものを選べば費用は増えない。**
+   * 読み直し・選ぶ・押せるかは、すべて下の controller（storageChoice.ts）を通す。画面は結果を映すだけ。
+   */
+  const [bucketList, setBucketList] = useState<BucketListState>(emptyBucketList)
+  /** 一覧の controller。プロジェクトが変わるたびに作り直す（読み直しの口は、どれもこれを呼ぶ）。 */
+  const bucketListRef = useRef<BucketListController | null>(null)
+  /** いまの記録の保存場所。controller が結果を当てる時点で読む（state の写しは、次の描画まで古い）。 */
+  const recordedBucketRef = useRef('')
+  /**
+   * 記録の保存場所の世代。**読み以外が記録を変えたとき（用意の成功）と、プロジェクトが変わったときだけ上がる**（上げるのは
+   * `discardPlacementReads` 1か所）。**読みの開始・読みが当てるときには上げない**（上げると、重なった次の読みが捨てられる）。
+   * 読み始めの世代と違えば、その読みは追い越されている（読み以外が記録を変えた・別のプロジェクトになった）ので当てない（掟11）。
+   */
+  const placementGenRef = useRef(0)
+  /** 記録の読みの通し番号（読み始めるたびに増える）。同じ世代の中で、どちらの読みが新しいかを決める。 */
+  const placementReadSeqRef = useRef(0)
+  /** 最後に当てた読みの番号。**自分より後に始まった読みがもう当たっていたら、自分は当てない。** */
+  const placementAppliedSeqRef = useRef(0)
+  /** いまのプロジェクト。記録の読みが、別のプロジェクトのものを当てないための印（controller を作る effect が更新する）。 */
+  const projectDirRef = useRef(projectDir)
+  /** 記録の保存場所を変えるのは、ここ1か所（画面の state と、controller が読む写しを一緒に変える。世代は上げない）。 */
+  const rememberPlacement = (p: Placement | null) => {
+    recordedBucketRef.current = p?.bucket ?? ''
+    setPlacement(p)
+  }
+  /**
+   * 飛んでいる記録の読みを全部捨てる（世代を上げるのはここ1か所）。**読み以外が記録を変えるとき**（用意の成功）と、
+   * **プロジェクトが変わったとき**に、記録を変える（またはプロジェクトを替える）のと同じ場所で呼ぶ。
+   */
+  const discardPlacementReads = () => { placementGenRef.current += 1 }
+  /** 記録の読みを始める（読み始めの印を取る。**読みの開始は世代を上げない**）。 */
+  const startPlacementRead = (dir: string): PlacementRead => ({
+    gen: placementGenRef.current,
+    dir,
+    seq: ++placementReadSeqRef.current,
+  })
+  /**
+   * 記録の読みを当ててよいか。**世代・プロジェクト・番号を見るのはここ1つ。**
+   * 読み始めから、読み以外が記録を変えておらず（世代）、プロジェクトも同じで、自分より後に始まった読みがまだ当たっていない（番号）。
+   */
+  const placementReadIsCurrent = (read: PlacementRead) =>
+    placementGenRef.current === read.gen && projectDirRef.current === read.dir && read.seq > placementAppliedSeqRef.current
+  /** 記録の読みの結果を当てる（当ててよいときだけ。当てたら、その番号を残す）。 */
+  const applyPlacementRead = (read: PlacementRead, p: Placement | null) => {
+    if (!placementReadIsCurrent(read)) return
+    placementAppliedSeqRef.current = read.seq
+    rememberPlacement(p)
+  }
+  /**
+   * このプロジェクトの保存場所の記録を読み直して、画面に当てる。**破棄が済んだ知らせ（sakura-meta-changed）が呼ぶ。**
+   *
+   * 開いたときにしか読まないと、同じ【公開】の中で破棄して保存場所が消えても、記録は古いまま
+   * 「用意済み」と出し続ける（2026-10-22 rc.4 の実機）。読めなかったとき（ok でない・例外）は、いまの表示を変えない。
+   * 後から始めた読みが勝つ（番号）。読みの開始は世代を上げない（上げると、読めなかった読み直しが、まだ飛んでいる
+   * 開いたときの読みまで捨ててしまい、ディスクに記録があるのに画面は「用意なし」になる）。
+   * ref と setState だけを使うので、一度しか聞かない知らせの effect から呼んでよい。**プロジェクトは `projectDirRef` から読む**
+   * （この関数は最初の描画の版が聞き手に残るので、`projectDir`（最初の値）を読むと、切り替えたあとも前のプロジェクトを読む）。
+   */
+  const refreshPlacement = async (): Promise<void> => {
+    const dir = projectDirRef.current
+    if (!dir) return
+    const read = startPlacementRead(dir)
+    try {
+      const r = await window.electronAPI.storage.placement(dir)
+      if (r.ok) applyPlacementRead(read, r.placement ?? null)
+    } catch { /* 読めなかった: いまの表示を変えない */ }
+  }
 
   /**
    * 古いデータを探して、問いの材料を作る。**探しに行くのはここ1か所だけ。**
@@ -295,6 +361,30 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
     }
   }
 
+  // 保存場所の一覧の controller は、**プロジェクトが変わったときだけ**作り直す。
+  // 公開先のタブ（target）を切り替えただけで作り直すと、一覧が空（既定は「新しく作る」）に戻り、
+  // 最初の読み直しが終わるまで「用意する（費用に同意）」を押せてしまう。
+  // 前のものは dispose して、前のプロジェクトで始めた読み直しの結果が、いまの画面に当たらないようにする（掟11）。
+  // 作った直後に読み始める（下の scan と記録を待たない）。**この effect は、下の effect より前に置く**
+  // （下の effect が、いまの controller を ref から読むため）
+  useEffect(() => {
+    // プロジェクトが変わった: 前のプロジェクトで始めた記録の読みは、あとで返っても当てない（掟11）
+    projectDirRef.current = projectDir
+    discardPlacementReads()
+    const bucketListController = createBucketListController({
+      status: () => window.electronAPI.storage.status(),
+      recorded: () => recordedBucketRef.current,
+      onChange: setBucketList,
+    })
+    bucketListRef.current = bucketListController
+    setBucketList(bucketListController.get())
+    if (projectDir) void bucketListController.reload()
+    return () => {
+      bucketListController.dispose()
+      if (bucketListRef.current === bucketListController) bucketListRef.current = null
+    }
+  }, [projectDir])
+
   useEffect(() => {
     let alive = true
     // プロジェクトが変われば、問いの状態も持ち越さない（前のプロジェクトの答えで黙らない）
@@ -314,23 +404,21 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
     setLeftoverAnswered(answered)
     if (!projectDir) { setNeed(null); return }
     void (async () => {
+      // 読み始めの印（世代・プロジェクト・番号）。読んでいる間に、用意の成功で記録が変わった・プロジェクトが変わった・
+      // もっと新しい読みが先に当たったときは、遅れて返ったこの読みは当てない（placementReadIsCurrent）
+      const read = startPlacementRead(projectDir)
       const [scan, place] = await Promise.all([
         window.electronAPI.storage.scan(projectDir),
         window.electronAPI.storage.placement(projectDir),
       ])
       if (!alive) return
-      if (place.ok) setPlacement(place.placement)
+      if (place.ok) applyPlacementRead(read, place.placement)
       // 保存場所の一覧も取る。**用意済みの保存場所が実際には無い**ことがあり
-      // （名前を消した直後は作り直せない）、そのときは選び直してもらう（2026-08-14）
-      try {
-        const st = await window.electronAPI.storage.status()
-        if (alive && st.ok) {
-          const names = st.buckets.map(b => b.name)
-          setBuckets(names)
-          const current = place.ok && place.placement ? place.placement.bucket : ''
-          setChosen(names.includes(current) ? current : (names[0] ?? NEW_BUCKET))
-        }
-      } catch { /* 取れなくても用意はできる（新しく作る側に倒れる） */ }
+      // （削除した名前は同じ月のうちは作り直せない）、そのときは選び直してもらう（2026-08-14）。
+      // 読み直しの口は、どれも同じ controller を通す。取れなければ用意は押せない（storageChoice.ts の canPrepare）。
+      // 記録が分かったあとの既定にするための読み直し（controller を作った直後の読み直しと重なっても、最新だけが当たる）
+      await bucketListRef.current?.reload()
+      if (!alive) return
       if (!scan.ok) return
       setFiles(scan.writesFiles)
       const memory = memorySitesFor(scan, target)
@@ -354,8 +442,34 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
     return () => { alive = false }
   }, [projectDir, target])
 
+  // 【公開】を開いたままでも、読み直す知らせを2つ聞く:
+  //   ・設定の「データの保存」で保存場所を作った（sakura:storage-buckets-changed）… 一覧だけ読み直す
+  //   ・公開先の破棄が済んだ（sakura-meta-changed。破棄で保存場所がバケットごと消えることがある）
+  //     … このプロジェクトの保存場所の記録を読み直して当ててから、一覧を読み直す。
+  //     先に記録を当てるのは、逆だと、バケットが消えた一覧に対して、もう無い記録が一瞬「見つかりません」と出るため
+  useEffect(() => {
+    const onBucketsMayHaveChanged = () => { void bucketListRef.current?.reload() }
+    const onMetaChanged = () => {
+      void (async () => {
+        await refreshPlacement()
+        await bucketListRef.current?.reload()
+      })()
+    }
+    window.addEventListener('sakura:storage-buckets-changed', onBucketsMayHaveChanged)
+    window.addEventListener('sakura-meta-changed', onMetaChanged)
+    return () => {
+      window.removeEventListener('sakura:storage-buckets-changed', onBucketsMayHaveChanged)
+      window.removeEventListener('sakura-meta-changed', onMetaChanged)
+    }
+  }, [])
+
   const prepare = async () => {
-    if (!projectDir) return
+    const bucketListController = bucketListRef.current
+    if (!projectDir || !bucketListController) return
+    // **押した時点の一覧で決める**（描画の写しは、読み直しの直後に1拍遅れる）。
+    // 読み直している間・一覧を確かめられないままのときは、費用の増える側に進ませない
+    const list = bucketListController.get()
+    if (!canPrepare(list, busy)) return
     setError('')
     setMarkerNote('')
     setBusy(true)
@@ -363,12 +477,22 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
       const r = await window.electronAPI.storage.prepare(projectDir, {
         mode: getStorageMode(),
         // 既存を選んでいればそれを使う（**費用は増えない**）。新しく作るときは渡さない
-        ...(chosen !== NEW_BUCKET ? { bucket: chosen } : {}),
+        ...(list.chosen !== NEW_BUCKET ? { bucket: list.chosen } : {}),
       })
       // 戻り値を画面の行へ直すのは純関数1か所（掟10）。**markerNote をここで落とさない**
       const lines = storagePrepareLines(r)
-      if (!r.ok || !r.placement) { setError(lines.error); return }
-      setPlacement(r.placement)
+      if (!r.ok || !r.placement) {
+        setError(lines.error)
+        // 確認は開いたまま。失敗のあとに作った保存場所が「どこに保存しますか」に出るよう、一覧を読み直す
+        void bucketListRef.current?.reload()
+        return
+      }
+      // 用意した保存場所は、一覧を読み直してから記録に載せる。先に載せると、新しい保存場所が
+      // 古い一覧に無く、「この保存場所は見つかりません」が一瞬出る
+      await bucketListRef.current?.reload()
+      // 読み以外が記録を変える: 飛んでいる記録の読み（古い値を返しうる）を捨ててから載せる
+      discardPlacementReads()
+      rememberPlacement(r.placement)
       setConfirming(false)
       // 同じ【公開】の中にある公開パネルへ知らせる。**あちらは画面を開いた時点の
       // 写しで動いている**ので、放っておくと費用の表示も破棄の案内も古いまま
@@ -521,8 +645,9 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
     rememberLeftoverAnswered(projectDir)
   }
 
-  // 記録にある保存場所が、実際に存在するか（一覧が取れているときだけ判断する）
-  const missing = !!placement && buckets.length > 0 && !buckets.includes(placement.bucket)
+  // 記録にある保存場所が、実際に存在するか（判定は placementMissing 1つ。一覧が読めて、サイトの利用開始も
+  // 確かめられた回だけ判断する。その回なら一覧が0件でも「無い」と確かめられている）
+  const missing = placementMissing(placement?.bucket, bucketList)
 
   if (!need || need.kind === 'none') {
     // 「書き直せたか確かめる」を押した直後に問題が消えることがある。
@@ -552,6 +677,9 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
   const warn = need.kind === 'will-lose-data'
   // 理由が「メモリだけに持っていそう」という推定だけのときは、見出しもその下の1行も断定しない
   const guess = need.kind === 'will-lose-data' && need.memoryOnly === true
+  // 見出しの下の1行。断定の版（STORAGE_REWRITE_REMAINING）は見出しと同じことを言うので空にしてある（2026-10-09）。
+  // 空のときは段落ごと出さない（空の <p> を置かない）。
+  const rewriteLine = guess ? STORAGE_REWRITE_MAYBE_REMAINING : STORAGE_REWRITE_REMAINING
   return (
     <div className={`rounded-xl border p-4 space-y-2 ${warn && !placement ? 'border-brand-yellow/70 bg-surface' : 'border-line bg-surface'}`}>
       <p className="text-sm font-semibold text-ink">
@@ -562,8 +690,8 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
         })}
       </p>
       {/* **保存場所はできたが、書き直しが残っている。** 残りの作業を1行で示す */}
-      {placement && warn && (
-        <p className="text-xs text-ink leading-relaxed select-text">{guess ? STORAGE_REWRITE_MAYBE_REMAINING : STORAGE_REWRITE_REMAINING}</p>
+      {placement && warn && rewriteLine && (
+        <p className="text-xs text-ink leading-relaxed select-text">{rewriteLine}</p>
       )}
       <p className="text-xs text-ink-secondary leading-relaxed select-text">{need.note}</p>
 
@@ -590,10 +718,10 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
             保存場所: <span className="font-semibold">{placement.bucket}</span>
             <span className="text-ink-muted">　{placement.shared ? '（ほかのプロジェクトと共有）' : '（このプロジェクト専用）'}</span>
           </p>
-          {/* **記録はあるが実在しない**ことがある（削除した名前は作り直せない） */}
+          {/* **記録はあるが実在しない**ことがある（削除した名前は同じ月のうちは作り直せない） */}
           {missing && (
             <p className="text-[11px] text-brand-yellow leading-relaxed select-text">
-              ⚠️ この保存場所は見つかりません。削除した直後は、同じ名前で作り直せないことがあります。
+              ⚠️ この保存場所は見つかりません。{BUCKET_NAME_REUSE_RULE}
               下から選び直してください。
             </p>
           )}
@@ -615,6 +743,22 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
         </div>
       )}
 
+      {/* **一覧を確かめられなかったら、用意は押せない。** 確認が開いているか・記録があるかに関わらず、
+          保存場所の欄に出す（確認の中には重ねない）。理由は捨てない（キー未登録なら、それが直し方になる） */}
+      {bucketList.listFailed && (
+        <div className="space-y-1">
+          <p className="text-[11px] text-brand-yellow leading-relaxed select-text">⚠️ 保存場所の一覧を確かめられませんでした。</p>
+          {bucketList.listError && (
+            <p className="text-[11px] text-ink-secondary leading-relaxed select-text">{bucketList.listError}</p>
+          )}
+          <button
+            onClick={() => { void bucketListRef.current?.reload() }}
+            disabled={bucketList.loading}
+            className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
+          >もう一度確かめる</button>
+        </div>
+      )}
+
       {/* 用意する。**課金の始まる操作なので、金額を見せてから二度押させる** */}
       {(!placement || missing) && shouldOfferStorage(need) && (
         confirming ? (
@@ -624,18 +768,18 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
               新しく作る場合は<span className="font-semibold">月額{BUCKET_MONTHLY_YEN}円（税込）</span>がかかります（日割はありません）。
             </p>
             {/* **すでにある保存場所を選べば費用は増えない。** 既定でそちらを選んでおく */}
-            {buckets.length > 0 && (
+            {bucketList.buckets.length > 0 && (
               <div className="space-y-1">
                 <p className="text-[11px] font-semibold text-ink-secondary">どこに保存しますか</p>
-                {buckets.map(b => (
+                {bucketList.buckets.map(b => (
                   <label key={b} className="flex items-center gap-2 text-xs text-ink cursor-pointer">
-                    <input type="radio" name="koto-bucket" checked={chosen === b} onChange={() => setChosen(b)} />
+                    <input type="radio" name="koto-bucket" checked={bucketList.chosen === b} onChange={() => bucketListRef.current?.pick(b)} />
                     <span className="font-mono">{b}</span>
                     <span className="text-[11px] text-ink-muted">すでにあります（費用は増えません）</span>
                   </label>
                 ))}
                 <label className="flex items-center gap-2 text-xs text-ink cursor-pointer">
-                  <input type="radio" name="koto-bucket" checked={chosen === NEW_BUCKET} onChange={() => setChosen(NEW_BUCKET)} />
+                  <input type="radio" name="koto-bucket" checked={bucketList.chosen === NEW_BUCKET} onChange={() => bucketListRef.current?.pick(NEW_BUCKET)} />
                   <span>新しく作る</span>
                   <span className="text-[11px] text-brand-yellow">月額{BUCKET_MONTHLY_YEN}円が増えます</span>
                 </label>
@@ -648,9 +792,9 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
             <div className="flex gap-2">
               <button
                 onClick={prepare}
-                disabled={busy}
+                disabled={!canPrepare(bucketList, busy)}
                 className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
-              >{busy ? '用意しています…' : '用意する（費用に同意）'}</button>
+              >{busy ? '用意しています…' : bucketList.loading ? '保存場所を確かめています…' : '用意する（費用に同意）'}</button>
               <button
                 onClick={() => setConfirming(false)}
                 disabled={busy}
@@ -660,7 +804,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
           </div>
         ) : (
           <button
-            onClick={() => { setError(''); setConfirming(true) }}
+            onClick={() => { setError(''); setConfirming(true); void bucketListRef.current?.openConfirm() }}
             className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura"
           >{missing ? '保存場所を選び直す…' : '保存場所を用意する…'}</button>
         )

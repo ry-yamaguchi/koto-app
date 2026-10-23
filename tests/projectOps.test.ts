@@ -89,7 +89,7 @@ describe('走っている間: get は running と最新の進み具合を返す'
     const p = withProjectLock(A, '削除', g.wait, META)
     progressReporter(A)('削除を待っています…')
     const refused = await withProjectLock(A, '公開', async () => ({ ok: true }), { target: 'hanamii', handler: 'x' })
-    expect(refused).toEqual({ busy: true, running: '削除' })
+    expect(refused).toEqual({ busy: true, running: '削除', runningTarget: 'sakura-apprun' })
     const running = getOps(A).running!
     expect(running.op).toBe('削除')
     expect(running.handler).toBe('test:handler')
@@ -399,9 +399,12 @@ describe('結果の写し（summarizeResult）: 返り値がすでに持って�
     expect(bucket.warnings).toHaveLength(1)
     expect(bucket.warnings[0]).toContain('データの保存場所『koto-data-x』')
     expect(bucket.warnings[0]).toContain('月額')
-    const registry = summarizeResult({ ok: true, keptRegistryName: 'myreg' })
+    // このプロジェクトだけのレジストリ（Koto が作り、ほかが使っていない）を残した回。由来と借り手が返り値に無ければ、このプロジェクトだけのものとは言わない
+    const OWN = { keptRegistryOrigin: 'owned', keptRegistryUsers: [] }
+    const registry = summarizeResult({ ok: true, keptRegistryName: 'myreg', ...OWN })
     expect(registry.warnings[0]).toContain('コンテナレジストリ『myreg』')
-    const both = summarizeResult({ ok: true, keptBucketName: 'b1', keptRegistryName: 'myreg' })
+    expect(registry.warnings[0]).toContain('月額')
+    const both = summarizeResult({ ok: true, keptBucketName: 'b1', keptRegistryName: 'myreg', ...OWN })
     expect(both.warnings[0]).toContain('コンテナレジストリ『myreg』')
     expect(both.warnings[0]).toContain('『b1』')
     // 何も残らなければ警告しない
@@ -410,7 +413,7 @@ describe('結果の写し（summarizeResult）: 返り値がすでに持って�
     const unnamed = summarizeResult({ ok: false, keptRegistryUnnamed: true })
     expect(unnamed.warnings).toEqual(teardownRemainingWarnings({ keptRegistryUnnamed: true }))
     expect(unnamed.warnings).toHaveLength(1)
-    expect(summarizeResult({ ok: false, keptRegistryName: 'myreg' }).warnings).toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg' })!])
+    expect(summarizeResult({ ok: false, keptRegistryName: 'myreg', ...OWN }).warnings).toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg' })!])
     expect(unnamed.extra).toMatchObject({ keptRegistryUnnamed: true })
     expect(summarizeResult({ ok: true, keptRegistryUnnamed: false }).warnings).toEqual([])
   })

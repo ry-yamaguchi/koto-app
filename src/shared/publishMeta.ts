@@ -54,6 +54,16 @@ export function withPublishRecord(
 }
 
 /**
+ * `publish.targets[target]`（📡 公開したもの一覧の1行）があるか（純関数）。値が真なら行（`{}` や日時の無い行も行）。null・false・無いは行ではない。
+ * 壊れた meta（null・配列・文字列）でも落ちない。main の `hasPublishRecordFs`（自分のプロジェクト）と、
+ * `main/cloud/bucketUsers.ts`（兄弟のプロジェクトが公開中か）が同じこれを通る——「行がある」の見方を1つにする。
+ */
+export function hasPublishRecordInMeta(meta: unknown, target: PublishTargetKind): boolean {
+  const m = meta as { publish?: { targets?: Record<string, unknown> | null } | null } | null | undefined
+  return !!m?.publish?.targets?.[target]
+}
+
+/**
  * `publish.pending`（公開開始マーカー）を書く。公開処理の開始時、実際の公開API呼び出しの
  * 直前に呼ぶこと。他の `publish.*` のキー（targets 等）は保つ。
  */
@@ -168,8 +178,18 @@ export type ApprunDedicatedRecord = {
    * （＝共用型が state.json にバケットを残して破棄をやり直せるのと同じ形）。
    *
    * 片づけられたら null に戻す。
+   *
+   * 保存場所が2件以上あるときは**止まった1件だけ**を書く値ではなく、残りの全件の先頭1件（`storageLeftoverBuckets[0]`）。
+   * 「消すものがあるか」の判断（`dedicatedTeardownHasWork`）はこの1件を見続ける。名前を言う側は下の全件を読む。
    */
   storageLeftoverBucket?: string | null
+  /**
+   * 同じ事実の**全件**（0.6.22 段階3B-2・押し直しの印を全件にする。HANAMII の `publish.hanamii.storageLeftoverBuckets` と同じ形）。
+   * 保存場所が2件以上で途中で止まった回、残っている保存場所を全部の名前で言うために書く（1件だけ言うと、名前が出なかった
+   * 保存場所の月額が黙って続く）。main は `storageLeftoverBucket`（先頭1件）と必ず同じ回に書き、片づけ切ったら両方を null に戻す。
+   * 無い（旧い記録）ときは `storageLeftoverBucket` の1件だけを言う（`dedicatedStorageLeftoverNames`）。
+   */
+  storageLeftoverBuckets?: string[] | null
 }
 
 /**
@@ -216,6 +236,31 @@ export function withHanamiiProjectId(meta: unknown, projectId: string | null): R
     publish: {
       ...publish,
       hanamii: { ...hanamii, projectId },
+    },
+  }
+}
+
+/**
+ * HANAMII 固有: `publish.hanamii.storageLeftoverBuckets`（前回の破棄で、プロジェクトは消えたが保存場所だけが残った印）を書く。
+ *
+ * - 配列 … 残っている保存場所の名前（全件）。**空配列は「プロジェクトは消えた・残りの名前は分からない」**（設定が読めなかった回）。
+ *   名前は文字列だけを残し、空文字と重複は落とす（並びは保つ）。
+ * - null … 印を消す（全部片づいた回・「一覧から削除」は `withoutPublishTarget` が消す）。
+ * `publish.hanamii` のほかの項目（projectId・workspaceId・envs 等）は保つ。
+ * 書く先は main の `markHanamiiStorageLeftoverFs`（この純関数を呼ぶ）だけ。
+ */
+export function withHanamiiStorageLeftover(meta: unknown, buckets: readonly string[] | null): Record<string, unknown> {
+  const m = asRecord(meta)
+  const publish = asRecord(m.publish)
+  const hanamii = asRecord(publish.hanamii)
+  const names = buckets === null
+    ? null
+    : Array.from(new Set(buckets.filter((b): b is string => typeof b === 'string' && b !== '')))
+  return {
+    ...m,
+    publish: {
+      ...publish,
+      hanamii: { ...hanamii, storageLeftoverBuckets: names },
     },
   }
 }
@@ -298,7 +343,9 @@ export function withoutPublishTarget(
   // を**作り直す**（古いプロジェクトの救済）。消し残すと、片づけたのに一覧へ
   // 戻ってきて「効いていない」ように見える。
   // 破棄の導線（📡 公開したもの一覧）はここしか通らないので、ここで消す。
-  if (target === 'hanamii') next.hanamii = { ...(base.hanamii ?? {}), projectId: null }
+  // HANAMII の「保存場所だけが残った印」（storageLeftoverBuckets）も一緒に消す。残すと、行も projectId も無いのに
+  // 印だけが残り、次に同じ記録へ projectId が入ったとき（公開し直し）、確認が「プロジェクトはすでに削除されています」と言い違える。
+  if (target === 'hanamii') next.hanamii = { ...(base.hanamii ?? {}), projectId: null, storageLeftoverBuckets: null }
   if (target === 'sakura-rental') {
     next.lastPublishedAt = undefined
     next.host = undefined

@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 
-// ── 📡 公開したもの一覧が、専有型の行の部品（DedicatedTeardownRow）につなぐ配線を、振る舞いで固定する（2026-10-08 検分）──────
+// ── 📡 公開したもの一覧が、専有型の行の部品（TeardownRow＋専有型の仕様書 dedicatedTeardownSpec）につなぐ配線を、振る舞いで固定する（2026-10-08 検分・0.6.22 3B-5 で向け直し）──────
+//
+// 3B-5: 専有型の行は、手本の DedicatedTeardownRow から共通の行 TeardownRow に替わった（見る先を向け直しただけ。期待を変えたのは V1・V9 に当たる所だけ。設計書 10.11.13）。
+//   ・V1: 押し直しの呼び方が「この一覧の 🗑 削除」（旧「🗑 破棄」）・行のボタンが「🗑 削除」
+//   ・V9: 保存場所だけが残った回は行が残るので、案内が「この行の「🗑 削除」をもう一度押すと…」（旧「この行は一覧から消えます。…手順6を押してください」）
 //
 // 検分で、この配線の多くを壊しても試験が1本も落ちないことが分かった:
 //   ・onOutcome を空にする（結果欄が出ない＝残っている資源・課金の警告が利用者に届かない）
 //   ・onFinished を空にする（終わっても一覧が読み直されない）
 //   ・blocked を false に固定する／onBusyChange の setBusyKey を消す（別の行の 🗑 が止まらない）
-//   ・行が確認ダイアログを描かない（🗑 が無反応になる）←これは tests/dedicatedTeardownEntries.test.ts の (E3)
+//   ・行が確認ダイアログを描かない（🗑 が無反応になる）←これは tests/dedicatedTeardownEntries.test.ts の (E3)（TeardownRow の中身は tests/teardownHookCommon.test.ts の E-6）
 // 文字列の一致だけでは「そう書いてあるか」しか見えないので、一覧（PublishedListModal）を react の小さな代役の上で**実際に動かし**、
 // 行に渡した props（onOutcome・onBusyChange・onFinished・blocked・render）を呼んで、一覧が何を描き直すかを見る。
 //
@@ -75,10 +79,18 @@ const onUnhandled = () => {}
 process.on('unhandledRejection', onUnhandled)
 afterAll(() => { process.off('unhandledRejection', onUnhandled) })
 
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import PublishedListModal from '../src/renderer/components/PublishedListModal'
-import DedicatedTeardownRow from '../src/renderer/components/DedicatedTeardownRow'
-import { DedicatedTeardownResultView } from '../src/renderer/components/DedicatedTeardownView'
-import type { DedicatedTeardownResult } from '../src/renderer/dedicatedTeardownFlow'
+import TeardownRow from '../src/renderer/components/teardown/TeardownRow'
+import TeardownResultView from '../src/renderer/components/teardown/TeardownResultView'
+import { dedicatedTeardownSpec, DEDICATED_LIST_KEY_MISSING_MESSAGE } from '../src/renderer/teardown/targets/dedicated'
+import { sharedTeardownSpec } from '../src/renderer/teardown/targets/shared'
+import { hanamiiTeardownSpec } from '../src/renderer/teardown/targets/hanamii'
+import { toTeardownView } from '../src/shared/teardownResult'
+import { PUBLISH_TARGET_CONSOLE } from '../src/renderer/publishStatus'
+import { CONTROL_PANEL_URL } from '../src/renderer/components/ServicePrincipalSection'
+import type { TeardownFlowOutcome } from '../src/renderer/teardown/useTeardownFlow'
 
 /** 「プロジェクトを開く」系のボタンが呼んだ順（onOpenProject → onClose）。 */
 const spy = { opened: [] as string[], order: [] as string[] }
@@ -111,20 +123,22 @@ function rerender(): void {
   hooks.index = 0; hooks.effects = []; hooks.rendered = []
   PublishedListModal(props)
 }
-const rows = () => hooks.rendered.filter(el => el.type === DedicatedTeardownRow)
+/** 専有型の行（TeardownRow のうち、専有型の仕様書を渡されているもの）。 */
+const rows = () => hooks.rendered.filter(el => el.type === TeardownRow && el.props.spec === dedicatedTeardownSpec)
 const rowOf = (name: string) => rows().find(el => el.props.entry.projectName === name)!
 const textOf = (p: any): string => {
   const c = p?.children
   return (Array.isArray(c) ? c : [c]).filter(x => typeof x === 'string' || typeof x === 'number').join('')
 }
-const FAILED: DedicatedTeardownResult = {
+const FAILED = toTeardownView('sakura-apprun-dedicated', {
   ok: false, executed: [], message: 'ロードバランサの削除に失敗しました',
   remaining: { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' },
-}
-/** アプリ以下は消えたが、保存場所だけが残った（アプリが消えた時点で main が公開の記録＝一覧の行を外すので、行はもう無い）。 */
-const STORAGE_ONLY: DedicatedTeardownResult = {
+})
+/** アプリ以下は消えたが、保存場所だけが残った（V9: 行は残る。main は保存場所まで片づくまで公開の記録を消さない）。 */
+const STORAGE_ONLY = toTeardownView('sakura-apprun-dedicated', {
   ok: false, executed: [], message: '保存場所を削除できませんでした', remaining: { storageBucket: 'koto-data-x' }, appDeleted: true,
-}
+})
+const outcomeOf = (view = FAILED): TeardownFlowOutcome => ({ view, notes: [] })
 
 beforeEach(() => {
   store.set('sakura_workspace', '/tmp/ws')
@@ -134,26 +148,42 @@ beforeEach(() => {
 })
 afterEach(() => { for (const c of mounted) { try { c() } catch { /* 片づけの失敗は無視 */ } } mounted = [] })
 
-describe('📡 一覧 → 専有型の行（DedicatedTeardownRow）の配線', () => {
-  it('★ 専有型の記録が2件あれば、行の部品が2つ描かれる。どちらも最初は押せる（blocked:false）', async () => {
+describe('📡 一覧 → 専有型の行（TeardownRow＋dedicatedTeardownSpec）の配線', () => {
+  it('★ 専有型の記録が2件あれば、行の部品が2つ描かれる。どちらも最初は押せる（blocked:false）。専有型の仕様書と、📡 用のキー未登録の案内を渡す', async () => {
     await openList()
     expect(rows()).toHaveLength(2)
     expect(rows().map(r => r.props.blocked)).toEqual([false, false])
+    expect(rows().map(r => r.props.keyMissingMessage)).toEqual([DEDICATED_LIST_KEY_MISSING_MESSAGE, DEDICATED_LIST_KEY_MISSING_MESSAGE])
+    // 専有型の行に、HANAMII・共用型の仕様書を渡していない（取り違えない）
+    expect(hooks.rendered.filter(el => el.type === TeardownRow && (el.props.spec === hanamiiTeardownSpec || el.props.spec === sharedTeardownSpec))).toHaveLength(0)
   })
 
-  it('★★★ 行の onOutcome を呼ぶと、一覧の上に結果欄（data-dedicated-outcome）が出て、手順6と同じ結果の部品に結果が渡る', async () => {
+  // V1: 専有型の行のボタンは「🗑 削除」（HANAMII・共用型は「🗑 破棄」のまま）。押し直しの呼び方も合わせる。
+  it('★★ V1: 専有型の行のボタンは「🗑 削除」で、HANAMII・共用型の言葉は「🗑 破棄」のまま', () => {
+    expect(dedicatedTeardownSpec.words.rowButton).toBe('🗑 削除')
+    expect(hanamiiTeardownSpec.words.rowButton).toBe('🗑 破棄')
+    expect(sharedTeardownSpec.words.rowButton).toBe('🗑 破棄')
+  })
+
+  it('★★★ 行の onOutcome を呼ぶと、一覧の上に結果欄（data-dedicated-outcome）が出て、HANAMII・共用型と同じ結果の部品（TeardownResultView）に結果が渡る', async () => {
     await openList()
     expect(hooks.rendered.some(el => el.props?.['data-dedicated-outcome'])).toBe(false)
     const alpha = rowOf('alpha')
-    alpha.props.onOutcome(alpha.props.entry, { result: FAILED, notes: [] })
+    alpha.props.onOutcome(alpha.props.entry, outcomeOf())
     rerender()
     const box = hooks.rendered.find(el => el.props?.['data-dedicated-outcome'])
     expect(box, '結果欄が出ない（残っている資源・課金の警告が利用者に届かない）').toBeTruthy()
-    const view = hooks.rendered.find(el => el.type === DedicatedTeardownResultView)
+    const view = hooks.rendered.find(el => el.type === TeardownResultView)
     expect(view, '結果の部品が描かれない').toBeTruthy()
-    expect(view!.props.result).toBe(FAILED)
+    expect(view!.props.view).toBe(FAILED)
     expect(view!.props.notes).toEqual([])
-    expect(view!.props.retryHint).toBe('この一覧の 🗑 破棄')
+    expect(view!.props.words).toBe(dedicatedTeardownSpec.words)
+    // V1: 押し直す場所の呼び方は「この一覧の 🗑 削除」。専有型の行のボタンの名前と同じ
+    expect(view!.props.retryHint).toBe('この一覧の 🗑 削除')
+    expect(view!.props.retryHint).toContain(dedicatedTeardownSpec.words.rowButton)
+    // 管理画面の行き先: 公開先もコントロールパネルも、さくらのクラウドのコントロールパネル（専有型は同じ入口）
+    expect(view!.props.serviceConsoleUrl).toBe(PUBLISH_TARGET_CONSOLE['sakura-apprun-dedicated'])
+    expect(view!.props.storageConsoleUrl).toBe(CONTROL_PANEL_URL)
     // どのプロジェクトの結果かを見出しに出す（行が消えても残る）
     const heading = hooks.rendered.find(el => el.type === 'p' && textOf(el.props).includes('alpha'))
     expect(heading).toBeTruthy()
@@ -164,16 +194,23 @@ describe('📡 一覧 → 専有型の行（DedicatedTeardownRow）の配線', (
   it('★★★ 保存場所だけが残った結果欄に「このプロジェクトを開く」があり、行の「プロジェクトを開く」と同じ処理（onOpenProject(dir) → onClose）を呼ぶ。案内の文が指す名前と一致する', async () => {
     await openList()
     const alpha = rowOf('alpha')
-    alpha.props.onOutcome(alpha.props.entry, { result: STORAGE_ONLY, notes: [] })
+    alpha.props.onOutcome(alpha.props.entry, outcomeOf(STORAGE_ONLY))
     rerender()
-    const view = hooks.rendered.find(el => el.type === DedicatedTeardownResultView)
+    const view = hooks.rendered.find(el => el.type === TeardownResultView)
     expect(view, '結果の部品が描かれない').toBeTruthy()
     const action = view!.props.storageRetryAction
-    expect(action, '案内が指す「このプロジェクトを開く」ボタンが渡されていない').toBeTruthy()
+    expect(action, '案内の下に出す「このプロジェクトを開く」ボタンが渡されていない').toBeTruthy()
     expect(action.label).toBe('このプロジェクトを開く')
-    // 案内の文は、画面に実在するボタンの名前で言う（もう無いボタンを指さない）
-    expect(view!.props.storageRetryHint).toContain(`「${action.label}」`)
-    expect(view!.props.storageRetryHint).not.toContain('「プロジェクトを開く」から')
+    // V9: 保存場所だけが残った回は行が残る（main は保存場所まで片づくまで公開の記録を消さない）。案内は、この行のボタンでもう一度押すと言う。
+    // 案内の文は、画面に実在するボタンの名前で言う（もう無いボタンを指さない）: 行のボタン（words.rowButton）と、専有型タブの手順6「すべて削除する」
+    const hint: string = view!.props.storageRetryHint
+    expect(hint).toBe('保存場所だけが残りました。この行の「🗑 削除」をもう一度押すと、残った保存場所だけを削除します。専有型タブの手順6「すべて削除する」からも削除できます。')
+    expect(hint).toContain(`この行の「${dedicatedTeardownSpec.words.rowButton}」をもう一度押す`)
+    expect(hint).not.toContain('破棄')
+    expect(hint, '行が一覧から消えると言う旧い文へ戻っている').not.toContain('一覧から消えます')
+    const panelFiles = ['src/renderer/components/AppRunDedicatedPanel.tsx', 'src/renderer/components/DedicatedTeardownSection.tsx']
+    const panelSrc = panelFiles.filter(f => existsSync(join(__dirname, '..', f))).map(f => readFileSync(join(__dirname, '..', f), 'utf-8')).join('\n')
+    expect(panelSrc, '案内が指す手順6のボタン「すべて削除する」が画面に無い').toContain('すべて削除する')
 
     spy.opened = []; spy.order = []
     action.onClick()
@@ -194,9 +231,9 @@ describe('📡 一覧 → 専有型の行（DedicatedTeardownRow）の配線', (
   it('★★ 結果欄のボタンが開くのは、その結果のプロジェクト（beta の結果なら beta）', async () => {
     await openList()
     const beta = rowOf('beta')
-    beta.props.onOutcome(beta.props.entry, { result: STORAGE_ONLY, notes: [] })
+    beta.props.onOutcome(beta.props.entry, outcomeOf(STORAGE_ONLY))
     rerender()
-    const view = hooks.rendered.find(el => el.type === DedicatedTeardownResultView)
+    const view = hooks.rendered.find(el => el.type === TeardownResultView)
     spy.opened = []
     view!.props.storageRetryAction.onClick()
     expect(spy.opened).toEqual(['/tmp/ws/beta'])
@@ -205,7 +242,7 @@ describe('📡 一覧 → 専有型の行（DedicatedTeardownRow）の配線', (
   it('★★★ 行の onBusyChange(true) で、ほかの行の 🗑 が止まる（blocked）。実行中の行自身は止めない。false で戻る。前の結果欄は片づく', async () => {
     await openList()
     const alpha = rowOf('alpha')
-    alpha.props.onOutcome(alpha.props.entry, { result: FAILED, notes: [] }) // 前の結果
+    alpha.props.onOutcome(alpha.props.entry, outcomeOf()) // 前の結果
     rerender()
     expect(hooks.rendered.some(el => el.props?.['data-dedicated-outcome'])).toBe(true)
 
@@ -260,5 +297,42 @@ describe('📡 一覧 → 専有型の行（DedicatedTeardownRow）の配線', (
     expect(rows()).toHaveLength(1)
     expect(beta1.key, '行の位置が変わって key が変わった（部品が作り直される）').toBe(beta0.key)
     expect(String(beta1.key)).toBe('/tmp/ws/beta-sakura-apprun-dedicated')
+  })
+})
+
+// 3B の検分: 「一覧から削除」のツールチップは、全部の行で「先に「破棄」してください」と直書きだった。専有型の行のボタンは「🗑 削除」で食い違い、
+// レンタルサーバ・Vercel の行には破棄のボタン自体が無い（V1 の言い換えは「🗑 破棄」の完全一致で数えたため、この言い回しは拾えていなかった）。
+describe('「一覧から削除」のツールチップは、その行の公開先のボタン名で、先に消す操作を言う', () => {
+  const HEAD = '記録だけを消します。公開したもの自体は消えません'
+  const forgetTitle = (): string => {
+    const b = hooks.rendered.find(el => el.type === 'button' && textOf(el.props).trim() === '一覧から削除')
+    expect(b, '「一覧から削除」が描かれていない').toBeTruthy()
+    return b!.props.title
+  }
+  const only = (target: string) => {
+    records = { ok: true, projects: [{ dir: '/tmp/ws/p', name: 'p', publish: { targets: { [target]: { publishedAt: '2026-09-28T00:00:00.000Z', url: 'https://p.example.com/' } } } }] }
+  }
+
+  it.each([
+    ['sakura-apprun-dedicated', dedicatedTeardownSpec, '「🗑 削除」'],
+    ['sakura-apprun', sharedTeardownSpec, '「🗑 破棄」'],
+    ['hanamii', hanamiiTeardownSpec, '「🗑 破棄」'],
+  ] as const)('★★★ %s の行（🗑 がある）: 先に%sを押す、と言う。行のボタンの名前（words.rowButton）と同じ', async (target, spec, quoted) => {
+    only(target)
+    await openList()
+    const row = hooks.rendered.find(el => el.type === TeardownRow && el.props.spec === spec)
+    expect(row, `${target} の行が描かれていない`).toBeTruthy()
+    hooks.rendered = []
+    row!.props.render({ button: 'BTN', below: null, busy: false })
+    expect(forgetTitle()).toBe(`${HEAD}（先に${quoted}を押してください）`)
+    expect(forgetTitle()).toContain(`「${spec.words.rowButton}」`)
+  })
+
+  it.each(['vercel', 'sakura-rental'])('★★★ %s の行（🗑 が無い）: 存在しない「破棄」を指さず、上の案内に従うと言う', async (target) => {
+    only(target)
+    await openList()
+    expect(hooks.rendered.filter(el => el.type === TeardownRow), '前提: この公開先に 🗑 は無い').toHaveLength(0)
+    expect(forgetTitle()).toBe(`${HEAD}（先に上の案内のとおり、サービス側で消してください）`)
+    expect(forgetTitle()).not.toContain('破棄')
   })
 })

@@ -20,7 +20,10 @@ import { watchProjectOps, sendAck, unseenOf, visiblePanelShows, holdsWarning, ty
 import StageEstimate from './StageEstimate'
 import StageTimingDetails from './StageTimingDetails'
 import { readStageTimings } from '../../shared/stageTiming'
-import { warningLine } from '../../shared/opsText'
+import { warningLine, warningsNotRepeatedIn } from '../../shared/opsText'
+import { stoppedNoticeHeadline } from '../../shared/inFlightOps'
+import { resultCallOf } from '../../shared/teardownResult'
+import { opWordFor } from '../../shared/opWord'
 
 // 「🚀 公開」モーダル：
 // - .sakuraide.json の公開先・設定を読み、フォーム入力（次回から再入力不要）
@@ -96,6 +99,14 @@ function opTargetName(rec: ProjectOpRecordShape): string {
 }
 
 /**
+ * 結果・進み具合の見出しが言う「〇〇の操作」（例: さくらのAppRunの破棄）。操作の言葉は shared の opWordFor の1つ
+ * （記録の op は共用型の破棄も専有型の削除も '削除'。そのまま文にすると、破棄の流れの「破棄」と割れる。2026-10-20）。
+ */
+export function opHeadlineSubject(rec: ProjectOpRecordShape): string {
+  return `${opTargetName(rec)}の${opWordFor(rec.op, rec.target)}`
+}
+
+/**
  * 終わった記録を、画面が持っている分へ足す（純関数）。**startedAt が記録の識別子**（同じプロジェクトで必ず増える）。
  * すでに持っているものは足さない。古い順に並べる。
  */
@@ -165,7 +176,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   // 記録だけを取り込むと、ディスクの pending と、前に聞いた「走っていない」が食い違い、走っている公開自身の印を
   // 「中断の可能性」と誤る。この画面では setMeta をここでしか呼ばない（tests/publishPendingView.test.ts が固定）。
   const applySnapshot = useCallback((snap: PublishSnapshot) => {
-    setRunningOp(snap.runningOp)
+    setRunningOp(snap.runningOp?.op ?? null)
     setMeta(snap.meta as Meta)
   }, [])
 
@@ -278,7 +289,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
       void opsWatch.current?.refresh()
       if (runningOp === null) return
       const snap = await loadPublishSnapshot(projectDir)
-      if (snap.runningOp !== runningOp) applySnapshot(snap)
+      if ((snap.runningOp?.op ?? null) !== runningOp) applySnapshot(snap)
     }, OPS_POLL_MS)
     return () => window.clearInterval(id)
   }, [runningOp, projectDir, applySnapshot])
@@ -488,7 +499,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <div className="rounded-xl border border-line bg-surface p-4">
               <p className="text-sm text-ink font-semibold mb-1">⏳ 公開はターミナルで進行します</p>
               <p className="text-xs text-ink-secondary">
-                下のターミナルパネルで進行を確認してください。完了したら、下のボタンでサイトを確認してください。
+                下のターミナルパネルで進行を確認してください。
                 {target === 'sakura-rental' && ' 初回はSSHパスワード（またはパスフレーズ）の入力を求められます。'}
               </p>
             </div>
@@ -564,7 +575,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             >
               <p className="text-sm font-semibold text-ink">📦 さくらのAppRun</p>
               <p className="text-xs text-ink-muted mt-0.5">
-                アプリを動かせる公開先です。むずかしい準備は要りません（Koto がまとめて行います）。
+                アプリを動かせる公開先です。準備は Koto がまとめて行います。
                 使った分だけ課金の「共用型」と、独自ドメインが使える「専有型（上級者向け・常時課金）」を選べます。
                 {/* 金額はプランを取得しないと分からないため、ここではハードコードしない
                     （専有型パネルの冒頭に実額が出ます・判断4・2026-09-11）。 */}
@@ -580,7 +591,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
               >
                 <p className="text-sm font-semibold text-ink">🌸 HANAMII（国産のクラウドサービス）</p>
-                <p className="text-xs text-ink-muted mt-0.5">国産のクラウドサービス。サーバーで動き続けるアプリ（Node.js など）も公開できます。データは100%国内です。</p>
+                <p className="text-xs text-ink-muted mt-0.5">サーバーで動き続けるアプリ（Node.js など）も公開できます。データは100%国内です。</p>
               </button>
               <button
                 onClick={() => setTarget('vercel')}
@@ -588,14 +599,14 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               >
                 <p className="text-sm font-semibold text-ink">▲ Vercel（海外のクラウドサービス）</p>
                 {/* 2026-09-24 検分の指摘2と同じ一文。国外なのはアプリが動く場所だけ（データは国内）。 */}
-                <p className="text-xs text-ink-muted mt-0.5">海外のクラウドサービスです。ページを見せるだけのサイト向けで、サーバーで動き続けるアプリは扱えません。アプリが動くのは国外です。データの保存を使う場合、そのデータはさくらのオブジェクトストレージ（日本国内）に置かれます。</p>
+                <p className="text-xs text-ink-muted mt-0.5">ページを見せるだけのサイト向けで、サーバーで動き続けるアプリは扱えません。アプリが動くのは国外です。データの保存を使う場合、そのデータはさくらのオブジェクトストレージ（日本国内）に置かれます。</p>
               </button>
               <button
                 onClick={() => setTarget('sakura-vps')}
                 className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
               >
                 <p className="text-sm font-semibold text-ink">🖥 さくらのVPS <span className="text-[11px] font-normal text-brand-yellow">（開発中・現在は接続確認のみ）</span></p>
-                <p className="text-xs text-ink-muted mt-0.5">自由度の高い仮想サーバ。手順2 初期セットアップ・手順3 公開はまだ実装中で、このバージョンでは手順1 接続（鍵認証で安全に接続できるようにする）までです。</p>
+                <p className="text-xs text-ink-muted mt-0.5">自由度の高い仮想サーバ。このバージョンでは手順1 接続（鍵認証で安全に接続できるようにする）までです。</p>
               </button>
             </div>
           </div>
@@ -607,7 +618,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
               <p className="text-sm font-semibold text-ink">🌐 さくらのレンタルサーバで公開</p>
               <p className="text-xs text-ink-muted leading-relaxed">
-                HTML や PHP のサイト向け（データベース（MySQL）も使えます）。契約済みのサーバへファイルを送ります。
+                HTML や PHP のサイト向け（MySQL のデータベースも使えます）。契約済みのサーバへファイルを送ります。
               </p>
               {rentalServiceUrl && (
                 <p className="text-[11px] text-ink-muted">
@@ -732,13 +743,13 @@ function OpProgressLines({ rec }: { rec: ProjectOpRecordShape }) {
 }
 
 // いま走っている操作の枠。
-function OpRunningCard({ rec }: { rec: ProjectOpRecordShape }) {
+export function OpRunningCard({ rec }: { rec: ProjectOpRecordShape }) {
   return (
     <div className="rounded-xl border border-line bg-surface p-4 mb-4 space-y-2" role="status">
-      <p className="text-sm text-ink leading-relaxed">{`⏳ ${opTargetName(rec)}の${rec.op}が進んでいます`}</p>
+      <p className="text-sm text-ink leading-relaxed">{`⏳ ${opHeadlineSubject(rec)}が進んでいます`}</p>
       <OpProgressLines rec={rec} />
       <StageEstimate stage={rec.progress?.stage} />
-      <p className="text-[11px] text-ink-muted leading-relaxed">この画面を閉じても処理は進みますが、Koto を終了すると途中で止まります。</p>
+      <p className="text-[11px] text-ink-muted leading-relaxed">Koto を終了すると途中で止まります。</p>
     </div>
   )
 }
@@ -756,21 +767,30 @@ function CopyTextButton({ text }: { text: string }) {
 }
 
 // 終わった操作の結果と警告。うまくいかなかった・警告があるときは黄色の枠にして、見逃させない。
-function OpFinishedCard({ rec }: { rec: ProjectOpRecordShape }) {
+// 見出しは、記録の結果の呼び名（済んだ／警告つきで済んだ／途中／失敗）で言い分ける。呼び名の定義は shared の resultCallOf の1つ
+// （`r.ok` だけで「失敗しました」と決めない。HANAMII が削除を受け付けただけの回は、失敗ではなく途中。10.18.15 の d1）。
+// 「Koto の終了で止まりました」の知らせ（起動の読み戻しが置く。失敗でも「終わった」でもない）は、見出しをその言い方にし、
+// 「に終わりました」の行は出さない。
+// 警告のうち、本文（message）がすでに言っている文は出さない（同じ文を2回言わない。判定は shared の warningsNotRepeatedIn の1つ。d2）。
+export function OpFinishedCard({ rec }: { rec: ProjectOpRecordShape }) {
   const r = rec.result
-  const what = `${opTargetName(rec)}の${rec.op}`
-  const warnings = r?.warnings ?? []
+  const what = opHeadlineSubject(rec)
+  const warnings = warningsNotRepeatedIn(r?.message, r?.warnings ?? [])
   const lines = r?.lines ?? []
-  const ok = r?.ok === true
-  const title = !r
+  const call = r ? resultCallOf(rec.target, r) : null
+  const title = call === null
     ? `⚠️ ${what}は終わりましたが、結果を読み取れませんでした`
-    : !r.ok
-      ? `⚠️ ${what}に失敗しました`
-      : warnings.length > 0
-        ? `⚠️ ${what}は終わりましたが、確認が必要なことがあります`
-        : `✅ ${what}が終わりました`
-  const when = rec.finishedAt ? formatPublishedAt(new Date(rec.finishedAt).toISOString()) : null
-  const needsAttention = !ok || warnings.length > 0
+    : call === 'stoppedByQuit'
+      ? `⏳ ${stoppedNoticeHeadline(what)}`
+      : call === 'inProgress'
+        ? `⏳ ${what}は途中です`
+        : call === 'failed'
+          ? `⚠️ ${what}に失敗しました`
+          : call === 'doneWithWarnings'
+            ? `⚠️ ${what}は終わりましたが、確認が必要なことがあります`
+            : `✅ ${what}が終わりました`
+  const when = call !== 'stoppedByQuit' && rec.finishedAt ? formatPublishedAt(new Date(rec.finishedAt).toISOString()) : null
+  const needsAttention = call !== 'done'
   return (
     <div className={`rounded-xl border ${needsAttention ? 'border-brand-yellow/70' : 'border-line'} bg-surface p-4 space-y-2`}>
       <p className="text-sm font-semibold text-ink leading-relaxed">{title}</p>

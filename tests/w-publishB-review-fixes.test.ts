@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { judgeVercelFit } from '../src/shared/vercelFit'
-import { teardownScopeNote } from '../src/shared/teardownSupport'
 import { LEFTOVER_DATA_ASK_AI_NOTE } from '../src/shared/leftoverData'
 
 // publishB（HANAMII・Vercel・GitHub と公開の画面）担当・検分で見つかった問題の確かめ（2026-09-28）。
@@ -48,12 +47,8 @@ describe('W-30: Vercel 公開前チェックの「データは残らない」注
   })
 })
 
-describe('W-16: AppRun（共用型）の破棄で消えるものの説明（決定どおりに直っているか固定）', () => {
-  it('1行目はアプリの削除だけを言い切り、コンテナレジストリの話はしない（下の欄に任せる）', () => {
-    expect(teardownScopeNote('sakura-apprun')).toBe('AppRun のアプリを削除します。')
-    expect(teardownScopeNote('sakura-apprun')).not.toContain('コンテナレジストリ')
-  })
-})
+// W-16（確認の1行目でレジストリを消すと言い切らない）: 1行目の一言を作っていた関数は、0.6.22 の段階3A-1 で無くなった。
+// 意図は tests/sharedTeardownSpec.test.ts の「アプリがあるときのレジストリは、一覧に入れない」が持つ。
 
 describe('W-29: 公開先を選ぶ画面の Vercel 説明（データは条件つきで日本国内、決定どおりに直っているか固定）', () => {
   it('PublishModal.tsx が条件つきの文（データの保存を使う場合…）になっている', () => {

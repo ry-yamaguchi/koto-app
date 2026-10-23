@@ -661,7 +661,7 @@ describe('★★ 削除（手順6）: 反映のずれの待ち（J）・5xx の�
 describe('段の定義表と、flow が渡す名前', () => {
   it('flow（apprunDedicated*Apply.ts）が渡す段の名前は、すべて STAGE の定義から引いている（文字列の直書きが無い）', () => {
     const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-    for (const f of ['src/main/cloud/apprunDedicatedApply.ts', 'src/main/cloud/apprunDedicatedAppApply.ts', 'src/main/ipc/apprunDedicated.ts']) {
+    for (const f of ['src/main/cloud/apprunDedicatedApply.ts', 'src/main/cloud/apprunDedicatedAppApply.ts', 'src/main/ipc/apprunDedicated.ts', 'src/main/ipc/apprunDedicatedTeardown.ts']) {
       const code = strip(fs.readFileSync(path.join(__dirname, '..', f), 'utf-8'))
       expect(code, `${f} に段の内部名の直書きがある`).not.toMatch(/['"`](create|publish|teardown)\.[a-z-]+['"`]/)
     }

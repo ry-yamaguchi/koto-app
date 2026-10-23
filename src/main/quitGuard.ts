@@ -17,10 +17,11 @@
 
 import * as path from 'path'
 import type { RunningOpInfo } from './projectOps'
+import { opWordFor } from '../shared/opWord'
 
 /** ダイアログの見出し。 */
 export const QUIT_GUARD_MESSAGE = '処理を実行中です'
-/** 0 番目のボタン（既定・キャンセル）。 */
+/** 0 番目のボタン（既定＝Return が付き、macOS では青く描かれる）。 */
 export const QUIT_GUARD_CANCEL_LABEL = '終了しない'
 /** 1 番目のボタン。押すと処理は途中で止まる。 */
 export const QUIT_GUARD_QUIT_LABEL = '終了する（処理は途中で止まります）'
@@ -39,17 +40,32 @@ function projectNameOf(projectDir: string): string {
 /**
  * いま終了してよいか（純関数）。走っている操作が無ければ止めない。あれば、ダイアログの文とボタンを返す。
  * 文は短く: 何が進行中か（プロジェクト名と公開/削除/作成）と、終了すると途中で止まることだけ。
+ *
+ * ── defaultId と cancelId（2026-10-12・0.6.21-rc.2 の実際の画面で「終了しない」が青くならなかった）──────────
+ * defaultId=0（終了しない）と cancelId=0 を同じにすると、macOS では**どのボタンも青くならない**。
+ *   Electron 33.4.11 の原本 shell/browser/ui/message_box_mac.mm 68〜85 行: defaultId のボタンに Return（`\r`）を付けたあと、
+ *   cancelId のボタンに Escape（`\e`）を付ける。同じボタンだと Return が Escape に**上書き**され（setKeyEquivalent は
+ *   1つしか持てない）、Return のボタンが無くなる＝青くならず、Return を押しても何も起きない。
+ * かといって cancelId を省くと、lib/browser/api/dialog.ts 195〜203 行が defaultId=0 のとき cancelId=1 を当てる
+ *   ＝**「終了する」に Escape が付く**（Esc で処理が止まったまま終了する）。省かない。
+ * そこで cancelId を**ボタンの数以上の値**にする。message_box_mac.mm は範囲外の cancelId にはキーを付けない
+ *   （`cancel_id < button_count` のときだけ）。dialog.ts は cancelId が null でなければそのまま渡す。
+ *   結果: 「終了しない」に Return が付いて青くなり、Esc はどのボタンにも付かない（何も起きない）。
+ *   「終了する」に Return も Esc も付かないので、キーだけでは終了できない。押されたのが 1（終了する）以外なら、
+ *   0（終了しない）・範囲外の 2・ダイアログの失敗のどれでも終了しない（`QUIT_GUARD_QUIT_INDEX` と等しいときだけ終了する）。
+ * ※ 実機で未確認。青く描かれるかは、署名した版の実機でしか確かめられない。
  */
-export function quitGuardDecision(running: readonly Pick<RunningOpInfo, 'projectDir' | 'op'>[]): QuitGuardDecision {
+export function quitGuardDecision(running: readonly (Pick<RunningOpInfo, 'projectDir' | 'op'> & Partial<Pick<RunningOpInfo, 'target'>>)[]): QuitGuardDecision {
   if (running.length === 0) return { block: false }
-  const items = running.map(r => `「${projectNameOf(r.projectDir)}」の${r.op}`).join('、')
+  const items = running.map(r => `「${projectNameOf(r.projectDir)}」の${opWordFor(r.op, r.target)}`).join('、')
+  const buttons = [QUIT_GUARD_CANCEL_LABEL, QUIT_GUARD_QUIT_LABEL]
   return {
     block: true,
     message: QUIT_GUARD_MESSAGE,
     detail: `${items}が進行中です。いま Koto を終了すると、処理は途中で止まります。`,
-    buttons: [QUIT_GUARD_CANCEL_LABEL, QUIT_GUARD_QUIT_LABEL],
+    buttons,
     defaultId: 0,
-    cancelId: 0,
+    cancelId: buttons.length,
   }
 }
 
@@ -66,8 +82,8 @@ export type QuitDialogOptions = {
 }
 
 /**
- * 決定（`quitGuardDecision`）からダイアログの設定を作る。**既定（Enter）とキャンセル（Esc）は決定の値をそのまま渡す**
- * ——ここが外れると、Enter や Esc で処理が止まったまま終了してしまう。
+ * 決定（`quitGuardDecision`）からダイアログの設定を作る。**既定（Return）と cancelId は決定の値をそのまま渡す**
+ * （cancelId を省くと Electron が「終了する」に Esc を付ける。上の説明）——ここが外れると、キーを押しただけで処理が止まったまま終了してしまう。
  */
 export function quitGuardDialogOptions(d: BlockedDecision): QuitDialogOptions {
   return { type: 'warning', buttons: d.buttons, defaultId: d.defaultId, cancelId: d.cancelId, message: d.message, detail: d.detail }

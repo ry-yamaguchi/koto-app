@@ -74,7 +74,9 @@ describe('B: 手順5が押せないとき、足りないものが名前で出る
       'ワーカプランを選んでください',
       'ロードバランサプランを選んでください',
     ])
-    expect(r.headline).toContain('あと5つ')
+    // 2026-10-09 画面の文を短くする（T014）: 件数は見出しが言う。本文（headline）は同じことを2行で言わないよう空にした。
+    expect(r.heading).toContain('あと5つ')
+    expect(r.headline).toBe('')
   })
 
   it('★ 何も触っていない初期表示では、項目を並べない（いきなり赤字を出さない・検分の指摘5）', () => {
@@ -84,13 +86,15 @@ describe('B: 手順5が押せないとき、足りないものが名前で出る
     expect(r.tone).toBe('info') // 見出しも ⚠️ ではなく控えめに
     expect(r.heading).not.toContain('⚠️')
     // それでも「何をすれば押せるのか」は分かる（件数と次の一手）
-    expect(r.headline).toBe('あと5つ、入力が足りません（上の欄を埋めてください）。')
+    expect(r.heading).toBe('「クラスタを作成する」は、あと5つ入力すると押せます。')
+    expect(r.headline).toBe('') // 件数と次の一手は見出しが言う。本文で言い直さない（2026-10-09）
   })
 
   it('★ 触ったあと（送信後）は ⚠️ で項目まで並べる', () => {
     const r = createBlockedReason(computeDedicatedFormErrors(emptyInput), '', REVEAL)
     expect(r.tone).toBe('warn')
-    expect(r.heading).toBe('⚠️ 「クラスタを作成する」を押すには、あと少し入力が要ります。')
+    expect(r.heading).toBe('⚠️ 「クラスタを作成する」を押すには、あと5つ入力が要ります。')
+    expect(r.heading).not.toContain('あと少し') // 件数を言う形に替えた（2026-10-09）。戻さない
   })
 
   it('★ 判断は既にある computeDedicatedFormErrors を使う（欄が増えても取りこぼさない）', () => {
@@ -113,8 +117,10 @@ describe('B: 手順5が押せないとき、足りないものが名前で出る
 
   it('★ 入力が足りないときの説明は、肯定だけで書く（打ち消しを重ねない・検分の指摘15）', () => {
     const r = createBlockedReason(computeDedicatedFormErrors({ ...fullInput, zone: '' }), '', REVEAL)
-    expect(r.headline).toBe('あと1つ、入力が足りません。')
+    expect(r.heading).toBe('⚠️ 「クラスタを作成する」を押すには、あと1つ入力が要ります。')
+    expect(r.headline).toBe('') // 件数は見出しが言う（2026-10-09）
     // 起きていないことの否定（「ほかの操作の最中ではありません」）は添えない
+    expect(r.heading).not.toContain('ほかの操作')
     expect(r.headline).not.toContain('ほかの操作')
   })
 
@@ -131,13 +137,16 @@ describe('B: 手順5が押せないとき、足りないものが名前で出る
   it('★ 画面はボタンのすぐ下で、純関数の結果を描くだけ（掟10）', () => {
     expect(panel).toContain('const createBlocked = createBlockedReason(errors, panelBusyReason({ creating, tearingDown, publishing, lbRefreshing }), revealCreateItems)')
     expect(panel).toContain('const revealCreateItems = submitted || Object.keys(touched).length > 0')
-    // W-96（2026-09-27 決定）: 「ASG」「LB」は略さず「オートスケーリンググループ」「ロードバランサ」と書く
-    const at = panel.indexOf(">{creating ? 'クラスタ→オートスケーリンググループ→ロードバランサの順で作成しています…' : 'クラスタを作成する'}</button>")
+    // 2026-10-09 画面の文を短くする（T015）: 作成中の文字は「クラスタを作成しています…」だけ（順番の説明は出さない）。
+    expect(panel).not.toContain('の順で作成しています…')
+    const at = panel.indexOf(">{creating ? 'クラスタを作成しています…' : 'クラスタを作成する'}</button>")
     expect(at).toBeGreaterThan(0)
     const below = panel.slice(at, at + 1600)
     expect(below).toContain('{!creating && createBlocked.kind !== \'none\' && (')
     // 見出しも純関数が決める（画面で文言を組み立てない・掟10）
     expect(below).toContain('{createBlocked.heading}')
+    // 本文が空のとき（入力が足りないとき）は空の段落を出さない（T014）
+    expect(below).toContain('{createBlocked.headline && (')
     expect(below).toContain('{createBlocked.headline}')
     expect(below).toContain('{createBlocked.items.map((msg, i) => (<li key={i}>・{msg}</li>))}')
   })
@@ -157,8 +166,10 @@ describe('D: 公開中は、いま何をしているかと待ってほしいこ�
     const later = publishProgressView('新しいバージョンを有効化しています…')
     // 0.6.21（作者の決定 2026-10-01）: 「段目」は「ステップ」に揃えた。直す前の言い方は戻さない
     expect(first.stepText).not.toContain('段目')
-    expect(first.stepText).toBe(`ステップ 1／${PUBLISH_PROGRESS_STEPS.length}（進み方によってはスキップするステップもあります）`)
-    expect(later.stepText).toBe(`ステップ ${PUBLISH_PROGRESS_STEPS.indexOf('activate') + 1}／${PUBLISH_PROGRESS_STEPS.length}（進み方によってはスキップするステップもあります）`)
+    // 2026-10-09 画面の文を短くする（T021）: 括弧の言い方をやめ、文を分けた。
+    expect(first.stepText).toBe(`ステップ 1／${PUBLISH_PROGRESS_STEPS.length}。スキップするステップもあります`)
+    expect(first.stepText).not.toContain('進み方によっては')
+    expect(later.stepText).toBe(`ステップ ${PUBLISH_PROGRESS_STEPS.indexOf('activate') + 1}／${PUBLISH_PROGRESS_STEPS.length}。スキップするステップもあります`)
     // 段は進む向きにしか動かない（並びが逆転していないこと）
     expect(PUBLISH_PROGRESS_STEPS.indexOf('activate')).toBeGreaterThan(PUBLISH_PROGRESS_STEPS.indexOf('version-create'))
   })
@@ -166,7 +177,10 @@ describe('D: 公開中は、いま何をしているかと待ってほしいこ�
   it('★ 待ってほしいことが伝わる（所要時間は断定しない）', () => {
     const v = publishProgressView('バージョンを作成しています…')
     // 画面を閉じても公開は最後まで進み、開き直すと進み具合と結果が出る（処理の記録・2026-09-29）ので、「開いたまま待て」とは言わない
-    expect(v.waitNote).toBe('⏳ 数分かかることがあります。開いたまま待たなくても、公開は進みます。')
+    // 2026-10-09 画面の文を短くする（T020）: 「開いたまま待たなくても、公開は進みます」は外した。
+    // 閉じても進むことは、すぐ下の stopNote（PUBLISH_STOP_NOTE_MAIN_RECORD）が言っている。
+    expect(v.waitNote).toBe('⏳ 数分かかることがあります。')
+    expect(v.waitNote).not.toContain('開いたまま待たなくても')
     expect(v.waitNote).not.toContain('開いたままお待ちください')
     // 実測していないので「3分で終わります」のような断定はしない
     expect(v.waitNote).toContain('ことがあります')
@@ -219,7 +233,7 @@ describe('D: 公開中は、いま何をしているかと待ってほしいこ�
   it('★ イメージのビルド・プッシュの間も、ステップの名前と「何ステップ目か」が出る（検分の指摘16）', () => {
     const v = publishProgressView('📤 レジストリへプッシュしています…')
     expect(v.stageLabel).toBe(PUBLISH_STAGE_LABEL['image'])
-    expect(v.stepText).toBe(`ステップ ${PUBLISH_PROGRESS_STEPS.indexOf('image') + 1}／${PUBLISH_PROGRESS_STEPS.length}（進み方によってはスキップするステップもあります）`)
+    expect(v.stepText).toBe(`ステップ ${PUBLISH_PROGRESS_STEPS.indexOf('image') + 1}／${PUBLISH_PROGRESS_STEPS.length}。スキップするステップもあります`)
     const s = publishProgressView('🔑 保存場所のアクセスキーを用意しています…')
     expect(s.stageLabel).toBe(PUBLISH_STAGE_LABEL['storage'])
     // 実行される順（アクセスキー → イメージ → publishAppFlow）どおりに並んでいる

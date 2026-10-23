@@ -134,7 +134,7 @@ describe('★★★ PublishModal: 開いたときの写し（state の meta）�
     // 2026-09-29: 以前は「公開」のときだけだった。処理の記録（projectOps）を出す作者の決定 ①②で、公開に限らず
     // 作成・削除でも同じ道にした（走っているかの聞き直しは、この同じ 3 秒のポーリングと共用する）。
     expect(s).toContain('if (runningOp === null) return')
-    expect(s).toContain('if (snap.runningOp !== runningOp) applySnapshot(snap)')
+    expect(s).toContain('if ((snap.runningOp?.op ?? null) !== runningOp) applySnapshot(snap)')
     expect(s).toContain('window.setInterval(async () => {')
     expect(s).toContain('const OPS_POLL_MS = 3000')
     expect(s).toContain('}, OPS_POLL_MS)')
@@ -174,6 +174,8 @@ describe('IPC の3点セット（掟6）: publishMeta:merge / forgetTarget / dis
     expect(dts).toContain('merge(projectDir: string, patch: Record<string, unknown>)')
     expect(dts).toContain('forgetTarget(projectDir: string, target: string)')
     expect(dts).toContain('dismissInterrupted(projectDir: string)')
-    expect(dts).toContain("runningOp(projectDir: string): Promise<'作成' | '削除' | '公開' | null>")
+    // 戻りは操作名と公開先（画面が「破棄が進んでいます」と「削除が進んでいます」を言い分ける材料）。操作名だけの形に戻さない
+    expect(dts).toContain("runningOp(projectDir: string): Promise<{ op: '作成' | '削除' | '公開'; target: RunningOpTargetShape } | null>")
+    expect(dts).not.toContain("runningOp(projectDir: string): Promise<'作成' | '削除' | '公開' | null>")
   })
 })

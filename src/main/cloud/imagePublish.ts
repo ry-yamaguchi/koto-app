@@ -9,7 +9,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import type { EnvSpec, ServiceSource } from './spec'
 import type { EnvState } from './state'
-import { resolvePushRegistry } from './state'
+import { resolvePushRegistry, withAdoptedRegistry } from './state'
 import type { CloudCredentials } from './auth'
 import { hasRegistryCredentials, loadRegistryCredentials, registryServer } from './registry-auth'
 import { SakuraCloudClient, pickContainerRegistries } from './client'
@@ -82,10 +82,15 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
   }
   // 記録が無いプロジェクトは、いま使っているレジストリを自分のものとして記録する
   // （次回からは上の突き合わせが効く）。
+  // **借りた事実（registryAdopted: true）も一緒に書く**（2026-10-19）。接続情報は Koto 全体で1つなので、
+  // これは別のプロジェクトが作ったレジストリのことがある。名前だけ書くと、破棄の確認が
+  // 「Koto が作ったもの」と読んで、ほかのアプリのイメージ入りのレジストリを既定で消しにいく。
+  // 手元の state も同じ形にする（呼び出し側はこの state で保存し直すので、ここで落とすと印が消える）。
   if (push.adopt) {
     try {
-      saveCloudState(projectDir, { ...state, meta: { ...state.meta, registryName: push.use } })
-      state.meta = { ...state.meta, registryName: push.use }
+      const adopted = withAdoptedRegistry(state, push.use)
+      saveCloudState(projectDir, adopted)
+      state.meta = adopted.meta
     } catch { /* 記録できなくても公開は続行（次回また採用を試みる） */ }
   }
 
@@ -119,7 +124,7 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
     return { ok: false, message: e?.message ?? String(e) }
   }
   if (!source.image || !source.tag) {
-    return { ok: false, message: 'env.json の service.source に image と tag を設定してください（イメージのビルドに必要です）' }
+    return { ok: false, message: 'env.json の service.source に image と tag を設定してください' }
   }
 
   // 2. レジストリサーバ＋image＋tag から完全な参照を組み立てる（検証込み）。
@@ -191,7 +196,7 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
     if (!b.ok) {
       return {
         ok: false,
-        message: 'アプリのビルド（Docker）に失敗しました。よくある原因: Dockerfile の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
+        message: 'アプリのビルド（Docker）に失敗しました。よくある原因: Dockerfile の記述ミス、存在しないライブラリ名、対応していないベースイメージ。',
         detail: b.log,
       }
     }
@@ -255,7 +260,7 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
           ? 'コンテナレジストリへプッシュできませんでした。'
             + '削除された、または接続情報が古い可能性があります。'
             + '下の「レジストリを設定し直す」を押してから、もう一度お試しください。'
-          : 'アプリのビルドに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。チャットでAIにエラー内容を貼って相談することもできます。',
+          : 'アプリのビルドに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。',
         detail,
       }
     }

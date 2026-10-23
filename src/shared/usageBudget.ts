@@ -391,7 +391,7 @@ export function checkBeforeRequestOf(settings: BudgetSettings, months: UsageStor
     allowed: true,
     warning:
       `⚠️ このAPIキーの今月の利用額（推定 ¥${cost.toFixed(1)}）が上限 ¥${limit} を超えています。` +
-      `止める設定ではないため、このまま続けられます（止めたいときは 設定（⌘,）の「上限に達したら さくらのAI Engine を止める」をオンにしてください）。`,
+      `止める設定ではないため、このまま続けられます。止めたいときは、設定（⌘,）の「上限に達したら さくらのAI Engine を止める」をオンにしてください。`,
   }
 }
 

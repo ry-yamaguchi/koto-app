@@ -13,6 +13,7 @@ import { sendToWindow } from './windowSend'
 import { initUpdater } from './updater'
 import { scheduleBrowserCacheTrim } from './browserCacheLimit'
 import { listRunningOps } from './projectOps'
+import { armInFlightOps, inFlightHasWork } from './inFlightOpsArm'
 import { createQuitGuard, createQuitAsk } from './quitGuard'
 
 const APP_NAME = 'Koto'
@@ -135,15 +136,19 @@ function createWindow() {
       // 「中断してウィンドウを閉じる」と言う。以前の「中断して終了」は、アプリが終了するように読めた。
       // （「処理は続きます」〔activity.ts の PUBLISH_CLOSE_CONFIRM_LABEL〕が正しいのは macOS だけ: darwin 以外は window-all-closed で
       // app.quit() するので処理も止まる。配布は mac だけ〔electron-builder.config.js〕なので今は問題ない。）
+      // defaultId=1（キャンセル）に Return が付いて青くなるよう、cancelId はボタンの数（2）以上にする。cancelId を defaultId と同じ 1 にすると、
+      // macOS ではその Return が Escape に上書きされてどのボタンも青くならず、省くと Electron が defaultId≠0 のとき cancelId=0
+      // （＝閉じる側）を当てる。範囲外の cancelId には Escape が付かない。理由と原本の行は quitGuard.ts の quitGuardDecision のコメント。
+      // 実機で未確認（署名した版の実機でしか確かめられない）。
       const { response } = await dialog.showMessageBox(mainWindow!, {
         type: 'warning',
         buttons: [closeBlockingConfirm || '中断してウィンドウを閉じる', 'キャンセル'],
         defaultId: 1,
-        cancelId: 1,
+        cancelId: 2,
         message: '処理を実行中です',
         detail: closeBlockingDetail || `${closeBlockingLabel || '処理'}が進行中です。いま閉じると中断されます。よろしいですか？`,
       })
-      if (response === 1) return // キャンセル＝閉じない
+      if (response !== 0) return // 0（閉じる側）だけ進む。キャンセル（1）も想定外の値も閉じない
       // 中断を承諾 → busyを解除して閉じ直す（次の再入で未保存確認に進む or そのまま終了）
       closeBlockingBusy = false
       mainWindow!.close()
@@ -462,7 +467,12 @@ function warnAlreadyRunningAndQuit(): void {
 
 const gotLock = app.requestSingleInstanceLock()
 console.log(`[single-instance] lock=${gotLock}`)
-if (!gotLock || anotherKotoIsRunning()) {
+// 鍵を取れて、動いている別の Koto も無い、ときだけ「本体の Koto」。anotherKotoIsRunning() を呼ぶのは鍵を取れたときだけ・1回だけ。
+// 起動時の読み戻し（下の armInFlightOps）は、本体の Koto だけが行う: 鍵を持たない古い版が先に動いていて自分が終了に入る側でも
+// app.hasSingleInstanceLock() は true のままなので、それを条件にすると、動いているほうの処理の記録を書き換えてしまう（設計書 10.13.1 の11）。
+const otherKotoRunning = gotLock && anotherKotoIsRunning()
+const isPrimaryInstance = gotLock && !otherKotoRunning
+if (!isPrimaryInstance) {
   app.whenReady().then(warnAlreadyRunningAndQuit)
 } else {
   app.on('second-instance', () => {
@@ -475,6 +485,16 @@ if (!gotLock || anotherKotoIsRunning()) {
 
 app.whenReady().then(() => {
   if (!app.hasSingleInstanceLock()) return  // 上で終了処理に入っている
+  // 途中で止まった回の読み戻し（設計書 10.13.5）。窓を作る前に1回だけ。何があっても投げない（読み戻せなくても窓は出す）。
+  // registerAllHandlers の中には置かない（あとから起動して自分で終了する側でも走る）。
+  if (isPrimaryInstance) {
+    try {
+      armInFlightOps({
+        version: app.getVersion(), exists: fs.existsSync, hasWork: inFlightHasWork,
+        onWillQuit: fn => { app.on('will-quit', fn) },
+      })
+    } catch { /* 読み戻せなくても起動する */ }
+  }
   applyCSP(); buildMenu(); setDockIcon(); createWindow(); runClaudeBinarySmokeCheckIfRequested()
   // 自動更新。既定は「ダウンロードだけして、次回起動時に適用」（勝手に再起動しない）。
   // 配信元が未公開・オフラインでも、状態が error になるだけでアプリの動作には影響しない。

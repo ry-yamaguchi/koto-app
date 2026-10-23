@@ -33,7 +33,7 @@ export interface ServiceDef {
 
 export const SERVICES: ServiceDef[] = [
   {
-    id: 'aiEngine', title: 'さくらのAI Engine', hint: 'チャット・生成で使うAPIキー（「使用中」がチャットに使われます）',
+    id: 'aiEngine', title: 'さくらのAI Engine', hint: 'チャット・生成で使うAPIキー',
     active: true, budget: true, group: 'first',
     // placeholder は さくらのAI Engine コントロールパネル上の呼称「アカウントトークン」に合わせる
     // （ユーザー指摘 2026-07-13。HTTPヘッダ上は Bearer だが、利用者がコピーする値の名前で案内する）。
@@ -111,7 +111,7 @@ export const CREDENTIAL_GROUP_LABEL: Record<CredentialGroup, string> = {
 /** 見出し直下の1行案内（3つ目「開発中・自動管理」は既定で折りたたむため案内なし）。 */
 export const CREDENTIAL_GROUP_DESCRIPTION: Partial<Record<CredentialGroup, string>> = {
   first: 'これだけで作る・試すまでできます',
-  perTarget: '公開先・Claude・Web検索など、使うものだけ登録すれば十分です',
+  perTarget: '公開先・Claude・Web検索など',
 }
 
 export interface CredentialGroupSection { group: CredentialGroup; label: string; services: ServiceDef[] }
@@ -159,7 +159,7 @@ export async function runSaveWithUnreadableCheck(
 }
 
 export const UNREADABLE_SAVE_CONFIRM_MESSAGE =
-  '保存されているキーや設定を読み取れませんでした。このまま保存すると、元のキーや設定は失われます。よろしいですか？'
+  'このまま保存すると、読み取れなかった元のキーや設定は失われます。よろしいですか？'
 
 // ── W-59（2026-09-27決定）: 接続テストの失敗に付く英語の頭（Error invoking remote method '…': Error: ）は
 // cleanRemoteError（src/renderer/remoteError.ts・初回案内の接続テストと共通の1つ）で取り除く。
@@ -734,7 +734,6 @@ function AnthropicKeyGuide() {
           <li>表示された <span className="font-mono">sk-ant-…</span> をコピーして上の欄に貼り付ける（キーは一度しか表示されません）</li>
           <li>「🔌 接続テスト」でキーが有効か確認する</li>
         </ol>
-        <p>キーはMacのキーチェーンで暗号化保存されます。</p>
       </div>
     </details>
   )
@@ -1015,7 +1014,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   const requestClose = async () => {
     if (!dirty) { onClose(); return }
     await runDiscardCredentialEdits(
-      '保存していない変更があります。保存せずに閉じますか？',
+      '保存せずに閉じますか？',
       {
         confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
         discard: () => onClose(),
@@ -1051,7 +1050,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
         </div>
 
         {st.entries.length === 0 && (
-          <p className="text-[11px] text-ink-muted py-2">未登録（「＋ 追加」で登録）</p>
+          <p className="text-[11px] text-ink-muted py-2">未登録</p>
         )}
 
         <div className="space-y-3">
@@ -1086,7 +1085,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
                   onClear={async () => {
                     await runEraseVpsKey(
                       e.id,
-                      '鍵を消去します（再生成が必要になります）。よろしいですか？',
+                      '再生成が必要になります。よろしいですか？',
                       {
                         confirm: (body) => confirm({ title: '鍵を消去します', body, confirmLabel: '消去する', danger: true }),
                         erase: async (entryId) => { await clearVpsKeypair(entryId) },
@@ -1161,7 +1160,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
           </div>
         </div>
       ) : (
-        <p className="text-[11px] text-ink-muted">未登録（さくらのAppRun を公開すると自動で作成されます）</p>
+        <p className="text-[11px] text-ink-muted">未登録</p>
       )}
     </div>
   )
@@ -1172,7 +1171,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
       <div>
         <h3 className="text-sm font-semibold text-ink">Web検索</h3>
         <p className="text-[11px] text-ink-muted mt-0.5">
-          AIチャットの検索機能に使用。<b className="text-ink-secondary">どちらか一方の登録でOK</b>です（両方登録時は優先側を使用）。
+          AIチャットの検索機能に使用。<b className="text-ink-secondary">どちらか一方の登録でOK</b>です。
         </p>
       </div>
       <Field
@@ -1254,7 +1253,6 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
           <SakuraLogo size={24} />
           <div>
             <h2 className="text-lg font-bold text-ink">認証情報（APIキー）</h2>
-            <p className="text-xs text-ink-secondary">さくらの各サービスのキーを管理（複数登録可）</p>
           </div>
           <button onClick={requestClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>

@@ -3,9 +3,12 @@ import {
   REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB,
   registryCostNotice, ongoingCostNotice, registryDeleteLabel, registryDeleteHelp,
   registryUnknownNotice, urlChangesOnTeardownNotice,
-  teardownTargets, remainingCostWarning, teardownRemainingWarnings, BUCKET_MONTHLY_YEN,
+  remainingCostWarning, teardownRemainingWarnings, keptSharedRegistryNote, BUCKET_MONTHLY_YEN,
   costSummaryLines,
 } from '../src/shared/cloudCost'
+
+// このプロジェクトだけのレジストリ（Koto が作り、ほかのプロジェクトが使っていない）を残した回の事実。由来と借り手が返り値に無ければ、このプロジェクトだけのものとは言わない。
+const OWN = { keptRegistryOrigin: 'owned', keptRegistryUsers: [] } as const
 
 // 2026-08-06 ユーザー指摘: AppRunアプリを削除しても、コンテナレジストリが残ると月額課金が続く。
 // 公式情報で裏取り済み（AppRun共用型=時間額・削除で停止／コンテナレジストリ=月額220円固定）。
@@ -40,7 +43,7 @@ describe('破棄時のレジストリ削除の選択', () => {
   })
 
   it('削除するときは「課金が止まる」と「イメージも消える」を両方伝える', () => {
-    const h = registryDeleteHelp(true)
+    const h = registryDeleteHelp(true, true)
     expect(h).toContain('220')
     expect(h).toContain('止まります')
     expect(h).toContain('イメージも消えます')
@@ -48,29 +51,9 @@ describe('破棄時のレジストリ削除の選択', () => {
 
   // ここが要。残す選択をしたのに費用の話が出ないと、黙って課金され続ける
   it('残すときは「課金が続く」と必ず伝える', () => {
-    const h = registryDeleteHelp(false)
+    const h = registryDeleteHelp(false, true)
     expect(h).toContain('220')
     expect(h).toContain('続きます')
-  })
-})
-
-describe('破棄で消えるものの一覧', () => {
-  it('レジストリを消すときは一覧に載り、名前も出る', () => {
-    const t = teardownTargets({ hasBucket: true, deleteRegistry: true, registryName: 'myapp' })
-    expect(t.join('')).toContain('AppRun アプリ')
-    expect(t.join('')).toContain('myapp')
-    expect(t.join('')).toContain('保存場所にある、このプロジェクトのデータ')
-  })
-
-  it('レジストリを残すときは一覧から消える（消えないものを消えると書かない）', () => {
-    const t = teardownTargets({ hasBucket: true, deleteRegistry: false, registryName: 'myapp' })
-    expect(t.join('')).not.toContain('コンテナレジストリ')
-    expect(t.join('')).toContain('AppRun アプリ')
-  })
-
-  it('バケットが無ければ載せない', () => {
-    const t = teardownTargets({ hasBucket: false, deleteRegistry: true, registryName: 'x' })
-    expect(t.join('')).not.toContain('保存場所にある、このプロジェクトのデータ')
   })
 })
 
@@ -83,12 +66,14 @@ describe('画面文言に Markdown 記法を混ぜない', () => {
     registryCostNotice(null),
     registryDeleteLabel('myapp'),
     registryDeleteLabel(null),
-    registryDeleteHelp(true),
-    registryDeleteHelp(false),
+    registryDeleteHelp(true, true),
+    registryDeleteHelp(false, true),
+    registryDeleteHelp(false, false),
     registryUnknownNotice(),
     urlChangesOnTeardownNotice(),
-    ...teardownTargets({ hasBucket: true, deleteRegistry: true, registryName: 'myapp' }),
     remainingCostWarning({ deleteRegistry: false, registryName: 'myapp' })!,
+    remainingCostWarning({ deleteRegistry: false, registryName: 'myapp', keptBucketName: 'b', keptBucketsUsedByOthers: ['b'] })!,
+    keptSharedRegistryNote({ registryName: 'myapp', origin: 'adopted', users: [] }),
   ]
 
   it.each(texts)('記法がそのまま画面に出ない: %s', (text) => {
@@ -319,8 +304,8 @@ describe('teardownRemainingWarnings: 返り値の事実から、月額が続く�
     expect(teardownRemainingWarnings({ keptRegistryUnnamed: false })).toEqual([])
   })
 
-  it('★ 残したレジストリは名前つきで、月額が続くと言う（remainingCostWarning と同じ文）', () => {
-    expect(teardownRemainingWarnings({ keptRegistryName: 'myreg' }))
+  it('★ このプロジェクトだけのレジストリ（Koto が作り、ほかが使っていない）を残したときは、名前つきで、月額が続くと言う（remainingCostWarning と同じ文）', () => {
+    expect(teardownRemainingWarnings({ keptRegistryName: 'myreg', ...OWN }))
       .toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg' })!])
   })
 
@@ -332,12 +317,12 @@ describe('teardownRemainingWarnings: 返り値の事実から、月額が続く�
   })
 
   it('★ 名前つきのレジストリが分かっているときは、名前なしの文は重ねない', () => {
-    const w = teardownRemainingWarnings({ keptRegistryName: 'myreg', keptRegistryUnnamed: true })
+    const w = teardownRemainingWarnings({ keptRegistryName: 'myreg', ...OWN, keptRegistryUnnamed: true })
     expect(w).toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg' })!])
   })
 
   it('★ 残った保存場所・残したレジストリの両方があれば、合算して1つの警告にする', () => {
-    const w = teardownRemainingWarnings({ keptBucketName: 'koto-data-x', keptRegistryName: 'myreg' })
+    const w = teardownRemainingWarnings({ keptBucketName: 'koto-data-x', keptRegistryName: 'myreg', ...OWN })
     expect(w).toEqual([remainingCostWarning({ deleteRegistry: false, registryName: 'myreg', keptBucketName: 'koto-data-x' })!])
     expect(w[0]).toContain('koto-data-x')
     expect(w[0]).toContain('myreg')

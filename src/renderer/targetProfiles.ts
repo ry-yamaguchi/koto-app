@@ -20,7 +20,7 @@ export interface TargetProfile {
 export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
   local: {
     id: 'local',
-    label: 'あとで決める（公開先は未定）',
+    label: 'あとで決める',
     summary: 'まだ公開先が決まっていない。手元で動けばよい。',
     recommended: [
       'まずは動くものを作ることを優先',

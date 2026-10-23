@@ -1,10 +1,6 @@
 import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import SakuraLogo from './SakuraLogo'
-import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
-import { clearPublishRecord, readHanamiiProjectId, readPublishTargetsChecked } from '../publishRecord'
-import { teardownSupport, manualTeardownGuide, teardownDataNoteForAll, teardownRemovesStorage } from '../../shared/teardownSupport'
-import { REGISTRY_MONTHLY_YEN, BUCKET_MONTHLY_YEN, registryDeleteDefault, projectDeleteRegistryNote } from '../../shared/cloudCost'
-import { getHanamiiToken } from './CredentialsModal'
+import ProjectDeleteDialog from './ProjectDeleteDialog'
 import { useFileDrag } from '../hooks/useFileDrag'
 import { isPublished, isPublishedTop, MATERIALS_DIR } from '../../shared/publishExclude'
 import { PUBLISH_DIR, PUBLISH_DIR_LABEL } from '../../shared/publishRoot'
@@ -148,69 +144,6 @@ export function moveConfirmBody(entryName: string, destLabel: string, willCreate
   return `「${entryName}」を「${destLabel}」へ移動します。${warn}よろしいですか？\n\n🕘 元に戻すで戻せます。`
 }
 
-/** `blocksProjectDeleteFor` の第2引数。publish.apprunDedicated の資源IDだけを見る（他のフィールドは要らない）。 */
-export type DedicatedResourceIds = { clusterID?: string | null; asgID?: string | null; loadBalancerID?: string | null } | null | undefined
-
-/**
- * 専有型（sakura-apprun-dedicated）の資源が残っている間は、プロジェクト削除を止める
- * （W-69・2026-09-27・作者決定／2026-09-27 再検分で穴を1つ塞いだ）。
- *
- * ── なぜ「公開も一緒に破棄する」のチェックだけに任せられないか ────────────────
- * クラスタ・ロードバランサの記録はプロジェクトのフォルダ（.sakura-cloud）の中にしかない。
- * 専有型は、この画面の破棄（teardownPublished）に通しても**必ず失敗に積む**（専有型の削除は
- * 確認 → 進み具合 → 結果を持つ長い処理なので、このダイアログの中では行わない）ので、チェックが入っていれば
- * 自動的にブロックされる。だが「公開も一緒に破棄する」のチェックを**外す**と teardownPublished は呼ばれず、
- * フォルダだけがそのままゴミ箱へ移ってしまう。記録が消えると、クラスタ・ロードバランサの月額を
- * Koto からは二度と止められなくなる。だからチェックの有無に関わらず、専有型が残っている間は
- * 削除そのものを止め、先に専有型タブの「手順6 作ったものを削除する」で片づけるよう案内する。
- * （2026-10-08: 📡 公開したもの一覧の「🗑 破棄」も、手順6と同じ「すべて削除」になった。どちらで片づけても、
- * 公開の記録・資源の記録は main が同じように外すので、この判定は変わらない。）
- *
- * ── なぜ pendingPublish（publish.targets）だけでは足りないか（2026-09-27 再検分の指摘3） ──
- * クラスタ・ASG・LB の ID は publish.targets とは**別の場所**（publish.apprunDedicated。
- * `window.electronAPI.apprunDedicated.state(dir)` で読む）にある。次の場合は pendingPublish
- * だけでは検知できない:
- *   手順5でクラスタを作ったが、手順8でまだアプリを公開していない場合。publish.targets には
- *   まだ何も書かれていない（アプリを公開して初めて書かれる＝D-3）。
- * そのとき pendingPublish は空のままなので、clusterID/asgID/loadBalancerID のどれかが
- * 残っていれば合わせてブロックする。
- * （2026-10-08 まで、もう1つの場合があった: 📡 の 🗑 がアプリだけを消して publish.targets を外し、
- * クラスタ・ASG・LB が残る形。アプリだけを消す口は廃止した。削除が途中で止まったときは、アプリが消えても
- * main は publish.targets を残すので〔全部消えるまで外さない〕、pendingPublish が検知する。）
- */
-export function blocksProjectDeleteFor(pendingPublish: PublishTargetKind[], dedicated?: DedicatedResourceIds): boolean {
-  if (pendingPublish.includes('sakura-apprun-dedicated')) return true
-  return !!dedicated && (!!dedicated.clusterID || !!dedicated.asgID || !!dedicated.loadBalancerID)
-}
-
-/**
- * 公開の記録（.sakuraide.json）を読めなかったときに、プロジェクト削除の確認へ出す注意（2026-10-08 検分 A の双子）。
- * 読めないまま何も言わないと、公開が残っていても「公開されています」の警告が出ないままフォルダをゴミ箱へ移せてしまう
- * ——記録もフォルダと一緒に移るので、あとから Koto では破棄できなくなる。読めた回（記録が無いだけの回を含む）には出さない。
- */
-export const PUBLISH_RECORD_UNREADABLE_NOTE =
-  '公開の記録（.sakuraide.json）を読めないため、公開が残っているか分かりません。'
-  + '公開が残っているままフォルダをゴミ箱へ移すと、どこに何を公開したかの記録も一緒に移り、あとから Koto では破棄できなくなります（公開先によっては月額が続きます）。'
-  // 公開の記録が読めないときは、【公開】の画面も 📡 の一覧も同じ記録を読むので答えを出せない。
-  // 記録に頼らずに確かめられる場所だけを挙げる（2026-10-08 検分2巡目）
-  + '📡 公開したもの一覧の『さくら側にあるものと、かかっている費用』で『調べる』を押すか、各サービスの管理画面で、公開が残っていないか確かめてから削除してください。'
-
-/**
- * プロジェクト削除で「公開も一緒に破棄する」を外したとき、保存場所が残ることを伝える文
- * （W-22・2026-09-27 再検分の指摘）。
- *
- * 同じ保存場所を別のプレフィックスで2件持っていると、`pendingPlacements` に同じ
- * バケット名が2回並ぶ（bucket は同じでも prefix が違う）。名前は重複を除いて出し、
- * 金額は保存場所が2つ以上あるときだけ「1つにつき」と明記する（バケットが共有でも
- * 専用でも、月額495円は**バケット単位**でかかる。合計を出すと、実は同じ保存場所を
- * 指しているだけの重複行を2重に数えかねないので、合算はしない）。
- */
-export function remainingPlacementsNote(placements: Array<{ bucket: string }>): string {
-  const names = Array.from(new Set(placements.map(p => p.bucket)))
-  const amount = names.length > 1 ? `1つにつき月額${BUCKET_MONTHLY_YEN}円・税込` : `月額${BUCKET_MONTHLY_YEN}円・税込`
-  return `保存場所「${names.join('・')}」とその中のデータは残ります（消すまで${amount}が続きます）。`
-}
-
 function ContextMenu({ menu, onClose, onRename, onDelete, onNewFile, onMove }: {
   menu: MenuState
   onClose: () => void
@@ -319,7 +252,7 @@ function FileTree({ dir, onOpenFile, depth = 0, refreshKey = 0, showHidden = fal
               公開されないものは、その理由もここで伝える（2026-08-20 Ryosuke 要望）。 */}
           <span
             className={`truncate ${entry.isDir ? 'text-ink-secondary' : 'text-ink'} group-hover:text-ink`}
-            title={published ? entry.name : `${entry.name}（公開されません。手元にだけ残ります）`}
+            title={published ? entry.name : `${entry.name}（公開されません）`}
           >
             {entry.name}
           </span>
@@ -351,7 +284,7 @@ function FileTree({ dir, onOpenFile, depth = 0, refreshKey = 0, showHidden = fal
       <>
         <GroupLabel text="公開されるもの" hint="このまま公開先に置かれます" />
         {shown.length > 0 ? <ul>{shown.map(row)}</ul> : <EmptyGroup />}
-        <GroupLabel text="公開されないもの" hint="手元にだけ残ります（公開先へは送られません）" />
+        <GroupLabel text="公開されないもの" hint="手元にだけ残ります" />
         {kept.length > 0 ? <ul>{kept.map(row)}</ul> : <EmptyGroup />}
       </>
     )
@@ -404,42 +337,6 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   //   高い割に、公開名は各公開パネルで独立に変更できるため必要性が低い。
   //   代わりに NewProjectModal で「名前は後から変更できない」旨を作成時に明示する。
   const [confirmProjDelete, setConfirmProjDelete] = useState<string | null>(null)
-  /** 削除しようとしているプロジェクトに残っている公開記録（確認ダイアログを開くときに読む）。 */
-  const [pendingPublish, setPendingPublish] = useState<PublishTargetKind[]>([])
-  /** 公開の記録（.sakuraide.json）を読めなかった（確認に注意を出す。`PUBLISH_RECORD_UNREADABLE_NOTE`）。 */
-  const [publishUnreadable, setPublishUnreadable] = useState(false)
-  /** 「公開も一緒に破棄する」（既定オン＝消し忘れによる課金を止める側を既定にする）。 */
-  const [teardownOnDelete, setTeardownOnDelete] = useState(true)
-  /** 破棄の実行中（ボタンを止めて二重実行を防ぐ）。 */
-  const [deletingBusy, setDeletingBusy] = useState(false)
-  /**
-   * このプロジェクトのイメージの置き場（名前と、それが**借り物**か）。
-   *
-   * ── なぜ要るか（2026-08-25 Ryosuke の問いで見つけた）─────────────────────
-   * ここは**破棄の3つめの導線**で、`deleteRegistry: true` の決め打ちだった。
-   * Koto が作った置き場ならそれで正しい（残すと月220円が続く）。だが**引き継ぎで
-   * 借りている置き場**まで消してしまい、しかもこのダイアログには置き場の話が
-   * 一言も無いので、**断る手段が無い**。中に他のアプリのイメージが入っていれば、
-   * それらも一緒に消える。
-   */
-  const [pendingRegistry, setPendingRegistry] = useState<{ registryName: string | null; adopted: boolean }>({ registryName: null, adopted: false })
-  /**
-   * このプロジェクトの保存場所（同意済みの**全件**。2026-09-25 検分の指摘2）。
-   *
-   * ── なぜ要るか ──────────────────────────────────────────────────
-   * 「公開も一緒に破棄する」で HANAMII を破棄すると、`hanamii:teardown` は
-   * **保存場所のバケット・その中のデータ・鍵まで片づける**。ところがこのダイアログは
-   * データが消えることを一言も言っていなかった。**言わずに消してはいけない**（掟5・掟10）。
-   * 1件だけ名指しすると、名前が出なかった保存場所とデータまで消える（指摘5）ので**全件**読む。
-   */
-  const [pendingPlacements, setPendingPlacements] = useState<Array<{ bucket: string; prefix: string; shared: boolean }>>([])
-  /**
-   * このプロジェクトの専有型（sakura-apprun-dedicated）の資源ID（クラスタ・ASG・LB）。
-   * `blocksProjectDeleteFor` の第2引数（W-69・2026-09-27 再検分の指摘3）。
-   * publish.targets（pendingPublish）とは別の場所（publish.apprunDedicated）にあるので、
-   * 削除確認を開くたびに `apprunDedicated.state()` で別に読む。
-   */
-  const [pendingDedicated, setPendingDedicated] = useState<DedicatedResourceIds>(null)
   /** ファイルの移動確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。 */
   const { confirm, element: confirmElement } = useConfirm()
 
@@ -620,155 +517,9 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     }
   }
 
-  // 削除の確認ダイアログを開くたびに、そのプロジェクトの公開記録を読む。
-  // 「何が公開されたままか」を見せないと、ユーザーは破棄の判断ができない。
-  useEffect(() => {
-    if (!confirmProjDelete) { setPendingPublish([]); setPublishUnreadable(false); setPendingPlacements([]); setPendingDedicated(null); return }
-    let cancelled = false
-    setTeardownOnDelete(true) // 開くたびに既定（破棄する）へ戻す
-    setPendingRegistry({ registryName: null, adopted: false }) // 前のプロジェクトのものを引きずらない
-    setPendingPlacements([]) // 同上（前のプロジェクトの保存場所を出さない）
-    setPendingDedicated(null) // 同上（前のプロジェクトの専有型の資源IDを引きずらない）
-    setPublishUnreadable(false) // 同上（前のプロジェクトの注意を引きずらない）
-    // 「読めなかった」と「記録が無い」を言い分ける読み口（readPublishTargets は読めないと黙って [] に倒す＝警告が出ないまま削除できてしまう）。
-    readPublishTargetsChecked(confirmProjDelete).then(r => {
-      if (cancelled) return
-      setPendingPublish(r.targets)
-      setPublishUnreadable(r.unreadable)
-    })
-    // 置き場のことは**消す前に見せる**（このダイアログには今まで一言も出ていなかった）
-    window.electronAPI.cloud.registryName(confirmProjDelete)
-      .then(r => { if (!cancelled) setPendingRegistry({ registryName: r?.name ?? null, adopted: r?.adopted === true }) })
-      .catch(() => { /* 読めなくても削除はできる（消えるものが増えるわけではない） */ })
-    // 保存場所のことも**消す前に見せる**（HANAMII の破棄はバケットとデータまで片づける）
-    window.electronAPI.storage.placement(confirmProjDelete)
-      .then(r => {
-        if (cancelled || !r.ok) return
-        const all = r.placements ?? (r.placement ? [r.placement] : [])
-        setPendingPlacements(all.map(p => ({ bucket: p.bucket, prefix: p.prefix, shared: p.shared })))
-      })
-      .catch(() => { /* 読めなくても削除はできる（消えるものが増えるわけではない） */ })
-    // 専有型の資源ID（クラスタ・ASG・LB）も読む（W-69・2026-09-27 再検分の指摘3）。
-    // publish.targets（pendingPublish）だけでは、
-    // 手順5でクラスタだけ作った状態を検知できない（blocksProjectDeleteFor 参照）。
-    // API は呼ばない、ただのファイル読み取りなので読めなくても実害は小さいが、
-    // 読めない間は「ブロックしない」側に倒れる（pendingPublish 側の判定はそのまま効く）。
-    window.electronAPI.apprunDedicated.state(confirmProjDelete)
-      .then(r => { if (!cancelled) setPendingDedicated(r ?? null) })
-      .catch(() => { /* 読めなくても削除はできる（pendingPublish 側の判定は残る） */ })
-    return () => { cancelled = true }
-  }, [confirmProjDelete])
-
-  /**
-   * このプロジェクトの公開を破棄する。**失敗したものの説明を配列で返す**（空なら全部成功）。
-   * 破棄の口が無い公開先（Vercel・レンタルサーバ）は対象外。消せないものを消せたことにしない。
-   */
-  const teardownPublished = async (dir: string, targets: PublishTargetKind[]): Promise<string[]> => {
-    const failed: string[] = []
-    for (const t of targets) {
-      if (teardownSupport(t) !== 'supported') continue
-      try {
-        let r: { ok: boolean; message?: string }
-        if (t === 'sakura-apprun') {
-          // ── 置き場を消すかどうか（2026-08-25 に決め打ちをやめた）─────────────
-          // **Koto が作った置き場は消す。** 残すと月220円が続くうえ、フォルダを消すと
-          // 記録も消えて Koto からは二度と消せなくなる。
-          //
-          // **借りている置き場は消さない。** 引き継ぎでは利用者がもとから持っていた
-          // ものを使っており、中に他のアプリのイメージが入っていることがある。
-          // ここにはチェックボックスが無い＝**断る手段が無い**ので、消さない側に倒す
-          // （残ることと課金が続くことは、確認ダイアログに書いてある）。
-          // 判断は shared/cloudCost.ts に一元化（【公開】・📡一覧と同じもの・掟10）。
-          r = await window.electronAPI.cloud.teardown(dir, {
-            confirmed: true,
-            deleteRegistry: registryDeleteDefault(pendingRegistry),
-          })
-        } else if (t === 'sakura-apprun-dedicated') {
-          // ── 専有型（D-3・2026-09-11 Ryosuke 決定／2026-10-08 に文を直した）─────────────
-          // 専有型の削除（アプリ → ロードバランサ → オートスケーリンググループ → クラスタ ＋ 保存場所）は、確認と進み具合
-          // （ロードバランサだけで約9分）を持つ長い処理なので、**この画面の中では行わない**。ここでは**明示的に失敗に積む**
-          // （failed が空でなければ deleteProject はフォルダを消さない＝記録を失わせない安全側）。
-          // 実際には blocksProjectDeleteFor が先に削除そのものを止めるので、ここは最後の砦。
-          // 共用型の cloud.teardown へは流さない: 専有型が同じ IPC で消せるか・置き場を使うかは
-          // ここからは分からず、推測で呼ぶと違うものを消しかねない（掟1）。
-          failed.push(`${PUBLISH_TARGET_LABEL[t]}: 専有型は、この画面からは削除できません。`
-            + '専有型タブの「手順6 作ったものを削除する」（または 📡 公開したもの一覧の「🗑 破棄」）で削除してから、もう一度お試しください')
-          continue
-        } else if (t === 'hanamii') {
-          const id = await readHanamiiProjectId(dir)
-          if (!id) { failed.push(`${PUBLISH_TARGET_LABEL[t]}: プロジェクトIDの記録がありません`); continue }
-          const token = await getHanamiiToken()
-          if (!token) { failed.push(`${PUBLISH_TARGET_LABEL[t]}: トークンが未登録です`); continue }
-          // ── projectDir（dir）を必ず渡す（2026-09-25 検分の指摘2）────────────────
-          // 渡さないと main は保存場所へ1件も要求を出さずに ok:true を返し、**成功扱いのまま
-          // この直後に fs.trash でフォルダごとゴミ箱へ入る**。バケットの唯一の記録は
-          // .sakura-cloud/env.json（フォルダの中）なので、**Koto から二度と保存場所を消せなくなる**
-          // ＝月額495円と、バケットへ読み書きできる鍵が、辿れないまま残る。
-          // このダイアログ自身が「記録も消えるため、あとから Koto では破棄できなくなります」と
-          // 警告しているそのものの状態を、HANAMII だけが作っていた。
-          r = await window.electronAPI.hanamii.teardown(id, token, dir)
-        } else {
-          // teardownSupport が 'supported' と言うのに、ここに破棄の枝が無い種類。
-          // 以前は「sakura-apprun でなければ HANAMII」の二値前提で、新しい種類が HANAMII の
-          // 破棄へ流れて誤った失敗理由（プロジェクトIDが無い）になっていた。黙って通さず失敗に積む
-          // （消せないものを消せたことにしない）。
-          failed.push(`${PUBLISH_TARGET_LABEL[t]}: この画面からは破棄できません`)
-          continue
-        }
-        if (!r.ok) failed.push(`${PUBLISH_TARGET_LABEL[t]}: ${r.message ?? '原因不明'}`)
-        else { try { await clearPublishRecord(dir, t) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ } }
-      } catch (e: any) {
-        failed.push(`${PUBLISH_TARGET_LABEL[t]}: ${e?.message ?? String(e)}`)
-      }
-    }
-    return failed
-  }
-
-  // プロジェクトの削除（フォルダごとゴミ箱へ移動・Finderのゴミ箱から復元可能）。
-  // 公開済みのサイト/アプリ・GitHubのリポジトリは対象外（ローカルのフォルダのみ）。
-  // 破壊操作のため専用の確認ダイアログを挟む（掟5）。confirmProjDelete = 削除確認中のパス。
-  const deleteProject = async (path: string) => {
-    // W-69: 専有型が残っている間は、チェックの有無に関わらずここで止める（多層防御。
-    // ボタン自体も無効化してあるが、このガードが最後の砦）。pendingDedicated も渡し、
-    // クラスタだけ作った状態も検知する（指摘3）。
-    if (blocksProjectDeleteFor(pendingPublish, pendingDedicated)) {
-      window.alert(
-        '専有型（さくらのAppRun 専有型）のリソースが残っているため、この画面からは削除できません。\n\n'
-        + '先に「📦 さくらのAppRun」の専有型タブ「手順6 作ったものを削除する」で、クラスタ・ロードバランサを含めて削除してから、もう一度このプロジェクトを削除してください。\n\n'
-        + '専有型タブに手順6の削除ボタンが出ていないとき（削除するものの記録が無く、公開の記録だけが残っているとき）は、📡 公開したもの一覧の「一覧から削除」で、その行を消してください。'
-      )
-      return
-    }
-    // ── 先に公開を破棄する（2026-08-09 Ryosuke の指摘）─────────────────────
-    // フォルダをゴミ箱へ移すと .sakura-cloud/state.json も一緒に消える。これは
-    // 「どのコンテナレジストリを使っているか」の**唯一の記録**なので、消えた後は
-    // Koto から後片付けできなくなり、月220円が黙って続く。だから削除より先に破棄する。
-    // **破棄に失敗したらフォルダを消さない。** 記録を失わせる方が害が大きい。
-    if (teardownOnDelete && pendingPublish.some(t => teardownSupport(t) === 'supported')) {
-      setDeletingBusy(true)
-      const failed = await teardownPublished(path, pendingPublish)
-      setDeletingBusy(false)
-      if (failed.length > 0) {
-        window.alert(
-          `公開の破棄に失敗したため、プロジェクトの削除を中止しました。\n\n${failed.join('\n')}\n\n`
-          + `このままフォルダを削除すると、どこに何を公開したかの記録も消えて、Koto から破棄できなくなります。`
-          + `【公開】の画面から破棄するか、各サービスの管理画面で削除してください。`
-        )
-        return
-      }
-    }
-    setConfirmProjDelete(null)
-    try {
-      // 既にディスクから消えている（=一覧表示が古かった）場合は成功扱いにして、
-      // 記録の掃除と一覧の再取得だけ行う（2026-07-13 ユーザー報告: 表示に残った項目を
-      // もう一度削除しようとしてエラーで行き止まりにならないように）。
-      if (await window.electronAPI.fs.exists(path)) {
-        await window.electronAPI.fs.trash(path)
-      }
-    } catch (e: any) {
-      window.alert(`プロジェクトを削除できませんでした: ${e?.message ?? e}`)
-      return
-    }
+  // プロジェクトの削除（フォルダごとゴミ箱へ移動・Finderのゴミ箱から復元可能）の確認ダイアログは ProjectDeleteDialog（開いたときの読み込み・
+  // 破棄・フォルダを移す操作はそこ）。ここに残すのは、フォルダを移したあとの後始末だけ。
+  const afterProjectDeleted = async (path: string) => {
     // このプロジェクトに紐づくアプリ内の記録を掃除する（タブ・旧チャット履歴・最近一覧）。
     // 新チャット履歴（.sakuraide/chat.json）はフォルダごとゴミ箱に入るため個別対応不要。
     try {
@@ -830,7 +581,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
             <button
               onClick={onOpenHistory}
               className="text-ink-muted hover:text-sakura w-6 h-6 flex items-center justify-center rounded-md hover:bg-overlay transition-colors text-[12px]"
-              title="🕘 履歴（前の状態に戻す）— 選んだ時点の状態にまるごと戻せます"
+              title="🕘 履歴（前の状態に戻す）"
             >🕘</button>
           )}
           {/* 所見13: 隠しファイル（.htaccess・.gitignore 等）の表示トグル。既定=非表示。プロジェクトを開いているときのみ表示。 */}
@@ -1075,145 +826,14 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
         />
       )}
 
-      {/* プロジェクト削除の確認ダイアログ（掟5: 破壊操作は必ず確認）。ゴミ箱移動なので復元可能な旨と、
-          公開済みのもの・GitHubのバックアップはローカル削除の対象外である旨を明記する。 */}
+      {/* プロジェクト削除の確認ダイアログ（掟5: 破壊操作は必ず確認）。key で、別のプロジェクトを開き直したときに前の材料・チェックを持ち越さない（掟11）。 */}
       {confirmProjDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-          onClick={() => setConfirmProjDelete(null)}
-        >
-          <div
-            className="bg-elevated border border-line rounded-xl p-4 w-[24rem] max-w-[92vw]"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="text-[13px] font-semibold text-ink mb-2">
-              プロジェクト「{confirmProjDelete.split('/').pop()}」を削除しますか？
-            </div>
-            <div className="text-[11px] text-ink-secondary leading-relaxed space-y-1.5">
-              <p>フォルダごと<b>ゴミ箱へ移動</b>します（Finderのゴミ箱から復元できます）。チャット履歴・🕘履歴もフォルダと一緒に移動します。</p>
-
-              {/* ── 公開したものの後始末（2026-08-09 Ryosuke の指摘）──────────────
-                  フォルダを消すと .sakura-cloud/state.json（どのレジストリを使っているかの
-                  唯一の記録）も一緒に消える。消えた後は Koto から後片付けできず、
-                  月220円が黙って続く。だから削除の前にここで止められるようにする。 */}
-              {(pendingPublish.length > 0 || publishUnreadable || blocksProjectDeleteFor(pendingPublish, pendingDedicated)) && (
-                <div className="rounded-lg border border-brand-red/50 bg-surface p-2.5 space-y-1.5">
-                  {publishUnreadable && (
-                    <p className="text-brand-red font-medium select-text">⚠️ {PUBLISH_RECORD_UNREADABLE_NOTE}</p>
-                  )}
-                  {pendingPublish.length > 0 && (
-                    <>
-                      <p className="text-ink font-medium">このプロジェクトは公開されています</p>
-                      <ul className="list-disc pl-4 text-ink-secondary">
-                        {pendingPublish.map(t => (
-                          <li key={t}>
-                            {PUBLISH_TARGET_LABEL[t]}
-                            {teardownSupport(t) === 'manual' && (
-                              <span className="text-ink-muted"><br />{manualTeardownGuide(t)}</span>
-                            )}
-                            {/* 専有型（sakura-apprun-dedicated）は、この一覧に出ても
-                                teardownScopeNote（「…削除します」）を出さない（W-69 再検分の指摘2）。
-                                専有型が pendingPublish に入っているときは blocksProjectDeleteFor が
-                                常に true になり、すぐ下の赤字が「この画面からは削除できません」と
-                                言う。「削除します」（teardownScopeNote）と「削除できません」が
-                                同じ枠に並ぶと、利用者はどちらを信じればよいか分からなくなる。 */}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-                  {blocksProjectDeleteFor(pendingPublish, pendingDedicated) ? (
-                    // W-69（2026-09-27・再検分で拡張）: 専有型の資源（クラスタ・ASG・LB）が
-                    // 残っている間はこの画面から削除できない。記録はフォルダの中にしかなく、
-                    // フォルダを先に消すと月額を二度と止められなくなる。まだアプリを公開して
-                    // いない（pendingPublish が空）ときも、クラスタだけ作っていれば同じくブロック
-                    // するので、「公開されています」の見出しが無くてもこの赤字は単独で出る。
-                    // チェックの有無に関わらず、ここで完全に止める（先に手順6で片づけてもらう）。
-                    <p className="text-brand-red font-medium">
-                      ⚠️ 専有型（さくらのAppRun 専有型）のリソースが残っているため、この画面からは削除できません。先に「📦 さくらのAppRun」の専有型タブ「手順6 作ったものを削除する」で、クラスタ・ロードバランサを含めて削除してから、もう一度このプロジェクトを削除してください。専有型タブに手順6の削除ボタンが出ていないとき（削除するものの記録が無く、公開の記録だけが残っているとき）は、📡 公開したもの一覧の「一覧から削除」で、その行を消してください。
-                    </p>
-                  ) : pendingPublish.some(t => teardownSupport(t) === 'supported') && (
-                    <>
-                      <label className="flex items-start gap-1.5 cursor-pointer pt-0.5">
-                        <input
-                          type="checkbox"
-                          checked={teardownOnDelete}
-                          onChange={e => setTeardownOnDelete(e.target.checked)}
-                          disabled={deletingBusy}
-                          className="mt-0.5 accent-[rgb(var(--sakura-rgb))]"
-                        />
-                        <span className="text-ink font-medium">公開も一緒に破棄する</span>
-                      </label>
-                      <p className={`pl-5 ${teardownOnDelete ? 'text-ink-muted' : 'text-brand-red'}`}>
-                        {teardownOnDelete
-                          ? '先に公開を破棄してから、フォルダをゴミ箱へ移します。破棄に失敗したときは削除しません。'
-                          : '公開はそのまま残ります。フォルダを消すと「どこに何を公開したか」の記録も消えるため、あとから Koto では破棄できなくなります。'
-                            + (pendingPublish.includes('sakura-apprun')
-                              ? ` コンテナレジストリの月額${REGISTRY_MONTHLY_YEN}円（税込）が、消すまで続きます。`
-                              : '')}
-                      </p>
-                      {/* W-22（案1後半）: チェックを外して破棄しないときも、保存場所が残ることを
-                          その場で伝える（下の💾行は teardownOnDelete のときだけ描くため、外したときは
-                          こちらが無いと保存場所の話が画面から消えてしまう）。同じ保存場所を
-                          プレフィックス違いで2件持つと bucket 名が重複するので、名前の重複を除き、
-                          2件以上あるときは「1つにつき」と明記する（remainingPlacementsNote・
-                          2026-09-27 再検分の指摘）。 */}
-                      {!teardownOnDelete && pendingPlacements.length > 0 && (
-                        <p className="pl-5 text-brand-red select-text">
-                          💾 {remainingPlacementsNote(pendingPlacements)}
-                        </p>
-                      )}
-                      {/* 置き場をどうするかは**ここでは選ばせない**（一気に進む操作なので、
-                          選択肢を増やすより安全側に倒す）。選ばせない代わりに、
-                          残すときは必ずそう書く（2026-08-25 Ryosuke の問いで見つけた）。 */}
-                      {teardownOnDelete && projectDeleteRegistryNote(pendingRegistry) && (
-                        <p className="pl-5 text-brand-red select-text">⚠️ {projectDeleteRegistryNote(pendingRegistry)}</p>
-                      )}
-                      {/* ── 保存場所のデータも消える（2026-09-25 検分の指摘2・3巡目の指摘3）──────
-                          破棄はバケットの中のこのプロジェクトのデータと鍵まで片づけ、ほかに使っている
-                          プロジェクトが無ければ**バケットそのものも消す**。チェックひとつで一気に進む
-                          操作なので、**消えるものを名指しで見せてから押させる**（掟5・掟10）。
-
-                          ⚠️ **公開先を決め打ちで書かない。** ここは `pendingPublish.includes('hanamii')`
-                          だったため、**共用型 AppRun（cloud:teardown の delete プラン）ではデータが
-                          消えることを一言も言わずに消していた**——指摘2で閉じたはずの穴が、同じ
-                          ダイアログの隣にそのまま残っていた。判定は一元定義（teardownSupport /
-                          teardownRemovesStorage）に通し、**新しい公開先が増えても勝手に正しくなる**形にする。
-                          文の組み立ても shared/teardownSupport.ts の純関数に任せ、**placements（全件）**で
-                          組み立てる（1件だけ名指しすると、名前が出なかった保存場所とデータまで消える）。
-                          公開先ごとに1行出すので、HANAMII と共用型が両方ある案件でも取りこぼさない。 */}
-                      {teardownOnDelete && pendingPublish
-                        .filter(t => teardownSupport(t) === 'supported' && teardownRemovesStorage(t, 'list'))
-                        .map(t => ({ t, note: teardownDataNoteForAll({ target: t, scope: 'list', placements: pendingPlacements }) }))
-                        .filter(x => !!x.note)
-                        .map(x => (
-                          <p key={x.t} className="pl-5 text-brand-red select-text">
-                            💾 {PUBLISH_TARGET_LABEL[x.t]}: {x.note}
-                          </p>
-                        ))}
-                    </>
-                  )}
-                </div>
-              )}
-
-              <p className="text-ink-muted">GitHub に保存したファイル（コード）は<b>そのまま残ります</b>。アプリに入っているデータは GitHub には入っていません。</p>
-              <p className="font-mono text-[10px] text-ink-muted break-all">{confirmProjDelete}</p>
-            </div>
-            <div className="flex justify-end gap-2 mt-3">
-              <button
-                onClick={() => setConfirmProjDelete(null)}
-                disabled={deletingBusy}
-                className="px-3 py-1.5 rounded-md text-[12px] text-ink-secondary hover:bg-overlay transition-colors disabled:opacity-40"
-              >キャンセル</button>
-              <button
-                onClick={() => deleteProject(confirmProjDelete)}
-                disabled={deletingBusy || blocksProjectDeleteFor(pendingPublish, pendingDedicated)}
-                title={blocksProjectDeleteFor(pendingPublish, pendingDedicated) ? '専有型を先に専有型タブの手順6で削除してください' : undefined}
-                className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red-fill hover:opacity-90 transition-opacity disabled:opacity-40"
-              >{deletingBusy ? '公開を破棄しています…' : '🗑 ゴミ箱に移動'}</button>
-            </div>
-          </div>
-        </div>
+        <ProjectDeleteDialog
+          key={confirmProjDelete}
+          projectDir={confirmProjDelete}
+          onClose={() => setConfirmProjDelete(null)}
+          onDeleted={afterProjectDeleted}
+        />
       )}
 
       {nameDialog && (

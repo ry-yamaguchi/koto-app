@@ -10,10 +10,11 @@ import { mergeProjectMeta } from '../projectMeta'
 import { useProjectOpsView } from '../hooks/useProjectOpsView'
 import { isHanamiiOp } from '../projectOpsView'
 import { clockText, opWarningText } from '../../shared/opsText'
-import { teardownDataNoteForAll } from '../../shared/teardownSupport'
+import { opWordFor } from '../../shared/opWord'
 import { askAiAboutFailure, type AskAiFailureKind } from '../../shared/askAi'
 import { publishButtonLabel } from '../../shared/publishLabels'
 import AccessKeySection from './AccessKeySection'
+import HanamiiTeardownSection, { HanamiiTeardownResult } from './HanamiiTeardownSection'
 
 // HANAMII の公開名の文字数上限。HANAMII 側の公開APIリファレンス（hanamii.jp/docs/api）には
 // 名前の上限が明記されていないが、HANAMII は AppRun 基盤上で動く（コンテナをビルドし EXPOSE から
@@ -113,16 +114,12 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   const [msg, setMsg] = useState('')
   // 失敗時の生API応答（JSON短縮・診断用・所見11）。主表示（msg）とは分け、折りたたみ「詳細を見る」で見せる。
   const [msgDetail, setMsgDetail] = useState('')
-  // msg が成功の知らせか（破棄の「✅ 破棄しました。＋片づけた内容」で使う）。
-  // 失敗の欄と共有するので、ここが false のときだけ「🤖 AIに相談する」を出す（判断2）。
+  // msg が成功の知らせか。失敗の欄と共有するので、ここが false のときだけ「🤖 AIに相談する」を出す（判断2）。
   const [msgOk, setMsgOk] = useState(false)
-  // msg がどの操作の失敗か（判断2・「🤖 AIに相談する」の定型文に使う kind）。publish/teardown が
-  // 同じ msg を共有するため、setMsg とあわせて各操作の先頭で立てる。
-  const [msgKind, setMsgKind] = useState<AskAiFailureKind>('公開')
   // 直近に公開を試みた名前（衝突時の代替名提案のベースにする）。
   const [lastAttemptedName, setLastAttemptedName] = useState('')
-  const [confirmDel, setConfirmDel] = useState(false)
   // 破棄を頼んでから、main の記録（running）が届くまでの間も「破棄中」と分かるようにする局所の印。
+  // 破棄そのもの（確認・実行・結果）は HanamiiTeardownSection が持つ。ここが持つのは「破棄中」の印と、破棄のあとの表示の後始末だけ。
   const [tearingDown, setTearingDown] = useState(false)
   // 「↻ 状態を更新」（HANAMII の状態を取り直す）。公開が「待つ時間のうちに動かなかった」で終わったとき、
   // 画面が BUILDING のまま固まらないための口（自動で確かめ続ける仕組みは持たない・下の説明）。
@@ -204,13 +201,9 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   // ── データの保存を持っていく（2026-08-15）──────────────────────────
   // データはオブジェクトストレージにあり、**計算とは別の場所**にある。
   // 鍵を発行して環境変数で渡せば、AppRun で作ったデータをそのまま読める。
+  // 公開で持っていく保存場所（先頭の1件。`issueStorageEnvFor`）。破棄が片づける**全件**は、破棄の確認が押した時点に読み直す
+  // （画面の写しはいつでも古い。teardown/flow.ts → HanamiiTeardownSection）ので、ここでは持たない。
   const [placement, setPlacement] = useState<{ bucket: string; prefix: string } | null>(null)
-  /**
-   * 同意済みの保存場所の**全件**（破棄の確認に出すもの・2026-09-25 検分の指摘5）。
-   * 公開で持っていくのは先頭の1件（`issueStorageEnvFor`）だが、**破棄は全件を片づける**。
-   * 確認で1件しか名指ししないと、**名前が一度も出なかった保存場所とデータまで消える。**
-   */
-  const [placements, setPlacements] = useState<Array<{ bucket: string; prefix: string; shared: boolean }>>([])
   const [usesData, setUsesData] = useState(false)
   const [withStorage, setWithStorage] = useState(true)
 
@@ -223,9 +216,6 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
       ])
       if (isStale?.()) return
       setPlacement(pl.ok && pl.placement ? { bucket: pl.placement.bucket, prefix: pl.placement.prefix } : null)
-      // placements（全件）が無い版の応答でも、先頭1件だけは必ず拾う（黙って空にしない）。
-      const all = pl.ok ? (pl.placements ?? (pl.placement ? [pl.placement] : [])) : []
-      setPlacements(all.map(p => ({ bucket: p.bucket, prefix: p.prefix, shared: p.shared })))
       setUsesData(!!(scan as any)?.usedBy?.length)
     } catch { /* 分からなければ出さない */ }
   }, [projectDir])
@@ -272,8 +262,8 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     setProjectId(null); setStatus(null)
     setWorkspaceId(''); setPublishName('')
     setEnvs(p => (p.length === 0 ? p : [])); setHcEnabled(false); setHcPath('/')
-    setPlacement(null); setPlacements(p => (p.length === 0 ? p : [])); setUsesData(false)
-    setPublishing(false); setTearingDown(false); setRestarting(false); setConfirmDel(false); setConfirmRestart(false)
+    setPlacement(null); setUsesData(false)
+    setPublishing(false); setTearingDown(false); setRestarting(false); setConfirmRestart(false)
     setMsg(''); setMsgDetail(''); setMsgOk(false); setLastAttemptedName('')
     setRestartMsg(''); setRestartMsgDetail(''); setStatusNote('')
     setLogsOpen(false); setLogs(null); setLogsError('')
@@ -360,7 +350,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
    */
   const showTornDown = async () => {
     teardownSettled.current = true
-    setProjectId(null); setStatus(null); setConfirmDel(false)
+    setProjectId(null); setStatus(null)
     window.dispatchEvent(new Event('sakura-meta-changed'))
     await loadStorageInfo()
   }
@@ -400,7 +390,6 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   // nameOverride: 衝突時の「代替名で公開し直す」ボタンから、state 更新の反映待ちをせず即座に使う名前を渡すため。
   const publish = async (nameOverride?: string) => {
     setMsgDetail(''); setMsgOk(false)
-    setMsgKind('公開')
     if (!token) { setMsg('先に「認証情報」で HANAMII トークンを登録してください'); return }
     if (!workspaceId) { setMsg('ワークスペースを選択してください'); return }
     const { sendEnvs, persistEnvs, healthCheck, emptySecretKey } = buildEnvsAndHealthCheck(envs, hcEnabled, hcPath)
@@ -529,44 +518,6 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     return d.toLocaleTimeString('ja-JP', { hour12: false })
   }
 
-  const teardown = async () => {
-    if (!projectId || !token) return
-    setMsg(''); setMsgDetail(''); setMsgOk(false)
-    setMsgKind('破棄')
-    // ── projectDir を必ず渡す（2026-09-25 検分の指摘1）──────────────────────
-    // main は `.sakura-cloud/env.json` を読まないと、どの保存場所を片づけるのか分からない。
-    // **渡さないと保存場所へ1件も要求が出ないまま ok:true が返り**、そのあと main が
-    // 📡 公開したもの一覧の行（公開記録）ごと消すので、**片づけの入口が
-    // どこにも無くなる**（🗑 破棄の行はこの記録からしか作られない）。
-    // ＝バケットの月額495円と、バケットへ読み書きできる鍵が、辿れないまま残り続ける。
-    const askedAt = Date.now()
-    // 呼んだときのプロジェクト（公開と同じ・掟11）。切り替わったあとの結果は、いまの画面（別のプロジェクト）へ入れない。
-    const dir = projectDir
-    const stale = () => dirRef.current !== dir
-    setConfirmDel(false); setTearingDown(true); ops.clearShown()
-    try {
-      const r = await window.electronAPI.hanamii.teardown(projectId, token, projectDir)
-      // 待っている間に別のプロジェクトへ切り替わった。破棄の後始末（記録・保存場所の片づけ）は main が dir の記録に対して済ませている。
-      // いまの画面は別のプロジェクトなので、「消えた」表示も、結果の文も、ここでは触らない。
-      if (stale()) return
-      // 消せたら、画面の表示を消えた状態にする。設定の projectId と公開記録の片づけは main が済ませている
-      // （hanamii:teardown・鍵の中で1回だけ。画面が書くと、記録の再生で新しい公開の記録まで消える）。
-      // 保存場所だけ残った回（appDeleted で ok が false）は、**記録も projectId も残る**——残さないと 🗑 が消えて、
-      // 案内した「もう一度 🗑」がどこにも無くなる。main は 404（もう無い）なら保存場所の片づけだけをやり直す。
-      if (r.ok) await showTornDown()
-      // **何を片づけたか・何が残ったか**（残ったバケットの月額に気づけるように）は、main の記録の結果から出す。
-      // 記録が作られない断り方（別の操作が走っている・トークン無し）のときだけ、返り値の文を出す。
-      await ops.sync()
-      if (!r.ok && !ops.didFinishSince('hanamii:teardown', askedAt)) setMsg(r.message ?? '削除に失敗しました')
-    } catch (e: any) {
-      if (stale()) return
-      await ops.sync()
-      if (!ops.didFinishSince('hanamii:teardown', askedAt)) setMsg(`破棄処理でエラーが発生しました: ${e?.message ?? String(e)}`)
-    } finally {
-      if (!stale()) setTearingDown(false)
-    }
-  }
-
   const rs = status?.readyState
   // 公開が進んでいるか（この画面が頼んだ直後・開き直した画面が main の記録で知ったもの・HANAMII 側の状態）。
   const publishRunning = publishing || ops.ownRunning?.handler === 'hanamii:publish'
@@ -575,11 +526,8 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   // 押せない間（この画面の公開・破棄・別の公開先の操作を含め、同じプロジェクトでは1つずつしか走らせない・main の鍵）。
   // 断られてから文で知らせるのではなく、押せない形にして理由を出す。
   const locked = busy || teardownRunning || !!ops.running
-  // 破棄の 2 つのボタン（🗑・破棄する）は、**main の鍵**（この画面が頼んだ公開・破棄・開き直した画面が記録で知った操作・
-  // 別の公開先の操作）だけで止める。HANAMII 側の状態が BUILDING のままだからといって止めない（2026-09-30 検分）:
-  // 公開が「待つ時間のうちに動かなかった（pending）」で終わると状態は BUILDING のまま残り、↻ で取り直しても変わらないことがある。
-  // そのとき、止まったままの版を、この画面から破棄できなくなる（以前は破棄のボタンに disabled は無かった）。
-  // main の鍵とは関係ない理由で、押せない理由も出さずに止めてはいけない。
+  // 破棄の入口（HanamiiTeardownSection）は、**main の鍵**（この画面が頼んだ公開・破棄・開き直した画面が記録で知った操作・
+  // 別の公開先の操作）だけで止める。HANAMII 側の状態が BUILDING のままでも止めない理由は、節の `locked` の説明にある。
   const teardownLocked = publishRunning || teardownRunning || !!ops.running
   // 名前衝突カード（NameConflictRetry）が表示されるケースでは、生の失敗メッセージ本体は
   // 折りたたみに降格してカードを主役にする（所見17: 親切カードと生エラーの二重表示の解消）。
@@ -603,7 +551,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
         <p className="text-sm font-semibold text-ink">🌸 HANAMII（国産のクラウドサービス）で公開</p>
         <p className="text-xs text-ink-muted leading-relaxed">
-          国産のクラウドサービス。サーバーで動き続けるアプリ（Node.js など）も公開できます（Koto がまとめてアップロードします。コンテナは不要です）。データは100%国内。
+          サーバーで動き続けるアプリ（Node.js など）も公開できます。コンテナは不要で、Koto がまとめてアップロードします。データは100%国内。
         </p>
         {getTargetProfile('hanamii').serviceUrl && (
           <p className="text-[11px] text-ink-muted">
@@ -623,7 +571,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         {!tokenLoaded && <p className="text-xs text-ink-muted">確認中…</p>}
         {tokenLoaded && !token && (
           <p className="text-xs text-ink-secondary leading-relaxed">
-            HANAMII の管理画面で発行したAPIトークン（<span className="font-mono">hnm_…</span>）を登録してください（他のキーと同じ場所で一元管理します）。
+            HANAMII の管理画面で発行したAPIトークン（<span className="font-mono">hnm_…</span>）を登録してください。
           </p>
         )}
         {tokenLoaded && token && tokens && tokens.length > 1 && (
@@ -673,7 +621,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
           </p>
           {detectedKeys.filter(k => !envs.some(e => e.key.trim() === k)).length > 0 && (
             <div className="space-y-1">
-              <p className="text-[11px] text-ink-muted">コードから検出（クリックで追加。🔒はシークレットの候補）:</p>
+              <p className="text-[11px] text-ink-muted">コードから検出（🔒はシークレットの候補）:</p>
               <div className="flex flex-wrap gap-1.5">
                 {detectedKeys.filter(k => !envs.some(e => e.key.trim() === k)).map(k => (
                   <button
@@ -732,7 +680,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         <section className="rounded-xl border border-line-soft bg-surface p-4 space-y-2">
           <p className="text-sm font-semibold text-ink-secondary">ヘルスチェック（任意）</p>
           <p className="text-[11px] text-ink-muted leading-relaxed">
-            アプリが正常に動いているか、公開後に自動で確認するパス（任意）。
+            アプリが正常に動いているか、公開後に自動で確認するパス。
           </p>
           <label className="flex items-center gap-2 text-xs text-ink-secondary select-none">
             <input
@@ -775,11 +723,11 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
               disabled={!!projectId}
               className="mt-1 w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink placeholder-ink-muted outline-none focus:border-sakura disabled:opacity-50"
             />
-            <p className="mt-1 text-[11px] text-ink-muted leading-relaxed">
-              {projectId
-                ? '公開済みのため名前は変更できません（変更するには「破棄」してから公開し直してください）。'
-                : '公開に失敗する場合、下に表示される代替名の提案からワンクリックで変更できます。'}
-            </p>
+            {projectId && (
+              <p className="mt-1 text-[11px] text-ink-muted leading-relaxed">
+                公開済みのため名前は変更できません（変更するには「破棄」してから公開し直してください）。
+              </p>
+            )}
           </div>
           {/* ── データの保存を持っていく（2026-08-15）──────────────────────
               データはオブジェクトストレージにあり、**計算とは別の場所**にある。
@@ -837,7 +785,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
               {confirmRestart ? (
                 <div className="rounded-lg border border-line bg-overlay p-3 space-y-2">
                   <p className="text-xs text-ink-secondary leading-relaxed select-text">
-                    アプリが数十秒間停止します。再起動して設定（環境変数・ヘルスチェック）を反映しますか？
+                    アプリが数十秒間停止します。再起動して設定を反映しますか？
                   </p>
                   <div className="flex gap-2">
                     <button
@@ -917,7 +865,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
               {rs === 'ERROR' && (
                 <div className="space-y-1 pt-1">
                   <p className="text-xs text-brand-red leading-relaxed select-text">
-                    {describeErrorCode(status.errorCode) || '公開に失敗しました。詳細は HANAMII の管理画面をご確認ください。'}
+                    {describeErrorCode(status.errorCode) || '公開に失敗しました。'}
                   </p>
                   <a href="https://hanamii.jp" className="inline-block text-xs text-sakura hover:underline">HANAMII の管理画面で詳細を見る ↗</a>
                 </div>
@@ -965,29 +913,14 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
           )}
 
           {projectId && (
-            confirmDel ? (
-              <div className="rounded-lg border border-brand-red/60 bg-overlay p-3 space-y-2">
-                <p className="text-xs text-brand-red font-semibold">この公開を破棄（削除）します。公開URLは無効になります。</p>
-                {/* ── データが消えることを、言わずに押させない（2026-09-25 検分の指摘1）──────
-                    この 🗑 は 📡 公開したもの一覧の 🗑 とまったく同じ口（hanamii:teardown に
-                    projectDir を渡す）を通り、**保存場所のデータも消す**。同じ振る舞いなら
-                    同じことを言う（掟5「同じ画面の同じボタンで振る舞いを変えない」）。
-                    文の組み立ては shared/teardownSupport.ts の純関数に任せる（掟10）。
-                    **全件（placements）で組み立てる**——1件だけ名指しすると、名前が出なかった
-                    保存場所とデータまで消える（指摘5）。 */}
-                {teardownDataNoteForAll({ target: 'hanamii', scope: 'list', placements }) && (
-                  <p className="text-xs text-brand-red leading-relaxed select-text">
-                    💾 {teardownDataNoteForAll({ target: 'hanamii', scope: 'list', placements })}
-                  </p>
-                )}
-                <div className="flex gap-2">
-                  <button onClick={teardown} disabled={teardownLocked} className="bg-brand-red-fill text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40">破棄する</button>
-                  <button onClick={() => setConfirmDel(false)} className="bg-overlay text-ink border border-line rounded-lg px-3 py-1.5 text-xs">やめる</button>
-                </div>
-              </div>
-            ) : (
-              <button onClick={() => setConfirmDel(true)} disabled={teardownLocked} className="text-xs text-ink-muted hover:text-brand-red disabled:opacity-40">🗑 この公開を破棄する</button>
-            )
+            <HanamiiTeardownSection
+              projectDir={projectDir}
+              locked={teardownLocked}
+              ops={ops}
+              onStart={() => { setMsg(''); setMsgDetail(''); setMsgOk(false); setTearingDown(true); ops.clearShown() }}
+              onFinished={() => setTearingDown(false)}
+              onTornDown={showTornDown}
+            />
           )}
         </section>
       )}
@@ -995,7 +928,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
       {/* トークンを消した・まだ読めていない間も、進み具合と結果は見失わない（公開の節ごと隠れるため、ここに出す）。 */}
       {!token && (ops.ownRunning || ops.foreignRunning || ops.shown.length > 0) && <div className="space-y-3">{opsBlock}</div>}
 
-      {msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} kind={msgKind} target="HANAMII" ok={msgOk} />}
+      {msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} kind="公開" target="HANAMII" ok={msgOk} />}
     </div>
   )
 }
@@ -1083,7 +1016,7 @@ export function OpProgressCard({ rec }: { rec: ProjectOpRecordShape }) {
   const pct = p && typeof p.step === 'number' && typeof p.total === 'number' && p.total >= 1
     ? Math.min(100, Math.max(0, Math.round((p.step / p.total) * 100)))
     : null
-  const what = rec.op === '削除' ? '破棄' : rec.op === '作成' ? '作成' : '公開'
+  const what = opWordFor(rec.op, rec.target)
   const clock = clockText(rec.startedAt)
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-1.5" role="status">
@@ -1111,7 +1044,7 @@ export function OpForeignNote({ rec }: { rec: ProjectOpRecordShape }) {
   const where = names[rec.target] ?? ''
   return (
     <p className="text-[11px] text-ink-muted leading-relaxed">
-      このプロジェクトでは別の操作（{rec.op}{where ? `・${where}` : ''}）が進んでいます。終わるまで、この画面の公開などの操作は押せません。
+      このプロジェクトでは別の操作（{opWordFor(rec.op, rec.target)}{where ? `・${where}` : ''}）が進んでいます。終わるまで、この画面の公開などの操作は押せません。
     </p>
   )
 }
@@ -1131,11 +1064,11 @@ export function OpWarnings({ warnings }: { warnings: string[] }) {
   )
 }
 
-/** 終わった HANAMII の公開・破棄1件を、結果と警告として出す。 */
+/** 終わった HANAMII の公開・破棄1件を、結果と警告として出す。破棄は節（HanamiiTeardownSection）が描く。 */
 function HanamiiOpResult({ rec, demoted }: { rec: ProjectOpRecordShape; demoted: boolean }) {
+  if (rec.op === '削除') return <HanamiiTeardownResult rec={rec} />
   const res = rec.result
-  const isDelete = rec.op === '削除'
-  const head = `${isDelete ? '🗑 破棄' : '🚀 公開'}の結果（${clockText(rec.startedAt)} に始まった操作）`
+  const head = `🚀 公開の結果（${clockText(rec.startedAt)} に始まった操作）`
   if (!res) {
     return (
       <div className="space-y-2">
@@ -1149,11 +1082,7 @@ function HanamiiOpResult({ rec, demoted }: { rec: ProjectOpRecordShape; demoted:
   // （ok は「依頼が受け付けられた」の意味。動いたかは deployState が言う）。
   let failure: string | null = null
   let title = ''
-  if (isDelete) {
-    if (res.ok) title = '✅ 破棄しました。'
-    else if (res.extra?.appDeleted === true) failure = `HANAMII のプロジェクトは削除しました。ただし、保存場所は削除できませんでした: ${res.message ?? '原因不明'}`
-    else failure = res.message ?? '削除に失敗しました'
-  } else if (!res.ok) {
+  if (!res.ok) {
     failure = res.message ?? '公開に失敗しました'
   } else if (deployState === 'ready') {
     title = '✅ 公開できました。新しいバージョンが起動したことを確かめました。'
@@ -1167,7 +1096,7 @@ function HanamiiOpResult({ rec, demoted }: { rec: ProjectOpRecordShape; demoted:
     <div className="space-y-2">
       <p className="text-[11px] text-ink-muted">{head}</p>
       {failure !== null
-        ? <ErrorMessageBlock msg={failure} detail={res.detail ?? ''} demoted={demoted} kind={isDelete ? '破棄' : '公開'} target="HANAMII" ok={false} />
+        ? <ErrorMessageBlock msg={failure} detail={res.detail ?? ''} demoted={demoted} kind="公開" target="HANAMII" ok={false} />
         : <p className="text-xs font-semibold text-ink leading-relaxed select-text">{title}</p>}
       {failure === null && res.url && (
         <div className="flex items-center gap-2 flex-wrap">

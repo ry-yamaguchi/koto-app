@@ -12,12 +12,19 @@ import path from 'node:path'
 // 中身（処理と画面の流れ）は1つで、押せる場所はいまのまま（専有型タブの手順6と、📡 の各行の 🗑）。
 // どちらから押しても、同じ確認の文・同じ進み具合・同じ閉じるときの警告・同じ結果・同じ公開の記録の片づけになる。
 //
+// 0.6.22 段階3B-4: A〜D3 は、共通の流れ（teardown/flow.ts）に専有型の仕様書（teardown/targets/dedicated.ts）を載せた形に向け直した
+// （期待は変えない。変えたのは V2〜V6・V13・V15 に当たる所だけ。設計書 10.11.13）。
+// 3B-5: E〜E3（📡 の行のフック・行）も、共通のフック useTeardownFlow と行 TeardownRow に専有型の仕様書を渡す形に向け直した
+// （期待は変えない。変えたのは V1〜V2・V8 に当たる所だけ。結果の形が手本の返り値から TeardownView に、閉じて開き直した知らせの見出しが「🔔 削除の結果（…）」になった）。
+// 3B-7: 手本が消えたので、手本の見張りの引数 kinds を見ていた節は消した（同じことは tests/teardownWatchCommon.test.ts が持つ。
+// パネルの見張り watchDedicatedOps は手順5・6・8の3種類を読む＝tests/ops-dedicated-resume.test.ts）。
+//
 // ここは**ソースの文字列を読まない**（掟10「お金・破壊の歯止めは、振る舞いで固定する」。配線の形は tests/apprunDedicatedWiring.test.ts）。
 //   (A) 流れの歯止め: 偽の口に流し、「やめる」なら IPC は0回・「削除する」なら confirmed:true で1回だけ、を数える
 //   (B) 確認の文: 2つの入口で同じ入力なら同じ文。消えるもの・課金・ロードバランサの時間（目安の仕組みの出力）が入る
 //   (C) 本物の main のハンドラ＋偽の HTTP サーバ（偽 client）: 📡 の入口から アプリ → LB → ASG → クラスタ の順に要求が出る
 //   (D) 公開の記録: main が消す。画面（renderer）は消さない（偽の記録で、消えたこと・画面の口が呼ばれなかったことを見る）
-//   (E) 📡 の行のフック（useDedicatedTeardown）を、React の小さな代役の上で実際に動かす:
+//   (E) 📡 の行のフック（useTeardownFlow＋専有型の仕様書）を、React の小さな代役の上で実際に動かす:
 //       確認 → 実行 → 進み具合 → 閉じるときの警告 → 結果。閉じて開き直したときの続き・結果。
 //
 // React は DOM 環境（jsdom 等）を入れていないので、react の useState／useRef／useCallback／useEffect だけを
@@ -89,16 +96,19 @@ vi.mock('../src/main/cloud/apprunDedicatedApply', async (importOriginal) => {
 import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated'
 import { writeApprunDedicatedRecordFs, writePublishRecordFs, readApprunDedicatedFs } from '../src/main/publishMetaFs'
 import { getOps, ackOps, setProjectOpsListener, resetProjectOpsForTests } from '../src/main/projectOps'
-import { useDedicatedTeardown, type DedicatedTeardownOutcome } from '../src/renderer/hooks/useDedicatedTeardown'
+import { useTeardownFlow, type TeardownFlowOutcome } from '../src/renderer/teardown/useTeardownFlow'
+import { runTeardownFlow, electronFlowDeps, teardownProgressText, type RunTeardownFlowDeps } from '../src/renderer/teardown/flow'
+import { loadTeardownFacts, electronTeardownFactsApi, type TeardownFactsApi } from '../src/renderer/teardown/facts'
+import { buildTeardownConfirm, buildTeardownConfirmBody, unreadableCautions } from '../src/renderer/teardown/confirm'
+import type { TeardownFacts } from '../src/renderer/teardown/types'
 import {
-  runDedicatedTeardown, buildDedicatedTeardownConfirm, loadDedicatedTeardownFacts, electronTeardownDeps, electronFactsApi,
-  dedicatedTeardownTargets, lbWaitNote, teardownProgressText, unreadableCautions, DEDICATED_TEARDOWN_ACTIVITY_LABEL, NOTHING_TO_DELETE_MESSAGE,
-  type DedicatedTeardownFacts, type DedicatedTeardownFactsApi, type RunDedicatedTeardownDeps, type DedicatedTeardownResult,
-} from '../src/renderer/dedicatedTeardownFlow'
-import DedicatedTeardownRow from '../src/renderer/components/DedicatedTeardownRow'
+  dedicatedTeardownSpec, dedicatedTeardownTargets, lbWaitNote, DEDICATED_NOTHING_TO_DELETE_MESSAGE, DEDICATED_TEARDOWN_WORDS, DEDICATED_LIST_KEY_MISSING_MESSAGE,
+  type DedicatedTeardownRecord, type DedicatedTeardownReply,
+} from '../src/renderer/teardown/targets/dedicated'
+import TeardownRow from '../src/renderer/components/teardown/TeardownRow'
 import { dedicatedTeardownHasWork } from '../src/shared/teardownSupport'
 import { withProjectLock } from '../src/main/projectLock'
-import { watchDedicatedOps, shouldShowTeardownButton, shouldShowTeardownList, teardownConfirmMessage, type DedicatedOpsApi } from '../src/renderer/apprunDedicatedActions'
+import { shouldShowTeardownButton, shouldShowTeardownList } from '../src/renderer/apprunDedicatedActions'
 import { PUBLISH_CLOSE_WARNING } from '../src/renderer/activity'
 import { estimatesFor, emptyStore } from '../src/shared/stageEstimate'
 import { PUBLISH_TARGET_LABEL } from '../src/renderer/publishStatus'
@@ -108,34 +118,37 @@ registerApprunDedicatedHandlers({} as any)
 const AUTH = { token: 'tok', secret: 'sec' }
 const tick = async () => { for (let k = 0; k < 6; k++) await new Promise<void>(r => setTimeout(r, 0)) }
 const FULL_RECORD = { clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1', applicationID: 'app1', applicationName: 'myapp' } as const
-const OK_RESULT: DedicatedTeardownResult = { ok: true, executed: ['x'], message: '', remaining: {} }
+const OK_RESULT: DedicatedTeardownReply = { ok: true, executed: ['x'], message: '', remaining: {} }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // (A) 流れの歯止め（偽の口）
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const FACTS: DedicatedTeardownFacts = {
+const FACTS: TeardownFacts<DedicatedTeardownRecord> = {
   projectName: 'myapp',
   record: FULL_RECORD,
   placements: [],
   placementsUnreadable: false,
+  placementsUnreadableCause: null,
   otherTargets: [],
   otherTargetsUnreadable: false,
-  lbEstimateLine: '目安 約9分（開発時の実測・2026-09-10）',
+  waitNote: lbWaitNote(FULL_RECORD, '目安 約9分（開発時の実測・2026-09-10）'),
 }
 
-function fakeDeps(over: Partial<RunDedicatedTeardownDeps> & { answer?: boolean } = {}) {
+type FlowDeps = RunTeardownFlowDeps<DedicatedTeardownRecord, { token: string; secret: string }, DedicatedTeardownReply>
+/** 確認の答えは、true／false のほか、不明な値（V15）も渡せる。 */
+function fakeDeps(over: Partial<FlowDeps> & { answer?: unknown } = {}) {
   const calls = {
     teardown: [] as Array<{ dir: string; auth: unknown; opts: unknown }>,
     confirm: [] as unknown[],
     begin: [] as Array<{ label: string; opts: unknown }>,
     ended: 0, started: 0, keyLoads: 0, facts: 0,
   }
-  const deps: RunDedicatedTeardownDeps = {
+  const deps: FlowDeps = {
     loadFacts: async () => { calls.facts++; return FACTS },
-    confirm: async o => { calls.confirm.push(o); return over.answer ?? true },
-    loadKey: async () => { calls.keyLoads++; return AUTH },
-    teardown: async (dir, auth, opts) => { calls.teardown.push({ dir, auth, opts }); return OK_RESULT },
+    confirm: async o => { calls.confirm.push(o); return ('answer' in over ? over.answer : true) as boolean },
+    loadAuth: async () => { calls.keyLoads++; return AUTH },
+    invoke: async (dir, auth, opts) => { calls.teardown.push({ dir, auth, opts }); return OK_RESULT },
     beginActivity: (label, opts) => { calls.begin.push({ label, opts }); return () => { calls.ended++ } },
     onStart: () => { calls.started++ },
     keyMissingMessage: 'キーが未登録です（テスト）',
@@ -145,10 +158,15 @@ function fakeDeps(over: Partial<RunDedicatedTeardownDeps> & { answer?: boolean }
   return { deps, calls }
 }
 
-describe('(A) runDedicatedTeardown: 確認が no なら IPC は0回・yes なら confirmed:true で1回だけ', () => {
+const runFlow = (dir: string, deps: FlowDeps) => runTeardownFlow(dir, dedicatedTeardownSpec, deps)
+/** 記録の読み口だけを偽物にした専有型の仕様書（確認の材料を読む試験用。ほかの項目は本物）。 */
+const specWith = (readRecord: () => Promise<DedicatedTeardownRecord>) => ({ ...dedicatedTeardownSpec, readRecord })
+const confirmOf = (facts: TeardownFacts<DedicatedTeardownRecord>) => buildTeardownConfirm(dedicatedTeardownSpec, facts)
+
+describe('(A) runTeardownFlow（専有型の仕様書）: 確認が no なら IPC は0回・yes なら confirmed:true で1回だけ', () => {
   it('★★ yes: IPC（apprunDedicated:teardown）が { confirmed: true } 付きで1回だけ。窓を閉じるときの警告つきで活動レジストリに載り、終われば必ず外れる', async () => {
     const { deps, calls } = fakeDeps()
-    const out = await runDedicatedTeardown('/p', deps)
+    const out = await runFlow('/p', deps)
     expect(out).toEqual({ cancelled: false, result: OK_RESULT })
     expect(calls.teardown).toEqual([{ dir: '/p', auth: AUTH, opts: { confirmed: true } }])
     expect(calls.started).toBe(1)
@@ -160,16 +178,16 @@ describe('(A) runDedicatedTeardown: 確認が no なら IPC は0回・yes なら
     const order: string[] = []
     const { deps } = fakeDeps({
       onStart: () => { order.push('onStart') },
-      loadKey: async () => { order.push('loadKey'); return AUTH },
-      teardown: async () => { order.push('teardown'); return OK_RESULT },
+      loadAuth: async () => { order.push('loadAuth'); return AUTH },
+      invoke: async () => { order.push('invoke'); return OK_RESULT },
     })
-    await runDedicatedTeardown('/p', deps)
-    expect(order).toEqual(['onStart', 'loadKey', 'teardown'])
+    await runFlow('/p', deps)
+    expect(order).toEqual(['onStart', 'loadAuth', 'invoke'])
   })
 
   it('★★ no（やめる）: IPC は0回。キーも読まず、活動レジストリにも載せず、画面を「削除しています…」にもしない', async () => {
     const { deps, calls } = fakeDeps({ answer: false })
-    const out = await runDedicatedTeardown('/p', deps)
+    const out = await runFlow('/p', deps)
     expect(out).toEqual({ cancelled: true })
     expect(calls.teardown).toEqual([])
     expect(calls.keyLoads).toBe(0)
@@ -178,9 +196,20 @@ describe('(A) runDedicatedTeardown: 確認が no なら IPC は0回・yes なら
     expect(calls.confirm).toHaveLength(1) // 確認は出した
   })
 
+  // V15（10.11.12）: 手本は `if (!confirmed)` で真偽の緩い判定だった。共通の流れは true のときだけ進む（不明な値を肯定に戻さない）。
+  it.each([['yes'], [1], [{}], ['true'], [undefined], [null]])('★★ V15: 確認の答えが %j（true ではない）なら進まない。IPC は0回、キーも読まず、活動レジストリにも載せない', async answer => {
+    const { deps, calls } = fakeDeps({ answer })
+    const out = await runFlow('/p', deps)
+    expect(out).toEqual({ cancelled: true })
+    expect(calls.teardown).toEqual([])
+    expect(calls.keyLoads).toBe(0)
+    expect(calls.begin).toEqual([])
+    expect(calls.started).toBe(0)
+  })
+
   it('★ 確認の材料が読めなければ、確認も IPC も出さずに失敗の結果を返す（消すものが分からないまま消させない）', async () => {
     const { deps, calls } = fakeDeps({ loadFacts: async () => { throw new Error('読めない') } })
-    const out = await runDedicatedTeardown('/p', deps)
+    const out = await runFlow('/p', deps)
     expect(out.cancelled).toBe(false)
     expect((out as any).result.ok).toBe(false)
     expect((out as any).result.message).toContain('読めない')
@@ -190,8 +219,8 @@ describe('(A) runDedicatedTeardown: 確認が no なら IPC は0回・yes なら
   })
 
   it('★ キーが無ければ IPC は0回。入口ごとの案内文を返す。活動レジストリは外れる', async () => {
-    const { deps, calls } = fakeDeps({ loadKey: async () => null })
-    const out = await runDedicatedTeardown('/p', deps)
+    const { deps, calls } = fakeDeps({ loadAuth: async () => null })
+    const out = await runFlow('/p', deps)
     expect((out as any).result).toEqual({ ok: false, executed: [], message: 'キーが未登録です（テスト）', remaining: {} })
     expect(calls.teardown).toEqual([])
     expect(calls.ended).toBe(calls.begin.length)
@@ -199,8 +228,8 @@ describe('(A) runDedicatedTeardown: 確認が no なら IPC は0回・yes なら
   })
 
   it('★ IPC が例外でも、活動レジストリは必ず外れる（実行中の印が残らない）', async () => {
-    const { deps, calls } = fakeDeps({ teardown: async () => { throw new Error('通信失敗') } })
-    await expect(runDedicatedTeardown('/p', deps)).rejects.toThrow('通信失敗')
+    const { deps, calls } = fakeDeps({ invoke: async () => { throw new Error('通信失敗') } })
+    await expect(runFlow('/p', deps)).rejects.toThrow('通信失敗')
     expect(calls.begin).toHaveLength(1)
     expect(calls.ended).toBe(1)
   })
@@ -210,19 +239,19 @@ describe('(A) runDedicatedTeardown: 確認が no なら IPC は0回・yes なら
 // (B) 確認の文: 2つの入口で同じ入力なら同じ文
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('(B) buildDedicatedTeardownConfirm: 消えるもの・課金・ロードバランサの時間', () => {
+describe('(B) buildTeardownConfirm（専有型の仕様書）: 消えるもの・課金・ロードバランサの時間', () => {
   it('★★ 手順6の入口で作った確認と、📡 の入口で作った確認は、同じ入力なら1文字も違わない（入口は同じ関数を呼ぶだけ）', async () => {
     const step6 = fakeDeps()
     const list = fakeDeps({ keyMissingMessage: '別の案内文（入口ごとに違ってよいのはここだけ）' })
-    await runDedicatedTeardown('/p', step6.deps)
-    await runDedicatedTeardown('/p', list.deps)
+    await runFlow('/p', step6.deps)
+    await runFlow('/p', list.deps)
     expect(step6.calls.confirm).toHaveLength(1)
     expect(list.calls.confirm).toEqual(step6.calls.confirm)
-    expect(step6.calls.confirm[0]).toEqual(buildDedicatedTeardownConfirm(FACTS))
+    expect(step6.calls.confirm[0]).toEqual(confirmOf(FACTS))
   })
 
   it('消えるもの（アプリ → LB → ASG → クラスタ）の名前・課金が止まること・ロードバランサの時間（目安の仕組みの出力）が入る', () => {
-    const c = buildDedicatedTeardownConfirm(FACTS)
+    const c = confirmOf(FACTS)
     expect(c.title).toBe('専有型クラスタを削除します')
     expect(c.confirmLabel).toBe('削除する')
     expect(c.danger).toBe(true)
@@ -235,68 +264,68 @@ describe('(B) buildDedicatedTeardownConfirm: 消えるもの・課金・ロー�
     expect(c.body).toContain('⏳ ロードバランサの削除には時間がかかります。目安 約9分（開発時の実測・2026-09-10）。')
     // 時間の予告は最後の問い（元に戻せません…よろしいですか？）の直前
     expect(c.body.indexOf('⏳')).toBeLessThan(c.body.indexOf('この操作は元に戻せません。'))
+    // V2（D10）: ロードバランサが記録にあるので DNS の A レコードの1行が出る。時間の予告の前
+    expect(c.body).toContain('🌐 独自ドメインの DNS に、このロードバランサを指す A レコードがあれば、DNS の管理画面で削除してください。')
+    expect(c.body.indexOf('🌐')).toBeLessThan(c.body.indexOf('⏳'))
     // 「アプリだけ」の文・「残ります」の文は戻らない
     for (const gone of ['アプリだけ', 'クラスタ・ロードバランサは残ります', '手順6から', '消さない限り課金が続きます']) expect(c.body).not.toContain(gone)
     expect(c.body, '丸数字').not.toMatch(/[①-⑳]/)
   })
 
   it('★ ロードバランサの目安は、目安の仕組み（shared/stageEstimate.ts の estimatesFor）の出力そのもの。数字はここで持たない', async () => {
-    const api: DedicatedTeardownFactsApi = {
-      state: async () => FULL_RECORD,
+    const api: TeardownFactsApi = {
       placements: async () => [],
       otherTargets: async () => [],
       estimates: async () => estimatesFor(emptyStore()), // この Mac に記録が無い状態＝開発時の実測
     }
-    const facts = await loadDedicatedTeardownFacts('/p', api)
-    expect(facts.lbEstimateLine).toBe('目安 約9分（開発時の実測・2026-09-10）')
-    expect(buildDedicatedTeardownConfirm(facts).body).toContain('目安 約9分（開発時の実測・2026-09-10）')
+    const facts = await loadTeardownFacts('/p', specWith(async () => FULL_RECORD), api)
+    expect(facts.waitNote).toBe('⏳ ロードバランサの削除には時間がかかります。目安 約9分（開発時の実測・2026-09-10）。')
+    expect(confirmOf(facts).body).toContain('目安 約9分（開発時の実測・2026-09-10）')
     // この Mac で測れていれば、その中央値に変わる（文は同じ仕組み）
     const measured = { ...emptyStore(), stages: { 'teardown.lb': [{ ms: 6 * 60_000, at: '2026-10-01T00:00:00.000Z', version: '0', zone: null }] } }
-    const facts2 = await loadDedicatedTeardownFacts('/p', { ...api, estimates: async () => estimatesFor(measured) })
-    expect(facts2.lbEstimateLine).toBe('目安 約6分（この Mac での前回の実測）')
+    const facts2 = await loadTeardownFacts('/p', specWith(async () => FULL_RECORD), { ...api, estimates: async () => estimatesFor(measured) })
+    expect(facts2.waitNote).toBe('⏳ ロードバランサの削除には時間がかかります。目安 約6分（この Mac での前回の実測）。')
   })
 
   it('ロードバランサが記録に無い・目安が読めないときは、時間の予告を作らない（無い段に目安を作らない）', async () => {
     expect(lbWaitNote({ clusterID: 'c1' }, '目安 約9分（開発時の実測・2026-09-10）')).toBeNull()
     expect(lbWaitNote(FULL_RECORD, null)).toBeNull()
-    const api: DedicatedTeardownFactsApi = {
-      state: async () => FULL_RECORD, placements: async () => [], otherTargets: async () => [],
+    const api: TeardownFactsApi = {
+      placements: async () => [], otherTargets: async () => [],
       estimates: async () => { throw new Error('読めない') },
     }
-    const facts = await loadDedicatedTeardownFacts('/p', api)
-    expect(facts.lbEstimateLine).toBeNull()
-    expect(buildDedicatedTeardownConfirm(facts).body).not.toContain('⏳')
+    const facts = await loadTeardownFacts('/p', specWith(async () => FULL_RECORD), api)
+    expect(facts.waitNote).toBeNull()
+    expect(confirmOf(facts).body).not.toContain('⏳')
   })
 
   it('★★ 保存場所は全件を名指しし、保存場所を共有しているほかの公開先も言う。材料は押した時点で読み直す', async () => {
-    const api: DedicatedTeardownFactsApi = {
-      state: async () => FULL_RECORD,
+    const api: TeardownFactsApi = {
       placements: async () => [{ bucket: 'koto-data-x', prefix: 'projects/a/', shared: true }, { bucket: 'koto-data-y', prefix: 'projects/a/', shared: true }],
       otherTargets: async () => ['🌸 HANAMII'],
       estimates: async () => ({}),
     }
-    const body = buildDedicatedTeardownConfirm(await loadDedicatedTeardownFacts('/p', api)).body
+    const body = confirmOf(await loadTeardownFacts('/p', specWith(async () => FULL_RECORD), api)).body
     expect(body).toContain("保存場所『koto-data-x』『koto-data-y』にある、このプロジェクトのデータ")
     expect(body).toContain('も削除します')
     expect(body).toContain('🌸 HANAMII')
   })
 
   it('資源の記録が読めなければ投げる（消すものが分からないまま確認を出さない）。保存場所・ほかの公開先が読めないだけなら空に倒す', async () => {
-    await expect(loadDedicatedTeardownFacts('/p', {
-      state: async () => { throw new Error('記録なし') }, placements: async () => [], otherTargets: async () => [], estimates: async () => ({}),
+    await expect(loadTeardownFacts('/p', specWith(async () => { throw new Error('記録なし') }), {
+      placements: async () => [], otherTargets: async () => [], estimates: async () => ({}),
     })).rejects.toThrow('記録なし')
-    const facts = await loadDedicatedTeardownFacts('/p', {
-      state: async () => FULL_RECORD,
+    const facts = await loadTeardownFacts('/p', specWith(async () => FULL_RECORD), {
       placements: async () => { throw new Error('x') }, otherTargets: async () => { throw new Error('y') }, estimates: async () => { throw new Error('z') },
     })
     expect(facts.placements).toEqual([])
     expect(facts.otherTargets).toEqual([])
-    expect(facts.lbEstimateLine).toBeNull()
+    expect(facts.waitNote).toBeNull()
     // 空に倒すが、**読めなかった事実は残す**（確認の文で言う。黙って「消えるものは無い」ことにしない・2026-10-08 検分）
     expect(facts.placementsUnreadable).toBe(true)
     expect(facts.otherTargetsUnreadable).toBe(true)
     // 読めた回は立たない（空の配列が返ったのは「読めて、無かった」）
-    const ok = await loadDedicatedTeardownFacts('/p', { state: async () => FULL_RECORD, placements: async () => [], otherTargets: async () => [], estimates: async () => ({}) })
+    const ok = await loadTeardownFacts('/p', specWith(async () => FULL_RECORD), { placements: async () => [], otherTargets: async () => [], estimates: async () => ({}) })
     expect(ok.placementsUnreadable).toBe(false)
     expect(ok.otherTargetsUnreadable).toBe(false)
   })
@@ -309,9 +338,9 @@ describe('(B) buildDedicatedTeardownConfirm: 消えるもの・課金・ロー�
 
   it('teardownProgressText: 記録が「削除が走っている」と言えばその文・言わなければ、この画面が受けた最新の1行（入口によらず同じ選び方）', () => {
     const rec = { progress: { label: '記録の文', detail: '（2分経過）' } }
-    expect(teardownProgressText({ runningKind: 'teardown', runningRecord: rec, local: '手元の文' })).toBe('記録の文 （2分経過）')
-    expect(teardownProgressText({ runningKind: null, runningRecord: null, local: '手元の文' })).toBe('手元の文')
-    expect(teardownProgressText({ runningKind: 'publish', runningRecord: rec, local: null })).toBeNull()
+    expect(teardownProgressText({ running: true, runningRecord: rec, local: '手元の文' })).toBe('記録の文 （2分経過）')
+    expect(teardownProgressText({ running: false, runningRecord: null, local: '手元の文' })).toBe('手元の文')
+    expect(teardownProgressText({ running: false, runningRecord: rec, local: null })).toBeNull() // 別の操作（公開など）の記録の文は出さない
   })
 })
 
@@ -320,26 +349,28 @@ describe('(B) buildDedicatedTeardownConfirm: 消えるもの・課金・ロー�
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('(B2) 確認の中身: 対象のプロジェクト名・読めなかった材料の注意', () => {
-  const apiOf = (over: Partial<DedicatedTeardownFactsApi> = {}): DedicatedTeardownFactsApi => ({
-    state: async () => FULL_RECORD, placements: async () => [], otherTargets: async () => [], estimates: async () => ({}), ...over,
+  const apiOf = (over: Partial<TeardownFactsApi> = {}): TeardownFactsApi => ({
+    placements: async () => [], otherTargets: async () => [], estimates: async () => ({}), ...over,
   })
+  const cautionsOf = (f: Partial<TeardownFacts<DedicatedTeardownRecord>>) =>
+    unreadableCautions({ ...FACTS, ...f }, DEDICATED_TEARDOWN_WORDS, dedicatedTeardownSpec.irreversibleNote, dedicatedTeardownSpec.target)
 
   it('★ 先頭に対象のプロジェクト名が入る（全プロジェクトが並ぶ 📡 の一覧で、どのプロジェクトのものを消すか確かめられる）', async () => {
-    const facts = await loadDedicatedTeardownFacts('/Users/x/projects/myapp-copy', apiOf())
+    const facts = await loadTeardownFacts('/Users/x/projects/myapp-copy', specWith(async () => FULL_RECORD), apiOf())
     expect(facts.projectName).toBe('myapp-copy')
-    const body = buildDedicatedTeardownConfirm(facts).body
+    const body = confirmOf(facts).body
     expect(body.startsWith('対象のプロジェクト: 『myapp-copy』\n\n')).toBe(true)
     // 入口ではなく、渡されたプロジェクトで決まる
-    expect(buildDedicatedTeardownConfirm({ ...facts, projectName: 'other' }).body).toContain('『other』')
-    expect(buildDedicatedTeardownConfirm({ ...facts, projectName: 'other' }).body).not.toContain('myapp-copy')
+    expect(confirmOf({ ...facts, projectName: 'other' }).body).toContain('『other』')
+    expect(confirmOf({ ...facts, projectName: 'other' }).body).not.toContain('myapp-copy')
   })
 
   it('★★ 保存場所の設定を読めなかったら、確認の文がそれを言う。言うのは事実どおり「保存場所の削除は行われず、残る」こと。読めた回は言わない', () => {
-    const base = buildDedicatedTeardownConfirm(FACTS).body
+    const base = confirmOf(FACTS).body
     expect(base).not.toContain('読めない')
     expect(base).not.toContain('読めなかった')
-    expect(unreadableCautions(FACTS)).toEqual([])
-    const body = buildDedicatedTeardownConfirm({ ...FACTS, placementsUnreadable: true, placementsUnreadableCause: 'settings' }).body
+    expect(cautionsOf({})).toEqual([])
+    const body = confirmOf({ ...FACTS, placementsUnreadable: true, placementsUnreadableCause: 'settings' }).body
     expect(body).toContain('保存場所の設定を読めないため、保存場所の削除は行われません')
     expect(body).toContain('その保存場所は残り、月額が続きます')
     expect(body).toContain('設定を直してからやり直してください')
@@ -351,25 +382,26 @@ describe('(B2) 確認の中身: 対象のプロジェクト名・読めなかっ
     // 2026-10-08 検分: 問い合わせそのものが失敗した（IPC の reject）回は、「削除は行われません」とは言わない（main は env.json を読めて、
     // 保存場所を削除するかもしれない）。名前を挙げられないことと、削除される場合があることを言う。原因が省略された回も同じ（言い切らない側）
     for (const cause of ['call', undefined, null] as const) {
-      const call = buildDedicatedTeardownConfirm({ ...FACTS, placementsUnreadable: true, placementsUnreadableCause: cause }).body
+      const call = confirmOf({ ...FACTS, placementsUnreadable: true, placementsUnreadableCause: cause as 'call' | null }).body
       expect(call, String(cause)).toContain('保存場所の設定を問い合わせられなかったため、ここに保存場所の名前を挙げられません')
       expect(call, String(cause)).toContain('その中のこのプロジェクトのデータも削除される場合があります')
       expect(call, String(cause)).not.toContain('保存場所の削除は行われません')
       expect(call, String(cause)).not.toContain('その保存場所は残り、月額が続きます')
     }
     // 読めた回（原因だけが残っていても、placementsUnreadable が false なら言わない）
-    expect(unreadableCautions({ ...FACTS, placementsUnreadable: false, placementsUnreadableCause: 'settings' })).toEqual([])
-    const others = buildDedicatedTeardownConfirm({ ...FACTS, otherTargetsUnreadable: true }).body
+    expect(cautionsOf({ placementsUnreadable: false, placementsUnreadableCause: 'settings' })).toEqual([])
+    const others = confirmOf({ ...FACTS, otherTargetsUnreadable: true }).body
     expect(others).toContain('ほかの公開先の記録を読めなかったため')
     expect(others).not.toContain('保存場所の設定を読めない')
   })
 
   it('★ 消すものの一覧が空でも「次を削除します: 」と空のまま出さない（名指ししないまま「削除する」を押させない・最後の砦）', () => {
-    const msg = teardownConfirmMessage({ targets: [], placements: [], dataNote: '' })
+    const common = { verb: '削除', placements: [], dataNote: '', claimsComputeBillingStops: true, irreversibleNote: 'always' } as const
+    const msg = buildTeardownConfirmBody({ ...common, targets: [] })
     expect(msg).not.toMatch(/次を削除します: \n/)
     expect(msg).toContain('次を削除します: （記録に名前を挙げられるものがありません）')
     // 一覧があるときの文は変わらない
-    expect(teardownConfirmMessage({ targets: ["クラスタ『c1』"], placements: [], dataNote: '' })).toContain("次を削除します: クラスタ『c1』")
+    expect(buildTeardownConfirmBody({ ...common, targets: ["クラスタ『c1』"] })).toContain("次を削除します: クラスタ『c1』")
   })
 })
 
@@ -404,10 +436,10 @@ describe('(B2) dedicatedTeardownHasWork: 「消すものが記録にあるか」
     expect(shouldShowTeardownList({ storageLeftoverBucket: 'koto-data-x' })).toBe(false)
     expect(shouldShowTeardownList(null)).toBe(false)
     expect(shouldShowTeardownList(undefined)).toBe(false)
-    // 画面は、この判断で一覧を出す（hasAnyResource のまま戻らない）
-    const panel = fs.readFileSync(path.join(__dirname, '../src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf8')
+    // 画面は、この判断で一覧を出す（hasAnyResource のまま戻らない）。0.6.22 3B-6a から、一覧を描くのは手順6の節（DedicatedTeardownSection.tsx）。
+    const section = fs.readFileSync(path.join(__dirname, '../src/renderer/components/DedicatedTeardownSection.tsx'), 'utf8')
       .split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*') && !l.trim().startsWith('/*')).join('\n')
-    expect(panel).toContain('{shouldShowTeardownList(apprunState) && (')
+    expect(section).toContain('{shouldShowTeardownList(apprunState) && (')
   })
 
   it('★★ 走っている間は、記録が空でも手順6は出る。📡 の 🗑 の確認（dedicatedTeardownHasWork）は走っているかを見ない（別の話）', () => {
@@ -425,41 +457,41 @@ describe('(B2) dedicatedTeardownHasWork: 「消すものが記録にあるか」
   })
 })
 
-describe('(B2) electronFactsApi（本物の口）: storage:placement の全件を、確認の文まで落とさない', () => {
+describe('(B2) electronTeardownFactsApi（本物の口）: storage:placement の全件を、確認の文まで落とさない', () => {
   const A = { bucket: 'koto-data-a', prefix: 'projects/myapp/', shared: true }
   const B = { bucket: 'koto-data-b', prefix: 'projects/myapp/', shared: true }
   const reply = (r: unknown) => { (globalThis as any).window.electronAPI.storage.placement = async () => r }
 
   it('★★★ 2件返れば2件とも確認の文に名指しされる（先頭1件だけを読むと『B』が名指しされないまま消える）', async () => {
     reply({ ok: true, placement: A, placements: [A, B] })
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts.placements).toEqual([A, B])
     expect(facts.placementsUnreadable).toBe(false)
-    const body = buildDedicatedTeardownConfirm(facts).body
+    const body = confirmOf(facts).body
     expect(body).toContain('保存場所『koto-data-a』『koto-data-b』にある、このプロジェクトのデータ')
   })
 
   it('★★ placements が無い古い応答でも、先頭1件は拾う（黙って空にしない）', async () => {
     reply({ ok: true, placement: A })
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts.placements).toEqual([A])
-    expect(buildDedicatedTeardownConfirm(facts).body).toContain('保存場所『koto-data-a』')
+    expect(confirmOf(facts).body).toContain('保存場所『koto-data-a』')
   })
 
   it('★★ 読めなかった（ok:false）は、空とは別の事実。placementsUnreadable が立ち、確認の文が「読めなかった」と言う', async () => {
     reply({ ok: false, placement: null, placements: [], message: 'env.json が壊れています' })
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts.placements).toEqual([])
     expect(facts.placementsUnreadable).toBe(true)
     expect(facts.placementsUnreadableCause).toBe('settings')
-    expect(buildDedicatedTeardownConfirm(facts).body).toContain('保存場所の設定を読めないため、保存場所の削除は行われません')
+    expect(confirmOf(facts).body).toContain('保存場所の設定を読めないため、保存場所の削除は行われません')
     // 例外で読めなかったとき（IPC の失敗）も「読めなかった」事実は残る。ただし理由が違う——設定を読めなかったのではなく、問い合わせそのものが失敗した。
     // main は env.json を読めて保存場所を削除するかもしれないので、「削除は行われません」とは言わない（2026-10-08 検分）
     ;(globalThis as any).window.electronAPI.storage.placement = async () => { throw new Error('IPC 失敗') }
-    const facts2 = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts2 = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts2.placementsUnreadable).toBe(true)
     expect(facts2.placementsUnreadableCause).toBe('call')
-    const body2 = buildDedicatedTeardownConfirm(facts2).body
+    const body2 = confirmOf(facts2).body
     expect(body2).toContain('保存場所の設定を問い合わせられなかったため')
     expect(body2).toContain('削除される場合があります')
     expect(body2).not.toContain('保存場所の削除は行われません')
@@ -467,34 +499,34 @@ describe('(B2) electronFactsApi（本物の口）: storage:placement の全件�
 
   it('読めた回は理由も立たない（placementsUnreadable:false・placementsUnreadableCause:null）', async () => {
     reply({ ok: true, placement: null, placements: [] })
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts.placementsUnreadable).toBe(false)
     expect(facts.placementsUnreadableCause).toBeNull()
   })
 
   it('読めて 0 件（保存場所を用意していない）なら、「読めなかった」とは言わない', async () => {
     reply({ ok: true, placement: null, placements: [] })
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts.placements).toEqual([])
     expect(facts.placementsUnreadable).toBe(false)
-    expect(buildDedicatedTeardownConfirm(facts).body).not.toContain('読めなかった')
+    expect(confirmOf(facts).body).not.toContain('読めなかった')
   })
 })
 
 // ── (B3) ほかの公開先の記録（.sakuraide.json）を読めなかったら、otherTargetsUnreadable が立つ（2026-10-08 検分 A）──────────
 // 直す前は、本物の口（electronFactsApi）の otherTargets が readPublishTargets（失敗も壊れた JSON も [] に倒して投げない）を呼んでいた。
-// そのため loadDedicatedTeardownFacts の「投げたら unreadable」の道は、偽の口の試験でしか通らず、**本物の口では一度も立たなかった**
+// そのため loadTeardownFacts の「投げたら unreadable」の道は、偽の口の試験でしか通らず、**本物の口では一度も立たなかった**
 // （確認の文の「ほかの公開先の記録を読めなかったため…」の注意が、実際には出ない）。偽 window の fs.readFile を壊して、本物の口で見る。
-describe('(B3) electronFactsApi（本物の口）: ほかの公開先の記録を読めなかったら、otherTargetsUnreadable が立ち、確認の文が注意を言う', () => {
+describe('(B3) electronTeardownFactsApi（本物の口）: ほかの公開先の記録を読めなかったら、otherTargetsUnreadable が立ち、確認の文が注意を言う', () => {
   const setReadFile = (fn: (p: string) => Promise<string>) => { (globalThis as any).window.electronAPI.fs.readFile = fn }
   const CAUTION = 'ほかの公開先の記録を読めなかったため'
 
   it('★★★ fs.readFile が reject すると立つ。ほかの公開先は空に倒すが、「読めなかった」事実は残り、確認の文が言う', async () => {
     setReadFile(async () => { throw new Error('EACCES: permission denied') })
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts.otherTargets).toEqual([])
     expect(facts.otherTargetsUnreadable).toBe(true)
-    expect(buildDedicatedTeardownConfirm(facts).body).toContain(CAUTION)
+    expect(confirmOf(facts).body).toContain(CAUTION)
   })
 
   it.each([
@@ -505,7 +537,7 @@ describe('(B3) electronFactsApi（本物の口）: ほかの公開先の記録�
     ['publish.targets が文字列', JSON.stringify({ publish: { targets: 'x' } })],
   ])('★★ 読めたが形が違う／壊れている（%s）も「読めなかった」。空に倒して続けるが、事実は残る', async (_label, text) => {
     setReadFile(async () => text)
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts.otherTargets).toEqual([])
     expect(facts.otherTargetsUnreadable).toBe(true)
   })
@@ -517,24 +549,24 @@ describe('(B3) electronFactsApi（本物の口）: ほかの公開先の記録�
       JSON.stringify({}),
     ]) {
       setReadFile(async () => text)
-      const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi())
+      const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
       expect(facts.otherTargets, text).toEqual([])
       expect(facts.otherTargetsUnreadable, text).toBe(false)
-      expect(buildDedicatedTeardownConfirm(facts).body, text).not.toContain(CAUTION)
+      expect(confirmOf(facts).body, text).not.toContain(CAUTION)
     }
   })
 
   it('★ 読めて、ほかの公開先がある（このプロジェクトの記録は Vercel もある）なら、その名前を出し、「読めなかった」とは言わない', async () => {
-    const facts = await loadDedicatedTeardownFacts(dir, electronFactsApi()) // beforeEach の本物の .sakuraide.json（専有型 ＋ Vercel）
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi()) // beforeEach の本物の .sakuraide.json（専有型 ＋ Vercel）
     expect(facts.otherTargets).toEqual([PUBLISH_TARGET_LABEL.vercel])
     expect(facts.otherTargetsUnreadable).toBe(false)
-    expect(buildDedicatedTeardownConfirm(facts).body).not.toContain(CAUTION)
+    expect(confirmOf(facts).body).not.toContain(CAUTION)
   })
 
-  it('★★ 入口（electronTeardownDeps）から確認ダイアログまで通しても、読めなかった注意が出る。やめれば IPC は0回', async () => {
+  it('★★ 入口（electronFlowDeps）から確認ダイアログまで通しても、読めなかった注意が出る。やめれば IPC は0回', async () => {
     setReadFile(async () => { throw new Error('ENOENT') })
     const { deps, asked } = entryDeps(false)
-    const out = await runDedicatedTeardown(dir, deps)
+    const out = await runFlow(dir, deps)
     expect(out).toEqual({ cancelled: true })
     expect(asked).toHaveLength(1)
     expect((asked[0] as { body: string }).body).toContain(CAUTION)
@@ -624,7 +656,8 @@ function installWindow(opts: { key?: { token: string; secret: string } | null } 
       },
       cloud: { loadKey: async () => (opts.key === undefined ? AUTH : opts.key) },
       storage: { placement: async () => ({ ok: true, placement: null, placements: [] }) },
-      fs: { readFile: async (p: string) => fs.readFileSync(p, 'utf-8') },
+      // exists は、旧い記録（state.json）の有無を調べる読み口が使う（D9=2。ほかの公開先の読み口は旧い記録も数える）。
+      fs: { readFile: async (p: string) => fs.readFileSync(p, 'utf-8'), exists: async (p: string) => fs.existsSync(p) },
       stageTiming: { estimates: async () => estimatesFor(emptyStore()) },
       win: { setBusy: (...a: unknown[]) => { win.busy.push(a) } },
       // 画面が公開記録を消す口。呼ばれたら「画面が消した」ことになる（呼ばれないことを固定する）。
@@ -666,10 +699,10 @@ afterEach(() => {
   rt.slots = []; rt.refs = []; rt.effects = []; rt.queue = []
 })
 
-/** 手順6の入口と同じ作り方（electronTeardownDeps）。確認の答えと入口ごとの文だけを渡す。 */
+/** 手順6の入口と同じ作り方（electronFlowDeps）。確認の答えと入口ごとの文だけを渡す。 */
 function entryDeps(answer: boolean, keyMissingMessage = '入口ごとの案内文') {
   const asked: unknown[] = []
-  const deps = electronTeardownDeps(dir, { confirm: async o => { asked.push(o); return answer }, keyMissingMessage })
+  const deps = electronFlowDeps(dir, dedicatedTeardownSpec, { confirm: async o => { asked.push(o); return answer }, keyMissingMessage })
   return { deps, asked }
 }
 
@@ -678,7 +711,7 @@ describe('(C) 本物の main ＋ 偽 client: 手順6も 📡 の入口も、ア�
     const calls: string[] = []
     h.baseUrl = await startServer(allRoutes(), calls)
     const { deps } = entryDeps(true)
-    const out = await runDedicatedTeardown(dir, deps)
+    const out = await runFlow(dir, deps)
 
     expect(out.cancelled).toBe(false)
     expect((out as any).result.ok).toBe(true)
@@ -699,7 +732,7 @@ describe('(C) 本物の main ＋ 偽 client: 手順6も 📡 の入口も、ア�
     h.baseUrl = await startServer(allRoutes(), calls)
     const before = JSON.stringify(readApprunDedicatedFs(dir))
     const { deps, asked } = entryDeps(false)
-    const out = await runDedicatedTeardown(dir, deps)
+    const out = await runFlow(dir, deps)
 
     expect(out).toEqual({ cancelled: true })
     expect(asked).toHaveLength(1)
@@ -709,15 +742,15 @@ describe('(C) 本物の main ＋ 偽 client: 手順6も 📡 の入口も、ア�
     expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel'])
   })
 
-  // 注意（2026-10-08 検分）: この試験は**同じ factory（electronTeardownDeps）を2回通して比べる**だけで、入口が食い違っても落ちない。
+  // 注意（2026-10-08 検分）: この試験は**同じ factory（electronFlowDeps）を2回通して比べる**だけで、入口が食い違っても落ちない。
   // 「手順6の画面と 📡 の行が、どちらもこの factory を通っているか」は tests/apprunDedicatedWiring.test.ts（配線の試験。
-  // 手順6は runDedicatedTeardown(projectDir, electronTeardownDeps(…))・📡 は useDedicatedTeardown 経由）が受け持つ。
-  it('★ 同じ factory（electronTeardownDeps）を通せば、確認の文も、出る要求の列も、結果も同じ（入口が同じ factory を通っているかは配線の試験が見る）', async () => {
+  // 手順6は runTeardownFlow(projectDir, dedicatedTeardownSpec, electronFlowDeps(…))・📡 は useTeardownFlow 経由）が受け持つ。
+  it('★ 同じ factory（electronFlowDeps）を通せば、確認の文も、出る要求の列も、結果も同じ（入口が同じ factory を通っているかは配線の試験が見る）', async () => {
     const run = async () => {
       const calls: string[] = []
       h.baseUrl = await startServer(allRoutes(), calls)
       const { deps, asked } = entryDeps(true)
-      const out = await runDedicatedTeardown(dir, deps)
+      const out = await runFlow(dir, deps)
       server?.close(); server = null
       return { calls, asked, result: (out as any).result }
     }
@@ -735,8 +768,8 @@ describe('(C) 本物の main ＋ 偽 client: 手順6も 📡 の入口も、ア�
     const calls: string[] = []
     h.baseUrl = await startServer(allRoutes({ 'DELETE /applications/app1': { status: 500, body: { status: 500, title: 'fail' } } }), calls)
     const { deps } = entryDeps(true)
-    const out = await runDedicatedTeardown(dir, deps)
-    const result = (out as any).result as DedicatedTeardownResult
+    const out = await runFlow(dir, deps)
+    const result = (out as any).result as DedicatedTeardownReply
     expect(result.ok).toBe(false)
     expect(calls.filter(c => c.startsWith('DELETE '))).toEqual(['DELETE /applications/app1'])
     expect(result.remaining).toMatchObject({ applicationID: 'app1', loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' })
@@ -747,7 +780,7 @@ describe('(C) 本物の main ＋ 偽 client: 手順6も 📡 の入口も、ア�
     const calls: string[] = []
     h.baseUrl = await startServer(allRoutes(), calls)
     const { deps } = entryDeps(true, '「認証情報」で登録してください')
-    const out = await runDedicatedTeardown(dir, deps)
+    const out = await runFlow(dir, deps)
     expect((out as any).result.message).toBe('「認証情報」で登録してください')
     expect(calls).toEqual([])
     expect(win.ipcTeardown).toEqual([])
@@ -759,7 +792,7 @@ describe('(D) 公開の記録（📡 の行）: 消すのは main の1か所。�
     h.baseUrl = await startServer(allRoutes(), [])
     expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel'])
     const { deps } = entryDeps(true)
-    const out = await runDedicatedTeardown(dir, deps)
+    const out = await runFlow(dir, deps)
     expect((out as any).result.ok).toBe(true)
     expect(targetsOf(dir)).toEqual(['vercel']) // main が消した
     expect(win.forgetTarget).toEqual([]) // 画面は消していない
@@ -768,7 +801,7 @@ describe('(D) 公開の記録（📡 の行）: 消すのは main の1か所。�
   it('★★ アプリの削除に失敗したら、公開記録は残る（まだ公開中のものを一覧から隠さない）。画面は消さない', async () => {
     h.baseUrl = await startServer(allRoutes({ 'DELETE /applications/app1': { status: 500, body: { status: 500, title: 'fail' } } }), [])
     const { deps } = entryDeps(true)
-    await runDedicatedTeardown(dir, deps)
+    await runFlow(dir, deps)
     expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel'])
     expect(win.forgetTarget).toEqual([])
   })
@@ -776,7 +809,7 @@ describe('(D) 公開の記録（📡 の行）: 消すのは main の1か所。�
   it('★★ 確認で「やめる」なら、公開記録はそのまま', async () => {
     h.baseUrl = await startServer(allRoutes(), [])
     const { deps } = entryDeps(false)
-    await runDedicatedTeardown(dir, deps)
+    await runFlow(dir, deps)
     expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel'])
     expect(win.forgetTarget).toEqual([])
   })
@@ -786,7 +819,7 @@ describe('(D2) 途中で止まった削除の押し直し: 全部消せた回に
   it('★★★ 1回目: ロードバランサの削除が失敗して止まる（行は残る）→ 2回目: 全部成功 → 専有型の行が消え、Vercel は残る。画面は消さない', async () => {
     const calls1: string[] = []
     h.baseUrl = await startServer(allRoutes({ 'DELETE /clusters/c1/asg/a1/load_balancers/l1': { status: 500, body: { status: 500, title: 'fail' } } }), calls1)
-    const first = await runDedicatedTeardown(dir, entryDeps(true).deps)
+    const first = await runFlow(dir, entryDeps(true).deps)
     expect((first as any).result.ok).toBe(false)
     // アプリは消えて、記録の applicationID は外れた。LB・ASG・クラスタは残る。行はまだ残す（押し直す 🗑 を残す）。
     const rec1 = readApprunDedicatedFs(dir)
@@ -798,7 +831,7 @@ describe('(D2) 途中で止まった削除の押し直し: 全部消せた回に
     // 押し直す。アプリは1回目で消えているので、2回目に出る DELETE は LB → ASG → クラスタ の3本。
     const calls2: string[] = []
     h.baseUrl = await startServer(allRoutes(), calls2)
-    const second = await runDedicatedTeardown(dir, entryDeps(true).deps)
+    const second = await runFlow(dir, entryDeps(true).deps)
     expect((second as any).result.ok).toBe(true)
     expect(calls2.filter(c => c.startsWith('DELETE '))).toEqual([
       'DELETE /clusters/c1/asg/a1/load_balancers/l1',
@@ -822,29 +855,31 @@ describe('(D3) 消すものが記録に無い行（幽霊の行）: 破壊の確
     const calls: string[] = []
     h.baseUrl = await startServer(allRoutes(), calls)
     const { deps, asked } = entryDeps(true)
-    const out = await runDedicatedTeardown(dir, deps)
+    const out = await runFlow(dir, deps)
 
     expect(out.cancelled).toBe(false)
-    expect((out as any).result).toEqual({ ok: false, executed: [], message: NOTHING_TO_DELETE_MESSAGE, remaining: {} })
+    expect((out as any).result).toEqual({ ok: false, executed: [], message: DEDICATED_NOTHING_TO_DELETE_MESSAGE, remaining: {} })
     expect(asked).toEqual([])
     expect(win.ipcTeardown).toEqual([])
     expect(calls).toEqual([])
     expect(targetsOf(dir)).toEqual(['sakura-apprun-dedicated', 'vercel']) // 行を消すのは「一覧から削除」（案内する）
-    expect(NOTHING_TO_DELETE_MESSAGE).toContain('一覧から削除')
-    expect(NOTHING_TO_DELETE_MESSAGE).toContain('さくらのクラウドには何も要求していません')
+    expect(DEDICATED_NOTHING_TO_DELETE_MESSAGE).toContain('一覧から削除')
+    expect(DEDICATED_NOTHING_TO_DELETE_MESSAGE).toContain('さくらのクラウドには何も要求していません')
   })
 
   // 2026-10-08 検分 F: 「一覧から削除」は Koto の記録の行を消すだけで、さくら側の実物には触れない。記録が失われただけで実物が残っていることもある。
   // 押す前に、さくら側に残っていないかを確かめてもらう。案内が指す名前は、画面に実在するものだけ（掟9。README・使い方ガイドの引用も同じ）。
   it('★★ 案内は、「一覧から削除」の前に、さくら側に残っていないかを確かめるよう言う。指す画面の名前は実在し、README・使い方ガイドの引用と一致する', () => {
     const SENTENCE = 'さくら側に残っていないかは、📡 の「さくら側にあるものと、かかっている費用」で「調べる」を押すか、コントロールパネルで確かめてから、「一覧から削除」してください。'
-    expect(NOTHING_TO_DELETE_MESSAGE).toContain(SENTENCE)
+    expect(DEDICATED_NOTHING_TO_DELETE_MESSAGE).toContain(SENTENCE)
     // 順序: 「一覧から削除」で消せる、のあとに、確かめてから、が来る
-    expect(NOTHING_TO_DELETE_MESSAGE.indexOf('その行の「一覧から削除」で消せます')).toBeLessThan(NOTHING_TO_DELETE_MESSAGE.indexOf(SENTENCE))
+    expect(DEDICATED_NOTHING_TO_DELETE_MESSAGE.indexOf('その行の「一覧から削除」で消せます')).toBeLessThan(DEDICATED_NOTHING_TO_DELETE_MESSAGE.indexOf(SENTENCE))
     // 指している画面の名前が、実際の画面（📡 の一覧）に実在する
+    // 棚卸しのカードは 0.6.22 の3B-5 で PublishedInventoryCard.tsx へ移った。「一覧から削除」のボタンは一覧（PublishedListModal.tsx）に残る
+    const card = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/PublishedInventoryCard.tsx'), 'utf-8')
     const modal = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/PublishedListModal.tsx'), 'utf-8')
-    expect(modal).toContain('さくら側にあるものと、かかっている費用</h3>')
-    expect(modal).toContain("{checking ? '調べています…' : '↻ 調べる'}")
+    expect(card).toContain('さくら側にあるものと、かかっている費用</h3>')
+    expect(card).toContain("{checking ? '調べています…' : '↻ 調べる'}")
     expect(modal).toContain('>一覧から削除</button>')
     // README・使い方ガイドの引用（掟9）
     const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf-8')
@@ -857,14 +892,14 @@ describe('(D3) 消すものが記録に無い行（幽霊の行）: 破壊の確
     emptyResourceRecord()
     writeApprunDedicatedRecordFs(dir, { storageLeftoverBucket: 'koto-data-x' })
     const { deps, asked } = entryDeps(false)
-    const out = await runDedicatedTeardown(dir, deps)
+    const out = await runFlow(dir, deps)
     expect(out).toEqual({ cancelled: true })
     expect(asked).toHaveLength(1)
   })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// (E) 📡 の行のフック（useDedicatedTeardown）を実際に動かす
+// (E) 📡 の行のフック（useTeardownFlow＋専有型の仕様書）を実際に動かす
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function flushEffects() {
@@ -878,20 +913,20 @@ function flushEffects() {
     slot.cleanup = q.fn()
   }
 }
-function mountHook(over: { onOutcome?: (o: DedicatedTeardownOutcome) => void; onFinished?: () => void } = {}) {
+function mountHook(over: { onOutcome?: (o: TeardownFlowOutcome) => void; onFinished?: () => void } = {}) {
   rt.slots = []; rt.refs = []; rt.effects = []; rt.queue = []; rt.i = 0; rt.r = 0; rt.e = 0
-  const outcomes: DedicatedTeardownOutcome[] = []
+  const outcomes: TeardownFlowOutcome[] = []
   const finished: number[] = []
-  let latest!: ReturnType<typeof useDedicatedTeardown>
-  const history: Array<{ tearingDown: boolean; progress: string | null; runningKind: string | null }> = []
+  let latest!: ReturnType<typeof useTeardownFlow>
+  const history: Array<{ tearingDown: boolean; progress: string | null; running: boolean }> = []
   const render = () => {
     rt.i = 0; rt.r = 0; rt.e = 0; rt.queue = []
-    latest = useDedicatedTeardown(dir, {
+    latest = useTeardownFlow(dir, dedicatedTeardownSpec, {
       keyMissingMessage: 'API キーが未登録です（📡）',
       onOutcome: o => { outcomes.push(o); over.onOutcome?.(o) },
       onFinished: () => { finished.push(outcomes.length); over.onFinished?.() },
     })
-    history.push({ tearingDown: latest.tearingDown, progress: latest.progress, runningKind: latest.runningKind })
+    history.push({ tearingDown: latest.tearingDown, progress: latest.progress, running: latest.running })
     flushEffects()
   }
   rt.rerender = render
@@ -945,7 +980,8 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
       'DELETE /clusters/c1',
     ])
     expect(m.outcomes).toHaveLength(1)
-    expect(m.outcomes[0].result.ok).toBe(true)
+    expect(m.outcomes[0].view.ok).toBe(true)
+    expect(m.outcomes[0].view.state).toBe('done')
     expect(m.outcomes[0].notes).toEqual([])
     expect(targetsOf(dir)).toEqual(['vercel'])
     expect(win.forgetTarget).toEqual([]) // 画面（フック）は公開の記録を消さない
@@ -959,21 +995,23 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     m.unmount()
   })
 
-  it('★★ 確認の文は手順6と同じ関数の出力。ロードバランサの時間（約9分）が入っている', async () => {
+  it('★★ 確認の文は手順6と同じ関数（buildTeardownConfirm）の出力。ロードバランサの時間（約9分）と、D10 の DNS の1行（V2）が入っている', async () => {
     h.baseUrl = await startServer(allRoutes(), [])
     const m = mountHook()
     const started = m.latest.start()
     for (let k = 0; k < 400 && !(m.latest.confirmElement as any).props.open; k++) await tick()
     const props = (m.latest.confirmElement as any).props
-    const expected = buildDedicatedTeardownConfirm({
-      projectName: path.basename(dir),
-      record: { ...FULL_RECORD, activeVersion: 1 } as any, placements: [], placementsUnreadable: false,
-      otherTargets: ['▲ Vercel'], otherTargetsUnreadable: false, lbEstimateLine: '目安 約9分（開発時の実測・2026-09-10）',
-    })
+    // 手順6の入口と同じ材料の読み方（loadTeardownFacts＋本物の口）で作った確認と、1文字も違わない
+    const facts = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
+    const expected = confirmOf(facts)
     expect(props.title).toBe(expected.title)
     expect(props.body).toBe(expected.body)
     expect(props.confirmLabel).toBe('削除する')
     expect(props.body).toContain('目安 約9分（開発時の実測・2026-09-10）')
+    // V2: ロードバランサが記録にある削除なので、DNS の A レコードの1行（記録に hosts が無いので名前なしの文）
+    expect(props.body).toContain('🌐 独自ドメインの DNS に、このロードバランサを指す A レコードがあれば、DNS の管理画面で削除してください。')
+    // 材料に、同じ保存場所を使うほかの公開先（Vercel）の記録が入っている
+    expect(facts.otherTargets.length).toBeGreaterThan(0)
     props.onCancel()
     await started
     m.unmount()
@@ -989,7 +1027,7 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     for (let k = 0; k < 400 && win.busy.length === 0; k++) await tick()
 
     // 走っている最中: setBusy(true, label, closeBlocking=true, label, detail, confirm)
-    expect(win.busy[0]).toEqual([true, DEDICATED_TEARDOWN_ACTIVITY_LABEL, true, DEDICATED_TEARDOWN_ACTIVITY_LABEL, PUBLISH_CLOSE_WARNING.detail, PUBLISH_CLOSE_WARNING.confirmLabel])
+    expect(win.busy[0]).toEqual([true, DEDICATED_TEARDOWN_WORDS.activityLabel, true, DEDICATED_TEARDOWN_WORDS.activityLabel, PUBLISH_CLOSE_WARNING.detail, PUBLISH_CLOSE_WARNING.confirmLabel])
     expect(m.latest.tearingDown).toBe(true)
 
     open()
@@ -1010,7 +1048,7 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     const started = m.latest.start()
     await answer(m, true)
     for (let k = 0; k < 400 && !m.latest.tearingDown; k++) await tick()
-    expect(m.latest.runningKind === 'teardown' || m.latest.tearingDown).toBe(true)
+    expect(m.latest.running || m.latest.tearingDown).toBe(true)
     open()
     await started
 
@@ -1019,7 +1057,7 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     const shown = m.history.map(x => x.progress).filter((x): x is string => !!x)
     expect(shown.some(s => s.includes('ロードバランサの削除を待っています'))).toBe(true)
     // 記録（projectOps）の監視: 走っている間に「削除が走っている」と読めた
-    expect(m.history.some(x => x.runningKind === 'teardown')).toBe(true)
+    expect(m.history.some(x => x.running)).toBe(true)
     m.unmount()
     expect(win.progressListeners.size).toBe(0) // 外したら購読も外れる
   })
@@ -1036,7 +1074,7 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     first.unmount()
     const reopened = mountHook()
     await tick()
-    expect(reopened.latest.runningKind).toBe('teardown')
+    expect(reopened.latest.running).toBe(true)
     expect(reopened.latest.tearingDown).toBe(true) // この行を押していなくても「削除しています…」になる（🗑 は止まる）
     expect(reopened.latest.runningRecord?.startedAt).toBeGreaterThan(0)
     open()
@@ -1055,9 +1093,10 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     const m = mountHook()
     await tick()
     expect(m.outcomes).toHaveLength(1)
-    expect(m.outcomes[0].result.ok).toBe(true)
+    expect(m.outcomes[0].view.ok).toBe(true)
     expect(m.outcomes[0].notes).toHaveLength(1)
-    expect(m.outcomes[0].notes[0].kind).toBe('teardown')
+    // V8: 開き直したときの知らせの見出しは「🔔 削除の結果（HH:MM に終わりました）」（入口に関係なく「手順6」とは言わない）
+    expect(m.outcomes[0].notes[0].headline).toMatch(/^🔔 削除の結果（.+ に終わりました）$/)
     expect(m.finished).toEqual([1]) // 一覧を読み直す
     // 見た印を返した（警告の無い結果は、二度出ない）
     const m2 = mountHook()
@@ -1077,7 +1116,8 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     expect(win.ipcTeardown).toEqual([])
     expect(calls).toEqual([])
     expect(m.outcomes).toHaveLength(1)
-    expect(m.outcomes[0].result.message).toBe('API キーが未登録です（📡）')
+    expect(m.outcomes[0].view.message).toBe('API キーが未登録です（📡）')
+    expect(m.outcomes[0].view.ok).toBe(false)
     m.unmount()
   })
 
@@ -1108,8 +1148,8 @@ describe('(E2) 📡 の行のフック: 幽霊の行・別の操作が走って�
     expect(win.ipcTeardown).toEqual([])
     expect(calls).toEqual([])
     expect(m.outcomes).toHaveLength(1)
-    expect(m.outcomes[0].result.ok).toBe(false)
-    expect(m.outcomes[0].result.message).toBe(NOTHING_TO_DELETE_MESSAGE)
+    expect(m.outcomes[0].view.ok).toBe(false)
+    expect(m.outcomes[0].view.message).toBe(DEDICATED_NOTHING_TO_DELETE_MESSAGE)
     expect(win.busy).toEqual([]) // 窓を閉じる警告も立たない
     m.unmount()
   })
@@ -1133,19 +1173,20 @@ describe('(E2) 📡 の行のフック: 幽霊の行・別の操作が走って�
 const ENTRY_FOR = (d: string) => ({
   dir: d, projectName: 'proj', target: 'sakura-apprun-dedicated' as const, label: '📦 さくらのAppRun（専有型）',
   url: 'https://app.example.com/', publishedAt: '2026-09-28T00:00:00.000Z', dateUnknown: false,
-  hanamiiProjectId: null, registryName: null, registryAdopted: false,
+  hanamiiProjectId: null, registryName: null,
 })
 
-/** 📡 の行（DedicatedTeardownRow）を、react の小さな代役の上で実際に動かす。行が一覧へ渡す部品（button・below・busy）と、行の末尾に描く確認ダイアログを読む。 */
+/** 📡 の行（TeardownRow＋専有型の仕様書）を、react の小さな代役の上で実際に動かす。行が一覧へ渡す部品（button・below・busy）と、行の末尾に描く確認ダイアログを読む。 */
 function mountRow(over: { blocked?: boolean } = {}) {
   rt.slots = []; rt.refs = []; rt.effects = []; rt.queue = []; rt.i = 0; rt.r = 0; rt.e = 0
   const busy: boolean[] = []
-  const outcomes: DedicatedTeardownOutcome[] = []
+  const outcomes: TeardownFlowOutcome[] = []
   let element: any
   let parts: any
   const render = () => {
     rt.i = 0; rt.r = 0; rt.e = 0; rt.queue = []
-    element = DedicatedTeardownRow({
+    element = TeardownRow({
+      spec: dedicatedTeardownSpec, keyMissingMessage: DEDICATED_LIST_KEY_MISSING_MESSAGE,
       entry: ENTRY_FOR(dir), blocked: over.blocked ?? false,
       onBusyChange: b => { busy.push(b) },
       onOutcome: (_e, o) => { outcomes.push(o) },
@@ -1166,7 +1207,30 @@ function mountRow(over: { blocked?: boolean } = {}) {
   }
 }
 
-describe('(E3) 📡 の行（DedicatedTeardownRow）の配線: 確認ダイアログ・押せる条件・実行中の印', () => {
+describe('(E3) 📡 の行（TeardownRow＋専有型の仕様書）の配線: 確認ダイアログ・押せる条件・実行中の印', () => {
+  // V1・V16: 専有型の行のボタンは「🗑 削除」（実行中は「削除しています…」）。title は共通の行の文で、手本の末尾の括弧（アプリ・ロードバランサ・…）はなくなる。
+  it('★★ V1・V16: ボタンの文字は「🗑 削除」（実行中は「削除しています…」）。title は共通の文で、消えるものの括弧を言い直さない', async () => {
+    h.baseUrl = await startServer(allRoutes(), [])
+    const m = mountRow()
+    expect(m.parts.button.props.children).toBe('🗑 削除')
+    expect(m.parts.button.props.title).toBe('公開を止めて、作られたものをすべて削除します')
+    expect(m.parts.button.props.title).not.toContain('（')
+    expect(m.parts.below, '削除が走っていないのに進み具合の枠が出ている').toBeNull()
+    m.unmount()
+    // 実行中は文字が替わる（ロードバランサの削除で止める）
+    let open!: () => void
+    h.gate = new Promise<void>(r => { open = r })
+    const running = mountRow()
+    running.parts.button.props.onClick()
+    for (let k = 0; k < 400 && !running.confirm?.props?.open; k++) await tick()
+    running.confirm.props.onConfirm()
+    for (let k = 0; k < 400 && !running.parts.busy; k++) await tick()
+    expect(running.parts.button.props.children).toBe('削除しています…')
+    open()
+    for (let k = 0; k < 400 && running.parts.busy; k++) await tick()
+    running.unmount()
+  })
+
   it('★★★ 🗑 を押すと、確認ダイアログ（ConfirmModal）が**この行の中に**描かれる（描かないと 🗑 を押しても何も起きない）', async () => {
     h.baseUrl = await startServer(allRoutes(), [])
     const m = mountRow()
@@ -1235,56 +1299,9 @@ describe('(E3) 📡 の行（DedicatedTeardownRow）の配線: 確認ダイア�
     m.unmount() // 行が消えた（別の再読み込み・「一覧から削除」）
     expect(m.busy[m.busy.length - 1], 'アンマウントで実行中の印が下りていない').toBe(false)
     open()
-    await tick()
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// watchDedicatedOps の kinds（📡 の行は削除だけを受け持つ）
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('watchDedicatedOps({ kinds: [teardown] }): 📡 の行は削除の記録だけを読み、作成・公開の記録は読まない・見たことにもしない', () => {
-  const rec = (handler: string, startedAt: number, extra: Record<string, unknown> = {}) => ({
-    op: '削除', target: 'sakura-apprun-dedicated', handler, startedAt, finishedAt: startedAt + 1, running: false, seen: false,
-    result: { ok: true, lines: [], warnings: [] }, ...extra,
-  })
-
-  function makeApi(snap: any) {
-    const acks: Array<number | undefined> = []
-    const api: DedicatedOpsApi = {
-      get: async () => snap,
-      ack: async (_d: string, upTo?: number) => { acks.push(upTo); return { ok: true, acked: 1 } },
-      onChanged: () => () => {},
-    }
-    return { api, acks }
-  }
-
-  it('★ 走っている公開（publishApp）は、この行の「削除中」にならず、別の操作として1行の知らせになる', async () => {
-    const { api } = makeApi({ running: { ...rec('apprunDedicated:publishApp', 5), running: true, op: '公開' }, last: null, earlier: [] })
-    const views: any[] = []
-    const w = watchDedicatedOps({ api, projectDir: '/p', kinds: ['teardown'], onRunning: v => views.push(v), onFinished: () => {} })
-    await tick()
-    expect(views[views.length - 1].running).toBeNull()
-    expect(views[views.length - 1].other).not.toBeNull()
-    w.stop()
-  })
-
-  it('★★ 削除の結果だけを渡す。手順5（作成）の結果は渡さず、ack の連鎖もそこで止まる（見ていないものを見たことにしない）', async () => {
-    const { api, acks } = makeApi({ running: null, earlier: [rec('apprunDedicated:create', 10, { op: '作成' })], last: rec('apprunDedicated:teardown', 20) })
-    const finished: any[] = []
-    const w = watchDedicatedOps({ api, projectDir: '/p', kinds: ['teardown'], onRunning: () => {}, onFinished: f => finished.push(...f) })
-    await tick()
-    expect(finished.map(f => f.kind)).toEqual(['teardown'])
-    expect(acks).toEqual([]) // 先頭の作成を見ていないので、削除も見たことにしない
-    w.stop()
-  })
-
-  it('kinds を渡さなければ（専有型タブ）、3種類とも読む', async () => {
-    const { api } = makeApi({ running: null, earlier: [rec('apprunDedicated:create', 10, { op: '作成' })], last: rec('apprunDedicated:teardown', 20) })
-    const finished: any[] = []
-    const w = watchDedicatedOps({ api, projectDir: '/p', onRunning: () => {}, onFinished: f => finished.push(...f) })
-    await tick()
-    expect(finished.map(f => f.kind)).toEqual(['create', 'teardown'])
-    w.stop()
+    // 外した行の削除は、裏で最後まで進み、開いている画面へ知らせて終わる。その終わりを待ってからテストを閉じる
+    // （待たないと、afterEach が window を消したあとに通知が投げられ、未処理の例外になって、まれに全体が失敗扱いになる）。
+    for (let k = 0; k < 400 && !win.dispatched.includes('sakura-meta-changed'); k++) await tick()
+    expect(win.dispatched).toContain('sakura-meta-changed')
   })
 })

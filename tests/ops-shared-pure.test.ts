@@ -9,6 +9,9 @@ import { isSharedTypeOp, unseenOf } from '../src/renderer/projectOpsView'
 import { warningLine } from '../src/shared/opsText'
 import * as ops from '../src/main/projectOps'
 import { remainingCostWarning } from '../src/shared/cloudCost'
+import { stoppedNextStep } from '../src/shared/inFlightOps'
+import { clockText } from '../src/shared/opsText'
+import { stoppedNotice } from './stoppedNoticeHarness'
 
 // ── 共用型 AppRun: 開き直しの判断（純関数）──────────────────────────────────────
 // 画面を動かす振る舞いのテスト（tests/ops-shared-panel.test.ts）が主。ここは、その判断のうち
@@ -199,7 +202,7 @@ describe('ackSeen: どこまでを「見た」ことにしてよいか（別の�
 describe('opResultFromRecord: 記録を画面の結果へ', () => {
   it('★ 破棄で残ったもの（月額が続く）の警告を、そのまま warnings に持つ', () => {
     const s = run('削除', 'sakura-apprun', 'cloud:teardown', {
-      ok: true, executed: ['アプリを削除'], keptBucketName: 'koto-data-x', keptRegistryName: 'koto-reg', message: '削除しました',
+      ok: true, executed: ['アプリを削除'], keptBucketName: 'koto-data-x', keptRegistryName: 'koto-reg', keptRegistryOrigin: 'owned', keptRegistryUsers: [], message: '削除しました',
     })
     const r = opResultFromRecord(s.last!)
     const w = remainingCostWarning({ deleteRegistry: false, registryName: 'koto-reg', keptBucketName: 'koto-data-x' })!
@@ -209,6 +212,22 @@ describe('opResultFromRecord: 記録を画面の結果へ', () => {
     expect(r.executed).toEqual(['アプリを削除'])
     expect(r.kind).toBe('破棄')
     expect(r.caption).toMatch(/^破棄の結果（\d{2}:\d{2}に終わりました）$/)
+  })
+
+  it('★★ N5 「Koto の終了で止まりました」の知らせ: 見出しは「破棄の結果（HH:MM ごろ、Koto の終了で止まりました）」で「に終わりました」と言わない。結果欄の材料は途中の知らせ（失敗でない）', () => {
+    const finished = new Date(2026, 9, 10, 14, 9).getTime()
+    const rec = stoppedNotice(DIR, 'sakura-apprun', finished)
+    const r = opResultFromRecord(rec)
+    expect(r.caption).toBe(`破棄の結果（${clockText(finished)} ごろ、Koto の終了で止まりました）`)
+    expect(r.caption).not.toContain('に終わりました')
+    expect(r.kind).toBe('破棄')
+    expect(r.teardownView).toMatchObject({ ok: false, state: 'inProgress', stoppedByQuit: true, message: stoppedNextStep('sakura-apprun'), warnings: [] })
+  })
+
+  it('N5 知らせでない削除の記録の見出しは今までのまま（stoppedByQuit が true でなければ知らせにしない）', () => {
+    const fake = run('削除', 'sakura-apprun', 'cloud:teardown', { ok: false, message: '失敗', stoppedByQuit: true }).last!
+    expect(opResultFromRecord(fake).caption).toMatch(/^破棄の結果（\d{2}:\d{2}に終わりました）$/)
+    expect('stoppedByQuit' in (opResultFromRecord(fake).teardownView ?? {})).toBe(false)
   })
 
   it('公開の結果: URL・詳細・回復の導線の材料（hint・pending・logUrl・askAi・staleImages・skipped）を引き継ぐ', () => {

@@ -72,6 +72,8 @@ function changelogSectionsFrom0621(text: string): string {
 }
 
 const ipc = readFileSync(join(__dirname, '..', 'src/main/ipc/apprunDedicated.ts'), 'utf-8')
+// 専有型の削除（apprunDedicated:teardown）は 0.6.22 段階3B-1 で ipc/apprunDedicatedTeardown.ts へ移し、共通の骨に載せた。
+const teardownIpc = readFileSync(join(__dirname, '..', 'src/main/ipc/apprunDedicatedTeardown.ts'), 'utf-8')
 const index = readFileSync(join(__dirname, '..', 'src/main/ipc/index.ts'), 'utf-8')
 const preload = readFileSync(join(__dirname, '..', 'src/main/preload.ts'), 'utf-8')
 const globalDts = readFileSync(join(__dirname, '..', 'src/renderer/global.d.ts'), 'utf-8')
@@ -79,10 +81,18 @@ const client = readFileSync(join(__dirname, '..', 'src/main/cloud/apprunDedicate
 const applyFile = readFileSync(join(__dirname, '..', 'src/main/cloud/apprunDedicatedApply.ts'), 'utf-8')
 const panel = readFileSync(join(__dirname, '..', 'src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf-8')
 const publishModal = readFileSync(join(__dirname, '..', 'src/renderer/components/PublishModal.tsx'), 'utf-8')
-// D-4: 📡 公開したもの一覧（専有型のアプリだけを消す口 apprunDedicated.teardownApp の配線）。
+// D-4: 📡 公開したもの一覧（専有型の 🗑 の配線。アプリだけを消す口 apprunDedicated.teardownApp は 2026-10-08 に廃止）。
 const publishedListModal = readFileSync(join(__dirname, '..', 'src/renderer/components/PublishedListModal.tsx'), 'utf-8')
-// 2026-10-08: 手順6の進み具合・結果の見た目は 📡 の行と共有する部品（DedicatedTeardownView.tsx）。
-const teardownView = readFileSync(join(__dirname, '..', 'src/renderer/components/DedicatedTeardownView.tsx'), 'utf-8')
+// 2026-10-08: 手順6の進み具合・結果の見た目は 📡 の行と共有する部品だった（DedicatedTeardownView.tsx）。0.6.22 の3B-5（📡 の行）・3B-6a（手順6）で
+// どちらも共通の部品（TeardownProgress・TeardownResultView）に替わり、旧い部品は 3B-7 で消した。
+// 0.6.22 3B-6a: 手順6の節（見た目・「すべて削除する」の流れ・保存場所の💾の行）は DedicatedTeardownSection.tsx へ切り出した（巨大ファイルの決まり）。
+// 手順6の文字列・配線は、持ち主のそのファイル1つを読んで固定する（パネルと節をつないだ文字列にしない＝当て先が増えて弱くなる。掟10）。
+const teardownSection = readFileSync(join(__dirname, '..', 'src/renderer/components/DedicatedTeardownSection.tsx'), 'utf-8')
+/** コメントの行を除く（行の先頭が `//`・`*`・`/*`・`{/*`）。「直す前の形が戻っていない」を見るとき、説明のコメントに当たらないようにする。 */
+const withoutComments = (src: string) => src.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*|\{\/\*)/.test(l)).join('\n')
+// 共通の進み具合・結果欄の部品（手順6と 📡 の行と、HANAMII・共用型が同じこれを使う）。
+const teardownProgressSrc = readFileSync(join(__dirname, '..', 'src/renderer/components/teardown/TeardownProgress.tsx'), 'utf-8')
+const teardownResultSrc = readFileSync(join(__dirname, '..', 'src/renderer/components/teardown/TeardownResultView.tsx'), 'utf-8')
 const targetProfiles = readFileSync(join(__dirname, '..', 'src/renderer/targetProfiles.ts'), 'utf-8')
 // 委譲仕様 UX-E（判断8）: 手順1「キー」節は AccessKeySection.tsx に一元化した。
 // panel.tsx 側の配線（何を渡しているか）と、共通部品側の見た目の判断（どう見せるか）を
@@ -102,10 +112,15 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(ipc).toContain("ipcMain.handle('apprunDedicated:clusters'")
   })
 
-  it('main: apprunDedicated:create / teardown / state の3つを登録している（段階(2)・(4)）', () => {
+  it('main: apprunDedicated:create / teardown / state の3つを登録している（段階(2)・(4)）。teardown は ipc/apprunDedicatedTeardown.ts で登録し、ここから呼ぶ', () => {
     expect(ipc).toContain("ipcMain.handle('apprunDedicated:create'")
-    expect(ipc).toContain("ipcMain.handle('apprunDedicated:teardown'")
     expect(ipc).toContain("ipcMain.handle('apprunDedicated:state'")
+    // 削除のハンドラはここに無く、切り出したファイルが1か所だけ登録する。ここは呼ぶ1行（HANAMII の registerHanamiiTeardownHandler と同じ形）
+    expect(ipc).not.toContain("ipcMain.handle('apprunDedicated:teardown'")
+    expect(ipc).toContain("import { registerApprunDedicatedTeardownHandler } from './apprunDedicatedTeardown'")
+    expect(ipc).toContain('  registerApprunDedicatedTeardownHandler()\n')
+    expect(teardownIpc).toContain("ipcMain.handle('apprunDedicated:teardown'")
+    expect(teardownIpc).toContain('export function registerApprunDedicatedTeardownHandler(): void {')
   })
 
   it('main: apprunDedicated:zones を登録し、GETのみの getZones（src/main/cloud/zones.ts）を呼ぶ（roadmap #28）', () => {
@@ -114,17 +129,20 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(ipc).toContain('getZones(auth)')
   })
 
-  it('main: create/teardown ハンドラは apprunDedicatedApply.ts の createClusterFlow/teardownFlow を呼ぶ（opts.confirmed 付き・2026-09-10 レビューの修理A）', () => {
-    expect(ipc).toContain("import { createClusterFlow, teardownFlow")
-    expect(ipc).toContain('from \'../cloud/apprunDedicatedApply\'')
+  it('main: create は createClusterFlow、teardown は teardownFlow を呼ぶ（apprunDedicatedApply.ts。2026-09-10 レビューの修理A）。teardownFlow・shouldForgetPublishRecord を読むのは切り出したファイルだけ', () => {
+    expect(ipc).toContain("import { createClusterFlow, type ApprunDedicatedClusterSpec } from '../cloud/apprunDedicatedApply'")
+    expect(ipc).not.toMatch(/\bteardownFlow\b/)
+    expect(ipc).not.toMatch(/\bshouldForgetPublishRecord\b/)
+    expect(teardownIpc).toContain("import { teardownFlow, shouldForgetPublishRecord, type TeardownFlowResult } from '../cloud/apprunDedicatedApply'")
     // 2026-10-07: 段（クラスタ → ASG → LB）の切り替わりを記録へ渡す onStage が増えた。
     expect(ipc).toContain('createClusterFlow(auth, projectDir, spec, { confirmed: isConfirmed(opts), onStage })')
-    // #39: 各段が一覧から消えるまで待つ間の進捗を画面へ流すため、progress を渡すようになった。
-    expect(ipc).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, onStage })')
+    // 削除は、確認の印を骨が見たあと（鍵より前）なので true を渡す。teardownFlow の中の印の検査は最後の砦として残る。
+    // #39: 各段が一覧から消えるまで待つ間の進捗を画面へ流すため、progress を渡す。
+    expect(teardownIpc).toContain('teardownFlow(auth, projectDir, { confirmed: true, progress, onStage })')
   })
 
-  it('main: #39 teardown ハンドラは event.sender.send で apprunDedicated:teardown-progress を流す（cloud:apply-progress と同じ形）', () => {
-    expect(ipc).toContain("event.sender.send('apprunDedicated:teardown-progress', msg)")
+  it('main: #39 teardown ハンドラは event.sender.send で apprunDedicated:teardown-progress を流す（cloud:apply-progress と同じ形）。骨へ渡す口として', () => {
+    expect(teardownIpc).toContain("sendProgress: msg => event.sender.send('apprunDedicated:teardown-progress', msg)")
   })
 
   it('main: registerApprunDedicatedHandlers が index.ts から呼ばれている', () => {
@@ -139,6 +157,9 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(preload).toContain("zones: (auth: { token: string; secret: string }) => ipcRenderer.invoke('apprunDedicated:zones', auth)")
     expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec, opts)")
     expect(preload).toContain("ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts)")
+    // V13: teardown の opts は必須（create は任意のまま）
+    expect(preload).toContain("teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean }) =>")
+    expect(preload).not.toContain("teardown: (projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }) =>")
     expect(preload).toContain("state: (projectDir: string) => ipcRenderer.invoke('apprunDedicated:state', projectDir)")
   })
 
@@ -155,12 +176,14 @@ describe('IPC 3点セット（掟6）: main / preload / global.d.ts が揃って
     expect(globalDts).toContain('clusters(auth: { token: string; secret: string })')
     expect(globalDts).toContain('zones(auth: { token: string; secret: string })')
     expect(globalDts).toContain('create(projectDir: string, auth: { token: string; secret: string }, spec:')
-    expect(globalDts).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean })')
+    // V13: opts は必須（確認の印を付け忘れた呼び出しを型で止める。HANAMII・共用型と同じ）
+    expect(globalDts).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean })')
+    expect(globalDts).not.toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean })')
     expect(globalDts).toContain('state(projectDir: string)')
   })
 
   it('global.d.ts: #39 teardown の戻り値に inProgress があり、onTeardownProgress の型もある', () => {
-    const at = globalDts.indexOf('teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean })')
+    const at = globalDts.indexOf('teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean })')
     expect(at).toBeGreaterThan(0)
     const block = globalDts.slice(at, globalDts.indexOf('onTeardownProgress(cb: (msg: string) => void): () => void'))
     // B（2026-09-17）: アプリの削除で止まったときも画面が示せるよう applicationID を足した
@@ -418,7 +441,11 @@ describe('AppRunDedicatedPanel: 手順1〜6の節がある', () => {
   })
 
   it('手順2: リソースIDの存在確認はできないと正直に書いている', () => {
-    expect(spSection).toContain('存在するかどうかはここでは確認できません')
+    // 2026-10-09 画面の文を短くする（T030）: 「IAM API が使えないため」の理由と「ここでは」を外した。
+    // 確かめられるのは形式だけで、存在は作るときに分かる、という正直さは残す。
+    expect(spSection).toContain('確認できるのは形式（12桁の数字）だけです。存在するかどうかは、クラスタを作るときに分かります。')
+    expect(spSection).not.toContain('存在するかどうかはここでは確認できません')
+    expect(spSection).not.toContain('IAM APIが使えないため')
     // 0.6.21: 「実在確認」は「存在確認」に揃えた。直す前の言い方は戻さない
     expect(spAll).not.toContain('実在するかどうかはここでは確認できません')
   })
@@ -459,20 +486,23 @@ describe('AppRunDedicatedPanel: 手順1〜6の節がある', () => {
   // D-5（2026-09-16）: 手順8「🔄 IP を取り直す」が lbAddresses を呼ぶようになり、14に。
   // O-1（2026-09-17）: 手順8「🔎 公開先と https を確かめる」が checkSite を呼ぶようになり、15に。
   // アプリだけを消す口（teardownApp）は 2026-10-08 に廃止した。📡 公開したもの一覧も手順6と同じ teardown を
-  // 呼ぶ（呼び出しはフック useDedicatedTeardown。このパネルからは doTeardown が呼ぶ）。
-  it('apprunDedicated への直接呼び出しは limits/plans/clusters/create/state/testConnection/onTeardownProgress/telemetryStatus/enableTelemetry/appStatus/publishApp/onPublishProgress/lbAddresses/checkSite の14（zonesはzonesCache.ts経由・teardown は共有の流れ dedicatedTeardownFlow.ts 経由・teardownApp は無い）', () => {
+  // 呼ぶ（0.6.22 の3B-5 から、📡 の行の呼び出しは専有型の仕様書 targets/dedicated.ts の invoke の1行）。
+  // 0.6.22 の3B-6a: 手順6の進捗購読 onTeardownProgress も、仕様書の subscribeProgress の1行になった（手順6の節 DedicatedTeardownSection.tsx が受ける）。
+  // このパネルから削除（teardown）も削除の進み具合（onTeardownProgress）も直接は呼ばず、直接呼び出しは13になった。
+  it('apprunDedicated への直接呼び出しは limits/plans/clusters/create/state/testConnection/telemetryStatus/enableTelemetry/appStatus/publishApp/onPublishProgress/lbAddresses/checkSite の13（zonesはzonesCache.ts経由・teardown と onTeardownProgress は共通の流れ〔仕様書 targets/dedicated.ts〕経由・teardownApp は無い）', () => {
     const calls = [...panel.matchAll(/electronAPI\.apprunDedicated\.(\w+)/g)].map(m => m[1])
     expect(calls.length).toBeGreaterThan(0)
     expect(new Set(calls)).toEqual(new Set([
-      'limits', 'plans', 'clusters', 'create', 'state', 'testConnection', 'onTeardownProgress',
+      'limits', 'plans', 'clusters', 'create', 'state', 'testConnection',
       'telemetryStatus', 'enableTelemetry',
       'appStatus', 'publishApp', 'onPublishProgress',
       'lbAddresses',
       'checkSite',
     ]))
     expect(calls).not.toContain('teardownApp')
-    // 削除（teardown）の呼び出しは、📡 の行と共有する dedicatedTeardownFlow.ts の electronTeardownDeps の1か所（2026-10-08）
+    // 削除（teardown）も削除の進み具合（onTeardownProgress）も、このパネルには無い（手順6は節 DedicatedTeardownSection.tsx が共通の流れを通す）
     expect(calls).not.toContain('teardown')
+    expect(calls).not.toContain('onTeardownProgress')
   })
 
   it('zones の実際の呼び出しは zonesCache.ts にある（roadmap #28）', () => {
@@ -480,8 +510,10 @@ describe('AppRunDedicatedPanel: 手順1〜6の節がある', () => {
     expect(cache).toContain('window.electronAPI.apprunDedicated.zones(auth)')
   })
 
-  it('手順5: ネットワークは共有セグメント固定と明示し、スイッチ/IPプールの入力欄を出さない', () => {
-    expect(panel).toContain('共有セグメントに接続します')
+  it('手順5: ネットワークは共有セグメント固定（構成図に出る）で、スイッチ/IPプールの入力欄を出さない', () => {
+    // 2026-10-09 画面の文を短くする（T008）: 構成図の「共有セグメント」と同じことを言う専用の枠は削った。戻さない。
+    expect(panel).toContain('ゾーン〈${zone}〉／ 共有セグメント ／ 公開ポート〈${ports}〉')
+    expect(panel).not.toContain('共有セグメントに接続します')
     expect(panel).not.toContain('共有セグメントに繋ぎます') // 0.6.21: 「つなぐ」は「接続」に揃えた。直す前の言い方は戻さない
     expect(panel).not.toMatch(/ipPool|netmaskLen|defaultGateway/i)
   })
@@ -691,7 +723,10 @@ describe('手順5: 記録があるとき（hasAnyResource）は入力欄・作�
   it('consentedAt ありでも hasAnyResource なら、作成フォームではなく「作られたものの記録があります」の案内を出す', () => {
     const at = panel.indexOf("{/* 手順5 クラスタを作る */}")
     expect(at).toBeGreaterThan(0)
-    const end = panel.indexOf('{/* 手順6 作ったものを壊す（破棄） */}')
+    // 手順5の節の終わり＝手順6の節の要素の手前。以前の '{/* 手順6 作ったものを壊す（破棄） */}' はパネルに無く -1 になり、slice(at, -1) で手順5の外まで見ていた
+    // （0.6.22 3B-6a。apprunDedicatedFolding.test.ts の同じ形と一緒に直した）。終わりが見つかり、手順5の節より後にあることを先に確かめる。
+    const end = panel.indexOf('<DedicatedTeardownSection')
+    expect(end, '手順6の節の要素が見つからない（手順5の節の終わりを決められない）').toBeGreaterThan(at)
     const block = panel.slice(at, end)
     expect(block).toContain('hasAnyResource ? (')
     expect(block).toContain('作られたものの記録があります。作り直すには、まず手順6で削除してください。')
@@ -701,7 +736,7 @@ describe('手順5: 記録があるとき（hasAnyResource）は入力欄・作�
   it('手順5の作成が途中で失敗したときの赤い文は、手順6を見出しと同じ「削除」で案内する（0.6.21・検分）', () => {
     expect(panel).toContain('ここまで作られています。課金が続くので、手順6で削除してください。')
     expect(panel).not.toContain('手順6から破棄してください')
-    expect(panel).toContain('手順6 作ったものを削除する</p>') // 案内先の見出し
+    expect(teardownSection).toContain('手順6 作ったものを削除する</p>') // 案内先の見出し（手順6の節。3B-6a から DedicatedTeardownSection.tsx）
   })
 
   it('hasAnyResource の定義は手順5の描画より前にある（2箇所に複製していない）', () => {
@@ -718,7 +753,8 @@ describe('手順5: 押す前の確認ダイアログに月額（見積り）を�
   it('doCreate は price.text を含む確認文言を ConfirmModal（useConfirm）で先に確認し、その答えを runCreate の confirm へ注入する（判断9・2026-09-11）', () => {
     const at = panel.indexOf('const doCreate = async () => {')
     expect(at).toBeGreaterThan(0)
-    const end = panel.indexOf('const doTeardown = async () => {')
+    const end = panel.indexOf('  // ── 手順6 作ったものを削除する（破棄）', at)
+    expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
     expect(block).toContain('const confirmMessage = `${price.text}')
     expect(block).toContain('この費用が毎月かかります')
@@ -736,10 +772,16 @@ describe('手順5: 押す前の確認ダイアログに月額（見積り）を�
     expect(block).toContain('window.electronAPI.apprunDedicated.create(projectDir, auth, s, opts)')
   })
 
-  it('runCreate/shouldShowCreateResult/shouldShowTeardownResult は apprunDedicatedActions.ts から import している（振る舞いの固定はそちら・tests/apprunDedicatedActions.test.ts）。削除の流れ（runTeardown を使う runDedicatedTeardown）は dedicatedTeardownFlow.ts から', () => {
+  it('runCreate/shouldShowCreateResult/shouldShowTeardownResult は apprunDedicatedActions.ts から import している（振る舞いの固定はそちら・tests/apprunDedicatedActions.test.ts）。削除の流れは節（DedicatedTeardownSection.tsx）が共通の流れ teardown/flow.ts で行い、パネルは手本の流れを import しない', () => {
     expect(panel).toContain("import { runCreate, shouldShowCreateResult, shouldShowTeardownResult } from '../apprunDedicatedActions'")
     expect(panel).not.toContain('runTeardown(')
-    expect(panel).toContain("from '../dedicatedTeardownFlow'")
+    expect(withoutComments(panel)).not.toContain('runTeardownFlow') // コメントは流れの名前を言ってよい（節が行う、と書いてある）
+    expect(panel).not.toContain("from '../dedicatedTeardownFlow'")
+    expect(panel).not.toContain("from './DedicatedTeardownView'")
+    expect(panel).not.toContain("from './DedicatedTeardownRow'")
+    expect(panel).toContain("import DedicatedTeardownSection from './DedicatedTeardownSection'")
+    expect(panel).toContain("import { notifyTeardownFinished } from '../teardown/flow'")
+    expect(teardownSection).toContain("import { runTeardownFlow, electronFlowDeps, teardownProgressText } from '../teardown/flow'")
   })
 
   it('price は priceSummary（表に無いプランは月額を出せません、と正直に返す関数）から作る', () => {
@@ -808,7 +850,9 @@ describe('手順5: 単価表に無いプランのときは金額を捏造しな�
     expect(r.totalYen).toBeNull()
     expect(r.text).toContain('手順3でプランを取得できたら')
     expect(r.text, 'C: 自動で取れるのに押させている').not.toContain('押')
-    expect(r.text).toContain('プランをまだ取得していないため')
+    // 2026-10-09 画面の文を短くする（T016）: 「（プランをまだ取得していないため）」の理由は外した。次の一手（手順3）は残す。
+    expect(r.text).toContain('月額はまだ出せません。手順3でプランを取得できたら出せます。')
+    expect(r.text).not.toContain('プランをまだ取得していないため')
     expect(r.text).not.toContain('料金表に無い')
   })
 
@@ -1047,7 +1091,9 @@ describe('手順5: 既定で選ぶプランは「料金表で引ける中の最�
   })
 
   it('手順5: 既定が選べなかったとき（プラン取得済みだが selectedWorkerPath/selectedLbPath が null）は、選ばせる注記を出す', () => {
-    expect(panel).toContain('⚠️ プランを選んでください（既定は選んでいません')
+    // 2026-10-09 画面の文を短くする（T013）: 「既定は選んでいません。」は外した（理由の「料金表に無い…」だけ残す）。
+    expect(panel).toContain('⚠️ プランを選んでください（料金表に無いプランのため、自動では選べませんでした）')
+    expect(panel).not.toContain('既定は選んでいません')
   })
 })
 
@@ -1250,7 +1296,7 @@ describe('事故の直し1: IsDummy が boolean でない行は「本物」に�
 // 「押すと選べます」という嘘の文言が出ていた。
 describe('事故の直し2: ゾーン欄の3分岐（未実施／取得失敗／取得できたが0件）', () => {
   it('3つの文言がすべてソースにある', () => {
-    expect(panel).toContain('自由入力です。ゾーンの一覧は手順3が自動で取得します（取得できたら選べるようになります）。')
+    expect(panel).toContain('自由入力です。手順3がゾーンの一覧を自動で取得すると、選べるようになります。')
     expect(panel).toContain('ゾーン一覧を取得できませんでした。手で入力してください。')
     expect(panel).toContain('一覧は取得できましたが、選べるゾーンがありませんでした。手で入力してください。')
   })
@@ -1260,9 +1306,9 @@ describe('事故の直し2: ゾーン欄の3分岐（未実施／取得失敗／
     expect(at).toBeGreaterThan(0)
     const block = panel.slice(at, panel.indexOf('</div>', at))
     // 出現順が「未実施」→「失敗」→「選べる」→「0件」になっていること（三項演算子の分岐順）。
-    const iNone = block.indexOf('自由入力です。ゾーンの一覧は手順3が自動で取得します')
+    const iNone = block.indexOf('自由入力です。手順3がゾーンの一覧を自動で取得すると')
     const iErr = block.indexOf('ゾーン一覧を取得できませんでした')
-    const iOk = block.indexOf('さくらのクラウドのゾーン一覧から選びます')
+    const iOk = block.indexOf('専有型がすべてのゾーンに対応しているかは未確認です')
     const iEmpty = block.indexOf('選べるゾーンがありませんでした')
     expect(iNone).toBeGreaterThan(-1)
     expect(iErr).toBeGreaterThan(iNone)
@@ -1483,9 +1529,10 @@ describe('手順2: (A)/(B)の2段階（公式マニュアルどおり）と、�
     expect(spSection).toContain('手順2 サービスプリンシパルの用意（最初の一度だけ手作業）')
   })
 
-  it('Koto からは作れない理由（IAM APIは通常のAPIキーでは使えない設計）を書いている', () => {
+  it('Koto からは作れないことを書いている（IAM API の設計の話は画面に出さない）', () => {
     expect(spSection).toContain('これは Koto からは作れません')
-    expect(spSection).toContain('作成に使う IAM API は、通常のAPIキーでは使えない設計のためです（実測で権限エラー）。')
+    // 2026-10-09 画面の文を短くする（T028）: 利用者の次の操作に使わない内部の理由は外した。戻さない。
+    expect(spSection).not.toContain('作成に使う IAM API は、通常のAPIキーでは使えない設計のためです')
   })
 
   it('(A)（サービスプリンシパルを作る）・(B)（ロールを付ける）の見出しがある', () => {
@@ -1537,9 +1584,12 @@ describe('手順2: (A)/(B)の2段階（公式マニュアルどおり）と、�
     expect(spAll).not.toContain('「リソース階層タイプ」が「プロジェクト」になっていることを確かめる')
   })
 
-  it('読み取り専用の欄については、手順ではなく注記で説明する（プロジェクト単位で付けるのが確実、も添える）', () => {
+  it('読み取り専用の欄については、手順ではなく注記で説明する（プロジェクト単位で付ける、も添える）', () => {
     expect(spSection).toContain('選んだプロジェクトが表示されるだけの欄です')
-    expect(spSection).toContain('サービスプリンシパルにはプロジェクト単位で付けるのが確実')
+    // 2026-10-09 画面の文を短くする（T029）: 「確実」「公式に明記」の言い回しを、してほしいことの言い方に替えた。
+    expect(spSection).toContain('サービスプリンシパルには、プロジェクト単位で付けてください')
+    expect(spSection).toContain('組織やフォルダ単位で付けた権限は効かないことがあります')
+    expect(spSection).not.toContain('プロジェクト単位で付けるのが確実')
   })
 
   it('プリンシパル欄にロール名を入れないでください、という注意書きがある', () => {
@@ -1826,12 +1876,17 @@ describe('手順2・8: 自分の書き込みで無駄なクラウドGETを起こ
     // 直す前の形（無条件に2つ走らせる1行）へ戻っていないこと。
     expect(panel).not.toContain('const onMetaChanged = () => { refreshApprunState(); refreshAppStatus() }')
 
-    // 破棄側: 終わった知らせ（notifyDedicatedTeardownFinished が 'sakura-meta-changed' を発火する）と明示の取り直しを、
+    // 破棄側: 終わった知らせ（notifyTeardownFinished が 'sakura-meta-changed' を発火する）と明示の取り直しを、
     // 印を立てている間に閉じ込める。公開記録（publish.targets）は画面では消さない（main の1か所）。
     const flagAt = panel.indexOf('selfMetaRefreshRef.current = true')
     expect(flagAt).toBeGreaterThan(0)
-    const teardownBlock = panel.slice(flagAt, panel.indexOf('selfMetaRefreshRef.current = false', flagAt))
-    expect(teardownBlock).toContain('notifyDedicatedTeardownFinished()')
+    // 印は必ず下ろす（下ろし忘れると、この画面の onMetaChanged の購読が黙ったままになり、以後の記録の取り直しが止まる）。下ろす行が無いと indexOf が -1 になり、slice が広がって素通りするので、見つかることを先に確かめる
+    const resetAt = panel.indexOf('selfMetaRefreshRef.current = false', flagAt)
+    expect(resetAt, '印を下ろす行が無い').toBeGreaterThan(flagAt)
+    expect(panel.slice(resetAt - 40, resetAt), '印は finally の中で下ろす（途中で投げても下りる）').toContain('finally {')
+    const teardownBlock = panel.slice(flagAt, resetAt)
+    expect(teardownBlock).toContain('notifyTeardownFinished()')
+    expect(withoutComments(panel)).not.toContain('notifyDedicatedTeardownFinished')
     expect(teardownBlock).not.toContain('clearPublishRecord')
     expect(teardownBlock).toContain('await refreshApprunState()')
     expect(teardownBlock).toContain('await refreshAppStatus()')
@@ -1872,9 +1927,21 @@ describe('手順5: 入力チェックの純関数', () => {
 })
 
 describe('手順6: 記録があるとき、または破棄結果が残っているときに表示し、破棄は確認ダイアログを通る（B-2・2026-09-10実機修理）', () => {
-  it('手順6のsectionは showTeardownButton か shouldShowTeardownResult(teardownResult) のどちらかがあれば描く（記録が空になっても破棄結果だけは残せる）', () => {
-    expect(panel).toContain('{(showTeardownButton || shouldShowTeardownResult(teardownResult)) && (')
+  /** 節の「すべて削除する」の流れ（フック useDedicatedPanelTeardown）の本体。節の描画（JSX）は含まない。 */
+  const hookBlock = () => {
+    const at = teardownSection.indexOf('export function useDedicatedPanelTeardown(')
+    const end = teardownSection.indexOf('export default function DedicatedTeardownSection(')
+    expect(at, 'フックが無い').toBeGreaterThan(0)
+    expect(end, '節の部品がフックの後に無い').toBeGreaterThan(at)
+    return teardownSection.slice(at, end)
+  }
+
+  it('手順6のsectionは showTeardownButton か shouldShowTeardownResult(teardownView) のどちらかがあれば描く（記録が空になっても破棄結果だけは残せる）', () => {
+    expect(panel).toContain('{(showTeardownButton || shouldShowTeardownResult(teardownView)) && (')
     expect(panel).toContain('const hasAnyResource = !!(apprunState?.clusterID || apprunState?.asgID || apprunState?.loadBalancerID)')
+    // 条件の直後に、節の要素を置く（3B-6a。節の中身はパネルに書かない）
+    const at = panel.indexOf('{(showTeardownButton || shouldShowTeardownResult(teardownView)) && (')
+    expect(panel.slice(at, at + 120)).toContain('<DedicatedTeardownSection')
   })
 
   // 2026-09-24 検分の指摘1: 「すべて削除する」を hasAnyResource だけで出していると、
@@ -1882,118 +1949,172 @@ describe('手順6: 記録があるとき、または破棄結果が残ってい�
   // バケットの月額が止められなくなる**。表示条件は純関数（shouldShowTeardownButton）に置き、
   // 記録の storageLeftoverBucket も見る。
   it('破棄フォーム（警告文・「すべて削除する」ボタン）は showTeardownButton のときに描き、判定は純関数に置く', () => {
-    expect(panel).toContain("import { shouldShowTeardownButton, shouldShowTeardownList, storageLeftoverNote } from '../apprunDedicatedActions'")
+    expect(panel).toContain("import { shouldShowTeardownButton } from '../apprunDedicatedActions'")
     expect(panel).toContain('const showTeardownButton = shouldShowTeardownButton({')
     expect(panel).toContain('record: apprunState,') // 2026-10-08 検分 E: 判断は 📡 の 🗑 と同じ dedicatedTeardownHasWork の1つ
-    const at = panel.indexOf('{(showTeardownButton || shouldShowTeardownResult(teardownResult)) && (')
+    // パネルは節の判定の入力（showButton）を渡すだけ。節の描画はパネルに戻さない
+    const call = panel.slice(panel.indexOf('<DedicatedTeardownSection'), panel.indexOf('/>', panel.indexOf('<DedicatedTeardownSection')))
+    expect(call).toContain('showButton={showTeardownButton}')
+    expect(panel).not.toMatch(/['>]すべて削除する['<]/) // ボタンの文字（説明のコメントは「すべて削除する」と書いてよい）
+    expect(withoutComments(panel)).not.toContain('消さない限り課金が続きます')
+    // 節: 出すかは showButton・押せるかは locked
+    const at = teardownSection.indexOf('{showButton && (')
     expect(at).toBeGreaterThan(0)
-    const end = panel.indexOf('<DedicatedTeardownResultView', at)
+    const end = teardownSection.indexOf('<TeardownResultView', at)
     expect(end).toBeGreaterThan(at)
-    const block = panel.slice(at, end)
-    expect(block).toContain('{showTeardownButton && (')
+    const block = teardownSection.slice(at, end)
     expect(block).toContain('すべて削除する')
-    // 残っているバケット名は手順6の中で必ず名指しする（押し直せば片づくことも）。
-    expect(block).toContain('storageLeftoverNote(apprunState?.storageLeftoverBucket)')
+    expect(block).toContain('⚠️ 消さない限り課金が続きます。この操作は元に戻せません。')
+    // 残っているバケット名は手順6の中で必ず名指しする（押し直せば片づくことも）。全件を読む1つの値（leftoverNote）から、出すかの条件と出す文の両方を作る
+    // （2か所で別々に読むと、条件と文の名前が食い違いうる。以前は2か所で同じ式を呼んでいた）。
+    expect(teardownSection.split('storageLeftoverNote(dedicatedStorageLeftoverNames(apprunState))').length - 1).toBe(1)
+    expect(teardownSection).toContain('const leftoverNote = storageLeftoverNote(dedicatedStorageLeftoverNames(apprunState))')
+    expect(block).toContain('{leftoverNote && (')
+    expect(block).toContain('🗄️ {leftoverNote}')
+    expect(teardownSection).not.toContain('storageLeftoverNote(apprunState?.storageLeftoverBucket)')   // 直す前: 先頭の1件だけを言っていた
+    expect(teardownSection).not.toContain('apprunState?.storageLeftoverBucket')
     // 月額目安は、クラスタの情報が材料なので、計算資源（クラスタ・ASG・LB）があるときだけ（保存場所だけ残った回に空の表を出さない）。
-    expect(block).toContain('{hasAnyResource && (')
+    // 行はパネルが作る（buildTeardownSummary は priceSummary・PlanRow を呼ぶのでパネルに残る）。無いときは空の配列で渡る＝この欄を出さない。
+    expect(call).toContain('summaryLines={hasAnyResource ? buildTeardownSummary(teardownSummaryRecord, { worker: workerPlans, lb: lbPlans }).lines : []}')
+    expect(block).toContain('{summaryLines.length > 0 && (')
     // 何を消すかの一覧は、ボタンと同じ判断（shouldShowTeardownList）で出す——アプリのIDだけの記録でも、ボタンがあるのに一覧が無い、にしない（2026-10-08 検分 E）。
     expect(block).toContain('{shouldShowTeardownList(apprunState) && (')
   })
 
   it('#39: 手順6の実行中は進捗（teardown-progress）を「削除しています…」の下に出す', () => {
-    const at = panel.indexOf("{tearingDown ? '削除しています…' : 'すべて削除する'}")
+    const at = teardownSection.indexOf('{tearingDown ? DEDICATED_TEARDOWN_WORDS.running : \'すべて削除する\'}')
     expect(at).toBeGreaterThan(0)
-    const block = panel.slice(at, at + 700)
-    // 進み具合は 📡 の行と共有する部品（DedicatedTeardownProgress）が出す（2026-10-08）。
+    const block = teardownSection.slice(at, at + 700)
+    // 進み具合は 📡 の行と共有する部品（TeardownProgress）が出す（2026-10-08・3B-6a で共通の部品に）。文の選び方は共通の teardownProgressText。
     expect(block).toContain('{tearingDown && (')
-    expect(block).toContain('<DedicatedTeardownProgress progress={teardownProgress} runningKind={runningKind} runningRecord={runningRecord} nowMs={nowMs} />')
-    expect(teardownView).toContain("{progress && <p className=\"text-xs text-ink-secondary leading-relaxed select-text\" data-teardown-progress>{progress}</p>}")
+    expect(block).toContain('<TeardownProgress')
+    expect(block).toContain('words={DEDICATED_TEARDOWN_WORDS}')
+    expect(block).toContain('progress={teardownProgressText({ running, runningRecord, local: progressLocal })}')
+    expect(block).toContain('running={running} runningRecord={runningRecord} nowMs={nowMs}')
+    expect(teardownProgressSrc).toContain("{progress && <p className=\"text-xs text-ink-secondary leading-relaxed select-text\" data-teardown-progress>{progress}</p>}")
+    // 直す前の手本の部品・パネルの購読には戻らない
+    expect(teardownSection).not.toContain('DedicatedTeardownProgress')
+    expect(panel).not.toContain('DedicatedTeardownProgress')
+    expect(panel).not.toContain('setTeardownProgress')
   })
 
   it('#39: inProgress が立っているときは黄色い注意（赤い「残っています」とは別）を出し、手順6のボタンは押せるまま。結果欄は 📡 の行と同じ部品', () => {
-    // 結果欄は DedicatedTeardownResultView（2026-10-08）。パネルは結果・知らせ・押し直す場所の呼び方（手順6）を渡す。
-    const at = panel.indexOf('<DedicatedTeardownResultView')
+    // 結果欄は共通の TeardownResultView（3B-6a。手順6は 2026-10-08 から 📡 の行と同じ部品を使っていた）。節は結果・知らせ・押し直す場所の呼び方（手順6）を渡す。
+    const at = teardownSection.indexOf('<TeardownResultView')
     expect(at).toBeGreaterThan(0)
-    const callBlock = panel.slice(at, panel.indexOf('/>', at))
-    expect(callBlock).toContain('result={teardownResult}')
-    expect(callBlock).toContain('notes={resumedNotes.teardown}')
+    const callBlock = teardownSection.slice(at, teardownSection.indexOf('/>', at))
+    expect(callBlock).toContain('view={view}')
+    expect(callBlock).toContain('notes={notes}')
+    expect(callBlock).toContain('words={DEDICATED_TEARDOWN_WORDS}')
     expect(callBlock).toContain('retryHint="手順6"')
-    const view = teardownView
-    expect(view).toContain('result.inProgress ? (')
-    expect(view).toContain('削除中です。しばらくして{retryHint}をもう一度押してください。')
+    expect(callBlock).toContain("serviceConsoleUrl={PUBLISH_TARGET_CONSOLE['sakura-apprun-dedicated']}")
+    expect(callBlock).toContain('storageConsoleUrl={CONTROL_PANEL_URL}')
+    // パネルは知らせを節へ渡す（結果欄の直前に出る）
+    expect(panel).toContain('notes={resumedNotes.teardown}')
+    expect(panel).toContain('view={teardownView}')
+    // 保存場所だけが残った回の案内は渡さない（押し直すボタンが同じ節の中にある）
+    expect(callBlock).not.toContain('storageRetryHint')
+    const view = teardownResultSrc
+    expect(view).toContain('inProgressListed ? (')
+    expect(view).toContain('{words.verb}中です。しばらくして{retryHint}をもう一度押してください。')
     expect(view).toContain('border-brand-yellow')
-    // B（2026-09-17）: アプリの行を先頭に足した（削除順＝アプリ→LB→ASG→クラスタに揃える）。
-    expect(view).toContain('result.inProgress.applicationID')
-    expect(view).toContain('result.inProgress.loadBalancerID')
-    expect(view).toContain('result.inProgress.asgID')
-    expect(view).toContain('result.inProgress.clusterID')
-    // ボタンの disabled は tearingDown だけを見ており、inProgress では止めない（再開できる）。
-    expect(panel).toContain('disabled={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}')
+    expect(view).toContain('view.inProgress.map((l, i) => <li key={i}>{l.label}</li>)')
+    // ボタンの disabled は locked（panelBusy＝実行中・公開中・作成中・IP 取り直し中）だけを見ており、inProgress では止めない（再開できる）。
+    expect(panel).toContain('locked={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}')
+    expect(teardownSection).toContain('disabled={locked}')
   })
 
-  it('doTeardown は 📡 の行と同じ流れ（runDedicatedTeardown）を通る。確認は ConfirmModal（useConfirm）で先に取り、その答えを runTeardown の confirm へ注入する（判断9・2026-09-11／2026-10-08）', () => {
-    const at = panel.indexOf('const doTeardown = async () => {')
+  it('削除の流れ（useDedicatedPanelTeardown）は 📡 の行と同じ流れ（runTeardownFlow）を通る。確認は ConfirmModal（useConfirmChoices）で出し、IPC・キー・窓を閉じる警告は共通の流れと専有型の仕様書が持つ（判断9・2026-09-11／2026-10-08／3B-6a）', () => {
+    const block = hookBlock()
+    expect(block).toContain('const outcome = await runTeardownFlow(projectDir, dedicatedTeardownSpec, electronFlowDeps(projectDir, dedicatedTeardownSpec, {')
+    expect(block).toContain('          confirm,\n')
+    // キー無しの文は手順6のもの（仕様書の定数。📡 の行の文とは違う）
+    expect(block).toContain('keyMissingMessage: DEDICATED_PANEL_KEY_MISSING_MESSAGE,')
+    // 確認のあと（実行が始まる直前）だけ画面へ知らせる。前回の進み具合の行も消す
+    expect(block).toContain('onStart: () => { setProgressLocal(null); panelRef.current.onStart() },')
+    // 材料の読み方・キー・IPC・窓を閉じる警告は、📡 の行と同じ共有のファクトリ（electronFlowDeps）と仕様書が持つ。画面は書き直さない。
+    expect(block).not.toContain('apprunDedicated.teardown(')
+    expect(block).not.toContain('beginActivity')
+    expect(block).not.toContain('loadKey')
+    // 確認ダイアログは ConfirmModal（掟5）。window.confirm へ退行していないこと（2026-09-11 CLAUDE.md 掟5改定）。
+    expect(teardownSection).toContain("import { useConfirmChoices } from '../useConfirmChoices'")
+    expect(block).not.toContain('window.confirm(')
+    // 確認の文面・題・ボタンは画面で組み立てない（📡 と食い違わせない）。手本の関数も直接は呼ばない。
+    // 名前は単語の境界つきで見る（`apprunDedicatedTeardownSummary` の中に `runDedicatedTeardown` が含まれるため、部分一致では当たり違いが出る）
+    for (const gone of ['teardownConfirmMessage', 'runTeardown\\(', 'runDedicatedTeardown', 'electronTeardownDeps', 'buildDedicatedTeardownConfirm', 'useDedicatedTeardown', 'notifyDedicatedTeardownFinished']) {
+      expect(withoutComments(teardownSection), gone).not.toMatch(new RegExp(`\\b${gone}`))
+      expect(withoutComments(panel), gone).not.toMatch(new RegExp(`\\b${gone}`))
+    }
+    for (const gone of ['専有型クラスタを削除します']) {
+      expect(teardownSection, gone).not.toContain(gone)
+      expect(panel, gone).not.toContain(gone)
+    }
+    // 例外のときの文は素の e.message（専有型の流れに「破棄」を出さない。共用型の「破棄処理でエラーが発生しました: 」は写さない）
+    expect(block).toContain('dedicatedTeardownSpec.toView(dedicatedTeardownSpec.failure(e?.message ?? String(e)))')
+    expect(teardownSection).not.toContain('破棄処理でエラーが発生しました')
+    // 窓を閉じる警告・確認の答えが true でなければ進まない判断は、共通の流れの側にある（tests/teardownFlowCommon.test.ts・tests/dedicatedTeardownEntries.test.ts・tests/dedicatedTeardownSection.test.ts が振る舞いで固定）
+  })
+
+  it('★ 専有型の確認は、題・ボタンが「削除」のまま、確認の答えを注入する形を保っている（言葉は仕様書、組み立ては共通の confirm.ts、確認の答えを見るのは共通の flow.ts）', () => {
+    // 0.6.22 段階3B-7: 手本 dedicatedTeardownFlow.ts は消えた。同じ形を、言葉の置き場（仕様書）・組み立て（confirm.ts）・答えの扱い（flow.ts）の3つで固定する。
+    // 文の中身は tests/dedicatedTeardownGolden.test.ts（0.6.21 の手本の出力を写した JSON との比べ）が固定している。
+    const spec = withoutComments(readFileSync(join(__dirname, '..', 'src/renderer/teardown/targets/dedicated.ts'), 'utf-8'))
+    const confirmSrc = withoutComments(readFileSync(join(__dirname, '..', 'src/renderer/teardown/confirm.ts'), 'utf-8'))
+    const flow = withoutComments(readFileSync(join(__dirname, '..', 'src/renderer/teardown/flow.ts'), 'utf-8'))
+    // W-117（2026-09-27 決定）: ConfirmModal は danger:true のとき自分で「⚠️ 」を付けるので、title からは外した（二重表示「⚠️ ⚠️」を防ぐ）。
+    expect(spec).toContain("confirmTitle: '専有型クラスタを削除します'")
+    expect(spec).toContain("confirmLabel: '削除する'")
+    expect(spec).not.toContain("'⚠️ 専有型クラスタを削除します'")
+    expect(confirmSrc).toContain("return { title: spec.words.confirmTitle, body: `${head}\\n\\n${body}`, confirmLabel: spec.words.confirmLabel, danger: true }")
+    // 0.6.21: 手順6は1回の流れの中で名前を変えない（直す前の「破棄」に戻らない）
+    expect(spec).not.toContain('専有型クラスタを破棄します')
+    expect(spec).not.toContain('専有型クラスタの破棄')
+    expect(flow).toContain('const ok = await deps.confirm(buildTeardownConfirm(spec, facts))')
+    expect(flow).toContain('if (ok !== true) return { cancelled: true }')
+    expect(flow).not.toContain('window.confirm(')
+  })
+
+  it('失敗が残ったら、残った資源のIDとコントロールパネルへの導線を出す（結果欄は 📡 の行と同じ共通の部品。残ったものの読み方は shared/teardownResult.ts の1つ）', () => {
+    const reader = readFileSync(join(__dirname, '..', 'src/shared/teardownResult.ts'), 'utf-8')
+    expect(reader).toContain("const REMAINING_WARNING_TAIL = 'できずに残っているものがあります。残っている間は課金が続きます'")
+    expect(reader).not.toContain('残っています＝課金が続きます') // 0.6.21: 「＝」のメモ書きは文にした。直す前の言い方は戻さない
+    expect(panel).not.toContain('残っています＝課金が続きます')
+    // B（2026-09-17）: アプリの行を先頭に足した（削除順＝アプリ→LB→ASG→クラスタに揃える）。
+    const keys = ['applicationID', 'loadBalancerID', 'asgID', 'clusterID'].map(k => reader.indexOf(`['${k}', `))
+    for (const k of keys) expect(k).toBeGreaterThan(-1)
+    expect([...keys].sort((x, y) => x - y)).toEqual(keys)
+    // 2026-09-24 検分の指摘5: 保存場所だけが残った回は、計算資源のIDが1件も出ない。保存場所は残りの全件（remainingBuckets。3B-2）、無ければ止まった1件。
+    expect(reader).toContain('remaining.storageBucket')
+    expect(reader).toContain('v.remainingBuckets')
+    // コントロールパネルへの導線は、共通の結果欄が storageConsoleUrl で出し、手順6の節がコントロールパネルの URL を渡す（上の it で固定）。
+    expect(teardownResultSrc).toContain('<a href={storageConsoleUrl}')
+    expect(teardownSection).toContain('storageConsoleUrl={CONTROL_PANEL_URL}')
+  })
+
+  // 2026-10-08（作者の決定）: 公開記録（publish.targets）は画面では消さない。main の apprunDedicated:teardown が、
+  // 保存場所まで片づいた回に1回だけ消す（📡 の 🗑 から押しても手順6から押しても同じ1か所）。
+  // 以前は doTeardown 自身が clearPublishRecord を呼んでいた（main と二重だった）。
+  it('手順6の削除は公開記録を消さない（clearPublishRecord も shouldClearPublishRecord も applicationID の控えも無い）。取り直しと知らせだけ', () => {
+    expect(panel).not.toContain("import { clearPublishRecord } from '../publishRecord'")
+    expect(panel).not.toContain('clearPublishRecord')
+    expect(panel).not.toContain('shouldClearPublishRecord')
+    expect(teardownSection).not.toContain('clearPublishRecord')
+    expect(teardownSection).not.toContain('shouldClearPublishRecord')
+    expect(teardownSection).not.toContain('forgetPublishTargetRecord')
+    // 終わったときの口（onTeardownDone）は、結果を置き、知らせと記録の取り直しをするだけ
+    const at = panel.indexOf('const onTeardownDone = async (view: TeardownView, stale: boolean) => {')
     expect(at).toBeGreaterThan(0)
     const end = panel.indexOf('// ── 手順8 アプリを公開する', at)
     expect(end).toBeGreaterThan(at)
     const block = panel.slice(at, end)
-    expect(block).toContain('const outcome = await runDedicatedTeardown(projectDir, electronTeardownDeps(projectDir, {')
-    expect(block).toContain('        confirm,\n')
-    // 材料の読み方・キー・IPC・窓を閉じる警告は、📡 の行と同じ共有のファクトリ（electronTeardownDeps）が持つ。画面は書き直さない。
-    expect(block).not.toContain('apprunDedicated.teardown(')
-    expect(block).not.toContain('beginActivity')
-    const flowSrc = readFileSync(join(__dirname, '..', 'src/renderer/dedicatedTeardownFlow.ts'), 'utf-8')
-    expect(flowSrc).toContain('loadFacts: () => loadDedicatedTeardownFacts(projectDir, electronFactsApi()),')
-    expect(flowSrc).toContain('teardown: (dir, auth, opts) => window.electronAPI.apprunDedicated.teardown(dir, auth, opts),')
-    expect(flowSrc).toContain('    beginActivity,\n')
-    // window.confirm へ退行していないこと（2026-09-11 CLAUDE.md 掟5改定）。
-    expect(block).not.toContain('window.confirm(')
-    // 確認の文面・題・ボタンは画面で組み立てない（📡 と食い違わせない）。runTeardown も直接は呼ばない。
-    expect(block).not.toContain('teardownConfirmMessage')
-    expect(block).not.toContain('runTeardown(')
-    expect(block).not.toContain('消さない限り課金が続きます')
-    // 題・ボタン・「破棄」へ戻っていないこと・確認の答えを runTeardown の confirm へ注入することは、共有の流れの側にある
-    const flow = readFileSync(join(__dirname, '..', 'src/renderer/dedicatedTeardownFlow.ts'), 'utf-8')
-    // W-117（2026-09-27 決定）: ConfirmModal は danger:true のとき自分で「⚠️ 」を付けるので、title からは外した（二重表示「⚠️ ⚠️」を防ぐ）。
-    // 本文は「対象のプロジェクト＋読めなかった材料の注意（head）」＋ teardownConfirmMessage の文（body）。
-    expect(flow).toContain("return { title: '専有型クラスタを削除します', body: `${head}\\n\\n${body}`, confirmLabel: '削除する', danger: true }")
-    expect(flow).not.toContain("title: '⚠️ 専有型クラスタを削除します'")
-    // 0.6.21: 手順6は1回の流れの中で名前を変えない（直す前の「破棄」に戻らない）
-    expect(flow).not.toContain("title: '専有型クラスタを破棄します'")
-    expect(flow).not.toContain('専有型クラスタの破棄')
-    expect(flow).toContain('const ok = await deps.confirm(confirmOpts)')
-    expect(flow).toContain('confirm: () => ok,')
-    expect(flow).not.toContain('window.confirm(')
-  })
-
-  it('失敗が残ったら、残った資源のIDとコントロールパネルへの導線を出す（結果欄は 📡 の行と同じ部品）', () => {
-    const view = teardownView
-    expect(view).toContain('削除できずに残っているものがあります。残っている間は課金が続きます。')
-    expect(view).not.toContain('残っています＝課金が続きます') // 0.6.21: 「＝」のメモ書きは文にした。直す前の言い方は戻さない
-    expect(panel).not.toContain('残っています＝課金が続きます')
-    // B（2026-09-17）: アプリの行を先頭に足した（削除順＝アプリ→LB→ASG→クラスタに揃える）。
-    expect(view).toContain('result.remaining.applicationID')
-    expect(view).toContain('result.remaining.loadBalancerID')
-    expect(view).toContain('result.remaining.asgID')
-    expect(view).toContain('result.remaining.clusterID')
-    // 2026-09-24 検分の指摘5: 保存場所だけが残った回は、計算資源のIDが1件も出ない。
-    expect(view).toContain('result.remaining.storageBucket')
-    expect(view).toContain('<a href={CONTROL_PANEL_URL}')
-  })
-
-  // 2026-10-08（作者の決定）: 公開記録（publish.targets）は画面では消さない。main の apprunDedicated:teardown が、
-  // アプリが消えたと分かった時に1回だけ消す（📡 の 🗑 から押しても手順6から押しても同じ1か所）。
-  // 以前は doTeardown 自身が clearPublishRecord を呼んでいた（main と二重だった）。
-  it('doTeardown は公開記録を消さない（clearPublishRecord も shouldClearPublishRecord も applicationID の控えも無い）。取り直しと知らせだけ', () => {
-    expect(panel).not.toContain("import { clearPublishRecord } from '../publishRecord'")
-    expect(panel).not.toContain('clearPublishRecord')
-    expect(panel).not.toContain('shouldClearPublishRecord')
-    const at = panel.indexOf('const doTeardown = async () => {')
-    const end = panel.indexOf('// ── 手順8 アプリを公開する', at)
-    const block = panel.slice(at, end)
     expect(block).not.toContain('hadApplicationID')
-    expect(block).toContain('notifyDedicatedTeardownFinished()')
+    // 待っている間にプロジェクトが切り替わった回（stale）は、結果を入れる前に抜ける（前のプロジェクトの結果を新しい画面へ入れない・掟11）。実行中の印は finally で必ず下ろす
+    expect(block.indexOf('if (stale) return')).toBeGreaterThan(-1)
+    expect(block.indexOf('if (stale) return')).toBeLessThan(block.indexOf('setTeardownView(view)'))
+    expect(block.indexOf('} finally {')).toBeGreaterThan(block.indexOf('setTeardownView(view)'))
+    expect(block).toContain('notifyTeardownFinished()')
     expect(block).toContain('await refreshApprunState()')
+    expect(block).toContain('await refreshAppStatus()')
   })
 })
 
@@ -2133,7 +2254,9 @@ describe('手順8 アプリを公開する（D-4）: 節の位置・表示条件
 
   it('設定済み（hasLetsEncryptEmail === true）のときは欄を出さず、確認できた旨だけ出す（アドレスそのものは出せない）', () => {
     expect(panel).toContain('appStatus.hasLetsEncryptEmail === true && (')
-    expect(panel).toContain('✅ Let&apos;s Encrypt のメールは設定済みです（アドレスそのものはここには表示できません）。')
+    // 2026-10-09 画面の文を短くする（T017）: 「（アドレスそのものはここには表示できません）」は外した。戻さない。
+    expect(panel).toContain('✅ Let&apos;s Encrypt のメールは設定済みです。')
+    expect(panel).not.toContain('アドレスそのものはここには表示できません')
   })
 
   it('手順8のメール欄の近くに、独自ドメインが要らないなら共用型で公開できる旨の案内がある（F-1 A-4）', () => {
@@ -2147,7 +2270,9 @@ describe('手順8 アプリを公開する（D-4）: 節の位置・表示条件
     const block = panel.slice(at, end)
     expect(block).toContain('<details')
     expect(block).toContain('詳細設定（ふつうは変えなくてよい）')
-    expect(block).toContain('既定のままで公開できます。1台構成でも更新できるよう、既定は小さめです。')
+    // 2026-10-09 画面の文を短くする（T018）: 「詳細設定（ふつうは変えなくてよい）」と重なる「既定のままで公開できます。」は外した。戻さない。
+    expect(block).toContain('1台構成でも更新できるよう、既定は小さめです。')
+    expect(block).not.toContain('既定のままで公開できます。')
     expect(panel).toContain('useState<number>(APP_DEFAULTS.cpu)')
     expect(panel).toContain('useState<number>(APP_DEFAULTS.memory)')
     expect(panel).toContain('useState<number>(APP_DEFAULTS.fixedScale)')
@@ -2476,8 +2601,8 @@ describe('手順8 アプリを公開する（D-4）: 節の位置・表示条件
   })
 })
 
-describe('手順6（D-4）: 破棄の対象・要約にアプリの行を足す', () => {
-  it('buildTeardownSummary: applicationID があれば末尾に「アプリ『name』（バージョン n）→ 先に削除」。無ければ行数は変わらない', () => {
+describe('手順6（D-4・T022）: 破棄の対象にアプリの行がある。「いまの構成と月額目安」にはアプリの行を足さない', () => {
+  it('★ T022（V12）: buildTeardownSummary は、記録にアプリがあっても行数は6のまま。「→ 先に削除」の行も、アプリの行も無い（アプリ名とバージョンは、節の「消すものの一覧」が言う）', () => {
     const base = {
       name: 'myapp', zone: 'tk1a',
       workerServiceClassPath: 'cloud/apprun/dedicated/worker/1vcpu_2gb',
@@ -2486,30 +2611,39 @@ describe('手順6（D-4）: 破棄の対象・要約にアプリの行を足す'
     }
     const without = buildTeardownSummary(base, null).lines
     expect(without.length).toBe(6)
-    expect(without.some(l => l.startsWith('アプリ『'))).toBe(false)
-
-    const withApp = buildTeardownSummary({ ...base, applicationID: 'app-1', applicationName: 'myapp', activeVersion: 3 }, null).lines
-    expect(withApp.length).toBe(7)
-    expect(withApp[6]).toBe('アプリ『myapp』（バージョン 3）→ 先に削除')
-    expect(withApp.slice(0, 6)).toEqual(without)
-
-    // 名前が無ければ ID、バージョンが無ければ「不明」（推測で埋めない）。
-    expect(buildTeardownSummary({ applicationID: 'app-1' }, null).lines.at(-1)).toBe('アプリ『app-1』（バージョン 不明）→ 先に削除')
-    // applicationID が null なら足さない。
-    expect(buildTeardownSummary({ ...base, applicationID: null, applicationName: 'x' }, null).lines.length).toBe(6)
+    // パネルが渡すのは state の返り値（手順8のアプリの欄を含む）。アプリの欄があっても、行は増えない。
+    const withAppRecord = { ...base, applicationID: 'app-1', applicationName: 'myapp', activeVersion: 3 }
+    const withApp = buildTeardownSummary(withAppRecord, null).lines
+    expect(withApp.length, 'アプリの行が足されている（直す前の形に戻っている）').toBe(6)
+    expect(withApp).toEqual(without)
+    expect(withApp.some(l => l.includes('先に削除') || l.startsWith('アプリ『'))).toBe(false)
+    // 名前もバージョンも無い・ID だけの記録でも同じ（旧い形の行も戻さない）
+    expect(buildTeardownSummary({ applicationID: 'app-1' } as typeof base, null).lines.some(l => l.includes('アプリ') || l.includes('先に削除'))).toBe(false)
+    // 画面に出る文の側にも戻していない（パネルのソースに旧い文の書き出しが無い）
+    expect(panel).not.toContain('→ 先に削除')
+    // 旧い行の文は、節・専有型の仕様書・見張りの部品のどれにも戻さない（行の作り手はパネルの buildTeardownSummary だけだが、別の所へ足されても言わない）
+    for (const f of [teardownSection, readFileSync(join(__dirname, '..', 'src/renderer/teardown/targets/dedicated.ts'), 'utf-8'), readFileSync(join(__dirname, '..', 'src/renderer/apprunDedicatedActions.ts'), 'utf-8')]) {
+      expect(f).not.toContain('→ 先に削除')
+    }
+    // パネルが「いまの構成と月額目安」の材料に渡すのは記録（apprunState）そのもの。直す前は、手順8のアプリの3欄を appStatus の record から補っていた
+    expect(panel).toContain('const teardownSummaryRecord = apprunState\n')
+    expect(panel).not.toMatch(/teardownSummaryRecord\s*=\s*\{/)
+    expect(panel).not.toContain('applicationName: appRecord?.applicationName ?? null')
   })
 
-  it('削除の対象一覧（共有の dedicatedTeardownTargets）と手順6の <ul> にアプリの行がある（先頭・main の teardownFlow と同じ順）', () => {
-    const flow = readFileSync(join(__dirname, '..', 'src/renderer/dedicatedTeardownFlow.ts'), 'utf-8')
-    const at = flow.indexOf('export function dedicatedTeardownTargets(')
-    const block = flow.slice(at, at + 900)
+  it('削除の対象一覧（専有型の仕様書の dedicatedTeardownTargets）と手順6の <ul> にアプリの行がある（先頭・main の teardownFlow と同じ順）', () => {
+    // 3B-6a: 確認の先頭の名前の並びは専有型の仕様書（targets/dedicated.ts。手本から1文字も変えずに移した）
+    const spec = readFileSync(join(__dirname, '..', 'src/renderer/teardown/targets/dedicated.ts'), 'utf-8')
+    const at = spec.indexOf('export function dedicatedTeardownTargets(')
+    const block = spec.slice(at, at + 900)
     expect(block).toContain("record?.applicationID ? `アプリ『${record.applicationName ?? record.applicationID}』` : null,")
     // 先頭＝アプリ → LB → ASG → クラスタ（main の teardownFlow と同じ順）
     const order = ['アプリ『', 'ロードバランサ『', 'オートスケーリンググループ『', 'クラスタ『'].map(k => block.indexOf(k))
     expect([...order].sort((x, y) => x - y)).toEqual(order)
-    // アプリの行: 手順8の状態（appRecord・APIキーが要る）が無くても、記録（apprunState）から出す（2026-10-08 検分 E）
-    expect(panel).toContain("{(appRecord?.applicationID ?? apprunState?.applicationID) && (")
-    expect(panel).toContain("<li>アプリ『{appRecord?.applicationName ?? apprunState?.applicationName ?? appRecord?.applicationID ?? apprunState?.applicationID}』（バージョン {appRecord?.activeVersion ?? apprunState?.activeVersion ?? '不明'}）</li>")
+    // アプリの行: 手順8の状態（appRecord・APIキーが要る）が無くても、記録（apprunState）から出す（2026-10-08 検分 E）。節（DedicatedTeardownSection.tsx）の <ul>
+    expect(teardownSection).toContain("{(appRecord?.applicationID ?? apprunState?.applicationID) && (")
+    expect(teardownSection).toContain("<li>アプリ『{appRecord?.applicationName ?? apprunState?.applicationName ?? appRecord?.applicationID ?? apprunState?.applicationID}』（バージョン {appRecord?.activeVersion ?? apprunState?.activeVersion ?? '不明'}）</li>")
+    // 「いまの構成と月額目安」の行を作る呼び形はパネルに残る（buildTeardownSummary は priceSummary・PlanRow を呼ぶので節へ移すと循環する）
     expect(panel).toContain('buildTeardownSummary(teardownSummaryRecord, { worker: workerPlans, lb: lbPlans })')
   })
 })
@@ -2557,72 +2691,99 @@ describe('computePublishFormErrors（手順8の入力チェック・純関数）
   })
 })
 
-// ── D-4（2026-09-15）→ 2026-10-08: 📡 公開したもの一覧（PublishedListModal.tsx）の専有型の破棄 ─────────────
+// ── D-4（2026-09-15）→ 2026-10-08 → 0.6.22 3B-5: 📡 公開したもの一覧（PublishedListModal.tsx）の専有型の 🗑 ─────────────
 // 作者の決定（2026-10-08）: 専有型の 🗑 は、手順6と同じ「すべて削除」。アプリだけを消す口（teardownApp）は廃止した。
-// 流れ（確認 → 実行 → 進み具合 → 結果）は手順6と同じ部品。振る舞い（IPC が confirmed:true で1回だけ・やめるなら0回・順序）は
+// 3B-5: 専有型の行は、HANAMII・共用型と同じ共通の行（TeardownRow）に、専有型の仕様書（dedicatedTeardownSpec）を渡す形に替わった。
+// 流れ（確認 → 実行 → 進み具合 → 結果）は共通の部品（teardown/flow.ts）。振る舞い（IPC が confirmed:true で1回だけ・やめるなら0回・順序）は
 // tests/dedicatedTeardownEntries.test.ts が偽の client で固定している。ここは配線だけ。
-describe('📡 公開したもの一覧: 専有型の 🗑 は 手順6と同じ流れ（DedicatedTeardownRow → useDedicatedTeardown → runDedicatedTeardown）', () => {
-  const rowSrc = readFileSync(join(__dirname, '..', 'src/renderer/components/DedicatedTeardownRow.tsx'), 'utf-8')
-  const hookSrc = readFileSync(join(__dirname, '..', 'src/renderer/hooks/useDedicatedTeardown.ts'), 'utf-8')
-  const flowSrc = readFileSync(join(__dirname, '..', 'src/renderer/dedicatedTeardownFlow.ts'), 'utf-8')
+describe('📡 公開したもの一覧: 専有型の 🗑 は 手順6と同じ流れ（TeardownRow＋dedicatedTeardownSpec → useTeardownFlow → runTeardownFlow）', () => {
+  const rowSrc = readFileSync(join(__dirname, '..', 'src/renderer/components/teardown/TeardownRow.tsx'), 'utf-8')
+  const hookSrc = readFileSync(join(__dirname, '..', 'src/renderer/teardown/useTeardownFlow.ts'), 'utf-8')
+  const specSrc = readFileSync(join(__dirname, '..', 'src/renderer/teardown/targets/dedicated.ts'), 'utf-8')
+  const flowSrc = readFileSync(join(__dirname, '..', 'src/renderer/teardown/flow.ts'), 'utf-8')
   const codeOf = (src: string) => src.split('\n').filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*') && !l.trimStart().startsWith('/*') && !l.trimStart().startsWith('{/*')).join('\n')
-
-  it('一覧の専有型の行は DedicatedTeardownRow を通り、一覧の runTeardown（共用型・HANAMII）に専有型の枝は無い', () => {
+  /** 一覧の専有型の枝（HANAMII の枝の手前まで）。 */
+  const dedicatedBranch = () => {
     const modal = codeOf(publishedListModal)
-    expect(modal).toContain("import DedicatedTeardownRow from './DedicatedTeardownRow'")
-    expect(modal).toContain("if (e.target === 'sakura-apprun-dedicated' && supported) {")
-    expect(modal).toContain('<DedicatedTeardownRow')
-    // runTeardown の中に専有型の枝・専有型の IPC 呼び出しは無い（teardownApp も teardown も）
-    const rt = modal.slice(modal.indexOf('const runTeardown = async (e: PublishedEntry) => {'), modal.indexOf('const total = groups?.reduce'))
-    expect(rt).not.toContain("'sakura-apprun-dedicated'")
-    expect(rt).not.toContain('apprunDedicated.')
-    expect(modal).not.toContain('teardownApp')
-    expect(modal).not.toContain('apprunDedicated.teardown(')
+    const start = modal.indexOf("if (e.target === 'sakura-apprun-dedicated' && supported) {")
+    const end = modal.indexOf("if (e.target === 'hanamii' && supported) {")
+    expect(start, '専有型の枝が見つからない').toBeGreaterThan(0)
+    expect(end, 'HANAMII の枝が専有型の枝のあとに無い（専有型の枝の終わりを決められない）').toBeGreaterThan(start)
+    return modal.slice(start, end)
+  }
+
+  it('一覧の専有型の行は TeardownRow（専有型の仕様書）を通り、一覧は専有型の IPC・手本の行・フック・結果欄の部品を使わない', () => {
+    const modal = codeOf(publishedListModal)
+    expect(modal).toContain("import TeardownRow from './teardown/TeardownRow'")
+    expect(modal).toContain("import { dedicatedTeardownSpec, DEDICATED_LIST_KEY_MISSING_MESSAGE } from '../teardown/targets/dedicated'")
+    const branch = dedicatedBranch()
+    expect(branch).toContain('<TeardownRow')
+    expect(branch).toContain('spec={dedicatedTeardownSpec}')
+    expect(branch).toContain('keyMissingMessage={DEDICATED_LIST_KEY_MISSING_MESSAGE}')
+    expect(branch).toContain('key={rowKey}')
+    // 直す前の形（手本の行・フック・結果欄の部品・一覧自身の破棄）には戻らない。空の文字列を検査しない（10.7.20 の (b)）ので、一覧全体で「無い」を見る
+    for (const gone of ['DedicatedTeardownRow', 'DedicatedTeardownResultView', 'DedicatedTeardownOutcome', 'useDedicatedTeardown', 'runTeardown', 'teardownApp', 'apprunDedicated.']) {
+      expect(modal, gone).not.toContain(gone)
+    }
+    expect(modal).not.toMatch(/\bLIST_KEY_MISSING_MESSAGE\b/)
   })
 
-  it('行は useDedicatedTeardown を使い、そのフックは共有の runDedicatedTeardown に確認・キー・IPC・活動レジストリを渡す', () => {
+  it('行は useTeardownFlow を使い、そのフックは共通の runTeardownFlow に確認・キー・IPC・活動レジストリを渡す', () => {
     const row = codeOf(rowSrc)
-    expect(row).toContain('useDedicatedTeardown(entry.dir, {')
+    expect(row).toContain('useTeardownFlow(entry.dir, spec, {')
     const hook = codeOf(hookSrc)
-    expect(hook).toContain('const out = await runDedicatedTeardown(projectDir, electronTeardownDeps(projectDir, {')
+    expect(hook).toContain('const out = await runTeardownFlow(projectDir, spec, electronFlowDeps(projectDir, spec, {')
     expect(hook).toContain('        confirm,\n')
-    // キー（方式B・掟4: 使う瞬間に読んで引数で渡す）・IPC・窓を閉じる警告は、手順6と同じ共有のファクトリが持つ
+    // キー（方式B・掟4: 使う瞬間に読んで引数で渡す）は、専有型の仕様書の loadAuth が持つ。IPC・窓を閉じる警告は共通の流れが持つ
     expect(hook).not.toContain('apprunDedicated.teardown(')
     expect(hook).not.toContain('beginActivity')
-    expect(flowSrc).toContain('loadKey: () => window.electronAPI.cloud.loadKey(),')
-    // 確認の文・題・ボタンはこのフックにも行にも一覧にも無い（共有の関数が作る）
+    expect(codeOf(flowSrc)).toContain('loadAuth: record => spec.loadAuth(record),')
+    expect(codeOf(specSrc)).toContain('const key = await window.electronAPI.cloud.loadKey()')
+    // 確認の文・題・ボタンはこのフックにも行にも一覧にも無い（共通の確認が作る）
     for (const src of [hook, row, codeOf(publishedListModal)]) {
       expect(src).not.toContain('teardownConfirmMessage')
       expect(src).not.toContain('専有型クラスタを削除します')
     }
     // 一覧の確認ダイアログは ConfirmModal（掟5）。window.confirm は使わない。
-    expect(hook).toContain("import { useConfirm } from '../useConfirm'")
+    expect(hook).toContain("import { useConfirmChoices } from '../useConfirmChoices'")
     expect(hook).not.toContain('window.confirm(')
   })
 
   it('キーが無いときは「認証情報」で登録する案内（📡 の言い方）。手順6は「手順1で登録」', () => {
-    expect(rowSrc).toContain("export const LIST_KEY_MISSING_MESSAGE = 'さくらのクラウドの API キーが未登録です。「認証情報」で登録してから、もう一度お試しください。'")
-    expect(rowSrc).toContain('keyMissingMessage: LIST_KEY_MISSING_MESSAGE,')
-    expect(panel).toContain("keyMissingMessage: 'さくらのクラウドAPIキーが未登録です。手順1で登録してください。',")
+    const spec = codeOf(specSrc)
+    expect(spec).toContain("export const DEDICATED_LIST_KEY_MISSING_MESSAGE = 'さくらのクラウドの API キーが未登録です。「認証情報」で登録してから、もう一度お試しください。'")
+    expect(spec).toContain("export const DEDICATED_PANEL_KEY_MISSING_MESSAGE = 'さくらのクラウドAPIキーが未登録です。手順1で登録してください。'")
+    // 手順6の節は、仕様書の DEDICATED_PANEL_KEY_MISSING_MESSAGE を渡す（3B-6a。パネルに文を直書きしない）
+    expect(teardownSection).toContain('keyMissingMessage: DEDICATED_PANEL_KEY_MISSING_MESSAGE,')
+    expect(teardownSection).toContain("DEDICATED_PANEL_KEY_MISSING_MESSAGE } from '../teardown/targets/dedicated'")
+    expect(withoutComments(panel)).not.toContain('keyMissingMessage')
+    expect(teardownSection).not.toContain('さくらのクラウドAPIキーが未登録です。手順1で登録してください。') // 文は仕様書の1か所（手順5・8などのパネルの文は別の操作のもの）
   })
 
-  it('進み具合: teardown-progress の購読と、処理の記録（projectOps）の監視（削除だけ）を張る。行の下に共有の進み具合の部品を出す', () => {
+  it('進み具合: teardown-progress の購読（仕様書の1行）と、処理の記録（projectOps）の監視（この公開先の削除だけ）を張る。行の下に共通の進み具合の部品を出す', () => {
+    expect(codeOf(specSrc)).toContain('subscribeProgress: cb => window.electronAPI.apprunDedicated.onTeardownProgress(cb),')
     const hook = codeOf(hookSrc)
-    expect(hook).toContain('window.electronAPI.apprunDedicated.onTeardownProgress(msg => setProgressLocal(msg))')
-    expect(hook).toContain('watch = watchDedicatedOps({')
+    expect(hook).toContain('try { unsubscribe = specRef.current.subscribeProgress?.(msg => setProgressLocal(msg)) ?? unsubscribe } catch')
+    expect(hook).toContain('watch = watchTeardownOps({')
     expect(hook).toContain('api: window.electronAPI.projectOps,')
-    expect(hook).toContain("kinds: ['teardown'],")
-    expect(hook).toContain('progress: teardownProgressText({ runningKind, runningRecord, local: progressLocal }),')
+    expect(hook).toContain('target: spec.target,')
+    expect(hook).toContain('progress: teardownProgressText({ running, runningRecord, local: progressLocal }),')
     const row = codeOf(rowSrc)
-    expect(row).toContain('<DedicatedTeardownProgress progress={t.progress} runningKind={t.runningKind} runningRecord={t.runningRecord} nowMs={t.nowMs} />')
+    expect(row).toContain('<TeardownProgress words={words} progress={t.progress} running={t.running} runningRecord={t.runningRecord} nowMs={t.nowMs} />')
   })
 
-  it('結果は行の外（一覧の上）に、手順6と同じ結果欄の部品で出す。閉じて開き直したときの記録の結果も同じ入り口（onOutcome）', () => {
+  it('結果は行の外（一覧の上）に、HANAMII・共用型と同じ結果欄の部品で出す。閉じて開き直したときの記録の結果も同じ入り口（onOutcome）', () => {
     const modal = codeOf(publishedListModal)
-    expect(modal).toContain('<DedicatedTeardownResultView')
-    expect(modal).toContain('result={dedicatedOutcome.outcome.result} notes={dedicatedOutcome.outcome.notes} retryHint="この一覧の 🗑 破棄"')
+    expect(modal).toContain('<TeardownResultView')
+    expect(modal).toContain('view={dedicatedOutcome.outcome.view} notes={dedicatedOutcome.outcome.notes} words={dedicatedTeardownSpec.words}')
+    // V1: 押し直す場所の呼び方は専有型の行のボタンの名前「🗑 削除」
+    expect(modal).toContain('retryHint="この一覧の 🗑 削除"')
+    const outcomeBlock = modal.slice(modal.indexOf('data-dedicated-outcome'), modal.indexOf('data-hanamii-outcome'))
+    expect(outcomeBlock, '専有型の結果欄の範囲が見つからない').toContain('TeardownResultView')
+    expect(outcomeBlock, '専有型の結果欄が「🗑 破棄」と呼んでいる（専有型の行のボタンは「🗑 削除」）').not.toContain('🗑 破棄')
+    expect(modal).toContain("serviceConsoleUrl={PUBLISH_TARGET_CONSOLE['sakura-apprun-dedicated']} storageConsoleUrl={CONTROL_PANEL_URL}")
     expect(modal).toContain('storageRetryHint={LIST_STORAGE_RETRY_HINT}')
-    // 2026-10-08 検分 C: 保存場所だけが残ったときの案内は、結果欄の「このプロジェクトを開く」ボタン（行の「プロジェクトを開く」と同じ openProject）を指す
+    // 2026-10-08 検分 C: 保存場所だけが残ったときの案内の下に、結果欄の「このプロジェクトを開く」ボタン（行の「プロジェクトを開く」と同じ openProject）を置く
     expect(modal).toContain("storageRetryAction={{ label: 'このプロジェクトを開く', onClick: () => openProject(dedicatedOutcome.entry.dir) }}")
     expect(modal).toContain('onClick={() => openProject(e.dir)}')
     expect(modal).toContain('const openProject = (dir: string) => { onOpenProject(dir); onClose() }')
@@ -2630,42 +2791,49 @@ describe('📡 公開したもの一覧: 専有型の 🗑 は 手順6と同じ�
     expect(modal).not.toContain('「プロジェクトを開く」から専有型タブ')
     expect(modal).not.toContain('onClick={() => { onOpenProject(e.dir); onClose() }}')
     const hook = codeOf(hookSrc)
-    expect(hook).toContain('cb.current.onOutcome({ result: resumedTeardownResult(latest.record), notes: finished.map(resumedNoteOf) })')
-    expect(hook).toContain('cb.current.onOutcome({ result, notes: [] })')
+    expect(hook).toContain('view: resumedTeardownView(s.target, latest.result),')
+    expect(hook).toContain('notes: finished.map(rec => resumedTeardownNote(s.words, rec)),')
+    expect(hook).toContain('cb.current.onOutcome(nothingToDo ? { view, notes: [], nothingToDo: true } : { view, notes: [] })')
     // 出し終えたら記録を「見た」にする（行が消える前に）
-    expect(hook.indexOf("watchRef.current?.endLocal('teardown')")).toBeGreaterThan(hook.indexOf('cb.current.onOutcome({ result, notes: [] })'))
-    expect(hook.indexOf("watchRef.current?.endLocal('teardown')")).toBeLessThan(hook.lastIndexOf('cb.current.onFinished?.()'))
+    const out = hook.indexOf('cb.current.onOutcome(nothingToDo ?')
+    expect(out).toBeGreaterThan(0)
+    expect(hook.indexOf('watchRef.current?.endLocal()')).toBeGreaterThan(out)
+    expect(hook.indexOf('watchRef.current?.endLocal()')).toBeLessThan(hook.lastIndexOf('cb.current.onFinished?.()'))
   })
 
   // 2026-10-08 検分: 一覧が行の部品につなぐ配線の多くが、壊しても試験が1本も落ちなかった。呼び出しの形ごと固定する
-  // （振る舞いは tests/publishedListDedicatedRow.test.ts と tests/dedicatedTeardownEntries.test.ts の (E3)）。
+  // （振る舞いは tests/publishedListDedicatedRow.test.ts と tests/dedicatedTeardownEntries.test.ts の (E3)・tests/teardownHookCommon.test.ts の E-6）。
   it('一覧は行の部品に、結果の置き場・実行中の印・読み直し・止める条件を渡す。行は確認ダイアログを自分の中に描く', () => {
     const modal = codeOf(publishedListModal)
-    expect(modal).toContain('onOutcome={(entry, outcome) => { setResult(null); setDedicatedOutcome({ entry, outcome }) }}')
-    expect(modal).toContain('onFinished={() => reload()}')
-    expect(modal).toContain('blocked={busyKey !== null && busyKey !== rowKey}')
-    expect(modal).toContain('setBusyKey(prev => (busy ? rowKey : (prev === rowKey ? null : prev)))')
-    expect(modal).toContain('if (busy) { setResult(null); setDedicatedOutcome(null) }')
-    expect(modal).toContain('render={({ button, below, busy }) => renderRow(e, button, below, busy)}')
+    const branch = dedicatedBranch()
+    expect(branch).toContain('onOutcome={(entry, outcome) => { setResult(null); setDedicatedOutcome({ entry, outcome }) }}')
+    expect(branch).toContain('onFinished={() => reload()}')
+    expect(branch).toContain('blocked={busyKey !== null && busyKey !== rowKey}')
+    expect(branch).toContain('setBusyKey(prev => (busy ? rowKey : (prev === rowKey ? null : prev)))')
+    // 新しい削除が始まったら、前の結果はどれも片づける（専有型の onBusyChange が HANAMII・共用型の結果も知っている。一覧の別の effect には頼らない）
+    expect(branch).toContain('if (busy) { setResult(null); setDedicatedOutcome(null); setHanamiiOutcome(null); setSharedOutcome(null) }')
+    expect(branch).toContain('render={({ button, below, busy }) => renderRow(e, button, below, busy)}')
+    expect(modal).not.toContain('if (busyKey !== null) { setHanamiiOutcome(null); setSharedOutcome(null) }')
     // 「一覧から削除」は、その行の削除が走っている間は押せない（2つのボタン）
     expect((modal.match(/disabled=\{rowBusy\}/g) ?? []).length).toBe(2)
-    // 専有型の行の key は添字を含めない
-    expect(modal).toContain("const key = e.target === 'sakura-apprun-dedicated' ? rowKey : `${rowKey}-${i}`")
+    // 🗑 のある行の key は添字を含めない。添字を含めるのは、状態を持たない行（破棄の口が無い公開先）の Fragment だけ
+    expect(modal).toContain('return <React.Fragment key={`${rowKey}-${i}`}>')
+    expect(modal).not.toContain("const key = e.target === 'sakura-apprun-dedicated' ? rowKey : `${rowKey}-${i}`")
     const row = codeOf(rowSrc)
     expect(row).toContain('return <>{render({ button, below, busy: t.tearingDown })}{t.confirmElement}</>')
     expect(row).toContain('disabled={blocked || t.tearingDown || t.otherRunning}')
+    // V1・V16: ボタンの文字は言葉の rowButton（専有型は「🗑 削除」）。title は共通の文（手本の末尾の括弧はなくなる）
+    expect(row).toContain('{t.tearingDown ? words.running : words.rowButton}')
+    expect(row).toContain('`公開を止めて、作られたものをすべて${words.verb}します`')
     // 行が消えたときは実行中の印を必ず下ろす
     expect(row).toContain('useEffect(() => () => { busyChangeRef.current(false) }, [])')
   })
 
-  it('公開記録は 📡 の画面（一覧・行・フック・流れ）のどこでも消さない。main の1か所（shouldForgetPublishRecord）', () => {
-    for (const src of [codeOf(rowSrc), codeOf(hookSrc), codeOf(flowSrc)]) {
+  it('公開記録は 📡 の画面（一覧・行・フック・流れ・仕様書）のどこでも消さない。main の1か所（shouldForgetPublishRecord）', () => {
+    for (const src of [codeOf(rowSrc), codeOf(hookSrc), codeOf(flowSrc), codeOf(specSrc), dedicatedBranch()]) {
       expect(src).not.toContain('clearPublishRecord')
       expect(src).not.toContain('forgetPublishTargetRecord')
     }
-    // 一覧の runTeardown の専有型向けの掃除は無い（一覧に残る clearPublishRecord は、共用型・HANAMII と「一覧から削除」ボタンのもの）
-    const modal = codeOf(publishedListModal)
-    expect(modal).not.toMatch(/sakura-apprun-dedicated[\s\S]{0,400}clearPublishRecord/)
   })
 
   it('アプリだけを消した旧い結果の文は無い（戻らない）', () => {
@@ -2679,16 +2847,19 @@ describe('📡 公開したもの一覧: 専有型の 🗑 は 手順6と同じ�
       expect(rowSrc, gone).not.toContain(gone)
       expect(hookSrc, gone).not.toContain(gone)
       expect(flowSrc, gone).not.toContain(gone)
+      expect(specSrc, gone).not.toContain(gone)
     }
   })
 
-  it('新しい見た目の部品は各400行以下（巨大ファイルの決まり）', () => {
+  it('新しい見た目の部品は各400行以下（巨大ファイルの決まり）。棚卸しのカードは150行以下', () => {
     for (const f of [
-      'src/renderer/components/DedicatedTeardownRow.tsx', 'src/renderer/components/DedicatedTeardownView.tsx',
-      'src/renderer/components/DedicatedOpsParts.tsx', 'src/renderer/hooks/useDedicatedTeardown.ts', 'src/renderer/dedicatedTeardownFlow.ts',
+      'src/renderer/components/PublishedListModal.tsx', 'src/renderer/components/teardown/TeardownRow.tsx', 'src/renderer/teardown/useTeardownFlow.ts',
+      'src/renderer/components/DedicatedOpsParts.tsx',
     ]) {
       expect(readFileSync(join(__dirname, '..', f), 'utf-8').split('\n').length, f).toBeLessThanOrEqual(400)
     }
+    expect(readFileSync(join(__dirname, '..', 'src/renderer/components/PublishedInventoryCard.tsx'), 'utf-8').split('\n').length).toBeLessThanOrEqual(150)
+    expect(readFileSync(join(__dirname, '..', 'src/renderer/teardown/targets/dedicated.ts'), 'utf-8').split('\n').length).toBeLessThanOrEqual(250)
   })
 })
 
@@ -3088,7 +3259,7 @@ describe('D-12: スティッキービットの説明と、消えるデータの�
   const planDoc3 = readFileSync(join(__dirname, '..', 'docs/apprun-dedicated-plan.md'), 'utf-8')
 
   // high: 「像の中のファイルの所有者は root」は**未確認のうえ実測と食い違う**
-  //（書庫に入るのはビルドした人の uid。実測 502・`uname=r-yamaguchi`）。
+  //（書庫に入るのはビルドした人の uid とユーザー名。実測 502）。
   // 同じ文書群が共用型については「未確認だから root だとは書かない」と決めているのに、
   // スティッキーの説明で未確認の root 因果を1つ新設していた（掟1）。
   it('★★ 計画書が「所有者は root」を理由に使っていない（書庫の uid はビルドした人のもの）', () => {

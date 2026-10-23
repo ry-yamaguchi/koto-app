@@ -59,8 +59,9 @@ export function judgeScale(input: { recorded: number; actual: number | null; dec
 
 /**
  * scaleLabel — min から画面の言葉を作る。
- * `AppRunPanel.tsx` の `scaleDisplay` と同じ言葉（0＝最初のアクセスが遅くてもよい・1以上＝常時起動）。
+ * `AppRunPanel.tsx` のボタンの名前と同じ言葉（0＝最初のアクセスが遅くてもよい・1以上＝常時起動）。
+ * 名前だけ。「安い」「既定」は設定の画面の説明が言う（2026-10-12: ボタンが語の途中で折れていたため、名前だけにそろえた）。
  */
 export function scaleLabel(min: number): string {
-  return min >= 1 ? '常時起動（すぐ応答する）' : '最初のアクセスが遅くてもよい（安い）'
+  return min >= 1 ? '常時起動' : '最初のアクセスが遅くてもよい'
 }

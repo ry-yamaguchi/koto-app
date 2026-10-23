@@ -21,8 +21,8 @@ import { loadCredentials } from './auth'
 import { createStorageAdapter } from './storageAdapter'
 import { teardownStorage } from './storageTeardown'
 import { validateSpec } from './spec'
-import { loadCloudSpec } from './specStore'
-import { consentedBuckets, storageEnvVars, containsSecretEnv, STORAGE_ENV, type StoragePlacement } from '../../shared/objectStorage'
+import { CLOUD_STATE_FILE, cloudFilePath, loadCloudSpec } from './specStore'
+import { consentedBuckets, consentedPlacementsOf, keepMarkerKey, storageEnvVars, containsSecretEnv, STORAGE_ENV, type StoragePlacement } from '../../shared/objectStorage'
 import { permissionNameFor, permissionsToCleanUp, permissionsForTarget, type StorageTarget } from '../../shared/storageKeys'
 
 const CLOUD_DIR = '.sakura-cloud'
@@ -32,7 +32,14 @@ const CLOUD_ENV_FILE = 'env.json'
 export type TargetEnv = { key: string; value: string; secret: boolean }
 
 export type StorageEnvResult =
-  | { ok: true; envs: TargetEnv[]; permissionId: string; bucket: string; prefix: string; projectName: string }
+  | {
+      ok: true; envs: TargetEnv[]; permissionId: string; bucket: string; prefix: string; projectName: string
+      /**
+       * 目印（.koto-keep）を置けなかったときだけ入る、結果に出す警告（置けたときは無い）。置けなくても鍵と環境変数は返す＝公開は止めない。
+       * 呼び手（HANAMII・Vercel・専有型の公開）は、公開が成功した回の結果へこれを載せる。
+       */
+      markerNote?: string
+    }
   /** `reason: 'none'` は「保存場所を使っていない」＝**失敗ではない**。 */
   | { ok: false; reason: 'none' | 'error'; message: string }
 
@@ -44,9 +51,33 @@ function readSpec(projectDir: string) {
 }
 
 /**
+ * プロジェクトの名前（env.json）。読めなければ null。**投げない。**
+ * `readSpec` は壊れた JSON・読めないファイルで投げる。これは破棄の結果に鍵の案内を添えるための読みで、
+ * 投げると、保存場所を消したあとでは結果（何を削除したか）を失いうる（掟10「途中まで起きたことは記録する」）。
+ * `teardownStorageForProject` の最初の読み（`readSpec` を直に呼ぶ）は今のまま（専有型の main も通る道。投げ方を変えない）。
+ */
+export function storageProjectNameOf(projectDir: string): string | null {
+  try {
+    return readSpec(projectDir)?.name ?? null
+  } catch {
+    return null
+  }
+}
+
+/** 目印を置けなかったときの、結果に出す警告（置けなくても公開は止めない。置き直しは、もう一度公開すること）。 */
+export function keepMarkerFailedNote(reason: string): string {
+  return `使用中であることを示すファイル（.koto-keep）を保存場所に置けませんでした（${reason}）。公開は続けました。もう一度公開すると、置き直します。`
+}
+
+/**
  * この公開先で使う保存場所の鍵を発行し、渡す環境変数を作る。
  *
  * **同意済みの保存場所が無ければ何もしない**（勝手にバケットを作らない＝勝手に課金しない）。
+ *
+ * **同意済みの保存場所に、目印（.koto-keep）を置き直す**（2026-10-21）。HANAMII・Vercel・専有型の公開は、共用型 AppRun の apply や
+ * 【公開】の「保存場所を用意する」と違い、目印を置かなかった。別の公開先の破棄が prefix を目印ごと消したあと、ここから公開し直しても目印は戻らず、
+ * 9/24 より前に用意したプロジェクトは目印が無いまま。鍵を発行するこの関数は HANAMII・Vercel・専有型の公開が**どれも通る**ので、置くのはここの1か所にする。
+ * 置けなくても公開は止めず、`markerNote` で知らせる（既存の目印の失敗の扱い——storage:prepare の `markerNote`——と同じ）。
  */
 export async function issueStorageEnvFor(opts: {
   projectDir: string
@@ -81,6 +112,12 @@ export async function issueStorageEnvFor(opts: {
       if (containsSecretEnv(publicVars)) {
         return { ok: false, reason: 'error', message: '内部エラー: シークレットではない環境変数にシークレットが混ざっています。公開を中止しました。' }
       }
+      // 目印。prefix が無い（空）ものには置かない（共用型 apply.ts と同じ）
+      let markerNote: string | undefined
+      if (bucket.prefix) {
+        try { await storage.putMarker(bucket.bucket, keepMarkerKey(bucket.prefix)) }
+        catch (e: any) { markerNote = keepMarkerFailedNote(String(e?.message ?? e)) }
+      }
       return {
         ok: true,
         envs: [
@@ -91,6 +128,7 @@ export async function issueStorageEnvFor(opts: {
         bucket: bucket.bucket,
         prefix: bucket.prefix ?? '',
         projectName: spec.name,
+        ...(markerNote ? { markerNote } : {}),
       }
     } finally {
       // アダプタが自分用に発行した一時キーだけを片づける（アプリへ渡した鍵は残る）
@@ -187,12 +225,21 @@ export function storagePlacementsOf(projectDir: string): StoragePlacement[] {
   // 呼び出し側（apprunDedicated.ts・hanamii.ts の破棄）は、投げたら「保存場所の設定を読めないため、保存場所は削除していません」で止まる。
   const spec = loadCloudSpec(projectDir)
   if (!spec) return []
-  return consentedBuckets(spec.persistence?.objectStorage)
-    .map(b => ({ bucket: b.bucket, prefix: b.prefix ?? '', shared: b.shared !== false }))
+  // 読み方は `consentedPlacementsOf` の1つ（確認の材料 `consentedPlacements`・`sharedTeardownRecordOf` と同じ。P5）。
+  return consentedPlacementsOf(spec.persistence?.objectStorage).map(({ bucket, prefix, shared }) => ({ bucket, prefix, shared }))
 }
 
-/** 片づけ終わった保存場所1件分（画面の「消しました」の行に使う）。 */
-export type TorndownBucket = { bucket: string; deletedBucket: boolean; note: string }
+/**
+ * 片づけ終わった保存場所1件分（画面の「消しました」の行に使う）。
+ * `keptReasons` は、バケットごとは消さなかった回だけ付く（理由は `teardownPlanFor` が決めたもの。`StorageTeardown.keptReasons`）。
+ */
+export type TorndownBucket = { bucket: string; deletedBucket: boolean; note: string; keptReasons?: { ownFiles: boolean; usedByOthers: boolean } }
+
+/**
+ * 破棄の返り値へ足す、残した保存場所の理由。定義は `storageTeardown.ts`（electron 非依存の apply.ts も同じものを通すため）。
+ * 共用型・HANAMII・専有型の3つの破棄と、公開（apply.ts）の保存場所の削除が、同じこれを通る。
+ */
+export { keptBucketReasonFields } from './storageTeardown'
 
 export type ProjectStorageTeardownResult =
   /** 保存場所を使っていない＝何もしない（**失敗ではない**）。 */
@@ -218,10 +265,15 @@ export type ProjectStorageTeardownResult =
  * **バケットを消していないときは呼ばないこと**（prefix だけ消してバケットが残る＝共有）。
  * 生の JSON を読んで該当の要素だけを外す（validateSpec を通して書き戻すと、知らないキーを
  * 落としうる）。書けなければ false（破棄そのものは成立しているので、呼び出し側は止めない）。
+ *
+ * 共用型の記録（`.sakura-cloud/state.json`）にあるそのバケットの記録も、同じ呼び出しで外す（戻り値は env.json を書き換えたかのまま）。
+ * 外さないと、HANAMII・専有型の破棄が消したバケットが state にだけ残り、あとの共用型の破棄が「設定から外した保存場所」と数えて、
+ * もう無いバケットの名前を確認で言い、消しに行って止まる（2026-10-11 検分）。
  */
 export function forgetDeletedBuckets(projectDir: string, buckets: string[]): boolean {
   if (buckets.length === 0) return false
   const gone = new Set(buckets)
+  forgetDeletedBucketsInState(projectDir, gone)
   const envFile = path.join(projectDir, CLOUD_DIR, CLOUD_ENV_FILE)
   try {
     if (!fs.existsSync(envFile)) return false
@@ -236,6 +288,21 @@ export function forgetDeletedBuckets(projectDir: string, buckets: string[]): boo
   } catch {
     return false
   }
+}
+
+/** `forgetDeletedBuckets` の state.json 側。外せなくても破棄は成立している（投げない）。 */
+function forgetDeletedBucketsInState(projectDir: string, gone: ReadonlySet<string>): void {
+  try {
+    const stateFile = cloudFilePath(projectDir, CLOUD_STATE_FILE)
+    if (!fs.existsSync(stateFile)) return
+    const raw = JSON.parse(fs.readFileSync(stateFile, 'utf-8')) as any
+    const list = raw?.resources
+    if (!Array.isArray(list)) return
+    const next = list.filter((r: any) => !(r && r.kind === 'bucket' && typeof r.id === 'string' && gone.has(r.id)))
+    if (next.length === list.length) return
+    raw.resources = next
+    fs.writeFileSync(stateFile, JSON.stringify(raw, null, 2) + '\n', 'utf-8')
+  } catch { /* 外せなかったときは、次の共用型の破棄が「設定から外した保存場所」と数える（確認が名前を言う） */ }
 }
 
 /**
@@ -258,9 +325,15 @@ export async function teardownStorageForProject(opts: {
    * **その公開先の資源をすべて消し終えたあとにだけ渡すこと**（現役の鍵が残っていると 403 で落ちる）。
    */
   sweepKeysFor?: StorageTarget | null
+  /**
+   * 消す保存場所を呼び手が決めるときの一覧（共用型だけが渡す。HANAMII・専有型は渡さず、env.json の同意済み全件になる）。
+   * 共用型は「env.json の同意済み全件」に「state にだけある保存場所」を足したもの（`sharedTeardownRecordOf`）を渡す。
+   * 渡したときは env.json を読み直さない。
+   */
+  placements?: readonly StoragePlacement[]
 }): Promise<ProjectStorageTeardownResult> {
   const projectName = readSpec(opts.projectDir)?.name ?? null
-  const placements = storagePlacementsOf(opts.projectDir)
+  const placements = opts.placements ? [...opts.placements] : storagePlacementsOf(opts.projectDir)
   if (placements.length === 0) return { ok: true, reason: 'none' }
   let storage: Awaited<ReturnType<typeof createStorageAdapter>>
   try {
@@ -278,13 +351,13 @@ export async function teardownStorageForProject(opts: {
     // 記録の鍵は1本しか無いので、最初の1件でだけ渡す（2件目に渡すと「もう無い」で警告が二重に出る）。
     let permissionId = opts.permissionId ?? null
     for (const placement of placements) {
-      const outcome = await teardownStorage({ storage, placement, permissionId })
+      const outcome = await teardownStorage({ storage, placement, permissionId, projectDir: opts.projectDir })
       if (!outcome.ok) {
         // **途中で止まっても、片づいた分は捨てない**（掟10）。残っているバケット名も返す。
         return { ok: false, reason: 'failed', message: outcome.message, done, remainingBucket: placement.bucket, warnings }
       }
       permissionId = null
-      done.push({ bucket: placement.bucket, deletedBucket: outcome.deletedBucket, note: outcome.note })
+      done.push({ bucket: placement.bucket, deletedBucket: outcome.deletedBucket, note: outcome.note, ...(outcome.keptReasons ? { keptReasons: outcome.keptReasons } : {}) })
       warnings.push(...outcome.warnings)
     }
     if (opts.sweepKeysFor && projectName) {

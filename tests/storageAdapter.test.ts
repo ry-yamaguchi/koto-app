@@ -155,8 +155,8 @@ describe('発行したての鍵が効くまで待つ', () => {
   })
 })
 
-// 2026-08-14。同じ名前の保存場所を削除した直後に作り直すと、作成APIが 409 を返し、
-// それを「もうあるので大丈夫」と読んでいた。**実際には作られておらず**、
+// 2026-08-14。削除した名前の保存場所を同じ月のうちに作り直すと、作成APIが 409 を返し、
+// それを「もうあるので大丈夫」と読んでいた（さくらの FAQ・2026-10-19 原本で確認）。**実際には作られておらず**、
 // あとで書き込むと 403 AccessDenied。原因の分からないエラーだけが残る。
 describe('作れたと決めつけない', () => {
   it('作ったあと、一覧に出ることを確かめる', async () => {
@@ -168,17 +168,43 @@ describe('作れたと決めつけない', () => {
 
   it('★ 一覧に出なければ、その場で止めて理由を伝える', async () => {
     const { api, s3 } = fakes()
-    api.createBucket = async () => ({ status: 409, text: 'Conflict' }) // 409 を「成功」と読んだ状態を再現
+    // 実機（2026-10-19）で返ってきた 409 の本文の形
+    const body = '{"error":{"trace_id":"x","errors":[{"domain":"fed.objectstorage.sacloud","reason":"conflict","location":"name","location_type":"request_body","message":"koto-data-x has already been created"}],"code":409,"message":"Conflict"}}'
+    api.createBucket = async () => ({ status: 409, text: body }) // 409 を「成功」と読んだ状態を再現
     api.listBuckets = async () => []
     const a = makeStorageAdapter(api, SITE, s3)
-    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('一覧に見つかりません')
+    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('削除した月のうちは作り直せません')
     // 0.6.21（作者の決定 2026-10-01）: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
     const err = await a.ensureBucket('koto-data-x').catch((e: any) => e)
-    expect(String(err?.message)).not.toContain('現れません')
-    // 次に何をすればよいかを添える
-    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('別の名前')
+    const msg = String(err?.message)
+    // 呼び出し元の apply が「保存場所『X』を用意できませんでした: 」と前置きするので、ここは名前を持たない（2回言わない）
+    expect(msg.startsWith('この名前は、ほかで使われているか、今月削除した名前です。')).toBe(true)
+    expect(msg).not.toContain('保存場所『')
+    expect(msg).not.toContain('現れません')
+    // 「直後」「しばらく待って」は誤りだった（待っても同じ月のうちは作れない）
+    expect(msg).not.toContain('直後')
+    expect(msg).not.toContain('しばらく待って')
+    // 次に何をすればよいかを添える（この入口の次の操作）
+    expect(msg).toContain('「設定 → データの保存」で別の名前の保存場所を作ってから、【公開】を開き直して選び直してください。')
     // **応答をそのまま添える**（これが無いと次も原因が分からない）
-    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('HTTP 409')
+    expect(msg).toContain('HTTP 409')
+    expect(msg).toContain('has already been created')
+    // いまある保存場所も添える（なければ「なし」）
+    expect(msg).toContain('いまある保存場所: なし')
+  })
+
+  it('作成が200なのに一覧に無いときは、「しばらく待って」と言い、作り直せないとは言わない', async () => {
+    const { api, s3 } = fakes()
+    api.createBucket = async () => ({ status: 200, text: '' })
+    api.listBuckets = async () => []
+    const a = makeStorageAdapter(api, SITE, s3)
+    const err = await a.ensureBucket('koto-data-x').catch((e: any) => e)
+    const msg = String(err?.message)
+    expect(msg.startsWith('作成を頼みましたが、一覧にまだ出ていません。しばらく待ってからお試しください。')).toBe(true)
+    expect(msg).not.toContain('保存場所『')
+    expect(msg).toContain('HTTP 200')
+    expect(msg).not.toContain('削除した月のうち')
+    expect(msg).not.toContain('作り直せません')
   })
 
   it('ほかの保存場所があっても、目的のものが無ければ止める', async () => {
@@ -186,6 +212,8 @@ describe('作れたと決めつけない', () => {
     api.createBucket = async () => ({ status: 409, text: '' })
     api.listBuckets = async () => [{ name: 'よその保存場所' }]
     const a = makeStorageAdapter(api, SITE, s3)
-    await expect(a.ensureBucket('koto-data-x')).rejects.toThrow('一覧に見つかりません')
+    const err = await a.ensureBucket('koto-data-x').catch((e: any) => e)
+    expect(String(err?.message)).toContain('削除した月のうちは作り直せません')
+    expect(String(err?.message)).toContain('いまある保存場所: よその保存場所')
   })
 })

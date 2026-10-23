@@ -144,8 +144,10 @@ describe('枠の見出し（用意済みと、まだ危ないを同居させな�
     const h = storageNoticeHeadline({ hasPlacement: true, warn: true })
     expect(h).not.toBe('💾 データの保存（用意済み）')
     expect(h).toContain('書き直し')
-    // 残りの作業が1行で分かること
-    expect(STORAGE_REWRITE_REMAINING).toContain('コードの書き直しだけ')
+    // 残りの作業は、見出しが言う（「…コードの書き直しが残っています」）。2026-10-09 画面の文を短くする（T166）:
+    // 見出しと同じことを言う下の1行は空にした。文を戻さない（見出しの重ねになる）。
+    expect(STORAGE_REWRITE_REMAINING).toBe('')
+    expect(STORAGE_REWRITE_REMAINING).not.toContain('コードの書き直しだけ')
   })
 
   it('保存場所があって危なくなければ「用意済み」', () => {
@@ -157,7 +159,8 @@ describe('枠の見出し（用意済みと、まだ危ないを同居させな�
   })
 
   it('どちらでもないときは案内だけ', () => {
-    expect(storageNoticeHeadline({ hasPlacement: false, warn: false })).toBe('💾 データの保存について')
+    // 2026-10-09 画面の文を短くする（T187）: 「について」は外した。
+    expect(storageNoticeHeadline({ hasPlacement: false, warn: false })).toBe('💾 データの保存')
   })
 })
 
@@ -465,14 +468,19 @@ describe('koto-data の版について、画面に出す1行', () => {
 // ── 2026-10-01 検分2巡目: 推定の見出しの下の1行・ボタンが出ない場面の頼み方 ──────────
 describe('検分2巡目: 推定のときは断定しない／頼み方まで書く', () => {
   it('★ 推定版の1行は「書き直しだけ」と言い切らない', () => {
-    expect(STORAGE_REWRITE_MAYBE_REMAINING).toContain('保存場所は用意できています')
+    // 2026-10-09 画面の文を短くする（T167）: 「保存場所は用意できています。」は見出しが言うので外した。推定の言い方（確かめてください）は残す。
+    expect(STORAGE_REWRITE_MAYBE_REMAINING).toContain('メモリだけにデータを持っている箇所が残っていないか、下の案内で確かめてください。')
+    expect(STORAGE_REWRITE_MAYBE_REMAINING).not.toContain('保存場所は用意できています')
     expect(STORAGE_REWRITE_MAYBE_REMAINING).not.toContain('書き直しだけ')
   })
 
   it('★ 画面は、見出しと同じ guess で2つの文を選び分ける', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/StorageNotice.tsx'), 'utf-8')
     expect(src).toContain("const guess = need.kind === 'will-lose-data' && need.memoryOnly === true")
-    expect(src).toContain('{guess ? STORAGE_REWRITE_MAYBE_REMAINING : STORAGE_REWRITE_REMAINING}</p>')
+    expect(src).toContain('const rewriteLine = guess ? STORAGE_REWRITE_MAYBE_REMAINING : STORAGE_REWRITE_REMAINING')
+    // 断定の版は文が空なので、空の段落を置かない（行ごと出さない・2026-10-09 T166）
+    expect(src).toContain('{placement && warn && rewriteLine && (')
+    expect(src).toContain('{rewriteLine}</p>')
     // 直す前の形（推定でも断定の1行を出す）に戻っていない
     expect(src).not.toContain('{STORAGE_REWRITE_REMAINING}</p>')
   })

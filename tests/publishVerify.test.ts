@@ -668,8 +668,16 @@ describe('O-1 siteCheckLines: 画面に出す行（1行につき1つの軸）', 
     const unknown = siteCheckLines({ dns: 'unknown', cert: 'unknown', httpsOpen: 'unknown', app: null })
     for (const line of unknown) {
       expect(line.startsWith('ℹ️')).toBe(true)
-      expect(line).toContain('確かめられませんでした')
       expect(line).not.toContain('ありません（')
+    }
+    // 2026-10-09 画面の文を短くする（T035）: ドメインの向き先の行だけ、「確かめられませんでした（この端末から調べられませんでした）」を
+    // 「この端末から調べられませんでした」の1つにした。ここは引けなかったこと自体が観測なので「この端末」と言ってよい。
+    expect(unknown[0]).toContain('この端末から調べられませんでした')
+    expect(unknown[0]).not.toContain('確かめられませんでした（')
+    // 証明書・ブラウザ・アプリの3行は、原因を「この端末」と断定しない（今までどおり）
+    for (const line of unknown.slice(1)) {
+      expect(line).toContain('確かめられませんでした')
+      expect(line).not.toContain('この端末から')
     }
   })
 

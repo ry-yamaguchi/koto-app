@@ -177,8 +177,7 @@ export function askAiRewritePlan(
     return {
       send: false,
       error: 'データ保存用のファイル（koto-data）を用意できませんでした' + detail
-        + '。この状態で書き直しをお願いすると、読み込み先が無いために失敗します。'
-        + '少し待ってから、もう一度お試しください。',
+        + '。少し待ってから、もう一度お試しください。',
     }
   }
   return { send: true, text: askAiRewriteText(writes, layer.moduleKind === 'esm' ? 'esm' : 'cjs', memory) }
@@ -201,7 +200,7 @@ export function dataLayerUpdateLine(
 ): string {
   if (!layer || layer.ok !== true) return ''
   const name = typeof layer.file === 'string' && layer.file.length > 0 ? layer.file : 'koto-data'
-  if (layer.replaced === true) return `🔄 ${name} を新しいバージョンに差し替えました（混み合ったときのやり直し・同時更新の検知が入ります）。`
+  if (layer.replaced === true) return `🔄 ${name} を新しいバージョンに差し替えました。`
   if (layer.needsUpdate === true) {
     // 画面には素のテキストとして出る（StorageNotice.tsx の <p>{checkLine}</p>）。
     // **Markdown 記法を使わない**——アスタリスクがそのまま見える（このファイル冒頭の決まり）。
@@ -325,16 +324,19 @@ export function storageNoticeHeadline(opts: { hasPlacement: boolean; warn: boole
   }
   if (hasPlacement) return '💾 データの保存（用意済み）'
   if (warn) return guess ? '⚠️ データが消えるかもしれません' : '⚠️ データが消えてしまいます'
-  return '💾 データの保存について'
+  return '💾 データの保存'
 }
 
-/** 保存場所はあるが書き直しが残っているときに、残りの作業を1行で伝える文。 */
-export const STORAGE_REWRITE_REMAINING =
-  '保存場所は用意できています。あとは、コードの書き直しだけです。'
+/**
+ * 保存場所はあるが書き直しが残っているときの、見出しの下の1行（断定の版）。
+ * 見出し（storageNoticeHeadline）が同じことを言っているので、文を空にした（2026-10-09 画面の文を短くする）。
+ * **空のときは、呼ぶ側（StorageNotice.tsx）が行ごと出さない。**
+ */
+export const STORAGE_REWRITE_REMAINING = ''
 
 /**
  * 上の文の**推定版**（警告の理由が「メモリだけに持っていそう」だけのとき）。
  * 見出しが「〜かもしれません」と言った直後に「あとは書き直しだけ」と言い切らない（2026-10-01 検分2巡目）。
  */
 export const STORAGE_REWRITE_MAYBE_REMAINING =
-  '保存場所は用意できています。メモリだけにデータを持っている箇所が残っていないか、下の案内で確かめてください。'
+  'メモリだけにデータを持っている箇所が残っていないか、下の案内で確かめてください。'

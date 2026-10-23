@@ -15,8 +15,9 @@ import type { EnvState, ResourceRef } from './state'
 import type { Plan } from './planner'
 import { buildCreateBody, buildPatchBody, apiErrorMessage, type RegistryAuth } from './client'
 import { keepMarkerKey, storageEnvVars, containsSecretEnv, consentedBuckets, STORAGE_ENV } from '../../shared/objectStorage'
-import { teardownStorage } from './storageTeardown'
-import { permissionNameFor } from '../../shared/storageKeys'
+import { teardownStorage, keyWarningLines, keptBucketReasonFields } from './storageTeardown'
+import { permissionNameFor, keyRevokeGuide } from '../../shared/storageKeys'
+import { teardownRemainingWarnings } from '../../shared/cloudCost'
 import { readActualMinScale, judgeScale, type ScaleDecision } from '../../shared/scaleDecision'
 
 /**
@@ -98,6 +99,11 @@ export type ApplyOptions = {
   storage?: StorageClientLike
   /** 破壊的操作を許可する明示確認フラグ（レンダラ＝段階2bから渡す）。 */
   confirmed: boolean
+  /**
+   * このプロジェクトのフォルダ（絶対パス）。**必須**——保存場所の削除が、ほかのプロジェクトの記録（同じ親フォルダの兄弟）を読んで
+   * 「ほかのプロジェクトも使っていないか」を確かめる起点（`teardownStorage`）。確かめられなければバケットは消さない。
+   */
+  projectDir: string
   /**
    * プライベートレジストリの認証情報（段階3b）。dockerfile ソースをビルド/プッシュ後に
    * main 側が渡す。あれば apprun-app 作成時の container_registry に載せる。
@@ -339,7 +345,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
         const ref = findRef(state, 'apprun-app', a.name)
         const id = ref?.id
         if (!id) {
-          skipped.push(`${a.description}: 対象アプリのIDが state に無く更新（公開し直し）できません（一度破棄して作り直してください）`)
+          skipped.push(`${a.description}: 対象アプリのIDが記録に無く、更新（公開し直し）できません。一度破棄して作り直してください。`)
           continue
         }
 
@@ -412,6 +418,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
           // 別のプロジェクトの破棄で巻き込まれて消える**（2026-08-13）。
           if (prefix) await storage.putMarker(a.name, keepMarkerKey(prefix))
         } catch (e: any) {
+          // ensureBucket の文は書き出しに保存場所の名前を持たない（omitHead）。ここで前置きするので、名前と失敗を2回言わない
           return await stopped(`保存場所『${a.name}』を用意できませんでした: ${e?.message ?? e}`)
         }
         state.resources.push({ kind: 'bucket', id: a.name, stateful: true, key: `bucket:${a.name}`, prefix })
@@ -427,7 +434,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
         const placement = { bucket: a.name, prefix, shared: isSharedBucket(spec, a.name) }
         // 鍵も無効にする。残すと、消したはずの保存場所へ届く鍵が生き続ける
         const permId = state.meta?.storagePermissionId
-        const outcome = await teardownStorage({ storage, placement, permissionId: permId })
+        const outcome = await teardownStorage({ storage, placement, permissionId: permId, projectDir: opts.projectDir })
         if (!outcome.ok) {
           return await stopped(outcome.message)
         }
@@ -440,8 +447,18 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
         // ID を消すと、**消したはずの保存場所へ読み書きできる鍵が、どこからも辿れないまま生き残る**
         // （objectStorage.ts の冒頭が「実機で起きた」と書いている形そのもの）。
         if (permId && outcome.warnings.length === 0) state.meta = { ...state.meta, storagePermissionId: undefined }
-        skipped.push(...outcome.warnings)
+        // 鍵を無効にできなかった警告には、どこで何を削除すればよいかを添える（破棄の入口〔cloudTeardown.ts〕と同じ。keyWarningLines は表示の行を作るだけで、
+        // 上の `outcome.warnings.length === 0` が見る生の warnings は変えない）。素の文のままだと、鍵が生き続けるのに名前も場所も言わない。
+        skipped.push(...keyWarningLines(outcome.warnings, keyRevokeGuide(spec.name || null, 'apprun')))
         executed.push(`${a.description} — ${outcome.note}`)
+        // 保存場所を残した回は、残した理由・月額・次の操作を、破棄の結果と同じ黄色の文（teardownRemainingWarnings）で言う。
+        // 緑の行（note）は「保存場所は残します。」だけなので、ここで言わないと、月額が続くことが結果のどこにも出ない。
+        if (!outcome.deletedBucket) {
+          executed.push(...teardownRemainingWarnings({
+            keptBucketName: a.name,
+            ...keptBucketReasonFields([{ bucket: a.name, deletedBucket: false, keptReasons: outcome.keptReasons }]),
+          }))
+        }
         continue
       }
 

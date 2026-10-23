@@ -235,8 +235,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
         let usesData = false
         try { usesData = scanDataUsage(resolvePublishRoot(projectDir)).usedBy.length > 0 } catch { usesData = false }
         if (usesData) {
-          noStorageNotice = '保存場所をまだ用意していないため、このアプリのデータは残りません'
-            + '（公開のたびに、アプリに入力されたデータが消えます）。'
+          noStorageNotice = '保存場所をまだ用意していないため、このアプリに入力されたデータは残りません。'
             + '「保存場所を用意する」から用意してから、もう一度「公開する」を押してください。'
         }
       }
@@ -395,6 +394,9 @@ export function registerVercelHandlers(_deps: IpcDeps) {
           } catch { /* 片づけに失敗しても公開は成立している（HANAMII・専有型と同じ） */ }
         }
       }
+      // 目印（.koto-keep）を置けなかった知らせ（issueStorageEnvFor が置き直す）。上の知らせは**消さずに**重ねる
+      const markerNote = storage.ok ? storage.markerNote : undefined
+      if (markerNote) notice = [notice, markerNote].filter(Boolean).join('\n')
       return withDataLayerNote({ ok: true, deploymentId: info.id, url: info.url, readyState: info.readyState, ...(notice ? { notice } : {}) })
     } catch (e: any) {
       return withDataLayerNote({ ok: false, message: e?.message ?? String(e) })
@@ -402,6 +404,6 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       clearPendingFs(projectDir)
     }
     }, { target: 'vercel', handler: 'vercel:publish', secrets: [opts?.token] })
-    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
+    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running, locked.runningTarget) } : locked.value
   })
 }

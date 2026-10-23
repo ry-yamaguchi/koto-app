@@ -4,30 +4,29 @@ import { app, ipcMain } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { execFile } from 'child_process'
+import { randomUUID } from 'crypto'
 import { HanamiiClient, extractProjectIds, extractProjectStatus, extractLogs, normalizeHealthCheck, hanamiiErrorMessage, type HanamiiEnv, type HanamiiHealthCheck, type HanamiiResult } from '../hanamii/client'
 import { detectEnvKeysInProject } from '../envDetect'
 import { issueStorageEnvFor, cleanUpOldKeysFor } from '../cloud/storageForTarget'
-// 2026-09-25 検分: HANAMII の破棄でも保存場所を片づける。手順と守りは共用型・専有型と
-// まったく同じ1つ（cloud/storageForTarget.ts → cloud/storageTeardown.ts）を通る。
-// ここには新しい判断を書かない（掟10「一元定義」）。上の import 行はテストが文字列で
-// 固定しているため、別行で足す（apprunDedicated.ts と同じ理由）。
-import { storagePlacementsOf, teardownStorageForProject, forgetDeletedBuckets, revokeIssuedKey } from '../cloud/storageForTarget'
-import { loadCredentials } from '../cloud/auth'
+// 公開が途中で止まったとき、いま発行した鍵を取り消す（公開の側の守り）。破棄の保存場所の片づけは hanamiiTeardown.ts に移した。
+import { revokeIssuedKey } from '../cloud/storageForTarget'
 import type { IpcDeps } from './types'
 import { zipExcludePatterns, BUILD_CONFIG_FILES } from '../../shared/publishExclude'
 import { resolvePublishRoot } from '../publishRootFs'
 import { ensureDataLayer } from '../dataLayer'
 // koto-data を差し替えたときの1行（文面は共用型・Vercel・専有型と同じ一元定義を通す・掟10）。
 import { dataLayerUpdateLine } from '../../shared/storageNoticeText'
-import { STORAGE_TEARDOWN_PROGRESS, storageTeardownDoneLine } from '../../shared/teardownSupport'
 import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs, readHanamiiProjectIdFs } from '../publishMetaFs'
 import { readPublishedAtFs } from '../publishMetaFs'
-// 破棄が成功したあとの記録の片づけ（main の1か所）。上の import 行はテストが文字列で固定しているため、別行で足す。
-import { settleHanamiiTeardownFs } from '../publishMetaFs'
 import { withProjectLock, projectBusyMessage } from '../projectLock'
 // 進捗の送り口は1つ（記録の更新を兼ねる）。公開のあと（動いたと確かめる）は hanamii/aftercare.ts。2026-09-29
 import { progressReporter } from '../projectOps'
 import { waitForNewVersion, type NewVersionOutcome } from '../hanamii/aftercare'
+// 破棄（hanamii:teardown）は hanamiiTeardown.ts に切り出した（共通の骨 teardownShell の上）。テストが registerHanamiiHandlers 経由でハンドラを取り出すので、
+// 登録はここから呼び、PROJECT_MISMATCH_TEARDOWN と結果の型はここからも読めるようにしておく。
+import { registerHanamiiTeardownHandler } from './hanamiiTeardown'
+export { PROJECT_MISMATCH_TEARDOWN } from './hanamiiTeardown'
+export type { HanamiiTeardownResult } from './hanamiiTeardown'
 
 // ── HANAMII（国産PaaS）連携 ──────────────────────────────────────────
 // HANAMII は言語マニフェスト(package.json 等)が無いと「対応言語を検出できない」と拒否する。
@@ -99,7 +98,9 @@ function zipProjectToBuffer(
   dropBuildConfig = false,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const tmp = path.join(app.getPath('temp'), `hanamii-${Date.now()}.zip`)
+    // 名前は**乱数**で決める。時刻だけだと、同じミリ秒に始まった別のプロジェクトの公開と同じファイルを取り合い、
+    // zip が既にあるファイルへ足して**別のプロジェクトのファイルが ZIP に混ざる**（tests/hanamiiZipTmpName.test.ts）。
+    const tmp = path.join(app.getPath('temp'), `hanamii-${randomUUID()}.zip`)
     const args = ['-r', '-q', '-X', tmp, '.', '-x', ...zipExcludePatterns(dropBuildConfig ? [...BUILD_CONFIG_FILES] : [])]
     execFile('zip', args, { cwd: projectDir, timeout: 60000, maxBuffer: 8 * 1024 * 1024 }, (err) => {
       if (err) { try { fs.rmSync(tmp) } catch {}; reject(new Error(`ZIP化に失敗しました（zip コマンドが必要です）: ${err.message}`)); return }
@@ -125,170 +126,6 @@ function zipProjectToBuffer(
       }
     })
   })
-}
-
-/**
- * HANAMII の破棄の結果（`hanamii:teardown` が返すもの）。
- *
- * **`appDeleted` を落とさないこと。** HANAMII のプロジェクトは消えたのに保存場所だけ
- * 片づかなかったとき、`ok:false` だけを返すと画面は「破棄できませんでした」と出し、
- * 公開の記録も残る＝**存在しない公開が一覧に並び続ける**（専有型の指摘4・9・13 と同じ形）。
- */
-export type HanamiiTeardownResult = {
-  ok: boolean
-  /** HANAMII のプロジェクトを削除できたか（保存場所だけ失敗しても true）。 */
-  appDeleted?: boolean
-  /** 片づけたこと・片づけ切れなかったことの一覧（画面にそのまま出す・**黙らない**）。 */
-  executed?: string[]
-  /** まだ残っている保存場所の名前（**消すまで月額が続く**）。先頭の1件。 */
-  remainingBucket?: string
-  /**
-   * まだ残っている保存場所の名前を**全部**（2026-09-25 検分の指摘5）。
-   * 破棄は同意済みの保存場所を全件片づけるので、残りも全件言わないと
-   * **名前が一度も出なかった保存場所の月額が、黙って続く**。
-   */
-  remainingBuckets?: string[]
-  /**
-   * **片づけたのに、バケットごとは消さなかった**保存場所（利用者が自分で置いたファイルがある・ほかのプロジェクトが
-   * 使っている）の名前。先頭の1件。**残れば月額も続く**（共用型の `cloud:teardown` の `keptBucketName` と同じ事実）。
-   * これが無いと、この回は `ok:true` のまま「片づけました — …残します」の1行が executed に入るだけで、警告にならなかった。
-   */
-  keptBucketName?: string
-  /** 同じ事実の全件（複数の保存場所を片づけたとき、名前が出なかった分の月額が黙って続かないように）。 */
-  keptBucketNames?: string[]
-  message?: string
-}
-
-/** バケットごとは消さなかった保存場所の名前（片づけの結果 `done` から。事実だけを返す）。 */
-function keptBucketFields(done: ReadonlyArray<{ bucket: string; deletedBucket: boolean }>): Pick<HanamiiTeardownResult, 'keptBucketName' | 'keptBucketNames'> {
-  const kept = done.filter(b => !b.deletedBucket).map(b => b.bucket)
-  return kept.length > 0 ? { keptBucketName: kept[0], keptBucketNames: kept } : {}
-}
-
-/** 保存場所の名前を画面の文に並べる（『A』『B』）。Markdown 記法は使わない（掟5）。 */
-function bucketNames(buckets: string[]): string {
-  return buckets.map(b => `『${b}』`).join('')
-}
-
-/**
- * 片づけ残りがあるときに、**どうすれば止められるか**を添える（2026-09-25 検分の指摘3）。
- *
- * 前は「もう一度 🗑 を押してください」とだけ案内していたのに、
- *   ・📡 公開したもの一覧は、押し直す 🗑 の行を消していた（記録を片づけていた）
- *   ・仮に行が残っても、2度目の破棄は HANAMII の DELETE が 404 で止まり、保存場所へ進めなかった
- * ＝**案内した導線がどこにも無かった**（manualTeardownGuide の Vercel と同じ轍）。
- *
- * いまは押し直せる: `hanamii:teardown` は「HANAMII のプロジェクトがもう無い（404）」なら
- * 保存場所の片づけだけを続け、📡 一覧は片づけ残りがある間は記録を残す。
- * それでも直らないとき（env.json が壊れている等）のために、**コントロールパネルの手順も添える。**
- */
-const RETRY_GUIDE = 'もう一度 🗑 を押すと、保存場所の削除だけをやり直します'
-  + '（削除できていない保存場所があるあいだ、📡 公開したもの一覧にはこの行を残します）。'
-  + 'やり直しても消えないときは、さくらのクラウドのコントロールパネル（オブジェクトストレージ）から削除してください。'
-
-/**
- * HANAMII の破棄の最後に、**保存場所も片づける**（2026-09-25 検分）。
- *
- * ── なぜ要るか ────────────────────────────────────────────────────
- * 📡 公開したもの一覧の確認オーバーレイは、HANAMII でも
- * 「保存場所『X』にある、このプロジェクトのデータも削除します…この保存場所を使っている
- * プロジェクトがほかに無ければ、保存場所そのものも削除して月額を止めます」と言い切る
- * （`teardownDataNoteFor` ／ `teardownRemovesStorage('hanamii','list')` が true）。
- * ところが実物は HANAMII のプロジェクトを消すだけで、**バケットも、その中のデータも、
- * 鍵（`koto-<名前>-hanamii`）も1件も消していなかった。** 画面が「月額を止めます」と
- * 言い切った後なので利用者はコントロールパネルを確認せず、**月額495円が止まらないまま、
- * 消したはずのアプリの鍵がバケットへ読み書きできるまま生き残る**（共有バケットなら
- * ほかのプロジェクトのデータにも届く）。専有型の手順6で直したのとまったく同じ形である。
- *
- * ── 順序（専有型 `teardownProjectStorage` と同じ）────────────────────
- * **先に HANAMII のプロジェクトを消し、そのあとで保存場所を片づける。** 先に鍵とデータを
- * 消すと、**まだ動いているアプリが 403 で落ちる**（2026-08-14 に共用型で実際に起きた形）。
- * 逆に、保存場所が片づかないことを理由にプロジェクトの削除を止めると、**月額の課金だけが残る**。
- *
- * ── ここに判断を書かないこと（掟10）─────────────────────────────────
- * 「一覧できなければ中止する」「バケットごと消してよいか（`teardownPlanFor`）」「鍵は
- * バケットのあと」は、すべて cloud/storageTeardown.ts の1つに集めてある。ここは
- * 「置き場所を読んで渡し、結果を画面の言葉に直す」だけ。
- *
- * 鍵のIDは HANAMII の記録に残していない（共用型の `state.meta.storagePermissionId`・
- * 専有型の `storagePermissionId` に当たるものが無い）ので `permissionId` は null で渡し、
- * **`sweepKeysFor: 'hanamii'` で「この公開先の名前の鍵を全部」無効にする**（検分の指摘6 と
- * 同じ手）。この時点で HANAMII のプロジェクトは消えている＝現役の鍵は存在しないので、
- * storageKeys.ts の「現役が分からないときは消さない」規則とは矛盾しない。
- * 名前は完全一致で見るので、共用型・専有型・ほかのプロジェクトの鍵には触れない（掟11）。
- */
-async function teardownHanamiiStorage(projectDir: string): Promise<HanamiiTeardownResult> {
-  // ここへ来た時点で HANAMII のプロジェクトは消えている。以降どう転んでも、
-  // **消えたという事実は落とさない**（呼び出し側が公開の記録を片づけられるように）。
-  const done: HanamiiTeardownResult = { ok: true, appDeleted: true, executed: [] }
-  // env.json が壊れていても、例外を IPC の外へ出さない（専有型の指摘12・14・15 と同じ）。
-  // storagePlacementsOf → loadCloudSpec は、JSON として読めない env.json でも、読めてもスペックの検証に通らない env.json でも throw する
-  // （確認画面の storage:placement と同じ読み方・2026-10-08）。
-  let placements: ReturnType<typeof storagePlacementsOf>
-  try {
-    placements = storagePlacementsOf(projectDir)
-  } catch (e: any) {
-    return {
-      ...done, ok: false,
-      // ここだけはバケット名を出せない（名前の記録そのものが読めない）。**無い導線を案内しない**ので、
-      // 押し直しではなくコントロールパネルで確かめてもらう（検分の指摘3）。
-      message: `保存場所の設定を読めないため、保存場所は削除していません（消すまで月額が続きます）: ${e?.message ?? String(e)}`
-        + '\nさくらのクラウドのコントロールパネル（オブジェクトストレージ）で、残っている保存場所を確かめて削除してください。',
-    }
-  }
-  // 保存場所を使っていないプロジェクトでは、何も言わない・何も呼ばない。
-  if (placements.length === 0) return done
-  // **残りは全件名指しする**（検分の指摘5）。1件だけ名指しすると、名前が出なかった保存場所の
-  // 月額が黙って続く（確認画面も全件を名指ししている＝そこと揃える）。
-  const allNames = bucketNames(placements.map(p => p.bucket))
-  const allBuckets = placements.map(p => p.bucket)
-  // さくらのクラウドの認証情報は main がファイルで持っている（cloud/auth.ts）。**公開のときに
-  // `issueStorageEnvFor` が `loadCredentials()` で読んでいるのとまったく同じ経路**にする
-  // ——鍵を発行した側と片づける側で出所を変えない。HANAMII のトークン（方式B・renderer が
-  // 引数で渡すもの）とは別物なので、ここで renderer から受け取り直さない。
-  const creds = loadCredentials()
-  if (!creds) {
-    return {
-      ...done, ok: false, remainingBucket: placements[0].bucket, remainingBuckets: allBuckets,
-      message: `さくらのクラウドのAPIキーが未登録のため、保存場所${allNames}は削除していません（消すまで月額が続きます）。`
-        + `「認証情報」でAPIキーを登録してから、${RETRY_GUIDE}`,
-    }
-  }
-  let st: Awaited<ReturnType<typeof teardownStorageForProject>>
-  try {
-    st = await teardownStorageForProject({ creds, projectDir, permissionId: null, sweepKeysFor: 'hanamii' })
-  } catch (e: any) {
-    return {
-      ...done, ok: false, remainingBucket: placements[0].bucket, remainingBuckets: allBuckets,
-      message: `保存場所${allNames}を削除できませんでした（消すまで月額が続きます）: ${e?.message ?? String(e)}`
-        + `\n${RETRY_GUIDE}`,
-    }
-  }
-  if (st.reason === 'none') return done
-  const executed = [
-    ...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note)),
-    ...st.warnings.map(w => `⚠️ ${w}`),
-  ]
-  // **バケットごと消したものは、env.json の記録からも外す**（専有型の指摘3・8 と同じ）。
-  // 残すと画面は「用意済み」のまま、次の公開が**消えたバケット宛ての鍵**を渡して成功扱いになる。
-  const deletedBuckets = st.done.filter(b => b.deletedBucket).map(b => b.bucket)
-  if (deletedBuckets.length > 0 && !forgetDeletedBuckets(projectDir, deletedBuckets)) {
-    executed.push('⚠️ 保存場所の記録（公開の設定・env.json）は残しています。次に公開する前に、【公開】の「保存場所を用意する」からやり直してください')
-  }
-  if (!st.ok) {
-    // HANAMII のプロジェクトは消えている（そのぶんは止まった）が、保存場所は残った。**黙らない。**
-    // 途中で止まったので、**片づいた分の後ろにある保存場所も丸ごと残っている**。
-    // 残りは全件名指しする（検分の指摘5。1件だけ名指しすると、出なかったぶんの月額が黙って続く）。
-    const doneBuckets = new Set(st.done.map(b => b.bucket))
-    const remaining = allBuckets.filter(b => !doneBuckets.has(b))
-    return {
-      ...done, ok: false, executed, remainingBucket: st.remainingBucket, remainingBuckets: remaining,
-      ...keptBucketFields(st.done),
-      message: st.message
-        + (remaining.length > 0 ? `\n保存場所${bucketNames(remaining)}が残っています（消すまで月額が続きます）。${RETRY_GUIDE}` : ''),
-    }
-  }
-  return { ...done, executed, ...keptBucketFields(st.done) }
 }
 
 /** hanamii:publish が返す形（画面が読む項目だけ型にし、あとは読み流す）。 */
@@ -318,11 +155,8 @@ type HanamiiPublishReply = {
  * 別のプロジェクトの稼働中のアプリを上書き（公開）・削除（破棄）してしまう。最後の砦は main の側に置く。
  */
 export const PROJECT_MISMATCH_PUBLISH =
-  '画面が持っている HANAMII のプロジェクトが、このプロジェクトの記録と一致しません（別のプロジェクトの画面から引き継がれた可能性があります）。'
+  '公開しようとした HANAMII のプロジェクトが、このプロジェクトの記録と一致しません。'
   + '何も公開していません。公開のダイアログを閉じて開き直してから、もう一度お試しください。'
-export const PROJECT_MISMATCH_TEARDOWN =
-  '破棄しようとした HANAMII のプロジェクトが、このプロジェクトの記録が指すものと一致しません（別のプロジェクトの画面から引き継がれた可能性があります）。'
-  + '何も削除していません。公開のダイアログを閉じて開き直してから、もう一度お試しください。'
 
 /** 待った時間を画面の文にする（90秒未満は秒、それ以上は約N分）。 */
 function waitedText(sec: number): string {
@@ -356,7 +190,9 @@ async function finishHanamiiPublish(args: {
   progress: (message: string, extra?: { detail?: string }) => void
 }): Promise<HanamiiPublishReply> {
   const { projectDir, requested, progress } = args
-  const { storagePermissionId, storageProjectName, ...rest } = requested
+  // 依頼の段で載った知らせ（目印を置けなかった）は、後段の知らせと**重ねて**返す（後段の warnings で上書きしない）
+  const { storagePermissionId, storageProjectName, warnings: carriedWarnings, ...rest } = requested
+  const carried = carriedWarnings ?? []
   const hasKey = !!(storagePermissionId && storageProjectName)
   const keepNote = hasKey ? '保存場所の古いアクセスキーは、新しいバージョンの起動を確認できるまで削除せずに残しています。' : ''
   const keepKeys = hasKey ? { storagePermissionId, storageProjectName } : {}
@@ -375,7 +211,7 @@ async function finishHanamiiPublish(args: {
     if (outcome.url) {
       writePublishRecordFs(projectDir, 'hanamii', { publishedAt: readPublishedAtFs(projectDir, 'hanamii') ?? new Date().toISOString(), url: outcome.url })
     }
-    const warnings: string[] = []
+    const warnings: string[] = [...carried]
     let keysDone = !hasKey
     if (hasKey) {
       progress('🧹 保存場所の古いアクセスキーを削除しています…')
@@ -401,6 +237,7 @@ async function finishHanamiiPublish(args: {
       message: `HANAMII が新しいバージョンを起動できませんでした${outcome.errorCode ? `（エラーコード: ${outcome.errorCode}）` : ''}。`
         + (args.redeployed ? '前のバージョンが動き続けている場合があります。' : '')
         + `HANAMII の管理画面でログを確かめてください。${keepNote}`,
+      ...(carried.length > 0 ? { warnings: carried } : {}),
       ...keepKeys,
     }
   }
@@ -414,6 +251,7 @@ async function finishHanamiiPublish(args: {
         outcome.readyState
           ? `HANAMII の新しいバージョンが、待った時間（${waited}）のうちには起動しませんでした（状態: ${outcome.readyState}）。まだ起動していません。HANAMII の管理画面で状態を確かめてください。${keepNote}`
           : `新しいバージョンが起動したかを、待った時間（${waited}）のうちには確かめられませんでした。HANAMII の管理画面で状態を確かめてください。${keepNote}`,
+        ...carried,
       ],
       ...keepKeys,
     }
@@ -421,7 +259,7 @@ async function finishHanamiiPublish(args: {
 
   return {
     ...rest, deployState: 'unknown',
-    warnings: [`新しいバージョンが起動したかを確かめられませんでした（${outcome.message}）。HANAMII の管理画面で状態を確かめてください。${keepNote}`],
+    warnings: [`新しいバージョンが起動したかを確かめられませんでした（${outcome.message}）。HANAMII の管理画面で状態を確かめてください。${keepNote}`, ...carried],
     ...keepKeys,
   }
 }
@@ -534,7 +372,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       if (!zip.length) return withDataLayerNote({ ok: false, message: 'ZIPが空です（公開できるファイルが見つかりません）' })
       // マニフェストも index.html も無い＝HANAMIIが公開形態を判定できない。分かりやすく案内する。
       if (!hasManifest && !hasIndex) {
-        return withDataLayerNote({ ok: false, message: 'HANAMII で公開できる形になっていません。静的サイトなら index.html を、アプリなら package.json 等（package.json / requirements.txt / pyproject.toml / composer.json）を用意してください。' })
+        return withDataLayerNote({ ok: false, message: 'HANAMII で公開できる形になっていません。静的サイトなら index.html を、アプリなら package.json・requirements.txt・pyproject.toml・composer.json のいずれかを用意してください。' })
       }
       progress('☁️ HANAMII へアップロードしています…')
       const up = await client.createUpload(opts.workspaceId, `${opts.name || 'app'}.zip`)
@@ -574,6 +412,8 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       // renderer には渡さず、ディスクにも書かない（掟4）。
       let storagePermissionId: string | null = null
       let storageProjectName = ''
+      // 目印（.koto-keep）を置けなかったときの知らせ（issueStorageEnvFor が置き直す。公開が受け付けられた回の結果に載せる）
+      let storageMarkerNote: string | undefined
       /**
        * 公開が途中で止まったときに、**いま発行したばかりの鍵だけ**を取り消す
        * （2026-09-25 検分の指摘14。専有型・Vercel・共用型 apply.ts の `revokeJustIssuedKey` と同じ形）。
@@ -602,6 +442,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
         } else {
           storagePermissionId = st.permissionId
           storageProjectName = st.projectName
+          storageMarkerNote = st.markerNote
           const storageEnvs = st.envs.map(e => ({ key: e.key, value: e.value, type: (e.secret ? 'secret' : 'plain') as 'plain' | 'secret' }))
           // 利用者が同じ名前を手で入れていたら、**そちらを優先しない**
           // （こちらは今この瞬間に発行した鍵で、手入力は古い可能性がある）
@@ -659,6 +500,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
         // 片づけは**動いたと確かめてから**なので、ここではまだ消さない（下の finishHanamiiPublish が
         // READY を確かめたあとに片づける。片づけ切れなかったときだけ、この2つが返り値に残る）
         ...(storagePermissionId ? { storagePermissionId, storageProjectName } : {}),
+        ...(storageMarkerNote ? { warnings: [storageMarkerNote] } : {}),
       })
     } catch (e: any) { return withDataLayerNote({ ok: false, message: e?.message ?? String(e) }) }
     finally { clearPendingFs(projectDir) }
@@ -668,7 +510,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     // ── 後段: 画面に依らず、新しい版が動いたと確かめるまで進める（古い鍵は READY を確かめてから消す）──
     return finishHanamiiPublish({ projectDir, token: opts.token, requested, redeployed, progress })
     }, { target: 'hanamii', handler: 'hanamii:publish', secrets: [opts?.token] })
-    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
+    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running, locked.runningTarget) } : locked.value
   })
   ipcMain.handle('hanamii:status', async (_, projectId: string, token: string) => {
     if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
@@ -737,83 +579,8 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       return { ok: true, noop }
     } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
   })
-  /**
-   * HANAMII の破棄。**プロジェクトを消したあと、保存場所も片づける**（2026-09-25 検分）。
-   *
-   * `projectDir` は保存場所（`.sakura-cloud/env.json`）を読むために要る（掟6 の3点セットで
-   * preload・global.d.ts にも足してある）。**渡らなかったときに「片づけたふり」をしない**：
-   * 何も消さずに `ok:true` を返すのは、確認画面が「保存場所も削除します」と言った経路
-   * （📡 公開したもの一覧）では嘘になる——なので 📡 からは必ず渡す
-   * （tests/teardownSupport.test.ts が呼び出しの形を固定している）。
-   *
-   * 保存場所の片づけは `teardownHanamiiStorage`（上）。順序・守り・返す形の理由はそこに書いた。
-   */
-  ipcMain.handle('hanamii:teardown', async (_, projectId: string, token: string, projectDir?: unknown): Promise<HanamiiTeardownResult> => {
-    if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
-    // 進み具合は処理の記録へ通す（projectOps.ts の1つの送り口）。projectDir が無い呼び出しは記録の対象外。
-    const progress = progressReporter(typeof projectDir === 'string' ? projectDir : '')
-    // 破棄の本体。下で、プロジェクト単位の鍵（公開・ほかの破棄と同時に走らせない）の中で走らせる。
-    const run = async (): Promise<HanamiiTeardownResult> => {
-    // ── 渡された projectId は、このプロジェクトの記録が指すものと一致するときだけ消す（2026-09-30 検分・掟11）──
-    // 画面が別のプロジェクトの projectId を持ち越したまま 🗑 を押すと、**別のプロジェクトの稼働中の HANAMII アプリを消し**、
-    // しかもここは 404 でも「もう無い」として、いまの projectDir の保存場所まで片づけていた（settleHanamiiTeardownFs の
-    // 照合が守るのは記録だけで、消すことそのものは止めなかった）。食い違うなら、何も呼ばずに断る。
-    // すべての呼び出し（【公開】の 🗑・📡 一覧・プロジェクト削除）は、この記録から projectId を読んで渡すので、正しい呼び出しは通る。
-    // 鍵（withProjectLock）の中で読むので、同じプロジェクトの公開が記録を書き換えている最中には見ない。
-    if (typeof projectDir === 'string' && projectDir && readHanamiiProjectIdFs(projectDir) !== projectId) {
-      return { ok: false, message: PROJECT_MISMATCH_TEARDOWN }
-    }
-    // 通信そのものが失敗したら例外を IPC の外へ出さない（【公開】の 🗑 は結果を待つだけで
-    // catch を持たないので、投げると確認ダイアログが開いたまま固まる）。
-    let r: HanamiiResult
-    progress('🗑 HANAMII のプロジェクトを削除しています…')
-    try {
-      r = await new HanamiiClient({ token }).deleteProject(projectId)
-    } catch (e: any) {
-      return { ok: false, message: `削除に失敗しました: ${e?.message ?? String(e)}` }
-    }
-    // ── もう無いものは「消えている」として扱う（2026-09-25 検分の指摘3）────────────
-    // 保存場所だけ片づかなかったとき、画面は「もう一度 🗑 を押してください」と案内する。
-    // ところが2度目の破棄はここで 404 になり、**保存場所へは一生進めなかった**
-    // ＝案内した導線がどこにも無い。HANAMII が「そんなプロジェクトは無い」と言っている以上、
-    // **動いているアプリはもう無い**＝鍵を消しても 403 で落ちるものが無いので、片づけへ進めてよい
-    // （共用型 apply.ts の削除も `res.status !== 404` で同じ扱いをしている）。
-    const gone = r.ok || r.status === 404
-    // **消せていないうちは保存場所に触らない**（アプリがまだ動いている＝鍵を消すと 403 で落ちる）。
-    if (!gone) return { ok: false, message: `削除に失敗しました（HTTP ${r.status}）` }
-    // プロジェクトフォルダが分からない呼び出しでは、保存場所には触れない（**片づけたふりをしない**）。
-    // 2026-09-25 検分の指摘1・2: 【公開】の HanamiiPanel・プロジェクト削除の Sidebar も
-    // projectDir を渡すようになったので、いま `projectDir` 無しで呼ぶ画面は Koto に無い。
-    // それでも**任意の引数**である以上、渡し忘れても型検査は通る。だからここは
-    // 「何も消していない」と正直に返し、呼び出し側は tests/teardownSupport.test.ts が
-    // 呼び出しの形（3つの入口すべてが渡していること）を固定している。
-    if (typeof projectDir !== 'string' || !projectDir) return { ok: true, appDeleted: true, executed: [] }
-    progress(STORAGE_TEARDOWN_PROGRESS)
-    const res = await teardownHanamiiStorage(projectDir)
-    // 保存場所まで片づいたら、**ここ（main・鍵の中）で**記録も片づける（2026-09-30）。
-    // 以前は画面が「破棄の結果を初めて見たとき」に片づけていたが、画面は記録を再生する（閉じて開き直すと、
-    // 見られていない古い破棄の結果をもう一度「初めて見た」と扱う）ので、その後に公開し直した
-    // 新しいプロジェクトの記録まで消して、二重に作られた。消したそのときに1回だけ、main が行う。
-    // 保存場所だけ残った回（ok:false）は、押し直せる入口（🗑）と記録を残す。
-    if (!res.ok) return res
-    const settled = settleHanamiiTeardownFs(projectDir, projectId)
-    if (settled.ok) return res
-    return {
-      ...res,
-      executed: [
-        ...(res.executed ?? []),
-        `⚠️ 公開の記録を削除できませんでした。📡 公開したもの一覧に、もう無い公開が残っているときは「一覧から削除」で消してください: ${settled.message}`,
-      ],
-    }
-    }
-    // 同じプロジェクトの公開・ほかの破棄と同時に走らせない（2026-09-29・src/main/projectLock.ts）。
-    // 断ったときは**外部の API を1件も呼ばない**（HANAMII の削除にも入らない）。
-    // projectDir が無い呼び出し（いま Koto の画面には無い）は、鍵を掛ける相手が分からないので
-    // そのまま走らせる（保存場所には触れない経路＝上の run の中で「片づけたふり」もしない）。
-    if (typeof projectDir !== 'string' || !projectDir) return run()
-    const locked = await withProjectLock(projectDir, '削除', run, { target: 'hanamii', handler: 'hanamii:teardown', secrets: [token] })
-    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
-  })
+  // HANAMII の破棄（hanamii:teardown）は ipc/hanamiiTeardown.ts（共通の骨 teardownShell の上）。呼び形は (projectDir, { token }, { confirmed, projectId })。
+  registerHanamiiTeardownHandler()
 
   ipcMain.handle('hanamii:detectEnvKeys', async (_, projectDir: string) => {
     try {

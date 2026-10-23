@@ -465,11 +465,9 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
 
   return (
     <div className="flex h-full bg-base relative">
-      {/* チャットモードでも右下で頭脳（Claude / さくらのAI Engine）を確認・切替できるチップ
-          （IDEモードの StatusBar と同じ BrainToggle・2026-07-13 ユーザー要望）。 */}
+      {/* 右下のチップ。チャットモードの会話は必ず さくらのAI Engine が答えるので、押せない表示にする
+          （chatMode。2026-10-15 作者決定: 切り替えると IDEモード側だけが変わり、効かないように見えたため）。 */}
       <div className="absolute bottom-2 right-3 z-20 bg-elevated/95 border border-line rounded-full px-2.5 py-1 shadow-sm text-[11px]">
-        {/* W-19: チャットモードの会話は必ず さくらのAI Engine が答える。切り替えられるときは
-            チップの表示もそれに揃える（chatMode）。 */}
         <BrainToggle apiKey={apiKey} chatMode />
       </div>
       {/* Session sidebar */}
@@ -535,8 +533,6 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
               buttonClassName="flex items-center gap-1 text-[13px] bg-elevated border border-line rounded-lg px-3 py-1.5 text-ink hover:border-sakura cursor-pointer transition-colors"
               defaultId={DEFAULT_CHAT_MODEL}
             />
-            {/* 頭脳の切替（2026-07-29 ユーザー要望）。右下の BrainToggle と同じもの・同じ書き込み口。 */}
-            <BrainToggle apiKey={apiKey} compact chatMode />
             {/* 🗂 手動で区切る（2026-08-20 Ryosuke 要望）。押しても意味が無いうちは出さない（掟5）。 */}
             {canCompactNow(activeSession?.messages ?? []) && (
               <button
@@ -642,7 +638,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                             {msg.role === 'assistant' && msg.thinking && (
                               <ThinkingBlock text={msg.thinking} live={isLoading && i === activeSession.messages.length - 1} />
                             )}
-                            {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={handleApplyFile} applyHint="この会話専用のプロジェクト（プロジェクトを置くフォルダの中）に保存します。編集・実行・公開は、画面上部の切替で IDEモードに移って行えます" /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
+                            {msg.role === 'assistant' ? <AiMessage content={msg.content} onApplyFile={handleApplyFile} applyHint="この会話専用のプロジェクト（プロジェクトを置くフォルダの中）に保存します。編集・実行・公開は、画面上部の切替で IDEモードに移って行えます" plain={msg.toolNote} /> : (msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>)}
                             {/* #31: Claudeが使えないときの「さくらのAI Engineに切り替えて続ける」提案ボタン。 */}
                             {msg.offerAiEngineFallback && (
                               <button

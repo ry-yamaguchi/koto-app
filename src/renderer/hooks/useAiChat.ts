@@ -650,9 +650,9 @@ export function useAiChat(args: UseAiChatArgs) {
               delegateKey = null
               appendBubble({
                 role: 'assistant', toolNote: true,
-                // W-50: 「委譲」「このターン」は非エンジニアに通じない → 「任せず」「今回」に言い換える。
+                // W-50: 「委譲」「このターン」は非エンジニアに通じない → 「今回」に言い換える（2026-10-09: 「任せず」は短くして外した）。
                 // W-6: 止まる基準はキーごとの上限なので、案内先も ⚙️ 設定ではなく 認証情報 にそろえる。
-                content: 'ℹ️ 今月のさくらのAI Engineの利用額が上限に達しているため、今回は作業をさくらのAI Engineに任せず、Claude だけで進めます（上限は 認証情報（⇧⌘,）で、キーごとに変えられます）。',
+                content: 'ℹ️ 今月のさくらのAI Engineの利用額が上限に達しているため、今回は Claude だけで進めます。上限は、認証情報（⇧⌘,）でキーごとに変えられます。',
               })
             } else if (delegateBudget.warning) {
               // W-21（2026-09-27決定・別案）: 「上限に達したら停止」がオフでも、実効上限を超えていれば

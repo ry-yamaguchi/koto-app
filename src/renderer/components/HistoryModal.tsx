@@ -85,7 +85,7 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
     if (r.ok) {
       const failed = r.failed ?? []
       setNotice(
-        `✅ ${formatDate(target.createdAt)} の状態に戻しました。戻す直前の状態も履歴に保存したので、この操作も取り消せます。`
+        `✅ ${formatDate(target.createdAt)} の状態に戻しました。この操作も履歴から取り消せます。`
         + (failed.length ? `\n⚠️ ただし次のファイルは戻せませんでした（記録が見つかりません）: ${failed.join('、')}` : '')
       )
       try { await onRestored(r.restored ?? [], r.deleted ?? []) } catch { /* 反映失敗でも一覧は更新する */ }
@@ -103,7 +103,7 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
           <SakuraLogo size={24} />
           <div>
             <h2 className="text-lg font-bold text-ink">🕘 履歴（前の状態に戻す）</h2>
-            <p className="text-xs text-ink-secondary">AIの変更・自分の編集の直前を自動で記録しています（直近50件）。選んだ時点の状態に戻せます。※AIが実行したコマンドでの変更・ゴミ箱へ移したものは記録されません</p>
+            <p className="text-xs text-ink-secondary">AIの変更・自分の編集の直前を自動で記録しています（直近50件）。※AIが実行したコマンドでの変更・ゴミ箱へ移したものは記録されません</p>
           </div>
           <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
@@ -162,8 +162,7 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
               <p className="text-sm text-ink-secondary py-3">読み込み中…</p>
             ) : snapshots.length === 0 ? (
               <p className="text-sm text-ink-muted py-3 leading-relaxed">
-                まだ履歴がありません。AIがファイルを変更したとき、または自分で編集して保存したときに、
-                その直前の状態がここに自動で記録されます。
+                まだ履歴がありません。
               </p>
             ) : (
               <ul className="divide-y divide-line max-h-96 overflow-y-auto">
@@ -215,10 +214,7 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
             )}
 
             <p className="text-[11px] text-ink-muted leading-relaxed">
-              「この時点に戻す」を押すと、それより後の変更をすべて取り消して、その時点の状態に戻ります
-              （3つ前のデザインに戻したいときは、3つ前の行を選んでください）。
-              戻す直前の状態も新しい履歴として保存されるため、間違えてもやり直せます。
-              なお、履歴は直近50件まで。それより古いものは自動で消えます。
+              50件より古い履歴は自動で消えます。
               ※ここで戻せるのは手元のファイルだけです。公開しているサイト／アプリを前のバージョンに戻したいときは、【公開】の『⏪ 公開したものを前のバージョンに戻す』を使ってください。
             </p>
           </div>

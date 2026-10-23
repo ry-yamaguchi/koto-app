@@ -139,9 +139,16 @@ describe('変えたと言っているのに書き込みが無いとき', () => {
   // 「変更されていません」と出て、**どちらが本当か分からない**見え方になっていた。
   it('★★ 実際には変わっていない、と伝える（矛盾に見えないように）', () => {
     const w = unexecutedChangeWarning(true, false)
-    expect(w).toContain('実際には書き込みが行われていません')
-    expect(w).toContain('Koto がこのやり取りを確認しました')
+    expect(w).toContain('ファイルは書き換えられていません（Koto が確かめました）')
     expect(w).toContain('Kimi K2.7 Code')
+  })
+
+  // 2026-10-14 実機（0.6.21-rc.2）: AI が書いたのは「紹介文を作成しました」なのに、
+  // 注意書きは「AI は「保存しました」と書いていますが」と、言っていない言葉を引用していた。
+  it('★★ AI の言葉を決め打ちで引用しない・文の途中で改行しない', () => {
+    const w = unexecutedChangeWarning(true, false)!
+    expect(w).not.toContain('「保存しました」')
+    expect(w.split('\n')[0]).toBe('⚠️ AI は変更したと書いていますが、ファイルは書き換えられていません（Koto が確かめました）。')
   })
 
   it('★ 書き込んだなら何も言わない', () => {

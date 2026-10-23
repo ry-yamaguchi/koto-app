@@ -1,4 +1,4 @@
-// さくらのクラウド連携（実行系）の IPC（cloud:plan/apply/teardown/env/cost/accessLimit 等。キー系は cloudKeys.ts）。
+// さくらのクラウド連携（実行系）の IPC（cloud:plan/apply/env/cost/accessLimit 等。キー系は cloudKeys.ts・破棄 cloud:teardown は cloudTeardown.ts）。
 // env.json / state.json の読み書きヘルパもここに移動。deps は使わない（認証情報は cloud/auth から読む）。
 import { ipcMain } from 'electron'
 import * as path from 'path'
@@ -6,19 +6,18 @@ import * as fs from 'fs'
 import { randomBytes } from 'crypto'
 import { validateSpec, defaultSpec, normalizeSpecName, type EnvSpec } from '../cloud/spec'
 import { computePlan, type Plan } from '../cloud/planner'
-import { emptyState, isExpired, registryDeletionTarget, registryLookupNames, registrySubdomainLabel, resolvePushRegistry, stateToSave, type EnvState } from '../cloud/state'
+import { emptyState, isExpired, metaAfterEnsureRegistry, registryLookupNames, registrySubdomainLabel, resolvePushRegistry, stateToSave, type EnvState } from '../cloud/state'
 import { loadCredentials, type CloudCredentials } from '../cloud/auth'
 import {
   hasRegistryCredentials,
   saveRegistryCredentials,
   loadRegistryCredentials,
-  clearRegistryCredentials,
   registryServer,
 } from '../cloud/registry-auth'
 import { SakuraCloudClient, pickContainerRegistries, extractAppUrl, extractLatestBill, extractAccountId, apiErrorMessage } from '../cloud/client'
 import { provisionRegistryWithMeta } from '../cloud/registryProvision'
 import { checkBilling } from '../cloud/connectionCheck'
-import { applyPlan } from '../cloud/apply'
+import { applyForProject } from '../cloud/applyForProject'
 import { performRollback } from '../cloud/rollback'
 import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapter'
 import { dockerAvailable } from '../cloud/docker'
@@ -148,7 +147,7 @@ export function runtimeSkipNoteFor(opts: { runtimeKind: string; publicUrl: strin
     return 'ℹ️ 公開先のURLを取得できなかったため、内容が新しくなったかの確認は行いませんでした（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
   }
   // それ以外（静的配信でない等）はこれまでの文のまま。
-  return 'ℹ️ このビルド方式では公開物にバージョン情報のファイル（.koto-build）を入れないため、内容が新しくなったかの確認は行いませんでした（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
+  return 'ℹ️ このビルド方式では、内容が新しくなったかの確認は行いませんでした（公開そのものは完了しています）。公開先を開いて、表示されるかご自身で確かめてください。'
 }
 
 async function waitForHealthy(
@@ -224,69 +223,11 @@ function planTouchesApp(plan: Plan): boolean {
   )
 }
 
-/**
- * コンテナレジストリの一覧を読む（読めなかったときは `null`）。
- *
- * B-2（2026-09-16 の検分）: `pickContainerRegistries`（cloud/client.ts）は、形が読めない応答
- * （`_send` は JSON でない応答を生テキストで返すことがある）でも空配列 `[]` を返す——
- * **「読めなかった」と「読めて0件だった」を区別できない**。破棄の場面でこれを
- * 「一覧に無い＝削除済み」と読むと、読めていないのに記録から名前を落として
- * 二度と見つけられなくなる。`apprunDedicatedShapes.ts` の `readContainerStates`
- * （200でも読めたとは限らない・不明は `null`）と同じ形で、ここだけ区別できる読み手を用意する。
- * 実際の絞り込み・整形は一元定義の `pickContainerRegistries` にそのまま任せる（掟10）。
- */
-export function readContainerRegistryList(data: unknown): Array<{ id: string; subdomainLabel: string }> | null {
-  const items = (data as any)?.CommonServiceItems ?? (data as any)?.commonserviceitems
-  if (!Array.isArray(items)) return null
-  return pickContainerRegistries(data)
-}
-
-/**
- * 破棄でレジストリを削除する（B・2026-09-16 の検分）。
- *
- * 直す前は、一覧の取得が失敗（HTTP 4xx/5xx）しても・例外が起きても `extraExecuted` に
- * 1行も積まれず、黙って「✅ 完了しました」になっていた（すぐ隣の削除失敗の行だけが伝えていた、
- * という非対称）。**破棄の成否（result.ok）は変えない**——ここが失敗しても「致命ではない
- * （アプリは削除済み）」という判断は正しい。だが黙ってよい理由にはならないので、必ず1行返す。
- *
- * B-2: 一覧が 200 でも `readContainerRegistryList` が読めなかった（`null`）ときは
- * 「一覧に無い＝削除済み」にしない（記録に名前を残す）。
- */
-export async function teardownRegistry(
-  client: Pick<SakuraCloudClient, 'listContainerRegistries' | 'deleteContainerRegistry'>,
-  region: string,
-  name: string,
-): Promise<{ registryDeleted: boolean; note: string | null }> {
-  const cannotConfirm = (reason: string): { registryDeleted: boolean; note: string | null } => ({
-    registryDeleted: false,
-    note: `※ レジストリ『${name}』を削除できたか確認できませんでした（${reason}）。`
-      + 'さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額220円がかかり続けます）。',
-  })
-  try {
-    const listed = await client.listContainerRegistries(region)
-    if (listed.dryRun !== false) return { registryDeleted: false, note: null } // dry-run は従来どおり何もしない
-    if (!listed.ok) return cannotConfirm(`一覧の取得に失敗・HTTP ${listed.status}`)
-
-    const rows = readContainerRegistryList(listed.data)
-    if (rows === null) return cannotConfirm('一覧の応答を読み取れませんでした')
-
-    const found = rows.find(r => r.subdomainLabel === name)
-    if (!found) return { registryDeleted: true, note: null } // 一覧に無い＝既に削除済み（読めたうえでの判断）
-
-    const del = await client.deleteContainerRegistry(region, found.id)
-    if (del.dryRun === false && del.ok) {
-      return { registryDeleted: true, note: `コンテナレジストリ『${name}』を削除（ユーザー・イメージごと）` }
-    }
-    if (del.dryRun === false) {
-      return { registryDeleted: false, note: `※ レジストリ『${name}』の削除に失敗（HTTP ${del.status}）。コンパネで削除してください` }
-    }
-    return { registryDeleted: false, note: null }
-  } catch (e: any) {
-    // レジストリ削除の失敗は致命ではない（アプリは削除済み）——この判断は正しい。
-    // だがそれは黙ってよい理由にはならない。すぐ隣の削除失敗の行と同じ語り口で伝える。
-    return cannotConfirm(`一覧の取得または削除でエラーが発生・${e?.message ?? String(e)}`)
-  }
-}
+// コンテナレジストリの一覧の読み取り（readContainerRegistryList）と破棄でのレジストリ削除（teardownRegistry）は、
+// 破棄の本体と一緒に ./cloudTeardown.ts へ移した（設計書 10.7.4）。tests/cloudIpcRegistryTeardown.test.ts が
+// ここから import しているので、再エクスポートで残す。
+export { readContainerRegistryList, teardownRegistry } from './cloudTeardown'
+import { registerCloudTeardownHandlers } from './cloudTeardown'
 
 import { scanDataUsage, ensureDataLayer } from '../dataLayer'
 // 差し替えを知らせる1行は StorageNotice・Vercel・専有型と**同じ純関数**を使う（掟10。文言を二重に書かない）。
@@ -306,38 +247,33 @@ import {
   siteIssueNote, siteCheckSummary, fixInstruction, type SiteIssue, type SiteIssueKind,
 } from '../../shared/siteCheck'
 import { publishExcludedDirNames } from '../../shared/publishExclude'
-import { sharedBucketName, isValidBucketName, consentedBuckets, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, keepMarkerKey, KOTO_ROOT, type BucketMode } from '../../shared/objectStorage'
+import { sharedBucketName, isValidBucketName, consentedBuckets, consentedPlacementsOf, keepStorageFromDisk, resolvePlacement, prefixForProject, storageCostNote, keepMarkerKey, bucketNotListedMessage, KOTO_ROOT, type BucketMode, type ConsentedPlacement } from '../../shared/objectStorage'
 import { planTagCleanup, digestsToDelete, normalizeKeep, DEFAULT_KEEP } from '../../shared/imageRetention'
 import { listTags, resolveDigests, deleteDigests } from '../cloud/imageCleanup'
 import { markerUrl, matchesMarker, verifyDelaysMs, verifyMessage, canVerify, judgeVerifyProbe, type VerifyOutcome, type DedicatedProbe } from '../../shared/publishVerify'
 import { resolvePublishRoot } from '../publishRootFs'
 import { readTraffics, readVersions, trafficState } from '../../shared/apprunTraffic'
 
-/** 画面へ返す保存場所1件分（`storage:placement` の戻りの形）。 */
-export type ConsentedPlacement = { bucket: string; prefix: string; shared: boolean; consentedAt: string }
+/** 画面へ返す保存場所1件分（`storage:placement` の戻りの形）。定義は shared/objectStorage.ts。 */
+export type { ConsentedPlacement } from '../../shared/objectStorage'
 
 /**
  * このプロジェクトの同意済みの保存場所を**全件**読む（2026-09-25 検分の指摘23）。
  *
  * ── なぜ全件なのか ────────────────────────────────────────────────
- * 破棄（手順6「すべて削除する」）は `storagePlacementsOf`（src/main/cloud/storageForTarget.ts）で
- * **全件**を片づける。ところが確認ダイアログの材料になるこの口は**先頭の1件しか返して
+ * 破棄は同意済みの保存場所を**全件**消す。ところが確認ダイアログの材料になるこの口が**先頭の1件しか返して
  * いなかった**ので、env.json に保存場所が2件ある状態（手で編集した・過去の記録が残っている）では
  * 「保存場所『A』（中のデータも消えます）」としか出ないまま、**名前が一度も出なかった『B』と
- * その中のデータまで消える**。元に戻せない削除を、名指ししないまま実行させてはいけない
+ * その中のデータまで消える**。元に戻せない削除を、名前を出さないまま実行させてはいけない
  * （掟10「お金・破壊の歯止め」）。**確認で見せるものと、実際に消すものを一致させる。**
  *
- * 判断（同意済みかどうか）は `consentedBuckets`（shared の一元定義）に任せ、ここでは書かない。
+ * 読み方（同意済みかどうか・prefix・共有）は `consentedPlacementsOf`（shared の一元定義）の1つ。
+ * 消す側の `storagePlacementsOf`（cloud/storageForTarget.ts）・`sharedTeardownRecordOf`（./cloudTeardown.ts）も同じものを通る。
  */
 export function consentedPlacements(projectDir: string): ConsentedPlacement[] {
   const spec = loadCloudSpec(String(projectDir || ''))
   if (!spec) return []
-  return consentedBuckets(spec.persistence?.objectStorage).map(b => ({
-    bucket: b.bucket,
-    prefix: b.prefix ?? '',
-    shared: b.shared !== false,
-    consentedAt: b.consentedAt ?? '',
-  }))
+  return consentedPlacementsOf(spec.persistence?.objectStorage)
 }
 
 export function registerCloudHandlers(_deps: IpcDeps) {
@@ -535,17 +471,17 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         const spec = loadCloudSpec(projectDir)
         if (spec) {
           const st = loadCloudState(projectDir, spec)
-          // **新しく作ったなら、借り物の印は落とす**（2026-08-25）。
-          // 引き継ぎで付けた印を残したままにすると、Koto が作った置き場なのに
-          // 破棄のチェックが既定オフになり、月220円が止まらない。
+          // **新しく作ったなら `registryAdopted: false` を書く**（2026-08-25・2026-10-19）。
+          // 破棄の「置き場も削除する」を既定でオンにするのは、この印が false のものだけ。
+          // 書かなければ「分からない」になり、Koto が作った置き場なのに既定オフになる。
+          // 引き継ぎで付けた true を残したままでも同じ（月220円が止まらない）。
+          // 既存のレジストリを再利用したときの印の扱いは metaAfterEnsureRegistry（state.ts）が決める。
           // registryMetaOutcome が null（既存レジストリを再利用・分かっていない）のときは
           // 記録に触れない——分かっていないことを false と書いてしまうと、次回から
           // 分類を試さなくなる（roadmap #36「反映されていなければ、その事実を記録する」の裏返し
           // として、分かっていないことも黙って false 扱いにしない）。
           const meta = {
-            ...st.meta,
-            registryName: label,
-            ...(created ? { registryAdopted: false } : {}),
+            ...metaAfterEnsureRegistry(st.meta, label, created),
             ...(registryMetaOutcome !== null ? { registryMetaSupported: registryMetaOutcome } : {}),
           }
           saveCloudState(projectDir, { ...st, meta })
@@ -1053,22 +989,18 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       // ── AppRun へ反映 ──
       progress('🚀 AppRun に反映しています…')
       const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
-      let result: Awaited<ReturnType<typeof applyPlan>>
-      try {
-        result = await applyPlan({
-          plan,
-          spec: resolvedSpec,
-          state,
-          client,
-          confirmed: opts?.confirmed === true,
-          ...(storage ? { storage } : {}),
-          ...(registryAuth ? { registryAuth } : {}),
-          ...(scaleDecision ? { scaleDecision } : {}),
-        })
-      } finally {
-        // 一時的に発行した鍵は必ず片づける（失敗しても公開の結果は変えない）
-        if (storage) await storage.dispose()
-      }
+      // 一時的に発行した鍵は applyForProject が必ず片づける。projectDir は保存場所の削除が、ほかのプロジェクトの記録を読む起点（必須）
+      const result = await applyForProject({
+        plan,
+        spec: resolvedSpec,
+        state,
+        client,
+        confirmed: opts?.confirmed === true,
+        projectDir,
+        ...(storage ? { storage } : {}),
+        ...(registryAuth ? { registryAuth } : {}),
+        ...(scaleDecision ? { scaleDecision } : {}),
+      })
 
       // ── 「起動のしかた」を、さくら側の実物へ取り込んだとき（scaleDecision:'sakura'）だけ、
       //    env.json へ書き戻す（画面の表示を実物に合わせる）。**同じ書き込み経路を使う**
@@ -1226,7 +1158,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       clearPendingFs(projectDir)
     }
     }, { target: 'sakura-apprun', handler: 'cloud:apply' })
-    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
+    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running, locked.runningTarget) } : locked.value
   })
 
   // ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）────────────────────────
@@ -1528,155 +1460,9 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     }
   })
 
-  // 破棄: 現在の state の全リソースを削除するプラン（空spec相当）を作って applyPlan（confirmed 必須）
-  ipcMain.handle('cloud:teardown', async (_, projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }) => {
-    // 進み具合は処理の記録だけへ通す（この IPC は renderer へ進捗を送っていない。閉じて開き直した画面が
-    // 「いま何をしているか」を続きから読めるように、段の変わり目を記録する）。2026-09-29・projectOps.ts
-    const progress = progressReporter(projectDir)
-    // 公開・ほかの破棄と同時に走らせない（2026-09-29・src/main/projectLock.ts）。
-    // 断ったときは**外部の API を1件も呼ばない**（下の本体に入らない）。
-    const locked = await withProjectLock(projectDir, '削除', async () => {
-    try {
-      const creds = loadCredentials()
-      if (!creds) return { ok: false, message: 'APIキー未登録（先にアクセストークン/シークレットを登録してください）' }
-
-      const spec = loadCloudSpec(projectDir)
-      if (!spec) return { ok: false, message: 'env.json がありません' }
-
-      const state = loadCloudState(projectDir, spec)
-
-      // 破棄プラン: 現在の state の全リソースを delete にする（空spec相当＝要求リソース無し）。
-      // computePlan は spec.name の apprun-app を必ず「要求」するため、全state資源を確実に
-      // delete 対象にするには state ベースで直接 delete プランを組むのが安全（apprun-app も含む）。
-      const nameFromRef = (r: EnvState['resources'][number]): string =>
-        r.key.startsWith(`${r.kind}:`) ? r.key.slice(r.kind.length + 1) : r.id
-      const plan: Plan = {
-        actions: state.resources.map(r => ({
-          type: 'delete' as const,
-          kind: r.kind,
-          name: nameFromRef(r),
-          stateful: r.stateful,
-          destructive: true,
-          description: r.stateful
-            ? `保存場所『${nameFromRef(r)}』にある、このプロジェクトのデータを削除（データが消えます）`
-            : `${r.kind}『${nameFromRef(r)}』を削除`,
-        })),
-        hasDestructive: state.resources.length > 0,
-        hasStatefulDelete: state.resources.some(r => r.stateful),
-      }
-
-      // 保存場所は **state に載っているときだけ**触る（載っていない＝作っていない）。
-      // ここで渡し忘れると、バケットだけが残って課金が続く
-      let storage: StorageAdapter | undefined
-      if (state.resources.some(r => r.kind === 'bucket')) {
-        try {
-          storage = await createStorageAdapter(creds)
-        } catch (e: any) {
-          // **中身を確かめられないなら消さない。** 破棄そのものを中止する
-          return { ok: false, message: `保存場所に接続できないため、破棄を中止しました: ${e?.message ?? e}` }
-        }
-      }
-
-      const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
-      let result: Awaited<ReturnType<typeof applyPlan>>
-      progress('🗑 公開したものを削除しています…')
-      try {
-        result = await applyPlan({ plan, spec, state, client, confirmed: opts?.confirmed === true, ...(storage ? { storage } : {}) })
-      } finally {
-        if (storage) await storage.dispose()
-      }
-
-      const extraExecuted: string[] = []
-      if (result.ok) {
-        // state の保存は**レジストリの処理が終わってから**行う（下の saveCloudState）。
-        // レジストリを残したときは registryName を記録に残す必要があり、その判断には
-        // 削除できたかどうかが要るため（2026-08-09）。
-        let registryDeleted = false
-
-        // ── 完全クリーンアップ: IDEが作成したコンテナレジストリ（＋push用ユーザー＋イメージ）も削除する。 ──
-        // レジストリは env state に載らない（ensureRegistry で別管理）ため、ここで明示的に破棄する。
-        // 保存済み資格情報の registry 名から対象を特定し、見つかれば DELETE → 資格情報もクリア。
-        // deleteRegistry が false のときは残す（ユーザーがチェックを外した＝月額課金を承知で残す判断）。
-        // 未指定は従来どおり削除する（呼び出し漏れで課金が残り続けるより、消す側を既定にする）。
-        try {
-          // 対象は**このプロジェクトが記録しているレジストリ名だけ**。
-          // 以前は共通の資格情報（registry-credentials.enc＝最後に公開したプロジェクトのもの）を
-          // 見ていたため、別プロジェクトのレジストリを削除する事故が起きた（2026-08-06）。
-          // 記録が無い（v0.2.94以前に公開した等）ときは**何も削除しない**で、その旨を伝える。
-          const target = registryDeletionTarget(state, opts?.deleteRegistry !== false)
-          const registryName = 'name' in target ? target.name : null
-          if ('skipped' in target && target.skipped === 'unknown' && opts?.confirmed === true) {
-            extraExecuted.push(
-              '※ このプロジェクトがどのコンテナレジストリを使っていたかの記録がないため、レジストリは削除していません。'
-              + 'さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額220円がかかり続けます）。'
-            )
-          }
-          const regCreds = registryName ? { name: registryName } : null
-          if (regCreds?.name && opts?.confirmed === true && opts?.deleteRegistry !== false) {
-            const region = (typeof spec.region === 'string' && spec.region) ? spec.region : 'is1a'
-            progress('🗑 コンテナレジストリを削除しています…')
-            // B（2026-09-16 の検分）: 一覧の取得が失敗しても・例外が起きても黙らない（すぐ隣の
-            // 削除失敗の行と同じ語り口で伝える）。判断は teardownRegistry に集約（掟10）。
-            const outcome = await teardownRegistry(client, region, regCreds.name)
-            registryDeleted = outcome.registryDeleted
-            if (outcome.note) extraExecuted.push(outcome.note)
-            // 共通の資格情報は、いま消した（＝既に削除済みと確認できた）レジストリを
-            // 指しているときだけクリアする（別プロジェクトのものを消すと push 設定を壊す）。
-            if (outcome.registryDeleted && loadRegistryCredentials()?.name === regCreds.name) clearRegistryCredentials()
-          }
-        } catch { /* レジストリ削除失敗は致命ではない（アプリは削除済み）。teardownRegistry 自身は
-          例外を外へ投げないので、ここに来るのは対象の判定（同期処理）が壊れたときだけ */ }
-
-        // 資源を空にした state を保存する。**レジストリを残したときは registryName を残す**
-        // （消すと、残したレジストリを Koto が二度と見つけられず・消せなくなる）。
-        progress('📝 記録を更新しています…')
-        saveCloudState(projectDir, stateToSave({ ok: true, state: result.state, kind: 'teardown', registryDeleted }))
-      } else {
-        // **失敗しても記録する。** 2026-08-14、保存場所の削除が 403 で落ちたとき、
-        // 既に消えていたアプリが記録に残り続け、次の公開が 404 になった
-        saveCloudState(projectDir, stateToSave({ ok: false, state: result.state, kind: 'teardown' }))
-      }
-      // **保存場所が残ったかどうかは、結果でしか分からない。**
-      // 3段構え（ほかのプロジェクトが使っている・利用者のファイルがある）で残ることがあり、
-      // 残ったなら月額も続く。env.json は破棄しても変わらないので判断材料にならない。
-      // apply はバケットを実際に消したときだけ state から取り除くので、そこを見る。
-      const keptBucketName = plan.actions.some(a => a.kind === 'bucket' && a.type === 'delete')
-        ? (result.state.resources.find(r => r.kind === 'bucket')?.id ?? null)
-        : null
-
-      // 利用者が「レジストリは残す」と選んだとき、**残ったレジストリ**（残れば月額も続く）の事実。
-      // 警告は**選択ではなく、この事実から**作る（画面の破棄の結果も、閉じて開き直したあとの処理の記録も、
-      // 同じこの返り値から同じ関数で作る＝その場と開き直しで食い違わない・2026-09-30 検分の指摘6）。
-      //
-      // **破棄の成否に関わらず、残す選択のレジストリは残っている**: レジストリを消すのは、破棄が成功したときの
-      // 上の `deleteRegistry !== false` の分岐だけ。以前は `result.ok` のときしか返しておらず、破棄が途中で失敗した
-      // （保存場所を消せなかった等）回は、その場の画面は月額が続くと言うのに、開き直した画面からは警告が消えた。
-      //   ・keptRegistryName … 記録にレジストリ名がある
-      //   ・keptRegistryUnnamed … 記録に名前が無い（v0.2.94 以前に公開した等）。消せないので、残っているかもしれない
-      //     （画面はこの場合も「残る」と念を押していた）。名前が無いので、文は名前なしで作る
-      const registryOnRecord = typeof state.meta?.registryName === 'string' && state.meta.registryName ? state.meta.registryName : null
-      const keepsRegistry = opts?.deleteRegistry === false
-      const keptRegistryName = keepsRegistry ? registryOnRecord : null
-      const keptRegistryUnnamed = keepsRegistry && !registryOnRecord
-
-      return {
-        ok: result.ok,
-        executed: [...result.executed, ...extraExecuted],
-        skipped: result.skipped,
-        keptBucketName,
-        ...(keptRegistryName ? { keptRegistryName } : {}),
-        ...(keptRegistryUnnamed ? { keptRegistryUnnamed: true } : {}),
-        // ステートフル（bucket）削除を含む場合は明示する。
-        message:
-          result.message ??
-          (plan.hasStatefulDelete ? '保存場所にあった、このプロジェクトのデータを削除しました。' : undefined),
-      }
-    } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
-    }
-    }, { target: 'sakura-apprun', handler: 'cloud:teardown' })
-    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
-  })
+  // 破棄: cloud:teardown（共用型の破棄）と cloud:teardownRecord（確認の材料）は ./cloudTeardown.ts。
+  // 確認の印・認証の形・鍵（同時に1つだけ）の順序は共通の骨（cloud/teardownShell.ts）が持つ。
+  registerCloudTeardownHandlers()
 
   // 破棄画面で「どのレジストリを消すか」を名前で見せるために使う（保存済み資格情報の名前だけを返す）。
   // パスワードは返さない（方式B: 秘密は画面に出さない）。
@@ -1690,9 +1476,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const spec = loadCloudSpec(projectDir)
       if (!spec) return { ok: true, name: null }
       const meta = loadCloudState(projectDir, spec).meta
-      // 借り物か（引き継ぎで、もとからあった置き場を使っているか）も返す。
-      // 破棄のチェックの既定がこれで変わる（2026-08-25）。
-      return { ok: true, name: meta?.registryName ?? null, adopted: meta?.registryAdopted === true }
+      // 返すのは名前だけ。作ったか借りたかは、使い手のいる破棄の確認（cloud:teardownRecord）が持つ。ここに返しても読む画面が無く、誤っても誰も気づかない（2026-10-19）
+      return { ok: true, name: meta?.registryName ?? null }
     } catch {
       return { ok: true, name: null }
     }
@@ -2234,16 +2019,18 @@ function findSiteIssues(root: string): SiteIssue[] {
       if (started) await client.startSite(site.id)
       const created = await client.createBucket(site.id, placement.bucket)
       // **作れたと決めつけない。** 作成APIは 409 を返すことがあり、それを
-      // 「もうある」と読んでいる。同じ名前を消した直後は名前が解放されておらず、
-      // 作られていないのに 409 になり得る（2026-08-14）
+      // 「もうある」と読んでいる。だが、削除した名前は同じ月のうちは作り直せず、
+      // 作られていないのに 409 になる（さくらの FAQ・2026-10-19 原本で確認。2026-08-14 実機）
       const names = (await client.listBuckets(site.id)).map(b => b.name)
       if (!names.includes(placement.bucket)) {
         return {
           ok: false,
-          message: `保存場所『${placement.bucket}』を作成しましたが、一覧に見つかりません。`
-            + '同じ名前の保存場所を削除した直後は、名前が解放されるまで作り直せないことがあります。'
-            + 'しばらく待ってからお試しください。'
-            + `（作成の応答: HTTP ${created.status}${created.text ? ' ' + created.text : ''}）`,
+          message: bucketNotListedMessage({
+            bucket: placement.bucket,
+            status: created.status,
+            responseText: created.text,
+            nextStep: '「設定 → データの保存」で別の名前の保存場所を作ってから、【公開】を開き直して選んでください。',
+          }),
         }
       }
 
@@ -2325,9 +2112,12 @@ function findSiteIssues(root: string): SiteIssue[] {
       if (!names.includes(bucket)) {
         return {
           ok: false,
-          message: `保存場所『${bucket}』を作成しましたが、一覧に見つかりません。`
-            + 'その名前は使えないか、削除した直後で名前が解放されていない可能性があります。別の名前でお試しください。'
-            + `（作成の応答: HTTP ${created.status}${created.text ? ' ' + created.text : ''}）`,
+          message: bucketNotListedMessage({
+            bucket,
+            status: created.status,
+            responseText: created.text,
+            nextStep: '別の名前でお試しください。',
+          }),
         }
       }
       return { ok: true, bucket }

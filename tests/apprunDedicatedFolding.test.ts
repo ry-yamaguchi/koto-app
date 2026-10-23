@@ -193,7 +193,9 @@ describe('手順2: サービスプリンシパルの手順を「詳しい手順�
   it('既存の内容（コントロールパネルのリンク・ロール欄のコピーボタン・存在確認できない旨）は残っている', () => {
     expect(spSection).toContain('href={CONTROL_PANEL_URL}')
     expect(spSection).toContain('<CopyButton text={ROLE_TEXT}')
-    expect(spSection).toContain('存在するかどうかはここでは確認できません')
+    // 2026-10-09 画面の文を短くする（T030）: 「ここでは」「IAM APIが使えないため」を外し、形式だけ確認できる旨に替えた。
+    expect(spSection).toContain('確認できるのは形式（12桁の数字）だけです。存在するかどうかは、クラスタを作るときに分かります。')
+    expect(spSection).not.toContain('存在するかどうかはここでは確認できません')
     expect(spAll).not.toContain('実在するかどうかはここでは確認できません') // 0.6.21（作者の決定 2026-10-01）: 「実在確認」は「存在確認」に揃えた。直す前の言い方は戻さない
   })
 })
@@ -202,7 +204,10 @@ describe('手順5: 詳細設定（ポート・ノード数）を <details> に�
   it('既定で見えるのはクラスタ名・ゾーン・ワーカプラン・ロードバランサプラン・構成図・作成ボタン', () => {
     const at = panel.indexOf('{/* 手順5 クラスタを作る */}')
     expect(at).toBeGreaterThan(0)
-    const end = panel.indexOf('{/* 手順6 作ったものを壊す')
+    // 手順5の節の終わり＝手順6の節の要素の手前（0.6.22 3B-6a。以前の '{/* 手順6 作ったものを壊す' はパネルに無く -1 になり、slice(at, -1) で
+    // 手順5の外まで検査していた。空振りを防ぐため、終わりが見つかり、手順5の節より後にあることを先に確かめる）。
+    const end = panel.indexOf('<DedicatedTeardownSection')
+    expect(end, '手順6の節の要素が見つからない（手順5の節の終わりを決められない）').toBeGreaterThan(at)
     const block = panel.slice(at, end)
 
     const clusterNameAt = block.indexOf('クラスタ名（1〜20文字')
@@ -233,7 +238,7 @@ describe('手順5: 詳細設定（ポート・ノード数）を <details> に�
     expect(buttonAt).toBeGreaterThan(diagramAt)
 
     // 折りたたみの見出し直下の1文。
-    expect(block).toContain('既定のままで作れます。ポートは 80/443、ノード数は最小1・最大1。')
+    expect(block).toContain('既定は、ポートが 80/443、ノード数が最小1・最大1です。')
   })
 
   // F-1（2026-09-16）: 手順5の Let's Encrypt メール欄は削除した（手順8に一本化）。

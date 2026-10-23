@@ -10,7 +10,7 @@
 // ── どこに置くか（掟10: 定義は1か所）────────────────────────────────────────
 // 「同じプロジェクトで同時に走らせない」鍵（projectLock.ts）と**同じ記録**である。走っている記録が
 // あること＝鍵が掛かっていること。だから鍵を取る `withProjectLock`（1か所）が、取った時に始まりを・
-// 抜ける時に終わりを**自動で**書く。9本のハンドラ（共用型 2・HANAMII 2・Vercel 1・専有型 4）が
+// 抜ける時に終わりを**自動で**書く。8本のハンドラ（共用型 2・HANAMII 2・Vercel 1・専有型 3）が
 // **同じ道**で記録され、「一部のハンドラだけ配線した」が起きない。
 // 進み具合も、各ハンドラが renderer へ送っていた進捗の送り口を `progressReporter` 1つに通し、
 // そこで記録も更新する。
@@ -24,11 +24,18 @@
 // （flow が `unmeasured` の印を付けたもの。IP が付かなかった・前回の続きだった・既に消えていた…）は、時間は結果に載せても保存しない**
 // （`ok:true` は「時間を測れた」の証拠ではない）。**段を渡さないハンドラは、これまでどおり**（時間は載らない・保存しない）。
 //
+// ── 途中で止まった回（2026-10-12・設計書 10.13）─────────────────────────────────────────
+// Koto を終了すると処理も止まる（main の1 invoke は窓では止まらないが、プロセスが終われば止まる）。押し直した回の時間に
+// 止まった回の時間も合わせて出せるよう、**走っている間の段の時刻だけ**を、口（`setInFlightSink`）を通して userData の
+// in-flight-ops.json に書く（書くのは inFlightOpsStore.ts。ここはファイルに触らない。口がつながる前は何もしない）。
+// 書く時刻は beginOp・段の切り替わり・進み具合（30秒に1回まで・単調な時計で測る）・finishOp・終了の直前（`flushInFlightOps`）。
+// **渡すのは決まった語と数と段の内部名だけ**（進み具合の文・結果・URL・資源の ID・秘密は渡さない）。書けなくても操作は止めない。
+// 起動時に読み戻した記録は「走っている」とは言わない（止まった回として別に持つ）。持ち越すと、止まった処理を
+// 「走っている」と言い続けるため。
+// 止まった回の持ち方・「Koto の終了で止まりました」の知らせ・次に終わったときの合わせ方は stoppedOps.ts（このファイルは 700 行以下）。
+// 起動の読み戻しは inFlightOpsArm.ts（main.ts が本体の Koto のときだけ、窓を作る前に1回呼ぶ）。ここは `adoptStoppedOps` でそれを受ける。
+//
 // ── 持たないもの ────────────────────────────────────────────────────────────
-// ・**ファイルには書かない。** Koto を終了すると処理も止まる（main の1 invoke は窓では止まらないが、
-//   プロセスが終われば止まる）ので、終了をまたいで「走っている」を持ち越す意味が無い
-//   （持ち越すと、止まった処理を「走っている」と言い続ける）。
-//   （例外は段の所要時間の保存だけ。上の sink を通って main の別の部品〔stageTimingStore.ts〕が書く。ここは書かない。）
 // ・**秘密を入れない（掟4）。** 引数のトークン・キーは記録しない。結果は**許可した項目だけ**を写し
 //   （下の EXTRA_KEYS）、文字列は必ず `scrub` を通す（呼び出し側が渡した秘密の完全一致＋
 //   `redactSecrets` の形による除去）。秘密っぽい名前のキーは値ごと落とす。
@@ -36,19 +43,25 @@
 
 import * as path from 'path'
 import { redactSecrets } from '../shared/updateLog'
-import { teardownRemainingWarnings } from '../shared/cloudCost'
-// ⚠️・※ で始まる行は「知らせ」として warnings へ移す（各ハンドラが executed の中で使っている印）。
-// 印の定義は shared/opsText.ts の1か所（画面が「⚠️」を付け足すかの判断も同じ定義を使う）。
-import { hasWarnMark } from '../shared/opsText'
+// 結果から警告・起きたことの文を作るのは shared/teardownResult.ts の2つの関数だけ（その場の画面も同じ2つを通る）。
+// ⚠️・※ で始まる行を「知らせ」として warnings へ移す印の定義は、そこから呼ぶ shared/opsText.ts の1か所。
+import { reportedLinesOf, teardownWarningsOf } from '../shared/teardownResult'
 import type { PublishTargetKind } from '../shared/publishMeta'
 import { buildStageTimings, isStageIdShape, type StageMark, type StageTimings, type StageTimingRow } from '../shared/stageTiming'
+import { opWordFor } from '../shared/opWord'
+import { isInFlightKey, isStoppedByQuit, type InFlightFile, type InFlightRun, type StoppedEntry } from '../shared/inFlightOps'
+import { inFlightVersionOf, isInFlightDirty, isInFlightSinkConnected, resetInFlightOutletForTests, writeInFlightThrough } from './inFlightOutlet'
+// 止まった回の持ち方・知らせ・今回との合わせ方は stoppedOps.ts（このファイルは 700 行以下）。ここは走っている記録（live）と見られていない結果（unseen）の持ち主。
+import {
+  adoptStopped, inFlightRunOf, markNoticeSeen, markNoticeSeenByBegin, resetStoppedForTests, settleStopped, stoppedSnapshot, withoutStoppedNotice,
+} from './stoppedOps'
 
 /** いま走っている操作（画面に出す日本語そのもの）。 */
 export type ProjectOp = '作成' | '削除' | '公開'
 
 /**
  * どの公開先の操作か。`PublishTargetKind` と同じ値。
- * 'unknown' は鍵を取るときに meta を渡さなかった呼び出し（テストだけ）。Koto 本体の9本はすべて渡す。
+ * 'unknown' は鍵を取るときに meta を渡さなかった呼び出し（テストだけ）。Koto 本体の8本はすべて渡す。
  */
 export type OpTarget = PublishTargetKind | 'unknown'
 
@@ -145,6 +158,9 @@ type Live = {
   record: ProjectOpRecord; secrets: string[]; zone: string | null; segments: OpenSegment[]
   /** 時間は結果に載せるが、保存はしない段（`StageMark.unmeasured`。理由は shared/stageTiming.ts）。 */
   unmeasured: Set<string>
+  /** 途中で止まった回の記録に写す2つ（Koto の版・最後に分かった時刻。戻らない）。画面の記録（ProjectOpRecord）には入れない。 */
+  version: string
+  lastSeenAt: number
 }
 
 /** projectDir（正規化）→ いま走っている操作。**これが鍵そのもの**（1つ入っていれば、そのプロジェクトは使用中）。 */
@@ -179,6 +195,54 @@ let stageSink: ((entry: StageTimingSinkEntry) => void) | null = null
  */
 export function setStageTimingSink(fn: ((entry: StageTimingSinkEntry) => void) | null): void {
   stageSink = fn
+}
+
+// ── 途中で止まった回の記録への口（設計書 10.13.4）────────────────────────────────────
+// ここは自分のメモリ（`live` と止まった回）から**ファイルの中身を丸ごと**組み立てて口へ渡すだけで、ファイルには触らない。
+// 口の持ち主（いつ書くか・書けなかったか）は inFlightOutlet.ts、書くのは inFlightOpsStore.ts。口がつながる前は何もしない。
+export { setInFlightSink, type InFlightSinkOptions } from './inFlightOutlet'
+
+/**
+ * ファイルの中身を、メモリから組み立てる。**入れるのは決まった語と数と段の内部名だけ**（進み具合の文・結果・URL・資源の ID・
+ * ゾーン・秘密は入れない。run のキーを書き下してあるのはそのため）。鍵の形に合わないものは入れない。
+ */
+function buildInFlightFile(): InFlightFile {
+  const running: Record<string, InFlightRun> = {}
+  for (const [key, e] of live) {
+    if (!isInFlightKey(key)) continue
+    running[key] = inFlightRunOf(e.record, e.version, e.lastSeenAt, e.segments)
+  }
+  return { v: 1, running, stopped: stoppedSnapshot() }
+}
+
+/** 口へ書く。`onlyIfDue`（進み具合だけが来たとき）は、前に書いてから30秒たつまで書かない（書けていなければ待たない）。 */
+const writeInFlight = (onlyIfDue = false): void => writeInFlightThrough(buildInFlightFile, onlyIfDue)
+
+/** 最後に分かった時刻を進める（戻さない。時計が戻っても、止まった回の時間が縮まない）。 */
+function touch(entry: Live, now: number): void {
+  if (Number.isFinite(now) && now > entry.lastSeenAt) entry.lastSeenAt = now
+}
+
+/**
+ * 終了の直前（`app.on('will-quit')`）に、いまの状態を同期で書き切る。走っているものがあるか、前の書き込みが失敗したままのときだけ
+ * 書く（走っているものの最後に分かった時刻は、すべて `now` にして1回）。走っていなくて失敗もなければ何もしない。
+ * 「終了しない」を選べば will-quit は来ないので、書かない。
+ */
+export function flushInFlightOps(now: number): void {
+  if (!isInFlightSinkConnected() || (live.size === 0 && !isInFlightDirty())) return
+  for (const entry of live.values()) touch(entry, now)
+  writeInFlight()
+}
+
+/**
+ * 起動の読み戻し（inFlightOpsArm.ts）が、整えた止まった回（`adoptAtStartup` の `stopped`）を渡す。止まった回を持ち、止まった削除ごとに
+ * 「Koto の終了で止まりました」の知らせを見られていない記録に1件置く（プロジェクトごと。走っているとは言わない＝`live` には入れない）。
+ * `lastStartedAt` は知らせの識別子まで上げる（この起動で始まる操作の識別子が、知らせより必ず大きくなる）。口がつながる前に呼ぶので、書かない。
+ */
+export function adoptStoppedOps(entries: Record<string, StoppedEntry>, now: number): void {
+  const { notices, maxId } = adoptStopped(entries, now)
+  for (const [key, rec] of notices) unseen.set(key, capUnseen([...(unseen.get(key) ?? []), rec]))
+  lastStartedAt = Math.max(lastStartedAt, maxId)
 }
 
 /**
@@ -219,6 +283,18 @@ function notify(key: string): void {
 /** いま走っている操作の名前（走っていなければ undefined）。`projectLock.runningOp` の答え。 */
 export function runningOpName(projectDir: string): ProjectOp | undefined {
   return live.get(keyOf(projectDir))?.record.op
+}
+
+/**
+ * いま走っている操作の「操作名」と「どの公開先か」。操作名だけでは、共用型・HANAMII の破棄（画面では「破棄」）と専有型の削除（「削除」）が
+ * 同じ '削除' で区別できない。別の操作を断る文・プロジェクト削除の赤字は、これを opWordFor（shared/opWord.ts）に通して言う。
+ */
+export type RunningOpEntry = { op: ProjectOp; target: OpTarget }
+
+/** いま走っている操作の操作名と公開先（走っていなければ undefined）。`runningOpName` と同じ記録から読む（`projectLock.runningOpEntry` の答え）。 */
+export function runningOpEntryOf(projectDir: string): RunningOpEntry | undefined {
+  const r = live.get(keyOf(projectDir))?.record
+  return r ? { op: r.op, target: r.target } : undefined
 }
 
 /** いま走っている操作 1 件の写し（終了の確認が読む。quitGuard.ts）。 */
@@ -264,11 +340,21 @@ export function ackOps(projectDir: string, upToStartedAt?: number): number {
     : []
   const acked = list.length - keep.length
   if (acked === 0) return 0
-  for (const r of list) if (!keep.includes(r)) r.seen = true
+  let sawNotice = false
+  for (const r of list) if (!keep.includes(r)) { r.seen = true; sawNotice ||= isStoppedByQuit(r.result) }
   if (keep.length > 0) unseen.set(key, keep)
   else unseen.delete(key)
   notify(key)
+  // 「止まりました」の知らせを見たら、次の起動でもう出さない（見た印をファイルへ書く）。
+  if (sawNotice && markNoticeSeen(key)) writeInFlight()
   return acked
+}
+
+/** 見られていない記録から、その公開先・種類の「止まりました」の知らせを外す（`beginOp` と `finishOp` が通る1つ）。 */
+function dropStoppedNotice(key: string, op: ProjectOp, target: OpTarget): void {
+  const left = withoutStoppedNotice(unseen.get(key) ?? [], op, target)
+  if (left.length > 0) unseen.set(key, left)
+  else unseen.delete(key)
 }
 
 /** 鍵を取ったとき（withProjectLock）だけ呼ぶ。**すでに走っているかの確認は呼び出し側**。 */
@@ -277,22 +363,29 @@ export function beginOp(projectDir: string, op: ProjectOp, meta: OpMeta | undefi
   const now = Date.now()
   lastStartedAt = Math.max(now, lastStartedAt + 1)
   const secrets = (meta?.secrets ?? []).filter((s): s is string => typeof s === 'string' && s.length >= MIN_SECRET_LENGTH)
+  // 同じ公開先・種類の操作が始まったら、「止まりました」の知らせを外す（押し直した人に出し続けない）。次の notify が画面へ伝える。
+  const target = meta?.target ?? 'unknown'
+  markNoticeSeenByBegin(key, op, target)
+  dropStoppedNotice(key, op, target)
   live.set(key, {
     secrets,
     zone: typeof meta?.zone === 'string' && meta.zone ? meta.zone : null,
     segments: [],
     unmeasured: new Set<string>(),
+    version: inFlightVersionOf(),
+    lastSeenAt: lastStartedAt,
     record: {
       op,
-      target: meta?.target ?? 'unknown',
+      target,
       handler: meta?.handler ?? '',
       startedAt: lastStartedAt,
       running: true,
-      progress: { label: `${op}を始めています…`, detail: '', at: lastStartedAt },
+      progress: { label: `${opWordFor(op, target)}を始めています…`, detail: '', at: lastStartedAt },
       seen: false,
     },
   })
   notify(key)
+  writeInFlight()
 }
 
 /** 進み具合に添えるもの。`stage` は段の内部名（shared/stageTiming.ts の STAGE）。 */
@@ -329,7 +422,8 @@ export function reportProgress(
   const entry = live.get(key)
   if (!entry) return
   const now = Math.max(Date.now(), entry.record.startedAt)
-  if (typeof extra?.stage === 'string') switchStage(entry, extra.stage, now)
+  const switched = typeof extra?.stage === 'string' && switchStage(entry, extra.stage, now)
+  touch(entry, now)
   const cur = openSegment(entry)
   const progress: OpProgress = {
     label: scrub(message, entry.secrets),
@@ -343,6 +437,8 @@ export function reportProgress(
   }
   entry.record.progress = progress
   notify(key)
+  // 段が変わったら30秒を待たずに書く。段が同じままの進み具合だけなら、前に書いてから30秒たったときだけ。
+  writeInFlight(!switched)
 }
 
 /**
@@ -358,8 +454,10 @@ export function reportStage(projectDir: string, stage: string, mark?: StageMark)
   const now = Math.max(Date.now(), entry.record.startedAt)
   if (mark?.unmeasured === true && isStageIdShape(stage)) entry.unmeasured.add(stage)
   if (!switchStage(entry, stage, now)) return
+  touch(entry, now)
   entry.record.progress = { ...entry.record.progress, stage }
   notify(key)
+  writeInFlight()
 }
 
 /**
@@ -416,13 +514,22 @@ export function finishOp(projectDir: string, outcome: { value: unknown } | { err
     )
     if (built) { timings = built; rec.result.extra.stageTimings = built }
   } catch { /* 時間の計算で結果を落とさない */ }
+  // 止まった回の時間を今回に合わせる。**足す場所は下の unseen.set・notify より前**（その場の結果・開き直し・押し出しの写しの3つへ同じものが届く）。
+  // 止まった回の段は `timings.stages` に混ぜない（今回の段だけ）。落ちても結果・鍵を変えない。
+  // 止まった回を消したとき（作り直した＝別の一生）は、見られていない「止まりました」の知らせも外す（main に回が無いのに、画面が言い続けない）。
+  try {
+    const settled = settleStopped(key, entry, finishedAt, timings !== undefined)
+    if (timings && settled.earlier) timings.earlierRuns = settled.earlier
+    if (settled.cleared) dropStoppedNotice(key, settled.cleared.op, settled.cleared.target)
+  } catch { /* 合わせられなくても結果は出す */ }
   unseen.set(key, capUnseen([...(unseen.get(key) ?? []), rec]))
   notify(key)
   // うまくいった操作の、終わった段の所要時間だけを保存する（失敗した回は目安に混ぜない）。
   // **`ok:true` は「時間を測れた」の証拠ではない**（2026-10-07 検分）: IP が付かないまま待ち切った・応答を確かめられなかった・
   // 前回の続きで残りだけ待った・既に消えていた…でも ok:true で終わる。そうした段は flow が `unmeasured` の印を付けて
   // おり、**その段だけ**保存から外す（同じ操作のほかの段は保存する）。時間そのものは結果に載せたまま。
-  if (timings && rec.result?.ok === true && stageSink) {
+  // 止まった回を合わせた回（earlierRuns が付いた回）は何も渡さない: 続きの回は、印の付かない段が短い時間のまま目安を狂わせうる（設計書 10.13.7）。
+  if (timings && !timings.earlierRuns && rec.result?.ok === true && stageSink) {
     const measured = timings.stages.filter(r => !entry.unmeasured.has(r.stage)).map(r => ({ stage: r.stage, ms: r.ms }))
     if (measured.length > 0) {
       try {
@@ -433,6 +540,9 @@ export function finishOp(projectDir: string, outcome: { value: unknown } | { err
       } catch { /* 保存の失敗で操作の結果を変えない */ }
     }
   }
+  // 途中で止まった回の記録からこの回を外す（ファイルへは finishOp の最後に1回だけ書く）。書けなかったときは印が残り、
+  // 次の書く機会と終了の直前に書き直す——残ったままだと、次の起動で偽の「止まりました」が出るため。
+  writeInFlight()
   return timings
 }
 
@@ -468,6 +578,8 @@ export function resetProjectOpsForTests(): void {
   listener = null
   stageSink = null
   lastStartedAt = 0
+  resetInFlightOutletForTests()
+  resetStoppedForTests()
 }
 
 // ── 結果の写し（画面に出すものだけ・秘密は入れない）────────────────────────
@@ -522,36 +634,27 @@ function cleanValue(x: unknown, secrets: readonly string[], depth = 0): unknown 
 const EXTRA_KEYS = [
   'stage', 'hint', 'pending', 'logUrl', 'askAi',
   'needsScaleDecision', 'adoptedScaleMin', 'staleImages', 'skipped',
-  'keptBucketName', 'keptBucketNames', 'keptRegistryName', 'keptRegistryUnnamed',
-  'remaining', 'inProgress', 'appDeleted', 'remainingBucket', 'remainingBuckets',
+  'keptBucketName', 'keptBucketNames', 'keptBucketsUsedByOthers', 'keptBucketsWithOwnFiles',
+  'keptRegistryName', 'keptRegistryOrigin', 'keptRegistryUsers', 'keptRegistryUnnamed',
+  'remaining', 'inProgress', 'appDeleted', 'remainingBucket', 'remainingBuckets', 'deletionAccepted',
   'projectId', 'deploymentId', 'deployState', 'readyState', 'errorCode',
   'applicationID', 'version', 'lbAddresses', 'verify', 'containerStates',
   'clusterID', 'asgID', 'loadBalancerID',
 ] as const
 
 const asStr = (x: unknown): string => (typeof x === 'string' ? x : '')
-const asStrList = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string' && v !== '') : [])
-
-/** 専有型の「消せずに残ったもの」を、画面の文に並べる（アプリ→ロードバランサ→ASG→クラスタ→保存場所の順）。 */
-function remainingNames(remaining: Record<string, unknown>): string[] {
-  const names: string[] = []
-  if (asStr(remaining.applicationID)) names.push(`アプリケーション『${asStr(remaining.applicationID)}』`)
-  if (asStr(remaining.loadBalancerID)) names.push(`ロードバランサ『${asStr(remaining.loadBalancerID)}』`)
-  if (asStr(remaining.asgID)) names.push(`オートスケーリンググループ『${asStr(remaining.asgID)}』`)
-  if (asStr(remaining.clusterID)) names.push(`クラスタ『${asStr(remaining.clusterID)}』`)
-  if (asStr(remaining.storageBucket)) names.push(`保存場所『${asStr(remaining.storageBucket)}』（月額が続きます）`)
-  return names
-}
 
 /**
  * 各ハンドラの返り値を、画面に出す形にする（純関数）。
  *
- * **ここで新しい判断を足さない。** 警告に変えるのは、返り値が**すでに持っている事実**だけ:
- *   ・`warnings`（文の配列）・`notice`（文）・executed／verifyNote の ⚠️・※ で始まる行
- *   ・`keptBucketName`（複数なら `keptBucketNames`）／`keptRegistryName`／`keptRegistryUnnamed`（破棄したのに残った）→ `teardownRemainingWarnings`（cloudCost.ts・画面の破棄の結果と同じ関数）
- *   ・`remaining`（消せずに残ったID）→ 専有型の画面が出している文と同じ言い方
- *   ・`inProgress`（削除を受け付けたが待ち切れなかった）
- * 「まだ動いていない」（HANAMII）は、各ハンドラが `warnings` に文で入れて返す。
+ * **ここで文を作らない。** 警告・起きたことの文の作り手は shared/teardownResult.ts の2つだけで、ここはそれを呼んで秘密を伏せるだけ
+ * （その場の画面 toTeardownView も同じ2つを通る。文の作り手が2つあると、開き直した画面からだけ警告が消える）:
+ *   ・`reportedLinesOf` … 返り値が文のまま持っている行と警告（executed／verifyNote の ⚠️・※ で始まる行は警告へ、ほかは lines に。`warnings`・`notice`）
+ *   ・`teardownWarningsOf` … 返り値がすでに持っている**事実**から作る警告
+ *       `keptBucketName(s)`／`keptBucketsUsedByOthers`・`keptBucketsWithOwnFiles`（残した保存場所と、その理由）／`keptRegistryName`・`keptRegistryOrigin`・
+ *       `keptRegistryUsers`・`keptRegistryUnnamed`（残したレジストリと、その由来・借り手）（破棄したのに残った）、専有型の `remaining`・`inProgress`、
+ *       HANAMII の `remainingBuckets`・`deletionAccepted`
+ * 「まだ動いていない」（HANAMII の公開）は、各ハンドラが `warnings` に文で入れて返す。
  */
 export function summarizeResult(value: unknown, secrets: readonly string[] = []): OpResult {
   const v = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -559,35 +662,12 @@ export function summarizeResult(value: unknown, secrets: readonly string[] = [])
   const lines: string[] = []
   const warnings: string[] = []
   const addWarning = (t: string) => { const w = s(t); if (w && !warnings.includes(w)) warnings.push(w) }
-  const addLine = (t: string) => { if (hasWarnMark(t)) addWarning(t); else lines.push(s(t)) }
 
-  for (const t of asStrList(v.executed)) addLine(t)
-  if (asStr(v.verifyNote)) addLine(asStr(v.verifyNote))
-  for (const t of asStrList(v.warnings)) addWarning(t)
-  if (asStr(v.notice)) addWarning(asStr(v.notice))
-
-  // 破棄したのに残った（共用型）。残ったなら課金も続く。文は画面と同じ関数（cloudCost.ts）で作る。
-  // 画面の破棄の結果（AppRunPanel）も、**同じこの事実から同じ関数で**警告を作る（その場と開き直しで食い違わない）。
-  // 名前が記録に無いレジストリ（keptRegistryUnnamed）も、名前なしで「残る」と言う。
-  // HANAMII・専有型の破棄も同じ事実で返す（keptBucketName＋複数のときの keptBucketNames）。利用者のファイルがあって
-  // バケットごと消さなかった回は、executed に「保存場所『X』を片づけました — …残します（月額の課金は続きます）」と
-  // 入るだけで ⚠️ が付かず、警告の枠にならない（共用型と扱いが食い違う）ので、事実として返してここで警告にする。
-  const keptBucket = asStr(v.keptBucketName)
-  const keptBuckets = asStrList(v.keptBucketNames)
-  const keptRegistry = asStr(v.keptRegistryName)
-  const keptRegistryUnnamed = v.keptRegistryUnnamed === true
-  for (const w of teardownRemainingWarnings({ keptBucketName: keptBucket, keptBucketNames: keptBuckets, keptRegistryName: keptRegistry, keptRegistryUnnamed })) addWarning(w)
-
-  // 専有型の破棄: 待ち切れなかった／消せずに残った。
-  const inProgress = v.inProgress && typeof v.inProgress === 'object' ? v.inProgress as Record<string, unknown> : null
-  if (inProgress) {
-    addWarning('削除の途中で、待ち切れずに止まりました。しばらくしてから、もう一度削除を実行してください（記録は残してあるので、続きから進みます）。')
-  } else if (v.ok !== true && v.remaining && typeof v.remaining === 'object') {
-    const names = remainingNames(v.remaining as Record<string, unknown>)
-    if (names.length > 0) {
-      addWarning(`削除できずに残っているものがあります。残っている間は課金が続きます。コントロールパネルから直接削除することもできます: ${names.join('・')}`)
-    }
-  }
+  // 文で持っている行・警告 → 事実から作る警告、の順（並びは画面の読み方 toTeardownView と同じ）。
+  const reported = reportedLinesOf(v)
+  for (const t of reported.executed) lines.push(s(t))
+  for (const w of reported.warnings) addWarning(w)
+  for (const w of teardownWarningsOf(v)) addWarning(w)
 
   const extra: Record<string, unknown> = {}
   for (const k of EXTRA_KEYS) {

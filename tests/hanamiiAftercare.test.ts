@@ -38,6 +38,10 @@ const h = vi.hoisted(() => ({
   deleted: [] as string[],
   storageCalls: [] as string[],
   hasCreds: true,
+  /** 目印を置く要求（`<バケット> <キー>`）。 */
+  markers: [] as string[],
+  /** 目印を置けない（保存場所に書けない）回を作る。 */
+  markerThrows: false,
 }))
 
 vi.mock('electron', () => ({
@@ -65,7 +69,10 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
         siteInfo: () => ({ s3Endpoint: 's3.isk01.sakurastorage.jp', region: 'jp-north-1' }),
         async isSiteReady() { return true },
         async ensureBucket() {},
-        async putMarker() {},
+        async putMarker(bucket: string, key: string) {
+          h.markers.push(`${bucket} ${key}`)
+          if (h.markerThrows) throw new Error('保存場所に書けませんでした（テスト）')
+        },
         async listAllKeys() { return [] },
         async deleteKeys() {},
         async deleteBucket() {},
@@ -143,6 +150,8 @@ beforeEach(() => {
   h.deleted = []
   h.storageCalls = []
   h.hasCreds = true
+  h.markers = []
+  h.markerThrows = false
   resetProjectOpsForTests()
   registerProjectOpsHandlers({ getMainWindow: () => null } as any)
   hanamiiWaitTuning.intervalMs = 0
@@ -469,14 +478,14 @@ describe('★★ 後段も鍵（withProjectLock）の中: 待っている間は�
     expect(snap.last).toBeNull()
     expect(snap.running).toMatchObject({ op: '公開', target: 'hanamii', running: true })
     expect(snap.running.progress.label).toContain('起動するのを待っています')
-    expect(await handler('publishMeta:runningOp')({}, projectDir)).toBe('公開')
+    expect(await handler('publishMeta:runningOp')({}, projectDir)).toEqual({ op: '公開', target: 'hanamii' })
 
     // 待っている間の2回目は断られる。**古い鍵を消す側（この公開の後段）と、新しく鍵を発行する側が交錯しない**
     const before = [...reqs]
     const eventsBefore = [...h.events]
     const second = await republish()
     expect(second.ok).toBe(false)
-    expect(second.message).toBe(projectBusyMessage('公開'))
+    expect(second.message).toBe(projectBusyMessage('公開', 'hanamii'))
     expect(reqs).toEqual(before)
     expect(h.events).toEqual(eventsBefore)
     expect(h.deleted).toEqual([])
@@ -500,5 +509,96 @@ describe('★★ 後段も鍵（withProjectLock）の中: 待っている間は�
     expect(stateGets()).toBe(0)
     expect(h.deleted).toEqual([])
     expect(r.deployState).toBeUndefined()
+  })
+})
+
+// ── 同意済みの保存場所に、目印（.koto-keep）を置き直す（2026-10-21 実機の欠陥の副）──────────────────────────
+// 実機: rc1-shared の HANAMII の破棄が、S の中の prefix を目印ごと消した。そのあと HANAMII へ公開し直しても、目印は戻らなかった
+// （目印を置くのは、共用型の apply と【公開】の「保存場所を用意する」だけだった）。9/24 より前に用意したプロジェクトは、目印が最初から無い。
+// 鍵を発行する issueStorageEnvFor は HANAMII・Vercel・専有型の公開がどれも通るので、置くのはそこの1か所。ここは HANAMII の公開の結果を見る。
+describe('★★★ HANAMII の公開: 同意済みの保存場所に目印を置き直す', () => {
+  const MARKER = 'koto-data-x projects/myapp/.koto-keep'
+
+  it('★★★ 公開が成功したら、目印を置く要求が1件出る（再公開・初回公開とも）。結果に余計な警告は出さない', async () => {
+    setupProject()
+    h.detailQueue = [detail(NEW, 'READY')]
+    const r = await republish()
+    expect(r.ok).toBe(true)
+    expect(r.deployState).toBe('ready')
+    expect(h.markers).toEqual([MARKER])
+    expect(r.warnings).toBeUndefined()
+
+    h.markers = []
+    const dir2 = projectDir
+    fs.rmSync(path.join(dir2, '.sakuraide.json'), { force: true })
+    h.detailQueue = [detail(NEW, 'READY')]
+    const first = await firstPublish({ withStorage: true })
+    expect(first.ok).toBe(true)
+    expect(h.markers).toEqual([MARKER])
+  })
+
+  it('保存場所を使わない公開（withStorage:false）・同意済みの保存場所が無いプロジェクトは、目印を置かない', async () => {
+    setupProject()
+    h.detailQueue = [detail(NEW, 'READY')]
+    await republish({ withStorage: false })
+    expect(h.markers).toEqual([])
+
+    const dir = projectDir
+    fs.writeFileSync(path.join(dir, '.sakura-cloud', 'env.json'), JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(dir, '.sakura-cloud', 'env.json'), 'utf-8')), persistence: { objectStorage: [] } }))
+    h.detailQueue = [detail(NEW, 'READY')]
+    await republish()
+    expect(h.markers).toEqual([])
+  })
+
+  it('★★ 目印を置けなくても公開は止めない。結果の warnings に1行（.koto-keep と理由・「公開は続けました」）。古い鍵の片づけも進む', async () => {
+    setupProject()
+    h.markerThrows = true
+    h.detailQueue = [detail(NEW, 'READY')]
+    const r = await republish()
+
+    expect(r.ok).toBe(true)
+    expect(r.deployState).toBe('ready')
+    expect(h.deleted).toEqual(['perm-old'])
+    expect(r.warnings).toHaveLength(1)
+    expect(r.warnings[0]).toContain('.koto-keep')
+    expect(r.warnings[0]).toContain('保存場所に書けませんでした（テスト）')
+    expect(r.warnings[0]).toContain('公開は続けました')
+    expect(r.storagePermissionId).toBeUndefined()
+  })
+
+  it('★★ 目印の知らせは、後段の知らせと重ねて返す（上書きしない）: 古い鍵を消せなかった回・時間切れの回・確かめられなかった回', async () => {
+    // 起動は確かめられたが、古い鍵を消せなかった
+    setupProject()
+    h.markerThrows = true
+    h.detailQueue = [detail(NEW, 'READY')]
+    h.listThrows = true
+    let r = await republish()
+    expect(r.deployState).toBe('ready')
+    expect(r.warnings).toHaveLength(2)
+    expect(r.warnings.some((w: string) => w.includes('古いアクセスキーを削除できませんでした'))).toBe(true)
+    expect(r.warnings.some((w: string) => w.includes('.koto-keep'))).toBe(true)
+
+    // 時間切れ（前の版が latest のまま）
+    h.listThrows = false
+    h.detailQueue = [detail(OLD, 'READY')]
+    r = await republish()
+    expect(r.deployState).toBe('pending')
+    expect(r.warnings).toHaveLength(2)
+    expect(r.warnings[0]).toContain('確かめられませんでした')
+    expect(r.warnings[1]).toContain('.koto-keep')
+
+    // 状態を取れない
+    h.detailQueue = [{ status: 404, body: {} }]
+    r = await republish()
+    expect(r.deployState).toBe('unknown')
+    expect(r.warnings).toHaveLength(2)
+    expect(r.warnings[1]).toContain('.koto-keep')
+
+    // 起動に失敗した
+    h.detailQueue = [detail(NEW, 'ERROR', { errorCode: 'BUILD_FAILED' })]
+    r = await republish()
+    expect(r.deployState).toBe('error')
+    expect(r.warnings).toHaveLength(1)
+    expect(r.warnings[0]).toContain('.koto-keep')
   })
 })

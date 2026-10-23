@@ -10,7 +10,7 @@
 //   W-3・W-15: computePlan（バケット→保存場所、削除文言）
 //   W-37     : prereqNextStepFor（黄色い行の「次の一手」を理由ごとに出し分ける）
 //   W-61     : storageCostNote（専用の保存場所の説明）
-//   W-13・W-15: projectDeleteRegistryNote・teardownTargets（コンテナレジストリ併記・保存場所）
+//   W-13     : adoptedRegistryNote（コンテナレジストリ併記。プロジェクト削除の注記は 3A-5b で消えた）
 //   W-98     : buildSwitchConfirmMessage（「配分」を使わない）
 //   W-64・W-78・W-13: importPlanNotes・importDoneNotes（インポートの案内文）
 //   W-77     : ImportFromPublishedPanel.tsx の「認証情報を開く」表示条件（状態で判定）
@@ -23,7 +23,7 @@ import { emptyState, type EnvState, type ResourceRef } from '../src/main/cloud/s
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { prereqNextStepFor } from '../src/renderer/components/AppRunPanel'
 import { storageCostNote } from '../src/shared/objectStorage'
-import { projectDeleteRegistryNote, teardownTargets } from '../src/shared/cloudCost'
+import { adoptedRegistryNote } from '../src/shared/cloudCost'
 import { buildSwitchConfirmMessage } from '../src/renderer/rollbackSwitch'
 import { importPlanNotes, importDoneNotes } from '../src/renderer/importProject'
 
@@ -81,9 +81,12 @@ describe('W-37: prereqNextStepFor は「足りないもの」ごとに正しい�
     expect(next).not.toContain('レジストリ')
   })
 
-  it('Docker・Dockerfile はあり、レジストリだけ無い（エキスパート）→ レジストリの案内', () => {
+  // 2026-10-09 画面の文を短くする（T044）: レジストリだけ無いときの「公開にはコンテナレジストリの認証情報が必要です。」は、
+  // 前半の「⚠️ レジストリ認証情報が未登録です。」の言い直しだけなので出さなくした。戻さない。
+  it('Docker・Dockerfile はあり、レジストリだけ無い（エキスパート）→ 次の一手は出さない（前半の「レジストリ認証情報が未登録です」で足りる）', () => {
     const next = prereqNextStepFor(true, { docker: true, dockerfile: true })
-    expect(next).toBe('公開にはコンテナレジストリの認証情報が必要です。')
+    expect(next).toBe('')
+    expect(next).not.toBe('公開にはコンテナレジストリの認証情報が必要です。')
   })
 
   it('内蔵ビルダーが無い（標準）→ 次の一手は出さない（内蔵ビルダーは通常必ずあるため、レジストリの話を誤って出さない）', () => {
@@ -91,15 +94,17 @@ describe('W-37: prereqNextStepFor は「足りないもの」ごとに正しい�
     expect(next).toBe('')
   })
 
-  it('内蔵ビルダーはあり、レジストリだけ無い（標準）→ レジストリの案内', () => {
+  it('内蔵ビルダーはあり、レジストリだけ無い（標準）→ 次の一手は出さない（同上）', () => {
     const next = prereqNextStepFor(false, { builder: true })
-    expect(next).toBe('公開にはコンテナレジストリの認証情報が必要です。')
+    expect(next).toBe('')
+    expect(next).not.toBe('公開にはコンテナレジストリの認証情報が必要です。')
   })
 
   it('変異ガード: Docker が無いときに、レジストリ文言へ戻すと落ちる', () => {
     // 直す前は理由に関わらず常に「公開にはコンテナレジストリの認証情報が必要です。」だった
     // （W-37: 足りないものと違うものを案内していた）。ここで固定する。
     const next = prereqNextStepFor(true, { docker: false })
+    expect(next).toBe('Docker の導入が必要です。')
     expect(next).not.toBe('公開にはコンテナレジストリの認証情報が必要です。')
   })
 })
@@ -126,20 +131,12 @@ describe('W-61: storageCostNote の「専用」側は、設定画面の文脈に
   })
 })
 
-describe('W-13/W-15: cloudCost.ts の保存場所・コンテナレジストリの呼び名', () => {
-  it('projectDeleteRegistryNote は「コンテナレジストリ」と言い、「イメージの置き場」というたとえは使わない', () => {
-    const note = projectDeleteRegistryNote({ registryName: 'reg1', adopted: true })
-    expect(note).toContain('コンテナレジストリ『reg1』は残します')
+describe('W-13: cloudCost.ts のコンテナレジストリの呼び名', () => {
+  it('adoptedRegistryNote は「コンテナレジストリ」と言い、「イメージの置き場」というたとえは使わない', () => {
+    const note = adoptedRegistryNote('reg1')
+    expect(note).toContain('このコンテナレジストリ『reg1』は、このプロジェクトのために作ったものではありません')
     // 0.6.21（作者の決定 2026-10-01）: 「イメージの置き場（コンテナレジストリ）」は「コンテナレジストリ」だけにした
     expect(note).not.toContain('イメージの置き場')
-  })
-
-  it('teardownTargets の保存場所の行は「バケット（データ）」ではなく実物に合う言い方になっている', () => {
-    const targets = teardownTargets({ hasBucket: true, deleteRegistry: false, registryName: null })
-    const bucketLine = targets.find(t => t.includes('保存場所'))
-    expect(bucketLine).toBeDefined()
-    expect(bucketLine).not.toBe('バケット（データ）')
-    expect(targets).not.toContain('バケット（データ）')
   })
 })
 

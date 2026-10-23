@@ -26,7 +26,10 @@ describe('cloud.ts: runtimeSkipNoteFor（確認をとばした理由・B）', ()
 
   it('★★ 静的配信でないときの文はこれまでのまま', () => {
     const note = runtimeSkipNoteFor({ runtimeKind: 'node', publicUrl: 'https://example.com' })
-    expect(note).toContain('このビルド方式では公開物にバージョン情報のファイル（.koto-build）を入れない')
+    // 2026-10-09 画面の文を短くする（T095）: 内部の目印の名前（.koto-build）は画面に出さない。確認をとばしたことと、次にすること（公開先を開いて確かめる）は変えない。
+    expect(note).toContain('このビルド方式では、内容が新しくなったかの確認は行いませんでした')
+    expect(note).toContain('公開先を開いて、表示されるかご自身で確かめてください。')
+    expect(note).not.toContain('.koto-build')
     // 0.6.21（作者の決定 2026-10-01）: 「版の目印」は実物の名前（バージョン情報のファイル）に揃えた。直す前の言い方は戻さない
     expect(note).not.toContain('版の目印')
   })

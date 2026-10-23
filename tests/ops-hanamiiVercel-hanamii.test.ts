@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 //   ② 公開の結果の言い分け: 動いたと確かめた／確かめられていない／起動に失敗した。
 //      **確かめていないことを「起動した」と言わない**（ok は「依頼が受け付けられた」の意味）。
 //   ③ 破棄: 進み具合・結果・残ったもの（月額が続く）が、閉じて開き直しても出る。消えたあとの画面側の後始末。
+//      確認は ConfirmModal（共通の破棄の流れ。段階1の1c）。入口の 🗑 を押す → 確認が出る → 確認の「破棄する」で実行。
 //
 // 偽の main は**本物の記録・鍵**（src/main/projectOps.ts・projectLock.ts）の上に作ってある（tests/ops-hanamiiVercel-harness.ts）。
 
@@ -63,6 +64,18 @@ const published = () => {
   world.meta.publish.targets = { hanamii: { publishedAt: '2026-09-29T00:00:00.000Z', url: 'https://old.example.test' } }
 }
 const READY = { ok: true, projectId: PROJECT_ID, deploymentId: 'dpl_test1', deployState: 'ready', readyState: 'READY', url: 'https://app-test.example.test' }
+/**
+ * 確認ダイアログ（ConfirmModal）の実行ボタン。入口の「🗑 この公開を破棄する」にも「破棄する」が含まれるので、
+ * 文字がちょうど一致するほうを取る（`button('破棄する')` だと入口を押してしまう）。
+ */
+const confirmButton = (m: Mounted) => m.buttons().find(b => b.text.trim() === '破棄する')
+/** 入口の 🗑 を押して確認を出し、「破棄する」と答える。 */
+const pressAndConfirm = async (m: Mounted): Promise<void> => {
+  m.button('🗑 この公開を破棄する')!.click()
+  await settle()
+  confirmButton(m)!.click()
+  await settle()
+}
 
 describe('HanamiiPanel: 画面はもう READY を待たない・アクセスキーを削除しない（main がやる）', () => {
   it('★★★ 公開が終わっても、setInterval を使わず、古いアクセスキーの削除（cleanUpKeys）を呼ばない', async () => {
@@ -247,7 +260,7 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     await settle()
     screen.button(CONFIRM)!.click()
     await settle()
-    screen.button('破棄する')!.click()
+    confirmButton(screen)!.click()
     return screen
   }
 
@@ -259,7 +272,7 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     const screen = await startTeardownFromPanel()
     await settle()
 
-    expect(screen.count('✅ 破棄しました。')).toBe(1)
+    expect(screen.count('✅ 破棄しました')).toBe(1)
     expect(screen.has('保存場所『koto-data-test』のデータを削除しました')).toBe(true)
     expect(screen.count('⚠️ アクセスキーを1件だけ無効にできませんでした'), '残った知らせが出ていない／二重に出ている').toBe(1)
     expect(world.calls.hanamiiTeardown).toEqual([[PROJECT_ID, DIR]])
@@ -274,13 +287,13 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
   it('★★★ 破棄が走っている間に開き直すと、進み具合が出て、公開も破棄も押せない', async () => {
     published()
     world.opGate = deferred()
-    const done = world.api.hanamii.teardown(PROJECT_ID, 'test-only-placeholder-token', DIR)
+    const done = world.api.hanamii.teardown(DIR, { token: 'test-only-placeholder-token' }, { confirmed: true, projectId: PROJECT_ID })
     await settle()
 
     const screen = open()
     await settle()
     expect(screen.has('⏳ 破棄が進んでいます')).toBe(true)
-    expect(screen.has('🗑 HANAMII のプロジェクトを削除しています…')).toBe(true)
+    expect(screen.has('🗑 HANAMII のプロジェクトを破棄しています…')).toBe(true)
     expect(screen.has('この画面を閉じても、処理は最後まで進みます')).toBe(true)
     expect(screen.button('破棄中…')?.disabled, '破棄が走っているのに、公開が押せる').toBe(true)
     expect(screen.button(CONFIRM)?.disabled, '破棄が走っているのに、もう一度破棄が押せる').toBe(true)
@@ -298,10 +311,7 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     const stuck = deferred()
     world.getGate = stuck
     world.teardownReply = { ok: true, appDeleted: true, executed: [] }
-    screen.button(CONFIRM)!.click()
-    await settle()
-    screen.button('破棄する')!.click()
-    await settle()
+    await pressAndConfirm(screen)
     expect(world.calls.hanamiiTeardown).toEqual([[PROJECT_ID, DIR]])
     expect(screen.button(CONFIRM), '破棄が成功したのに、記録が読めないだけで 🗑 の入口が残っている').toBeUndefined()
     stuck.resolve()
@@ -313,13 +323,13 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     // 設定の片づけは main が済ませている（偽の main も本物と同じく、鍵の中で記録を片づける）。
     published()
     world.teardownReply = { ok: true, appDeleted: true, executed: ['保存場所『koto-data-test』のデータを削除しました'] }
-    await world.api.hanamii.teardown(PROJECT_ID, 'test-only-placeholder-token', DIR)
+    await world.api.hanamii.teardown(DIR, { token: 'test-only-placeholder-token' }, { confirmed: true, projectId: PROJECT_ID })
     expect(world.meta.publish.hanamii.projectId, '前提: main が記録を片づけている').toBeNull()
     expect(world.meta.publish.targets.hanamii, '前提: main が公開記録を片づけている').toBeUndefined()
 
     const screen = open()
     await settle()
-    expect(screen.has('✅ 破棄しました。')).toBe(true)
+    expect(screen.has('✅ 破棄しました')).toBe(true)
     expect(screen.has('保存場所『koto-data-test』のデータを削除しました')).toBe(true)
     expect(screen.button(CONFIRM), '破棄が終わったのに、破棄の入口が残っている').toBeUndefined()
     // 開き直した画面は、記録を書かない（再生された古い破棄の結果で、いまの記録を消さないため）
@@ -336,9 +346,9 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     world.readGate = null                     // これ以降の読み込みは遅れない（遅れるのは、開いたときの1回だけ）
     // 読み込みの応答を待っている間に、破棄が最後まで終わる（画面は記録から破棄の結果を出し、消えた表示にする）
     world.teardownReply = { ok: true, appDeleted: true, executed: [] }
-    await world.api.hanamii.teardown(PROJECT_ID, 'test-only-placeholder-token', DIR)
+    await world.api.hanamii.teardown(DIR, { token: 'test-only-placeholder-token' }, { confirmed: true, projectId: PROJECT_ID })
     await settle()
-    expect(screen.has('✅ 破棄しました。'), '前提: 記録から破棄の結果が出ている').toBe(true)
+    expect(screen.has('✅ 破棄しました'), '前提: 記録から破棄の結果が出ている').toBe(true)
     expect(screen.button(CONFIRM), '前提: 消えた表示になっている').toBeUndefined()
     late.resolve()                            // 古い projectId がいまごろ届く
     await settle()
@@ -351,15 +361,19 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
       ok: false, appDeleted: true, executed: [], remainingBucket: 'koto-data-test', remainingBuckets: ['koto-data-test'],
       message: '保存場所を削除できませんでした（消すまで月額が続きます）: 通信に失敗しました\n保存場所『koto-data-test』が残っています（消すまで月額が続きます）。',
     }
-    await world.api.hanamii.teardown(PROJECT_ID, 'test-only-placeholder-token', DIR)
+    await world.api.hanamii.teardown(DIR, { token: 'test-only-placeholder-token' }, { confirmed: true, projectId: PROJECT_ID })
 
     const screen = open()
     await settle()
-    expect(screen.has('HANAMII のプロジェクトは削除しました。ただし、保存場所は削除できませんでした')).toBe(true)
+    // 共通の結果欄（TeardownResultView）: 見出し・main の文・残った保存場所の一覧（月額が続く）・コントロールパネルへの導線
+    expect(screen.has('⚠️ 破棄できませんでした')).toBe(true)
+    expect(screen.has('保存場所を削除できませんでした（消すまで月額が続きます）')).toBe(true)
+    expect(screen.has('保存場所『koto-data-test』（月額が続きます）'), '残った保存場所の一覧が出ていない').toBe(true)
     expect(screen.has('保存場所は片づけられませんでした')).toBe(false) // 0.6.21: 「片づける」は「削除」に揃えた。直す前の言い方は戻さない
     expect(screen.has('消すまで月額が続きます'), '残ったものの月額が続くことを見逃している').toBe(true)
+    expect(screen.has('コントロールパネルを開く')).toBe(true)
     expect(screen.has('AIに相談する')).toBe(true)
-    expect(screen.has('✅ 破棄しました。')).toBe(false)
+    expect(screen.has('✅ 破棄しました')).toBe(false)
     // もう一度 🗑 を押して保存場所の片づけをやり直せるよう、入口と記録は残す
     expect(screen.button(CONFIRM), '案内した「もう一度」の入口が消えている').toBeDefined()
     expect(world.calls.forgetTarget, '保存場所が残っているのに、公開記録を消している').toEqual([])
@@ -374,10 +388,7 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     world.opGate = deferred()
     const busy = world.guard(DIR, '公開', { target: 'sakura-apprun', handler: 'cloud:apply' }, '別の操作', async () => ({ ok: true }))
     await settle()
-    screen.button(CONFIRM)!.click()
-    await settle()
-    screen.button('破棄する')!.click()
-    await settle()
+    await pressAndConfirm(screen)
     expect(screen.count('いま別の操作（公開）を実行中です'), '断られた理由が出ていない／二重に出ている').toBe(1)
     expect(world.calls.forgetTarget, '断られたのに、公開記録を消している').toEqual([])
     world.opGate.resolve()
@@ -398,11 +409,8 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
     const screen = open()
     await settle()
     world.teardownReply = { ok: true, appDeleted: true, executed: [] }
-    screen.button(CONFIRM)!.click()
-    await settle()
-    screen.button('破棄する')!.click()
-    await settle()
-    expect(screen.has('✅ 破棄しました。'), '前提: 破棄が終わっている').toBe(true)
+    await pressAndConfirm(screen)
+    expect(screen.has('✅ 破棄しました'), '前提: 破棄が終わっている').toBe(true)
     // R2: 同じ画面で HANAMII に公開し直す（新しい projectId。main が公開の記録へ書く）
     world.meta.publish.hanamii.projectId = 'prj_new'
     world.meta.publish.targets = { hanamii: { publishedAt: '2026-09-30T00:00:00.000Z', url: 'https://new.example.test' } }
@@ -430,15 +438,15 @@ describe('HanamiiPanel: 破棄の進み具合と結果（閉じて開き直し�
   it('★ 破棄を終えて開き直したあと、同じ結果は出ない（見たことにしてある）', async () => {
     published()
     world.teardownReply = { ok: true, appDeleted: true, executed: [] }
-    await world.api.hanamii.teardown(PROJECT_ID, 'test-only-placeholder-token', DIR)
+    await world.api.hanamii.teardown(DIR, { token: 'test-only-placeholder-token' }, { confirmed: true, projectId: PROJECT_ID })
     const first = open()
     await settle()
-    expect(first.has('✅ 破棄しました。')).toBe(true)
+    expect(first.has('✅ 破棄しました')).toBe(true)
     first.unmount()
     expect(getOps(DIR).last).toBeNull()
     const second = open()
     await settle()
-    expect(second.has('✅ 破棄しました。')).toBe(false)
+    expect(second.has('✅ 破棄しました')).toBe(false)
   })
 })
 
@@ -461,12 +469,7 @@ describe('★★★ HanamiiPanel: 開いたまま別のプロジェクトへ切�
     screen.rerender({ apiKey: 'k', projectDir: dir, onOpenCredentials: () => {} })
     await settle()
   }
-  const teardownFromScreen = async (screen: Mounted) => {
-    screen.button(CONFIRM)!.click()
-    await settle()
-    screen.button('破棄する')!.click()
-    await settle()
-  }
+  const teardownFromScreen = pressAndConfirm
   const lastPublishOpts = () => world.calls.hanamiiPublish[world.calls.hanamiiPublish.length - 1] as any
 
   it('★★★ 公開の途中で切り替わり、切り替え先の記録に別の projectId がある: 前の公開の返り値は入らず、🗑・再公開は切り替え先の projectId で呼ばれる', async () => {
@@ -610,9 +613,9 @@ describe('★★ HanamiiPanel: 破棄の入口は main の鍵だけで止める�
 
     screen.button(CONFIRM)!.click()
     await settle()
-    expect(screen.button('破棄する')?.disabled, '確認の「破棄する」が押せない').toBe(false)
+    expect(confirmButton(screen), '確認（ConfirmModal）が出ていない').toBeDefined()
     world.teardownReply = { ok: true, appDeleted: true, executed: [] }
-    screen.button('破棄する')!.click()
+    confirmButton(screen)!.click()
     await settle()
     expect(world.calls.hanamiiTeardown).toEqual([[PROJECT_ID, DIR]])
   })

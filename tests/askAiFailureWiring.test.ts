@@ -64,14 +64,16 @@ describe('HanamiiPanel.tsx / ErrorMessageBlock: 失敗時のみ出す。🔄再�
     expect(hanamiiPanel).toContain('ok ? null : askAiAboutFailure(kind, target, msg, detail)')
   })
 
-  it('publish（公開）は msgKind を「公開」、teardown（破棄）は「破棄」に立ててから msg を出す', () => {
-    const publishAt = hanamiiPanel.indexOf('const publish = async (nameOverride?: string) => {')
-    expect(publishAt).toBeGreaterThan(-1)
-    expect(hanamiiPanel.slice(publishAt, publishAt + 150)).toContain("setMsgKind('公開')")
-
-    const teardownAt = hanamiiPanel.indexOf('const teardown = async () => {')
-    expect(teardownAt).toBeGreaterThan(-1)
-    expect(hanamiiPanel.slice(teardownAt, teardownAt + 150)).toContain("setMsgKind('破棄')")
+  // 段階1の1c: 破棄は節（HanamiiTeardownSection）へ移り、msg 欄を使わなくなった。msg 欄は**公開の失敗だけ**を映すので、
+  // 種類の state（msgKind）は持たず、種類は「公開」に決め打ちする。破棄の失敗の「🤖 AIに相談する」は、節の結果欄の部品
+  // （TeardownResultView の onAskAi。種類は '破棄'）が出す。
+  it('メインの欄（msg）は公開の失敗だけを映す: 種類は「公開」に決め打ち。破棄は msg 欄を使わず、節の結果欄が「🤖 AIに相談する」を出す', () => {
+    expect(hanamiiPanel, 'msg 欄の種類の state が残っている（破棄が使わなくなった）').not.toContain('msgKind')
+    expect(hanamiiPanel).not.toContain('const teardown = async')
+    const section = read('src/renderer/components/HanamiiTeardownSection.tsx')
+    expect(section, '節の結果欄に「AIに相談する」の口が無い').toContain('onAskAi={text => window.dispatchEvent(new CustomEvent(\'sakura:ask-ai\', { detail: { text } }))}')
+    // 破棄の失敗の定型文の種類は '破棄'（共通の結果欄の部品が引く）
+    expect(read('src/renderer/components/teardown/TeardownResultView.tsx')).toContain("askAiAboutFailure('破棄', words.askAiTarget, view.message || '失敗しました')")
   })
 
   // ── msg は失敗と成功の**共有欄**である（2026-09-25 検分・3巡目の指摘2）─────────────
@@ -79,9 +81,9 @@ describe('HanamiiPanel.tsx / ErrorMessageBlock: 失敗時のみ出す。🔄再�
   // だから restartMsg と同じく ok を**明示的に渡す**（渡し忘れると成功の知らせに
   // 「🤖 AIに相談する」が出る）。`ok={msgOk}` を足したときにこの期待を直し忘れて赤のままだったので、
   // **実物の行をそのまま**固定する。
-  it('メインの欄（msg）は kind={msgKind} target="HANAMII" ok={msgOk} を渡す（成功の知らせにも流れる共有欄）', () => {
+  it('メインの欄（msg）は kind="公開" target="HANAMII" ok={msgOk} を渡す（成功の知らせにも流れる共有欄）', () => {
     expect(hanamiiPanel).toContain(
-      '{msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} kind={msgKind} target="HANAMII" ok={msgOk} />}'
+      '{msg && <ErrorMessageBlock msg={msg} detail={msgDetail} demoted={conflictCardShown} kind="公開" target="HANAMII" ok={msgOk} />}'
     )
     // 直す前の形（ok を渡さない＝成功の知らせに 🤖 が出る）が戻っていないか
     expect(
@@ -94,7 +96,6 @@ describe('HanamiiPanel.tsx / ErrorMessageBlock: 失敗時のみ出す。🔄再�
     expect(hanamiiPanel).toContain('const [msgOk, setMsgOk] = useState(false)')
     for (const [name, head] of [
       ['publish', 'const publish = async (nameOverride?: string) => {'],
-      ['teardown', 'const teardown = async () => {'],
     ] as const) {
       const at = hanamiiPanel.indexOf(head)
       expect(at, `${name} が見つからない`).toBeGreaterThan(-1)
@@ -155,17 +156,21 @@ describe('AppRunDedicatedPanel.tsx / ⑤⑥: createResult・teardownResult そ�
     )
   })
 
-  it('⑥ 手順6の結果は !result.ok のときだけボタンを出す（kind:破棄）。結果欄は 📡 の行と共有する部品で、パネルが onAskAi を渡す', () => {
-    // 2026-10-08: 手順6の結果欄は DedicatedTeardownResultView（📡 の行と同じ部品）へ移した。
-    const view = read('src/renderer/components/DedicatedTeardownView.tsx')
-    const at = view.indexOf('<ErrorBlock msg={result.message} />')
+  it('⑥ 手順6の結果は view.state が失敗のときだけボタンを出す（kind:破棄。途中〔受け付けただけ・待ち切れて止まった・「Koto の終了で止まりました」の知らせ〕は失敗ではないので出さない）。結果欄は 📡 の行と共有する部品（TeardownResultView）で、手順6の節が onAskAi を渡す', () => {
+    // 2026-10-08: 手順6の結果欄は 📡 の行と同じ部品へ移した。0.6.22 3B-6a: その部品は共通の TeardownResultView（HANAMII・共用型・専有型で1つ）。
+    const view = read('src/renderer/components/teardown/TeardownResultView.tsx')
+    const at = view.indexOf('{view.message !== \'\' && <ErrorBlock msg={view.message} />}')
     expect(at).toBeGreaterThan(-1)
-    const block = view.slice(at, at + 700)
-    expect(block).toContain('{!result.ok && onAskAi && (')
+    const block = view.slice(at, at + 1300)
+    expect(block).toContain("{view.state === 'failed' && onAskAi && (")
     expect(block).toContain(
-      "onAskAi(askAiAboutFailure('破棄', 'さくらのAppRun（専有型）', result.message ?? '失敗しました'))"
+      "onAskAi(askAiAboutFailure('破棄', words.askAiTarget, view.message || '失敗しました'))"
     )
-    // 手順6は「🤖 AIに相談する」を出す（onAskAi を渡す）。
-    expect(dedicatedPanel).toContain("onAskAi={text => window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text } }))}")
+    // 専有型の言葉の askAiTarget は 'さくらのAppRun（専有型）'（相談の文が専有型を指す）
+    expect(read('src/renderer/teardown/targets/dedicated.ts')).toContain("askAiTarget: 'さくらのAppRun（専有型）',")
+    // 手順6は「🤖 AIに相談する」を出す（節が onAskAi を渡す）。パネルは節に結果を渡すだけで、結果欄を自分では描かない。
+    const section = read('src/renderer/components/DedicatedTeardownSection.tsx')
+    expect(section).toContain("onAskAi={text => window.dispatchEvent(new CustomEvent('sakura:ask-ai', { detail: { text } }))}")
+    expect(dedicatedPanel).not.toContain('DedicatedTeardownResultView')
   })
 })

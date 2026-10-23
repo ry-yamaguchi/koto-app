@@ -166,7 +166,7 @@ describe('buildInventory: apprun-app の行に scaleMin が乗る', () => {
     const row = rows.find(r => r.id === 'app-1111-aaaa')!
     expect(row.scaleMin).toBe(1)
     expect(row.note).toContain('常時起動の設定')
-    // 0.6.21（検分）: 設定画面の「常時起動（すぐ応答する）」と同じ呼び名にそろえた。旧「常時動く設定」は戻さない
+    // 0.6.21（検分）: 設定画面の「常時起動」と同じ呼び名にそろえた（0.6.22 でボタンの名前から括弧の説明を外した）。旧「常時動く設定」は戻さない
     expect(row.note).not.toContain('常時動く')
     expect(row.note).toContain('料金がかかり続けます')
     expect(row.note).not.toMatch(/[\d,]+\s*円/)
@@ -250,32 +250,51 @@ describe('棚卸しが画面まで届いている', () => {
     expect(body).not.toContain("failed.push('イメージの置き場") // 0.6.21: 直す前の言い方は戻さない
     expect(body).toContain("failed.push('データの保存場所')")
     expect(body).toContain("failed.push('専有型のクラスタ')")
-    expect(read('src/renderer/components/PublishedListModal.tsx')).toContain('この一覧に出ていない')
+    expect(read('src/renderer/components/PublishedInventoryCard.tsx')).toContain('この一覧に出ていない')
   })
 
   it('★ 勝手に通信しない（押したときだけ調べる）', () => {
-    const modal = read('src/renderer/components/PublishedListModal.tsx')
-    expect(modal).toContain('runInventory')
+    const card = read('src/renderer/components/PublishedInventoryCard.tsx')
+    expect(card).toContain('runInventory')
     // 画面を開いた時点では走らせない
-    expect(modal).not.toMatch(/useEffect\([^)]*\{\s*void runInventory\(\)/)
+    expect(card).not.toMatch(/useEffect\([^)]*\{\s*void runInventory\(\)/)
+  })
+
+  // 0.6.22 の3B-5: カードを PublishedListModal.tsx から切り出した。切り出したカードを一覧が描いていなければ、棚卸しが画面から消える
+  // （型は通る・カードの文字列のテストは緑のまま）。一覧が描く形を固定し、一覧の側に棚卸しの状態・問い合わせが戻っていないことも見る。
+  it('★★ 一覧は棚卸しのカードを描く（workspace を渡す）。カードの状態・問い合わせは一覧に戻っていない', () => {
+    const list = read('src/renderer/components/PublishedListModal.tsx')
+    expect(list).toContain("import PublishedInventoryCard from './PublishedInventoryCard'")
+    expect(list).toContain('<PublishedInventoryCard workspace={workspace} />')
+    expect(list).not.toContain('runInventory')
+    expect(list).not.toContain('cloud.inventory(')
+    expect(list).not.toContain('さくら側にあるものと、かかっている費用</h3>')
+    expect(read('src/renderer/components/PublishedInventoryCard.tsx')).toContain('window.electronAPI.cloud.inventory(')
+  })
+
+  // 専有型の行のボタンが「🗑 削除」になった（V1）ので、カードは行のボタンの名前を言わず「🗑」と言う。直す前の「🗑 破棄」へは戻さない。
+  it('★ カードの案内は、上の一覧の 🗑 を指す（「🗑 破棄」と呼ばない・専有型の行は「🗑 削除」）', () => {
+    const card = read('src/renderer/components/PublishedInventoryCard.tsx')
+    expect(card).toContain('Koto から消せるものは上の一覧の 🗑 から、そうでないものは')
+    expect(card).not.toContain('🗑 破棄')
   })
 
   it('★ 合計を、文章の中に埋めない（いちばん見たい数字）', () => {
-    const modal = read('src/renderer/components/PublishedListModal.tsx')
-    expect(modal).toMatch(/月額 \{\(inventory\.totalYen \?\? 0\)\.toLocaleString\(\)\}円/)
+    const card = read('src/renderer/components/PublishedInventoryCard.tsx')
+    expect(card).toMatch(/月額 \{\(inventory\.totalYen \?\? 0\)\.toLocaleString\(\)\}円/)
   })
 
   it('★ どのキーで調べたかを出す（別のアカウントを見ていないか分かるように）', () => {
-    const modal = read('src/renderer/components/PublishedListModal.tsx')
-    expect(modal).toContain('調べたキー')
-    expect(modal).toContain('getActiveCloudKeyId')
+    const card = read('src/renderer/components/PublishedInventoryCard.tsx')
+    expect(card).toContain('調べたキー')
+    expect(card).toContain('getActiveCloudKeyId')
   })
 
   it('心当たりの無いものは、行き先まで示す', () => {
-    const modal = read('src/renderer/components/PublishedListModal.tsx')
-    expect(modal).toContain('このパソコンの Koto の記録にありません')
-    expect(modal).not.toContain('心当たりがありません') // 0.6.21: 直す前の言い方は戻さない（利用者に向けた「心当たりが無ければ」は残す）
-    expect(modal).toContain('コントロールパネル')
+    const card = read('src/renderer/components/PublishedInventoryCard.tsx')
+    expect(card).toContain('このパソコンの Koto の記録にありません')
+    expect(card).not.toContain('心当たりがありません') // 0.6.21: 直す前の言い方は戻さない（利用者に向けた「心当たりが無ければ」は残す）
+    expect(card).toContain('コントロールパネル')
   })
 
   // ── #31 検分の直し（2026-09-10）: 一覧の a?.min_scale は原本に無いキーで常に null に
@@ -295,15 +314,15 @@ describe('棚卸しが画面まで届いている', () => {
     expect(body).toContain('clusterIds')
   })
 
-  // ⚠️ 画面（PublishedListModal.tsx）が r.note / costNote(r) を使わず、r.monthlyYen だけを
+  // ⚠️ 画面（PublishedInventoryCard.tsx。0.6.22 の3B-5 で PublishedListModal.tsx から切り出した）が r.note / costNote(r) を使わず、r.monthlyYen だけを
   // 見て自前で文言を組み立てていると、inventory.ts 側をいくら直しても画面には届かない
   // （2026-09-09 検分時点の実際の形がこれだった）。**呼び出し側**を固定する。
   it('★ 一覧の費用表示は costNote(r) を使う（r.monthlyYen 直読みの複製をしていない）', () => {
-    const modal = read('src/renderer/components/PublishedListModal.tsx')
-    expect(modal).toContain("import { kindLabel, costNote } from '../../shared/inventory'")
-    expect(modal).toContain('{costNote(r)}')
+    const card = read('src/renderer/components/PublishedInventoryCard.tsx')
+    expect(card).toContain("import { kindLabel, costNote } from '../../shared/inventory'")
+    expect(card).toContain('{costNote(r)}')
     // 直す前の形（金額の有無だけで「従量（待機中はほぼゼロ）」を出す複製）が残っていないこと
-    expect(modal).not.toMatch(/r\.monthlyYen > 0 \? `月額\$\{r\.monthlyYen\}円` : '従量/)
+    expect(card).not.toMatch(/r\.monthlyYen > 0 \? `月額\$\{r\.monthlyYen\}円` : '従量/)
   })
 })
 

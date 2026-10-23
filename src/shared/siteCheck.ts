@@ -310,7 +310,7 @@ export function siteIssueNote(kind: SiteIssueKind, detail: string): string {
     case 'missing':
       return `参照しているファイルが見つかりません: ${detail}（公開すると、その場所が空白になります）`
     case 'miscased':
-      return `名前の大文字小文字が違います: ${detail}（手元では表示されますが、**公開先では表示されません**）`
+      return `名前の大文字小文字が違います: ${detail}（手元では表示されますが、公開先では表示されません）`
     case 'background':
       return `背景画像に大きさの指定がありません: ${detail}（画像が敷き詰められ、タイル状に並んで見えます）`
     case 'link':

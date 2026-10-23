@@ -43,12 +43,15 @@ describe('保存場所の要否', () => {
   })
 
   // ★ いちばん大事な判定。動作確認では正常に見えて、再起動で消える
-  it('ファイルに書いていて公開先が保持できないなら、データが失われると知らせる', () => {
+  it('ファイルに書いていて公開先が保持できないなら、データが残らないと知らせる', () => {
     for (const t of STATELESS) {
       const need = storageNeedFor({ usesDataLayer: false, writesFiles: true, target: t })
       expect(need.kind).toBe('will-lose-data')
       expect(shouldOfferStorage(need)).toBe(true)
-      expect(need.kind === 'will-lose-data' && need.note).toContain('失われ')
+      // 2026-10-09 画面の文を短くする（T114）: 「ファイルに書いたデータは残りません」と「保存場所を用意しないと…失われます」が
+      // 同じことを2回言っていたので、後者を削った。残らないことは前者が言う。
+      expect(need.kind === 'will-lose-data' && need.note).toContain('残りません')
+      expect(need.kind === 'will-lose-data' && need.note).not.toContain('失われ')
     }
   })
 

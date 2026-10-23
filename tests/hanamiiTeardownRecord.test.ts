@@ -25,8 +25,8 @@ const h = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
   /** さくらのクラウドの認証情報が登録されているか（保存場所を片づけるのに要る）。 */
   hasCreds: true,
-  /** HANAMII API が返す HTTP ステータス（DELETE /api/v1/projects/<id>）。 */
-  hanamiiStatus: 204,
+  /** HANAMII API が返す HTTP ステータス（DELETE /api/v1/projects/<id>）。200＝削除済み（原本の応答例と同じ本文）。 */
+  hanamiiStatus: 200,
   hanamiiCalls: [] as string[],
 }))
 
@@ -48,6 +48,7 @@ import { registerHanamiiHandlers, PROJECT_MISMATCH_TEARDOWN } from '../src/main/
 import { settleHanamiiTeardownFs } from '../src/main/publishMetaFs'
 import { setProjectOpsListener, resetProjectOpsForTests, getOps } from '../src/main/projectOps'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
+import { deleteProjectReply } from './hanamiiTeardownFixtures'
 
 registerHanamiiHandlers({} as any)
 const teardown = h.handlers.get('hanamii:teardown')!
@@ -98,13 +99,12 @@ function withStorageEnv() {
 beforeEach(() => {
   projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-hnm-teardown-record-'))
   h.hasCreds = true
-  h.hanamiiStatus = 204
+  h.hanamiiStatus = 200
   h.hanamiiCalls = []
   resetProjectOpsForTests()
   globalThis.fetch = (async (input: unknown, init: any) => {
     h.hanamiiCalls.push(`${init?.method ?? 'GET'} ${String(input)}`)
-    const status = h.hanamiiStatus
-    return { ok: status >= 200 && status < 300, status, async text() { return '' } }
+    return deleteProjectReply(h.hanamiiStatus, String(input).split('/').pop() ?? '')
   }) as unknown as typeof fetch
 })
 afterEach(() => {
@@ -113,7 +113,8 @@ afterEach(() => {
   fs.rmSync(projectDir, { recursive: true, force: true })
 })
 
-const run = (projectId: string = P1) => teardown(EVENT, projectId, TOKEN, projectDir)
+// 呼び形は (projectDir, { token }, { confirmed, projectId })
+const run = (projectId: string = P1) => teardown(EVENT, projectDir, { token: TOKEN }, { confirmed: true, projectId })
 
 describe('★★★ HANAMII の破棄: 成功したら、main が記録（projectId・公開記録）を片づける', () => {
   it('★★★ projectId を空にし、HANAMII の公開記録を消す。ほかの設定・ほかの公開先・専有型の資源IDは残す', async () => {
@@ -192,12 +193,19 @@ describe('★★★ HANAMII の破棄: 成功したら、main が記録（projec
   it('★★★ 保存場所だけ残った（プロジェクトは消えた・ok は false）ときは、記録も projectId も残す（🗑 を押し直せる入口）', async () => {
     withStorageEnv()
     writeMeta(publishedMeta())
-    const before = fs.readFileSync(metaFile(), 'utf-8')
+    const before = readMeta()
     h.hasCreds = false          // 保存場所を片づけられない
     const r = await run()
     expect(r.ok).toBe(false)
     expect(r.appDeleted).toBe(true)
-    expect(fs.readFileSync(metaFile(), 'utf-8'), '保存場所が残ったのに、記録を消した（押し直す入口が無くなる）').toBe(before)
+    // 行（公開記録）も projectId も、ほかの設定・ほかの公開先・専有型の資源IDも、そのまま残る。増えるのは「保存場所だけ残った」印だけ
+    // （印の中身と、押し直して全部片づいたときに消えることは tests/hanamiiTeardownLeftover.test.ts）
+    const after = readMeta()
+    expect(after.publish.hanamii.projectId, '保存場所が残ったのに、projectId を消した（押し直す入口が無くなる）').toBe(P1)
+    expect(after.publish.targets.hanamii, '保存場所が残ったのに、公開記録を消した（押し直す入口が無くなる）').toEqual(before.publish.targets.hanamii)
+    const { storageLeftoverBuckets, ...hanamiiRest } = after.publish.hanamii
+    expect(storageLeftoverBuckets).toEqual(['koto-data-x'])
+    expect({ ...after, publish: { ...after.publish, hanamii: hanamiiRest } }).toEqual(before)
   })
 
   it('★★ 記録を書き換えられなかったときも、破棄は成功のまま。片づけられなかったことは黙らず知らせに載る', async () => {

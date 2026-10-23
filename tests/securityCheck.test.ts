@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, checkRecordKey, formatCheckRecord, DATA_FILE_RE, ASSET_FILE_RE, classifyUnchecked, capList } from '../src/renderer/securityCheck'
+import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, reportParts, checkRecordKey, formatCheckRecord, DATA_FILE_RE, ASSET_FILE_RE, classifyUnchecked, capList } from '../src/renderer/securityCheck'
 
 // 2026-08-09 の総点検で見つかった2件の回帰テスト。
 // 公開前セキュリティチェックは「守り」のコードなのに、テストが1件も無かった（掟10）。
@@ -883,7 +883,9 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
   it('truncated（一覧打ち切り）は判定を要確認に倒し、専用の文言を明示する', () => {
     const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: [], truncated: true })
     expect(m.verdict).toBe('warn')
-    expect(m.report).toContain('※ ファイルが多いため一覧は途中までです。チェックも全体の一部にとどまります')
+    // 2026-10-09 画面の文を短くする（T107）: 「一覧は途中までです。チェックも…」の重ねを1つにした。
+    expect(m.report).toContain('※ ファイルが多いため、チェックは一部のファイルにとどまります')
+    expect(m.report).not.toContain('一覧は途中までです')
   })
 
   it('truncated が無ければ、その文言は入れない', () => {
@@ -901,6 +903,73 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
     const m = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（timeout）。' }], { files: 0, batches: 0, skipped: [], dataLike: [], others: ['server.py'] })
     expect(m.verdict).toBe('skip')
     expect(m.report).toBe('チェックに失敗しました（timeout）。')
+  })
+})
+
+// ── 結果を「AI の行」と「Koto の行」に分けて持つ（2026-10-09 検分の指摘）──────────────
+// 結果の文には、AI が書いた行のほかに、Koto が組み立てた行（確認しなかったファイル名の一覧など）が混ざる。
+// 画面は AI の行だけを太字・箇条書きに描き、Koto の行は文字のまま出す。そうしないと、ファイル名の中の ** や `
+// が太字・コードになり、実在しない名前に見える。分け方は mergeCheckResults が決める（画面は parts を見るだけ）。
+describe('結果を AI の行と Koto の行に分けて持つ（mergeCheckResults の parts）', () => {
+  const ok = { verdict: 'ok' as const, report: '判定: 問題なし\n- **全ファイル**: 秘密情報はありません\n- `a.js` は安全' }
+  const warn = { verdict: 'warn' as const, report: '判定: 要確認\n- b.js: キーが直書き' }
+
+  it('★ report は parts を改行でつないだものと一致する（コピー・「AIに修正させる」に渡る全文は変わらない）', () => {
+    const infos = [
+      { files: 3, batches: 1, skipped: [] as string[] },
+      { files: 9, batches: 2, skipped: ['x.html'], dataLike: ['d**a.csv'], others: ['`x`.txt'], assets: ['l.png'], truncated: true },
+      { files: 1, batches: 1, skipped: [], assets: ['l.png'] },
+    ]
+    for (const info of infos) for (const results of [[ok], [warn], [ok, warn], []]) {
+      const m = mergeCheckResults(results, info)
+      expect(m.parts.map(p => p.text).join('\n')).toBe(m.report)
+      expect(m.parts.every(p => p.text !== '')).toBe(true)
+    }
+  })
+
+  it('★ AI の行だけが ai: true。Koto の行（判定・件数・確認しなかった名前・打ち切り・資産・確認できない種類）は ai: false', () => {
+    const m = mergeCheckResults([ok], {
+      files: 9, batches: 2, skipped: ['s**t.html'], dataLike: ['d**a.csv'], others: ['`x`.txt'], assets: ['l.png'], truncated: true,
+    })
+    const ai = m.parts.filter(p => p.ai).map(p => p.text)
+    expect(ai).toEqual(['- **全ファイル**: 秘密情報はありません\n- `a.js` は安全'])
+    const koto = m.parts.filter(p => !p.ai).map(p => p.text).join('\n')
+    for (const line of [
+      '判定: 要確認',
+      '（9個のファイルを2回に分けて確認しました）',
+      '※ 量が多いため、次のファイルは確認していません: s**t.html',
+      'd**a.csv: 公開するとデータの中身を誰でも見られるようになる種類のファイルです',
+      '※ ファイルが多いため、チェックは一部のファイルにとどまります',
+      '※ 画像・フォント・音声など 1 件は、中身の確認の対象外です',
+      '※ 中身を確認できない種類のファイルです（名前だけで判定しました）: `x`.txt',
+    ]) expect(koto, line).toContain(line)
+    // 並び: Koto の行 → AI の行 → Koto の行
+    expect(m.parts.map(p => p.ai)).toEqual([false, true, false])
+  })
+
+  it('AI の行が無い（AI 未実施で機械的に要確認になった）とき、ai: true は無い', () => {
+    const m = mergeCheckResults([], { files: 0, batches: 0, skipped: [], dataLike: ['dump.sql'], others: [] })
+    expect(m.verdict).toBe('warn')
+    expect(m.parts.some(p => p.ai)).toBe(false)
+  })
+
+  it('実施できなかった結果（skip）は、全体が Koto の文（失敗の理由には外部の応答の文が入りうる）', () => {
+    const m = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（**timeout**）。' }], { files: 1, batches: 1, skipped: [] })
+    expect(m.parts).toEqual([{ text: 'チェックに失敗しました（**timeout**）。', ai: false }])
+    expect(mergeCheckResults([], { files: 0, batches: 0, skipped: [] }).parts).toEqual([{ text: 'チェックを実施できませんでした。', ai: false }])
+  })
+
+  it('★ parts を持たない結果（Koto が早期に返す一言）は、全体を Koto の文として扱う（解釈しない側に倒す）', () => {
+    expect(reportParts({ report: 'APIキーが未設定のため、セキュリティチェックを省略しました。' }))
+      .toEqual([{ text: 'APIキーが未設定のため、セキュリティチェックを省略しました。', ai: false }])
+    expect(reportParts({ report: 'x', parts: [] })).toEqual([{ text: 'x', ai: false }])
+    expect(reportParts({ report: 'a\nb', parts: [{ text: 'a', ai: false }, { text: 'b', ai: true }] }))
+      .toEqual([{ text: 'a', ai: false }, { text: 'b', ai: true }])
+  })
+
+  it('runSecurityCheck は mergeCheckResults の parts を結果に載せたまま返す（mode だけ足す）', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/securityCheck.ts'), 'utf-8')
+    expect(src).toContain('return { ...merged, mode }')
   })
 })
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { WARN_MARK, hasWarnMark, warningLine, opWarningText, clockText } from '../src/shared/opsText'
+import { WARN_MARK, hasWarnMark, warningLine, opWarningText, clockText, monthDayText } from '../src/shared/opsText'
 import { summarizeResult } from '../src/main/projectOps'
 
 // 処理の記録の文の部品（src/shared/opsText.ts）。**定義は1か所**（2026-09-30 検分の指摘2）。
@@ -42,6 +42,17 @@ describe('clockText: 時刻を「HH:MM」（ゼロ埋め・端末の時計）に
   })
   it('読めなければ空文字（呼び出し側は時刻の言い回しごと省く）', () => {
     for (const bad of [NaN, Infinity, undefined, null, 'x', {}]) expect(clockText(bad as any)).toBe('')
+  })
+})
+
+describe('monthDayText: 日付を「M/D」（ゼロ埋めなし・端末の時計）にする', () => {
+  it('月も日もゼロで埋めない（止まった回の見出しが「10/10」「3/5」になる）', () => {
+    expect(monthDayText(new Date(2026, 9, 10, 14, 2).getTime())).toBe('10/10')
+    expect(monthDayText(new Date(2026, 2, 5, 0, 0).getTime())).toBe('3/5')
+    expect(monthDayText(new Date(2026, 11, 31, 23, 59, 59).getTime())).toBe('12/31')
+  })
+  it('読めなければ空文字（呼び出し側は日付の言い回しごと省く）', () => {
+    for (const bad of [NaN, Infinity, undefined, null, 'x', {}, 1e20]) expect(monthDayText(bad as any), String(bad)).toBe('')
   })
 })
 

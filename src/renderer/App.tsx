@@ -636,7 +636,7 @@ export default function App() {
         onToggleTerminal={() => setShowTerminal(v => !v)}
         onOpenSettings={() => setShowSettings(true)}
         onPublish={() => {
-          if (!currentDir) { window.alert('先にプロジェクトを開いてください（公開対象のプロジェクトが必要です）') ; return }
+          if (!currentDir) { window.alert('先にプロジェクトを開いてください') ; return }
           setShowPublish(true)
         }}
         onOpenKnowledge={() => setShowKnowledge(true)}
@@ -645,7 +645,7 @@ export default function App() {
           setShowGithubSave(true)
         }}
         onOpenHistory={() => {
-          if (!currentDir) { window.alert('先にプロジェクトを開いてください（履歴はプロジェクトごとに記録されます）') ; return }
+          if (!currentDir) { window.alert('先にプロジェクトを開いてください') ; return }
           setShowHistory(true)
         }}
         version={version}

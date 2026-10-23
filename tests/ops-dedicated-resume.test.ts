@@ -1,12 +1,21 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { withProjectLock } from '../src/main/projectLock'
 import { getOps, ackOps, setProjectOpsListener, reportProgress, resetProjectOpsForTests, summarizeResult } from '../src/main/projectOps'
 import {
-  watchDedicatedOps, dedicatedOpKind, resumedCreateResult, resumedTeardownResult, resumedPublishResult, resumedNoteOf,
-  addResumedNotes, opProgressText, opElapsedText, otherOpNote, shouldShowTeardownButton,
-  TEARDOWN_REMAINING_WARNING_HEAD, TEARDOWN_IN_PROGRESS_WARNING_HEAD,
-  type DedicatedRunningView, type DedicatedFinished, type DedicatedOpsApi, type DedicatedOpKind,
+  watchDedicatedOps, dedicatedOpKind, resumedCreateResult, resumedPublishResult, resumedNoteOf,
+  addResumedNotes, otherOpNote, shouldShowTeardownButton,
+  type DedicatedRunningView, type DedicatedFinished, type DedicatedOpsApi, type DedicatedOpKind, type DedicatedResumedNote,
 } from '../src/renderer/apprunDedicatedActions'
+// 進み具合の一文・経過の文は projectOpsView.ts の1つ（段階3B-3 で、手本 apprunDedicatedActions.ts と teardown/flow.ts の同じ中身の2つを1つにした）。
+import { opProgressText, opElapsedText } from '../src/renderer/projectOpsView'
+// 警告の書き出しの定数は shared/teardownResult.ts の1か所（段階3B-2 で、手本 apprunDedicatedActions.ts の同じ定数を消して一本化した）。
+// 手本の resumedNoteOf もここから import して使うので、main の実際の文との一致（下の試験）は変わらず効く。
+import { TEARDOWN_REMAINING_WARNING_HEAD, TEARDOWN_IN_PROGRESS_WARNING_HEAD, resumedTeardownView } from '../src/shared/teardownResult'
+// 手順6（削除）の知らせは共通の resumedTeardownNote（3B-6b）。専有型の言葉は仕様書の DEDICATED_TEARDOWN_WORDS。
+import { resumedTeardownNote } from '../src/renderer/teardown/watch'
+import { DEDICATED_TEARDOWN_WORDS } from '../src/renderer/teardown/targets/dedicated'
 
 // ── 専有型手順5 作成・手順6すべて削除・手順8 公開: 閉じて開き直したとき、続きと結果を出す（2026-09-29・作者の決定 (1)(2)）──────
 //
@@ -166,9 +175,9 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     expect(items[0].kind).toBe('teardown')
 
     // 結果欄（既存の手順6の結果欄がそのまま描ける形）: 残った保存場所が名指しで入っている
-    const typed = resumedTeardownResult(items[0].record)
+    const typed = resumedTeardownView('sakura-apprun-dedicated', items[0].record.result)
     expect(typed.ok).toBe(false)
-    expect(typed.remaining).toEqual({ storageBucket: 'koto-data-x' })
+    expect(typed.remaining).toEqual([{ label: '保存場所『koto-data-x』（月額が続きます）', billing: true, kind: 'storage' }])
     expect(typed.executed).toEqual(['アプリケーション『app1』を削除しました（消えたことを確認）'])
     expect(typed.message).toContain('保存場所を片づけられませんでした')
     expect(typed.appDeleted).toBe(true)
@@ -176,7 +185,9 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     // 警告（見逃してはいけない知らせ）: ⚠️ の行は警告へ移してあり、そのまま出る
     const note = resumedNoteOf(items[0])
     expect(note.warnings).toEqual(['⚠️ 保存場所の記録（公開の設定）は残しています。次に公開する前に、【公開】の「保存場所を用意する」からやり直してください'])
-    expect(note.headline).toContain('手順6 すべて削除')
+    // V8（3B-6b・T162）: 見出しは共通の「🔔 削除の結果（HH:MM に終わりました）」。入口の名前（手順6）は言わない（📡 の行・共用型・HANAMII と同じ）。
+    expect(note.headline).toMatch(/^🔔 削除の結果（\d{1,2}:\d{2} に終わりました）$/)
+    expect(note.headline, '入口の名前（手順6）が見出しに戻っている').not.toContain('手順6')
     expect(note.headline, '旧い丸数字の見出しが戻っている').not.toContain('⑥')
 
     // ack: **警告つきの記録は、画面が出しても「見た」と伝えない**（2026-09-30 検分）。手順6の結果欄は公開ボタンのずっと下にあり、
@@ -289,9 +300,9 @@ describe('★★★ 終わっていれば、外して付け直したとき結果
     const m1 = mount(api)
     await flush()
     const inProgress = m1.allFinished()[0]
-    const typed = resumedTeardownResult(inProgress.record)
-    expect(typed.inProgress).toEqual({ loadBalancerID: 'l1' })
-    expect(typed.remaining).toEqual({ loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' })
+    const typed = resumedTeardownView('sakura-apprun-dedicated', inProgress.record.result)
+    expect(typed.inProgress.map(l => l.label)).toEqual(['ロードバランサ『l1』'])
+    expect(typed.remaining.map(l => l.label)).toEqual(['ロードバランサ『l1』', 'オートスケーリンググループ『a1』', 'クラスタ『c1』'])
     // 結果欄が ID つきで出す2つの知らせは、警告へ重ねない
     expect(resumedNoteOf(inProgress).warnings).toEqual([])
     // ただし main が実際に作った警告の文で確かめる（書き出しが食い違えば、二重に出るだけで消えない）
@@ -573,6 +584,196 @@ describe('★★ この画面が始めた操作は、記録から二重に出さ
   })
 })
 
+// ── 窓の上限と「渡したことにする」（V14・設計書 10.11.10・10.11.14 の見張り）─────────────────────────────────
+// この画面が始めた操作の窓の判断は `localOpsWindow`（projectOpsView.ts）の1つで、📡 の行の見張り（teardown/watch.ts・tests/teardownWatchCommon.test.ts の
+// 同じ2つの場合）と、このパネルの見張り（手順5・6・8を**種類ごとに**1つずつ）が同じこれを通る。**3種類すべて**で固定する
+// （手順5の作成・手順8の公開の記録にも効く。手順6だけ直して他の2種類を取り残さない＝双子の片方だけ直る、を捕まえる）。
+describe('★★★ この画面が始めた操作の窓: 出し終えたあとの別の入口の記録は渡る・同じ画面の押し直しで前の結果が重ならない（手順5・6・8の3種類）', () => {
+  const KINDS: DedicatedOpKind[] = ['create', 'teardown', 'publish']
+  /** 警告つきの結果（ack されず残る＝窓を張り直したあとの重なりが起きる形）。 */
+  const WARN = { ok: true, stage: 'done', message: 'warn', executed: [], remaining: {}, warnings: ['まだ動いていません'] }
+  const PLAIN = (message: string) => ({ ok: false, stage: 'done', executed: [], message, remaining: {} })
+
+  it.each(KINDS)('★★★ (a) %s: 出し終えたあと（endLocal の後）に別の入口が始めた同じ種類の記録は、この画面のものではない。記録から渡し、渡してから ack する（誰にも見せないまま「見た」にしない）', async kind => {
+    const { api, acks } = makeApi()
+    const m = mount(api)
+    await flush()
+    m.watch.beginLocal(kind)
+    await finish(startOp(kind, PLAIN('この画面が始めたもの'))) // L
+    await flush()
+    const lStartedAt = getOps(DIR).last!.startedAt // ack の前（ack すると未読の記録から消える）
+    m.watch.endLocal(kind)
+    await flush()
+    expect(m.allFinished()).toEqual([])
+    expect(acks).toHaveLength(1)
+    expect(acks[0][1]).toBe(lStartedAt)
+
+    await new Promise<void>(r => setTimeout(r, 5)) // endLocal より後の時刻に始める
+    await finish(startOp(kind, PLAIN('別の入口が始めたもの'))) // 別の画面（📡 の行など）が始めた同じ種類
+    await flush()
+    expect(m.allFinished().map(i => [i.kind, i.record.result?.message])).toEqual([[kind, '別の入口が始めたもの']])
+    expect(acks).toHaveLength(2)
+    expect(acks[1][1]).toBe(m.allFinished()[0].record.startedAt) // 渡したあとで ack する
+    m.watch.stop()
+  })
+
+  it.each(KINDS)('★★★ (b) %s: 警告つきの結果（ack されず残る）を出したあと、同じ画面がもう一度始めても、前の結果を記録から重ねて渡さない。閉じて開き直したときは記録から出る', async kind => {
+    const { api, acks } = makeApi()
+    const m = mount(api)
+    await flush()
+    m.watch.beginLocal(kind)
+    await finish(startOp(kind, WARN)) // 1回目（自分）。警告つき＝ack されない
+    await flush()
+    m.watch.endLocal(kind)
+    await flush()
+    expect(acks).toEqual([])
+    expect(m.allFinished()).toEqual([])
+    await new Promise<void>(r => setTimeout(r, 5))
+    m.watch.beginLocal(kind) // 押し直し。窓を張り直す
+    await flush()
+    expect(m.allFinished(), '前の結果（この画面が出し済み）が、記録から重ねて渡された').toEqual([])
+    m.watch.refresh()
+    await flush()
+    expect(m.allFinished()).toEqual([])
+    m.watch.stop()
+    const reopened = mount(api)
+    await flush()
+    expect(reopened.allFinished().map(i => i.kind)).toEqual([kind]) // 結果を失わない
+    reopened.watch.stop()
+  })
+
+  it.each(KINDS)('%s: endLocal は beginLocal が無ければ何もしない（ack もしない）', async kind => {
+    const { api, acks } = makeApi()
+    await finish(startOp(kind, WARN))
+    const m = mount(api)
+    await flush()
+    m.watch.endLocal(kind)
+    await flush()
+    expect(acks).toEqual([])
+    m.watch.stop()
+  })
+
+  it('種類ごとに別の窓: 手順6を出し終えても、手順5を出している最中の窓には影響しない（手順5の記録は出し終えるまで渡さず ack しない）', async () => {
+    const { api, acks } = makeApi()
+    const m = mount(api)
+    await flush()
+    m.watch.beginLocal('create')
+    m.watch.beginLocal('teardown')
+    await finish(startOp('create', PLAIN('手順5')))
+    await finish(startOp('teardown', PLAIN('手順6')))
+    await flush()
+    m.watch.endLocal('teardown') // 手順6だけ出し終えた
+    await flush()
+    expect(m.allFinished()).toEqual([])
+    expect(acks, '手順5が出し終わっていないのに、手順6の endLocal で手順5まで見たことになった').toEqual([])
+    m.watch.endLocal('create')
+    await flush()
+    expect(m.allFinished()).toEqual([])
+    expect(acks).toHaveLength(1) // 両方を出し終えたので、まとめて ack
+    m.watch.stop()
+  })
+})
+
+// ── 見張りの境界（3B-6b の再検分で足した。変異で素通りした4つ。📡 の行の見張り teardownWatchCommon.test.ts の同じ場合と双子）─────────
+// 1. `ackUpTo > ackedUpTo`（同じ範囲を何度も ack しない）を外しても落ちなかった
+// 2. `apply` の `if (stopped) return` を外しても落ちなかった（外すと、画面を閉じたあとに遅れて戻った endLocal が、誰にも見せていない結果を
+//    「見た」にする＝月額が続く警告が、開き直しても出なくなる）
+// 3. `addResumedNotes` の並べ替え・5件の上限を外しても落ちなかった
+// 手順5・6・8の3種類すべてで見る（手順6だけ直して他の2種類を取り残さない）。
+describe('★★★ 見張りの境界: 同じ ack を繰り返さない・外したあとは見たことにしない（手順5・6・8の3種類）', () => {
+  const KINDS: DedicatedOpKind[] = ['create', 'teardown', 'publish']
+  const RESULT = (message: string) => ({ ok: false, stage: 'done', executed: [], message, remaining: {} })
+
+  it.each(KINDS)('★ %s: ack が効かず記録が残り続けても、同じ ack を繰り返し送らない（押し出しが何度届いても1回）', async kind => {
+    await finish(startOp(kind, RESULT('結果')))
+    const snap = getOps(DIR)
+    const subs = new Set<(p: Push) => void>()
+    const acks: Array<number | undefined> = []
+    const api: DedicatedOpsApi = {
+      get: async () => snap,
+      ack: async (_d, upTo) => { acks.push(upTo); return { ok: true } }, // 実際には見たことにならない（記録は残り続ける）
+      onChanged: cb => { subs.add(cb); return () => { subs.delete(cb) } },
+    }
+    const m = mount(api)
+    await flush()
+    for (let i = 0; i < 3; i++) for (const cb of [...subs]) cb({ projectDir: DIR, ...snap })
+    await flush()
+    expect(m.allFinished(), '残り続ける記録を、押し出しのたびに重ねて渡した').toHaveLength(1)
+    expect(acks, '同じ範囲の ack を繰り返し送った').toEqual([snap.last!.startedAt])
+    m.watch.stop()
+  })
+
+  it.each(KINDS)('★★ %s: 外したあとは何も届けず、ack もしない（refresh・endLocal・visibilityChanged も何もしない）', async kind => {
+    const { api, acks, subs } = makeApi()
+    const m = mount(api)
+    await flush()
+    m.watch.beginLocal(kind)
+    m.watch.stop()
+    expect(subs.size).toBe(0) // 購読も外れる
+    const before = m.running.length
+    await finish(startOp(kind, RESULT('外したあとに終わった')))
+    m.watch.refresh()
+    m.watch.endLocal(kind)
+    m.watch.visibilityChanged()
+    await flush()
+    expect(m.running.length, '外したあとに画面の状態を書いた').toBe(before)
+    expect(m.allFinished()).toEqual([])
+    expect(acks).toEqual([])
+  })
+
+  it.each(KINDS)('★★★ %s: 結果を出す前に画面を閉じたら、遅れて戻った endLocal が「見た」にしない。開き直したら記録から出る（結果を失わない）', async kind => {
+    const { api, acks } = makeApi()
+    const m = mount(api)
+    await flush()
+    m.watch.beginLocal(kind)
+    await finish(startOp(kind, RESULT('閉じる前に終わった'))) // この画面が出している最中の記録。渡さず、ack もしない
+    await flush()
+    expect(m.allFinished()).toEqual([])
+    m.watch.stop() // 出し終える前に閉じた
+    m.watch.endLocal(kind) // 遅れて IPC の返り値が戻った（画面は無い）
+    await flush()
+    expect(acks, '誰にも見せていない結果を「見た」にした').toEqual([])
+    expect(getOps(DIR).last, '見た印が付いて、記録が消えた').not.toBeNull()
+    const reopened = mount(api)
+    await flush()
+    expect(reopened.allFinished().map(i => [i.kind, i.record.result?.message])).toEqual([[kind, '閉じる前に終わった']])
+    reopened.watch.stop()
+  })
+})
+
+describe('addResumedNotes: 古い順・同じ記録は足さない・種類ごとに新しい5件まで（純関数）', () => {
+  const note = (kind: DedicatedOpKind, startedAt: number): DedicatedResumedNote => ({
+    kind, startedAt, finishedAt: startedAt + 1, ok: true, call: 'done', headline: `h${startedAt}`, message: '', warnings: [],
+  })
+  const EMPTY = () => ({ create: [], teardown: [], publish: [] }) as Record<DedicatedOpKind, DedicatedResumedNote[]>
+
+  it('★ 古い記録があとから届いても、古い順に並ぶ（知らせの並びは時系列）', () => {
+    const held = addResumedNotes(EMPTY(), [note('publish', 30), note('publish', 10), note('publish', 20)])
+    expect(held.publish.map(n => n.startedAt)).toEqual([10, 20, 30])
+    const later = addResumedNotes(held, [note('publish', 5)])
+    expect(later.publish.map(n => n.startedAt)).toEqual([5, 10, 20, 30])
+  })
+
+  it('★ 種類ごとに新しい5件まで。6件目が来たら、いちばん古いものから落ちる（5件ちょうどは全部残る）', () => {
+    const five = addResumedNotes(EMPTY(), [1, 2, 3, 4, 5].map(n => note('teardown', n)))
+    expect(five.teardown.map(n => n.startedAt)).toEqual([1, 2, 3, 4, 5])
+    const six = addResumedNotes(five, [note('teardown', 6)])
+    expect(six.teardown.map(n => n.startedAt)).toEqual([2, 3, 4, 5, 6])
+    const seven = addResumedNotes(EMPTY(), [7, 3, 1, 6, 2, 5, 4].map(n => note('teardown', n)))
+    expect(seven.teardown.map(n => n.startedAt)).toEqual([3, 4, 5, 6, 7])
+  })
+
+  it('★ 種類は混ざらない（同じ startedAt でも種類が違えば別の知らせ）。渡した側の配列は書き換えない', () => {
+    const held = addResumedNotes(EMPTY(), [note('create', 10)])
+    const next = addResumedNotes(held, [note('publish', 10), note('create', 10)])
+    expect(next.create.map(n => n.startedAt)).toEqual([10])
+    expect(next.publish.map(n => n.startedAt)).toEqual([10])
+    expect(next.teardown).toEqual([])
+    expect(held.publish).toEqual([]) // 元の入れ物は変わらない
+    expect(next).not.toBe(held)
+  })
+})
+
 describe('★★ 別の公開先・別の操作の記録は出さない・巻き込まない（掟11）', () => {
   it('別の公開先（Vercel）の公開が走っている: 詳細は出さず「別の操作」だけ。手順5・6・8の走っている印は立たない', async () => {
     const { api } = makeApi()
@@ -584,6 +785,26 @@ describe('★★ 別の公開先・別の操作の記録は出さない・巻き
     expect(view.other).toEqual({ op: '公開', targetLabel: '▲ Vercel' })
     expect(otherOpNote(view.other!)).toContain('別の操作（▲ Vercelの公開）が進んでいます')
     await finish(op)
+  })
+
+  it('★★★ 共用型・HANAMII の破棄が走っている: 専有型の画面は「破棄」と言う（記録の op は専有型の削除と同じ「削除」。公開先で言い分ける・2026-10-20）', async () => {
+    for (const [target, handler, label] of [
+      ['sakura-apprun', 'cloud:teardown', '📦 さくらのAppRun'], ['hanamii', 'hanamii:teardown', '🌸 HANAMII'],
+    ] as const) {
+      resetProjectOpsForTests()
+      const { api } = makeApi()
+      let release!: () => void
+      const gate = new Promise<void>(open => { release = open })
+      const done = withProjectLock(DIR, '削除', async () => { await gate; return { ok: true } }, { target, handler })
+      const m = mount(api)
+      await flush()
+      const view = m.lastRunning()!
+      expect(view.running).toBeNull()
+      expect(view.other, target).toEqual({ op: '破棄', targetLabel: label })
+      expect(otherOpNote(view.other!), target).toContain(`別の操作（${label}の破棄）が進んでいます`)
+      release(); await done
+      m.watch.stop()
+    }
   })
 
   it('同じ専有型でも handler が違う記録（廃止したアプリだけを消す旧い口 teardownApp の名前など）は、手順6として扱わない', async () => {
@@ -811,5 +1032,51 @@ describe('main の記録が作る警告の書き出しと、画面が外す書�
     const inProgress = summarizeResult({ ok: false, inProgress: { loadBalancerID: 'l1' }, remaining: { loadBalancerID: 'l1' } }).warnings
     expect(inProgress).toHaveLength(1)
     expect(inProgress[0].startsWith(TEARDOWN_IN_PROGRESS_WARNING_HEAD)).toBe(true)
+  })
+
+  // 警告の書き出しの定数は shared/teardownResult.ts の1か所（段階3B-2。10.6.2 の3・完了条件 3）。手本の側に同じ名前の定義を戻すと、
+  // 2つが別々に直されて食い違う（ここの試験は import 先の定数しか見ないので、定義が2つあっても気づけない）。
+  // 3B-6b: 手順6の知らせは共通の resumedTeardownNote が作る（警告の選び方もそこ）ので、apprunDedicatedActions.ts はこの定数を使わない
+  // （定義も import も無い）。使うのは resumedTeardownNote（teardown/watch.ts）で、定数は shared/teardownResult.ts から import する。
+  it('★ 手本（apprunDedicatedActions.ts）は書き出しの定数を定義も使いもしない。使うのは共通の resumedTeardownNote（shared/teardownResult.ts から import）', () => {
+    const actions = readFileSync(join(__dirname, '..', 'src', 'renderer', 'apprunDedicatedActions.ts'), 'utf-8')
+    expect(actions).not.toMatch(/TEARDOWN_(?:REMAINING|IN_PROGRESS)_WARNING_HEAD/)
+    const watch = readFileSync(join(__dirname, '..', 'src', 'renderer', 'teardown', 'watch.ts'), 'utf-8')
+    expect(watch).not.toMatch(/(?:export )?const TEARDOWN_(?:REMAINING|IN_PROGRESS)_WARNING_HEAD\s*=/)
+    expect(watch).toContain('TEARDOWN_REMAINING_WARNING_HEAD, TEARDOWN_IN_PROGRESS_WARNING_HEAD, resumedTeardownView,')
+    expect(watch).toContain("} from '../../shared/teardownResult'")
+  })
+})
+
+// ── 手順6の知らせは共通の resumedTeardownNote（3B-6b・10.11.10・V8）─────────────────────────────────────────
+describe('★★ 手順6（削除）の開き直したときの知らせは、共通の resumedTeardownNote と同じ（見出しは「🔔 削除の結果」。手順5・8は変わらない）', () => {
+  const baseRec = (handler: string, result: object | undefined, finishedAt?: number) => ({
+    op: '削除' as const, target: 'sakura-apprun-dedicated' as const, handler, startedAt: 100, running: false,
+    progress: { label: '', detail: '', at: 100 }, seen: false, ...(finishedAt ? { finishedAt } : {}), ...(result ? { result } : {}),
+  })
+  const TD = (result: object | undefined, finishedAt?: number) => baseRec('apprunDedicated:teardown', result, finishedAt)
+  const T = new Date(2026, 9, 16, 10, 32).getTime() // 端末の時計で 10:32
+
+  it.each([
+    ['全部消えた', { ok: true, lines: ['x'], warnings: [], extra: {} }, T],
+    ['残った（警告つき）', { ok: false, message: '失敗', lines: [], warnings: ['別の知らせ'], extra: { remaining: { clusterID: 'c1' } } }, T],
+    ['止まった', { ok: false, message: '止まった', lines: [], warnings: [`${TEARDOWN_IN_PROGRESS_WARNING_HEAD}。しばらくしてから…`], extra: { inProgress: { loadBalancerID: 'l1' }, remaining: { loadBalancerID: 'l1' } } }, T],
+    ['終わった時刻が無い', { ok: true, lines: [], warnings: [], extra: {} }, undefined],
+    ['結果が無い', undefined, T],
+  ] as const)('%s: resumedNoteOf（パネルの作り手）は {kind, ...resumedTeardownNote(専有型の言葉, 記録)} と1文字も違わない', (_n, result, finishedAt) => {
+    const record = TD(result as never, finishedAt) as never
+    expect(resumedNoteOf({ kind: 'teardown', record })).toEqual({ kind: 'teardown', ...resumedTeardownNote(DEDICATED_TEARDOWN_WORDS, record) })
+  })
+
+  it('見出し: 終わった時刻があれば「🔔 削除の結果（10:32 に終わりました）」、無ければ「🔔 削除の結果」（「です」も句点も手順6も無い）', () => {
+    const ok = { ok: true, lines: [], warnings: [], extra: {} }
+    expect(resumedNoteOf({ kind: 'teardown', record: TD(ok, T) as never }).headline).toBe('🔔 削除の結果（10:32 に終わりました）')
+    expect(resumedNoteOf({ kind: 'teardown', record: TD(ok) as never }).headline).toBe('🔔 削除の結果')
+  })
+
+  it('手順5・8の見出しは入口の名前のまま（「🔔 手順5 クラスタの作成の結果」「🔔 手順8 アプリの公開の結果」。変えない）', () => {
+    const rec = (handler: string) => baseRec(handler, { ok: true, lines: [], warnings: ['w'], extra: {} }, T) as never
+    expect(resumedNoteOf({ kind: 'create', record: rec('apprunDedicated:create') }).headline).toBe('🔔 手順5 クラスタの作成の結果（10:32 に終わりました）')
+    expect(resumedNoteOf({ kind: 'publish', record: rec('apprunDedicated:publishApp') }).headline).toBe('🔔 手順8 アプリの公開の結果（10:32 に終わりました）')
   })
 })

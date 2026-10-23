@@ -82,7 +82,7 @@ describe('記録の購読と「見た」の伝え方は、共通の部品だけ'
     expect(holders).toEqual(['src/renderer/projectOpsView.ts'])
   })
 
-  it('★ 記録を読む5つの画面は、共通の watchProjectOps を通る', () => {
+  it('★ 記録を読む6つの画面は、共通の watchProjectOps を通る', () => {
     const users = RENDERER.filter(f => /\bwatchProjectOps\(/.test(code(f))).map(f => f.replace(/\\/g, '/')).sort()
     expect(users).toEqual([
       'src/renderer/apprunDedicatedActions.ts',       // 専有型（AppRunDedicatedPanel が watchDedicatedOps 経由で使う）
@@ -90,6 +90,7 @@ describe('記録の購読と「見た」の伝え方は、共通の部品だけ'
       'src/renderer/components/PublishModal.tsx',     // モーダルの上部
       'src/renderer/hooks/useProjectOpsView.ts',      // HANAMII・Vercel
       'src/renderer/projectOpsView.ts',               // 定義
+      'src/renderer/teardown/watch.ts',               // 破棄の共通の部品（watchTeardownOps。段階0）
     ])
   })
 
@@ -99,6 +100,7 @@ describe('記録の購読と「見た」の伝え方は、共通の部品だけ'
       'src/renderer/apprunDedicatedActions.ts',
       'src/renderer/hooks/useProjectOpsView.ts',
       'src/renderer/projectOpsView.ts',
+      'src/renderer/teardown/watch.ts',
     ])
     // AppRunPanel は ackShown（内部で ackUpToFor）を通る
     expect(code('src/renderer/components/AppRunPanel.tsx')).toContain('ackShown(window.electronAPI.projectOps, projectDir, r => isSharedTypeOp(r) && shown.has(r.startedAt))')
@@ -131,9 +133,22 @@ describe('共用型の破棄の警告は、teardownRemainingWarnings だけが�
     expect(holders).toEqual(['src/shared/cloudCost.ts'])
   })
 
-  it('★ その場の画面（③公開の破棄・📡 一覧の破棄）と処理の記録（main）は、同じ teardownRemainingWarnings を通る', () => {
-    expect(code('src/renderer/components/AppRunPanel.tsx')).toContain('const warns = teardownRemainingWarnings(r)')
-    expect(code('src/renderer/components/PublishedListModal.tsx')).toContain('teardownRemainingWarnings(r).join(')
-    expect(code('src/main/projectOps.ts')).toContain('teardownRemainingWarnings({ keptBucketName: keptBucket, keptBucketNames: keptBuckets, keptRegistryName: keptRegistry, keptRegistryUnnamed })')
+  it('★ その場の画面（③公開の破棄・📡 一覧の破棄）と処理の記録（main）は、同じ警告の作り手（teardownWarningsOf → teardownRemainingWarnings）を通る', () => {
+    // 📡 一覧（2b-2）と ③公開の破棄（AppRunPanel。2c）は共通の流れに置き換わった。画面は警告を自分では作らない
+    // （結果の部品が toTeardownView／resumedTeardownView の warnings を描く）。プロジェクトの削除（projectDelete.ts。2d・3A-4b）も同じで、
+    // 済んだ回の step が sharedTeardownSpec.toView(...) を view に持ち、その warnings を呼び手が読むだけ。
+    for (const f of ['src/renderer/components/PublishedListModal.tsx', 'src/renderer/components/AppRunPanel.tsx', 'src/renderer/components/SharedTeardownSection.tsx', 'src/renderer/teardown/projectDelete.ts', 'src/renderer/components/Sidebar.tsx', 'src/renderer/components/ProjectDeleteDialog.tsx', 'src/renderer/components/teardown/ProjectDeleteResults.tsx']) {
+      expect(code(f), f).not.toContain('teardownRemainingWarnings(')
+    }
+    // その場の結果（SharedTeardownSection の onDone に渡る view）も、記録から開き直した結果（opResultFromRecord）も、同じ TeardownView の作り手を通る
+    expect(code('src/renderer/components/SharedTeardownSection.tsx')).toContain('sharedTeardownSpec.toView(outcome.result)')
+    expect(code('src/renderer/components/AppRunPanel.tsx')).toContain("out.teardownView = resumedTeardownView('sakura-apprun', r)")
+    expect(code('src/renderer/teardown/projectDelete.ts')).toContain('view: sharedTeardownSpec.toView(outcome.result)')
+    expect(code('src/renderer/teardown/targets/shared.ts')).toContain("toView: raw => toTeardownView('sakura-apprun', raw)")
+    // main の記録（summarizeResult）は文を自分で作らず、shared/teardownResult.ts の teardownWarningsOf を呼ぶ。teardownWarningsOf が
+    // teardownRemainingWarnings で作る（その場の画面〔toTeardownView〕も同じ teardownWarningsOf を通る。段階1で一本化した）。
+    expect(code('src/main/projectOps.ts')).toContain('for (const w of teardownWarningsOf(v)) addWarning(w)')
+    expect(code('src/main/projectOps.ts')).not.toContain('teardownRemainingWarnings(')
+    expect(code('src/shared/teardownResult.ts')).toContain('teardownRemainingWarnings({')
   })
 })

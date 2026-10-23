@@ -148,9 +148,9 @@ export function isClaudeUsageBlockedError(message: string): boolean {
 /** チャット利用不可時（isChatUsable=false）に案内画面へ出す文言。ChatPanel/ChatApp 共通。 */
 export const CHAT_NO_KEY_MESSAGE = 'APIキーが登録されていません。'
 /** 上の案内に続けて示すボタン誘導文。「さくらのAI Engine」「Claude」どちらのキーでも利用開始できる旨を伝える。
- *  W-1: この画面には「右上の 🔑」は無い（ChatPanel.tsx/ChatApp.tsx とも、直下に「🔑 APIキーを登録する」
- *  ボタンが実在する）。案内は無い場所ではなく、そのボタンを指す。 */
-export const CHAT_NO_KEY_HINT = '下の「🔑 APIキーを登録する」から、「さくらのAI Engine」または「Claude」のキーを登録してください。'
+ *  W-1: この画面には「右上の 🔑」は無い（無い場所を指さない）。直下に「🔑 APIキーを登録する」ボタンが
+ *  実在するので、文ではボタン名を言い直さない。 */
+export const CHAT_NO_KEY_HINT = '「さくらのAI Engine」または「Claude」のキーを登録してください。'
 
 /**
  * isChatUsable — チャット画面を表示してよいか（さくらのAI EngineキーまたはClaudeキーのいずれかがあれば利用可）。
@@ -179,7 +179,7 @@ export function claudeNoProjectGuidance(hasProjectDir: boolean, hasApiKey: boole
  */
 export function claudeConsentDeclinedGuidance(hasApiKey: boolean): string | null {
   if (hasApiKey) return null
-  return 'キャンセルしたので送信を中止しました。'
+  return '送信を中止しました。'
 }
 
 /** 初回同意済みか。 */

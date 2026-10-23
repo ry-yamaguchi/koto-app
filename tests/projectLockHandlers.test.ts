@@ -153,24 +153,28 @@ const readPublish = (dir: string): any => {
 const hanamiiTeardown = (dir: string) => {
   const p = path.join(dir, '.sakuraide.json')
   if (!fs.existsSync(p)) fs.writeFileSync(p, JSON.stringify({ publish: { hanamii: { projectId: 'hnm-proj-1' } } }, null, 2), 'utf-8')
-  return handler('hanamii:teardown')({}, 'hnm-proj-1', TOKEN, dir)
+  return handler('hanamii:teardown')({}, dir, { token: TOKEN }, { confirmed: true, projectId: 'hnm-proj-1' })
 }
 
 type Case = {
   name: string
   /** 走っているあいだ main の鍵が名乗る操作。 */
   op: '公開' | '削除'
+  /** 走っているあいだ main の鍵が名乗る公開先（記録の target）。 */
+  target: 'sakura-apprun' | 'hanamii' | 'vercel'
+  /** 断られた側が見る、走っている操作の言葉（画面の言葉。共用型・HANAMII の破棄は「破棄」）。 */
+  word: '公開' | '破棄'
   /** pending（公開開始マーカー）を書く公開の経路か（破棄は書かない）。 */
   writesPending: boolean
   invoke: (dir: string) => Promise<any>
 }
 
 const CASES: Case[] = [
-  { name: 'cloud:apply（共用型の公開）', op: '公開', writesPending: true, invoke: dir => handler('cloud:apply')(EVENT, dir, { confirmed: true }) },
-  { name: 'cloud:teardown（共用型の破棄）', op: '削除', writesPending: false, invoke: dir => handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: false }) },
-  { name: 'hanamii:publish（HANAMII の公開）', op: '公開', writesPending: true, invoke: dir => handler('hanamii:publish')({}, dir, { token: TOKEN, workspaceId: 'ws-1', name: 'myapp' }) },
-  { name: 'hanamii:teardown（HANAMII の破棄）', op: '削除', writesPending: false, invoke: dir => hanamiiTeardown(dir) },
-  { name: 'vercel:publish（Vercel の公開）', op: '公開', writesPending: true, invoke: dir => handler('vercel:publish')(EVENT, dir, { token: TOKEN, name: 'myapp' }) },
+  { name: 'cloud:apply（共用型の公開）', op: '公開', target: 'sakura-apprun', word: '公開', writesPending: true, invoke: dir => handler('cloud:apply')(EVENT, dir, { confirmed: true }) },
+  { name: 'cloud:teardown（共用型の破棄）', op: '削除', target: 'sakura-apprun', word: '破棄', writesPending: false, invoke: dir => handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: false, registryName: null }) },
+  { name: 'hanamii:publish（HANAMII の公開）', op: '公開', target: 'hanamii', word: '公開', writesPending: true, invoke: dir => handler('hanamii:publish')({}, dir, { token: TOKEN, workspaceId: 'ws-1', name: 'myapp' }) },
+  { name: 'hanamii:teardown（HANAMII の破棄）', op: '削除', target: 'hanamii', word: '破棄', writesPending: false, invoke: dir => hanamiiTeardown(dir) },
+  { name: 'vercel:publish（Vercel の公開）', op: '公開', target: 'vercel', word: '公開', writesPending: true, invoke: dir => handler('vercel:publish')(EVENT, dir, { token: TOKEN, name: 'myapp' }) },
 ]
 
 /**
@@ -192,15 +196,16 @@ describe('★★★ 1回目が走っている間の2回目は、外部の API �
       const held = await startHeld(() => c.invoke(dir))
       // 1回目は外部要求の手前まで来て止まっている（ここまでで外部要求は1件）
       expect(h.calls).toHaveLength(1)
-      expect(await runningOp(dir)).toBe(c.op)
+      expect(await runningOp(dir)).toEqual({ op: c.op, target: c.target })
 
       const before = [...h.calls]
       const second = await c.invoke(dir)
 
       // **2回目は断られ、外部の要求は1件も増えていない**（偽 client の呼び出し一覧で固定）
       expect(second.ok).toBe(false)
-      expect(second.message).toBe(projectBusyMessage(c.op))
-      expect(second.message).toContain(`（${c.op}）`)
+      expect(second.message).toBe(projectBusyMessage(c.op, c.target))
+      // 言葉は記録の op ではなく画面の言葉（共用型・HANAMII の破棄が走っている間は「（破棄）」。「（削除）」と言わない）
+      expect(second.message).toContain(`（${c.word}）`)
       expect(h.calls).toEqual(before)
 
       // 1回目を終わらせる
@@ -266,10 +271,28 @@ describe('★★ 鍵はプロジェクト単位: 公開先をまたいでも、�
 
     const apply = await handler('cloud:apply')(EVENT, dir, { confirmed: true })
     const vercel = await handler('vercel:publish')(EVENT, dir, { token: TOKEN, name: 'myapp' })
-    expect(apply.message).toBe(projectBusyMessage('削除'))
-    expect(vercel.message).toBe(projectBusyMessage('削除'))
+    expect(apply.message).toBe(projectBusyMessage('削除', 'hanamii'))
+    expect(vercel.message).toBe(projectBusyMessage('削除', 'hanamii'))
+    // HANAMII の破棄が走っている間は「破棄」と言う（記録の op の「削除」をそのまま言わない）
+    expect(apply.message).toContain('いま別の操作（破棄）を実行中です')
+    expect(vercel.message).toContain('いま別の操作（破棄）を実行中です')
     expect(h.calls).toEqual(before)
     await held.finish()
+  })
+
+  it('★★★ 破棄が走っている間は、ほかのどの入口も「（破棄）」で断る（共用型の破棄でも HANAMII の破棄でも）', async () => {
+    for (const hold of CASES.filter(x => x.op === '削除')) {
+      const dir = newProject()
+      const held = await startHeld(() => hold.invoke(dir))
+      const before = [...h.calls]
+      for (const caller of CASES) {
+        const r = await caller.invoke(dir)
+        expect(r.ok, `${hold.name} の最中の ${caller.name}`).toBe(false)
+        expect(r.message, `${hold.name} の最中の ${caller.name}`).toBe('いま別の操作（破棄）を実行中です。終わってからもう一度お試しください。')
+      }
+      expect(h.calls, hold.name).toEqual(before)
+      await held.finish()
+    }
   })
 
   it('別のプロジェクトは影響を受けない（片方が走っていても、もう片方は本体に入る）', async () => {
@@ -292,23 +315,21 @@ describe('★★ 鍵はプロジェクト単位: 公開先をまたいでも、�
     for (const alias of [`${dir}/`, `${dir}/.`, path.join(dir, 'sub', '..')]) {
       const r = await handler('vercel:publish')(EVENT, alias, { token: TOKEN, name: 'myapp' })
       expect(r.ok, alias).toBe(false)
-      expect(r.message, alias).toBe(projectBusyMessage('公開'))
+      expect(r.message, alias).toBe(projectBusyMessage('公開', 'vercel'))
     }
     expect(h.calls).toEqual(before)
     await held.finish()
   })
 })
 
-describe('hanamii:teardown: projectDir が無い呼び出しは鍵を掛けられないので、そのまま走る（保存場所には触れない）', () => {
-  it('projectDir 無しでも落ちず、HANAMII の削除だけが出る', async () => {
+describe('hanamii:teardown: projectDir が無い呼び出しは、鍵を掛ける相手が無いので、外部の API を1件も呼ばずに断る', () => {
+  it('projectDir 無し・確認の印無しは、HANAMII の削除も出ない（以前は projectDir 無しだと鍵も掛けずに HANAMII の削除だけが走った）', async () => {
     h.blockNext = false
-    globalThis.fetch = (async (input: unknown, init: any) => {
-      h.calls.push(`${init?.method ?? 'GET'} ${String(input)}`)
-      return { ok: true, status: 204, async text() { return '' } }
-    }) as unknown as typeof fetch
-    const r = await handler('hanamii:teardown')({}, 'hnm-proj-1', TOKEN)
-    expect(r).toEqual({ ok: true, appDeleted: true, executed: [] })
-    expect(h.calls).toEqual(['DELETE https://hanamii.jp/api/v1/projects/hnm-proj-1'])
+    for (const [dir, opts] of [[undefined, { confirmed: true, projectId: 'hnm-proj-1' }], ['', { confirmed: true, projectId: 'hnm-proj-1' }], [newProject(), { projectId: 'hnm-proj-1' }]] as const) {
+      const r = await handler('hanamii:teardown')({}, dir, { token: TOKEN }, opts)
+      expect(r.ok).toBe(false)
+    }
+    expect(h.calls).toEqual([])
   })
 })
 
@@ -332,12 +353,13 @@ describe('withProjectLock の定義は src/main/projectLock.ts の1か所だけ�
     expect(definers).toEqual(['src/main/projectLock.ts'])
   })
 
-  it('★ 使っているファイルは、専有型・共用型・HANAMII・Vercel の4つで、どれも ../projectLock から import している', () => {
+  it('★ 使っているファイルは、破棄の共通の骨・専有型・共用型・HANAMII・Vercel の5つで、どれも ../projectLock から import している', () => {
     const users = walk(path.join(process.cwd(), 'src/main'))
       .filter(f => /withProjectLock\(/.test(codeOf(f)) && !f.endsWith('projectLock.ts'))
       .map(f => path.relative(process.cwd(), f))
       .sort()
     expect(users).toEqual([
+      'src/main/cloud/teardownShell.ts',
       'src/main/ipc/apprunDedicated.ts',
       'src/main/ipc/cloud.ts',
       'src/main/ipc/hanamii.ts',

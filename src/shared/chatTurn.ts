@@ -852,7 +852,11 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           if (shown !== r.content) ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: shown } })
           // 促してもやらなかった場合は、**黙って成功に見せない**
           // W-47: 現在のモデル（useModel）が既定（Kimi K2.7 Code）なら、その名前は出さない。
-          const warn = ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles, useModel)
+          // ただし書き込みのツールを渡していないターン（単独チャット＝toolsProjectDir が無い）では見ない。
+          // AI はファイルを書けないので、「作成しました」は返事の中の文章のことである
+          // （2026-10-14 実機・0.6.21-rc.2: 「お店の紹介文を考えて」への返事の「紹介文を作成しました」に
+          // 「書き込みが行われていません」が付いた。上の促しは toolsProjectDir を見ていたが、ここは見ていなかった）。
+          const warn = (toolsProjectDir ? ports.h.unexecutedChangeWarning(ports.h.claimsFileChange(r.content), wroteFiles, useModel) : null)
             ?? ports.h.unexecutedToolWarning(sawToolMarkup, usedTools, useModel)
           if (warn) {
             ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: `${shown}\n\n${warn}` } })

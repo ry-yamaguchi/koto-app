@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { runSecurityCheck, SecurityCheckResult, CheckRecord, checkRecordKey, formatCheckRecord } from '../securityCheck'
 import { foldSecurity } from '../appRunFolding'
 import CopyButton from './CopyButton'
+import SecurityReportBody from './SecurityReportBody'
 
 // 🛡 セキュリティチェックの節。公開フローの「事前チェック」の次に置く
 // （2026-08-21 Ryosuke 指定。最初は上部バーに置いたが、公開の流れの中が自然）。
@@ -104,7 +105,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
           文言も実態に合わせる（何を見るか／このあと選べること／責任の所在）。 */}
       <p className="text-[11px] text-ink-muted leading-relaxed">
         簡易的なセキュリティチェックを実施します。（秘密情報の書き込みや危険な記述がないか）<br />
-        公開されるファイルを、原則すべて確認します（量が多いときは何回かに分けます。確認しきれなかったファイルは、結果に名前を出します）。<br />
+        公開されるファイルを、原則すべて確認します（確認しきれなかったファイルは、結果に名前を出します）。<br />
         チェック後、修正するかどうか選択可能です。<br />
         なおAIによる簡易的な確認であるため、最終的にはご自身で確認してください。
       </p>
@@ -145,7 +146,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
               <div className="flex items-center justify-end">
                 <CopyButton text={result.report} title="チェック結果をコピー" />
               </div>
-              <pre className="text-xs text-ink-secondary whitespace-pre-wrap select-text max-h-52 overflow-y-auto font-sans">{result.report}</pre>
+              <SecurityReportBody result={result} />
             </div>
           </details>
         ) : (
@@ -163,7 +164,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
             </div>
             {/* 結果は目印方式で「判定＋指摘（最大5件）」だけに絞ってある（＝要約）。
                 思考の文章は securityCheck 側で捨てるので、ここには届かない */}
-            <pre className="text-xs text-ink-secondary whitespace-pre-wrap select-text max-h-52 overflow-y-auto font-sans">{result.report}</pre>
+            <SecurityReportBody result={result} />
             {result.verdict === 'warn' && (
               <span className="block">
                 <button

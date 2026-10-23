@@ -144,7 +144,7 @@ describe('目安は段の仕組みから出る（この Mac に記録が無い�
   it('★★ 目安の文・数字を、ほかの場所に書き写していない（固定文を持つ関数・定数が main から消えている）', () => {
     // コメントを除いたコードに、「N分かかります」「実測では」の直書きが無い。
     const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/([^:'"`])\/\/.*$/gm, '$1')
-    for (const f of ['src/main/cloud/apprunDedicatedApply.ts', 'src/main/cloud/apprunDedicatedAppApply.ts', 'src/main/cloud/apprunDedicated.ts', 'src/main/ipc/apprunDedicated.ts']) {
+    for (const f of ['src/main/cloud/apprunDedicatedApply.ts', 'src/main/cloud/apprunDedicatedAppApply.ts', 'src/main/cloud/apprunDedicated.ts', 'src/main/ipc/apprunDedicated.ts', 'src/main/ipc/apprunDedicatedTeardown.ts']) {
       const code = strip(fs.readFileSync(path.join(__dirname, '..', f), 'utf-8'))
       expect(code, `${f} に目安の直書きがある`).not.toMatch(/およそ\d+分|ふつう\d*分|ふつう数分|さくら側で|実測では|目安です/)
       expect(code, `${f} に旧い目安の関数・定数が残っている`).not.toMatch(/lbDeleteEstimateNote|lbAddressEstimateNote|LB_DELETE_MEASURED_MINUTES|LB_ADDRESS_EMPTY_AFTER_MINUTES/)

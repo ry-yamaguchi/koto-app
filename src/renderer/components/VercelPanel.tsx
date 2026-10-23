@@ -270,7 +270,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
         {!tokenLoaded && <p className="text-xs text-ink-muted">確認中…</p>}
         {tokenLoaded && !token && (
           <p className="text-xs text-ink-secondary leading-relaxed">
-            Vercel のトークンを登録してください（他のキーと同じ場所で一元管理します）。
+            Vercel のトークンを登録してください。
           </p>
         )}
         {tokenLoaded && token && tokens && tokens.length > 1 && (
@@ -337,7 +337,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
               <p className="text-[11px] text-brand-red leading-relaxed select-text">{preflight.message}</p>
             )}
             <p className="text-[11px] text-ink-muted leading-relaxed">
-              手元のファイルを読んで確かめているだけです（何も作らず、何も送っていません）。
+              手元のファイルを読んで確かめているだけです。
             </p>
           </div>
         )}
@@ -355,7 +355,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
               className="mt-1 w-full bg-elevated border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink placeholder-ink-muted outline-none focus:border-sakura disabled:opacity-50"
             />
             <p className="mt-1 text-[11px] text-ink-muted leading-relaxed">
-              同じ名前で公開し直すと、Vercel 側で同じプロジェクトの本番の公開として更新されます（Vercel ではこれを「本番デプロイ」と呼びます）。
+              同じ名前で公開し直すと、Vercel 側の同じプロジェクトの「本番デプロイ」（本番の公開）が更新されます。
             </p>
           </div>
           <button
@@ -494,7 +494,7 @@ function ErrorMessageBlock({ msg, detail }: { msg: string; detail: string }) {
   )
 }
 
-// 🔰 初めて公開する方へ（折りたたみ）。トークン発行手順・アプリが動く場所・常駐サーバ不可の注意。
+// 🔰 初めて公開する方へ（折りたたみ）。トークン発行手順・アプリが動く場所の注意。常駐サーバ不可は画面上部の説明に1本化。
 function VercelFirstTimeGuide() {
   return (
     <details className="rounded-xl border border-brand-yellow/70 bg-surface p-3">
@@ -506,15 +506,14 @@ function VercelFirstTimeGuide() {
           <li>
             <a href="https://vercel.com/account/tokens" className="text-sakura hover:underline">
               vercel.com/account/tokens
-            </a> でトークンを発行する（Vercelへのログインが必要です）。
-            <b>範囲（Scope）</b>は3つから選べます——
+            </a> でトークンを発行する。
+            <b>範囲（Scope）</b>は
             <b>Full Account</b>（個人＋全チーム）／<b>チーム</b>（そのチームの全プロジェクト）／
-            <b>プロジェクト</b>（1つだけ）。
+            <b>プロジェクト</b>（1つだけ）から選べます。
             <b>Koto では「Full Account」か「チーム」を選んでください。</b>
-            Koto のプロジェクト1つにつき Vercel のプロジェクトが1つ作られるため、
-            <b>1プロジェクトに絞ると、そのプロジェクトしか公開できなくなります</b>
-            （2つ目を公開しようとした時点で拒否されます）。
-            <b>トークンは作成時に一度しか表示されません。</b>その場でコピーしてください。
+            Koto はプロジェクトごとに Vercel のプロジェクトを1つ作るので、
+            <b>1プロジェクトに絞ると2つ目からは公開を拒否されます</b>。
+            <b>トークンは作成時に一度しか表示されない</b>ので、その場でコピーしてください。
           </li>
           <li>
             <b>範囲を絞ったトークン（チーム／プロジェクト）を使うときは、チームIDを空欄のままにしてください。</b>
@@ -533,7 +532,6 @@ function VercelFirstTimeGuide() {
             この一文だけを理由に諦める。targetProfiles.ts の説明文と揃える。
           */}
           <p>⚠️ <b className="text-ink-secondary">アプリが動くのは国外（Vercelの海外サーバ）です。</b>データの保存を使う場合、データ自体はさくらのオブジェクトストレージ（日本国内）に置かれます。アプリの実行そのものを国内にしたい場合は HANAMII やさくらのAppRun を選んでください。</p>
-          <p>⚠️ <b className="text-ink-secondary">常駐サーバは動きません。</b>Vercelは静的サイト・サーバーレス関数向けです（Node.jsのlisten等は不可）。</p>
         </div>
       </div>
     </details>

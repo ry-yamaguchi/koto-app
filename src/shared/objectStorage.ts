@@ -35,7 +35,26 @@ export type StorageTeardown = {
   deletePrefix: string | null
   /** 利用者に見せる説明。 */
   note: string
+  /**
+   * バケットごとは消さない（`deleteBucket: false`）ときの、**残す理由の事実**。消すときは付かない。
+   *   ・`ownFiles` … Koto が作ったのではないファイル（`projects/` の外）が入っている
+   *   ・`usedByOthers` … ほかのプロジェクトのデータが入っている
+   * 両方が当てはまることがある（判断は `ownFiles` が先だが、事実は両方を返す）。結果の警告が「後で消す場合は削除して」と言ってよいかを決める材料
+   * （ほかのプロジェクトが使う保存場所を、言われたとおり消すと、そのプロジェクトのデータも消える）。
+   */
+  keptReasons?: { ownFiles: boolean; usedByOthers: boolean }
 }
+
+/**
+ * ほかのプロジェクトの**記録**（`.sakura-cloud/env.json` の同意済みの保存場所・`state.json` の bucket 資源・`.sakuraide.json` の公開の記録）から分かった、あるバケットの利用者
+ * （main の `bucketUsersFromRecords` が読んで作る。`teardownPlanFor` が「バケットごと消してよいか」に使う）。
+ * 使っていると数えるのは、**同じバケットを同意済みで使い、かつ公開の記録がまだあるプロジェクトだけ**（破棄が済んだプロジェクトは、設定にバケットが残っていても数えない）。
+ *   ・`known: true` … 兄弟のプロジェクトを全部読めた。`users` はそのバケットを使っているプロジェクトの名前（0件なら、記録の上では誰も使っていない）
+ *   ・`known: false` … 読めなかった（親フォルダの一覧・兄弟の記録・たどれないリンク）。**「いない」ではない**——わからないときは消さない
+ * キーの一覧（`allKeys`）だけでは、保存場所を用意しただけでまだ何も書いていない・目印（.koto-keep）が消えたプロジェクトが見えない
+ * （2026-10-21 実機: 共用型 AppRun の公開が使い続けている保存場所を、別のプロジェクトの削除がバケットごと消した）。
+ */
+export type BucketRecordUsers = { known: true; users: readonly string[] } | { known: false }
 
 /**
  * さくらのオブジェクトストレージのバケット名として使えるか（純関数）。
@@ -54,6 +73,50 @@ export function isValidBucketName(name: string): boolean {
   if (!/^[a-z][a-z0-9-]*[a-z0-9]$/.test(name)) return false
   if (name.includes('--')) return false // 読み違えのもと。避ける
   return true
+}
+
+/**
+ * さくらの仕様を、利用者向けの言い方にしたもの。保存場所の名前の再利用について、画面の文で共通に使う。
+ * 文を手で複製しない（食い違いのもとになる）。
+ */
+export const BUCKET_NAME_REUSE_RULE = 'さくらでは、削除した保存場所と同じ名前は、削除した月のうちは作り直せません。'
+
+/**
+ * 作成を頼んだのに一覧に無かった保存場所の説明（純関数）。3つの入口（保存場所の用意・設定の「新しく作る」・
+ * 公開の apply）で共通。作成 API を呼ぶ順序・一覧での存在確認は呼び出し側のまま、ここは文だけを組み立てる。
+ *
+ * ── 原本（2026-10-19 に確認）──────────────────────────────────────────────
+ * FAQ  https://manual.sakura.ad.jp/cloud/objectstorage/faq.html
+ *   「同一月内において、削除したバケットと同名のバケットを再作成することはできません」
+ * 基本操作  https://manual.sakura.ad.jp/cloud/objectstorage/basic.html
+ *   「バケット名は…オブジェクトストレージ全体で一意である必要がある」
+ * 実機（0.6.22-rc.3）: 10/1 に削除した名前の作成が 18 日後も HTTP 409 のまま、一覧にも無かった。
+ * 「削除した直後だけ」「しばらく待てば作れる」という以前の理解は誤りだった。
+ * 409 は、ほかで使われている名前か、今月削除した名前。待っても直らないので、別の名前の保存場所へ誘導する。
+ * 作成が 2xx なのに一覧に無いときだけ、反映待ちの可能性があるので「しばらく待って」と言う。
+ */
+export function bucketNotListedMessage(opts: {
+  bucket: string
+  status: number
+  responseText: string
+  /** 409 のときに次にすべき操作（入口ごとに違う）。1文で、句点で終わる */
+  nextStep: string
+  /** 応答の括弧の中に「／」で続ける補足（例: いまある保存場所）。任意 */
+  extra?: string
+  /**
+   * 呼び出し側が「保存場所『X』を用意できませんでした」と前置きするときに true。名前と失敗を2回言わないため。
+   * true のとき、書き出しの「保存場所『X』を作れませんでした。」「保存場所『X』を作成しましたが、」を省く。
+   */
+  omitHead?: boolean
+}): string {
+  const { bucket, status, responseText, nextStep, extra, omitHead } = opts
+  const detail = `${responseText ? ' ' + responseText : ''}${extra ? '／' + extra : ''}`
+  if (status === 409) {
+    return `${omitHead ? '' : `保存場所『${bucket}』を作れませんでした。`}この名前は、ほかで使われているか、今月削除した名前です。`
+      + `${BUCKET_NAME_REUSE_RULE}${nextStep}（作成の応答: HTTP 409${detail}）`
+  }
+  return `${omitHead ? '作成を頼みましたが、' : `保存場所『${bucket}』を作成しましたが、`}一覧にまだ出ていません。しばらく待ってからお試しください。`
+    + `（作成の応答: HTTP ${status}${detail}）`
 }
 
 /**
@@ -133,6 +196,26 @@ export function consentedBuckets<T extends BucketSpecLike>(list: readonly T[] | 
   })
 }
 
+/** 同意済みの保存場所1件分（確認の材料・破棄が消すものの形。`consentedPlacementsOf` が作る）。 */
+export type ConsentedPlacement = { bucket: string; prefix: string; shared: boolean; consentedAt: string }
+
+/**
+ * 同意済みの保存場所を、**破棄の判断に使う形**（prefix は無ければ空・共有は明示的に false のときだけ専用）にして返す（純関数）。
+ *
+ * 共用型の破棄で保存場所を読む3つ——確認の材料 `consentedPlacements`（`storage:placement`）・消すもの `storagePlacementsOf`
+ * （`teardownStorageForProject`）・確認の記録 `sharedTeardownRecordOf`（`cloud:teardownRecord`）——は、**どれもこの1つを通る**。
+ * 読み方が1つでも別だと、確認が名前を出した保存場所と実際に消す保存場所が食い違う（掟10）。
+ * 同意済みかどうかは `consentedBuckets` の判断のまま。
+ */
+export function consentedPlacementsOf(list: readonly BucketSpecLike[] | undefined | null): ConsentedPlacement[] {
+  return consentedBuckets(list).map(b => ({
+    bucket: b.bucket,
+    prefix: b.prefix ?? '',
+    shared: b.shared !== false,
+    consentedAt: b.consentedAt ?? '',
+  }))
+}
+
 /** `persistence` を持つスペック（shared から main の型を参照しないための最小の形）。 */
 export type SpecWithPersistence = { persistence?: { objectStorage?: BucketSpecLike[] } }
 
@@ -203,49 +286,78 @@ export function foreignKeys(allKeys: string[]): string[] {
   })
 }
 
+/** バケットごとは消さなかった回の、緑の行（「保存場所『X』のデータを削除しました — …」）の続き。理由・月額・次の操作は黄色の文が言う。 */
+const KEPT_STORAGE_NOTE = '保存場所は残します。'
+
 /**
  * 破棄のとき、何を消してよいかを決める（純関数）。
  *
- * **判断は2段構え。**
+ * **判断は3段構え。**
  *   1. `projects/` の外に何かあれば → **バケットは消さない**（利用者のデータ）
- *   2. ほかのプロジェクトが使っていれば → バケットは消さない（道連れになる）
- * どちらも無いときだけ、バケットごと消してよい（残すと課金が続くため）。
+ *   2. ほかのプロジェクトが使っていれば → バケットは消さない（道連れになる）。見るのは2つ:
+ *      ・バケットの中のキー（`allKeys`）に、ほかのプロジェクトの prefix がある
+ *      ・ほかのプロジェクトの記録（`recordUsers`）に、同じバケットが書かれていて、そのプロジェクトがまだ公開している（公開の記録がある）
+ *   3. 記録を読めなかった（`recordUsers` が known:false・渡されなかった）→ **消さない**
+ * どれも無いときだけ、バケットごと消してよい（残すと課金が続くため）。
+ *
+ * **キーの一覧だけでは足りない。** 保存場所を用意しただけでまだ何も書いていない・目印が消えたプロジェクトは、一覧に出ない。
+ * 実機（2026-10-21）では、共用型 AppRun の公開が使い続けている保存場所を、別のプロジェクトの削除が一覧だけを見て「ほかに使う prefix が無い」と判断し、
+ * バケットごと消した。だから記録も見る。**`recordUsers` を渡し忘れたときも「わからない」と同じ**（消さない側に倒す）。
+ *
+ * **残す回の `note` は「保存場所は残します。」だけ。** 残した理由・月額・次にすべき操作は、結果の黄色の文
+ * （`shared/cloudCost.ts` の `remainingCostWarning`）が1か所で言う。ここでも言うと、緑の ✅ の行と黄色の枠が同じことを2回言い、
+ * しかも食い違う（ほかのプロジェクトも使う保存場所に、緑の行だけが「削除してください」と言っていた・2026-10-19 検分）。
+ * 記録を読めなかったために残した回は、`keptReasons` を「どちらでもない」にする（黄色の文は「使っているプロジェクトが無いか確かめてください」と言う。
+ * 使っているとは確かめていないので、「ほかのプロジェクトも使っています」とは言わない）。
+ * **消した回の `note` は、消し終わったあとの結果の行にそのまま出る**（過去形で事実を言う）。
  *
  * @param allKeys バケットの中に実在するキーの一覧。
  *   **ローカルの記録ではなく、バケットを一覧して得たものを渡すこと。**
  *   利用者がプロジェクトのフォルダを手で消していると、記録は当てにならない。
+ * @param recordUsers ほかのプロジェクトの記録から分かった利用者（`main/cloud/bucketUsers.ts` の `bucketUsersFromRecords`）。
  */
-export function teardownPlanFor(placement: StoragePlacement, allKeys: string[] = []): StorageTeardown {
-  const foreign = foreignKeys(allKeys)
-  const others = projectPrefixesFromKeys(allKeys).filter(p => p !== placement.prefix)
+export function teardownPlanFor(placement: StoragePlacement, allKeys: string[], recordUsers: BucketRecordUsers): StorageTeardown {
+  const keys = allKeys ?? []
+  const foreign = foreignKeys(keys)
+  const others = projectPrefixesFromKeys(keys).filter(p => p !== placement.prefix)
+  const usedByOthers = others.length > 0 || (recordUsers?.known === true && recordUsers.users.length > 0)
 
   if (foreign.length > 0) {
     return {
       deleteBucket: false,
       deletePrefix: placement.prefix,
-      note: `このプロジェクトのデータだけを削除します。保存場所には Koto が作ったのではないファイルが${foreign.length}件あるため、`
-        + '保存場所そのものは残します（月額の課金は続きます）。不要であれば、さくらのコントロールパネルで中身を確認してから削除してください。',
+      note: KEPT_STORAGE_NOTE,
+      keptReasons: { ownFiles: true, usedByOthers },
     }
   }
-  if (others.length > 0) {
+  if (usedByOthers) {
     return {
       deleteBucket: false,
       deletePrefix: placement.prefix,
-      note: `このプロジェクトのデータだけを削除します。保存場所はほかの${others.length}件のプロジェクトが使っているため残します。`,
+      note: KEPT_STORAGE_NOTE,
+      keptReasons: { ownFiles: false, usedByOthers: true },
+    }
+  }
+  // 記録を読めなかった（`known: true` と確かめられたときだけ先へ進む）。**「いない」に倒さない。**
+  if (recordUsers?.known !== true) {
+    return {
+      deleteBucket: false,
+      deletePrefix: placement.prefix,
+      note: KEPT_STORAGE_NOTE,
+      keptReasons: { ownFiles: false, usedByOthers: false },
     }
   }
   if (!placement.shared) {
     return {
       deleteBucket: true,
       deletePrefix: placement.prefix,
-      note: 'このプロジェクト専用の保存場所ごと削除します。中のデータはすべて失われ、月額の課金も止まります。',
+      note: 'このプロジェクト専用の保存場所ごと削除しました。中のデータはすべて失われ、月額の課金も止まります。',
     }
   }
   return {
     deleteBucket: true,
     deletePrefix: placement.prefix,
-    note: 'このプロジェクトのデータを削除します。保存場所を使っているプロジェクトはほかにありません。'
-      + '保存場所を残すと月額の課金が続くため、あわせて削除できます。',
+    note: '保存場所ごと削除しました。月額の課金も止まります。',
   }
 }
 
@@ -291,7 +403,7 @@ export function publicUrlFor(s3Endpoint: string, bucket: string, key: string): s
  */
 export function storageCostNote(mode: BucketMode, monthlyYen: number): string {
   if (mode === 'dedicated') {
-    return `新しいプロジェクトは、公開のとき専用の保存場所を作れます（1つ月額${monthlyYen}円（税込）・作る前に金額を確認）。`
+    return `新しいプロジェクトは、公開のとき専用の保存場所を作れます。1つ月額${monthlyYen}円（税込）で、作る前に金額を確認します。`
   }
   return `ほかのプロジェクトと共有の保存場所を使います。追加の費用はかかりません（保存場所全体で月額${monthlyYen}円）。`
     + 'ただし、公開したアプリのアクセスキーが漏れると、同じ保存場所にあるほかのプロジェクトのデータにもアクセスできてしまいます。'

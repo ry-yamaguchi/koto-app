@@ -35,6 +35,9 @@ const h = vi.hoisted(() => ({
    * 既定は 200＝応答している。503 にすると `no-backend`＝**アプリがまだ応答していない**。
    */
   probeStatus: 200,
+  /** 目印を置く要求（`<バケット> <キー>`）と、置けない回を作る印（2026-10-21）。 */
+  markers: [] as string[],
+  markerThrows: false,
 }))
 
 const ISSUED = { accessKey: 'AKIA-NEW-ONE', secretKey: 'S3CRET-NEW-ONE', permissionId: 'perm-new' }
@@ -65,6 +68,10 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
       return {
         siteInfo: () => SITE,
         async issueKey(_bucket: string, displayName: string) { h.issuedNames.push(displayName); return ISSUED },
+        async putMarker(bucket: string, key: string) {
+          h.markers.push(`${bucket} ${key}`)
+          if (h.markerThrows) throw new Error('保存場所に書けませんでした（テスト）')
+        },
         async listPermissions() { return h.permissions },
         async deletePermission(id: string) { h.deletedPermissions.push(id) },
         async dispose() { /* 一時キーは使っていない */ },
@@ -133,6 +140,8 @@ beforeEach(() => {
   h.imageCalls = 0
   h.imageFails = false
   h.probeStatus = 200
+  h.markers = []
+  h.markerThrows = false
   progressMsgs = []
 })
 afterEach(() => {
@@ -202,10 +211,10 @@ function okRoutes(): Record<string, Route | Route[]> {
 const CONSENTED_BUCKET = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true, consentedAt: '2026-08-14T00:00:00.000Z' }
 
 /** `.sakura-cloud/env.json` と、⑤で作られたクラスタの記録を置く。 */
-function setupProject(opts: { storage?: boolean; env?: { name: string; value: string }[] } = {}) {
+function setupProject(opts: { storage?: boolean; env?: { name: string; value: string }[]; bucket?: Record<string, unknown> } = {}) {
   const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
   if (opts.env) spec.service.env = opts.env
-  if (opts.storage !== false) spec.persistence = { objectStorage: [CONSENTED_BUCKET] }
+  if (opts.storage !== false) spec.persistence = { objectStorage: [(opts.bucket ?? CONSENTED_BUCKET) as any] }
   fs.mkdirSync(path.join(projectDir, '.sakura-cloud'), { recursive: true })
   fs.writeFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
   writeApprunDedicatedRecordFs(projectDir, { clusterID: 'cluster-x', asgID: 'asg-y', loadBalancerID: 'lb-z' })
@@ -620,5 +629,78 @@ describe('AppRun 専有型: 保存場所の鍵の ID を記録する（⑥の破
     expect(result.ok).toBe(false)
     expect(h.deletedPermissions).toContain(ISSUED.permissionId) // いま発行した分は取り消した
     expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBe('perm-live-before')
+  })
+})
+
+// ── 目印（.koto-keep）の置き直し（2026-10-21 実機の欠陥の副）──────────────────────────────────────
+// 別の公開先の破棄が prefix を目印ごと消したあと、専有型へ公開し直しても目印は戻らなかった。鍵を発行する issueStorageEnvFor が
+// HANAMII・Vercel・専有型の公開すべてで目印を置く。
+describe('★★★ AppRun 専有型の公開: 同意済みの保存場所に目印を置き直す', () => {
+  it('公開が成功したら、目印を置く要求が1件出る。保存場所を使わない公開では出ない。余計な警告は出さない', async () => {
+    setupProject()
+    const { result } = await runPublish()
+    expect(result.ok).toBe(true)
+    expect(h.markers).toEqual(['koto-data-x projects/myapp/.koto-keep'])
+    expect((result.warnings ?? []).some((w: string) => w.includes('.koto-keep'))).toBe(false)
+
+    h.markers = []
+    setupProject({ storage: false })
+    const second = await runPublish()
+    expect(second.result.ok).toBe(true)
+    expect(h.markers).toEqual([])
+  })
+
+  it('★★ 目印を置けなくても公開は成功のまま。warnings に .koto-keep の知らせが1行', async () => {
+    setupProject()
+    h.markerThrows = true
+    const { result } = await runPublish()
+
+    expect(result.ok).toBe(true)
+    const notes = (result.warnings ?? []).filter((w: string) => w.includes('.koto-keep'))
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain('保存場所に書けませんでした（テスト）')
+    expect(notes[0]).toContain('公開は続けました')
+  })
+
+  it('★★★ 目印を置けなかった知らせは、公開がもともと出す警告を消さない。あとに足される（置き換えない・同じ知らせを2回出さない）', async () => {
+    // もともとの警告を1件作る: 古いバージョンの一覧を取得できない（公開は成功のまま warnings に1行残る）
+    const routes = okRoutes()
+    routes['GET /applications/app-1/versions?maxItems=20'] = { status: 500, body: { error: 'テスト用の失敗' } }
+
+    // 目印が置けた回の警告（もともとの警告だけ）
+    setupProject()
+    const base = await runPublish(routes)
+    expect(base.result.ok).toBe(true)
+    const baseWarnings: string[] = base.result.warnings ?? []
+    expect(baseWarnings.some(w => w.includes('古いバージョンの一覧を取得できませんでした'))).toBe(true)
+    expect(baseWarnings.some(w => w.includes('.koto-keep'))).toBe(false)
+
+    // 目印を置けなかった回: もともとの警告がそのまま先に並び、目印の知らせが最後に1行足される
+    fs.rmSync(projectDir, { recursive: true, force: true })
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-dedicated-storage-'))
+    if (server) { server.close(); server = null }
+    h.markerThrows = true
+    setupProject()
+    const failed = await runPublish(routes)
+    expect(failed.result.ok).toBe(true)
+    const warnings: string[] = failed.result.warnings ?? []
+    expect(warnings).toHaveLength(baseWarnings.length + 1)
+    expect(warnings.slice(0, baseWarnings.length)).toEqual(baseWarnings)
+    expect(warnings[warnings.length - 1]).toContain('.koto-keep')
+    expect(warnings[warnings.length - 1]).toContain('保存場所に書けませんでした（テスト）')
+  })
+
+  it('★★★ prefix が無い同意済みの保存場所では、目印を置く要求が1件も出ない（`undefined.koto-keep` をバケット直下に作らない）。公開は成功のまま・知らせも出ない', async () => {
+    // 目印をバケット直下に置くと、projects/ の外のファイル（利用者のもの）に見えて、そのバケットは二度と消せなくなる（foreignKeys）。
+    // env.json の検証は、prefix があれば「/」で終わることを求める（空文字は通らない）。prefix が無いのが、この形の唯一の入口
+    const { prefix: _omit, ...withoutPrefix } = CONSENTED_BUCKET
+    setupProject({ bucket: withoutPrefix })
+    const { result, versionEnv } = await runPublish()
+    expect(result.ok).toBe(true)
+    expect(h.markers).toEqual([])
+    expect((result.warnings ?? []).some((w: string) => w.includes('.koto-keep'))).toBe(false)
+    // 鍵と環境変数は、いつもどおり渡している（目印を置かないだけ）。prefix は空で渡る
+    expect(versionEnv.find(v => v.key === STORAGE_ENV.bucket)?.value).toBe('koto-data-x')
+    expect(versionEnv.find(v => v.key === STORAGE_ENV.prefix)?.value).toBe('')
   })
 })

@@ -10,11 +10,11 @@
 // **書き込みは main の1か所**（projectMeta.ts 経由。書く直前にディスクから読み直す）。
 // ここは、消す依頼と、記録を読む側だけを受け持つ。
 
-import type { PublishTargetKind } from './publishStatus'
+import { parseApprunLegacy, type PublishTargetKind } from './publishStatus'
 import { forgetPublishTargetRecord } from './projectMeta'
 
 /** プロジェクトの公開記録の置き場。 */
-function metaPath(projectDir: string): string {
+export function metaPath(projectDir: string): string {
   return `${projectDir}/.sakuraide.json`
 }
 
@@ -79,7 +79,7 @@ export async function readPublishTargets(projectDir: string): Promise<PublishTar
  *
  * 専有型の「すべて削除」の確認は、保存場所を巻き添えにされる**ほかの公開先**（HANAMII・共用型など）の名前を、この記録から読んで言う。
  * 読めなかったのを空配列に倒すと、確認の文は「ほかに公開先は無い」ように見えたまま、ほかの公開先が使う保存場所を消してしまう。
- * 投げれば、呼び出し側（dedicatedTeardownFlow の loadDedicatedTeardownFacts）が「読めなかった」事実を残し、確認の文が言える。
+ * 投げれば、呼び出し側（teardown/facts.ts の loadTeardownFacts）が「読めなかった」事実を残し、確認の文が言える。
  *
  * 投げるのは次のとき: ファイルを読めない（無い・権限・IPC の失敗）／JSON として読めない／中身の形が違う（`parsePublishTargets` が null）。
  * 読めて、記録の公開先が無いだけなら空配列を返す（投げない）。
@@ -91,37 +91,109 @@ export async function readPublishTargetsOrThrow(projectDir: string): Promise<Pub
   return targets
 }
 
+const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v !== ''
+
 /**
- * プロジェクトの削除の確認用に、公開記録の公開先を読む。**「読めなかった」と「記録が無い」を言い分ける**（2026-10-08 検分 A の双子）。
- *
- * プロジェクトの削除は、フォルダごとゴミ箱へ移す。公開記録（.sakuraide.json）が読めないまま「公開は残っていない」と見せると、
- * 公開が残っていてもそれを警告できず、記録ごとフォルダが移ってしまい、Koto から破棄できなくなる。だから読めなかったことを `unreadable` で返し、
- * 確認の画面が注意を出せるようにする。
- *
- * ・`.sakuraide.json` が**無い**（まだ何も公開していないプロジェクト・既存のフォルダを開いただけのもの）は、読めなかったのではなく
- *   「記録が無い」＝`{ targets: [], unreadable: false }`。無いたびに注意を出すと、公開していないプロジェクトの削除すべてに偽の警告が出る。
- * ・ファイルがあるのに読めない（権限・IPC の失敗）／JSON として読めない／中身の形が違う（`readPublishTargetsOrThrow` が投げる）は
- *   `{ targets: [], unreadable: true }`。
- * 存在確認そのものが失敗したときは、ファイルがあるとみなして読みにいく（読めなければ unreadable になる＝黙って「無い」にしない）。
+ * 保存場所を使いうる公開先（HANAMII・共用型・専有型・Vercel）。レンタルサーバは保存場所を使わない
+ * （`shared/storageKeys.ts` の `StorageTarget` に無い）。破棄の確認が「ほかの公開先」を挙げるときは、この表で絞る
+ * （保存場所を使わない公開先を挙げると、「この保存場所は〜でも使っているため」が事実と違う文になる。親の判断・2026-10-10）。
  */
-export async function readPublishTargetsChecked(projectDir: string): Promise<{ targets: PublishTargetKind[]; unreadable: boolean }> {
+export const PUBLISH_TARGETS_USING_STORAGE: readonly PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-apprun-dedicated']
+
+/**
+ * `publishTargetsWithLegacy`（D9=2）。公開記録（JSON.parse 済み）と、旧い共用型の記録（`.sakura-cloud/state.json`、無ければ null）から、
+ * **いま生きている公開先**を定義順で返す。形が読めなければ `null`（`parsePublishTargets` と同じ意味）。
+ *
+ * 公開先 = `publish.targets`（`parsePublishTargets`）∪ HANAMII（`publish.hanamii.projectId` が空でない文字列。一覧の旧い行と同じ
+ * `publishStatus.ts` のレガシー救済）∪ 共用型（state.json に apprun-app がある。`parseApprunLegacy`）∪ 専有型（`publish.apprunDedicated` の
+ * `applicationID`・`clusterID`・`asgID`・`loadBalancerID` のどれかが空でない文字列）。重なりは1つ。
+ *
+ * なぜ要るか: `publish.targets` だけを読むと、targets に行が無い旧い記録の公開先（HANAMII・共用型・専有型）を「ほかの公開先」に数えず、
+ * その公開先のアプリが使う保存場所のデータが消えることを確認が言わない。
+ */
+export function publishTargetsWithLegacy(meta: unknown, apprunState: unknown | null): PublishTargetKind[] | null {
+  const recorded = parsePublishTargets(meta)
+  if (recorded === null) return null
+  const found = new Set<PublishTargetKind>(recorded)
+  const publish = isPlainObject(meta) && isPlainObject(meta.publish) ? meta.publish : null
+  if (publish) {
+    const hanamii = publish.hanamii
+    if (isPlainObject(hanamii) && isNonEmptyString(hanamii.projectId)) found.add('hanamii')
+    const dedicated = publish.apprunDedicated
+    if (isPlainObject(dedicated) && [dedicated.applicationID, dedicated.clusterID, dedicated.asgID, dedicated.loadBalancerID].some(isNonEmptyString)) {
+      found.add('sakura-apprun-dedicated')
+    }
+  }
+  if (apprunState !== null && parseApprunLegacy(apprunState) !== null) found.add('sakura-apprun')
+  return TARGET_ORDER.filter(t => found.has(t))
+}
+
+/**
+ * 公開の記録の2つのファイル（`.sakuraide.json`・`.sakura-cloud/state.json`）を読む。**旧い記録を足す読み口（下の2つ）が、どちらもこれを通る**
+ * （同じ判断を2つ書かない）。投げない。
+ *
+ * ・`.sakuraide.json`: `fs.exists` が **false を返した**ときだけ「記録が無い」＝`meta = {}`（readFile は呼ばない。まだ何も公開していない
+ *   プロジェクト・既存のフォルダを開いただけのもの。段階3A の G=1）。`exists` が投げた・true 以外を返したときは、あるとみなして読みにいく。
+ *   あるのに読めない・JSON でない・中身の形が違う（`parsePublishTargets` が null）→ `ok: false`（state.json へは進まない）。
+ * ・`state.json`: `fs.exists` が true でなければ「旧い共用型なし」（読めなかった印は立たない）。`exists` が投げたら、あるとみなして読みにいく。
+ *   あるのに読めない・JSON でない → `state = null`・`stateUnreadable = true`（`.sakuraide.json` の分は残す）。
+ */
+type PublishRecordParts =
+  | { ok: true; meta: unknown; state: unknown | null; stateUnreadable: boolean; stateError: unknown }
+  | { ok: false; error: unknown }
+
+async function readPublishRecordParts(projectDir: string): Promise<PublishRecordParts> {
+  let meta: unknown
   try {
-    if (!(await window.electronAPI.fs.exists(metaPath(projectDir)))) return { targets: [], unreadable: false }
-  } catch { /* 存在を確かめられなかった。読みにいく（読めなければ unreadable） */ }
+    let metaExists: unknown = true
+    try { metaExists = await window.electronAPI.fs.exists(metaPath(projectDir)) } catch { /* 存在を確かめられなかった。あるとみなして読みにいく */ }
+    meta = metaExists === false ? {} : JSON.parse(await window.electronAPI.fs.readFile(metaPath(projectDir)))
+    // 形が違えば、旧い共用型の記録（state.json）へ進まない（`readPublishTargetsOrThrow` と同じ判断）。
+    if (parsePublishTargets(meta) === null) return { ok: false, error: new Error('公開の記録の形を読めませんでした') }
+  } catch (error) {
+    return { ok: false, error }
+  }
+  const statePath = `${projectDir}/.sakura-cloud/state.json`
+  let stateExists = true
+  try { stateExists = (await window.electronAPI.fs.exists(statePath)) === true } catch { /* 存在を確かめられなかった。あるとみなして読みにいく */ }
+  if (!stateExists) return { ok: true, meta, state: null, stateUnreadable: false, stateError: null }
   try {
-    return { targets: await readPublishTargetsOrThrow(projectDir), unreadable: false }
-  } catch {
-    return { targets: [], unreadable: true }
+    return { ok: true, meta, state: JSON.parse(await window.electronAPI.fs.readFile(statePath)), stateUnreadable: false, stateError: null }
+  } catch (stateError) {
+    return { ok: true, meta, state: null, stateUnreadable: true, stateError }
   }
 }
 
-/** HANAMII のプロジェクトID（破棄に必要）。無ければ null。 */
-export async function readHanamiiProjectId(projectDir: string): Promise<string | null> {
-  try {
-    const meta = JSON.parse(await window.electronAPI.fs.readFile(metaPath(projectDir)))
-    const id = meta?.publish?.hanamii?.projectId
-    return typeof id === 'string' && id ? id : null
-  } catch {
-    return null
-  }
+const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)))
+
+/**
+ * `readPublishTargetsOrThrow` に旧い記録の分（D9=2）を足した読み口。**読めなかったら投げる**（空に倒さない）。
+ *
+ * ・`.sakuraide.json` が無い → 記録が無いだけ（投げない。state.json があれば旧い共用型だけが数えられる）。
+ * ・`.sakuraide.json` が読めない・JSON でない・形が違う → 投げる（`readPublishTargetsOrThrow` と同じ）。
+ * ・state.json は `fs.exists` が true でなければ「旧い共用型なし」。あるのに読めない・JSON でない → 投げる（読めなかった事実を確認が言う）。
+ */
+export async function readPublishTargetsWithLegacyOrThrow(projectDir: string): Promise<PublishTargetKind[]> {
+  const parts = await readPublishRecordParts(projectDir)
+  if (!parts.ok) throw asError(parts.error)
+  if (parts.stateUnreadable) throw asError(parts.stateError)
+  const targets = publishTargetsWithLegacy(parts.meta, parts.state)
+  if (targets === null) throw new Error('公開の記録の形を読めませんでした')
+  return targets
+}
+
+/**
+ * プロジェクトの削除の確認用に、旧い記録の分も含めた公開先を読む。**投げない。「読めなかった」と「記録が無い」を言い分ける**
+ * （段階3A の 3A-5b で、`publish.targets` だけを読んでいた旧い読み口の後継になった）。
+ *
+ * ・どちらのファイルも無い → `{ targets: [], unreadable: false }`（偽の警告を出さない）。
+ * ・`.sakuraide.json` が読めない・JSON でない・形が違う → `{ targets: [], unreadable: true }`（state.json は読まない）。
+ * ・state.json だけが読めない → **読めた分は数える**（`publish.targets`・HANAMII の projectId・専有型の ID）。落ちるのは旧い共用型だけで、
+ *   `unreadable: true`。読めた分は破棄する、という約束を守る。
+ */
+export async function readPublishTargetsWithLegacyChecked(projectDir: string): Promise<{ targets: PublishTargetKind[]; unreadable: boolean }> {
+  // 投げない: readPublishRecordParts は読みの失敗を全部 ok:false か stateUnreadable で返し、publishTargetsWithLegacy は形が違う値にも投げない。
+  const parts = await readPublishRecordParts(projectDir)
+  if (!parts.ok) return { targets: [], unreadable: true }
+  return { targets: publishTargetsWithLegacy(parts.meta, parts.state) ?? [], unreadable: parts.stateUnreadable }
 }

@@ -61,7 +61,7 @@ export default function ServicePrincipalPicker({ candidates, value, onPick, onPi
       {/* 候補が複数: ID とそれを使っているプロジェクト名を並べて選ぶ（既定は先頭＝いちばん新しいもの） */}
       {candidates.length >= 2 && (
         <fieldset className="space-y-1 rounded-lg border border-line bg-overlay p-2.5">
-          <legend className="px-1 text-[11px] font-medium text-ink-secondary">前のプロジェクトで使った ID（どれを使いますか？）</legend>
+          <legend className="px-1 text-[11px] font-medium text-ink-secondary">前のプロジェクトで使った ID</legend>
           {candidates.map((c, i) => (
             <label key={c.id} className="flex items-start gap-2 text-xs text-ink cursor-pointer">
               <input

@@ -14,9 +14,14 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 // 偽の electronAPI が2件返したときに、画面が2件とも抱えるかを見る。
 //
 // 見ている画面（破棄の確認に保存場所を出すもの）:
-//   - AppRunPanel・AppRunDedicatedPanel・HanamiiPanel … 開いたとき（useEffect）に読む
-//   - PublishedListModal（📡 公開したもの一覧）… **🗑 破棄を押したとき**（askConfirm）に読む。
-//     effect を回すだけでは読まないので、一度描き直して🗑のボタンを探し、実際に押す。
+//   - AppRunPanel・専有型の手順6の節（DedicatedTeardownSection。0.6.22 の3B-6a でパネルから切り出した）… 開いたとき（useEffect）に読む
+//   - HanamiiPanel（段階1の1c）… 開いたときには読まず、抱えない。🗑 を押した時点に共通の流れの読み口（teardown/facts.ts）が全件を読む。
+//     その振る舞いは tests/hanamiiTeardownSection.test.ts（偽の React で HanamiiPanel を動かす）が固定する。ここは「抱えていない」ことだけ見る。
+//   - PublishedListModal の HANAMII の行（段階1の1b）・共用型 AppRun の行（段階2の2b-2）… 一覧は保存場所を自分では読まない。
+//     行（TeardownRow）が共通の流れを呼び、**押した時点で**共通の材料の読み口（electronFlowDeps の loadFacts）が全件を読んで、
+//     確認の文（buildTeardownConfirm）に名前を出す。HANAMII は共通の読み口（storage:placement＝env.json の同意済み）、
+//     共用型は main の記録（cloud:teardownRecord の placements＝env.json の同意済み + state にだけある保存場所）から。
+//     偽の react の上では行の部品は動かないので、一覧が行に渡す仕様書（hanamiiTeardownSpec・sharedTeardownSpec）で、その読み口と確認の文を直接動かす。
 // tests/teardownSupport.test.ts はソースの文字列で見張っている。ここは**振る舞い**で見張る。
 
 /** 偽の react（hooks を手で回す）。画面は作らない（jsx は null を返す）。 */
@@ -62,6 +67,10 @@ let reply: any = { ok: true, placement: A, placements: [A, B] }
 let readPlacements = false
 /** 📡 公開したもの一覧が読む公開の記録（`fs.publishedRecords` の中身）。 */
 let records: any = { ok: true, projects: [] }
+/** `fs.readFile` が返す `.sakuraide.json` の中身（HANAMII の流れが、押した時点の記録として読む）。 */
+let metaText = '{}'
+/** `cloud.teardownRecord` が返す中身（共用型の流れが、押した時点の記録として読む）。 */
+let recordReply: any = null
 
 /** 何を触られても落ちない偽の electronAPI（ここで見たいのは storage.placement だけ）。 */
 function fakeElectronApi(): any {
@@ -71,9 +80,12 @@ function fakeElectronApi(): any {
   })
   return new Proxy({
     // publishedRecords だけ中身を返す。ほかの fs（readFile など）は何を呼ばれても落ちない。
-    fs: new Proxy({ publishedRecords: async () => records } as any, {
+    // exists: 旧い共用型の記録（state.json）は無い（D9=2。.sakuraide.json だけがある）。
+    fs: new Proxy({ publishedRecords: async () => records, readFile: async () => metaText, exists: async (p: string) => String(p).endsWith('/.sakuraide.json') } as any, {
       get: (t, key) => (key in t ? t[key] : anything),
     }),
+    // cloud:teardownRecord（共用型の破棄の材料）。ほかの cloud は何を呼ばれても落ちない。
+    cloud: new Proxy({ teardownRecord: async () => recordReply } as any, { get: (t, key) => (key in t ? t[key] : anything) }),
     // placement だけ中身を返す。ほかの storage（HANAMII が一緒に読む scan など）は落ちない偽物。
     storage: new Proxy({
       placement: async () => {
@@ -107,9 +119,20 @@ process.on('unhandledRejection', onUnhandled)
 afterAll(() => { process.off('unhandledRejection', onUnhandled) })
 
 import AppRunPanel from '../src/renderer/components/AppRunPanel'
-import AppRunDedicatedPanel from '../src/renderer/components/AppRunDedicatedPanel'
+import DedicatedTeardownSection from '../src/renderer/components/DedicatedTeardownSection'
 import HanamiiPanel from '../src/renderer/components/HanamiiPanel'
 import PublishedListModal from '../src/renderer/components/PublishedListModal'
+import { electronFlowDeps } from '../src/renderer/teardown/flow'
+import { buildTeardownConfirm } from '../src/renderer/teardown/confirm'
+import { hanamiiTeardownSpec } from '../src/renderer/teardown/targets/hanamii'
+import { sharedTeardownSpec } from '../src/renderer/teardown/targets/shared'
+import { runTeardownFlow } from '../src/renderer/teardown/flow'
+
+/** 専有型の手順6の節に渡す最小の props（押さない・結果も無い。保存場所を読んで抱えるかだけを見る）。 */
+const sectionProps = (projectDir: string) => ({
+  projectDir, locked: false, showButton: true, tearingDown: false, running: false, runningRecord: null, nowMs: 0,
+  apprunState: null, appRecord: null, summaryLines: [], view: null, notes: [], onStart: () => {}, onDone: async () => {},
+})
 
 /** まだ片づけていない購読（**テストどうしが混ざらないよう**、毎回必ず外す）。 */
 let mounted: Array<() => void> = []
@@ -168,6 +191,8 @@ beforeEach(() => {
   reply = { ok: true, placement: A, placements: [A, B] }
   readPlacements = false
   records = { ok: true, projects: [] }
+  metaText = '{}'
+  recordReply = null
   store.clear()
 })
 afterEach(() => { for (const c of mounted) { try { c() } catch { /* 片づけの失敗は無視 */ } } mounted = [] })
@@ -179,8 +204,8 @@ describe('破棄の確認の材料: 画面は保存場所を1件も落とさな�
     expect(keptBuckets(), '2件あるのに全件を抱えていない').toEqual([A.bucket, B.bucket])
   })
 
-  it('★★★ 専有型 AppRun: 2件あれば2件とも抱える', async () => {
-    await renderAndRunEffects(AppRunDedicatedPanel as any, { projectDir: '/tmp/proj-b', apiKey: 'k', onOpenCredentials: () => {} })
+  it('★★★ 専有型 AppRun（手順6の節）: 2件あれば2件とも抱える', async () => {
+    await renderAndRunEffects(DedicatedTeardownSection as any, sectionProps('/tmp/proj-b'))
     expect(readPlacements, 'placements（全件）を読んでいない＝先頭1件しか見ていない').toBe(true)
     expect(keptBuckets(), '2件あるのに全件を抱えていない').toEqual([A.bucket, B.bucket])
   })
@@ -199,88 +224,143 @@ describe('破棄の確認の材料: 画面は保存場所を1件も落とさな�
 
   it('★ 読めなかった回（ok:false）は、消えるものを勝手に作らない', async () => {
     reply = { ok: false, placement: null, placements: [] }
-    await renderAndRunEffects(AppRunDedicatedPanel as any, { projectDir: '/tmp/proj-e', apiKey: 'k', onOpenCredentials: () => {} })
+    await renderAndRunEffects(DedicatedTeardownSection as any, sectionProps('/tmp/proj-e'))
     expect(keptBuckets()).toBeNull()
   })
 
-  // ── ③公開の HANAMII（開いたときに読む）──────────────────────────────
-  it('★★★ ③公開の HANAMII: 2件あれば2件とも抱える', async () => {
+  // ── ③公開の HANAMII ──────────────────────────────────────────────
+  // 段階1の1c: 【公開】(HanamiiPanel) は保存場所を**開いたときには読まない**（画面の写しはいつでも古いので持たない）。
+  // 🗑 を押した時点に、共通の流れの読み口（teardown/facts.ts）が全件を読んで確認の文に名前を出す。
+  // その振る舞い（2件とも名指し・placements が無い古い応答でも先頭1件・読めなかった回は消えるものを作らず注意を出す）は
+  // tests/hanamiiTeardownSection.test.ts が、HanamiiPanel を動かして固定している。
+  it('★★ ③公開の HANAMII: 保存場所の全件を画面の state に抱えない（確認は押した時点に読む）', async () => {
     await renderAndRunEffects(HanamiiPanel as any, { projectDir: '/tmp/proj-f', apiKey: 'k', onOpenCredentials: () => {} })
-    expect(readPlacements, 'placements（全件）を読んでいない＝先頭1件しか見ていない').toBe(true)
-    expect(keptBuckets(), '2件あるのに全件を抱えていない').toEqual([A.bucket, B.bucket])
-  })
-
-  it('★★ ③公開の HANAMII: placements が無い古い応答でも、先頭1件は拾う（黙って空にしない）', async () => {
-    reply = { ok: true, placement: A }
-    await renderAndRunEffects(HanamiiPanel as any, { projectDir: '/tmp/proj-g', apiKey: 'k', onOpenCredentials: () => {} })
-    expect(keptBuckets()).toEqual([A.bucket])
-  })
-
-  it('★ ③公開の HANAMII: 読めなかった回（ok:false）は、消えるものを勝手に作らない', async () => {
-    reply = { ok: false, placement: A, placements: [A, B] }
-    await renderAndRunEffects(HanamiiPanel as any, { projectDir: '/tmp/proj-h', apiKey: 'k', onOpenCredentials: () => {} })
-    expect(keptBuckets()).toBeNull()
+    expect(keptBuckets(), '開いたときの写しで確認を作ることになる（押した時点より古い）').toBeNull()
   })
 })
 
-// ── 📡 公開したもの一覧（🗑 破棄を押したときに読む）────────────────────────
+// ── 📡 公開したもの一覧の共用型 AppRun の行（段階2の2b-2）──────────────────────────────
 //
-// この画面は保存場所を**開いたときには読まず**、🗑 破棄を押して確認を出すとき（askConfirm）に読む。
-// なので「開く（effect で公開の記録を読む）→ 描き直す → 🗑 破棄のボタンを実際に押す」の順に動かす。
-describe('破棄の確認の材料: 📡 公開したもの一覧も保存場所を1件も落とさない', () => {
-  const props = { onClose: () => {}, onOpenProject: () => {} }
+// 共用型の 🗑 も、一覧が保存場所を読む askConfirm ではなく、行（TeardownRow）→ 共通の流れ（runTeardownFlow）を通る。
+// 共用型の仕様書は共通の読み口（storage:placement＝env.json の同意済みだけ）を呼ばず、押した時点の main の記録（cloud:teardownRecord）の
+// placements（env.json の同意済み + state にだけある保存場所）を使う（確認が言うものと main が消すものを同じ関数で決める）。
+// ここで見るのは、その材料から確認の文が保存場所を全件・名前つきで言うこと、記録を読めなかったときは確認を出さないこと。
+// 一覧が行にこの仕様書を渡していること自体は tests/publishedListSharedRow.test.ts。本物の main を通した一致は tests/sharedTeardownConfirm.test.ts（P5-確認）。
+describe('破棄の確認の材料: 📡 一覧の共用型 AppRun の行（共通の流れ）も保存場所を1件も落とさない', () => {
+  const plain = (p: typeof A) => ({ bucket: p.bucket, prefix: p.prefix, shared: p.shared })
+  const record = (over: Record<string, unknown> = {}) => ({
+    ok: true,
+    record: { appNames: ['myapp'], registryName: null, registryOrigin: 'owned', registryUsers: [], placements: [plain(A), plain(B)], stateOnlyBuckets: [], ...over },
+  })
+  const depsOf = (confirm: () => Promise<boolean> = async () => false) =>
+    electronFlowDeps('/tmp/ws/myapp', sharedTeardownSpec, { confirm, confirmWithChoices: async () => ({ confirmed: false, choices: {} }), keyMissingMessage: 'k' })
 
-  /** 一覧を開いて、HANAMII の行の 🗑 破棄を押す。押したあとの確認画面まで描き直す。 */
-  async function openAndPressTeardown(): Promise<void> {
-    store.set('sakura_workspace', '/tmp/ws')
-    records = {
-      ok: true,
-      projects: [{
-        dir: '/tmp/ws/myapp',
-        name: 'myapp',
-        publish: {
-          hanamii: { projectId: 'hanamii-project-1' },
-          targets: { hanamii: { publishedAt: '2026-09-24T01:00:00.000Z', url: 'https://myapp.example.invalid/' } },
-        },
-      }],
+  /** 🗑 を押した時点の確認の文（行が呼ぶ流れと同じ読み口・同じ文の作り手）。 */
+  async function confirmBodyAtPress(): Promise<string> {
+    return buildTeardownConfirm(sharedTeardownSpec, await depsOf().loadFacts()).body
+  }
+
+  beforeEach(() => { recordReply = record() })
+
+  it('★★★ 2件あれば2件とも読み、確認に2件とも名前を出す（保存場所『A』『B』のデータも削除する旨）。共通の読み口（storage:placement）は呼ばない', async () => {
+    const body = await confirmBodyAtPress()
+    expect(body, '名前が出ていない保存場所がある（名前を出さないまま消させる）').toContain(A.bucket)
+    expect(body, '名前が出ていない保存場所がある（名前を出さないまま消させる）').toContain(B.bucket)
+    expect(body).toContain('データも削除します')
+    expect(body).toContain('この操作は元に戻せません。')
+    expect(readPlacements, '共用型が env.json だけの読み口（storage:placement）を呼んでいる＝state にだけある保存場所が確認から落ちる').toBe(false)
+  })
+
+  it('★★ state にだけある保存場所（設定から外したもの）も名前を出し、言い分ける（言って消す）', async () => {
+    recordReply = record({ stateOnlyBuckets: [B.bucket] })
+    const body = await confirmBodyAtPress()
+    expect(body).toContain(`設定から外した保存場所『${B.bucket}』も削除します。`)
+    expect(body).toContain(A.bucket)
+    expect(body).not.toContain(`設定から外した保存場所『${A.bucket}』`)
+  })
+
+  it('★★ 保存場所が1件でも、名前を出す', async () => {
+    recordReply = record({ placements: [plain(A)] })
+    const body = await confirmBodyAtPress()
+    expect(body).toContain(A.bucket)
+    expect(body).not.toContain(B.bucket)
+  })
+
+  it('★★ 保存場所が0件（アプリだけ）。保存場所のことは言わない（記録に無いものを「消えます」と言わない）', async () => {
+    recordReply = record({ placements: [] })
+    const body = await confirmBodyAtPress()
+    expect(body).not.toContain('💾')
+    expect(body).not.toContain('保存場所')
+  })
+
+  it('★ 記録を読めなかった回（ok:false）・形が違う回は、確認の材料を作らない。確認も出さず、何も消さない（消すものを空に倒さない）', async () => {
+    for (const bad of [{ ok: false, message: '保存場所の設定を読めませんでした（テスト）' }, { ok: true, record: { appNames: ['myapp'] } }, null]) {
+      recordReply = bad
+      await expect(depsOf().loadFacts(), JSON.stringify(bad)).rejects.toThrow()
+      let asked = 0
+      let invoked = 0
+      const out = await runTeardownFlow('/tmp/ws/myapp', sharedTeardownSpec, {
+        ...depsOf(async () => { asked++; return true }),
+        confirmWithChoices: async () => { asked++; return { confirmed: true, choices: {} } },
+        invoke: async () => { invoked++; return { ok: true } },
+      })
+      expect(asked).toBe(0)
+      expect(invoked).toBe(0)
+      expect(out).toMatchObject({ cancelled: false, result: { ok: false } })
+      expect((out as any).result.message).toContain(sharedTeardownSpec.words.factsUnreadable)
     }
-    await renderAndRunEffects(PublishedListModal as any, props)
-    rerender(PublishedListModal as any, props)
-    const btn = findButton('🗑 破棄')
-    expect(btn, '🗑 破棄のボタンが描かれていない（公開の記録から一覧を組み立てられていない）').toBeTruthy()
-    readPlacements = false // ここから先の読み取りは、🗑 を押したことによるもの
-    btn!.props.onClick()
-    await settle()
-    rerender(PublishedListModal as any, props)
+  })
+})
+
+// ── 📡 公開したもの一覧の HANAMII の行（段階1の1b）──────────────────────────────
+//
+// HANAMII の 🗑 は、一覧が保存場所を読む askConfirm ではなく、行（TeardownRow）→ 共通の流れ（runTeardownFlow）を通る。
+// 材料は押した時点に共通の読み口（electronFlowDeps の loadFacts）が読み、確認の文は buildTeardownConfirm が作る（入口によらず同じ文）。
+// ここで見るのは、その読み口と確認の文が、保存場所を全件・名前つきで言うこと、読めなかったときは言い落とさず注意を出すこと。
+// 一覧が行にこの仕様書を渡していること自体は tests/publishedListHanamiiRow.test.ts。
+describe('破棄の確認の材料: 📡 一覧の HANAMII の行（共通の流れ）も保存場所を1件も落とさない', () => {
+  beforeEach(() => {
+    metaText = JSON.stringify({
+      name: 'myapp',
+      publish: {
+        hanamii: { projectId: 'hanamii-project-1', name: 'myapp' },
+        targets: { hanamii: { publishedAt: '2026-09-24T01:00:00.000Z', url: 'https://myapp.example.invalid/' } },
+      },
+    })
+  })
+
+  /** 🗑 を押した時点の確認の文（行が呼ぶ流れと同じ読み口・同じ文の作り手）。 */
+  async function confirmBodyAtPress(): Promise<string> {
+    const deps = electronFlowDeps('/tmp/ws/myapp', hanamiiTeardownSpec, { confirm: async () => false, keyMissingMessage: 'k' })
+    return buildTeardownConfirm(hanamiiTeardownSpec, await deps.loadFacts()).body
   }
 
-  /** 確認画面の「💾 …」の文（無ければ null）。 */
-  function dataNote(): string | null {
-    const t = hooks.rendered.map(el => textOf(el.props)).find(s => s.startsWith('💾'))
-    return t ?? null
-  }
-
-  it('★★★ 2件あれば2件とも抱え、確認に2件とも名指しする', async () => {
-    await openAndPressTeardown()
+  it('★★★ 2件あれば2件とも読み、確認に2件とも名前を出す（保存場所『A』『B』のデータも削除する旨）', async () => {
+    const body = await confirmBodyAtPress()
     expect(readPlacements, 'placements（全件）を読んでいない＝先頭1件しか見ていない').toBe(true)
-    expect(keptBuckets(), '2件あるのに全件を抱えていない').toEqual([A.bucket, B.bucket])
-    const note = dataNote()
-    expect(note, '確認画面に保存場所の文が出ていない').not.toBeNull()
-    expect(note, '名前が出ていない保存場所がある（名指ししないまま消させる）').toContain(A.bucket)
-    expect(note, '名前が出ていない保存場所がある（名指ししないまま消させる）').toContain(B.bucket)
+    expect(body, '名前が出ていない保存場所がある（名前を出さないまま消させる）').toContain(A.bucket)
+    expect(body, '名前が出ていない保存場所がある（名前を出さないまま消させる）').toContain(B.bucket)
+    expect(body).toContain('保存場所にあるデータの削除は元に戻せません')
   })
 
-  it('★★ placements が無い古い応答でも、先頭1件は拾って名指しする', async () => {
+  it('★★ placements が無い古い応答でも、先頭1件は拾って名前を出す', async () => {
     reply = { ok: true, placement: A }
-    await openAndPressTeardown()
-    expect(keptBuckets()).toEqual([A.bucket])
-    expect(dataNote()).toContain(A.bucket)
+    const body = await confirmBodyAtPress()
+    expect(body).toContain(A.bucket)
   })
 
-  it('★ 読めなかった回（ok:false）は、消えるものを勝手に作らない', async () => {
+  it('★★ 用意していなければ0件。保存場所のことも、「元に戻せません」も言わない（HANAMII のプロジェクトそのものは原本に無いので言わない）', async () => {
+    reply = { ok: true, placement: null, placements: [] }
+    const body = await confirmBodyAtPress()
+    expect(body).not.toContain('💾')
+    expect(body).not.toContain('元に戻せません')
+  })
+
+  it('★ 読めなかった回（ok:false）は、消えるものを勝手に作らず、「保存場所の削除は行われません」と注意を出す', async () => {
     reply = { ok: false, placement: A, placements: [A, B] }
-    await openAndPressTeardown()
-    expect(keptBuckets()).toBeNull()
-    expect(dataNote()).toBeNull()
+    const body = await confirmBodyAtPress()
+    expect(body).not.toContain(A.bucket)
+    expect(body).not.toContain('💾')
+    expect(body).toContain('保存場所の削除は行われません')
   })
 })

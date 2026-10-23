@@ -337,7 +337,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
             type="button"
             onClick={() => { onStopCmd(); setServerRunning(false) }}
             className="rounded-lg px-2 py-1 flex items-center gap-1 hover:bg-overlay transition-colors flex-none text-[11px] text-ink-secondary border border-line"
-            title="「試す」で起動したサーバーを停止します（ターミナルに Ctrl+C を送信）"
+            title="「試す」で起動したサーバーを停止します"
           >⏹ サーバー停止</button>
         )}
 

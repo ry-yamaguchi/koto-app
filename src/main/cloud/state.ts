@@ -59,18 +59,25 @@ export type EnvMeta = {
    */
   registryName?: string
   /**
-   * `registryName` の置き場を、**Koto が作ったのではない**（もとからあったものを
-   * 借りている）ことの印。
+   * `registryName` の置き場を、このプロジェクトのために **Koto が作ったか**の印。3つの状態がある
+   * （読むのは shared/cloudCost.ts の `registryOriginOf` の1か所。ここで `=== true` と読まない）。
    *
-   * ── なぜ要るか（2026-08-25・AppRun の引き継ぎ）──────────────────────────
-   * 引き継ぎでは、**利用者が前から持っていた置き場**をそのまま使う。それが
-   * 「月額は増えません」と言える理由でもある。ところが破棄の「置き場も削除する」は
-   * **既定でオン**（残すと月220円が止まらないため・2026-08-06）なので、そのままだと
-   * **利用者が自分で作った置き場を、うっかり消せてしまう**。中に他のアプリの
-   * イメージが入っていれば、それらも消える。
+   *   `false`    … Koto がこのプロジェクトのために作った（`cloud:ensureRegistry` が作ったとき）
+   *   `true`     … もとからあったものを借りている（引き継ぎ・記録の無いプロジェクトの公開）
+   *   印が無い   … 分からない
    *
-   * **無い＝Koto が作ったもの**として扱う（今までのプロジェクトの動きを変えない）。
-   * 新しく作ったときは `false` を書き、印を古いまま残さない。
+   * ── なぜ3つなのか（2026-08-25・AppRun の引き継ぎ／2026-10-19）──────────────────
+   * 破棄の「置き場も削除する」は既定でオン（残すと月220円が止まらないため・2026-08-06）。
+   * だが借りた置き場には、**利用者が自分で作った置き場や、ほかのアプリのイメージ**が入っている。
+   * 既定でオンのままだと、うっかり消せてしまう。
+   *
+   * 当初は「印が無い＝Koto が作ったもの」として扱った（今までのプロジェクトの動きを変えないため）。
+   * これが穴だった（2026-10-19）。接続情報は Koto 全体で1つなので、記録の無いプロジェクトが公開すると
+   * **ほかのプロジェクトが作ったレジストリ**を使う。その記録に印を書いていなかったため、
+   * 「Koto が作ったもの」に見えて、ほかのアプリのイメージ入りのレジストリを既定で消す確認が出た。
+   * いまは、**既定でオンにするのは `false`（作ったと分かっているもの）だけ**。印が無いものは外しておく。
+   *
+   * 新しく作ったときは `false` を書き、古い印を残さない。借りたときは `true` を書く。
    */
   registryAdopted?: boolean
   /**
@@ -220,6 +227,34 @@ export function resolvePushRegistry(
 }
 
 /**
+ * 記録の無いプロジェクトが、いま接続情報にあるレジストリを自分のものとして記録する（純関数）。
+ *
+ * **借りた事実（`registryAdopted: true`）も書く**（2026-10-19）。接続情報は Koto 全体で1つなので、
+ * 記録の無いプロジェクトが公開すると、ほかのプロジェクトが作ったレジストリを使う。名前だけ書くと、
+ * 破棄の確認が「Koto が作ったもの」と読んで、ほかのアプリのイメージ入りのレジストリを既定で消しにいく。
+ * 公開の道（imagePublish.ts）は、保存する記録と手元の state を、どちらもこの関数の結果にする
+ * （手元の state だけ古いと、あとの保存で印が落ちる）。
+ */
+export function withAdoptedRegistry(state: EnvState, registryName: string): EnvState {
+  return { ...state, meta: { ...state.meta, registryName, registryAdopted: true } }
+}
+
+/**
+ * `cloud:ensureRegistry` が、レジストリの名前と作った／借りたの印を記録に書き込む形（純関数）。
+ *
+ * - **新しく作った**なら `registryAdopted: false`（古い `true` を残さない。Koto が作った置き場なのに既定オフになり、月220円が止まらない）
+ * - **記録していた名前のレジストリを再利用した**なら、印は触らない（作ったものは作ったまま・借りたものは借りたまま）
+ * - **記録と違う名前の既存レジストリを再利用した**なら、印を外す（`unknown`）。前の印は前のレジストリのもので、
+ *   これが Koto の作ったものかは分からない（基本ラベルと同じ名前の、ほかのプロジェクトのレジストリのことがある）
+ */
+export function metaAfterEnsureRegistry(prev: EnvMeta | undefined, label: string, created: boolean): EnvMeta {
+  const { registryAdopted: _prevMark, ...rest } = prev ?? {}
+  if (created) return { ...rest, registryName: label, registryAdopted: false }
+  if (prev?.registryName === label && typeof prev.registryAdopted === 'boolean') return { ...rest, registryName: label, registryAdopted: prev.registryAdopted }
+  return { ...rest, registryName: label }
+}
+
+/**
  * 破棄したあとの state を組み立てる（純関数）。
  * リソースを空にし、作成メタ（createdAt/ttlHours）も落とす。ただし
  * **レジストリを残したときは registryName だけは残す**。
@@ -245,10 +280,11 @@ export function stateAfterTeardown(state: EnvState, registryDeleted: boolean): E
     name: state.name,
     backend: state.backend,
     resources: state.resources,
-    // 名前を残すなら、**それが借り物かどうかの印も一緒に残す**。片方だけ残すと、
-    // 次の破棄で「Koto が作ったもの」に見えてチェックが既定オンに戻る（2026-08-25）。
+    // 名前を残すなら、**作ったか借りたかの印も、あるままに一緒に残す**（true も false も。印が無ければ無いまま）。
+    // 片方だけ残すと、次の破棄で印の読みが変わる: 借りた置き場が「Koto が作ったもの」に見えて既定オンに戻り（2026-08-25）、
+    // 作ったと分かっている置き場は「分からない」に落ちる（2026-10-19）。
     ...(keep
-      ? { meta: { registryName: name as string, ...(state.meta?.registryAdopted ? { registryAdopted: true } : {}) } }
+      ? { meta: { registryName: name as string, ...(typeof state.meta?.registryAdopted === 'boolean' ? { registryAdopted: state.meta.registryAdopted } : {}) } }
       : {}),
   }
 }

@@ -64,7 +64,9 @@ describe('leftoverScanLine: 取りこぼした件数（referenced）の扱い', 
 
   it('★ 断定しない（「ありません」「見つかりませんでした」と言い切らない）', () => {
     const line = leftoverScanLine({ ok: true, referenced: 2, files: FOUND })
-    expect(line).toContain('はっきり分かりませんでした')
+    // 2026-10-09 画面の文を短くする（T109）: 「はっきり」は外した（分からなかった、で足りる）。
+    expect(line).toContain('いま使われているかどうかは分かりませんでした')
+    expect(line).not.toContain('はっきり')
     expect(line).not.toContain('ありません')
     expect(line).not.toContain('見つかりませんでした')
     // 次にどうすればよいかまで書く

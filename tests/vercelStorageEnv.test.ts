@@ -23,6 +23,9 @@ const h = vi.hoisted(() => ({
   permissions: [] as { id: string; displayName: string }[],
   /** 削除に失敗させる鍵の ID（2026-10-07: 失敗の件数を数えることの固定）。 */
   failDelete: new Set<string>(),
+  /** 目印を置く要求（`<バケット> <キー>`）と、置けない回を作る印（2026-10-21）。 */
+  markers: [] as string[],
+  markerThrows: false,
 }))
 
 /** 発行される鍵（**実キーは使わない**・掟4）。 */
@@ -51,6 +54,10 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
     createStorageAdapter: async () => ({
       siteInfo: () => SITE,
       async issueKey(_bucket: string, displayName: string) { h.issuedNames.push(displayName); return ISSUED },
+      async putMarker(bucket: string, key: string) {
+        h.markers.push(`${bucket} ${key}`)
+        if (h.markerThrows) throw new Error('保存場所に書けませんでした（テスト）')
+      },
       async listPermissions() { return h.permissions },
       async deletePermission(id: string) { if (h.failDelete.has(id)) throw new Error('消せませんでした（テスト）'); h.deletedPermissions.push(id) },
       async dispose() { /* 一時キーは使っていない */ },
@@ -94,6 +101,8 @@ beforeEach(() => {
   h.deletedPermissions = []
   h.permissions = []
   h.failDelete = new Set()
+  h.markers = []
+  h.markerThrows = false
   sent = []
   envStatuses = [200]
   envCalls = 0
@@ -141,9 +150,9 @@ const CONSENTED_BUCKET = { bucket: 'koto-data-x', prefix: 'projects/myapp/', sha
  * **保存場所の有無とは別の軸**——この2つの組み合わせが「用意していないのにデータを使う」
  * という、いちばん静かに壊れる形を作る。
  */
-function setupProject(opts: { storage?: boolean; usesData?: boolean } = {}) {
+function setupProject(opts: { storage?: boolean; usesData?: boolean; bucket?: Record<string, unknown> } = {}) {
   const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
-  if (opts.storage !== false) spec.persistence = { objectStorage: [CONSENTED_BUCKET] }
+  if (opts.storage !== false) spec.persistence = { objectStorage: [(opts.bucket ?? CONSENTED_BUCKET) as any] }
   fs.mkdirSync(path.join(projectDir, '.sakura-cloud'), { recursive: true })
   fs.writeFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
   fs.writeFileSync(path.join(projectDir, 'index.html'), '<html><body>hi</body></html>', 'utf-8')
@@ -433,5 +442,57 @@ describe('Vercel: 秘密の扱い', () => {
     for (const f of files) {
       expect(fs.readFileSync(f, 'utf-8')).not.toContain(ISSUED.secretKey)
     }
+  })
+})
+
+// ── 目印（.koto-keep）の置き直し（2026-10-21 実機の欠陥の副）──────────────────────────────────────
+// 別の公開先の破棄が prefix を目印ごと消したあと、Vercel へ公開し直しても目印は戻らなかった（目印を置くのは、共用型の apply と【公開】の
+// 「保存場所を用意する」だけ）。鍵を発行する issueStorageEnvFor が HANAMII・Vercel・専有型の公開すべてで目印を置く。
+describe('★★★ Vercel の公開: 同意済みの保存場所に目印を置き直す', () => {
+  it('公開が成功したら、目印を置く要求が1件出る。保存場所を使わない公開では出ない。余計な知らせは出ない', async () => {
+    setupProject()
+    const r = await publish(EVENT, projectDir, OPTS)
+    expect(r.ok).toBe(true)
+    expect(h.markers).toEqual(['koto-data-x projects/myapp/.koto-keep'])
+    expect(r.notice).toBeUndefined()
+
+    h.markers = []
+    fs.rmSync(path.join(projectDir, '.sakura-cloud'), { recursive: true, force: true })
+    setupProject({ storage: false })
+    const r2 = await publish(EVENT, projectDir, OPTS)
+    expect(r2.ok).toBe(true)
+    expect(h.markers).toEqual([])
+  })
+
+  it('★★★ prefix が無い同意済みの保存場所では、目印を置く要求が1件も出ない（`undefined.koto-keep` をバケット直下に作らない）。公開は成功のまま・余計な知らせも出ない', async () => {
+    // 目印をバケット直下に置くと、projects/ の外のファイル（利用者のもの）に見えて、そのバケットは二度と消せなくなる（foreignKeys）。
+    // env.json の検証は、prefix があれば「/」で終わることを求める（空文字は通らない）。prefix が無いのが、この形の唯一の入口
+    const { prefix: _omit, ...withoutPrefix } = CONSENTED_BUCKET
+    setupProject({ bucket: withoutPrefix })
+    const r = await publish(EVENT, projectDir, OPTS)
+    expect(r.ok).toBe(true)
+    expect(h.markers).toEqual([])
+    expect(r.notice).toBeUndefined()
+    // 鍵と環境変数は、いつもどおり渡している（目印を置かないだけ）。prefix は空で渡る
+    expect(envVars().find(v => v.key === STORAGE_ENV.bucket)?.value).toBe('koto-data-x')
+    expect(envVars().find(v => v.key === STORAGE_ENV.prefix)?.value).toBe('')
+    expect(h.issuedNames).toHaveLength(1)
+  })
+
+  it('★★ 目印を置けなくても公開は成功のまま。notice に .koto-keep の知らせ。初回公開（先送り）の知らせは消さず、重ねる', async () => {
+    setupProject()
+    h.markerThrows = true
+    const r = await publish(EVENT, projectDir, OPTS)
+    expect(r.ok).toBe(true)
+    expect(String(r.notice)).toContain('.koto-keep')
+    expect(String(r.notice)).toContain('保存場所に書けませんでした（テスト）')
+    expect(String(r.notice)).toContain('公開は続けました')
+
+    envStatuses = [404, 200]
+    envCalls = 0
+    const first = await publish(EVENT, projectDir, OPTS)
+    expect(first.ok).toBe(true)
+    expect(String(first.notice)).toContain('もう一度「公開する」を押すと')
+    expect(String(first.notice)).toContain('.koto-keep')
   })
 })

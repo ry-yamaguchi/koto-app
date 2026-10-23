@@ -10,7 +10,7 @@
 // ConfirmModal が現れる（open は内部状態で管理する）。
 //
 // ── 歯止めのロジックには触れない（掟10・2026-09-11 仕様）─────────────────────
-// RollbackSection.tsx の runSwitch・AppRunDedicatedPanel.tsx の runCreate/runTeardown・
+// RollbackSection.tsx の runSwitch・AppRunDedicatedPanel.tsx の runCreate・
 // main 側の performRollback は、いずれも「confirm が false を返したら実行しない」という
 // 歯止めを**同期的な boolean を返す confirm 関数**への注入として持っている
 // （2026-09-08〜09 の事故を受けた設計）。ここを非同期（Promise<boolean>）に書き換えると、

@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { CHAT_TEXT_WRAP } from '../textWrap'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { AiText } from './AiMessage'
 
 // 推論モデル（Kimi K2.7 / gpt-oss 等）の「思考」を、生成中はライブで見せ、終わったら畳む折りたたみ表示。
 //
@@ -34,6 +34,13 @@ export default function ThinkingBlock({ text, live }: { text: string; live: bool
     if (el) el.scrollTop = el.scrollHeight
   }, [text, open, live])
 
+  // 思考の本文は、思考そのものが増えたときだけ描き直す。本文（content）が流れてくる間は text が変わらないので、
+  // 差分が届くたびに思考の全文を解析し直さない（同じ要素を返すと React は中を描き直さない）
+  const body = useMemo(
+    () => <AiText content={text} className="text-[11px] text-ink-secondary leading-relaxed select-text" />,
+    [text],
+  )
+
   if (!text.trim()) return null
 
   return (
@@ -48,10 +55,11 @@ export default function ThinkingBlock({ text, live }: { text: string; live: bool
         <span className="ml-auto tabular-nums">{text.length.toLocaleString()}文字</span>
       </button>
       {open && (
-        <div
-          ref={bodyRef}
-          className={`px-2 pb-2 max-h-40 overflow-y-auto text-[11px] text-ink-secondary leading-relaxed select-text ${CHAT_TEXT_WRAP}`}
-        >{text}</div>
+        <div ref={bodyRef} className="px-2 pb-2 max-h-40 overflow-y-auto">
+          {/* 太字・箇条書き・コードを描く部品はチャットの吹き出しと同じ（AiMessage.tsx の AiText）。
+              流れてくる途中の閉じていない ** や ``` は、記号のまま出る（例外は投げない） */}
+          {body}
+        </div>
       )}
     </div>
   )

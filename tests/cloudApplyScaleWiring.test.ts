@@ -29,14 +29,14 @@ describe('cloud:apply の opts に scaleDecision が3点セットで揃ってい
     expect(cloud).toContain("ipcMain.handle('cloud:apply', async (event, projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }) => {")
   })
 
-  it('main: 値の形を検証してから applyPlan へ渡す（不正値は undefined 扱い）', () => {
+  it('main: 値の形を検証してから applyForProject（→ applyPlan）へ渡す（不正値は undefined 扱い）', () => {
     const at = cloud.indexOf("ipcMain.handle('cloud:apply'")
     expect(at).toBeGreaterThan(0)
-    const applyPlanAt = cloud.indexOf('result = await applyPlan(', at)
+    const applyPlanAt = cloud.indexOf('const result = await applyForProject(', at)
     expect(applyPlanAt).toBeGreaterThan(at)
     const between = cloud.slice(at, applyPlanAt)
     expect(between).toContain("const scaleDecision = opts?.scaleDecision === 'koto' || opts?.scaleDecision === 'sakura' ? opts.scaleDecision : undefined")
-    const call = callBody(cloud, applyPlanAt + 'result = await applyPlan'.length)
+    const call = callBody(cloud, applyPlanAt + 'const result = await applyForProject'.length)
     expect(call).toContain('...(scaleDecision ? { scaleDecision } : {})')
   })
 

@@ -968,7 +968,8 @@ describe('見出し・見える形: 推定だけが理由のときは断定し�
     expect(storageNoticeHeadline({ hasPlacement: true, warn: true })).toBe('⚠️ 保存場所は用意済み・コードの書き直しが残っています')
     // 警告でなければ、推定かどうかは関係ない
     expect(storageNoticeHeadline({ hasPlacement: true, warn: false, guess: true })).toBe('💾 データの保存（用意済み）')
-    expect(storageNoticeHeadline({ hasPlacement: false, warn: false, guess: true })).toBe('💾 データの保存について')
+    // 2026-10-09 画面の文を短くする（T187）: 「について」は外した。
+    expect(storageNoticeHeadline({ hasPlacement: false, warn: false, guess: true })).toBe('💾 データの保存')
   })
 })
 

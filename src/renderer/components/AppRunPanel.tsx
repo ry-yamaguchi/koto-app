@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import { getTargetProfile } from '../targetProfiles'
 import { foldRecheck } from '../../shared/appHealth'
-import { clearPublishRecord } from '../publishRecord'
 import { isNameConflictError, isCreationLimitError, suggestAlternativeName } from '../nameConflict'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import CopyButton from './CopyButton'
@@ -16,7 +15,7 @@ import { askAiAboutFailure, type AskAiFailureKind } from '../../shared/askAi'
 import { pinnedAfterApplyNotice } from '../../shared/apprunTraffic'
 import { scaleLabel, type ScaleDecision } from '../../shared/scaleDecision'
 import { nextApplyOpts } from '../scaleDecisionFlow'
-import { teardownTargets, registryDeleteLabel, registryDeleteHelp, registryDeleteDefault, adoptedRegistryNote, registryUnknownNotice, teardownRemainingWarnings, urlChangesOnTeardownNotice, costSummaryLines, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
+import { costSummaryLines, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
 import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
 import { isSubmitEnter } from '../keyInput'
 import { shouldBlockPublish } from '../publishGate'
@@ -25,6 +24,8 @@ import { publishButtonLabel } from '../../shared/publishLabels'
 // 記録を読む・「見た」と伝える・持ち場を決める・警告と時刻の文にする、は共通の1か所（掟10・2026-09-30 検分の指摘2）。
 import { watchProjectOps, unseenOf, readUnseenOps, ackShown, normDir, isSharedTypeOp, type OpsWatch } from '../projectOpsView'
 import { warningLine, clockText } from '../../shared/opsText'
+import { isStoppedByQuit, stoppedWhenText } from '../../shared/inFlightOps'
+import { opWordFor } from '../../shared/opWord'
 // D-13 F（2026-09-16）: README・使い方ガイドは「共用型も専有型も同じです」と書いているのに、
 // 「アプリが書いたデータは残らない」の注意を出していたのは専有型の手順8だけだった。
 // **既定で推奨される共用型（大多数が通る道）にも出す。** 文言は複製せず、専有型と同じ
@@ -32,6 +33,9 @@ import { warningLine, clockText } from '../../shared/opsText'
 import { ephemeralDataNote } from '../../shared/publishLabels'
 import AccessKeySection from './AccessKeySection'
 import { useConfirm } from '../useConfirm'
+// 破棄（S1・S2）の流れと結果の表示は SharedTeardownSection.tsx（共通の流れ teardown/flow.ts と共用型の仕様書 teardown/targets/shared.ts を通る）。
+import { useSharedTeardown, SharedTeardownResultView } from './SharedTeardownSection'
+import { resumedTeardownView, type TeardownView } from '../../shared/teardownResult'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
 // （小文字英数字とハイフン・先頭末尾は英数字・3〜40文字）と同じ制約をここでも複製する
@@ -97,9 +101,9 @@ export function scaleDisplay(min: number): ScaleDisplay {
 }
 
 /**
- * 黄色い行の後半（次の一手）。足りないものがレジストリの認証情報のときだけ、その案内を付ける
- * （W-37: Docker・Dockerfile が足りないときにまで「レジストリの認証情報が必要」を続けると、
- * 足りないものと違うものを案内してしまう）。純関数にして、当てるべき一手を取り違えていないか
+ * 黄色い行の後半（次の一手）。Docker・Dockerfile が足りないときだけ、その案内を付ける
+ * （W-37: 足りないものと違うものを案内しない）。レジストリの認証情報が足りないときは、
+ * 前半の「レジストリ認証情報が未登録です」だけで足りるので、後半は付けない。純関数にして、当てるべき一手を取り違えていないか
  * テストで固定する（掟10）。
  */
 export function prereqNextStepFor(
@@ -109,9 +113,9 @@ export function prereqNextStepFor(
   if (isDockerMode) {
     if (!prereqs?.docker) return 'Docker の導入が必要です。'
     if (!prereqs?.dockerfile) return 'Dockerfile を用意してください。'
-    return '公開にはコンテナレジストリの認証情報が必要です。'
+    return ''
   }
-  return !prereqs?.builder ? '' : '公開にはコンテナレジストリの認証情報が必要です。'
+  return ''
 }
 
 // 「さくらのAppRun」公開パネル（段階2b＝操作UI）。
@@ -157,7 +161,6 @@ function kindLabel(kind: CloudResourceKind): string {
 // 確認ダイアログの種類（破壊操作ごとに文言・強調を変える）
 type Confirm =
   | { kind: 'apply'; plan: CloudPlan }
-  | { kind: 'teardown' }
   // 公開名の変更確認。公開済み（state.json に apprun-app あり）のときのみ挟む
   // （変更すると次回公開時に新しいアプリとして作成され公開URLが変わるため）。
   // retryPublish: true のときは保存後に公開処理（事前チェック→確認→適用）を続けて呼ぶ（衝突時の再公開ボタン用）。
@@ -176,11 +179,6 @@ type Confirm =
       dedicatedTagUnknown: boolean
     }
   | null
-
-/** 破棄に成功したら公開記録からも取り除く（「📡 公開したもの一覧」に幽霊を残さない・2026-08-06）。 */
-// 記録の掃除は publishRecord.ts に一本化した（2026-08-09）。破棄の導線が
-// 【公開】の各パネル・📡 公開したもの一覧・プロジェクト削除の3系統に増えたため。
-const clearAppRunPublishRecord = (projectDir: string) => clearPublishRecord(projectDir, 'sakura-apprun')
 
 // ── 閉じて開き直しても、進み具合と結果が続きから見える（2026-09-29・作者の決定 (2)）────────────
 //
@@ -224,6 +222,11 @@ export type PanelOpResult = {
   kind?: AskAiFailureKind
   /** 起動のしかたを聞く段階で止まった（失敗ではない）。 */
   needsChoice?: boolean
+  /**
+   * 破棄（共用型）の結果の読み直し。付いていれば、本体は共通の結果欄（SharedTeardownResultView）で描く（見出し caption はそのまま）。
+   * この画面が始めた破棄の返り値も、開き直して読んだ記録も、同じ TeardownView に直す（その場と開き直しで食い違わない）。
+   */
+  teardownView?: TeardownView
 }
 
 export type OpsView = {
@@ -271,12 +274,9 @@ export function progressTextOf(rec: ProjectOpRecordShape): string {
 }
 
 /** 別の公開先の操作が走っているときの1行（詳細は出さない）。ボタンを押せない理由も添える。 */
-export function foreignBusyNote(rec: { op?: string } | null | undefined): string {
-  return `このプロジェクトでは別の操作（${rec?.op ?? '処理'}）が進んでいます。終わるまで、この画面の公開・破棄・古いイメージの削除は押せません。`
+export function foreignBusyNote(rec: { op?: string; target?: string } | null | undefined): string {
+  return `このプロジェクトでは別の操作（${rec?.op ? opWordFor(rec.op, rec.target) : '処理'}）が進んでいます。終わるまで、この画面の公開・破棄・古いイメージの削除は押せません。`
 }
-
-// 操作の呼び名（この画面のボタンの言葉に合わせる。main の記録は '削除'・'公開'・'作成'）
-const OP_WORD: Record<string, string> = { 公開: '公開', 削除: '破棄', 作成: '作成' }
 
 /** 記録の op から、AIに相談する定型文の種類を決める。 */
 export function kindOfOp(op: string): AskAiFailureKind {
@@ -289,7 +289,7 @@ const asStrList = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v 
 /**
  * 終わった記録を、画面の結果（opResult）の形にする。
  *
- * ・警告は**そのまま warnings へ**（月額が続く等。main が作った文で、画面の破棄の結果と同じ teardownRemainingWarnings が作る）。
+ * ・警告は**そのまま warnings へ**（月額が続く等。main が作った文）。破棄の記録は、更に teardownView（共通の結果欄が描く読み直し）を持つ。
  * ・extra は main が許可した項目だけ（hint・pending・logUrl・askAi・staleImages・skipped）を読む。
  * ・結果が無い記録（起こらないはずだが）は、うまくいったことにしない。
  * ・起動のしかたを聞く段階で止まった記録は、失敗ではなく「止まった」と出す。選ぶ画面は開き直すと出さない
@@ -298,11 +298,13 @@ const asStrList = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v 
 export function opResultFromRecord(rec: ProjectOpRecordShape): PanelOpResult {
   const kind = kindOfOp(rec.op)
   const when = Number.isFinite(rec.finishedAt) ? `（${clockText(rec.finishedAt as number)}に終わりました）` : ''
-  const caption = `${OP_WORD[rec.op] ?? rec.op}の結果${when}`
+  // 「Koto の終了で止まりました」の知らせは、終わっていない。見出しの文は shared の stoppedWhenText から作る（ここに文を足さない）。
+  const caption = `${opWordFor(rec.op, rec.target)}の結果${isStoppedByQuit(rec.result) ? `（${stoppedWhenText(rec.finishedAt)}）` : when}`
   const r = rec.result
   if (!r || typeof r !== 'object') return { ok: false, kind, caption, message: '結果を読み取れませんでした。' }
   const extra: Record<string, unknown> = r.extra && typeof r.extra === 'object' ? r.extra : {}
   const out: PanelOpResult = { ok: r.ok === true, kind, caption }
+  if (rec.op === '削除') out.teardownView = resumedTeardownView('sakura-apprun', r)
   const message = asStr(r.message)
   if (message) out.message = message
   const detail = asStr(r.detail)
@@ -433,21 +435,14 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
    * **失敗ではない**ので opResult（⚠️の失敗表示）には載せず、選択カードを別に出す。
    */
   const [scaleAsk, setScaleAsk] = useState<{ recorded: number; actual: number; confirmed: boolean } | null>(null)
-  // 破棄時にコンテナレジストリも消すか。既定 true（残すと月額課金が続くため）。
-  const [deleteRegistry, setDeleteRegistry] = useState(true)
 
   /**
-   * このプロジェクトの保存場所（用意していなければ0件）。
-   * **費用の表示と、破棄で何が消えるかがこれで変わる**（2026-08-14）。
+   * このプロジェクトの保存場所（用意していなければ0件）。**費用の表示**（先頭1件 `placement`）に使う（2026-08-14）。
    *
-   * ── なぜ1件ではなく全件を持つのか（2026-09-25 検分の指摘23・37）──────────
-   * 破棄（cloud:teardown）は `teardownStorageForProject` を通って**同意済みの保存場所を
-   * 全件**片づける。ところがここは `r.placement`（先頭1件）しか読んでいなかったので、
-   * 確認画面には『A』しか出ないのに『B』とその中のデータまで消えていた。
-   * **元に戻せない削除を、名指ししないまま実行させない**（掟10）。
-   *
-   * 費用の表示や「用意済みか」の判断は今までどおり先頭1件（`placement`）でよい。
-   * **数え上げが要るのは、消えるものを見せる確認画面だけ。**
+   * 破棄の確認の材料には使わない（段階2の2c）。破棄の確認は、押した時点の main の記録（cloud:teardownRecord）から
+   * 共通の流れ（teardown/flow.ts）が作る。この画面の写しは、開いたあとに用意された保存場所を知らないことがある。
+   * 全件を持つのは、先頭1件しか読まなかった頃の名残で、読み口（storage:placement）が全件を返すのに合わせている
+   * （tests/placementAllPanels.test.ts が固定）。
    */
   const [placements, setPlacements] = useState<{ bucket: string; prefix: string; shared: boolean }[]>([])
   const placement = placements[0] ?? null
@@ -469,8 +464,6 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     return () => { alive = false; window.removeEventListener('sakura:storage-prepared', onPrepared) }
   }, [projectDir])
   const [registryName, setRegistryName] = useState<string | null>(null)
-  /** その置き場を Koto が作ったのではない（引き継ぎで借りている）か。既定オフの判断に使う。 */
-  const [registryAdopted, setRegistryAdopted] = useState(false)
   /**
    * レジストリを設定し直して整ったか（2026-08-14 Ryosuke 指摘）。
    * **一度直したらボタンを消す。** 出したままだと「効いていないのでは」と何度も
@@ -509,8 +502,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     const more = files.length > 8 ? `\n・ほか ${files.length - 8} 件` : ''
     const ok = await confirmDialog({
       title: '使っていない画像をゴミ箱へ移します',
-      body: `どこからも使われていない画像 ${files.length} 件をゴミ箱へ移します。\n\n${head}${more}\n\n`
-        + '完全には消えません（Finder のゴミ箱から戻せます）。よろしいですか？',
+      body: `どこからも使われていない画像 ${files.length} 件です。\n\n${head}${more}\n\n`
+        + 'Finder のゴミ箱から戻せます。よろしいですか？',
       confirmLabel: 'ゴミ箱へ移す',
       danger: true,
     })
@@ -783,7 +776,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       else setConnMsg('')
     } catch (e: any) {
       setConn('ng'); setConnChecks(null)
-      setConnMsg(e?.message ?? 'APIキー/エンドポイントを確認してください（実APIキーが必要です）。')
+      setConnMsg(e?.message ?? 'APIキーを確認してください。')
     }
   }
 
@@ -822,18 +815,13 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   }
 
   // このプロジェクトが使っているレジストリ名を取り直す。
-  // 破棄の確認画面と公開後の費用案内がこの名前を出すので、レジストリを作った直後・
+  // 公開後の費用案内と「古いイメージを削除する」の出し分けがこの名前を使うので、レジストリを作った直後・
   // 破棄した直後には必ず取り直す（古い名前のまま出すと、消す対象を誤解させる）。
+  // 破棄の確認は、これを使わない（押した時点の main の記録から、共用型の仕様書が作る。借り物の既定オフもそこで決まる）。
   const refreshRegistryName = () => {
     window.electronAPI.cloud.registryName(projectDir)
-      .then(r => {
-        setRegistryName(r?.name ?? null)
-        const adopted = r?.adopted === true
-        setRegistryAdopted(adopted)
-        // **借り物なら、最初から外しておく**（判断は shared/cloudCost.ts に一元化）。
-        setDeleteRegistry(registryDeleteDefault({ registryName: r?.name ?? null, adopted }))
-      })
-      .catch(() => { setRegistryName(null); setRegistryAdopted(false) })
+      .then(r => { setRegistryName(r?.name ?? null) })
+      .catch(() => { setRegistryName(null) })
   }
 
   // ── レジストリを自動作成（クラウドAPI）。push 用認証も保存される ──
@@ -874,7 +862,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     window.dispatchEvent(new CustomEvent('sakura:open-file', { detail: `${projectDir}/.sakura-cloud/env.json` }))
   }
 
-  // TTL（期限）を変更して env.json に保存する。0=期限なし（継続運用）。
+  // TTL（期限）を変更して env.json に保存する。0=期限なし。
   const setTtl = async (hours: number) => {
     if (!spec || savingTtl) return
     setSavingTtl(true)
@@ -953,6 +941,38 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     setOpResult(newest)
     setOpKind(newest.kind ?? '公開')
   }
+
+  // ── 破棄（S1・S2）の流れ ──────────────────────────────────────────────────────
+  // 確認の文・選択（コンテナレジストリを消すか。借り物は既定オフ）・窓を閉じる警告・キー・IPC は、共通の流れと共用型の仕様書が持つ
+  // （components/SharedTeardownSection.tsx）。この画面が持つのは、実行中の印（beginLiveOp）と、終わったあとの取り直しだけ。
+  // **公開の記録（📡 の行）は、ここでは消さない**。消すのは main の cloud:teardown の1か所（失敗の回は残す）。
+  const sharedTeardown = useSharedTeardown(projectDir, {
+    // 確認のあと（やめたときは呼ばれない）。実行中にして、始まった時刻を返す（markLiveOpShown が使う）。
+    onStart: () => beginLiveOp(),
+    onDone: async (view, began, nothingToDo, stale) => {
+      try {
+        // 待っている間にプロジェクトが切り替わった: 前のプロジェクトの結果は、いまの画面（別のプロジェクト）へ入れない。実行中の印だけ下ろす。
+        if (stale) return
+        // 消すものが記録に無かった（失敗ではない）。確認も実行も出ていない。
+        if (nothingToDo) { setOpResult({ ok: true, message: view.message }); return }
+        // 結果は共通の結果欄で描く（開き直して読む記録と同じ形）。警告（月額が続く等）も、そこで黄色の枠に出る。
+        setOpResult({ ok: view.ok, kind: '破棄', teardownView: view })
+        if (view.appDeleted === true) setAppUrl(null) // 破棄後はURLを消す
+        if (began) {
+          refreshRegistryName() // レジストリを消したなら記録も消えている。残したなら記録は残る
+          await refreshExpiry()
+          await runPlan()
+          await refreshPublished()
+        }
+      } catch { /* 取り直しの失敗で、破棄の結果は変えない（↻ の各ボタンで取り直せる） */ } finally {
+        if (began) {
+          // 返り値で出した結果を、開き直して読む結果として二重に出さない（markLiveOpShown の説明）。前のプロジェクトのものは印を付けない。
+          if (!stale) await markLiveOpShown(projectDir, began.since)
+          endLiveOp()
+        }
+      }
+    },
+  })
 
   // ── 構築（適用）: 先に公開前チェック（preflight）→ プランを出してから確認ダイアログ ──
   //
@@ -1069,54 +1089,15 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     }
   }
 
+  // 🗑 破棄する（S1・S2）。確認（選択つき）→ 実行 → 結果は、共通の流れ（teardown/flow.ts）と共用型の仕様書（teardown/targets/shared.ts）が持つ。
+  // ここは、押したときに操作の種類を立てて前の結果を片づけ、流れ（上の sharedTeardown）を始めるだけ。
+  // **ボタンは disabled にしない**（公開が途中で失敗してレジストリだけ残ったときの片づけの道を塞がない）。消すものが本当にあるかは、
+  // 仕様書の hasWork が押した時点の main の記録から決める（AppRunアプリ・保存場所・レジストリのどれも記録に無いときだけ、確認を出さず
+  // 「破棄するものはありません」と中立の知らせで終える。askCleanupImages が「消える古いイメージが無ければ確認を出さない」のと同じ作り）。
   const doTeardown = async () => {
     setOpKind('破棄')
-    const since = beginLiveOp()
-    try {
-      // 記録が無いレジストリは削除できない。確認画面と同じ判断をここでも通す
-      // （そうしないと「残るのに課金が続く」警告が出ない）。
-      const effectiveDeleteRegistry = !!registryName && deleteRegistry
-      const r = await window.electronAPI.cloud.teardown(projectDir, { confirmed: true, deleteRegistry: effectiveDeleteRegistry })
-      // レジストリを残した場合は、破棄の結果画面でも「課金は続く」と念を押す
-      // （「破棄した＝もう費用はかからない」と受け取られるのを防ぐ）。
-      // 保存場所は破棄しても残ることがある（3段構え）。**残ったなら課金も続く。**
-      // 残ったかどうかは結果でしか分からないので、main から受け取る（2026-08-14）。
-      // **警告は、選択（deleteRegistry・registryName）からではなく、main が返した事実から作る**
-      // （2026-09-30 検分の指摘6）: 閉じて開き直したあとの処理の記録も、同じ事実から同じ関数
-      // （main/projectOps.ts の summarizeResult → teardownRemainingWarnings）で警告を作る。
-      // ここで自分の選択から作ると、破棄が途中で失敗した回などで、その場と開き直しの警告が食い違う。
-      const warns = teardownRemainingWarnings(r)
-      // 課金が続く知らせは、本文に混ぜず「見逃してはいけない知らせ」（黄色の枠）へ。開き直して読む結果と同じ見え方にする
-      setOpResult(warns.length > 0 ? { ...r, warnings: warns } : r)
-      // 破棄できたら公開記録も消す（残すと「公開したもの一覧」に存在しない公開が出続ける）
-      if (r.ok) { try { await clearAppRunPublishRecord(projectDir) } catch { /* 記録の掃除の失敗は破棄の成否に影響させない */ } }
-      setConfirm(null)
-      setAppUrl(null) // 破棄後はURLを消す
-      refreshRegistryName() // レジストリを消したなら記録も消えている。残したなら記録は残る
-      await refreshExpiry()
-      await runPlan()
-      await refreshPublished()
-    } catch (e: any) {
-      setOpResult({ ok: false, message: e?.message ?? String(e) })
-      setConfirm(null)
-    } finally {
-      await markLiveOpShown(projectDir, since)
-      endLiveOp()
-    }
-  }
-
-  // 「🗑 破棄する」を押したとき：消すものが本当にあるかをまず見る（2026-09-11 利用者目線レビュー）。
-  // **ボタン自体は disabled にしない**（公開が途中で失敗してレジストリだけ残ったときの
-  // 片づけ経路を塞がないため）。かわりに、AppRunアプリ・保存場所・レジストリのどれも
-  // 記録に無いときだけ、赤い確認画面を出さずに opResult 相当の枠で終える
-  // （askCleanupImages が「消える古いイメージが無ければ確認を出さない」のと同じ作り）。
-  const askTeardown = () => {
     clearResults()
-    if (!published && !placement && !registryName) {
-      setOpResult({ ok: true, message: '公開されていないため、破棄するものはありません。' })
-      return
-    }
-    setConfirm({ kind: 'teardown' })
+    await sharedTeardown.start()
   }
 
   // ── 古いイメージの片づけ（2026-08-19 Ryosuke 指摘）─────────────────────────
@@ -1322,7 +1303,6 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   const pinnedKeyId = spec?.auth?.keyId
   const pinnedExists = !!pinnedKeyId && cloudKeys.some(k => k.id === pinnedKeyId)
   const selectedKeyId = pinnedExists ? pinnedKeyId! : (activeKeyId ?? cloudKeys[0]?.id ?? null)
-  const selectedKeyLabel = cloudKeys.find(k => k.id === selectedKeyId)?.label ?? '（未選択）'
   const pinnedLabel = cloudKeys.find(k => k.id === pinnedKeyId)?.label ?? ''
   const activeLabel = cloudKeys.find(k => k.id === activeKeyId)?.label ?? '（不明）'
   // ピン留めが存在し、かつ現在の「使用中」と食い違っているとき（自動切替はしない）。
@@ -1364,15 +1344,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         busy={busy || renaming}
         onCancel={() => setConfirm(null)}
         onApply={() => doApply()}
-        onTeardown={doTeardown}
-        registryName={registryName}
-        registryAdopted={registryAdopted}
-        deleteRegistry={deleteRegistry}
-        onChangeDeleteRegistry={setDeleteRegistry}
         onRename={doRenameConfirmed}
         onCleanupImages={doCleanupImages}
-        placement={placement}
-        placements={placements}
         progress={progress}
       />
     )
@@ -1449,7 +1422,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         <div className="rounded-xl border border-brand-yellow/70 bg-surface p-3 flex items-start gap-2">
           <span className="inline-block w-3.5 h-3.5 mt-0.5 border-2 border-sakura border-t-transparent rounded-full animate-spin flex-none" />
           <div className="min-w-0 space-y-0.5">
-            <p className="text-xs font-semibold text-ink">{OP_WORD[opsView.runningOwn.op] ?? opsView.runningOwn.op}が進んでいます</p>
+            <p className="text-xs font-semibold text-ink">{opWordFor(opsView.runningOwn.op, opsView.runningOwn.target)}が進んでいます</p>
             <p className="text-xs text-ink-secondary leading-relaxed break-all select-text">{progressTextOf(opsView.runningOwn)}</p>
             <p className="text-[11px] text-ink-muted leading-relaxed">終わると、結果がここに出ます。</p>
           </div>
@@ -1478,10 +1451,10 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       {expiry?.expired && (
         <div className="rounded-xl border border-brand-red/70 bg-surface p-3 flex items-center gap-3">
           <p className="flex-1 text-sm text-ink leading-relaxed">
-            ⏰ この環境は予定時間（TTL）を過ぎています。使わない場合は破棄してください。
+            ⏰ この環境は期限を過ぎています。使わない場合は破棄してください。
           </p>
           <button
-            onClick={askTeardown}
+            onClick={() => { void doTeardown() }}
             disabled={blocked}
             className="flex-none bg-brand-red-fill text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-40"
           >🗑 破棄する</button>
@@ -1505,11 +1478,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             { key: 'billing', label: '請求（コスト）参照', ok: connChecks.billing.ok, message: connChecks.billing.message },
           ] : undefined,
           message: connMsg,
-          note: '※「作成」権限は実際に作成するまで確認できません（ここでは参照の可否のみ確認）。',
+          note: '※「作成」権限は実際に作成するまで確認できません。',
         }}
       >
         {/* この公開に使うキーの選択（登録キーが1つ以上あるとき） */}
-        {cloudKeys.length > 0 ? (
+        {cloudKeys.length > 0 && (
           <div className="space-y-1">
             <label className="text-[11px] font-medium text-ink-secondary">この公開に使うキー</label>
             <select
@@ -1519,19 +1492,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             >
               {cloudKeys.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
             </select>
-            <p className="text-[11px] text-ink-secondary">
-              この公開に使うキー: <span className="font-medium text-ink">{selectedKeyLabel}</span>
-            </p>
           </div>
-        ) : (
-          <p className="text-[11px] text-brand-yellow leading-relaxed">
-            まだクラウドのキーが登録されていません。「認証情報」でアクセストークン／シークレットを登録してください。
-          </p>
         )}
 
         {/* 権限についての注意（このキーに必要な権限） */}
         <p className="text-[11px] text-ink-muted leading-relaxed">
-          このキーには、AppRun・コンテナレジストリの作成/操作権限と、請求（コスト）の閲覧権限が必要です。権限が不足していると公開やコスト取得に失敗します。
+          このキーには、AppRun・コンテナレジストリの作成/操作権限と、請求（コスト）の閲覧権限が必要です。
         </p>
 
         {/* ピン留めキーと「使用中」キーの不一致（自動切替はせず、明示確認のみ） */}
@@ -1568,7 +1534,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
               <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all select-text">{envError}</p>
             )}
             <p className="text-sm text-ink-secondary leading-relaxed">
-              このプロジェクトにはまだ公開の設定がありません。ひな形を自動で作成できます。
+              このプロジェクトにはまだ公開の設定がありません。
             </p>
             <button
               onClick={scaffold}
@@ -1619,11 +1585,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
           >{checking ? '確かめています…' : planning ? '確認中…' : '🔍 公開前に確かめる'}</button>
         </div>
         <p className="text-[11px] text-ink-muted leading-relaxed">
-          公開ボタンを押したときにも自動で確かめます。手で確かめたいときはこちら。
-        </p>
-        <p className="text-[11px] text-ink-muted leading-relaxed">
-          公開する前に、さくら側の状態と、何が作成・更新・削除されるかを確認できます
-          （どちらも何も変更しません）。
+          さくら側の状態と、作成・更新・削除されるものを確かめます（何も変更しません）。
+          公開ボタンを押したときにも自動で確かめます。
         </p>
 
         {/* 公開できるかの確認結果。**駄目なものには「どうすればよいか」まで書く** */}
@@ -1714,7 +1677,6 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                           disabled={trashing}
                           className="bg-elevated border border-line text-ink rounded-lg px-3 py-1.5 text-xs font-semibold hover:border-sakura disabled:opacity-40"
                         >{trashing ? 'ゴミ箱へ移しています…' : `🗑 使っていない画像をゴミ箱へ（${c.unusedFiles!.length}件）`}</button>
-                        <span className="ml-2 text-[11px] text-ink-muted">完全には消えません（ゴミ箱から戻せます）</span>
                       </span>
                     )}
                   </span>
@@ -1768,8 +1730,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
               </div>
               <p className="text-[11px] text-ink-muted">
                 {isDockerMode
-                  ? 'あなたの Dockerfile を Docker でビルドします（RUN 等が使えます／Docker の導入が必要）。'
-                  : 'Koto に内蔵のビルド機能で、ベースイメージにあなたのファイルを加えてイメージをビルドします（Docker 不要・準備ゼロ）。'}
+                  ? 'Dockerfile の RUN などが使えます。'
+                  : 'Koto に内蔵のビルド機能で、ベースイメージにあなたのファイルを加えてビルドします。'}
               </p>
             </div>
           </details>
@@ -1792,14 +1754,14 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
           >{publishButtonLabel(published)}</button>
           <button
-            onClick={askTeardown}
+            onClick={() => { void doTeardown() }}
             disabled={blocked || !keyReady}
             title={!keyReady ? '先にAPIキーを登録してください' : ''}
             className="bg-overlay text-brand-red border border-brand-red/50 rounded-lg px-4 py-2 text-sm font-semibold hover:bg-brand-red/10 disabled:opacity-40"
           >🗑 破棄する（削除）</button>
         </div>
         <p className="text-[11px] text-ink-muted leading-relaxed">
-          「公開する」は事前チェックを表示して確認してから実行します。「破棄する」はデータの保存場所も含めて削除する場合があります。
+          「破棄する」はデータの保存場所も含めて削除する場合があります。
         </p>
         {/* D-13 F（2026-09-16）: 公開する**前に**読める位置（保存場所の注意のすぐ下・公開ボタンの近く）に、
             データが残らないことを出す。文言は専有型の手順8と同じ関数から出し、複製しない（掟10）。
@@ -1850,12 +1812,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
           <div className="rounded-lg border border-brand-yellow/70 bg-elevated p-3 text-[11px] text-ink-secondary leading-relaxed space-y-1.5">
             <p className="font-semibold text-ink">⚠️ アカウントで作成できるAppRunアプリ数が上限に達しています</p>
             <p>
-              新しいアプリを作成できない状態です（公開名を変えても解決しません）。
+              公開名を変えても解決しません。
               さくらのクラウドのコントロールパネル（AppRun）で<b className="text-ink">使っていないアプリを削除</b>してから、もう一度公開してください。
             </p>
             <p className="text-ink-muted">
               ※ Koto でプロジェクトを削除しても、公開済みのAppRunアプリはアカウントに残ります。
-              過去のテストで公開したアプリが溜まっている可能性があります。上限の緩和はさくらのクラウドのサポートに申請できます。
+              上限の緩和はさくらのクラウドのサポートに申請できます。
             </p>
             <a href="https://secure.sakura.ad.jp/cloud/" className="text-sakura hover:underline">さくらのクラウド コントロールパネルを開く ↗</a>
           </div>
@@ -1890,7 +1852,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
               className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
             >{cleaning ? '調べています…' : '🧹 古いイメージを削除する'}</button>
             <p className="text-[11px] text-ink-muted leading-relaxed">
-              押すと、消えるものの一覧が出ます。そこで確かめてから実行できます。
+              押すと、消えるものの一覧が出ます。
               いま公開しているものと、直近{opResult.staleImages.keep}件は残ります。
             </p>
           </div>
@@ -1924,7 +1886,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
               <>
                 <p className="text-[11px] text-ink-secondary leading-relaxed">
                   {opResult.pending
-                    ? '公開そのものは終わっています。起動に時間がかかっているだけのこともあるので、少し待ってから「↻ 更新」を押してみてください。それでも変わらないときは、AIに相談してみてください。'
+                    ? '公開そのものは終わっています。少し待ってから「↻ 更新」を押してください。それでも変わらないときは、AIに相談してください。'
                     : '公開そのものは終わっています。プログラムが起動の途中で止まっている可能性が高いので、まずはAIに相談してみてください。'}
                 </p>
                 {recheck && (
@@ -1950,8 +1912,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                 </div>
                 <p className="text-[11px] text-ink-muted leading-relaxed">
                   チャットに文面が入ります。<span className="font-semibold">ログをコピーして貼り付けてから</span>送信すると、
-                  原因がはっきりします。くわしいログは Koto からは取得できないため、
-                  右のボタンからコントロールパネルでご確認ください。
+                  原因がはっきりします。ログは右のボタンから、コントロールパネルで確認してください。
                 </p>
               </>
             )}
@@ -2003,7 +1964,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             <CopyButton text={appUrl} title="公開URLをコピー" />
           </div>
         ) : (
-          <p className="text-xs text-ink-muted">{urlLoading ? '取得中…' : 'まだ公開URLはありません（公開すると表示されます）。'}</p>
+          <p className="text-xs text-ink-muted">{urlLoading ? '取得中…' : 'まだ公開URLはありません。'}</p>
         )}
         {/* 公開したら必ず目に入る場所に、費用の案内を書く。破棄画面まで来ない人が大半のため
             （2026-08-06 ユーザー指摘: アプリを消してもレジストリが残ると月額課金が続く）。
@@ -2043,7 +2004,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
           {limitEnabled && (
             <div className="space-y-3">
               {/* 許可IPリスト */}
-              {limitIps.length > 0 ? (
+              {limitIps.length > 0 && (
                 <ul className="rounded-lg border border-line bg-overlay divide-y divide-line">
                   {limitIps.map((entry, i) => (
                     <li key={i} className="flex items-center justify-between px-3 py-2 gap-2">
@@ -2055,14 +2016,12 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                     </li>
                   ))}
                 </ul>
-              ) : (
-                <p className="text-xs text-ink-muted">許可IPがまだありません。</p>
               )}
 
-              {/* 空リスト警告 */}
+              {/* 空リスト警告（「許可IPがまだありません」と合わせて1行） */}
               {limitIps.length === 0 && (
                 <p className="text-[11px] text-brand-red leading-relaxed font-semibold">
-                  ⚠️ リストが空のまま有効にすると、誰もアクセスできなくなります。
+                  ⚠️ 許可IPがまだありません。このまま有効にすると、誰もアクセスできなくなります。
                 </p>
               )}
 
@@ -2127,7 +2086,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
           </div>
 
           <p className="text-[11px] text-ink-muted leading-relaxed">
-            公開URLは変わりません。許可リスト外のIPからはアクセスがブロックされます。回線のIPが変わるとアクセスできなくなることがあります。
+            公開URLは変わりません。回線のIPが変わるとアクセスできなくなることがあります。
           </p>
         </section>
       )}
@@ -2162,7 +2121,6 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             {costLoading ? '取得中…' : '実額を取得'}
           </button>
         </div>
-        <p className="text-[11px] text-ink-muted">このアプリの分だけではありません。</p>
         {cost && (
           cost.amountYen != null
             ? <p className="text-xs text-ink">直近の確定請求額{cost.asOf ? `（${cost.asOf}分）` : ''}: <span className="font-semibold">¥{cost.amountYen.toLocaleString()}</span></p>
@@ -2171,6 +2129,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         {!cost && <p className="text-[11px] text-ink-muted">「実額を取得」で直近に確定したクラウドの請求額を確認できます。</p>}
       </section>
       {confirmElement}
+      {sharedTeardown.confirmElement}
     </div>
   )
 }
@@ -2191,9 +2150,9 @@ function parseIpInput(raw: string): { ip: string; prefix: number } | null {
   return { ip, prefix }
 }
 
-// TTL（期限）のプリセット。0=期限なし（継続運用）。
+// TTL（期限）のプリセット。0=期限なし。
 const TTL_PRESETS: { hours: number; label: string }[] = [
-  { hours: 0, label: '期限なし（継続運用）' },
+  { hours: 0, label: '期限なし' },
   { hours: 6, label: '6時間' },
   { hours: 24, label: '24時間' },
   { hours: 72, label: '72時間（3日）' },
@@ -2285,17 +2244,19 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
             const display = scaleDisplay(spec.service.scale.min)
             return (
               <div className="flex flex-col gap-1.5">
-                <div className="flex gap-2 text-xs">
+                {/* ボタンの名前は語の途中で折れない（whitespace-nowrap）。幅が足りなければ、ボタンごと次の行へ回す（flex-wrap）。
+                    名前だけにして、「既定」「安い」は下の説明が言う（2026-10-12 作者の指摘: 「（既定・安 / い）」と折れていた） */}
+                <div className="flex flex-wrap gap-2 text-xs">
                   <button
                     onClick={() => onSetScale('cold')}
                     disabled={savingScale}
-                    className={`px-2.5 py-1 rounded border ${display === 'cold' ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}
-                  >最初のアクセスが遅くてもよい（既定・安い）</button>
+                    className={`whitespace-nowrap px-2.5 py-1 rounded border ${display === 'cold' ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}
+                  >最初のアクセスが遅くてもよい</button>
                   <button
                     onClick={() => onSetScale('warm')}
                     disabled={savingScale}
-                    className={`px-2.5 py-1 rounded border ${display === 'warm' ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}
-                  >常時起動（すぐ応答する）</button>
+                    className={`whitespace-nowrap px-2.5 py-1 rounded border ${display === 'warm' ? 'border-sakura text-sakura bg-sakura/10' : 'border-line text-ink-muted hover:text-ink'} disabled:opacity-50`}
+                  >常時起動</button>
                   {savingScale && <span className="text-ink-muted self-center">保存中…</span>}
                 </div>
                 <p className="text-[11px] text-ink-muted leading-relaxed">
@@ -2304,10 +2265,10 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
                         <> <a href={getTargetProfile('sakura-apprun').serviceUrl} className="text-sakura hover:underline">公式サイトを見る ↗</a></>
                       )}</>
                     : display === 'cold'
-                      // scaleLabel（src/shared/scaleDecision.ts）と同じ言い回しに揃える（判断4・
-                      // 2026-09-11）。以前の言い切り表現はやめ、scaleLabel の「安い」に統一する
-                      // ——止まっている間の実額を確かめたわけではないため。
-                      ? `${scaleLabel(0)}。アクセスが無い間は止まります（最初のアクセスだけ起動を待ちます）。`
+                      // 料金がかからないとは言い切らない（判断4・2026-09-11）——止まっている間の
+                      // 実額を確かめたわけではないため。「安く済む」と「既定」はこの説明が言う
+                      // （2026-10-12: ボタンは名前だけにした。「最初のアクセスが遅くてもよい」という名前の言い直しは説明に書かない）。
+                      ? 'アクセスが無い間は止まるので、安く済みます（既定）。'
                       : 'いまの設定を判断できません。上のどちらかを選び直してください。'}
                 </p>
               </div>
@@ -2334,7 +2295,7 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
           <span className="block text-[11px] text-ink-muted mt-1">
             {ttl > 0
               ? '作成からこの時間を過ぎると、次に開いた時に破棄を促します（自動削除はしません）。'
-              : '期限なし。破棄するまで動き続けます（課金も継続）。'}
+              : '破棄するまで動き続け、課金も続きます。'}
           </span>
         </dd>
       </dl>
@@ -2450,6 +2411,15 @@ function StoppedResultView({ result }: { result: PanelOpResult }) {
 
 function OpResultView({ result, demoted = false, kind, target }: { result: PanelOpResult; demoted?: boolean; kind: AskAiFailureKind; target: string }) {
   if (!result.ok && result.needsChoice) return <StoppedResultView result={result} />
+  // 破棄の結果は共通の結果欄で描く（この画面が始めたものも、開き直して読んだ記録も）。見出し（caption）だけここで足す。
+  if (result.teardownView) {
+    return (
+      <div className="space-y-1.5">
+        <CaptionLine caption={result.caption} />
+        <SharedTeardownResultView view={result.teardownView} />
+      </div>
+    )
+  }
   const copyText = [result.message, ...(result.warnings ?? []), result.detail].filter(Boolean).join('\n')
   // 判断2: 失敗のときだけ「🤖 AIに相談する」を、既存の内容の下に添える（成功時には出さない）。
   const askAiText = result.ok ? null : askAiAboutFailure(kind, target, result.message ?? '失敗しました', result.detail)
@@ -2486,7 +2456,7 @@ function OpResultView({ result, demoted = false, kind, target }: { result: Panel
       ))}
       {result.executed && result.executed.length > 0 && (
         <div>
-          <p className="text-[11px] text-ink-muted">実行（executed）</p>
+          <p className="text-[11px] text-ink-muted">実行</p>
           <ul className="text-[11px] text-ink font-mono list-disc pl-4 break-all">
             {result.executed.map((s, i) => <li key={i}>{s}</li>)}
           </ul>
@@ -2494,7 +2464,7 @@ function OpResultView({ result, demoted = false, kind, target }: { result: Panel
       )}
       {result.skipped && result.skipped.length > 0 && (
         <div>
-          <p className="text-[11px] text-ink-muted">スキップ（skipped）</p>
+          <p className="text-[11px] text-ink-muted">スキップ</p>
           <ul className="text-[11px] text-ink-secondary font-mono list-disc pl-4 break-all">
             {result.skipped.map((s, i) => <li key={i}>{s}</li>)}
           </ul>
@@ -2564,7 +2534,7 @@ function PrereqChecklist({
     ok ? <span className="text-brand-green font-semibold">✓</span> : <span className="text-brand-red font-semibold">✗</span>
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-2">
-      <p className="text-[11px] font-semibold text-ink-secondary">{isDocker ? '公開するための前提（ビルド方式はエキスパートで、Docker を使います）' : '公開するための前提（Docker は不要です）'}</p>
+      <p className="text-[11px] font-semibold text-ink-secondary">{isDocker ? '公開するための前提' : '公開するための前提（Docker は不要です）'}</p>
       <ul className="space-y-1.5 text-xs">
         {isDocker ? (
           <>
@@ -2583,7 +2553,7 @@ function PrereqChecklist({
           <li className="flex items-center gap-2 flex-wrap">
             {mark(!!prereqs?.builder)}
             <span className="text-ink">内蔵ビルダー</span>
-            <span className="text-ink-muted">Koto に内蔵のビルド機能（Docker のインストールは不要）</span>
+            <span className="text-ink-muted">Koto に内蔵のビルド機能</span>
           </li>
         )}
         <li className="flex items-center gap-2 flex-wrap">
@@ -2625,31 +2595,15 @@ function PrereqChecklist({
 
 // ── 破壊操作の確認ダイアログ（やめる／実行 の2ボタン） ──
 function ConfirmDialog({
-  confirm, busy, onCancel, onApply, onTeardown, onRename, onCleanupImages,
-  registryName, registryAdopted, deleteRegistry: deleteRegistryRaw, onChangeDeleteRegistry, placement, placements, progress,
+  confirm, busy, onCancel, onApply, onRename, onCleanupImages, progress,
 }: {
   confirm: Exclude<Confirm, null>
   busy: boolean
   onCancel: () => void
   onApply: () => void
-  onTeardown: () => void
   onRename: () => void
   /** 古いイメージの片づけを実行する（一覧を見せたあとの2回目の呼び出し）。 */
   onCleanupImages: () => void
-  /** 破棄画面に出すコンテナレジストリ名（未取得なら null）。 */
-  registryName: string | null
-  /** その置き場が借り物か（引き継ぎで、もとからあったものを使っている）。 */
-  registryAdopted: boolean
-  /** レジストリも削除するか（Koto が作ったものなら既定 true＝月額課金を止める）。 */
-  deleteRegistry: boolean
-  onChangeDeleteRegistry: (v: boolean) => void
-  /** このプロジェクトの保存場所（用意していなければ null）。費用の表示と、破棄の対象の有無に関わる。 */
-  placement: { bucket: string; prefix: string; shared: boolean } | null
-  /**
-   * 破棄で**実際に消える保存場所の全件**（2026-09-25 検分の指摘23・37）。
-   * 破棄は全件を片づけるので、確認では**1件も隠さず名前を並べる**（「ほか◯件」で省かない）。
-   */
-  placements: { bucket: string; prefix: string; shared: boolean }[]
   /**
    * いま何をしているか（最新の1行）。
    *
@@ -2660,11 +2614,8 @@ function ConfirmDialog({
    */
   progress: string | null
 }) {
-  // 記録が無いレジストリは削除できない（registryDeletionTarget が「対象不明」を返す）。
-  // チェックを出さないだけでなく、破棄の実行にも「削除しない」を渡す。そうしないと
-  // 「残るのに課金が続く」という警告が出ずに終わってしまう。
-  const canDeleteRegistry = !!registryName
-  const deleteRegistry = canDeleteRegistry && deleteRegistryRaw
+  // 破棄（teardown）の確認は、この画面（全面を置き換える赤い確認）ではない。共通の確認（ConfirmModal。選択つき）を、
+  // 共通の流れが出す（components/SharedTeardownSection.tsx）。
 
   if (confirm.kind === 'apply') {
     const plan = confirm.plan
@@ -2746,7 +2697,7 @@ function ConfirmDialog({
         <div className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-2">
           <p className="text-sm font-semibold text-ink">⚠️ 古いイメージを {plan.remove.length} 件消します</p>
           <p className="text-sm text-ink-secondary leading-relaxed">
-            コンテナレジストリに残っている、過去の公開のイメージを消します。元に戻せません。
+            コンテナレジストリから消します。元に戻せません。
             {/* 料金の内訳は**実際に片づけるこの場面**で見せる（公開のたびに言わない・2026-08-20） */}
             <span className="block mt-1 text-[11px] text-ink-muted leading-relaxed">
               コンテナレジストリは月額{REGISTRY_MONTHLY_YEN}円（税込）に{REGISTRY_INCLUDED_STORAGE_GIB}GiB分が含まれ、
@@ -2756,7 +2707,7 @@ function ConfirmDialog({
             {/* 専有型の稼働タグを Koto が把握できていないときは、影響が無いと言い切らない
                 （2026-09-17 の穴・A: 断定したまま専有型の稼働イメージを消しうる状態を直す）。 */}
             {dedicatedTagUnknown
-              ? '専有型（AppRunDedicated）で公開しているアプリが、いまどのイメージを使っているか確認できませんでした。そちらに影響しないとは言い切れません。下の「残るもの」を確かめてから進めてください。'
+              ? '専有型で公開しているアプリが、いまどのイメージを使っているか確認できませんでした。そちらに影響しないとは言い切れません。下の「残るもの」を確かめてから進めてください。'
               : 'いま公開しているアプリ（共用型・専有型とも）には影響しません。'}
           </p>
           <div className="rounded-lg border border-brand-red/50 bg-overlay p-2 space-y-1">
@@ -2780,7 +2731,7 @@ function ConfirmDialog({
               ))}
             </ul>
             <p className="text-[11px] text-ink-muted leading-relaxed">
-              直近{keep}件は、公開したものを前のバージョンに戻したいときのために残します。
+              直近{keep}件は、前のバージョンに戻せるように残します。
             </p>
           </div>
         </div>
@@ -2812,7 +2763,7 @@ function ConfirmDialog({
         <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-2">
           <p className="text-sm font-semibold text-ink">⚠️ 公開名を変更しますか？</p>
           <p className="text-sm text-ink-secondary leading-relaxed">
-            公開名を変更すると、次回公開時に新しいアプリとして作成され、公開URLが変わります。よろしいですか？
+            次回公開時に新しいアプリとして作成され、公開URLが変わります。
           </p>
           <p className="text-xs text-ink-muted">
             新しい公開名: <span className="font-mono text-ink">{confirm.name}</span>
@@ -2834,71 +2785,6 @@ function ConfirmDialog({
     )
   }
 
-  // teardown（強い確認）
-  return (
-    <div className="space-y-3">
-      <div className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-2">
-        <p className="text-sm font-semibold text-ink">⚠️ 環境を破棄します</p>
-        <p className="text-sm text-ink-secondary leading-relaxed">
-          このプロジェクトの さくらのAppRun 環境（作成済みリソース）のうち、下に挙げたものを削除します。
-          この操作は元に戻せません。
-        </p>
-        <ul className="text-xs text-ink-muted leading-relaxed list-disc pl-5">
-          {teardownTargets({ hasBucket: !!placement, deleteRegistry: canDeleteRegistry && deleteRegistry, registryName }).map(t => <li key={t}>{t}</li>)}
-        </ul>
-        {/* 公開URLはアプリIDから作られるため、破棄して公開し直すと別のURLになる。
-            人に伝えたURLが届かなくなるので、消える物の一覧と同じ強さで伝える。
-            URLそのものは長くて読み取れないため出さない（2026-08-09 Ryosuke の指定）。 */}
-        {/* 2026-09-25 検分の指摘23・37: 破棄は同意済みの保存場所を**全件**片づける。
-            1件だけ名指しすると、名前の出なかった保存場所とデータが黙って消える。 */}
-        {placements.map((p, i) => (
-          <p key={`${p.bucket}-${i}`} className="text-xs text-brand-red leading-relaxed select-text">💾 {teardownDataNote(p)}</p>
-        ))}
-        <p className="text-xs text-brand-red leading-relaxed">🔗 {urlChangesOnTeardownNotice()}</p>
-      </div>
-
-      {/* コンテナレジストリは AppRun とは別に月額課金が続くため、消すかどうかをここで明示的に選ばせる。
-          AppRunアプリは削除すれば課金が止まるが、レジストリは残る限り止まらない（2026-08-06 ユーザー指摘）。
-          ただし**どのレジストリを使っているかの記録が無いときは削除できない**ので、選択肢を出さずに
-          その旨を伝える。押しても消えないチェックは誤解しか生まない（2026-08-09 の実機検証）。 */}
-      <div className="rounded-xl border border-line bg-surface p-4 space-y-2">
-        {canDeleteRegistry ? (
-          <>
-            <label className="flex items-start gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={deleteRegistry}
-                onChange={e => onChangeDeleteRegistry(e.target.checked)}
-                disabled={busy}
-                className="mt-0.5 accent-[rgb(var(--sakura-rgb))]"
-              />
-              <span className="text-sm text-ink font-medium">{registryDeleteLabel(registryName)}</span>
-            </label>
-            {/* 借り物のときは、既定を外した理由をその場で言う（黙って外すと、
-                「なぜ課金が止まらないのか」が分からなくなる・2026-08-25） */}
-            {registryAdopted && (
-              <p className="text-xs text-brand-red leading-relaxed pl-6 select-text">⚠️ {adoptedRegistryNote(registryName)}</p>
-            )}
-            <p className={`text-xs leading-relaxed pl-6 ${deleteRegistry ? 'text-ink-secondary' : 'text-brand-red'}`}>
-              {registryDeleteHelp(deleteRegistry)}
-            </p>
-          </>
-        ) : (
-          <p className="text-xs text-brand-red leading-relaxed select-text">⚠️ {registryUnknownNotice()}</p>
-        )}
-      </div>
-      <div className="flex justify-between items-center">
-        <button
-          onClick={onCancel}
-          disabled={busy}
-          className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-        >やめる</button>
-        <button
-          onClick={onTeardown}
-          disabled={busy}
-          className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
-        >{busy ? '破棄中…' : '理解した上で破棄する'}</button>
-      </div>
-    </div>
-  )
+  // 到達しない（確認の種類は apply・cleanupImages・renameSpec の3つで尽きる。破棄の確認は共通の確認〔ConfirmModal〕で、この画面ではない）。
+  return null
 }
