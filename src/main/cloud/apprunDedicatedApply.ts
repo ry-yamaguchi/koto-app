@@ -515,7 +515,7 @@ export type TeardownFlowResult = {
    * 消せずに残ったID（無ければキー自体が無い＝最初から記録に無かった/消せた）。
    *
    * `storageBucket` は保存場所（オブジェクトストレージ）だけ毛色が違う——IDではなくバケット名で、
-   * 立てるのは `ipc/apprunDedicated.ts` の保存場所の片づけ（2026-09-24 検分の指摘5）。
+   * 立てるのは `ipc/apprunDedicatedTeardown.ts` の保存場所の片づけ（2026-09-24 検分の指摘5）。
    * **ここが空のまま ok:false を返すと、画面の「残っている間は課金が続きます」の下に
    * 1件も出ない**＝何が残っているのか分からないまま放置させることになる。
    */
@@ -524,8 +524,9 @@ export type TeardownFlowResult = {
    * **計算資源（アプリ・LB・ASG・クラスタ）は消し切れたか**（2026-09-24 検分の指摘4・9・13）。
    *
    * `ok` は保存場所の片づけまで含めた総合判定なので、「アプリは消えたが保存場所だけ失敗」で
-   * false になる。画面はそのとき公開記録（publish.targets）を消さず、📡 公開したもの一覧に
-   * **存在しないアプリの幽霊**が残る。公開記録を消すかどうかは `ok` ではなくこちらで判断する。
+   * false になる。そのとき、アプリが消えたことは `appDeleted` が言う（結果欄の管理画面への導線などが使う）。
+   * **公開記録（📡 の行）を消すかには使わない**（D1=1・0.6.22 段階3B-1。消すのは保存場所まで片づいた `ok` の回だけ。
+   * 保存場所だけ残った回は行を残し、📡 から押し直せる）。
    * 立てるのは保存場所の片づけ（teardownFlow 自身は `ok` と同じ意味なので触らない）。
    */
   appDeleted?: boolean
@@ -538,27 +539,38 @@ export type TeardownFlowResult = {
   /**
    * **片づけたのに、バケットごとは消さなかった**保存場所（利用者が自分で置いたファイルがある・ほかのプロジェクトが
    * 使っている）の名前。先頭の1件。**残れば月額も続く**（共用型の `cloud:teardown` の `keptBucketName` と同じ事実）。
-   * `remaining.storageBucket`（**片づけに失敗して**残ったもの）とは別。立てるのは `ipc/apprunDedicated.ts` の保存場所の片づけ。
+   * `remaining.storageBucket`（**片づけに失敗して**残ったもの）とは別。立てるのは `ipc/apprunDedicatedTeardown.ts` の保存場所の片づけ。
    * これが無いと、この回は ok:true のまま executed に「残します（月額の課金は続きます）」の1行が入るだけで、警告にならなかった。
    */
   keptBucketName?: string
   /** 同じ事実の全件（複数の保存場所を片づけたとき、名前が出なかった分の月額が黙って続かないように）。 */
   keptBucketNames?: string[]
+  /** 残した保存場所のうち、ほかのプロジェクトも使っているため残したもの（`teardownPlanFor` の `keptReasons`）。結果の警告が「消すと、そのプロジェクトのデータも消える」と言う材料。 */
+  keptBucketsUsedByOthers?: string[]
+  /** 残した保存場所のうち、Koto が作ったのではないファイルがあるため残したもの。 */
+  keptBucketsWithOwnFiles?: string[]
+  /**
+   * 保存場所が2件以上で途中で止まった回の、**残りの全件**（HANAMII の `remainingBuckets` と同じ。0.6.22 段階3B-2・立てるのは
+   * `ipc/apprunDedicatedTeardown.ts` の保存場所の片づけ。3点セット〔main・preload・global.d.ts〕は同じ形）。
+   * 先頭は止まった1件で、`remaining.storageBucket` と同じ（そちらは止まった1件のまま）。無い回は全部片づいた回・保存場所に触れなかった回。
+   */
+  remainingBuckets?: string[]
 }
 
 /**
  * 手順6の破棄のあと、公開記録（publish.targets['sakura-apprun-dedicated']＝📡 の行）を片づけるか（純関数）。
  *
- * **判断の基準は「破棄全体が成功したか」ではなく「アプリが実際に消えたか」**（`appDeleted`。無ければ `ok`）。
- * 保存場所の片づけだけが失敗した回は `ok:false` だがアプリは消えている——記録を残すと 📡 公開したもの一覧に
- * 存在しないアプリが出続ける。
+ * **判断の基準は「保存場所まで片づいたか」**（`ok`。D1=1・0.6.22 段階3B-1）。アプリが消えても保存場所だけ残った回
+ * （`ok:false`・`appDeleted:true`）は、**行を残す**＝📡 の行の「🗑 削除」を押し直すと、残った保存場所だけを削除する
+ * （HANAMII・共用型と同じ）。以前は `appDeleted ?? ok` で、保存場所だけ残っても行が消え、プロジェクトを開いて
+ * 手順6から消すしかなかった。
  *
  * **「消す公開記録があったか」は、破棄の前に公開記録（行）があったか（`hadPublishRecord`）で決める**
  * （2026-10-08 検分。以前は「破棄前の記録に applicationID があったか」で決めていた）。applicationID は、アプリが消えた
  * 時点で記録から外れる。だから途中で止まった削除（ロードバランサの待ち切れなど。実測約9分に対して待ちの上限は約10分で、
  * 現実に起きる）を押し直して全部消せても、2回目は applicationID が無く、行が永久に残った（幽霊の行）。
  * 行そのものがあったかを見れば、1回目で止まった行も、資源の記録が失われた幽霊の行も、全部消せた回に消える。
- * 途中で止まった回（`ok:false`・`appDeleted` 無し）は行を残す＝押し直す 🗑 を残す。
+ * 途中で止まった回（`ok:false`）は、アプリが消えていても消えていなくても行を残す＝押し直す 🗑 を残す。
  *
  * **公開記録を消すのは main のこの1か所だけ**（画面は消さない）。以前は画面だけが破棄の後始末として公開記録を
  * 消していたが、手順6のダイアログを閉じると窓が持つ後始末は走らず、破棄は最後まで進むのに存在しないアプリの
@@ -571,7 +583,8 @@ export function shouldForgetPublishRecord(s: {
   result: { ok: boolean; appDeleted?: boolean } | null | undefined
 }): boolean {
   if (!s.hadPublishRecord || !s.result) return false
-  return s.result.appDeleted ?? s.result.ok
+  // `appDeleted` は見ない（D1=1）。`ok === true` だけ: 計算資源も保存場所も片づいた回。
+  return s.result.ok === true
 }
 
 export type TeardownFlowOpts = {
@@ -1495,7 +1508,7 @@ function mergeLowerResourcesIntoAppStop(
  * **`opts.confirmed !== true` なら、API を一切呼ばずに中止する**（2026-09-10 レビューの修理・A・
  * 掟10の3点セット）。
  *
- * 手順6「すべて削除する」も 📡 公開したもの一覧の「🗑 破棄」も、**この1つの流れ**を通る
+ * 手順6「すべて削除する」も 📡 公開したもの一覧の「🗑 削除」も、**この1つの流れ**を通る
  * （2026-10-08 作者の決定: アプリだけを消す専用の口は廃止した）。
  *
  * 各段の内訳は `attemptDeleteApplication` / `attemptDeleteLoadBalancer` / `attemptDeleteAsg` /

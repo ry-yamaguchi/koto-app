@@ -151,7 +151,7 @@ export function buildRollbackBody(versionName: string | null): unknown[] {
  * ②公開し直せば最新に戻ること——を伝える文言にする。
  */
 export function pinnedNotice(versionName: string): string {
-  return `⚠️ いま『${versionName}』に固定されています。訪問者にはこのバージョンが見えています。Koto から公開し直すと、最新のバージョンに戻ります（固定は解除されます）。`
+  return `⚠️ いま『${versionName}』に固定されていて、訪問者にはこのバージョンが見えています。Koto から公開し直すと、最新のバージョンに戻ります。`
 }
 
 /**

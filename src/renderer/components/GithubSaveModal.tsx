@@ -159,7 +159,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
           ) : !token ? (
             <div className="rounded-xl border border-brand-yellow/70 bg-surface p-4 space-y-3">
               <p className="text-sm text-ink leading-relaxed">
-                GitHubのトークンが未登録です。認証情報でトークン（PAT）を登録してください。
+                GitHubのトークンが未登録です。認証情報で登録してください。
               </p>
               <button
                 onClick={onOpenCredentials}
@@ -196,7 +196,6 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
             </div>
           ) : (
             <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-ink">GitHubに保存</h3>
               <div className="flex items-center gap-2 text-xs text-ink-secondary">
                 <span className="text-ink-muted">前回の保存</span>
                 <span className="text-ink">{formatDate(lastSavedAt)}</span>

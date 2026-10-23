@@ -148,11 +148,13 @@ describe('📚 資料の置き場所と文言', () => {
   // 目的は「登録した資料がちゃんと引けるか」の確認。回答だけでは分からない。
   it('検索の結果は、当たった資料の名前・場所・本文まで見せる', () => {
     const s = read('src/renderer/components/KnowledgeModal.tsx')
-    expect(s).toContain('見つかったところ')
+    // 結果の枠は KnowledgeAnswer.tsx に切り出してある（描き方）。何を渡すか（where・excerpt）は KnowledgeModal.tsx
+    const a = read('src/renderer/components/KnowledgeAnswer.tsx')
+    expect(a).toContain('見つかったところ')
     expect(s).toContain('番目の区切り')
-    expect(s).toContain('h.excerpt')
+    expect(a).toContain('h.excerpt')
     // 見つからなかったことも、はっきり言う（回答だけ出すと効いたように見える）
-    expect(s).toContain('当てはまる資料は見つかりませんでした')
+    expect(a).toContain('当てはまる資料は見つかりませんでした')
     // 応答は前からこれを返していた。追加の呼び出しは増やさない
     expect(s.split('window.electronAPI.rag.chat(').length - 1).toBe(1)
     expect(s).not.toContain('window.electronAPI.rag.query(')

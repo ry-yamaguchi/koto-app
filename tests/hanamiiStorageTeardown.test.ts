@@ -7,7 +7,7 @@ import path from 'node:path'
 // 📡 公開したもの一覧の「🗑 破棄」は、HANAMII でも確認オーバーレイに
 // 「保存場所『koto-data-xxxx』にある、このプロジェクトのデータも削除します。…この保存場所を
 // 使っているプロジェクトがほかに無ければ、保存場所そのものも削除して月額を止めます。」と出す
-// （shared/teardownSupport.ts の teardownDataNoteFor。teardownRemovesStorage('hanamii','list') が true）。
+// （shared/teardownSupport.ts の teardownDataNoteFor。teardownRemovesStorage('hanamii') が true）。
 //
 // ところが当時の `hanamii:teardown` は HANAMII のプロジェクトを消すだけで、
 // **バケットも、その中のデータも、鍵（koto-<名前>-hanamii）も1件も消していなかった。**
@@ -15,7 +15,7 @@ import path from 'node:path'
 // **月額495円が止まらないまま、消したはずのアプリの鍵がバケットへ読み書きできるまま生き残る。**
 // 専有型の⑥で直したのとまったく同じ形である。
 //
-// そして tests/teardownSupport.test.ts は `teardownRemovesStorage('hanamii','list')` が true で
+// そして tests/teardownSupport.test.ts は `teardownRemovesStorage('hanamii')` が true で
 // あることだけを固定していた——**テストは断定を固定するだけで、断定が正しいかは確かめない**
 // （掟10・#34 レジストリと同じ形）。だからここは**ソースの文字列を読まない**。
 // 偽の保存場所と偽の HANAMII API に実際に流し、**何が呼ばれ、何が呼ばれなかったか・その順序**を見る。
@@ -27,8 +27,8 @@ const h = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
   /** さくらのクラウドの認証情報が登録されているか（保存場所の鍵はこれで読む）。 */
   hasCreds: true,
-  /** HANAMII API が返す HTTP ステータス（DELETE /api/v1/projects/<id>）。 */
-  hanamiiStatus: 204,
+  /** HANAMII API が返す HTTP ステータス（DELETE /api/v1/projects/<id>）。200＝削除済み（原本の応答例と同じ本文）。 */
+  hanamiiStatus: 200,
   /** HANAMII API へ出た要求（順序込み）。**空であることを確かめるのに使う。** */
   hanamiiCalls: [] as string[],
   /** listAllKeys が返すバケットの中身。 */
@@ -112,6 +112,8 @@ import { registerHanamiiHandlers } from '../src/main/ipc/hanamii'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { BUCKET_MONTHLY_YEN, teardownRemainingWarnings } from '../src/shared/cloudCost'
+import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { isolatedProjectDir, workspaceDirOf } from './isolatedProject'
 
 registerHanamiiHandlers({} as any)
 const teardown = h.handlers.get('hanamii:teardown')!
@@ -131,9 +133,9 @@ const realFetch = globalThis.fetch
 
 beforeEach(() => {
   resetProjectOpsForTests()
-  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-hanamii-teardown-'))
+  projectDir = isolatedProjectDir('koto-hanamii-teardown-')
   h.hasCreds = true
-  h.hanamiiStatus = 204
+  h.hanamiiStatus = 200
   h.hanamiiCalls = []
   h.keys = [`${PREFIX}.koto-keep`]
   h.listThrows = false
@@ -148,8 +150,7 @@ beforeEach(() => {
   // 偽の HANAMII API（実物の HanamiiClient をそのまま動かし、出た要求だけを記録する）。
   globalThis.fetch = (async (input: unknown, init: any) => {
     h.hanamiiCalls.push(`${init?.method ?? 'GET'} ${String(input)}`)
-    const status = h.hanamiiStatus
-    return { ok: status >= 200 && status < 300, status, async text() { return '' } }
+    return deleteProjectReply(h.hanamiiStatus, PROJECT_ID)
   }) as unknown as typeof fetch
 })
 
@@ -184,7 +185,11 @@ function recordProjectId(projectId: string = PROJECT_ID) {
   fs.writeFileSync(path.join(projectDir, '.sakuraide.json'), JSON.stringify({ publish: { hanamii: { projectId } } }, null, 2), 'utf-8')
 }
 
-const run = () => { recordProjectId(); return teardown(EVENT, PROJECT_ID, TOKEN, projectDir) }
+/** 呼び形は (projectDir, { token }, { confirmed, projectId })。確認の印も付ける（印が無い・projectDir が無い回は tests/hanamiiTeardownShell.test.ts）。 */
+const call = (over: { projectDir?: unknown; auth?: unknown; opts?: unknown } = {}) =>
+  teardown(EVENT, 'projectDir' in over ? over.projectDir : projectDir, 'auth' in over ? over.auth : { token: TOKEN },
+    'opts' in over ? over.opts : { confirmed: true, projectId: PROJECT_ID })
+const run = () => { recordProjectId(); return call() }
 
 // ── 1. 確認画面の約束を、実物が果たしているか ────────────────────────────────
 
@@ -355,8 +360,12 @@ describe('★★★ HANAMII の破棄: バケットを残した回は、残っ�
     expect(rec.result!.warnings, '月額が続くのに、警告になっていない（折りたたみの中に隠れる）').toHaveLength(1)
     expect(rec.result!.warnings[0]).toContain(`『${BUCKET}』`)
     expect(rec.result!.warnings[0]).toContain(`月額${BUCKET_MONTHLY_YEN}円`)
-    // 共用型と同じ関数の文（画面によって言い方が食い違わない）
-    expect(rec.result!.warnings).toEqual(teardownRemainingWarnings({ keptBucketName: BUCKET }))
+    // 共用型と同じ関数の文（画面によって言い方が食い違わない）。残した理由（利用者のファイル）も事実として返り、文はそれを言う
+    expect(result.keptBucketsWithOwnFiles).toEqual([BUCKET])
+    expect(result.keptBucketsUsedByOthers).toBeUndefined()
+    expect(rec.result!.warnings).toEqual(teardownRemainingWarnings({ keptBucketName: BUCKET, keptBucketsWithOwnFiles: [BUCKET] }))
+    expect(rec.result!.warnings[0]).toContain('Koto が作ったのではないファイルがあります')
+    expect(rec.result!.warnings[0], '利用者のファイルが入った保存場所に、言われたとおり消してよいとは言わない').not.toContain('後で消す場合は')
   })
 
   it('★★ ほかのプロジェクトが使っている保存場所を残した回も、同じ（残れば月額が続く）', async () => {
@@ -365,6 +374,11 @@ describe('★★★ HANAMII の破棄: バケットを残した回は、残っ�
     const result = await run()
     expect(result.keptBucketName).toBe(BUCKET)
     expect(getOps(projectDir).last!.result!.warnings).toHaveLength(1)
+    // 残した理由（ほかのプロジェクトも使っている）が返り、「後で消す場合は削除して」ではなく、消すとそのアプリが止まると言う（共用型・専有型と同じ判断）
+    expect(result.keptBucketsUsedByOthers).toEqual([BUCKET])
+    expect(result.keptBucketsWithOwnFiles).toBeUndefined()
+    expect(getOps(projectDir).last!.result!.warnings[0]).toContain('ほかのプロジェクトも使っています。消すと、そのプロジェクトのデータも消えます。')
+    expect(getOps(projectDir).last!.result!.warnings[0]).not.toContain('後で消す場合は')
   })
 
   it('★★ バケットごと消した回は、残った事実を返さない（警告を出さない）', async () => {
@@ -496,9 +510,12 @@ describe('HANAMII の破棄: 保存場所に触らない場合', () => {
   it('★★ トークンが未登録なら、HANAMII へも保存場所へも1件も要求を出さない', async () => {
     setupProject()
     recordProjectId()
-    const result = await teardown(EVENT, PROJECT_ID, '', projectDir)
-
-    expect(result.ok).toBe(false)
+    // 空のトークン・トークンの無い認証・認証そのものが無い、のどれでも同じ（骨が認証の形で断る）
+    for (const auth of [{ token: '' }, {}, null, undefined, 'hnm_test']) {
+      const result = await call({ auth })
+      expect(result.ok, JSON.stringify(auth)).toBe(false)
+      expect(result.message, JSON.stringify(auth)).toBe('HANAMII のトークンが未登録です')
+    }
     expect(h.hanamiiCalls).toEqual([])
     expect(h.storageCalls).toEqual([])
   })
@@ -511,14 +528,16 @@ describe('HANAMII の破棄: 保存場所に触らない場合', () => {
     expect(h.storageCalls).toEqual([])
   })
 
-  it('★ projectDir が渡らない呼び出しでは、片づけたふりをしない（何も消さない）', async () => {
+  it('★★ projectDir が渡らない呼び出しは、HANAMII へも保存場所へも1件も要求を出さずに断る（以前は鍵も掛けずに HANAMII だけ消して ok:true だった）', async () => {
     setupProject()
-    const result = await teardown(EVENT, PROJECT_ID, TOKEN)
-
-    expect(result.ok).toBe(true)
-    expect(result.appDeleted).toBe(true)
+    recordProjectId()
+    for (const dir of [undefined, '', 0, null, {}]) {
+      const result = await call({ projectDir: dir })
+      expect(result.ok, String(dir)).toBe(false)
+      expect(result.appDeleted, String(dir)).toBeUndefined()
+    }
+    expect(h.hanamiiCalls).toEqual([])
     expect(h.storageCalls).toEqual([])
-    expect(result.executed).toEqual([])
   })
 })
 
@@ -607,6 +626,8 @@ describe('HANAMII の破棄: 残った保存場所は全部名指しする', () 
     expect(result.message).toContain(BUCKET)
     expect(result.message, '手を付けていない2件目が残りとして出ていない').toContain(BUCKET2)
     expect(result.remainingBuckets).toEqual([BUCKET, BUCKET2])
+    // 3つの公開先の「残っています」の行は同じ関数（bucketNamesText）で並べる。区切りを変えると、専有型・共用型と文が割れる（3B の検分）
+    expect(result.message).toContain(`保存場所『${BUCKET}』『${BUCKET2}』が残っています（消すまで月額が続きます）。`)
   })
 
   it('★★ 片づいた分は残りに数えない（1件目は消えて、残りは2件目だけ）', async () => {
@@ -864,5 +885,139 @@ describe('HANAMII の公開: koto-data を差し替えたら、黙らない（�
     expect(r.ok).toBe(true)
     expect(dataLayerText()).toBe(mine)
     expect((r.executed ?? []).join('\n')).not.toContain('差し替えました')
+  })
+})
+
+// ── 11. ほかのプロジェクトの記録を読んでから、バケットごと消すか決める（2026-10-21 実機の欠陥）──────────────
+//
+// 実機: 共用の保存場所 S を使う rc1-shared（共用型 AppRun と HANAMII の両方で公開中）の HANAMII の破棄が、S の中の自分の prefix を目印ごと消した。
+// そのあと rc1-ded1 の専有型の削除が、S のキーに「ほかの prefix が無い」と読んで S をバケットごと消した。rc1-shared の env.json には S が同意済みで残っていた。
+// HANAMII の破棄にも同じ穴がある（保存場所を片づける道は teardownStorageForProject の1つ）。ここは、兄弟の記録から使っていると分かるとき・わからないときに、
+// **バケット削除の要求が0件**で、このプロジェクトのキーだけ消えることを、偽の保存場所に実際に流して固定する。
+describe('★★★ HANAMII の破棄: ほかのプロジェクトの記録に同じ保存場所があれば、バケットごとは消さない', () => {
+  /**
+   * 兄弟のプロジェクトを同じ親フォルダに置く。`published` は公開の記録（.sakuraide.json の共用型の行）を置く
+   * （兄弟が「いま使っている」と数えられるのは、保存場所を同意済みで使い、かつ公開の記録がまだあるとき）。
+   */
+  function sibling(name: string, opts: { consent?: string[]; rawEnv?: string; published?: boolean } = {}) {
+    const dir = path.join(workspaceDirOf(projectDir), name)
+    fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
+    const file = path.join(dir, '.sakura-cloud', 'env.json')
+    if (opts.rawEnv !== undefined) fs.writeFileSync(file, opts.rawEnv)
+    else fs.writeFileSync(file, JSON.stringify({ persistence: { objectStorage: (opts.consent ?? []).map(bucket => ({ bucket, prefix: `projects/${name}/`, shared: true, consentedAt: '2026-10-19T00:00:00.000Z' })) } }))
+    if (opts.published) fs.writeFileSync(path.join(dir, '.sakuraide.json'), JSON.stringify({ publish: { targets: { 'sakura-apprun': { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.example/' } } } }))
+  }
+
+  it('★★★ 実機の再現: キーには自分の prefix しか無いが、兄弟の env.json に同意済みで残っている → バケット削除0件・自分のキーだけ消す・「ほかのプロジェクトも使っています」', async () => {
+    setupProject()
+    h.keys = [`${PREFIX}data.json`] // 自分の prefix しか無い
+    h.permissions = [{ id: 'perm-hanamii', displayName: MINE }]
+    sibling('rc1-shared', { consent: [BUCKET], published: true })
+    const result = await run()
+
+    expect(result.ok).toBe(true)
+    expect(h.deletedBuckets, 'バケットごと消した（実機の欠陥）').toEqual([])
+    expect(touched().some(c => c.startsWith('deleteBucket'))).toBe(false)
+    expect(h.deletedKeys).toEqual([`${PREFIX}data.json`])
+    expect(h.deletedPermissions).toEqual(['perm-hanamii']) // 鍵は無効にする（バケットを残しても、このアプリの鍵は残さない）
+    expect(result.keptBucketName).toBe(BUCKET)
+    expect(result.keptBucketsUsedByOthers).toEqual([BUCKET])
+    const warning = teardownRemainingWarnings(result).join('\n')
+    expect(warning).toContain('ほかのプロジェクトも使っています')
+    expect(readObjectStorage().map((b: any) => b.bucket), '消していないバケットの記録は残す').toEqual([BUCKET])
+  })
+
+  it('★★★ 兄弟の記録を読めない（壊れた JSON）→ わからないので残す。「ほかのプロジェクトも使っています」とは言わない', async () => {
+    setupProject()
+    h.keys = [`${PREFIX}data.json`]
+    sibling('broken', { rawEnv: '{ not json' })
+    const result = await run()
+
+    expect(result.ok).toBe(true)
+    expect(h.deletedBuckets).toEqual([])
+    expect(h.deletedKeys).toEqual([`${PREFIX}data.json`])
+    expect(result.keptBucketName).toBe(BUCKET)
+    expect(result.keptBucketsUsedByOthers).toBeUndefined()
+    const warning = teardownRemainingWarnings(result).join('\n')
+    expect(warning).toContain('使っているプロジェクトが無いか確かめてください')
+    expect(warning).not.toContain('ほかのプロジェクトも使っています')
+  })
+
+  it('★ 兄弟が別のバケットだけを使っている → 今までどおりバケットごと消す。緑の行は消したことを事実で言う', async () => {
+    setupProject()
+    h.keys = [`${PREFIX}data.json`]
+    sibling('uses-other', { consent: ['koto-data-other'], published: true })
+    const result = await run()
+
+    expect(result.ok).toBe(true)
+    expect(h.deletedBuckets).toEqual([BUCKET])
+    expect(result.executed).toContain(`保存場所『${BUCKET}』のデータを削除しました — 保存場所ごと削除しました。月額の課金も止まります。`)
+  })
+})
+
+// ── 兄弟が「いま使っている」かは、設定に加えて公開の記録（.sakuraide.json の行）で決める（8f5e9d8 の直後に見つかった回帰）────────────────
+// 共用型・HANAMII・専有型の破棄は、ほかが使うので残したバケットを env.json・state.json に残す（設定から外さない）。設定だけで数えると、
+// 同じ保存場所 S を使う A・B を順に破棄したとき、B の破棄が**破棄済みの A** を使用者と読み、S は誰にも消せず月額が続いた。
+describe('★★★ HANAMII の破棄: 回帰 — 同じ保存場所を使う A・B を順に破棄すると、最後の破棄でバケットごと消える', () => {
+  const PREFIX_A = 'projects/proj-a/'
+  const PREFIX_B = 'projects/proj-b/'
+  /** HANAMII で公開中のプロジェクト（保存場所を同意済み・公開の記録＝hanamii の行と projectId あり）。 */
+  function publishedProject(dir: string, prefix: string) {
+    fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
+    const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
+    spec.persistence = { objectStorage: [{ ...CONSENTED_BUCKET, prefix }] } as any
+    fs.writeFileSync(path.join(dir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
+    fs.writeFileSync(path.join(dir, '.sakuraide.json'), JSON.stringify({
+      publish: { hanamii: { projectId: PROJECT_ID }, targets: { hanamii: { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.hanamii.example/' } } },
+    }, null, 2), 'utf-8')
+  }
+
+  it('A を破棄 → S は残る（B が公開中）。続けて B を破棄（A は破棄済みで行が無い）→ バケット削除の要求が1件・「保存場所ごと削除しました」', async () => {
+    const dirB = path.join(workspaceDirOf(projectDir), 'proj-b')
+    fs.mkdirSync(dirB)
+    publishedProject(projectDir, PREFIX_A)
+    publishedProject(dirB, PREFIX_B)
+
+    // 1. A を破棄。S のキーは A の prefix だけ（B の prefix は目印ごと消えていた・実機と同じ）。B は公開中なので S は残る
+    h.keys = [`${PREFIX_A}data.json`]
+    const first = await call()
+    expect(first.ok).toBe(true)
+    expect(h.deletedBuckets, 'B が公開中なのに S を消した').toEqual([])
+    expect(first.keptBucketsUsedByOthers).toEqual([BUCKET])
+    // A の公開の記録（hanamii の行・projectId）は消える。設定（env.json の S）は残る（設定から外さない作り）
+    const metaA = JSON.parse(fs.readFileSync(path.join(projectDir, '.sakuraide.json'), 'utf-8'))
+    expect(metaA.publish.targets?.hanamii).toBeUndefined()
+    expect(readObjectStorage().map((b: any) => b.bucket)).toEqual([BUCKET])
+
+    // 2. 続けて B を破棄。A は破棄済み（公開の記録が無い）なので数えない → S をバケットごと消す
+    h.keys = [`${PREFIX_B}data.json`]
+    const second = await call({ projectDir: dirB })
+    expect(second.ok).toBe(true)
+    expect(h.deletedBuckets, '最後の破棄で S が消えない（月額が続く・回帰）').toEqual([BUCKET])
+    expect(h.storageCalls.filter(c => c === `deleteBucket ${BUCKET}`)).toHaveLength(1)
+    expect(second.keptBucketName).toBeUndefined()
+    expect(second.keptBucketsUsedByOthers).toBeUndefined()
+    expect(second.executed).toContain(`保存場所『${BUCKET}』のデータを削除しました — 保存場所ごと削除しました。月額の課金も止まります。`)
+  })
+
+  it('★★ 兄弟が S を同意済みでも、公開の記録が無い・目印も無い（一度も公開していない「用意しただけ」）→ 数えない＝バケットごと消す。目印があればキーで数える＝残す', async () => {
+    setupProject()
+    h.keys = [`${PREFIX}data.json`]
+    // 兄弟（公開の記録なし）。S の中に目印は無い
+    const p = path.join(workspaceDirOf(projectDir), 'prepared-only')
+    fs.mkdirSync(path.join(p, '.sakura-cloud'), { recursive: true })
+    fs.writeFileSync(path.join(p, '.sakura-cloud', 'env.json'), JSON.stringify({ persistence: { objectStorage: [{ ...CONSENTED_BUCKET, prefix: 'projects/prepared-only/' }] } }))
+    const gone = await run()
+    expect(gone.ok).toBe(true)
+    expect(h.deletedBuckets).toEqual([BUCKET])
+
+    // 同じ形で、S の中に兄弟の目印がある → 残す
+    h.deletedBuckets = []
+    setupProject()
+    h.keys = [`${PREFIX}data.json`, 'projects/prepared-only/.koto-keep']
+    const kept = await run()
+    expect(kept.ok).toBe(true)
+    expect(h.deletedBuckets).toEqual([])
+    expect(kept.keptBucketsUsedByOthers).toEqual([BUCKET])
   })
 })

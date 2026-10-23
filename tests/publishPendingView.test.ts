@@ -105,8 +105,9 @@ describe('pendingPublishMessage: 画面に出す1文（素のテキスト・掟5
 
   it('★ running: 「公開状況に出る」のは成功したときだけ（失敗すると記録は書かれない）。「終わると出ます」と言い切らない', () => {
     const msg = pendingPublishMessage({ kind: 'running', pending: { target: 'vercel', startedAt: OLD } })!
-    expect(msg).toContain('公開に成功すると、公開状況に記録されます')
-    expect(msg).toContain('失敗したときは記録されません')
+    // 2026-10-09 画面の文を短くする（T091）: 「成功すると…記録されます（失敗したときは記録されません）」を「記録されるのは、成功したときだけです」の1文にした。
+    expect(msg).toContain('公開状況に記録されるのは、成功したときだけです')
+    expect(msg).not.toContain('失敗したときは記録されません')
     expect(msg).not.toContain('終わると')
   })
 
@@ -155,7 +156,7 @@ describe('★★★ 本物の鍵（withProjectLock）と記録ファイルを通
   /** 画面を開いたときと同じ手順（走っているかを聞く → 記録を読む → 判定）。 */
   async function openDialog() {
     const snap = await loadPublishSnapshot(projectDir)
-    return { snap, view: judgePendingPublish(snap.meta.publish as PublishMeta | undefined, snap.runningOp, Date.now()) }
+    return { snap, view: judgePendingPublish(snap.meta.publish as PublishMeta | undefined, snap.runningOp?.op, Date.now()) }
   }
 
   it('★ 走っている: 公開の最中に開き直す（pending あり・main の鍵が「公開」）→ 「進んでいます」。中断ではない', async () => {
@@ -163,7 +164,8 @@ describe('★★★ 本物の鍵（withProjectLock）と記録ファイルを通
     writeMeta({ publish: { pending: { target: 'hanamii', startedAt: new Date(Date.now() - 60_000).toISOString() } } })
     await withProjectLock(projectDir, '公開', async () => {
       const { snap, view } = await openDialog()
-      expect(snap.runningOp).toBe('公開')
+      // 操作名と公開先（鍵を取るときに渡した meta の target）。公開先を渡さない呼び出しは 'unknown'
+      expect(snap.runningOp).toEqual({ op: '公開', target: 'unknown' })
       expect(view.kind).toBe('running')
       expect(pendingPublishMessage(view)).toContain('公開が進んでいます')
     })
@@ -207,13 +209,13 @@ describe('loadPublishSnapshot: 走っているかを先に聞き、記録は後�
     // 時間の進み: 最初の1回の問い合わせの直後に、公開が終わる（pending が消え、鍵が外れる）。
     let finished = false
     const io = {
-      runningOp: async () => { const v = finished ? null : ('公開' as const); finished = true; return v },
+      runningOp: async () => { const v = finished ? null : ({ op: '公開', target: 'hanamii' } as const); finished = true; return v },
       readFile: async () => { const v = finished ? withoutPending : withPending; finished = true; return v },
     }
     const snap = await loadPublishSnapshot('/p/x', io)
     // 正しい順序: 「走っている」と聞き、そのあとの記録には pending が無い
-    expect(snap.runningOp).toBe('公開')
-    const view = judgePendingPublish(snap.meta.publish as PublishMeta | undefined, snap.runningOp, NOW)
+    expect(snap.runningOp).toEqual({ op: '公開', target: 'hanamii' })
+    const view = judgePendingPublish(snap.meta.publish as PublishMeta | undefined, snap.runningOp?.op, NOW)
     expect(view.kind).toBe('none')
   })
 
@@ -277,8 +279,8 @@ describe('★★★ 書いたあと・片づけたあとも、走っているか
     fs.rmSync(projectDir, { recursive: true, force: true })
   })
 
-  const viewOf = (snap: { runningOp: string | null; meta: Record<string, unknown> }) =>
-    judgePendingPublish(snap.meta.publish as PublishMeta | undefined, snap.runningOp, Date.now()).kind
+  const viewOf = (snap: { runningOp: { op: string } | null; meta: Record<string, unknown> }) =>
+    judgePendingPublish(snap.meta.publish as PublishMeta | undefined, snap.runningOp?.op, Date.now()).kind
 
   it('★ 「記録を片づける」: 公開が走っている最中は running（中断とは言わない）。pending と専有型の記録は残る', async () => {
     fs.writeFileSync(metaPath(), JSON.stringify({
@@ -290,7 +292,7 @@ describe('★★★ 書いたあと・片づけたあとも、走っているか
     }), 'utf-8')
     await withProjectLock(projectDir, '公開', async () => {
       const snap = await forgetPublishTargetThenLoad(projectDir, 'vercel')
-      expect(snap.runningOp).toBe('公開')
+      expect(snap.runningOp?.op).toBe('公開')
       expect(viewOf(snap)).toBe('running')
       const disk = JSON.parse(fs.readFileSync(metaPath(), 'utf-8'))
       expect(disk.publish.targets?.vercel).toBeUndefined()
@@ -303,7 +305,7 @@ describe('★★★ 書いたあと・片づけたあとも、走っているか
     fs.writeFileSync(metaPath(), JSON.stringify({ publish: { pending: oldPending() } }), 'utf-8')
     await withProjectLock(projectDir, '公開', async () => {
       const snap = await mergeProjectMetaThenLoad(projectDir, { target: 'sakura-rental' })
-      expect(snap.runningOp).toBe('公開')
+      expect(snap.runningOp?.op).toBe('公開')
       expect(viewOf(snap)).toBe('running')
       expect((snap.meta as any).target).toBe('sakura-rental')
     })
@@ -325,7 +327,7 @@ describe('★★★ 書いたあと・片づけたあとも、走っているか
     const code = src.split('\n').filter(l => !l.trimStart().startsWith('//')).join('\n')
     const calls = code.match(/\bsetMeta\(/g) ?? []
     expect(calls).toHaveLength(1)
-    expect(code).toMatch(/const applySnapshot = useCallback\(\(snap: PublishSnapshot\) => \{\s*setRunningOp\(snap\.runningOp\)\s*setMeta\(snap\.meta as Meta\)/)
+    expect(code).toMatch(/const applySnapshot = useCallback\(\(snap: PublishSnapshot\) => \{\s*setRunningOp\(snap\.runningOp\?\.op \?\? null\)\s*setMeta\(snap\.meta as Meta\)/)
     // 書いたあと・片づけたあとは、走っているかも取り直す関数を通す
     expect(code).toContain('mergeProjectMetaThenLoad(projectDir')
     expect(code).toContain('forgetPublishTargetThenLoad(projectDir')

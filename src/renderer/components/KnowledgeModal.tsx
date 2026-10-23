@@ -4,6 +4,7 @@ import { getDefaultModel } from '../usage'
 import { buildWebPageMarkdown, WEB_FETCH_MAX_CHARS } from '../ragContext'
 import KnowledgeCollectorTab from './KnowledgeCollectorTab'
 import KnowledgePacksTab from './KnowledgePacksTab'
+import KnowledgeAnswer, { type KnowledgeAnswerData } from './KnowledgeAnswer'
 import { judgeFreshness, parseSourceMeta, sourcesDueForCheck, fingerprint, judgeUpdate } from '../../shared/freshness'
 import { setBaseline, getBaseline, pruneBaselines } from '../knowledgeBaseline'
 import { isSubmitEnter } from '../keyInput'
@@ -101,15 +102,8 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
   // 試し質問
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
-  /**
-   * 検索の結果。**回答だけでなく、どの資料のどこが当たったかまで持つ**
-   * （2026-08-25 Ryosuke と設計）。応答は前からこれを返していたのに、
-   * **画面が資料名しか使わずに捨てていた**。
-   */
-  const [answer, setAnswer] = useState<{
-    text: string
-    hits: { name: string; where: string; excerpt: string }[]
-  } | null>(null)
+  // 検索の結果（回答の文＋どの資料のどこが当たったか）。描くのは KnowledgeAnswer
+  const [answer, setAnswer] = useState<KnowledgeAnswerData | null>(null)
   const [askError, setAskError] = useState('')
 
   // ポーリング管理（モーダルを閉じたら必ず停止）
@@ -576,7 +570,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                                 const note =
                                   st === 'checking' ? { text: '元のページを確認中…', warn: false }
                                   : st === 'changed' ? { text: '🔄 元のページが更新されています', warn: true }
-                                  : st === 'same' ? { text: '✅ 元のページと同じ内容です（最新です）', warn: false }
+                                  : st === 'same' ? { text: '✅ 元のページと同じ内容です', warn: false }
                                   : st === 'no-baseline' ? { text: '取り込んだときの内容が記録されていないため、更新の有無は分かりません（いまの内容を基準にしました）', warn: false }
                                   : st === 'no-url' ? { text: `出典URLが記録されていないため、確認できません（本文の先頭: ${sourceHead[doc.id] ?? '—'}）`, warn: false }
                                   : st === 'fetch-failed' ? { text: '元のページを取得できませんでした', warn: false }
@@ -663,31 +657,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 {askError && (
                   <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{askError}</p>
                 )}
-                {answer && (
-                  <div className="bg-elevated border border-line rounded-lg p-3 space-y-3">
-                    {answer.text && (
-                      <p className="text-sm text-ink whitespace-pre-wrap select-text">{answer.text}</p>
-                    )}
-                    {answer.hits.length > 0 ? (
-                      <div className="space-y-2">
-                        <p className="text-[11px] font-semibold text-ink-secondary">見つかったところ</p>
-                        {answer.hits.map((h, i) => (
-                          <div key={i} className="border-l-2 border-line pl-2.5 space-y-1">
-                            <p className="text-[11px] text-ink-secondary">
-                              📄 {h.name}{h.where ? ` ・ ${h.where}` : ''}
-                            </p>
-                            <p className="text-[11px] text-ink-muted whitespace-pre-wrap select-text leading-relaxed">{h.excerpt}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      // **見つからなかったことを、はっきり言う**（回答だけ出すと効いたように見える）
-                      <p className="text-[11px] text-ink-muted">
-                        当てはまる資料は見つかりませんでした。言葉を変えて試すか、資料が登録されているか確かめてください。
-                      </p>
-                    )}
-                  </div>
-                )}
+                {answer && <KnowledgeAnswer answer={answer} />}
               </div>
 
             </>

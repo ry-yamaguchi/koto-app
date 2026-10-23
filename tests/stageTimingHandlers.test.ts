@@ -85,7 +85,8 @@ import { initStageTimingStore, stageTimingFilePath, loadStageTimings } from '../
 import { writeApprunDedicatedRecordFs } from '../src/main/publishMetaFs'
 import { defaultSpec } from '../src/main/cloud/spec'
 import { estimateText, readEstimate } from '../src/shared/stageEstimate'
-import { resumedTeardownResult, resumedPublishResult, resumedCreateResult } from '../src/renderer/apprunDedicatedActions'
+import { resumedPublishResult, resumedCreateResult } from '../src/renderer/apprunDedicatedActions'
+import { resumedTeardownView } from '../src/shared/teardownResult'
 
 registerApprunDedicatedHandlers({} as any)
 registerProjectOpsHandlers({ getMainWindow: () => null } as any)
@@ -166,7 +167,7 @@ describe('★★ 手順6（apprunDedicated:teardown）: その場の結果・記
     // 開き直したときの記録（同じ値）。記録から読み戻した結果も同じ形（双子）
     const rec = (await getOps(dir)).last
     expect(rec.result.extra.stageTimings).toEqual(r.stageTimings)
-    expect(resumedTeardownResult(rec).stageTimings).toEqual(r.stageTimings)
+    expect(resumedTeardownView('sakura-apprun-dedicated', rec.result).stageTimings).toEqual(r.stageTimings)
     // 保存: 終わった段だけ・{ ms, at, version, zone }・Koto の版とゾーン（記録の zone は、消える前に読んでいる）
     const file = saved()
     expect(Object.keys(file.stages).sort()).toEqual(['teardown.app', 'teardown.asg', 'teardown.cluster', 'teardown.lb'])

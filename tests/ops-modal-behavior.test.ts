@@ -34,7 +34,7 @@ vi.mock('../src/renderer/publishRootRenderer', () => ({ resolvePublishRoot: asyn
 import PublishModal from '../src/renderer/components/PublishModal'
 import { withProjectLock } from '../src/main/projectLock'
 import {
-  getOps, ackOps, reportProgress, runningOpName,
+  getOps, ackOps, reportProgress, runningOpEntryOf,
   setProjectOpsListener, resetProjectOpsForTests,
   type ProjectOp, type OpTarget,
 } from '../src/main/projectOps'
@@ -229,7 +229,7 @@ const OTHER = '/tmp/ops-modal-proj-b'
 
 type Api = ReturnType<typeof makeApi>
 
-function makeApi(opts: { runningOp?: (dir: string) => string | null } = {}) {
+function makeApi(opts: { runningOp?: (dir: string) => '作成' | '削除' | '公開' | null } = {}) {
   const subs = new Set<(p: any) => void>()
   const state = { push: true, metaJson: '{}', metaGate: null as Promise<void> | null }
   // main の記録が変わるたび、押し出す（ipc/projectOps.ts と同じ形: { projectDir, running, last, earlier }）
@@ -245,7 +245,12 @@ function makeApi(opts: { runningOp?: (dir: string) => string | null } = {}) {
       onChanged: vi.fn((cb: (p: any) => void) => { subs.add(cb); return () => { subs.delete(cb) } }),
     },
     publishMeta: {
-      runningOp: vi.fn(async (dir: string) => (opts.runningOp ? opts.runningOp(dir) : (runningOpName(dir) ?? null))),
+      // 本物の IPC（publishMeta:runningOp）と同じ形: 操作名と公開先、または null。opts.runningOp は操作名だけ差し替える（公開先は共用型にしておく）
+      runningOp: vi.fn(async (dir: string) => {
+        if (!opts.runningOp) return runningOpEntryOf(dir) ?? null
+        const op = opts.runningOp(dir)
+        return op === null ? null : { op, target: 'sakura-apprun' as const }
+      }),
       merge: vi.fn(async () => ({ ok: true, meta: {} })),
       forgetTarget: vi.fn(async () => ({ ok: true, meta: {} })),
       dismissInterrupted: vi.fn(async () => ({ ok: true, meta: {} })),
@@ -550,7 +555,7 @@ describe('★★★ ② 閉じて開き直したとき（外して付け直す�
     await settle()
     expect(first.root.text()).toContain('ロードバランサの削除を待っています…')
     expect(first.root.text()).toContain('状態: 削除中')
-    expect(first.root.text()).toContain('の削除が進んでいます')
+    expect(first.root.text()).toContain('の破棄が進んでいます')
     first.root.unmount() // 閉じる（処理は止まらない）
 
     reportProgress(DIR, 'オートスケーリンググループを削除しています…')
@@ -583,7 +588,7 @@ describe('★★★ ② 閉じて開き直したとき（外して付け直す�
     const { root } = open()
     await settle()
     const t = root.text()
-    expect(t).toContain('さくらのAppRunの削除は終わりましたが、確認が必要なことがあります')
+    expect(t).toContain('さくらのAppRunの破棄は終わりましたが、確認が必要なことがあります')
     // 「保存場所が残ったので月額が続きます」という警告を見逃さない
     expect(t).toContain('koto-data-bucket')
     expect(t).toContain('課金は続きます')
@@ -602,7 +607,7 @@ describe('★★★ ② 閉じて開き直したとき（外して付け直す�
     const t = root.text()
     expect(t).toContain('🌸 HANAMIIの公開が終わりました')
     expect(t).toContain('https://example.test/')
-    expect(t).toContain('さくらのAppRunの削除に失敗しました')
+    expect(t).toContain('さくらのAppRunの破棄に失敗しました')
     expect(t).not.toContain('うまくいきませんでした') // 0.6.21: 「うまくいかなかった」は「失敗」に揃えた。直す前の言い方は戻さない
     expect(t).toContain('レジストリの削除に失敗しました')
   })
@@ -636,7 +641,7 @@ describe('★★★ ② 閉じて開き直したとき（外して付け直す�
   })
 
   it('★★★ 開いている間に終わっても、その場で結果と警告が出る', async () => {
-    const op = startOp(DIR, '削除', TEARDOWN, { ok: true, keptRegistryName: 'my-registry' })
+    const op = startOp(DIR, '削除', TEARDOWN, { ok: true, keptRegistryName: 'my-registry', keptRegistryOrigin: 'owned', keptRegistryUsers: [] })
     const { root } = open()
     await settle()
     expect(root.text()).not.toContain('が終わりました')
@@ -766,7 +771,7 @@ describe('★★ 別のプロジェクトの記録を混ぜない（掟11）', (
     const other = startOp(OTHER, '削除', TEARDOWN, { ok: true, keptBucketName: 'other-bucket' })
     const { root } = open()
     await settle()
-    expect(root.text()).not.toContain('の削除が進んでいます')
+    expect(root.text()).not.toContain('の破棄が進んでいます')
     await other.finish()
     expect(root.text()).not.toContain('other-bucket')
     expect(root.text()).not.toContain('が終わりました')
@@ -780,7 +785,7 @@ describe('★★ 別のプロジェクトの記録を混ぜない（掟11）', (
     await settle()
     const op = startOp(DIR, '削除', TEARDOWN)
     await settle()
-    expect(root.text()).toContain('の削除が進んでいます')
+    expect(root.text()).toContain('の破棄が進んでいます')
     await op.finish()
   })
 
@@ -811,11 +816,11 @@ describe('★★ 古い応答で、より新しい写しを戻さない', () => 
     await settle()
     // 応答を待っている間に、処理が終わり、押し出しが届く
     await op.finish()
-    expect(root.text()).not.toContain('の削除が進んでいます')
+    expect(root.text()).not.toContain('の破棄が進んでいます')
     // いまごろ古い応答が届く（「走っている」）
     releaseGet()
     await settle()
-    expect(root.text()).not.toContain('の削除が進んでいます')
+    expect(root.text()).not.toContain('の破棄が進んでいます')
     expect(root.text()).not.toContain(NOTE)
     root.click(root.backdrop)
     expect(onClose).toHaveBeenCalledTimes(1)
@@ -884,7 +889,7 @@ describe('★★ 開いたまま、別のプロジェクトへ切り替わった
 describe('★★ 既存の runningOp の聞き直し（公開以外の操作でも、終わったら追いつく）', () => {
   it('★★ 作成・削除でも、3秒ごとの聞き直しで「終わった」に追いつき、閉じられるようになる（公開のときだけではない）', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
-    let legacy: string | null = '削除'
+    let legacy: '作成' | '削除' | '公開' | null = '削除'
     api = makeApi({ runningOp: () => legacy })
     install(api)
     api.stopPush() // projectOps は空のまま。既存の runningOp だけが変わる
@@ -1034,7 +1039,7 @@ describe('★★★ 二重表示の解消: 目の前の公開先の画面が出�
     await settle()
     await op.finish()
     expect(root.text(), '月額が続くのに、「終わりました」だけの見出しになっている').toContain('確認が必要なことがあります')
-    expect(root.text()).not.toContain('HANAMIIの削除が終わりました')
+    expect(root.text()).not.toContain('HANAMIIの破棄が終わりました')
     // 折りたたみ（実行した内容）を開かなくても、月額が続くことと保存場所の名前が読める
     const warnings = root.findAll(n => n.type === 'p' && root.nodeText(n).includes('月額495円'))
     expect(warnings.length, '月額が続く警告の段落が出ていない').toBeGreaterThan(0)

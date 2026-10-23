@@ -80,6 +80,8 @@ type ApprunDedicatedRecordShape = import('../shared/publishMeta').ApprunDedicate
 type ProjectOpRecordShape = import('../main/projectOps').ProjectOpRecord
 /** { running, last, earlier }。 */
 type ProjectOpsSnapshotShape = import('../main/projectOps').ProjectOpsSnapshot
+/** どの公開先の操作か（記録の target と同じ。公開先の種類、または 'unknown'）。`publishMeta.runningOp` の戻りの公開先。 */
+type RunningOpTargetShape = import('../main/projectOps').OpTarget
 
 /** 引き取りの候補（shared/publishImport.ts の ImportCandidate と同じ形）。 */
 type ImportCandidate = {
@@ -474,7 +476,7 @@ interface Window {
       /** `pending: true` は「失敗ではなく、まだ確認できていない」（起動に時間がかかっている）。 */
       /** `verifyNote`: 公開先の中身が本当に新しくなったかの確認結果（確認できたときだけ入る）。 */
       apply(projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; message?: string; detail?: string; hint?: string; pending?: boolean; logUrl?: string; askAi?: string; verifyNote?: string; staleImages?: { total: number; removable: number; keep: number }; needsScaleDecision?: { appId: string; recorded: number; actual: number }; adoptedScaleMin?: number }>
-      /** deleteRegistry: false でコンテナレジストリを残す（月額課金は続く）。未指定は削除する。 */
+      /** deleteRegistry は true のときだけコンテナレジストリを消す。省略・false は残す（月額課金は続く）。 */
       /** `keptBucketName` は「破棄したのに残った保存場所」。残っていれば月額も続く。`keptRegistryName` は利用者が「残す」と選んだ
        *  コンテナレジストリの名前（月額が続く）。`keptRegistryUnnamed` は「残す」と選んだが、記録に名前が無い（残っているかもしれない）。
        *  警告は**この事実から**作る（画面の破棄の結果も、開き直したあとの記録も、同じ返り値から同じ関数で作る）。
@@ -491,13 +493,22 @@ interface Window {
         checks: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' | 'ai-fix'; fixPrompt?: string; unusedFiles?: string[] }[]
         message?: string
       }>
-      teardown(projectDir: string, opts?: { confirmed?: boolean; deleteRegistry?: boolean }): Promise<{ ok: boolean; executed?: string[]; skipped?: string[]; keptBucketName?: string | null; keptRegistryName?: string; keptRegistryUnnamed?: boolean; message?: string }>
-      /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
-      registryName(projectDir: string): Promise<{
-        ok: boolean; name: string | null
-        /** その置き場を Koto が作ったのではない（引き継ぎで借りている）か。 */
-        adopted?: boolean
+      teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null }): Promise<{
+        ok: boolean; appDeleted?: boolean; executed?: string[]; skipped?: string[]
+        remainingBucket?: string; remainingBuckets?: string[]
+        keptBucketName?: string | null; keptBucketNames?: string[]; keptRegistryName?: string; keptRegistryUnnamed?: boolean
+        /** 残した保存場所の理由（ほかのプロジェクトも使っている／Koto が作ったのではないファイルがある）。警告が「後で消す場合は削除して」と言ってよいかを決める。 */
+        keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[]
+        /** 残したコンテナレジストリの由来と、使っているほかのプロジェクト（調べられなかった回は keptRegistryUsers が無い）。警告は、このプロジェクトだけのものにだけ月額と「後で消す場合は」を言う。 */
+        keptRegistryOrigin?: 'owned' | 'adopted' | 'unknown'; keptRegistryUsers?: string[]
+        message?: string
       }>
+      /** 破棄の確認に出す材料。読むだけ（外部へ要求を出さない）。env.json が無い・読めないときは ok:false。 */
+      teardownRecord(projectDir: string): Promise<
+        | { ok: true; record: { appNames: string[]; registryName: string | null; registryOrigin: 'owned' | 'adopted' | 'unknown'; registryUsers: string[]; placements: Array<{ bucket: string; prefix: string; shared: boolean }>; stateOnlyBuckets: string[] } }
+        | { ok: false; message: string }>
+      /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
+      registryName(projectDir: string): Promise<{ ok: boolean; name: string | null }>
       checkExpiry(projectDir: string): Promise<{ ok: boolean; expired?: boolean; createdAt?: string | null; ttlHours?: number | null; message?: string }>
       // 公開済みか（state.json に apprun-app リソースがあるか）の軽量チェック。APIキー不要。
       isPublished(projectDir: string): Promise<{ ok: boolean; published?: boolean; message?: string }>
@@ -642,19 +653,27 @@ interface Window {
       // detail は失敗時の生API応答（診断用）。noop=true は HANAMII 側で変更がなく再起動が不要だった場合。
       restart(projectId: string, opts: { token: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }): Promise<{ ok: boolean; noop?: boolean; message?: string; detail?: string }>
       /**
-       * HANAMII のプロジェクトを削除し、**`projectDir` を渡したときは保存場所も片づける**
+       * HANAMII のプロジェクトを削除し、続けて**保存場所も片づける**
        * （2026-09-25 検分。バケット・このプロジェクトのデータ・`koto-<名前>-hanamii` の鍵）。
+       *
+       * 引数は 3つとも必須（共用型・専有型と同じ形）。`confirmed` が true でなければ、main は何も呼ばずに断る。
+       * `projectId` は、プロジェクトの記録（.sakuraide.json）が指すものと一致するときだけ消すための照合。
+       * 公開の記録（📡 の行・projectId）は **main が**、全部片づいた回だけ消す（画面は消さない）。
        *
        * - `appDeleted` … HANAMII のプロジェクトは消えた。**保存場所だけ失敗しても true**
        *   （`ok:false` だけを見て記録を残すと、存在しない公開が 📡 一覧に並び続ける）
        * - `executed` … 片づけたこと・片づけ切れなかったことの一覧（画面にそのまま出す）
-       * - `remainingBucket` … まだ残っている保存場所（**消すまで月額が続く**）
+       * - `remainingBucket`／`remainingBuckets` … まだ残っている保存場所（先頭の1件／全件。**消すまで月額が続く**）
        * - `keptBucketName`／`keptBucketNames` … 片づけたが、**バケットごとは消さなかった**保存場所
        *   （利用者が自分で置いたファイルがある・ほかのプロジェクトが使っている）。**残れば月額も続く**
+       * - `deletionAccepted` … HANAMII が削除を受け付けただけで、まだ終わっていない（原本は 202）。このとき
+       *   `ok:false`・`appDeleted:false` で、保存場所にも記録にも触れていない。専有型の `inProgress`（Koto が待ち切れなかった）とは別の事実
        */
-      teardown(projectId: string, token: string, projectDir?: string): Promise<{
-        ok: boolean; appDeleted?: boolean; executed?: string[]; remainingBucket?: string
+      teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string }): Promise<{
+        ok: boolean; appDeleted?: boolean; executed?: string[]; remainingBucket?: string; remainingBuckets?: string[]
         keptBucketName?: string; keptBucketNames?: string[]; message?: string
+        keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[]
+        deletionAccepted?: boolean
       }>
       detectEnvKeys(projectDir: string): Promise<{ ok: boolean; keys: string[]; message?: string }>
       // デプロイログ取得（JSON形式）。limit 既定100・最大500。
@@ -712,11 +731,12 @@ interface Window {
       /** 「確認しました」: 中断の可能性の印（publish.pending）を消す。公開が走っているあいだは `running: true` で断る。 */
       dismissInterrupted(projectDir: string): Promise<{ ok: true; meta: Record<string, unknown> } | { ok: false; message: string; running?: true }>
       /**
-       * いま main が走らせている操作（'作成' | '削除' | '公開'）。走っていなければ null。
-       * `projectOps.get(projectDir).running?.op` と**同じ記録から答える**（2026-09-29）。画面が projectOps へ
+       * いま main が走らせている操作とその公開先（`{ op: '作成' | '削除' | '公開', target }`）。走っていなければ null。
+       * `projectOps.get(projectDir).running` の op・target と**同じ記録から答える**（2026-09-29）。画面が projectOps へ
        * 移り終えたら、この口は3点セットごと消してよい。
+       * `op` は記録の語で、共用型・HANAMII の破棄も専有型の削除も '削除'。画面に出す言葉は `opWordFor(op, target)`（src/shared/opWord.ts）を通す。
        */
-      runningOp(projectDir: string): Promise<'作成' | '削除' | '公開' | null>
+      runningOp(projectDir: string): Promise<{ op: '作成' | '削除' | '公開'; target: RunningOpTargetShape } | null>
     }
 
     /**
@@ -881,10 +901,11 @@ interface Window {
       // 段階4「破棄」: 記録にある ID だけを アプリ→LB→ASG→クラスタ の順で削除する
       // （B・2026-09-17でコメントを実装（apprunDedicatedApply.ts teardownFlow）に合わせて訂正。
       // 以前は「LB→ASG→クラスタ」と書いていたが、実装はアプリの段が先頭にある）。
-      // opts.confirmed は上と同じ意味。
+      // opts.confirmed は上と同じ意味。共通の骨（main の cloud/teardownShell.ts）に載っている（0.6.22 段階3B-1）。
+      // opts は必須（`?` のままだと、確認の印を付け忘れた呼び出しが型で止まらない。HANAMII・共用型と同じ）。
       // #39: 各段は一覧から消えるまで待つ。待ち切れず(timeout)止まったときだけ inProgress が立つ
       // （「まだ残っています」＝失敗、とは区別する。画面は黄色い注意＋再開導線を出す）。
-      teardown(projectDir: string, auth: { token: string; secret: string }, opts?: { confirmed?: boolean }): Promise<{
+      teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean }): Promise<{
         ok: boolean
         executed: string[]
         message: string
@@ -893,12 +914,18 @@ interface Window {
         remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string; storageBucket?: string }
         inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
         // 2026-09-24 検分の指摘4・9・13: 計算資源（アプリ・LB・ASG・クラスタ）は消し切れたか。
-        // 保存場所だけが失敗すると ok は false だが、アプリは消えている。公開記録を片づけるかは
-        // ok ではなくこちらで判断する（main の shouldForgetPublishRecord。画面は消さない）。
+        // 保存場所だけが失敗すると ok は false だが、アプリは消えている（結果欄の管理画面への導線などが使う）。
+        // 公開記録（📡 の行）を消すかには使わない: 消すのは保存場所まで片づいた ok の回だけ（main の shouldForgetPublishRecord。
+        // D1=1・0.6.22 段階3B-1。保存場所だけ残った回は行を残し、📡 から押し直せる。画面は消さない）。
         appDeleted?: boolean
+        // 保存場所が2件以上で途中で止まった回の、残りの全件（HANAMII の remainingBuckets と同じ。先頭は止まった1件で remaining.storageBucket と同じ。0.6.22 段階3B-2）。
+        remainingBuckets?: string[]
         // 片づけたが、バケットごとは消さなかった保存場所（残れば月額も続く）。共用型 cloud.teardown の keptBucketName と同じ事実。
         keptBucketName?: string
         keptBucketNames?: string[]
+        // 残した理由（共用型・HANAMII と同じ。ほかのプロジェクトも使っている／Koto が作ったのではないファイルがある）。
+        keptBucketsUsedByOthers?: string[]
+        keptBucketsWithOwnFiles?: string[]
         // 段ごとの所要時間と合計（2026-10-07・create と同じ）。
         stageTimings?: import('../shared/stageTiming').StageTimings
       }>

@@ -125,17 +125,49 @@ describe('main: publishApp の歯止め（掟10）', () => {
   })
 })
 
-describe('main: 破棄の入口は apprunDedicated:teardown の1つ（手順6も 📡 の 🗑 も同じ）。confirmed 付きで teardownFlow を呼ぶ', () => {
-  it('★ 呼び出し行の exact 一致（confirmed は isConfirmed(opts) から）。アプリだけの印（appOnly）は付かない', () => {
-    const full = handlerBlock('apprunDedicated:teardown')
-    // H-1（2026-09-17）: 破棄と公開を同時に走らせないため、本体は withProjectLock に包まれた。
-    expect(full).toContain("withProjectLock(projectDir, '削除', async () => {")
-    expect(full).toContain('teardownFlow(auth, projectDir, { confirmed: isConfirmed(opts), progress, onStage })')
-    expect(full).not.toContain('appOnly')
+describe('main: 破棄の入口は apprunDedicated:teardown の1つ（手順6も 📡 の 🗑 も同じ）。共通の骨に載り、teardownFlow を呼ぶ', () => {
+  // 0.6.22 段階3B-1: ハンドラは ipc/apprunDedicatedTeardown.ts へ移り、順序（projectDir → 確認の印 → 認証 → 鍵 → run → 記録の片づけ）は
+  // 骨（cloud/teardownShell.ts）が持つ。本体の振る舞いは tests/dedicatedTeardownShell.test.ts が偽のサーバに流して固定している。
+  // コメントを除いたコードだけに当てる（説明の文に同じ名前が出ても、コードの複製を見逃しても、気づけるように）。
+  const td = codeOnly(readFileSync(join(__dirname, '..', 'src/main/ipc/apprunDedicatedTeardown.ts'), 'utf-8'))
+  const handlerOf = (src: string, channel: string): string => {
+    const at = src.indexOf(`ipcMain.handle('${channel}'`)
+    expect(at, `${channel} の handler が無い`).toBeGreaterThan(0)
+    return src.slice(at, src.indexOf('\n}\n', at))
+  }
+
+  it('★ ハンドラは骨へ渡すだけ（runTeardownShell(DEDICATED_TEARDOWN_SHELL, …)）。ここ（ipc/apprunDedicated.ts）に削除のハンドラ・鍵・記録消しは無い', () => {
+    const full = handlerOf(td, 'apprunDedicated:teardown')
+    expect(full).toContain('runTeardownShell(DEDICATED_TEARDOWN_SHELL, {')
+    expect(full).toContain('projectDir, auth, opts,')
+    // 鍵・確認の印・記録消しをハンドラに書き直さない（順序は骨の1か所）
+    expect(full).not.toContain('withProjectLock')
+    expect(full).not.toContain('isConfirmed')
+    expect(full).not.toContain('forgetPublishTargetFs')
+    expect(ipc).not.toContain("ipcMain.handle('apprunDedicated:teardown'")
+    expect(ipc).not.toContain('forgetPublishTargetFs')
+    expect(td).not.toContain('appOnly')
+  })
+
+  it('★ 仕様書（DEDICATED_TEARDOWN_SHELL）の呼び出し行の exact 一致: 保存場所の片づけまで通る・公開記録を消す規則は shouldForgetPublishRecord の1つ・消すのは骨', () => {
+    const at = td.indexOf('export const DEDICATED_TEARDOWN_SHELL')
+    expect(at).toBeGreaterThan(0)
+    const spec = td.slice(at, td.indexOf('\n}\n', at))
+    expect(spec).toContain("target: 'sakura-apprun-dedicated',")
+    expect(spec).toContain("handler: 'apprunDedicated:teardown',")
+    expect(spec).toContain('parseAuth: a => (isCreds(a) ? a : null),')
+    expect(spec).toContain('secretsOf: a => [a.token, a.secret],')
+    // **関数を値で渡さない**（循環した require で undefined のままゾーンが黙って記録されなくなる）
+    expect(spec).toContain('zoneOf: dir => recordedZone(dir),')
+    expect(spec).not.toContain('zoneOf: recordedZone')
+    expect(spec).toContain('teardownFlow(auth, projectDir, { confirmed: true, progress, onStage })')
     // 破棄は保存場所の片づけまで通る（アプリだけで止まると、クラスタが消えずに課金が続く）
-    expect(full).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage)')
-    // 公開記録（📡 一覧の行）を片づけるのは main のここだけ（画面は消さない）
-    expect(full).toContain("forgetPublishTargetFs(projectDir, 'sakura-apprun-dedicated')")
+    expect(spec).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage)')
+    // 公開記録（📡 一覧の行）を片づけるのは main の骨のここだけ（画面は消さない）
+    expect(spec).toContain('shouldForgetRecord: s => shouldForgetPublishRecord(s),')
+    expect(spec).toContain("forgetRecord: ctx => forgetPublishTargetFs(ctx.projectDir, 'sakura-apprun-dedicated'),")
+    // 断りの形（今までと同じ）
+    expect(spec).toContain('refused: message => ({ ok: false, executed: [], message, remaining: {} }),')
   })
 })
 

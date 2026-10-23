@@ -823,7 +823,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
             kind: 'append',
             msg: {
               role: 'assistant',
-              content: `✅ 公開先を「${label}」に変更しました。この公開先には公開済みの実績があります${when ? `（${when} 公開）` : ''}。今のコードのままで再公開できます（【公開】から）。${staleNote}`,
+              content: `✅ 公開先を「${label}」に変更しました。この公開先には${when ? `${when} に` : ''}公開した実績があります。今のコードのまま【公開】から再公開できます。${staleNote}`,
             },
           })
           return
@@ -1039,7 +1039,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
             onClick={async () => {
               if (messages.filter(m => !m.hidden).length === 0) return
               await runClearConversation(
-                'この会話をすべて削除します。よろしいですか？（元に戻せません）',
+                'この操作は元に戻せません。よろしいですか？',
                 {
                   confirm: (body) => confirm({ title: '会話をすべて削除します', body, confirmLabel: '削除する', danger: true }),
                   clear: () => applyOp({ kind: 'replaceAll', messages: [] }),
@@ -1140,7 +1140,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
                     {msg.role === 'assistant' ? (
                       // コードカードの「💾 プロジェクトに保存」も write_file と同じ穴を持っていた
                       // （2026-08-27 発見）。ここで公開の根（currentAiRoot）を結んで渡す。
-                      <AiMessage content={msg.content} onApplyFile={onApplyFile ? (rel, content) => onApplyFile(rel, content, currentAiRoot) : undefined} />
+                      <AiMessage content={msg.content} onApplyFile={onApplyFile ? (rel, content) => onApplyFile(rel, content, currentAiRoot) : undefined} plain={msg.toolNote} />
                     ) : (
                       msg.content && <p className={CHAT_TEXT_WRAP}>{msg.content}</p>
                     )}
@@ -1262,8 +1262,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
               ragEnabled ? 'text-ink border-sakura' : 'text-ink-muted hover:text-ink border-line'
             }`}
             title={ragEnabled
-              ? '📚 資料：このプロジェクトのチャットで資料を使っています。クリックで使わないに切替'
-              : '📚 資料：このプロジェクトのチャットで資料を使いません。クリックで使うに切替'}
+              ? '📚 資料：このプロジェクトのチャットで使っています。クリックで使わないに切替'
+              : '📚 資料：このプロジェクトのチャットで使いません。クリックで使うに切替'}
           >{ragEnabled ? '📚 資料を使う' : '📚 資料を使わない'}</button>
         )}
       </div>

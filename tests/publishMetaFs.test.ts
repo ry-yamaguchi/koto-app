@@ -4,7 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import {
   markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs,
-  readApprunDedicatedFs, writeApprunDedicatedRecordFs, hasPublishRecordFs,
+  readApprunDedicatedFs, writeApprunDedicatedRecordFs, hasPublishRecordFs, readMetaFs,
 } from '../src/main/publishMetaFs'
 
 // roadmap #20: src/main/publishMetaFs.ts（publishMeta.ts の純関数を使って
@@ -198,5 +198,37 @@ describe('hasPublishRecordFs: 一覧の行があるか（日時が無くても�
     fs.writeFileSync(metaPath(), JSON.stringify({ name: 'x' }))
     expect(hasPublishRecordFs(projectDir, 'sakura-apprun-dedicated')).toBe(false)
     expect(fs.readFileSync(metaPath(), 'utf-8')).toBe(JSON.stringify({ name: 'x' })) // 書き換えていない
+  })
+})
+
+// 2026-10-21: readMetaFs は「無い（ENOENT）」と「読めない・壊れている」を分ける唯一の口。保存場所を消してよいかの判断（main/cloud/bucketUsers.ts）が、
+// 兄弟の公開の記録を読むのに使う。読めないものを「無い（公開していない）」と読むと、使っているプロジェクトのバケットを消す向きに倒れる。
+describe('readMetaFs: 無い（ENOENT）と、読めない・壊れているを分ける', () => {
+  it('ファイルが無いだけなら missing（投げない・ファイルも作らない）', () => {
+    expect(readMetaFs(projectDir)).toEqual({ kind: 'missing' })
+    expect(fs.existsSync(metaPath())).toBe(false)
+  })
+
+  it('読めれば ok（中身はそのまま）。JSON として読めない・空・ディレクトリは unreadable（missing ではない）', () => {
+    fs.writeFileSync(metaPath(), JSON.stringify({ publish: { targets: { vercel: {} } } }))
+    expect(readMetaFs(projectDir)).toEqual({ kind: 'ok', value: { publish: { targets: { vercel: {} } } } })
+    fs.writeFileSync(metaPath(), '{ 壊れた')
+    expect(readMetaFs(projectDir)).toEqual({ kind: 'unreadable' })
+    fs.writeFileSync(metaPath(), '')
+    expect(readMetaFs(projectDir)).toEqual({ kind: 'unreadable' })
+    fs.rmSync(metaPath())
+    fs.mkdirSync(metaPath())                                    // ファイルのはずの場所がディレクトリ（EISDIR）
+    expect(readMetaFs(projectDir)).toEqual({ kind: 'unreadable' })
+  })
+
+  it('権限が無ければ unreadable（EACCES を「無い」にしない）', () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return // root は権限を無視して読める
+    fs.writeFileSync(metaPath(), JSON.stringify({ publish: { targets: { vercel: {} } } }))
+    fs.chmodSync(metaPath(), 0o000)
+    try {
+      expect(readMetaFs(projectDir)).toEqual({ kind: 'unreadable' })
+    } finally {
+      fs.chmodSync(metaPath(), 0o600)
+    }
   })
 })

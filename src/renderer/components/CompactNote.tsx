@@ -9,8 +9,8 @@
 
 import { useState } from 'react'
 import { COMPACT_NOTE, summaryFilePath, summaryFileBody } from '../historyCompact'
-import { CHAT_TEXT_WRAP } from '../textWrap'
 import CopyButton from './CopyButton'
+import { AiText } from './AiMessage'
 
 export default function CompactNote({ text, projectDir }: {
   text: string
@@ -63,11 +63,10 @@ export default function CompactNote({ text, projectDir }: {
           <>
             {/* ほかの吹き出しと同じく、文字を選んでコピーできるようにする
                 （アプリ全体は user-select: none なので、明示的に許可する必要がある）。 */}
-            <p className={`mt-2 text-[12px] text-ink select-text ${CHAT_TEXT_WRAP}`}>{text}</p>
+            <AiText content={text} className="mt-2 text-[12px] text-ink select-text" />
             <p className="mt-2 text-[11px] text-ink-secondary">
-              これより前のやり取りは、AIへはこのまとめとして渡します。
-              <b className="text-ink">これより後のやり取りは、そのまま渡します。</b>
-              会話そのものは、どちらも消えていません。
+              AIには、これより前のやり取りはこのまとめで、これより後はそのまま渡します。
+              会話そのものは消えていません。
             </p>
             {projectDir && (
               <div className="mt-2 flex items-center gap-2 flex-wrap">

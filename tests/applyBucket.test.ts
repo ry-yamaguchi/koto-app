@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { applyPlan, orderForApply, type StorageClientLike, type CloudClientLike } from '../src/main/cloud/apply'
+import { applyPlan as applyPlanWith, orderForApply, type ApplyOptions, type StorageClientLike, type CloudClientLike } from '../src/main/cloud/apply'
+import { isolatedProjectDir } from './isolatedProject'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { emptyState, type EnvState } from '../src/main/cloud/state'
 import type { Plan } from '../src/main/cloud/planner'
+import { makeStorageAdapter, type StorageApiLike, type S3Like } from '../src/main/cloud/storageAdapter'
+import type { StorageSite } from '../src/main/cloud/objectStorage'
+import { BUCKET_NAME_REUSE_RULE } from '../src/shared/objectStorage'
 
 // 2026-08-13。永続データ（S-1）の実行層。**ここは実際にデータを消す経路**なので、
 // 偽のストレージを注入して「何が消えたか」を確かめる。
@@ -13,6 +17,11 @@ import type { Plan } from '../src/main/cloud/planner'
 // 判断そのものは shared/objectStorage.ts で固定済みだが、**apply がその判断を
 // 正しく使っているか**は別の話なので、ここで確かめる（掟10「一元化したことと、
 // 全経路が実際にそこを通っていることは別」）。
+
+// applyPlan は projectDir が必須（保存場所の削除が、ほかのプロジェクトの記録を読む起点）。ここの試験は兄弟のいない自分だけの親フォルダを使う
+// （一時フォルダの直下だと、同時に走る別の試験の残り物を兄弟として読む）。兄弟がいる回は tests/bucketUsersGuard.test.ts
+const PROJECT_DIR = isolatedProjectDir('koto-applybucket-')
+const applyPlan = (o: Omit<ApplyOptions, 'projectDir'> & { projectDir?: string }) => applyPlanWith({ projectDir: PROJECT_DIR, ...o })
 
 /** 何をされたかを記録する偽のストレージ。 */
 function fakeStorage(keys: string[], opts: { siteReady?: boolean } = {}) {
@@ -92,6 +101,68 @@ describe('保存場所を用意する', () => {
   })
 })
 
+// 2026-10-19 検分。公開の途中で保存場所を用意できなかったとき、画面には
+// 「保存場所『X』を用意できませんでした: 」＋ ensureBucket の文 が並ぶ。ensureBucket の文が書き出しにも
+// 『X』を言うと、名前と失敗を2回言う。**apply が包んだあとの文**を、実物（applyPlan と makeStorageAdapter）の
+// 組み合わせで固定する。偽にしたのはさくらの API（createBucket・listBuckets など）と S3 だけ。
+describe('保存場所を用意できなかったときの文（apply が包んだあと）', () => {
+  const SITE: StorageSite = {
+    id: 'isk01', display_name: '石狩第1サイト',
+    s3_endpoint: 's3.isk01.sakurastorage.jp', region: 'jp-north-1', plan_family: 'standard',
+  }
+  // 実機（2026-10-19）で返ってきた 409 の本文の形
+  const CONFLICT = '{"error":{"trace_id":"x","errors":[{"domain":"fed.objectstorage.sacloud","reason":"conflict","location":"name","location_type":"request_body","message":"koto-data-x has already been created"}],"code":409,"message":"Conflict"}}'
+
+  function adapterWith(create: { status: number; text: string }) {
+    const api: StorageApiLike = {
+      async isSiteReady() { return true },
+      async createBucket() { return create },
+      async listBuckets() { return [] },
+      async deleteBucket() {},
+      async issueKey() { return { accessKey: 'AK', secretKey: 'SK', permissionId: 'perm' } },
+      async deletePermission() {},
+      async listPermissions() { return [] },
+    }
+    const s3: S3Like = {
+      async putObject() {},
+      async deleteObject() {},
+      async listAllKeys() { return [] },
+    }
+    return makeStorageAdapter(api, SITE, s3)
+  }
+
+  const count = (hay: string, needle: string) => hay.split(needle).length - 1
+
+  it('★★★ 409 で一覧にも無い: 「保存場所『X』を用意できませんでした: この名前は、ほかで使われているか」で始まり、『X』は1回だけ', async () => {
+    const r = await applyPlan({
+      plan: planOf('create'), spec: specWith(true), state: emptyState('myapp', 'sakura-apprun'),
+      client: noCloud, storage: adapterWith({ status: 409, text: CONFLICT }), confirmed: true,
+    })
+    expect(r.ok).toBe(false)
+    const msg = String(r.message)
+    expect(msg.startsWith(`保存場所『${BUCKET}』を用意できませんでした: この名前は、ほかで使われているか`)).toBe(true)
+    expect(count(msg, `保存場所『${BUCKET}』`), '名前と失敗を2回言っている').toBe(1)
+    expect(msg).not.toContain('を作れませんでした')
+    expect(msg).toContain(BUCKET_NAME_REUSE_RULE)
+    expect(msg).toContain('「設定 → データの保存」で別の名前の保存場所を作ってから、【公開】を開き直して選び直してください。')
+    expect(msg).toContain('HTTP 409')
+    expect(msg).toContain('いまある保存場所: なし')
+    expect(r.executed).toEqual([])
+  })
+
+  it('★★ 200 なのに一覧に無い: 「保存場所『X』を用意できませんでした: 作成を頼みましたが、」で始まり、『X』は1回だけ', async () => {
+    const r = await applyPlan({
+      plan: planOf('create'), spec: specWith(true), state: emptyState('myapp', 'sakura-apprun'),
+      client: noCloud, storage: adapterWith({ status: 200, text: '' }), confirmed: true,
+    })
+    expect(r.ok).toBe(false)
+    const msg = String(r.message)
+    expect(msg.startsWith(`保存場所『${BUCKET}』を用意できませんでした: 作成を頼みましたが、一覧にまだ出ていません。しばらく待ってからお試しください。`)).toBe(true)
+    expect(count(msg, `保存場所『${BUCKET}』`)).toBe(1)
+    expect(msg).not.toContain('を作成しましたが')
+  })
+})
+
 describe('保存場所を破棄する（★実際にデータが消える経路）', () => {
   const MINE = ['projects/myapp/.koto-keep', 'projects/myapp/data/posts.json']
 
@@ -118,6 +189,34 @@ describe('保存場所を破棄する（★実際にデータが消える経路�
     // 利用者のファイルには手を付けない
     expect(calls.deletedKeys).not.toContain('わたしの資料.pdf')
     expect(r.executed.join()).toContain('Koto が作ったのではない')
+  })
+
+  // 残した回の緑の行（note）は「保存場所は残します。」だけ。残した理由・月額・次の操作は、破棄の結果と同じ黄色の文（teardownRemainingWarnings）で言う。
+  // ここで言わないと、保存場所が残って月額が続くことが、公開の結果のどこにも出ない（2026-10-19 検分。緑の行が言うのをやめたため）。
+  it('★★★ 保存場所を残した回は、緑の行は短く、月額・理由・次の操作は ⚠️ の行が言う（ほかのプロジェクトが使う回に「削除してください」と勧めない）', async () => {
+    for (const [keys, reason, next] of [
+      [[...MINE, 'projects/other/.koto-keep'], 'ほかのプロジェクトも使っています。消すと、そのプロジェクトのデータも消えます。', null],
+      [[...MINE, 'わたしの資料.pdf'], 'Koto が作ったのではないファイルがあります。', '中身を確かめてください'],
+      [[...MINE, 'projects/other/.koto-keep', 'わたしの資料.pdf'], 'ほかのプロジェクトも使っています。消すと、そのプロジェクトのデータも消えます。', null],
+    ] as const) {
+      const { client } = fakeStorage([...keys])
+      const r = await applyPlan({ plan: planOf('delete'), spec: specWith(true), state: emptyState('myapp', 'sakura-apprun'), client: noCloud, storage: client, confirmed: true })
+      const lines = r.executed
+      expect(lines[0], keys.join()).toBe(`保存場所『${BUCKET}』を削除 — 保存場所は残します。`)
+      expect(lines, keys.join()).toHaveLength(2)
+      expect(lines[1]).toMatch(/^⚠️ /)
+      expect(lines[1]).toContain(`『${BUCKET}』は残るため、月額495円（税込）の課金は続きます。`)
+      expect(lines[1]).toContain(reason)
+      if (next) expect(lines[1]).toContain(next)
+      expect(lines.join('')).not.toContain('削除してください')
+      expect(lines.join('')).not.toContain('後で消す場合は')
+    }
+  })
+
+  it('★★ 保存場所をバケットごと消した回は、⚠️ の行を足さない', async () => {
+    const { client } = fakeStorage(MINE)
+    const r = await applyPlan({ plan: planOf('delete'), spec: specWith(true), state: emptyState('myapp', 'sakura-apprun'), client: noCloud, storage: client, confirmed: true })
+    expect(r.executed.filter(l => l.startsWith('⚠️'))).toEqual([])
   })
 
   // 「たぶん空」で消すのがいちばん危ない
@@ -176,6 +275,27 @@ describe('保存場所を破棄する（★実際にデータが消える経路�
     expect(r.state.meta?.storagePermissionId).toBe('perm-old') // だから記録は残す
     expect(r.skipped.join()).toContain('アクセスキーを無効にできませんでした')
     expect(r.skipped.join()).not.toContain('鍵を無効') // 0.6.21: 「鍵」は「アクセスキー」に揃えた。直す前の言い方は戻さない
+  })
+
+  // 段階3A の検分: 公開時に保存場所を消す道（設定から外して公開し直した回）は、破棄の入口と同じ鍵の警告を作る双子。
+  // 素の文のままだと、鍵が生き続けるのに「どこで何を削除するか」を言わない。文は書き下す（関数を通すと同語反復になる）。
+  it('★★ 鍵を無効にできなかった警告に、名前つきの案内（パーミッション「koto-<名前>」）が付く。⚠️ で始まり、案内は1回だけ', async () => {
+    const { client } = fakeStorage(MINE)
+    client.deletePermission = async () => { throw new Error('アクセスキーを無効にできません') }
+    const state: EnvState = { ...emptyState('myapp', 'sakura-apprun'), meta: { storagePermissionId: 'perm-old' } }
+    const r = await applyPlan({ plan: planOf('delete'), spec: specWith(false), state, client: noCloud, storage: client, confirmed: true })
+    expect(r.skipped).toEqual([
+      '⚠️ 保存場所のアクセスキーを無効にできませんでした。'
+      + 'さくらのクラウドのコントロールパネルで、オブジェクトストレージのパーミッション「koto-myapp」を削除してください（アクセスキーも一緒に無効になります）。',
+    ])
+    expect(r.state.meta?.storagePermissionId, '案内を足しても、記録の鍵を残す判断（生の warnings を見る）は変わらない').toBe('perm-old')
+  })
+
+  it('★★ 鍵を無効にできたとき（警告なし）は、案内を出さない', async () => {
+    const { client } = fakeStorage(MINE)
+    const state: EnvState = { ...emptyState('myapp', 'sakura-apprun'), meta: { storagePermissionId: 'perm-old' } }
+    const r = await applyPlan({ plan: planOf('delete'), spec: specWith(false), state, client: noCloud, storage: client, confirmed: true })
+    expect(r.skipped).toEqual([])
   })
 })
 

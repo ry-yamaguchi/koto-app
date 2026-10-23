@@ -32,6 +32,8 @@ import { join } from 'path'
 // 書かれず・目印も置かれない**ことを見る。2026-08-14 に実機で2回外した形そのもの。
 
 /** 偽のさくら側の記録。vi.mock の工場から触るので hoisted で持つ。 */
+const CONFLICT_BODY = vi.hoisted(() => '{"error":{"trace_id":"x","errors":[{"domain":"fed.objectstorage.sacloud","reason":"conflict","location":"name","location_type":"request_body","message":"koto-data-x has already been created"}],"code":409,"message":"Conflict"}}')
+
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
   /** loadCredentials が返す値（実キーは使わない・掟4）。 */
@@ -78,7 +80,8 @@ vi.mock('../src/main/cloud/objectStorage', async (importOriginal) => {
     async createBucket(_siteId: string, bucket: string) {
       h.calls.push('createBucket')
       h.created.push(bucket)
-      return { status: h.createStatus, text: h.createStatus === 409 ? 'bucket already exists' : '' }
+      // 実機（2026-10-19）で返ってきた 409 の本文の形
+      return { status: h.createStatus, text: h.createStatus === 409 ? CONFLICT_BODY : '' }
     }
     async listBuckets() { h.calls.push('listBuckets'); return h.existingBuckets.map(name => ({ name })) }
   }
@@ -156,18 +159,44 @@ function recordedBuckets(): string[] {
 describe('保存場所を用意する（偽のさくらへ実際に流す）', () => {
   it('★★★ 作成が409で一覧にも現れなければ、用意できたことにしない（2026-08-14 の再発防止）', async () => {
     h.createStatus = 409
-    h.existingBuckets = [] // 消した直後で名前が解放されていない＝**作られていない**
+    h.existingBuckets = [] // 削除した名前は同じ月のうちは作り直せない＝**作られていない**
 
     const r = await prepare({}, projectDir, { bucket: BUCKET })
 
     expect(r.ok).toBe(false)
-    expect(String(r.message ?? '')).toContain('一覧に見つかりません')
-    expect(String(r.message ?? '')).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
+    const msg = String(r.message ?? '')
+    // 409 は「削除した月のうちは作り直せない」と言い、この入口の次の操作を添える（「しばらく待って」とは言わない）
+    expect(msg).toContain(`保存場所『${BUCKET}』を作れませんでした。`)
+    expect(msg).toContain('削除した月のうちは作り直せません')
+    expect(msg).toContain('「設定 → データの保存」で別の名前の保存場所を作ってから、【公開】を開き直して選んでください。')
+    // 実在しないボタン名（記録があるときのボタンは「保存場所を選び直す…」）を案内しない
+    expect(msg).not.toContain('「保存場所を用意する…」')
+    expect(msg).toContain('HTTP 409')
+    expect(msg).toContain('has already been created') // 応答をそのまま添える
+    expect(msg).not.toContain('直後')
+    expect(msg).not.toContain('しばらく待って')
+    expect(msg).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
     // **記録を残さない**（consentedAt が付くと、公開で鍵と環境変数を渡してしまう）
     expect(readEnv()).toBeNull()
     // 存在しないバケットへ書きに行かない
     expect(h.markers).toEqual([])
     expect(h.calls).not.toContain('putMarker')
+  })
+
+  it('★★ 作成が200なのに一覧に無いときは「しばらく待って」と言い、作り直せないとは言わない', async () => {
+    h.createStatus = 200
+    h.existingBuckets = []
+
+    const r = await prepare({}, projectDir, { bucket: BUCKET })
+
+    expect(r.ok).toBe(false)
+    const msg = String(r.message ?? '')
+    expect(msg).toContain('一覧にまだ出ていません')
+    expect(msg).toContain('しばらく待ってからお試しください')
+    expect(msg).toContain('HTTP 200')
+    expect(msg).not.toContain('削除した月のうち')
+    expect(msg).not.toContain('作り直せません')
+    expect(readEnv()).toBeNull()
   })
 
   it('★★★ 一覧に現れて初めて用意できたことにし、記録に同意の日時を残す', async () => {
@@ -281,7 +310,7 @@ describe('保存場所を用意したら、目印も置く（形）', () => {
   it('★ 使用中を示すファイルを置く処理は、存在確認と記録の間にある（区切りで指す）', () => {
     const body = prepareHandler()
     // 「存在を確かめる」から「env.json へ書く」までの区切りの中に putMarker がある
-    const check = at(body, '一覧に見つかりません', 'バケットの存在確認のメッセージが無い')
+    const check = at(body, 'bucketNotListedMessage(', 'バケットの存在確認のメッセージ（bucketNotListedMessage）が無い')
     const save = at(body, 'fs.writeFileSync(file', 'env.json への書き込みが無い')
     const between = body.slice(check, save)
     expect(between).toContain('putMarker(')

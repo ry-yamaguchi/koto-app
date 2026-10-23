@@ -350,8 +350,7 @@ export function askAiMoveDataPlan(
     return {
       send: false,
       error: 'データ保存用のファイル（koto-data）を用意できませんでした' + detail
-        + '。この状態でデータの引き継ぎをお願いすると、読み込み先が無いために失敗します。'
-        + '少し待ってから、もう一度お試しください。',
+        + '。少し待ってから、もう一度お試しください。',
     }
   }
   return { send: true, text: askAiMoveDataText(files, layer.moduleKind === 'esm' ? 'esm' : 'cjs') }
@@ -451,7 +450,7 @@ export function leftoverScanLine(
   const missed = Number(result.referenced ?? 0)
   if (Number.isFinite(missed) && missed > 0) {
     return 'ℹ️ 古いデータかもしれないものが残っていました。'
-      + 'コードのコメントや説明のファイル（.md・.txt）の中にだけ名前が出ているので、いま使われているのかどうかは、はっきり分かりませんでした。'
+      + 'コードのコメントや説明のファイル（.md・.txt）にだけ名前が出ていて、いま使われているかどうかは分かりませんでした。'
       + '心当たりがあれば、チャットから引き継ぎを頼んでください。'
   }
   return ''

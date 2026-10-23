@@ -206,7 +206,7 @@ export function importPlanNotes(opts: {
         ? `いま公開されているイメージ（公開のために固めたアプリの中身。${opts.image}）を取り出して、中の公開物だけを「${opts.publishDirLabel}」へ置きます。`
         : `いま公開されているイメージ（公開のために固めたアプリの中身）を取り出して、中の公開物だけを「${opts.publishDirLabel}」へ置きます。`,
     )
-    notes.push('取り出せるのは公開されている状態のものです。ビルド前のファイル（ソース）は戻りません。')
+    notes.push('ビルド前のファイル（ソース）は戻りません。')
     const keys = opts.secretKeys ?? []
     if (keys.length) {
       notes.push(`⚠️ シークレット環境変数（${keys.length}件: ${keys.join(', ')}）の値は取り戻せません。公開する前に入れ直してください。`)
@@ -262,7 +262,7 @@ export function importPlanNotes(opts: {
       }
     }
   }
-  notes.push('公開先には何も作らず、何も消しません（読み取るだけです）。')
+  notes.push('公開先には何も作らず、何も消しません。')
   return notes
 }
 
@@ -438,7 +438,7 @@ export function noCandidatesHint(target: ImportTarget, keyCount: number): string
       + '別のキーに切り替えると見つかるかもしれません。'
   }
   return head + (target === 'vercel'
-    ? 'そのトークンから見える範囲に、公開したものがありません（範囲を絞ったトークンでは見えないことがあります）。'
+    ? '範囲を絞ったトークンでは、公開したものが見えないことがあります。'
     : 'このアカウントに AppRun のアプリがありません。')
 }
 

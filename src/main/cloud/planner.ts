@@ -121,13 +121,18 @@ function updateDescription(kind: ResourceKind, name: string): string {
     case 'image':
       return `コンテナイメージ『${name}』を再ビルド・更新`
     case 'apprun-app':
-      return `AppRunアプリ『${name}』を更新（公開し直し・最新の内容を反映・公開URLは維持）`
+      return `AppRunアプリ『${name}』を更新（最新の内容を反映・公開URLは維持）`
     case 'bucket':
       return `保存場所『${name}』を再構成（データは保持）`
   }
 }
 
-function deleteDescription(kind: ResourceKind, name: string, stateful: boolean): string {
+/**
+ * 削除の実行内容の行（画面の「実行した内容」・対応外の行）の言い方の**唯一の定義**。
+ * 資源の種類名（apprun-app など）は画面に出さない（掟5）。computePlan と、共用型の破棄（ipc/cloudTeardown.ts の
+ * deletePlanWithoutBuckets）が同じこれを通る。自前で `${kind}『…』を削除` と組まない（0.6.22 で組んで、種類名が画面に出た）。
+ */
+export function deleteDescription(kind: ResourceKind, name: string, stateful: boolean): string {
   if (stateful) {
     return `保存場所『${name}』にある、このプロジェクトのデータを削除（データが消えます）`
   }
@@ -208,7 +213,7 @@ export function computePlan(spec: EnvSpec, state: EnvState): Plan {
             name: d.name,
             stateful,
             destructive: false,
-            description: `${d.name}（${d.kind}）は変更なし`,
+            description: `${d.name}は変更なし`,
           },
     )
   }

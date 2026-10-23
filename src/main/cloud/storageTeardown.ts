@@ -18,8 +18,13 @@
 // ── いちばん大事な守り ────────────────────────────────────────────────
 // **消す前に必ず一覧して確かめる。一覧できなければ1件も消さずに中止する。**
 // 「たぶん空」で消すのがいちばん危ない（利用者のデータがそこにある）。
+// **キーの一覧だけでは、ほかのプロジェクトは見えない**（2026-10-21 実機）。保存場所を用意しただけ・目印が消えたプロジェクトは一覧に出ない。
+// だから**ほかのプロジェクトの記録も読んで**（`bucketUsersFromRecords`）判断に渡す。読めなければ「わからない」＝バケットは消さない。
+// バケットを消す道は、ここ（`teardownStorage`）の1か所だけ。共用型・HANAMII・専有型の3つの破棄（`teardownStorageForProject` 経由）と、
+// 公開の apply の削除は、すべてここを通る。
 
-import { teardownPlanFor, type StoragePlacement } from '../../shared/objectStorage'
+import { teardownPlanFor, type StoragePlacement, type StorageTeardown } from '../../shared/objectStorage'
+import { bucketUsersFromRecords } from './bucketUsers'
 
 /**
  * 片づけに要るストレージ操作だけを切り出したもの（注入で受け取る＝electron 非依存を保つ）。
@@ -36,6 +41,42 @@ export type StorageTeardownClientLike = {
   deletePermission(permissionId: string): Promise<void>
 }
 
+/** 記録の鍵を無効にできなかったときの警告の文。呼び手（共用型の破棄）が「鍵の記録を残すか」を決めるのに使う。 */
+export const KEY_REVOKE_FAILED_WARNING = '保存場所のアクセスキーを無効にできませんでした'
+
+/**
+ * 鍵の警告（`teardownStorageForProject` の `warnings` など）を、結果に出す行にする。各行を `⚠️ ` で始め、
+ * **最後の1行にだけ** `guide`（`keyRevokeGuide`）を足す（同じ案内を何度も言わない）。空なら []。
+ *
+ * ここで案内を足すのは、**表示の行を作るとき**だけ。生の `warnings` と `KEY_REVOKE_FAILED_WARNING` の文は変えない
+ * （共用型の `cloudTeardown.ts` が `warnings.includes(KEY_REVOKE_FAILED_WARNING)` で「記録の鍵を外すか」を決め、専有型も同じ文を使う）。
+ * 案内の中の名前（`koto-<名前>`）は公開先とプロジェクトで決まり、定数は名前を知らないので、定数には足さない。
+ */
+export function keyWarningLines(warnings: readonly string[], guide: string): string[] {
+  const last = warnings.length - 1
+  return warnings.map((w, i) => (i === last ? `⚠️ ${w}${w.endsWith('。') ? '' : '。'}${guide}` : `⚠️ ${w}`))
+}
+
+/**
+ * 破棄の返り値へ足す、**残した保存場所の理由**（共用型・HANAMII・専有型の3つの破棄と、公開〔apply.ts〕の保存場所の削除が、同じこれを通る）。
+ * 結果の警告（`teardownRemainingWarnings`）は、これで残した理由を言い分け、「後で消す場合は」を言ってよいかを決める。
+ *   ・`keptBucketsUsedByOthers` … ほかのプロジェクトも使っているため残した保存場所（消すと、そのプロジェクトのデータも消える）
+ *   ・`keptBucketsWithOwnFiles` … Koto が作ったのではないファイルがあるため残した保存場所（消す前に中身を確かめる）
+ * 理由が分からない回（旧い返り値・`keptReasons` の無い `done`）は、どちらにも入れない（言う側が「分からない」の文に倒す）。
+ * バケットごと消した保存場所は入れない。
+ */
+export function keptBucketReasonFields(
+  done: ReadonlyArray<{ bucket: string; deletedBucket: boolean; keptReasons?: StorageTeardown['keptReasons'] }>,
+): { keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[] } {
+  const kept = done.filter(b => !b.deletedBucket)
+  const usedByOthers = kept.filter(b => b.keptReasons?.usedByOthers === true).map(b => b.bucket)
+  const withOwnFiles = kept.filter(b => b.keptReasons?.ownFiles === true).map(b => b.bucket)
+  return {
+    ...(usedByOthers.length > 0 ? { keptBucketsUsedByOthers: usedByOthers } : {}),
+    ...(withOwnFiles.length > 0 ? { keptBucketsWithOwnFiles: withOwnFiles } : {}),
+  }
+}
+
 export type StorageTeardownOutcome =
   | {
       ok: true
@@ -43,6 +84,8 @@ export type StorageTeardownOutcome =
       deletedBucket: boolean
       /** 利用者に見せる説明（`teardownPlanFor` が返したもの）。 */
       note: string
+      /** バケットごとは消さなかった理由（`teardownPlanFor` が返したもの。バケットごと消した回は無い）。結果の警告が、残した保存場所の言い分けに使う。 */
+      keptReasons?: StorageTeardown['keptReasons']
       /** 片づけ切れなかったこと（失敗ではないが黙らない）。 */
       warnings: string[]
     }
@@ -56,6 +99,8 @@ export type StorageTeardownOutcome =
  *   4. 計画が言うときだけ、バケットごと消す
  *   5. **そのあとで**鍵を無効にする
  *
+ * 2 の前に、ほかのプロジェクトの記録を読む（同じ親フォルダの兄弟の env.json・state.json。読めなければ「わからない」＝バケットは消さない）。
+ *
  * 5 が最後なのは、鍵を先に無効にすると 3・4 が 403 で失敗するため
  * （中身を消せないままバケットだけ残り、課金が続く）。
  *
@@ -66,6 +111,11 @@ export async function teardownStorage(opts: {
   storage: StorageTeardownClientLike
   placement: StoragePlacement
   permissionId?: string | null
+  /**
+   * このプロジェクトのフォルダ（絶対パス）。**必須**——ほかのプロジェクトの記録を読む起点（親フォルダの兄弟）。
+   * 渡し忘れ・絶対パスでない値は「わからない」と読まれ、バケットは消されない（消さない側に倒れる）。
+   */
+  projectDir: string
 }): Promise<StorageTeardownOutcome> {
   const bucket = opts.placement.bucket
 
@@ -78,7 +128,9 @@ export async function teardownStorage(opts: {
     return { ok: false, message: `保存場所『${bucket}』の中身を確認できないため、削除を中止しました: ${e?.message ?? e}` }
   }
 
-  const decision = teardownPlanFor(opts.placement, allKeys)
+  // **ほかのプロジェクトの記録も見る**（一覧に出ない利用者がいる）。バケットごと消すかの判断だけに使う。
+  const recordUsers = bucketUsersFromRecords(opts.projectDir, bucket)
+  const decision = teardownPlanFor(opts.placement, allKeys, recordUsers)
   try {
     if (decision.deletePrefix) {
       const mine = allKeys.filter(k => k.startsWith(decision.deletePrefix as string))
@@ -93,8 +145,11 @@ export async function teardownStorage(opts: {
   const warnings: string[] = []
   if (opts.permissionId) {
     try { await opts.storage.deletePermission(opts.permissionId) }
-    catch { warnings.push('保存場所のアクセスキーを無効にできませんでした') }
+    catch { warnings.push(KEY_REVOKE_FAILED_WARNING) }
   }
 
-  return { ok: true, deletedBucket: decision.deleteBucket, note: decision.note, warnings }
+  return {
+    ok: true, deletedBucket: decision.deleteBucket, note: decision.note, warnings,
+    ...(!decision.deleteBucket && decision.keptReasons ? { keptReasons: decision.keptReasons } : {}),
+  }
 }

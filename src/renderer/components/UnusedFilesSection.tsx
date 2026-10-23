@@ -113,11 +113,11 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
             // Node/PHP 等はプログラムが実行時にファイル名を組み立てることがあり、
             // 文字列の出現だけでは追い切れない（roadmap #22・2026-09-06）。
             <p className="text-[11px] text-ink-muted leading-relaxed">
-              ⚠️ このプロジェクトはプログラムが動くタイプです。実行時にファイル名を組み立てている場合、実際は使っているファイルが「使われていない」と出ることがあります。移動する前に一覧をご確認ください（🕘 元に戻すで戻せます）。
+              ⚠️ このプロジェクトはプログラムが動くタイプです。実行時にファイル名を組み立てている場合、使っているファイルが「使われていない」と出ることがあります。移動する前に一覧をご確認ください。
             </p>
           )}
           <p className="text-[11px] text-ink-muted leading-relaxed">
-            どのページ・コードからも名前が参照されていないファイルです。「素材（公開しません）」フォルダへ移動できます。🕘 元に戻すで戻せます
+            どのページ・コードからも名前が参照されていないファイルです。「素材（公開しません）」フォルダへ移動できます。
           </p>
           <ul className="text-xs text-ink-secondary space-y-0.5 max-h-40 overflow-y-auto select-text">
             {unused.map(f => <li key={f}>・{f}</li>)}

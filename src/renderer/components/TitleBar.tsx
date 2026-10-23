@@ -91,7 +91,7 @@ export default function TitleBar({
                 （2026-08-05 利用者フィードバック）、上部にも文字付きで置く。 */}
             <button
               onClick={onOpenHistory}
-              title="前の状態に戻す（作業の履歴から選んで、その時点の状態に戻せます）"
+              title="前の状態に戻す（作業の履歴から選びます）"
               className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
             >
               🕘 元に戻す

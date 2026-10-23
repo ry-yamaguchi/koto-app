@@ -7,7 +7,8 @@ import {
 } from '../src/main/cloud/adopt'
 import { validateSpec, normalizeSpecName } from '../src/main/cloud/spec'
 import { registrySubdomainLabel, stateAfterTeardown } from '../src/main/cloud/state'
-import { registryDeleteDefault, adoptedRegistryNote, projectDeleteRegistryNote, REGISTRY_MONTHLY_YEN } from '../src/shared/cloudCost'
+import * as cloudCost from '../src/shared/cloudCost'
+import { registryDeleteDefault, adoptedRegistryNote, unknownOriginRegistryNote, registryOriginNote, registryOriginOf, registryChoiceNote, sharedRegistryNote, otherProjectsText, REGISTRY_MONTHLY_YEN } from '../src/shared/cloudCost'
 import { computePlan } from '../src/main/cloud/planner'
 import { buildPatchBody, buildCreateBody } from '../src/main/cloud/client'
 import { appRunSettings, type AppRunSettings } from '../src/shared/publishImport'
@@ -178,34 +179,100 @@ describe('引き継ぎで書く state.json', () => {
 
 describe('破棄で「置き場も削除する」の最初の状態', () => {
   // Koto が作った置き場は、そのプロジェクト専用。残すと月220円が止まらないので既定オン。
-  it('Koto が作ったものなら、これまでどおりオン', () => {
-    expect(registryDeleteDefault({ registryName: 'sample-app', adopted: false })).toBe(true)
+  it('Koto が作ったと記録にあるもの（owned）なら、オン', () => {
+    expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'owned', otherUsers: 0 })).toBe(true)
   })
 
   // 借り物には、他のアプリのイメージも入っていることがある。
-  it('借り物ならオフにしておく', () => {
-    expect(registryDeleteDefault({ registryName: 'sample-app', adopted: true })).toBe(false)
+  it('借り物（adopted）ならオフにしておく', () => {
+    expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'adopted', otherUsers: 0 })).toBe(false)
+  })
+
+  // ★ 印が無いものは「Koto が作った」と読まない（2026-10-19）。接続情報は Koto 全体で1つなので、
+  // 記録の無いプロジェクトはほかのプロジェクトが作ったレジストリを使う。
+  it('作ったか分からないもの（unknown）もオフにしておく', () => {
+    expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'unknown', otherUsers: 0 })).toBe(false)
   })
 
   it('記録が無ければ、そもそも消せない', () => {
-    expect(registryDeleteDefault({ registryName: null, adopted: false })).toBe(false)
+    for (const origin of ['owned', 'adopted', 'unknown'] as const) {
+      expect(registryDeleteDefault({ registryName: null, origin, otherUsers: 0 }), origin).toBe(false)
+    }
+  })
+
+  // ★ 作った側でも、ほかのプロジェクトが借りていればオフ（2026-10-19）。借りる側を直しても、借りられた側から消せば同じ害が起きる
+  it('Koto が作ったもの（owned）でも、ほかのプロジェクトが使っていればオフ。オンは使い手が0のときだけ', () => {
+    expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'owned', otherUsers: 0 })).toBe(true)
+    for (const n of [1, 2, 4, 100]) expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'owned', otherUsers: n }), String(n)).toBe(false)
+  })
+
+  // 数えられなかった（数でない・負・小数）は「使い手が0」と読まない。0 とちょうど等しいときだけオン
+  it('使い手の数が数でない・負・小数のときは「分からない」ものとしてオフ', () => {
+    for (const n of [NaN, -1, 0.5, undefined, null, '0'] as unknown[]) {
+      expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'owned', otherUsers: n as number }), String(n)).toBe(false)
+    }
+  })
+
+  it('使い手の名前の出し方: 2件まではそのまま、3件以上は先頭と件数', () => {
+    expect(otherProjectsText(['reminder'])).toBe('reminder')
+    expect(otherProjectsText(['reminder', 'landingTEST'])).toBe('reminder・landingTEST')
+    expect(otherProjectsText(['reminder', 'landingTEST', 'a'])).toBe('reminder ほか2件')
+    expect(otherProjectsText(['reminder', 'landingTEST', 'landingtest-2', 'Tsukaisute'])).toBe('reminder ほか3件')
+  })
+
+  it('使い手がいるときの断りは、全文で固定（名前・消すとアプリが動かなくなること・月額と、チェックを入れる条件）', () => {
+    expect(sharedRegistryNote('scheduleapp', ['reminder', 'landingTEST', 'landingtest-2', 'Tsukaisute']))
+      .toBe('ほかのプロジェクト（reminder ほか3件）も、このコンテナレジストリ『scheduleapp』を使っています。'
+        + '消すと、それらのアプリが動かなくなります。'
+        + '消してよいと分かっているときだけ、チェックを入れてください（月額220円・税込が止まります）。')
+    // 理由を言う順: 使い手が分かっていれば使い手、いなければ作った・借りた
+    expect(registryChoiceNote({ origin: 'owned', registryName: 'x', users: ['a'] })).toBe(sharedRegistryNote('x', ['a']))
+    expect(registryChoiceNote({ origin: 'owned', registryName: 'x', users: [] })).toBeNull()
+    expect(registryChoiceNote({ origin: 'adopted', registryName: 'x', users: [] })).toBe(adoptedRegistryNote('x'))
+    expect(registryChoiceNote({ origin: 'unknown', registryName: 'x', users: [] })).toBe(unknownOriginRegistryNote('x'))
+  })
+
+  it('記録の印の読みは1か所。false だけが owned・true は adopted・それ以外（無い・型違い）は unknown', () => {
+    expect(registryOriginOf(false)).toBe('owned')
+    expect(registryOriginOf(true)).toBe('adopted')
+    for (const v of [undefined, null, 0, 1, '', 'false', 'true', {}, []]) expect(registryOriginOf(v), String(v)).toBe('unknown')
   })
 
   it('黙って外さず、理由をその場で言う', () => {
     const note = adoptedRegistryNote('sample-app')
-    expect(note).toContain('sample-app')
-    expect(note).toContain('Koto が作ったものではありません')
-    expect(note).toContain('ほかのアプリのイメージ')
-    expect(note).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
+    // 全文で固定する。引き継ぎも、記録の無いプロジェクトの公開で借りたもの（ふつう Koto が別のプロジェクトのために作ったもの）も、この文
+    // （旧い文は「Koto が作ったものではありません」。借りたものは Koto が作ったものなので、画面が事実と違うことを言っていた）
+    expect(note).toBe('このコンテナレジストリ『sample-app』は、このプロジェクトのために作ったものではありません。'
+      + 'ほかのアプリのイメージも入っている場合、消すとそれらが動かなくなります。'
+      + '消してよいと分かっているときだけ、チェックを入れてください（月額220円・税込が止まります）。')
+    expect(note).not.toContain('Koto が作ったものではありません')
   })
 
-  // ⚠️ 名前だけ残して印を落とすと、次の破棄で「Koto が作ったもの」に見えて既定オンに戻る。
-  it('破棄でレジストリを残したときは、名前と一緒に印も残す', () => {
-    const kept = stateAfterTeardown(
-      { name: 'x', backend: 'apprun', resources: [], meta: { registryName: 'sample-app', registryAdopted: true } },
-      false,
-    )
-    expect(kept.meta).toEqual({ registryName: 'sample-app', registryAdopted: true })
+  it('作ったか分からないものも、外した理由を言う（借り物とは別の文。作ったと分からないだけで、借りたとは言わない）', () => {
+    const note = unknownOriginRegistryNote('sample-app')
+    expect(note).toBe('このコンテナレジストリ『sample-app』を、このプロジェクトのために作ったか分かりません。'
+      + 'ほかのアプリも使っている場合、消すとそれらが動かなくなります。'
+      + '消してよいと分かっているときだけ、チェックを入れてください（月額220円・税込が止まります）。')
+    expect(note).not.toContain('作ったものではありません')
+    // 言う相手: owned は言うことが無い（既定がオンなので）
+    expect(registryOriginNote('owned', 'sample-app')).toBeNull()
+    expect(registryOriginNote('adopted', 'sample-app')).toBe(adoptedRegistryNote('sample-app'))
+    expect(registryOriginNote('unknown', 'sample-app')).toBe(note)
+  })
+
+  // ⚠️ 名前だけ残して印を落とすと、次の破棄で印の読みが変わる（借り物が「Koto が作ったもの」に見えて既定オンに戻る／
+  // 作ったと分かっているものが「分からない」に落ちる）。印は true も false も、あるままに残す。無ければ無いまま。
+  it('破棄でレジストリを残したときは、名前と一緒に印も残す（true も false も。印が無ければ無いまま）', () => {
+    for (const mark of [true, false]) {
+      const kept = stateAfterTeardown(
+        { name: 'x', backend: 'apprun', resources: [], meta: { registryName: 'sample-app', registryAdopted: mark } },
+        false,
+      )
+      expect(kept.meta, String(mark)).toEqual({ registryName: 'sample-app', registryAdopted: mark })
+    }
+    const unmarked = stateAfterTeardown({ name: 'x', backend: 'apprun', resources: [], meta: { registryName: 'sample-app' } }, false)
+    expect(unmarked.meta).toEqual({ registryName: 'sample-app' })
+    expect(JSON.stringify(unmarked)).not.toContain('registryAdopted')
   })
 
   it('レジストリを消したときは、名前も印も残さない', () => {
@@ -216,75 +283,115 @@ describe('破棄で「置き場も削除する」の最初の状態', () => {
     expect(gone.meta).toBeUndefined()
   })
 
-  // Koto が新しく作ったら、借り物ではなくなる。印を古いまま残さない。
-  it('新しく作ったときは、借り物の印を落とす', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/ipc/cloud.ts'), 'utf-8')
-    expect(src).toContain('...(created ? { registryAdopted: false } : {})')
-  })
-
+  // Koto が新しく作ったら、借り物ではなくなる。印を古いまま残さない（書く口の振る舞いは tests/registryOriginWrite.test.ts が、
+  // 偽 client を通した cloud:ensureRegistry で固定する）。
   // ⚠️ **破棄の導線は3つある**（③公開・📡公開したもの一覧・プロジェクトごと削除）。
   // 2026-08-25、2つだけ直して**3つめ（プロジェクト削除）を見落としていた**。
   // そこは `deleteRegistry: true` の決め打ちで、しかもチェックボックスが無い＝
   // **借りている置き場を、断る手段なく消していた**（Ryosuke の問いで見つけた）。
   //
   // 一覧を**書き下す**（配列を回すだけだと、中身が減っても気づけない・掟10）。
-  it('破棄の導線は3つとも、同じ判断を通す', () => {
-    const paths = [
-      'src/renderer/components/AppRunPanel.tsx',       // ③公開の破棄
-      'src/renderer/components/PublishedListModal.tsx', // 📡公開したもの一覧
-      'src/renderer/components/Sidebar.tsx',            // プロジェクトごと削除
-    ]
-    for (const f of paths) {
+  //
+  // 段階2（設計書 10.7.9）で、3つの入口は共通の流れ（共用型の仕様書 teardown/targets/shared.ts）に置き換わった（2b-2・2c・2d）。
+  // **どの入口も、判断（registryDeleteDefault）を自分で持たない。持つのは仕様書の `choices` の1か所だけ**（src 全体で書き下す）。
+  it('破棄の導線は、同じ判断を通る（持つのは仕様書の1か所だけ。3つの入口は持たず、決め打ちで消しにいく形も無い）', () => {
+    const holders = walkSrc().filter(f => readCode(f).includes('registryDeleteDefault('))
+    expect(holders).toEqual(['src/renderer/teardown/targets/shared.ts', 'src/shared/cloudCost.ts'])
+    expect(readCode('src/renderer/teardown/targets/shared.ts')).toContain('registryDeleteDefault(')
+    for (const f of [
+      'src/renderer/teardown/projectDelete.ts',            // プロジェクトごと削除（2d で流れに置き換わった）
+      'src/renderer/components/PublishedListModal.tsx',    // 📡 公開したもの一覧（2b-2）
+      'src/renderer/components/AppRunPanel.tsx',           // ③公開の破棄（2c）
+      'src/renderer/components/SharedTeardownSection.tsx', // ③公開の破棄の流れ（2c）
+    ]) {
       const src = readCode(f)
-      expect(src, f).toContain('registryDeleteDefault(')
       // **決め打ちで消しにいく形が残っていないこと**（3つめがまさにこれだった）
-      expect(src, f).not.toContain('deleteRegistry: true')
-      expect(src, f).not.toContain('setDeleteRegistry(true)')
+      for (const gone of ['deleteRegistry: true', 'deleteRegistry:true', 'setDeleteRegistry(', 'registryDeleteDefault(', 'pendingRegistry']) {
+        expect(src, `${f} に ${gone}`).not.toContain(gone)
+      }
     }
+    // プロジェクトごと削除は、共通の流れに仕様書を渡して呼び、選択つきの確認の口を渡す（置き場を消すかは確認で選ぶ）
+    const del = readCode('src/renderer/teardown/projectDelete.ts')
+    expect(del).toContain('runTeardownFlow(dir, sharedTeardownSpec, electronFlowDeps(dir, sharedTeardownSpec, {')
+    expect(del).toContain('confirmWithChoices: ctx.confirmWithChoices,')
   })
 
-  // 選ばせない導線（プロジェクト削除）は、**選ばせない代わりに必ず書く**。
-  it('プロジェクトごと削除では、置き場を残すことを書く', () => {
-    const src = readCode('src/renderer/components/Sidebar.tsx')
-    // ⚠️ 「どこかに名前がある」だけでは足りない（**出す条件**を消しても通ってしまう。
-    // 実際にミューテーションで素通りした・掟10）。**出している場所ごと**押さえる。
-    expect(src).toContain('{teardownOnDelete && projectDeleteRegistryNote(pendingRegistry) && (')
-    expect(src).toContain('{projectDeleteRegistryNote(pendingRegistry)}</p>')
-    // 借り物かどうかは、確認を開くときに実物から読む
-    expect(src).toContain('window.electronAPI.cloud.registryName(confirmProjDelete)')
-    // 前のプロジェクトのものを引きずらない（8/24 の事故と同じ形を作らない）
-    expect(src).toContain('前のプロジェクトのものを引きずらない')
+  // 流れに置き換わった入口（📡 一覧・③公開の破棄〔AppRunPanel〕。プロジェクトごと削除は上のテスト）は、レジストリの既定を自分では決めない。
+  // 決めるのは仕様書の1か所（押した時点の main の記録から作る）。
+  it('📡 一覧と ③公開の破棄は、レジストリを消すかの既定を自分では持たない（仕様書 shared.ts の choices が持つ）', () => {
+    const list = readCode('src/renderer/components/PublishedListModal.tsx')
+    for (const gone of ['registryDeleteDefault(', 'registryDeleteLabel(', 'registryDeleteHelp(', 'registryUnknownNotice(', 'deleteRegistry', 'setDeleteRegistry', 'confirmPlacements']) {
+      expect(list, gone).not.toContain(gone)
+    }
+    expect(list).toContain('spec={sharedTeardownSpec}')
+    // ③公開の破棄: 画面は選択の欄も、その既定の判断も、借り物の注意も持たない。流れ（SharedTeardownSection.tsx）に任せる。
+    for (const f of ['src/renderer/components/AppRunPanel.tsx', 'src/renderer/components/SharedTeardownSection.tsx']) {
+      const src = readCode(f)
+      for (const gone of ['registryDeleteDefault(', 'registryDeleteLabel(', 'registryDeleteHelp(', 'registryUnknownNotice(', 'adoptedRegistryNote(', 'registryOriginNote(', 'registryChoiceNote(', 'deleteRegistry', 'setDeleteRegistry', 'registryAdopted', 'registryOrigin', 'registryUsers', 'effectiveDeleteRegistry']) {
+        expect(src, `${f} に ${gone}`).not.toContain(gone)
+      }
+    }
+    expect(readCode('src/renderer/components/SharedTeardownSection.tsx')).toContain('runTeardownFlow(projectDir, sharedTeardownSpec, electronFlowDeps(projectDir, sharedTeardownSpec, {')
+    // 仕様書は選択の既定を、借り物なら外す判断（registryDeleteDefault）に通す
+    expect(readCode('src/renderer/teardown/targets/shared.ts')).toContain('defaultChecked: registryDeleteDefault({ registryName: r.registryName, origin: r.registryOrigin, otherUsers: r.registryUsers.length })')
+  })
+
+  // プロジェクト削除のダイアログは、コンテナレジストリの注記（「残します」）を持たない（段階3A の 3A-5b。10.9.18 の D=1）。
+  // 開いたときに読んだ写しで言うと、続く確認でチェックを入れた回と食い違う。置き場を残すか消すかは、続く共用型の確認の選択の欄が言う
+  // （借り物の既定はオフ・外した理由と月額は仕様書 shared.ts が出す。下のテスト）。同じ事実は 1 つの画面で 1 回（掟5の2）。
+  // 「公開も一緒に破棄する」を外したときの「コンテナレジストリの月額220円が、消すまで続きます」は、消さない選択を確認に出さないので残す。
+  // ただし、言うのは「このプロジェクトのために Koto が作った（owned）レジストリがあり、ほかのプロジェクトが借りていない」ときだけ
+  // （2026-10-19、0.6.22-rc.1 の実機。共用型の行があるだけで言うと、記録の無いプロジェクトにも言ってしまう）。判断は projectDeletePlan.ts の ownRegistryBillingNote。
+  it('プロジェクトごと削除のダイアログは、レジストリの注記も cloud.registryName の読みも持たない（選ぶのは続く確認）', () => {
+    const src = readCode('src/renderer/components/ProjectDeleteDialog.tsx')
+    for (const gone of ['projectDeleteRegistryNote', 'registryName', 'setRegistry', 'registry.adopted', 'adoptedRegistryNote']) {
+      expect(src, gone).not.toContain(gone)
+    }
+    // 月額の文は、行があるだけ（includes('sakura-apprun') だけ）では言わない。純関数に任せ、ダイアログは文を持たない
+    expect(src).not.toContain("shownTeardown.includes('sakura-apprun')")
+    expect(src).not.toContain('REGISTRY_MONTHLY_YEN')
+    expect(src).toContain('ownRegistryBillingNote(facts, shownTeardown)')
+    expect(readCode('src/renderer/teardown/projectDeletePlan.ts')).toContain('コンテナレジストリの月額${REGISTRY_MONTHLY_YEN}円（税込）が、消すまで続きます。')
+    // 材料を読む関数も、レジストリの名前は読まない
+    expect(readCode('src/renderer/teardown/projectDeleteFacts.ts')).not.toContain('registryName(')
+    // 前のプロジェクトのものを引きずらない（8/24 の事故と同じ形を作らない）: Sidebar が key で作り直す（状態を持ち越さない）
+    expect(readCode('src/renderer/components/Sidebar.tsx')).toMatch(/<ProjectDeleteDialog\s+key=\{confirmProjDelete\}/)
   })
 
   // ③公開・📡一覧のほうは、**外した理由**をその場に出す（チェックがあるので）。
-  it('チェックのある2つは、既定を外した理由を出す', () => {
-    for (const f of [
-      'src/renderer/components/AppRunPanel.tsx',
-      'src/renderer/components/PublishedListModal.tsx',
-    ]) {
-      const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf-8')
-      expect(src, f).toContain('adoptedRegistryNote(')
+  // 📡 一覧は段階2の2b-2、③公開の破棄は2c で共通の確認に置き換わった。外した理由（adoptedRegistryNote）を渡すのは仕様書（shared.ts）の `choices` の `note`。
+  it('チェックのある導線は、既定を外した理由を出す（どちらも仕様書が）', () => {
+    expect(fs.readFileSync(path.join(__dirname, '..', 'src/renderer/teardown/targets/shared.ts'), 'utf-8')).toContain('registryChoiceNote({ origin: r.registryOrigin, registryName: r.registryName, users: r.registryUsers })')
+    for (const f of ['src/renderer/components/PublishedListModal.tsx', 'src/renderer/components/AppRunPanel.tsx']) {
+      expect(fs.readFileSync(path.join(__dirname, '..', f), 'utf-8'), f).not.toContain('registryOriginNote(')
+      expect(fs.readFileSync(path.join(__dirname, '..', f), 'utf-8'), f).not.toContain('registryChoiceNote(')
     }
+    // 借り物と作ったか分からないものに note を付ける（付け忘れると、既定を外した理由が確認に出ない。言う文は上の registryOriginNote の表と、仕様書の試験が固定する）
+    expect(readCode('src/renderer/teardown/targets/shared.ts')).toContain('...(note ? { note } : {})')
   })
 })
 
-describe('プロジェクトごと削除するときの断り', () => {
-  it('借り物なら、残すことと課金が続くことを言う', () => {
-    const note = projectDeleteRegistryNote({ registryName: 'sample-app', adopted: true })
+describe('プロジェクトごと削除するときの断り（3A-5b: 関数 projectDeleteRegistryNote は消えた。選ぶのは続く確認）', () => {
+  it('★ 関数は cloudCost に無い（使い手が無くなったので消した）。借り物の断りは、続く確認の選択の欄の adoptedRegistryNote が言う', () => {
+    expect('projectDeleteRegistryNote' in cloudCost).toBe(false)
+    expect('adoptedRegistryNote' in cloudCost).toBe(true)
+  })
+
+  // もとの3件（借り物なら残すことと課金が続くことを言う・Koto が作ったものなら何も言わない・記録が無ければ何も言わない）の意図は、続く確認が持つ:
+  // 借り物は最初から外れており（registryDeleteDefault）、外した理由と月額が確認に出る（adoptedRegistryNote）。Koto が作ったものは最初からオン。記録が無ければチェック自体を出さない。
+  it('借り物なら、既定は「消さない」で、確認が残すことと課金が続くことを言う', () => {
+    expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'adopted', otherUsers: 0 })).toBe(false)
+    const note = adoptedRegistryNote('sample-app')
     expect(note).toContain('sample-app')
-    expect(note).toContain('残します')
+    expect(note).toContain('このプロジェクトのために作ったものではありません')
     expect(note).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
-    // 行き止まりにしない（消したい人の行き先を書く）
-    expect(note).toContain('コントロールパネル')
   })
 
-  // Koto が作った置き場は今までどおり消す。消えるものの話は「公開も一緒に破棄する」で足りる。
-  it('Koto が作ったものなら、何も言わない（消すので）', () => {
-    expect(projectDeleteRegistryNote({ registryName: 'sample-app', adopted: false })).toBeNull()
-  })
-
-  it('記録が無ければ、何も言わない（そもそも消せない）', () => {
-    expect(projectDeleteRegistryNote({ registryName: null, adopted: true })).toBeNull()
+  it('Koto が作ったと記録にあるものは既定が「消す」。作ったか分からないものと、記録が無いものは「消す」にしない（後者はそもそも消せない）', () => {
+    expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'owned', otherUsers: 0 })).toBe(true)
+    expect(registryDeleteDefault({ registryName: 'sample-app', origin: 'unknown', otherUsers: 0 })).toBe(false)
+    expect(registryDeleteDefault({ registryName: null, origin: 'adopted', otherUsers: 0 })).toBe(false)
+    expect(registryDeleteDefault({ registryName: null, origin: 'owned', otherUsers: 0 })).toBe(false)
   })
 })
 
@@ -482,6 +589,16 @@ const readCode = (rel: string): string =>
       return !t.startsWith('//') && !t.startsWith('*')
     })
     .join('\n')
+
+/** src 配下の .ts／.tsx を、src からの相対パスで（並べ替えて）返す。 */
+const walkSrc = (dirRel = 'src', out: string[] = []): string[] => {
+  for (const ent of fs.readdirSync(path.join(__dirname, '..', dirRel), { withFileTypes: true })) {
+    const rel = `${dirRel}/${ent.name}`
+    if (ent.isDirectory()) walkSrc(rel, out)
+    else if (/\.(ts|tsx)$/.test(ent.name)) out.push(rel)
+  }
+  return out.sort()
+}
 
 describe('引き継ぎの配線', () => {
   const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')

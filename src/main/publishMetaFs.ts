@@ -15,7 +15,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   withPendingPublish, withoutPendingPublish, withPublishRecord, withHanamiiProjectId,
-  withApprunDedicatedRecord, withMetaPatch, withoutPublishTargetInMeta,
+  withApprunDedicatedRecord, withMetaPatch, withoutPublishTargetInMeta, withHanamiiStorageLeftover, hasPublishRecordInMeta,
   type PublishTargetKind, type ApprunDedicatedRecord,
 } from '../shared/publishMeta'
 import { runningOp } from './projectLock'
@@ -24,13 +24,32 @@ function metaFilePath(projectDir: string): string {
   return path.join(projectDir, '.sakuraide.json')
 }
 
+/**
+ * `.sakuraide.json` の読み結果。**「ファイルが無い」と「読めない・壊れている」を分ける**（2026-10-21）。
+ * 保存場所を消してよいかの判断（`main/cloud/bucketUsers.ts`）は、読めないものを「公開していない」と読むと、使っているプロジェクトのバケットを消す向きに倒れる。
+ * `missing` は ENOENT（そもそも無い）だけ。権限・ディレクトリだった・JSON として読めない、は `unreadable`。
+ */
+export type MetaRead = { kind: 'missing' } | { kind: 'ok'; value: unknown } | { kind: 'unreadable' }
+
+/** `.sakuraide.json` を、無い・読めないを区別して読む。**投げない。** `.sakuraide.json` を読む唯一の口（下の `readMetaRaw` もここを通る）。 */
+export function readMetaFs(projectDir: string): MetaRead {
+  let text: string
+  try {
+    text = fs.readFileSync(metaFilePath(projectDir), 'utf-8')
+  } catch (e) {
+    return (e as NodeJS.ErrnoException | null)?.code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unreadable' }
+  }
+  try {
+    return { kind: 'ok', value: JSON.parse(text) }
+  } catch {
+    return { kind: 'unreadable' } // 壊れている
+  }
+}
+
 /** `.sakuraide.json` を読む。無い/壊れている（既存フォルダ等）場合は空メタ扱い。 */
 function readMetaRaw(projectDir: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(metaFilePath(projectDir), 'utf-8'))
-  } catch {
-    return {}
-  }
+  const r = readMetaFs(projectDir)
+  return r.kind === 'ok' ? r.value : {}
 }
 
 /**
@@ -130,8 +149,7 @@ export function readPublishedAtFs(projectDir: string, target: PublishTargetKind)
  * （renderer の buildPublishStatusRows と同じ見方）。無い・壊れている＝false。
  */
 export function hasPublishRecordFs(projectDir: string, target: PublishTargetKind): boolean {
-  const m = readMetaRaw(projectDir) as any
-  return !!m?.publish?.targets?.[target]
+  return hasPublishRecordInMeta(readMetaRaw(projectDir), target)
 }
 
 /**
@@ -264,6 +282,37 @@ export function settleHanamiiTeardownFs(
   if (typeof onDisk === 'string' && onDisk !== '' && onDisk !== deletedProjectId) return { ok: true, cleared: false }
   const r = updateMetaFs(projectDir, disk => withoutPublishTargetInMeta(disk, 'hanamii'), 'HANAMII の破棄後の記録の片づけ')
   return r.ok ? { ok: true, cleared: true } : { ok: false, message: r.message }
+}
+
+/**
+ * HANAMII の破棄で、**プロジェクトは消えたのに保存場所だけが残った**回の印を書く（`publish.hanamii.storageLeftoverBuckets`）。
+ * 設計書 docs/teardown-unify-plan.md 10.4.1。
+ *
+ * ── なぜ要るか ──────────────────────────────────────────────────────────
+ * 保存場所だけ残った回は、押し直せるように 📡 の行と projectId を残す（D1=1）。ところが記録が projectId を持ったままだと、
+ * 押し直したときの確認は「HANAMII のプロジェクト『X』を削除します」と言う——実体はもう無い。専有型は消えた資源の ID を
+ * 記録から外すので「次を削除します」に載らないが、HANAMII は行を残すために projectId を残すので同じにならない。
+ * そこで「プロジェクトは消えた・保存場所が残っている」を、この印で言い分ける（renderer の確認の文が読む）。
+ *
+ * ── 何を書くか ──────────────────────────────────────────────────────────
+ * `buckets` は残っている保存場所の名前（全件）。名前が分からない回（保存場所の設定を読めなかった）は `[]`。
+ * 消すのは、全部片づいた回（`settleHanamiiTeardownFs`）と「一覧から削除」（`withoutPublishTarget`）。
+ *
+ * ── 守り（`settleHanamiiTeardownFs` と同じ規則）─────────────────────────────────
+ * 記録の projectId が、消したものと**同じときだけ**書く（違う＝別の公開の記録、無い＝書く先の行が無い）。
+ * 記録ファイルが無い・壊れているときは、**ファイルを作らず、壊れたものを上書きもしない**。
+ * 書けなかったときは `ok:false`（呼び手は破棄の結果を変えず、知らせの行を足す）。
+ */
+export function markHanamiiStorageLeftoverFs(
+  projectDir: string, deletedProjectId: string, buckets: readonly string[],
+): { ok: true; marked: boolean } | { ok: false; message: string } {
+  let existing: unknown
+  try { existing = JSON.parse(fs.readFileSync(metaFilePath(projectDir), 'utf-8')) } catch { return { ok: true, marked: false } }
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return { ok: true, marked: false }
+  const onDisk = (existing as any)?.publish?.hanamii?.projectId
+  if (typeof onDisk !== 'string' || onDisk === '' || onDisk !== deletedProjectId) return { ok: true, marked: false }
+  const r = updateMetaFs(projectDir, disk => withHanamiiStorageLeftover(disk, buckets), 'HANAMII の保存場所が残った印')
+  return r.ok ? { ok: true, marked: true } : { ok: false, message: r.message }
 }
 
 /**

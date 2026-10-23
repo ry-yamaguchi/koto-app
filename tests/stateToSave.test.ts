@@ -67,23 +67,42 @@ describe('成功したときの仕上げ', () => {
 })
 
 // 判断を一元化しても、呼ぶ側が `if (result.ok)` で囲めば同じ穴が空く（掟10）。
+// 公開の保存は cloud.ts、破棄の保存は cloudTeardown.ts（2026-10-10・段階2で移した）。どちらも stateToSave を通す。
 describe('記録の保存が、成功の中に閉じ込められていない', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc', 'cloud.ts'), 'utf-8')
+  const teardown = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc', 'cloudTeardown.ts'), 'utf-8')
+  /** `//` から行末までのコメントを除く（説明の文が呼び出しに見えないように）。 */
+  const code = (text: string): string => text.replace(/(^|\s)\/\/[^\n]*/g, (_m, lead: string) => lead)
+  const teardownCode = code(teardown)
 
-  it('applyPlan が返した state は、必ず stateToSave を通してから保存する', () => {
+  it('公開: applyPlan が返した state は、必ず stateToSave を通してから保存する', () => {
     // `result.state`（＝実際に何が起きたか）を素で保存している箇所があってはならない。
-    // ※レジストリ名だけを書き足す保存（別の目的）はここでは見ない
     // 保存に渡している箇所（`state: result.state`）だけを見る。読み取りは対象外
     const positions: number[] = []
     for (let i = source.indexOf('state: result.state'); i !== -1; i = source.indexOf('state: result.state', i + 1)) positions.push(i)
-    expect(positions.length).toBeGreaterThanOrEqual(3)
+    expect(positions.length).toBeGreaterThanOrEqual(1)
     for (const at of positions) {
       const before = source.slice(Math.max(0, at - 120), at)
       expect(before).toContain('stateToSave')
     }
   })
 
-  it('失敗したときにも保存する道がある', () => {
-    expect(source).toContain('ok: false, state: result.state')
+  it('公開: 失敗したときにも保存する道がある', () => {
+    expect(source).toContain('ok: result.ok, state: result.state, kind: \'apply\'')
+  })
+
+  it('破棄: saveCloudState( を呼ぶのは1か所だけで、その直前で stateToSave を通した値を渡す。素の state を保存しない', () => {
+    const calls = teardownCode.match(/saveCloudState\(/g) ?? []
+    expect(calls.length, 'saveCloudState( の呼び出しが1か所でなくなった').toBe(1)
+    const at = teardownCode.indexOf('saveCloudState(')
+    const around = teardownCode.slice(Math.max(0, at - 220), at + 160)
+    expect(around).toContain('stateToSave({ ok: o.ok, state: cur, kind: \'teardown\', registryDeleted: o.registryDeleted })')
+    // 保存に渡す引数が、素の state（result.state・cur・state）ではないこと
+    expect(teardownCode).not.toMatch(/saveCloudState\(\s*projectDir,\s*(result\.state|cur|state)\s*\)/)
+  })
+
+  it('破棄: 失敗したときにも保存する道がある（アプリの段・保存場所の段の両方で ok:false を保存する）', () => {
+    expect(teardownCode).toContain("persist(projectDir, cur, { ok: false, registryDeleted: false, keyKept: null })")
+    expect(teardownCode).toContain('persist(projectDir, cur, { ok: failure === null, registryDeleted, keyKept })')
   })
 })

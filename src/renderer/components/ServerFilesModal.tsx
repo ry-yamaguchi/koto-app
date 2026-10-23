@@ -318,7 +318,7 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
                 >↻ 更新</button>
               </div>
               <p className="text-[11px] text-ink-muted leading-relaxed">
-                「取得して編集」で取得したファイル（{SERVER_EDIT_DIR}/ 配下）を選んでサーバへ戻します。上書き前に自動バックアップを作成します。
+                「取得して編集」で取得したファイル（{SERVER_EDIT_DIR}/ 配下）を選んでサーバへ戻します。
               </p>
               {edited.length === 0 ? (
                 <p className="text-sm text-ink-muted py-2">取得済みのファイルはありません。上の一覧から「取得して編集」してください。</p>

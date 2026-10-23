@@ -34,6 +34,20 @@ export function opWarningText(w: string): string {
 }
 
 /**
+ * 警告のうち、**本文（message）がすでに言っている文**を除く（同じ事実を1つの画面で2回言わない。掟5 の2）。**定義はこの1か所**（掟10）。
+ * 先頭の「⚠️」「⚠」「※」と空白は外して比べる（警告は印つきで持たれることがある）。本文がその文を含んでいれば、警告の側を出さない。
+ * 空の文（印だけの文を含む）は本文に必ず含まれるので、ここで一緒に落ちる（「⚠️ 」だけの行にしない）。
+ *
+ * HANAMII が削除を受け付けただけの回は、main が同じ文を message にも warnings にも入れて返す（HANAMII_DELETION_ACCEPTED_WARNING）。
+ * 結果カード（【公開】の OpFinishedCard）・結果欄（TeardownResultView）・開き直しの知らせ（resumedTeardownNote）は、本文と警告を同じ枠に出すので、この関数を通す。
+ * 本文に含まれない警告は、そのまま残る（月額が続く等の知らせを落とさない）。
+ */
+export function warningsNotRepeatedIn(message: unknown, warnings: readonly string[]): string[] {
+  const body = typeof message === 'string' ? message : ''
+  return warnings.filter(w => !body.includes(opWarningText(w).trim()))
+}
+
+/**
  * 時刻（epoch ミリ秒）を端末の時計で「10:32」の形（ゼロ埋め）にする。読めなければ空文字
  * （呼び出し側は、空なら時刻の言い回しごと省く）。ロケールに頼らない（環境で「24:05」などにならないように）。
  */
@@ -42,4 +56,15 @@ export function clockText(ms: unknown): string {
   const d = new Date(ms)
   if (isNaN(d.getTime())) return ''
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * 日付（epoch ミリ秒）を端末の時計で「10/10」の形（月/日・ゼロ埋めなし）にする。読めなければ空文字。
+ * 止まった回の見出し（shared/stageTiming.ts の stageTimingView）が、`clockText` と並べて使う。
+ */
+export function monthDayText(ms: unknown): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return ''
+  const d = new Date(ms)
+  if (isNaN(d.getTime())) return ''
+  return `${d.getMonth() + 1}/${d.getDate()}`
 }

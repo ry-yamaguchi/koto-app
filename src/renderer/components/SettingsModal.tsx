@@ -184,7 +184,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
                 キー別の行で、そのキー自身の基準（checkBeforeRequestOf と同じ・isKeyOverLimit）
                 に対してだけ出す。 */}
             <div className="mt-2 flex items-center justify-between text-[11px] text-ink-muted">
-              <span>{usage.totalTokens.toLocaleString()} トークン（≒文字数の目安。日本語1文字で1〜2トークン）（入力 {usage.promptTokens.toLocaleString()} / 出力 {usage.completionTokens.toLocaleString()}）</span>
+              <span>{usage.totalTokens.toLocaleString()} トークン（入力 {usage.promptTokens.toLocaleString()} / 出力 {usage.completionTokens.toLocaleString()}。日本語1文字で1〜2トークンが目安）</span>
               <button
                 onClick={async () => {
                   await runResetUsageWithConfirm(RESET_USAGE_CONFIRM_MESSAGE, {
@@ -321,7 +321,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
                   className="bg-sakura text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
                 >いますぐ再起動して更新する</button>
                 <p className="text-[11px] text-ink-muted leading-relaxed">
-                  押さなくても構いません。次に Koto を起動したときに自動で切り替わります。
+                  押さなくても、次に Koto を起動したときに自動で切り替わります。
                 </p>
                 {applyError && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {applyError}</p>}
               </div>
@@ -356,11 +356,11 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               思考を常に開いたままにする
             </label>
             <p className="mt-1.5 text-[11px] text-ink-muted leading-relaxed">
-              推論型のモデル（Kimi K2.7 など）は、回答を書き始める前の思考を表示できます。
-              既定では思考している間だけ開き、書き終わると自動で畳みます。オンにすると畳まずに残します。
-              ※ 思考を出さないモデルでは表示されません。
+              推論型のモデル（Kimi K2.7 など）は、回答する前の思考を表示できます。
+              既定では思考している間だけ開き、書き終わると畳みます。オンにすると畳まずに残します。
+              思考を出さないモデルでは表示されません。
               <strong className="font-medium text-ink-secondary">思考は英語で書かれることがあります</strong>
-              （モデルが内部で使う言葉のため。回答そのものは日本語です）。
+              （回答は日本語です）。
             </p>
           </div>
 
@@ -409,7 +409,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
 
           {/* Default model (IDE) */}
           <div>
-            <label className="text-xs font-semibold text-ink-secondary">IDEで使うモデル（さくらのAI Engine・コード・公開向け）</label>
+            <label className="text-xs font-semibold text-ink-secondary">IDEで使うモデル（さくらのAI Engine）</label>
             <select
               value={ideModel}
               onChange={e => { setDefaultModel(e.target.value, 'ide'); setIdeModel(e.target.value) }}
@@ -431,7 +431,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
 
           {/* Default model (Chat) */}
           <div>
-            <label className="text-xs font-semibold text-ink-secondary">チャットで使うモデル（さくらのAI Engine・相談・調査向け）</label>
+            <label className="text-xs font-semibold text-ink-secondary">チャットで使うモデル（さくらのAI Engine）</label>
             <select
               value={chatModel}
               onChange={e => { setDefaultModel(e.target.value, 'chat'); setChatModel(e.target.value) }}

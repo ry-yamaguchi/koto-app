@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   applyResources: [] as any[],
   /** applyPlan が成功を返すか（false＝共用型の破棄が途中で失敗した回を作る）。 */
   applyOk: true,
+  /** 偽の保存場所が、どのバケットを一覧しても返す中身（共用型の破棄で「ほかのプロジェクトが使っている」を作る）。 */
+  bucketKeys: [] as string[],
   /** prepareAppImage の返り方（専有型の公開で「レジストリが秘密を含む文で断る」を作る）。 */
   imageFailure: null as null | string,
   /** main → renderer の押し出し（projectOps:changed）。 */
@@ -87,10 +89,22 @@ vi.mock('../src/main/cloud/apply', async (importOriginal) => {
   }
 })
 
-// 保存場所（共用型の破棄で、state に bucket があるとき接続する）。実ネットワークへは出ない。
+// 保存場所（共用型の破棄で、消す保存場所があるとき・記録の鍵を無効にするときに接続する）。実ネットワークへは出ない。
+// 判断（storageTeardown.ts → teardownPlanFor）は本物のまま動かす。どのバケットを一覧しても h.bucketKeys が返る
+// （ほかのプロジェクトの prefix を入れておくと、バケットは残る）。
 vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
   const real = await importOriginal<any>()
-  return { ...real, createStorageAdapter: async () => ({ async dispose() {} }) }
+  return {
+    ...real,
+    createStorageAdapter: async () => ({
+      async listAllKeys() { return [...h.bucketKeys] },
+      async deleteKeys() {},
+      async deleteBucket() {},
+      async deletePermission() {},
+      async listPermissions() { return [] },
+      async dispose() {},
+    }),
+  }
 })
 
 import { registerCloudHandlers } from '../src/main/ipc/cloud'
@@ -100,6 +114,7 @@ import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated
 import { registerPublishMetaHandlers } from '../src/main/ipc/publishMeta'
 import { registerProjectOpsHandlers } from '../src/main/ipc/projectOps'
 import { resetProjectOpsForTests, ackOps } from '../src/main/projectOps'
+import { withProjectLock } from '../src/main/projectLock'
 import { hanamiiWaitTuning } from '../src/main/hanamii/aftercare'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { teardownRemainingWarnings } from '../src/shared/cloudCost'
@@ -124,10 +139,15 @@ const BASE = 'https://hanamii.jp'
 let projectDirs: string[] = []
 let realFetch: typeof globalThis.fetch
 
-/** 公開できるプロジェクト。 */
+/**
+ * 公開できるプロジェクト。**プロジェクトごとに自分だけの親フォルダへ置く**: 共用型の破棄は、残すレジストリを使っているほかのプロジェクトを、同じ親フォルダの
+ * 兄弟から数える（cloud/registryUsers.ts）。一時フォルダ直下だと、同時に走る別の試験の残りを兄弟として読む。
+ */
 function newProject(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-ops-'))
-  projectDirs.push(dir)
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-ops-'))
+  projectDirs.push(ws)
+  const dir = path.join(ws, 'myapp')
+  fs.mkdirSync(dir)
   const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
   fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
   fs.writeFileSync(path.join(dir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
@@ -148,6 +168,7 @@ beforeEach(() => {
   h.creds = { token: 'TEST-TOKEN', secret: 'TEST-SECRET' }
   h.applyResources = []
   h.applyOk = true
+  h.bucketKeys = []
   h.imageFailure = null
   h.pushed = []
   resetProjectOpsForTests()
@@ -179,7 +200,7 @@ const handler = (channel: string) => h.handlers.get(channel)!
 const hanamiiTeardown = (dir: string) => {
   const p = path.join(dir, '.sakuraide.json')
   if (!fs.existsSync(p)) fs.writeFileSync(p, JSON.stringify({ publish: { hanamii: { projectId: 'hnm-proj-1' } } }, null, 2), 'utf-8')
-  return handler('hanamii:teardown')({}, 'hnm-proj-1', HN_TOKEN, dir)
+  return handler('hanamii:teardown')({}, dir, { token: HN_TOKEN }, { confirmed: true, projectId: 'hnm-proj-1' })
 }
 /** 画面が開き直したときに呼ぶ IPC。 */
 const getOps = (dir: string): Promise<{ running: any; last: any; earlier: any[] }> => handler('projectOps:get')({}, dir)
@@ -206,7 +227,7 @@ const CASES: Case[] = [
   { name: 'cloud:apply（共用型の公開）', channel: 'cloud:apply', op: '公開', target: 'sakura-apprun',
     invoke: dir => handler('cloud:apply')(EVENT, dir, { confirmed: true }) },
   { name: 'cloud:teardown（共用型の破棄）', channel: 'cloud:teardown', op: '削除', target: 'sakura-apprun',
-    invoke: dir => handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: false }) },
+    invoke: dir => handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: false, registryName: null }) },
   { name: 'hanamii:publish（HANAMII の公開）', channel: 'hanamii:publish', op: '公開', target: 'hanamii',
     invoke: dir => handler('hanamii:publish')({}, dir, { token: HN_TOKEN, workspaceId: 'ws-1', name: 'myapp' }) },
   { name: 'hanamii:teardown（HANAMII の破棄）', channel: 'hanamii:teardown', op: '削除', target: 'hanamii',
@@ -289,13 +310,65 @@ describe('★★★ 8本のハンドラすべてが、同じ道で記録され�
     const entered = new Promise<void>(resolve => { h.entered = resolve })
     const first = handler('vercel:publish')(EVENT, dir, { token: 'vercel-token-CCCC3333', name: 'myapp' })
     await entered
-    expect(await runningOp(dir)).toBe('公開')
-    expect((await getOps(dir)).running.op).toBe('公開')
+    // 操作名と公開先（画面は、記録の op ではなく opWordFor(op, target) の言葉で「破棄が進んでいます」「削除が進んでいます」と言い分ける）
+    expect(await runningOp(dir)).toEqual({ op: '公開', target: 'vercel' })
+    const running = (await getOps(dir)).running
+    expect({ op: running.op, target: running.target }).toEqual(await runningOp(dir))
     h.release()
     await first
     expect(await runningOp(dir)).toBeNull()
     expect((await getOps(dir)).running).toBeNull()
   })
+
+  it('★★ publishMeta:runningOp の戻りは、走っているハンドラの公開先ごと（8本）: 共用型・HANAMII・専有型の削除は、どれも op が \'削除\' で、target で見分ける', async () => {
+    for (const c of CASES) {
+      const dir = newProject()
+      let open!: () => void
+      const gate = new Promise<void>(r => { open = r })
+      const held = withProjectLock(dir, c.op, () => gate, { target: c.target, handler: c.channel })
+      expect(await runningOp(dir), c.name).toEqual({ op: c.op, target: c.target })
+      expect(await handler('publishMeta:runningOp')({}, 'relative/path'), '相対パスは null').toBeNull()
+      expect(await handler('publishMeta:runningOp')({}, 42), '文字列でないものは null').toBeNull()
+      open()
+      await held
+      expect(await runningOp(dir), c.name).toBeNull()
+    }
+  })
+})
+
+// ── 断る文は、走っている操作の公開先で言葉が決まる（8本すべてが「断る側」）──────────────────────────────
+// 記録の op は共用型・HANAMII の破棄も専有型の削除も '削除'。断る文が op をそのまま言うと、共用型・HANAMII の破棄が走っている間に
+// 別の操作を押すと「（削除）」と出る（破棄の流れの確認・進み具合・結果は「破棄」）。8本それぞれが、走っている操作の公開先を添えて言うことを
+// 実物のハンドラで固定する（6つの呼び元のどれかが公開先を渡し忘れても、ここで落ちる）。
+describe('★★★ 別の操作を断る文: 走っている操作の公開先で言葉が決まる（8本すべてが断る側）', () => {
+  const HOLDERS: Array<{ name: string; op: '作成' | '削除' | '公開'; target: Case['target']; word: string }> = [
+    { name: '共用型の破棄', op: '削除', target: 'sakura-apprun', word: '破棄' },
+    { name: 'HANAMII の破棄', op: '削除', target: 'hanamii', word: '破棄' },
+    { name: '専有型の削除', op: '削除', target: 'sakura-apprun-dedicated', word: '削除' },
+    { name: 'HANAMII の公開', op: '公開', target: 'hanamii', word: '公開' },
+    { name: '専有型の作成', op: '作成', target: 'sakura-apprun-dedicated', word: '作成' },
+  ]
+  for (const holder of HOLDERS) {
+    for (const caller of CASES) {
+      it(`${holder.name}が走っている間に ${caller.channel} を呼ぶと「（${holder.word}）」で断られる。外部の要求は増えない・記録も作らない`, async () => {
+        const dir = newProject()
+        let open!: () => void
+        const gate = new Promise<void>(r => { open = r })
+        const held = withProjectLock(dir, holder.op, () => gate, { target: holder.target, handler: 'test:hold' })
+        const before = [...h.calls]
+        const refused = await caller.invoke(dir)
+        const during = await getOps(dir)
+        open()
+        await held
+
+        expect(refused.ok).toBe(false)
+        expect(refused.message).toBe(`いま別の操作（${holder.word}）を実行中です。終わってからもう一度お試しください。`)
+        expect(h.calls).toEqual(before)
+        // 断られた側は記録を作らない（走っている記録は走らせている側のまま）
+        expect(during.running).toMatchObject({ op: holder.op, target: holder.target, handler: 'test:hold' })
+      })
+    }
+  }
 })
 
 describe('★★ 進み具合: 各ハンドラが送っていた進捗の段は、記録（と押し出し）に載る', () => {
@@ -305,9 +378,9 @@ describe('★★ 進み具合: 各ハンドラが送っていた進捗の段は�
   // 送り口の配線は tests/projectOpsWiring.test.ts が固定している。
   const STAGES: Array<[string, string]> = [
     ['cloud:apply', '🚀 AppRun に反映しています…'],
-    ['cloud:teardown', '🗑 公開したものを削除しています…'],
+    ['cloud:teardown', '🗑 公開したものを破棄しています…'],
     ['hanamii:publish', '☁️ HANAMII へアップロードしています…'],
-    ['hanamii:teardown', '🗑 HANAMII のプロジェクトを削除しています…'],
+    ['hanamii:teardown', '🗑 HANAMII のプロジェクトを破棄しています…'],
     ['vercel:publish', 'ファイルを収集しています…'],
     ['apprunDedicated:create', '🏗 クラスタ・オートスケーリンググループ・ロードバランサを作っています…'],
   ]
@@ -319,6 +392,19 @@ describe('★★ 進み具合: 各ハンドラが送っていた進捗の段は�
       await c.invoke(dir)
       const labels = pushedFor(dir).map(e => (e.running ?? e.last)?.progress?.label)
       expect(labels).toContain(label)
+    })
+  }
+
+  // 共用型・HANAMII の破棄は、確認・結果・見出しまで「破棄」で1つ（0.6.22 の決定 D3）。進み具合の文だけ「削除しています」と言っていた
+  // （0.6.22-rc.3 の実機のあとの確かめで見つかった）。専有型の削除の進み具合は「削除」のまま（そちらは tests/dedicatedTeardownShell*.test.ts が見る）。
+  for (const channel of ['cloud:teardown', 'hanamii:teardown']) {
+    it(`★★ ${channel}（破棄）: 記録された進み具合のどれも「削除しています」と言わない（動詞は「破棄」）`, async () => {
+      const dir = newProject()
+      const c = CASES.find(x => x.channel === channel)!
+      await c.invoke(dir)
+      const labels = pushedFor(dir).map(e => (e.running ?? e.last)?.progress?.label).filter((l): l is string => typeof l === 'string')
+      expect(labels.some(l => l.includes('破棄しています')), JSON.stringify(labels)).toBe(true)
+      expect(labels.filter(l => l.includes('削除しています')), JSON.stringify(labels)).toEqual([])
     })
   }
 
@@ -368,18 +454,21 @@ describe('★★ 別のプロジェクトの記録は混ざらない（掟11・�
 describe('★★ 警告を見逃さない: 終わった結果の警告は、開き直したあとも読める', () => {
   it('★ 共用型の破棄: 保存場所が残った・レジストリを残した → 月額が続くと警告される', async () => {
     const dir = newProject()
-    // 前の公開で作られたもの: 保存場所（破棄しても3段構えで残ることがある）・記録済みのレジストリ
-    saveCloudState(dir, {
-      name: 'myapp', backend: 'apprun',
-      resources: [{ kind: 'bucket', key: 'bucket:koto-data-x', id: 'koto-data-x', stateful: true } as any],
-      meta: { registryName: 'myreg' },
-    } as any)
-    // 破棄の結果、保存場所は state に残ったまま（消せなかった）
-    h.applyResources = [{ kind: 'bucket', key: 'bucket:koto-data-x', id: 'koto-data-x', stateful: true }]
+    // 前の公開で作られたもの: 保存場所（env.json に同意済み・state にも記録）・記録済みのレジストリ
+    const spec = JSON.parse(fs.readFileSync(path.join(dir, '.sakura-cloud', 'env.json'), 'utf-8'))
+    spec.persistence = { objectStorage: [{ bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true, consentedAt: '2026-08-14T00:00:00.000Z' }] }
+    fs.writeFileSync(path.join(dir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
+    const bucketRef = { kind: 'bucket', key: 'bucket:koto-data-x', id: 'koto-data-x', stateful: true, prefix: 'projects/myapp/' }
+    // Koto がこのプロジェクトのために作ったレジストリ（registryAdopted: false）で、ほかに使うプロジェクトは無い＝このプロジェクトだけのもの
+    saveCloudState(dir, { name: 'myapp', backend: 'apprun', resources: [bucketRef as any], meta: { registryName: 'myreg', registryAdopted: false } } as any)
+    // ほかのプロジェクトも同じ保存場所を使っている（3段構えで、バケットは残る）
+    h.bucketKeys = ['projects/myapp/data.json', 'projects/other/data.json']
 
-    const reply = await handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: false })
+    const reply = await handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: false, registryName: 'myreg' })
     expect(reply.keptBucketName).toBe('koto-data-x')
     expect(reply.keptRegistryName).toBe('myreg')
+    // 残した理由と、レジストリの由来・借り手も事実として返る（警告が「後で消す場合は」と言ってよいかを決める）
+    expect(reply).toMatchObject({ keptBucketsUsedByOthers: ['koto-data-x'], keptRegistryOrigin: 'owned', keptRegistryUsers: [] })
 
     // ダイアログを閉じていた（窓はここに居ない）。開き直して get する
     const res = (await getOps(dir)).last.result
@@ -387,7 +476,10 @@ describe('★★ 警告を見逃さない: 終わった結果の警告は、開�
     expect(res.warnings[0]).toContain('データの保存場所『koto-data-x』')
     expect(res.warnings[0]).toContain('コンテナレジストリ『myreg』')
     expect(res.warnings[0]).toContain('月額')
-    expect(res.extra).toMatchObject({ keptBucketName: 'koto-data-x', keptRegistryName: 'myreg' })
+    // このプロジェクトだけのレジストリには「後で消す場合は」と言う。ほかのプロジェクトも使う保存場所には、消すとそのアプリが止まると言う
+    expect(res.warnings[0]).toContain('コンテナレジストリを後で消す場合は')
+    expect(res.warnings[0]).toContain('データの保存場所『koto-data-x』は、ほかのプロジェクトも使っています。消すと、そのプロジェクトのデータも消えます。')
+    expect(res.extra).toMatchObject({ keptBucketName: 'koto-data-x', keptRegistryName: 'myreg', keptBucketsUsedByOthers: ['koto-data-x'], keptRegistryOrigin: 'owned', keptRegistryUsers: [] })
   })
 
   // ── 2026-09-30 検分の指摘6: その場の警告と、開き直した警告が食い違っていた ──────────────────────
@@ -397,11 +489,12 @@ describe('★★ 警告を見逃さない: 終わった結果の警告は、開�
   // いまは**返り値の事実から**、画面の破棄の結果も記録も同じ関数（teardownRemainingWarning）で警告を作る。
   it('★★★ 共用型の破棄が途中で失敗しても、「残す」と選んだレジストリの月額が続くことは、開き直した記録から消えない', async () => {
     const dir = newProject()
-    saveCloudState(dir, { name: 'myapp', backend: 'apprun', resources: [], meta: { registryName: 'myreg' } } as any)
+    saveCloudState(dir, { name: 'myapp', backend: 'apprun', resources: [], meta: { registryName: 'myreg', registryAdopted: false } } as any)
     h.applyOk = false
-    const reply = await handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: false })
+    const reply = await handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: false, registryName: 'myreg' })
     expect(reply.ok).toBe(false)
     expect(reply.keptRegistryName, '失敗した回に、残したレジストリの事実を返していない').toBe('myreg')
+    expect(reply, '失敗した回にも、由来と借り手を返す（警告の言い分けの材料）').toMatchObject({ keptRegistryOrigin: 'owned', keptRegistryUsers: [] })
 
     const res = (await getOps(dir)).last.result
     expect(res.ok).toBe(false)
@@ -414,11 +507,13 @@ describe('★★ 警告を見逃さない: 終わった結果の警告は、開�
 
   it('★★ 記録にレジストリ名が無いとき（v0.2.94 以前に公開した等）も、その場と記録の警告は同じ。残っていると断定せず、確認画面と同じ文で言う', async () => {
     const dir = newProject()
-    saveCloudState(dir, { name: 'myapp', backend: 'apprun', resources: [] } as any)   // meta.registryName が無い
     for (const ok of [true, false]) {
+      // meta.registryName が無い。公開した形跡（アプリの記録）はある＝レジストリが残っているかもしれない。
+      // 成功の回は記録を空にするので、回ごとに置き直す。
+      saveCloudState(dir, { name: 'myapp', backend: 'apprun', resources: [{ kind: 'apprun-app', key: 'apprun-app:myapp', id: 'app-1', stateful: false }] } as any)
       h.applyOk = ok
       // 画面は、記録に名前が無いレジストリは削除できないので「削除しない」（deleteRegistry:false）を渡す
-      const reply = await handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: false })
+      const reply = await handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: false, registryName: null })
       expect(reply.ok, String(ok)).toBe(ok)
       expect(reply.keptRegistryName, String(ok)).toBeUndefined()
       expect(reply.keptRegistryUnnamed, String(ok)).toBe(true)
@@ -434,7 +529,7 @@ describe('★★ 警告を見逃さない: 終わった結果の警告は、開�
     const dir = newProject()
     saveCloudState(dir, { name: 'myapp', backend: 'apprun', resources: [], meta: { registryName: 'myreg' } } as any)
     h.applyOk = false
-    const reply = await handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: true })
+    const reply = await handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'myreg' })
     expect(reply.ok).toBe(false)
     expect(reply.keptRegistryName).toBeUndefined()
     expect(reply.keptRegistryUnnamed).toBeUndefined()
@@ -450,7 +545,7 @@ describe('★★ 警告を見逃さない: 終わった結果の警告は、開�
       await record(`${init?.method ?? 'GET'} ${String(input)}`)
       return jsonRes(200, { CommonServiceItems: [] })
     }) as unknown as typeof fetch
-    const reply = await handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: true })
+    const reply = await handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'myreg' })
     expect(reply.ok).toBe(true)
     expect(reply.keptRegistryName).toBeUndefined()
     expect(reply.keptRegistryUnnamed).toBeUndefined()
@@ -462,7 +557,7 @@ describe('★★ 警告を見逃さない: 終わった結果の警告は、開�
     const dir = newProject()
     saveCloudState(dir, { name: 'myapp', backend: 'apprun', resources: [], meta: { registryName: 'myreg' } } as any)
     // 偽の client は全部 500 を返す＝レジストリの一覧が取れず、削除できたか確認できない
-    const reply = await handler('cloud:teardown')({}, dir, { confirmed: true, deleteRegistry: true })
+    const reply = await handler('cloud:teardown')({}, dir, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'myreg' })
     expect(reply.ok).toBe(true)
     const noteInReply = (reply.executed as string[]).find(l => l.startsWith('※'))
     expect(noteInReply, 'ハンドラがレジストリの確認失敗を言っていない').toContain('レジストリ『myreg』')

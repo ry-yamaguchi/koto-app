@@ -116,7 +116,7 @@ export function buildStartupScript(identity: KeyIdentity): string {
     '# Koto（さくらのVPS 公開機能）が生成した初期設定スクリプトです。',
     '# さくらのVPS コントロールパネルの「マイスクリプト」に登録し、',
     '# サーバ新規追加・OS再インストール時に選択してください（稼働中のサーバでは実行されません）。',
-    '# 秘密情報（パスワード等）は一切含まれません（公開鍵のみ）。何度実行しても安全です（冪等）。',
+    '# 秘密情報（パスワード等）は含まれません（公開鍵のみ）。何度実行しても安全です。',
     'set -eu',
     ...userSetupCommands(adminUser, publicKey, true),
     ...userSetupCommands(deployUser, publicKey, false, '/srv/app'),

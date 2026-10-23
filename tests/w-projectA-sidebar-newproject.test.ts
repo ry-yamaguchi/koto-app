@@ -12,7 +12,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 //  B. W-23: isMoveTargetPublished / moveConfirmBody（Sidebar.tsx）。public/ が無いプロジェクト
 //     直下のファイルは、isInPublishDir だけでは「公開されない側」に誤判定されていた
 //     （すでに「公開されるもの」に並んでいるのに「🌐 公開するものへ移動」が出ていた）。
-//  C. W-69: blocksProjectDeleteFor（Sidebar.tsx）。専有型（sakura-apprun-dedicated）の
+//  C. W-69: projectDeleteBlockOf(...) !== null（teardown/projectDeletePlan.ts。段階3A で Sidebar.tsx の「止めるかを返すだけの薄い関数」から移し、3A-5b でその関数を消した）。専有型（sakura-apprun-dedicated）の
 //     資源（公開記録・クラスタ／ASG／LB）が残っている間は、「公開も一緒に破棄する」の
 //     チェックの有無に関わらずプロジェクト削除そのものを止める（先に専有型タブの⑥で片づけさせる）。
 //     2026-09-27 の再検分で、公開記録（publish.targets）だけでは (a)📡一覧でアプリだけ
@@ -23,11 +23,13 @@ import { describe, it, expect, afterEach } from 'vitest'
 //     英語の頭「Error invoking remote method '…': Error: 」を取り除く。
 //  E（2026-09-27 再検分）. isMoveTargetPublished の直し漏れ: public/ が無いプロジェクトの
 //     入れ子ファイル（例: css/style.css）も、先頭の段（トップのフォルダ名）で判定する。
-//  F（2026-09-27 再検分）. remainingPlacementsNote（Sidebar.tsx）: プロジェクト削除で保存場所が
+//  F（2026-09-27 再検分）. remainingPlacementsNote（teardown/projectDeletePlan.ts。段階3A で Sidebar.tsx から移した）: プロジェクト削除で保存場所が
 //     残ることを伝える文。同じ保存場所がプレフィックス違いで2件あっても名前は重複させない。
 
 import { getWorkspaceDir, WORKSPACE_KEY, LEGACY_WORKSPACE_DIRNAME, WORKSPACE_DIRNAME } from '../src/renderer/workspace'
-import { isMoveTargetPublished, moveConfirmBody, blocksProjectDeleteFor, remainingPlacementsNote } from '../src/renderer/components/Sidebar'
+import { isMoveTargetPublished, moveConfirmBody } from '../src/renderer/components/Sidebar'
+import { projectDeleteBlockOf, remainingPlacementsNote, type DedicatedResourceIds } from '../src/renderer/teardown/projectDeletePlan'
+import type { PublishTargetKind } from '../src/renderer/publishStatus'
 import { cleanRemoteError } from '../src/renderer/remoteError'
 import { newProjectHeaderNote, newProjectSubmitLabel } from '../src/renderer/components/NewProjectModal'
 import { MATERIALS_DIR } from '../src/shared/publishExclude'
@@ -269,23 +271,26 @@ describe('moveConfirmBody（W-23）: public/ を初めて作るときだけ、�
 })
 
 // ─────────────────────────────────────────────────────────────────
-// C. blocksProjectDeleteFor（W-69・2026-09-27・作者決定）
+// C. 止めるか＝projectDeleteBlockOf(...) !== null（W-69・2026-09-27・作者決定。止めるかを返すだけの薄い関数は 3A-5b で消えた）
 // ─────────────────────────────────────────────────────────────────
 
-describe('blocksProjectDeleteFor（W-69）: 専有型が残っている間はプロジェクト削除を止める', () => {
+// 旧い薄い包みと同じ形で呼ぶ小さな関数（ケースは1件も減らさない）。第2引数を省略する呼び方（undefined）も、そのまま通す。
+const blocksDelete = (targets: readonly PublishTargetKind[], dedicated?: DedicatedResourceIds): boolean => projectDeleteBlockOf(targets, dedicated) !== null
+
+describe('止めるか（W-69）: 専有型が残っている間はプロジェクト削除を止める', () => {
   it('専有型（sakura-apprun-dedicated）を含むときは true（チェックの有無は見ない＝引数に無い）', () => {
-    expect(blocksProjectDeleteFor(['sakura-apprun-dedicated'])).toBe(true)
-    expect(blocksProjectDeleteFor(['hanamii', 'sakura-apprun-dedicated'])).toBe(true)
+    expect(blocksDelete(['sakura-apprun-dedicated'])).toBe(true)
+    expect(blocksDelete(['hanamii', 'sakura-apprun-dedicated'])).toBe(true)
   })
 
   it('専有型を含まず、専有型の資源IDも無ければ false（共用型・HANAMII だけなら止めない）', () => {
-    expect(blocksProjectDeleteFor([])).toBe(false)
-    expect(blocksProjectDeleteFor(['sakura-apprun'])).toBe(false)
-    expect(blocksProjectDeleteFor(['hanamii', 'vercel', 'sakura-rental'])).toBe(false)
-    expect(blocksProjectDeleteFor([], null)).toBe(false)
-    expect(blocksProjectDeleteFor([], undefined)).toBe(false)
-    expect(blocksProjectDeleteFor([], {})).toBe(false)
-    expect(blocksProjectDeleteFor([], { clusterID: null, asgID: null, loadBalancerID: null })).toBe(false)
+    expect(blocksDelete([])).toBe(false)
+    expect(blocksDelete(['sakura-apprun'])).toBe(false)
+    expect(blocksDelete(['hanamii', 'vercel', 'sakura-rental'])).toBe(false)
+    expect(blocksDelete([], null)).toBe(false)
+    expect(blocksDelete([], undefined)).toBe(false)
+    expect(blocksDelete([], {})).toBe(false)
+    expect(blocksDelete([], { clusterID: null, asgID: null, loadBalancerID: null })).toBe(false)
   })
 
   // ── 2026-09-27 再検分の指摘3: publish.targets だけでは足りない2つの穴 ──────────────
@@ -293,59 +298,89 @@ describe('blocksProjectDeleteFor（W-69）: 専有型が残っている間はプ
   it('(a) 公開記録（publish.targets）は外れたが、クラスタの記録が残っている（pendingPublish は空）ときも true', () => {
     // 以前は 📡 一覧のアプリだけを消す口（廃止）がこの状態を作った。いまは、削除が途中で止まったあとに公開記録だけが外れた場合の保険。
     // 記録が残っているものを置き去りにしてフォルダを消せば、月額を Koto から止められなくなる。この状態を偽のAPI応答（state()の戻り値）で再現する。
-    expect(blocksProjectDeleteFor([], { clusterID: 'cluster-1', asgID: 'asg-1', loadBalancerID: 'lb-1' })).toBe(true)
+    expect(blocksDelete([], { clusterID: 'cluster-1', asgID: 'asg-1', loadBalancerID: 'lb-1' })).toBe(true)
   })
 
   it('(b) ⑤でクラスタを作ったが、⑧でまだアプリを公開していない（pendingPublish は空）ときも true', () => {
     // publish.targets['sakura-apprun-dedicated'] はアプリを公開して初めて書かれる（D-3）。
     // クラスタだけ作った段階では pendingPublish には何も入らない。
-    expect(blocksProjectDeleteFor([], { clusterID: 'cluster-2', asgID: null, loadBalancerID: null })).toBe(true)
+    expect(blocksDelete([], { clusterID: 'cluster-2', asgID: null, loadBalancerID: null })).toBe(true)
   })
 
   it('クラスタ・ASG・LB のどれか1つでも残っていれば true（3つとも消えて初めて false）', () => {
-    expect(blocksProjectDeleteFor([], { clusterID: null, asgID: 'asg-only', loadBalancerID: null })).toBe(true)
-    expect(blocksProjectDeleteFor([], { clusterID: null, asgID: null, loadBalancerID: 'lb-only' })).toBe(true)
+    expect(blocksDelete([], { clusterID: null, asgID: 'asg-only', loadBalancerID: null })).toBe(true)
+    expect(blocksDelete([], { clusterID: null, asgID: null, loadBalancerID: 'lb-only' })).toBe(true)
   })
 })
 
+
 // ─────────────────────────────────────────────────────────────────
-// C-2. Sidebar.tsx の配線: deleteProject の先頭ガード・削除ボタンの disabled/title が、
-//      blocksProjectDeleteFor(pendingPublish, pendingDedicated) を実際に呼んでいること
+// C-2. ProjectDeleteDialog.tsx の配線（段階3A・3A-5a で Sidebar.tsx から移し、3A-5b で押す口を pressProjectDelete に替えた）:
+//      押したときの先頭ガード・削除ボタンの disabled・赤い箱が、止める判断（plan.block＝planProjectDeleteTeardown → projectDeleteBlockOf）を実際に見ていること
 //      （2026-09-27 再検分の指摘: 判定だけ直しても、呼び出し側に配線されていなければ効かない）。
+//      Sidebar は、もう止める判断を持たない。振る舞い（押すと何が起きるか）は tests/projectDeleteDialog*.test.ts が動かして固定する。
 // ─────────────────────────────────────────────────────────────────
 
-describe('Sidebar.tsx の配線（W-69・2026-09-27再検分）: pendingDedicated を実際に読み、渡している', () => {
-  const sidebarSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'components', 'Sidebar.tsx'), 'utf-8')
+describe('ProjectDeleteDialog.tsx の配線（W-69・2026-09-27再検分）: 専有型の資源の記録を実際に読み、止める判断に渡している', () => {
+  const stripComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, '')).replace(/(^|\s)\/\/[^\n]*/g, (_m, lead: string) => lead)
+  const src = (rel: string) => stripComments(fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8'))
+  const dialogSrc = src('src/renderer/components/ProjectDeleteDialog.tsx')
+  const sidebarSrc = src('src/renderer/components/Sidebar.tsx')
+  const factsSrc = src('src/renderer/teardown/projectDeleteFacts.ts')
+  const planSrc = src('src/renderer/teardown/projectDeletePlan.ts')
 
-  it('削除確認を開くたびに window.electronAPI.apprunDedicated.state(confirmProjDelete) を読み、pendingDedicated へ入れている', () => {
-    expect(sidebarSrc).toContain('window.electronAPI.apprunDedicated.state(confirmProjDelete)')
-    expect(sidebarSrc).toContain('setPendingDedicated(r ?? null)')
+  it('専有型の記録は、開いたときに材料を読む関数（projectDeleteFacts.ts）が apprunDedicated.state を読んで facts.dedicated に入れ、ダイアログはその材料を 1 回だけ読む', () => {
+    expect(factsSrc).toContain('window.electronAPI.apprunDedicated.state(dir)')
+    expect(factsSrc).toMatch(/return \{ targets, unreadable, dedicated, placements, running, sharedLeftover, sharedRegistry \}/)
+    expect(dialogSrc).toContain('readProjectDeleteFacts(projectDir)')
+    expect(dialogSrc.match(/readProjectDeleteFacts\(projectDir\)/g)).toHaveLength(1)
+    expect(dialogSrc).toContain('.then(f => { if (!cancelled) setFacts(f) })')
+    // ダイアログは専有型の記録を自分では読まない
+    expect(dialogSrc).not.toContain('apprunDedicated')
   })
 
-  it('deleteProject の先頭ガードが blocksProjectDeleteFor(pendingPublish, pendingDedicated) を呼ぶ（多層防御の最後の砦）', () => {
-    expect(sidebarSrc).toContain('if (blocksProjectDeleteFor(pendingPublish, pendingDedicated)) {')
+  it('止める判断は plan.block の 1 つ。facts（公開先・専有型の記録・走っている操作）から planProjectDeleteTeardown で作る。読み込みの前は plan が null', () => {
+    expect(dialogSrc).toContain('const plan = facts ? planProjectDeleteTeardown(facts) : null')
+    expect(dialogSrc).not.toContain('projectDeleteBlockOf')
+    expect(sidebarSrc).not.toContain('projectDeleteBlockOf')
+    expect(sidebarSrc).not.toContain('planProjectDeleteTeardown')
   })
 
-  it('削除ボタンの disabled・title も blocksProjectDeleteFor(pendingPublish, pendingDedicated) を見る', () => {
-    expect(sidebarSrc).toContain('disabled={deletingBusy || blocksProjectDeleteFor(pendingPublish, pendingDedicated)}')
-    expect(sidebarSrc).toContain("title={blocksProjectDeleteFor(pendingPublish, pendingDedicated) ? ")
+  it('押したときの先頭ガードが、読み込みの前（plan が null）と plan.block を見る（多層防御の最後の砦）', () => {
+    expect(dialogSrc).toContain('if (busy || facts === null || plan === null || plan.block !== null) return')
   })
 
-  it('確認ダイアログの赤字ブロックは、pendingPublish が空でも blocksProjectDeleteFor が true なら出る（(b)のケースで見せる文が無いままにしない）', () => {
-    // 2026-10-08 検分: 公開の記録を読めなかったときの注意（publishUnreadable）も、同じ箱の中に単独で出る
-    expect(sidebarSrc).toContain("{(pendingPublish.length > 0 || publishUnreadable || blocksProjectDeleteFor(pendingPublish, pendingDedicated)) && (")
+  it('削除ボタンの disabled も、読み込みの前と plan.block を見る。T121: マウスを乗せたヒント（title）は無い', () => {
+    expect(dialogSrc).toContain('disabled={busy || plan === null || plan.block !== null}')
+    const button = dialogSrc.slice(dialogSrc.lastIndexOf('<button', dialogSrc.indexOf("'🗑 ゴミ箱に移動'")), dialogSrc.indexOf("'🗑 ゴミ箱に移動'"))
+    expect(button).toContain('onClick={press}')
+    expect(button).not.toContain('title=')
+    expect(dialogSrc).not.toContain('専有型を先に専有型タブの手順6で削除してください')
+  })
+
+  it('確認ダイアログの赤字ブロックは、公開先が空でも plan.block があれば出る（(b)のケースで見せる文が無いままにしない）', () => {
+    // 2026-10-08 検分: 公開の記録を読めなかったときの注意（facts.unreadable）も、同じ箱の中に単独で出る。共用型の記録だけが残る回（leftoverNote）も。
+    expect(dialogSrc).toContain("(shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '') && (")
   })
 
   // 2026-10-08 検分: 資源の記録が空で公開記録だけが残っている行（幽霊の行）では、案内先の手順6の削除ボタンが出ない。
-  // 行き止まりにしないよう、出口（📡 の「一覧から削除」）も、止める文（確認のダイアログと、削除を押したときの警告）の両方に添える。
-  it('止める文（赤字と警告ダイアログ）は、手順6のボタンが出ないとき（公開の記録だけ残っている）の出口として「一覧から削除」を案内する', () => {
-    const hint = '専有型タブに手順6の削除ボタンが出ていないとき（削除するものの記録が無く、公開の記録だけが残っているとき）は、📡 公開したもの一覧の「一覧から削除」で、その行を消してください。'
-    expect(sidebarSrc.split(hint).length - 1, '赤字と警告ダイアログの2か所').toBe(2)
+  // 行き止まりにしないよう、出口（📡 の「一覧から削除」）も、止める文に添える。T094（3A-5b）: その文は 1 か所（projectDeletePlan.ts の projectDeleteBlockNote）にまとまり、
+  // alert の写しは無くなった（赤字と警告ダイアログの 2 か所に同じ長文を書いていた）。
+  it('★★ T094: 止める文は projectDeleteBlockNote の 1 か所。旧い長い文（括弧の状況説明・「専有型（さくらのAppRun 専有型）」）はどこにも無い', () => {
+    const hint = '手順6の削除ボタンが出ていないときは、📡 公開したもの一覧の「一覧から削除」でその行を消してください。'
+    expect(planSrc.split(hint).length - 1, '新しい文は projectDeletePlan.ts に 1 か所').toBe(1)
+    expect(dialogSrc, 'ダイアログは文を自分では書かない').not.toContain('一覧から削除')
+    expect(sidebarSrc).not.toContain('一覧から削除')
+    for (const old of ['専有型タブに手順6の削除ボタンが出ていないとき（削除するものの記録が無く、公開の記録だけが残っているとき）', '専有型（さくらのAppRun 専有型）のリソースが残っているため']) {
+      expect(planSrc, old).not.toContain(old)
+      expect(dialogSrc, old).not.toContain(old)
+    }
+    expect(dialogSrc.match(/projectDeleteBlockNote\(/g), '赤い箱の 1 か所（結果の欄は ProjectDeleteResults が描く）').toHaveLength(1)
   })
 
-  it('専有型の行には、もう teardownScopeNote（「…削除します」）を出さない（W-69再検分の指摘2: 同じ枠で「削除できません」と矛盾していた）', () => {
+  it('専有型の行には、「…削除します」と言う旧い案内の行を出さない（W-69再検分の指摘2: 同じ枠で「削除できません」と矛盾していた）', () => {
+    expect(dialogSrc).not.toContain("{t === 'sakura-apprun-dedicated' && (")
     expect(sidebarSrc).not.toContain("{t === 'sakura-apprun-dedicated' && (")
-    expect(sidebarSrc).not.toContain('<span className="text-ink-muted"><br />{teardownScopeNote(t)}</span>')
   })
 })
 
@@ -396,8 +431,9 @@ describe('cleanRemoteError（W-59・初回案内の接続テストが通る形�
 
 describe('newProjectHeaderNote / newProjectSubmitLabel（W-70・2026-09-27）: まっさらは AI に頼まない', () => {
   it('まっさらは、キーの有無に関わらず「空で始めます」', () => {
-    expect(newProjectHeaderNote('blank', true)).toBe('空で始めます。あとからチャットで頼めます')
-    expect(newProjectHeaderNote('blank', false)).toBe('空で始めます。あとからチャットで頼めます')
+    // 2026-10-09 画面の文を短くする（T125）: 「あとからチャットで頼めます」は、下の説明（「あとからAIチャットで…頼んでください」）と重なるので外した。
+    expect(newProjectHeaderNote('blank', true)).toBe('空で始めます')
+    expect(newProjectHeaderNote('blank', false)).toBe('空で始めます')
   })
 
   it('まっさら以外は、これまでどおりキーの有無で分かれる', () => {

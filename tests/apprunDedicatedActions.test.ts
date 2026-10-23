@@ -1,17 +1,37 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runCreate, runTeardown, runPublishApp, shouldShowCreateResult, shouldShowTeardownResult, shouldShowPublishSection } from '../src/renderer/apprunDedicatedActions'
+import { runCreate, runPublishApp, shouldShowCreateResult, shouldShowTeardownResult, shouldShowPublishSection } from '../src/renderer/apprunDedicatedActions'
 import { panelBusy, panelBusyReason } from '../src/renderer/apprunDedicatedActions'
-import { teardownConfirmMessage } from '../src/renderer/apprunDedicatedActions'
+import { buildTeardownConfirmBody } from '../src/renderer/teardown/confirm'
 import { shouldShowTeardownButton, storageLeftoverNote } from '../src/renderer/apprunDedicatedActions'
-import { teardownDataNote, teardownDataNoteForAll } from '../src/shared/teardownSupport'
+import { teardownDataNote, teardownDataNoteForAll, dedicatedStorageLeftoverNames } from '../src/shared/teardownSupport'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 // apprunDedicatedActions.test.ts — AppRunDedicatedPanel.tsx の「確認→IPC」を、React/DOM から
 // 切り離して振る舞いで固定する（2026-09-10 レビューの修理・J・tests/rollbackSwitch.test.ts と同型）。
-// confirm・create/teardown を注入で受け取るので jsdom は要らない。「confirm が false（キャンセル）を
-// 返したとき、create/teardown が一度も呼ばれないこと」を偽の関数の呼び出し回数で確かめる
+// confirm・create を注入で受け取るので jsdom は要らない。「confirm が false（キャンセル）を
+// 返したとき、create が一度も呼ばれないこと」を偽の関数の呼び出し回数で確かめる
 // （文字列一致ではない・掟10）。
+//
+// 0.6.22 段階3B-7: 破棄（手順6・📡 の 🗑）の「確認 → IPC」（runTeardown）と、確認の本文を作る teardownConfirmMessage は、
+// 3つの公開先で共通の流れ・文（teardown/flow.ts・teardown/confirm.ts）の1つになった。ここにあった runTeardown の5件は、
+// tests/teardownFlowCommon.test.ts の A に1対1で移っている（下の表）。確認の本文の試験は、同じ期待のまま buildTeardownConfirmBody に向け直した。
+//
+//   runTeardown の試験（消した）                                    → 共通の流れの試験（tests/teardownFlowCommon.test.ts）
+//   1 confirm が false → teardown 0回・{cancelled:true}・begin/end 0回  → A-1（確認 no。invoke 0回・begin 0回・loadAuth 0回）と A-3（答えが true 以外 8通り）
+//   2 confirm が true → { confirmed: true } で1回だけ・結果を返す      → A-2（invoke が { confirmed: true } 付きで1回・beginActivity 1回・end 1回）
+//   3 confirm に req.confirmMessage がそのまま渡る                    → 「確認に出した文は buildTeardownConfirm の出力そのもの。確認は1回だけ」
+//   4 begin → teardown → end の順                                     → A-8（材料 → 確認 → 活動レジストリに載せる → onStart → キー → IPC → 外す）
+//   5 teardown が reject しても end は1回                            → A-5（IPC が例外 → 投げ直す・end は1回）と A-5b（キーの読み込みが例外でも end は1回）
+
+// 専有型の確認の本文（手順6・📡 の 🗑 の確認で同じ）。専有型の言葉（verb 削除・課金は止まると言う・元に戻せませんは常に言う）で共通の本文作りを呼ぶ。
+const confirmBody = (o: {
+  targets: string[]
+  placements: Array<{ bucket: string; prefix?: string; shared?: boolean } | null | undefined> | null | undefined
+  dataNote: string
+  otherTargets?: string[]
+  waitNote?: string
+}): string => buildTeardownConfirmBody({ verb: '削除', claimsComputeBillingStops: true, irreversibleNote: 'always', ...o })
 
 // K（2026-09-10 レビューの修理・バッチ3）: 「実行中」レジストリ（activity.ts の beginActivity と
 // 同じ形）への伝達。偽の begin/end で「create/teardown の前に begin が1回、後に end が1回
@@ -94,69 +114,6 @@ describe('runCreate: confirm を通らなければ create は一切呼ばれな�
       { confirmMessage: 'x', spec: {} },
       { confirm: () => true, create, activity },
     )).rejects.toThrow('作成失敗')
-    expect(begin).toHaveBeenCalledTimes(1)
-    expect(end).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('runTeardown: confirm を通らなければ teardown は一切呼ばれない', () => {
-  it('confirm が false を返すと teardown は呼ばれず、{cancelled:true} を返す', async () => {
-    const teardown = vi.fn()
-    const { activity, begin, end } = fakeActivity()
-    const outcome = await runTeardown(
-      { confirmMessage: '次を削除します。よろしいですか？' },
-      { confirm: () => false, teardown, activity },
-    )
-    expect(teardown).not.toHaveBeenCalled()
-    expect(outcome).toEqual({ cancelled: true })
-    expect(begin).not.toHaveBeenCalled()
-    expect(end).not.toHaveBeenCalled()
-  })
-
-  it('confirm が true を返すと teardown を { confirmed: true } で1回だけ呼ぶ', async () => {
-    const teardown = vi.fn().mockResolvedValue({ ok: true, executed: ['クラスタ『c1』を削除しました'], message: 'ok', remaining: {} })
-    const { activity } = fakeActivity()
-    const outcome = await runTeardown(
-      { confirmMessage: '次を削除します。よろしいですか？' },
-      { confirm: () => true, teardown, activity },
-    )
-    expect(teardown).toHaveBeenCalledTimes(1)
-    expect(teardown).toHaveBeenCalledWith({ confirmed: true })
-    expect(outcome).toEqual({
-      cancelled: false,
-      result: { ok: true, executed: ['クラスタ『c1』を削除しました'], message: 'ok', remaining: {} },
-    })
-  })
-
-  it('confirm には req.confirmMessage がそのまま渡る', async () => {
-    const confirm = vi.fn().mockReturnValue(false)
-    const { activity } = fakeActivity()
-    await runTeardown({ confirmMessage: '確認文言Y' }, { confirm, teardown: vi.fn(), activity })
-    expect(confirm).toHaveBeenCalledWith('確認文言Y')
-  })
-
-  it('confirm=true のとき、teardown の前に begin が1回、後に end が1回呼ばれる', async () => {
-    const calls: string[] = []
-    const teardown = vi.fn(async () => { calls.push('teardown'); return { ok: true, executed: [], message: 'ok', remaining: {} } })
-    const end = vi.fn(() => { calls.push('end') })
-    const begin = vi.fn(() => { calls.push('begin'); return end })
-    const outcome = await runTeardown(
-      { confirmMessage: 'x' },
-      { confirm: () => true, teardown, activity: { begin } },
-    )
-    expect(begin).toHaveBeenCalledTimes(1)
-    expect(end).toHaveBeenCalledTimes(1)
-    expect(calls).toEqual(['begin', 'teardown', 'end'])
-    expect(outcome.cancelled).toBe(false)
-  })
-
-  it('teardown が失敗（reject）しても end は必ず1回呼ばれる', async () => {
-    const teardown = vi.fn().mockRejectedValue(new Error('破棄失敗'))
-    const { activity, begin, end } = fakeActivity()
-    await expect(runTeardown(
-      { confirmMessage: 'x' },
-      { confirm: () => true, teardown, activity },
-    )).rejects.toThrow('破棄失敗')
     expect(begin).toHaveBeenCalledTimes(1)
     expect(end).toHaveBeenCalledTimes(1)
   })
@@ -361,6 +318,8 @@ function codeOnlyPanel(src: string): string {
 
 describe('画面の配線: 手順5・6・7・8 の操作はすべて panelBusy で止まる', () => {
   const panel = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf8'))
+  // 0.6.22 段階3B-6a: 手順6のボタンと流れの入口は節（DedicatedTeardownSection.tsx）にある。パネルは panelBusy の答えを `locked` として渡す。
+  const section = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/components/DedicatedTeardownSection.tsx'), 'utf8'))
   const BUSY = 'panelBusy({ creating, tearingDown, publishing, lbRefreshing })'
 
   it('★ 手順8の公開ボタンが、破棄の最中でも無効になる（今回の穴そのもの）', () => {
@@ -370,8 +329,11 @@ describe('画面の配線: 手順5・6・7・8 の操作はすべて panelBusy �
   })
 
   it('★ 手順6の破棄ボタンが、公開の最中でも無効になる（逆向き）', () => {
-    expect(panel).toContain(`disabled={${BUSY}}`)
+    // パネルが panelBusy の答えを `locked` で渡し、節のボタンが `disabled={locked}` で受ける（どちらかが欠けると、公開の最中に押せてしまう）
+    expect(panel).toContain(`locked={${BUSY}}`)
+    expect(section).toContain('disabled={locked}')
     expect(panel).not.toContain('disabled={tearingDown}')
+    expect(section).not.toContain('disabled={tearingDown}')
   })
 
   it('★ 手順5の作成ボタン・IP の取り直しも同じ判定を通る', () => {
@@ -387,7 +349,8 @@ describe('画面の配線: 手順5・6・7・8 の操作はすべて panelBusy �
 
   it('★ ボタンを無効にするだけでなく、実行の入口（早期 return）も同じ判定を通る', () => {
     expect(panel).toContain(`if (hasErrors || ${BUSY}) return`)
-    expect(panel).toContain(`if (${BUSY}) return`)
+    // 手順6: 流れの入口（節のフック）が、渡された `locked`（＝上の panelBusy の答え）を見て早期 return する
+    expect(section).toContain('if (startedRef.current || panelRef.current.locked) return')
     expect(panel).toContain(`if (publishErrors.length > 0 || ${BUSY} || !appStatus) return`)
   })
 
@@ -409,7 +372,7 @@ describe('手順6の確認ダイアログ: 保存場所を名指しする（案2
   // W-14（2026-09-27 決定）: 「（中のデータも消えます）」は保存場所そのものが丸ごと消えると
   // 読めてしまうため「にある、このプロジェクトのデータ」に直した（wording-review.md W-14 の注意）。
   it('★★ 保存場所があるとき、一覧に名前が入り「このプロジェクトのデータ」と言う', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: TARGETS,
       placements: [PLACEMENT],
       dataNote: teardownDataNote(PLACEMENT),
@@ -423,7 +386,7 @@ describe('手順6の確認ダイアログ: 保存場所を名指しする（案2
   })
 
   it('★★ ほかのプロジェクトも使っている保存場所のことを伝える（何が残るかの約束）', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: TARGETS,
       placements: [PLACEMENT],
       dataNote: teardownDataNote(PLACEMENT),
@@ -434,7 +397,7 @@ describe('手順6の確認ダイアログ: 保存場所を名指しする（案2
   })
 
   it('★★ 保存場所が無いときは、一覧にも本文にも保存場所が出ない', () => {
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [], dataNote: '' })
+    const msg = confirmBody({ targets: TARGETS, placements: [], dataNote: '' })
     expect(msg).not.toContain('保存場所')
     expect(msg).not.toContain('データも消えます')
     for (const t of TARGETS) expect(msg).toContain(t)
@@ -445,7 +408,7 @@ describe('手順6の確認ダイアログ: 保存場所を名指しする（案2
   // 部分一致は語尾の「の課金は止まります」だけを見る）。
   it('★ 「消さない限り課金が続きます」ではなく、止まる側の説明にする', () => {
     for (const placement of [PLACEMENT, null]) {
-      const msg = teardownConfirmMessage({ targets: TARGETS, placements: placement ? [placement] : [], dataNote: teardownDataNote(placement) })
+      const msg = confirmBody({ targets: TARGETS, placements: placement ? [placement] : [], dataNote: teardownDataNote(placement) })
       expect(msg).not.toContain('消さない限り課金が続きます')
       expect(msg).toContain('の課金は止まります')
       expect(msg).toContain('この操作は元に戻せません')
@@ -453,7 +416,7 @@ describe('手順6の確認ダイアログ: 保存場所を名指しする（案2
   })
 
   it('画面には素のテキストとして出る（Markdown 記法を使わない・v0.2.98 の教訓）', () => {
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [PLACEMENT], dataNote: teardownDataNote(PLACEMENT) })
+    const msg = confirmBody({ targets: TARGETS, placements: [PLACEMENT], dataNote: teardownDataNote(PLACEMENT) })
     expect(msg).not.toMatch(/\*\*|__|`/)
   })
 })
@@ -469,10 +432,10 @@ describe('手順6の確認ダイアログ: 保存場所が2件あるとき、両
   const TARGETS = ['クラスタ『cluster-x』']
   const A = { bucket: 'koto-data-a', prefix: 'projects/myapp/', shared: true }
   const B = { bucket: 'koto-data-b', prefix: 'projects/myapp/', shared: true }
-  const noteAll = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'full', placements: [A, B] })
+  const noteAll = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', placements: [A, B] })
 
   it('★★ 削除するものの一覧に『A』と『B』が両方入る（先頭1件で終わらない）', () => {
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
+    const msg = confirmBody({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
     const first = msg.split('\n\n')[0]
     expect(first, '『A』が一覧に無い').toContain('『koto-data-a』')
     expect(first, '『B』が一覧に無い＝名指ししないまま消す').toContain('『koto-data-b』')
@@ -481,13 +444,13 @@ describe('手順6の確認ダイアログ: 保存場所が2件あるとき、両
   })
 
   it('★★ 「ほか1件」のように省かない（省いた名前は、利用者にとって存在しないのと同じ）', () => {
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
+    const msg = confirmBody({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
     expect(msg).not.toMatch(/ほか\s*\d+\s*件/)
     expect(msg).not.toContain('…')
   })
 
   it('★★ 💾 の行（何が残るかの約束）も全件の名前を出す', () => {
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
+    const msg = confirmBody({ targets: TARGETS, placements: [A, B], dataNote: noteAll })
     const dataLine = msg.split('\n\n').find(x => x.startsWith('💾 '))
     expect(dataLine, '💾 の行が無い').toBeTruthy()
     expect(dataLine!).toContain('『koto-data-a』')
@@ -495,18 +458,19 @@ describe('手順6の確認ダイアログ: 保存場所が2件あるとき、両
   })
 
   it('★★ ほかの公開先の巻き添えも、2件のときは「これらの保存場所」と言う', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: TARGETS, placements: [A, B], dataNote: noteAll, otherTargets: ['HANAMII'],
     })
-    expect(msg).toContain('これらの保存場所は HANAMII でも使っています。')
-    expect(msg).toContain('アプリ自体は消えません')
+    // T161（作者の決定・0.6.22 段階3B-3）: 公開先の名前を2回並べず「そちらで」にまとめた。部分一致は「でも使っているため」と「データも消えます」に分けて見る
+    expect(msg).toContain('これらの保存場所は HANAMII でも使っているため、')
+    expect(msg).toContain('そちらで公開中のアプリのデータも消えます（アプリ自体は消えません）。')
   })
 
   // W-14（2026-09-27 決定）でこの全文の固定文言を組み立て式に直したため、期待値も新しい文面に更新
   // （テストの狙い＝1件と2件で組み立てが同じであることは変えていない）。
   it('★★ 1件のときの文面は、直したあとの形で固定する（文言を二重管理しない）', () => {
-    const noteOne = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', scope: 'full', placements: [A] })
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [A], dataNote: noteOne })
+    const noteOne = teardownDataNoteForAll({ target: 'sakura-apprun-dedicated', placements: [A] })
+    const msg = confirmBody({ targets: TARGETS, placements: [A], dataNote: noteOne })
     expect(msg).toBe(
       '次を削除します: クラスタ『cluster-x』・保存場所『koto-data-a』にある、このプロジェクトのデータ'
       + '\n\n💾 ' + noteOne
@@ -514,15 +478,16 @@ describe('手順6の確認ダイアログ: 保存場所が2件あるとき、両
       + '\n\nこの操作は元に戻せません。削除すると、クラスタの課金は止まります。保存場所は、ほかに使っているプロジェクトが無いときだけ止まります。よろしいですか？',
     )
     // 1件のときは「この保存場所」（従来どおり）
-    const withOther = teardownConfirmMessage({
+    const withOther = confirmBody({
       targets: TARGETS, placements: [A], dataNote: noteOne, otherTargets: ['HANAMII'],
     })
-    expect(withOther).toContain('この保存場所は HANAMII でも使っています。')
+    expect(withOther).toContain('この保存場所は HANAMII でも使っているため、')
+    expect(withOther).toContain('そちらで公開中のアプリのデータも消えます')
     expect(withOther).not.toContain('これらの保存場所')
   })
 
   it('★ 名前の無いもの（bucket が空）は数えない（空の『』を出さない）', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: TARGETS, placements: [{ bucket: '' }, null, undefined, A], dataNote: teardownDataNote(A),
     })
     expect(msg).not.toContain('『』')
@@ -531,7 +496,7 @@ describe('手順6の確認ダイアログ: 保存場所が2件あるとき、両
 
   it('★ 1件も無ければ、保存場所の話は一切出ない（消えるものが無い）', () => {
     for (const placements of [[], null, undefined, [{ bucket: '' }]]) {
-      const msg = teardownConfirmMessage({ targets: TARGETS, placements, dataNote: noteAll, otherTargets: ['HANAMII'] })
+      const msg = confirmBody({ targets: TARGETS, placements, dataNote: noteAll, otherTargets: ['HANAMII'] })
       expect(msg).not.toContain('保存場所')
       expect(msg).not.toContain('HANAMII')
       expect(msg).not.toContain('💾')
@@ -539,46 +504,71 @@ describe('手順6の確認ダイアログ: 保存場所が2件あるとき、両
   })
 })
 
-describe('手順6の確認ダイアログ: 画面は文を組み立てず、共有の1つの関数（buildDedicatedTeardownConfirm）を通す', () => {
+describe('専有型の確認ダイアログ: 画面は文を組み立てず、共通の1つの関数（buildTeardownConfirm → buildTeardownConfirmBody）を通す', () => {
   const panel = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf8'))
-  const flow = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/dedicatedTeardownFlow.ts'), 'utf8'))
-
-  it('★ 確認の文を作るのは dedicatedTeardownFlow.ts の1か所。teardownConfirmMessage に placements（全件）と teardownDataNoteForAll を渡す', () => {
-    // 2026-09-24 検分の指摘7: 「保存場所まで片づけるか」の判断は shared の純関数に置く。専有型の削除は
-    // 2026-10-08 から、手順6も 📡 の 🗑 も scope:'full'（保存場所まで片づける）。
-    // 2026-09-25 検分の指摘15: 保存場所は**全件**片づけるので、確認の本文も全件（placements）。
-    // **呼び出しの形ごと**見る（'placements,' だけを探すと、ほかの行にも当たって素通りする）。
-    expect(flow).toContain(`const body = teardownConfirmMessage({
-    targets: dedicatedTeardownTargets(facts.record),
-    placements: facts.placements,
-    dataNote: teardownDataNoteForAll({ target: DEDICATED, scope: 'full', placements: facts.placements }),
-    otherTargets: facts.otherTargets,
-    waitNote: lbWaitNote(facts.record, facts.lbEstimateLine) ?? undefined,
-  })`)
-    // 先頭1件だけを渡す形へ戻っていないこと（この行が戻ると『B』が名指しされないまま消える）
-    expect(flow).not.toContain("teardownDataNoteFor({ target")
-    expect(flow).not.toContain('placements[0]')
-    // 2026-09-24 検分の指摘2: 巻き添えになる公開先の名前は、公開記録を読むだけで足りる（材料の読み方も共有）。
-    // 2026-10-08 検分 A: 読めなかったら**投げる**版（空に倒す readPublishTargets に戻すと、「ほかの公開先の記録を読めなかった」注意が本物の口では立たない）。
-    expect(flow).toContain("otherTargets: async dir => (await readPublishTargetsOrThrow(dir)).filter(t => t !== DEDICATED).map(t => PUBLISH_TARGET_LABEL[t]),")
-    expect(flow).not.toContain('(await readPublishTargets(dir))')
-    expect(flow).not.toContain("import { readPublishTargets } from './publishRecord'")
-    // 画面（パネル）には確認の文を組み立てる処理が無い（組み立て直すと、📡 と食い違う）。
-    expect(panel).not.toContain('teardownConfirmMessage(')
-    expect(panel).not.toContain('teardownDataNoteForAll(')
-    expect(panel).not.toContain('readPublishTargets(')
-    expect(panel).toContain('runDedicatedTeardown(projectDir, electronTeardownDeps(projectDir, {')
-    // 直す前の文面が残っていない
-    expect(flow).not.toContain('この操作は元に戻せません。消さない限り課金が続きます。よろしいですか？')
+  const section = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/components/DedicatedTeardownSection.tsx'), 'utf8'))
+  const confirm = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/teardown/confirm.ts'), 'utf8'))
+  const facts = codeOnlyPanel(readFileSync(join(__dirname, '../src/renderer/teardown/facts.ts'), 'utf8'))
+  const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => {
+    const f = join(dir, e.name)
+    return e.isDirectory() ? walk(f) : /\.(ts|tsx)$/.test(e.name) ? [f] : []
   })
 
-  it('★ teardownConfirmMessage の呼び出しは src 全体で dedicatedTeardownFlow.ts の1か所だけ（確認の文を作る関数は1つ）', () => {
-    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => {
-      const f = join(dir, e.name)
-      return e.isDirectory() ? walk(f) : /\.(ts|tsx)$/.test(e.name) ? [f] : []
-    })
-    const holders = walk(join(__dirname, '../src')).filter(f => codeOnlyPanel(readFileSync(f, 'utf8')).includes('teardownConfirmMessage({'))
-    expect(holders.map(f => f.split('/src/')[1])).toEqual(['renderer/dedicatedTeardownFlow.ts'])
+  it('★ 確認の文を作るのは confirm.ts の1か所。本文の組み立てに placements（全件）と teardownDataNoteForAll を渡す', () => {
+    // 2026-09-24 検分の指摘7: 「保存場所まで片づけるか」の判断は shared の純関数に置く。専有型の削除は
+    // 2026-10-08 から、手順6も 📡 の 🗑 も保存場所まで片づける（0.6.22 段階3B-3 で入口の範囲 scope をやめた。公開先だけで決まる）。
+    // 2026-09-25 検分の指摘15: 保存場所は**全件**片づけるので、確認の本文も全件（placements）。
+    // **呼び出しの形ごと**見る（'placements,' だけを探すと、ほかの行にも当たって素通りする）。
+    expect(confirm).toContain(`const body = buildTeardownConfirmBody({
+    verb: spec.words.verb,
+    targets: spec.targets(facts.record),
+    placements: facts.placements,
+    dataNote: teardownDataNoteForAll({ target: spec.target, placements: facts.placements }),
+    otherTargets: facts.otherTargets,`)
+    // 先頭1件だけを渡す形へ戻っていないこと（この行が戻ると『B』が名指しされないまま消える）
+    expect(confirm).not.toContain('teardownDataNoteFor({ target')
+    expect(confirm).not.toContain('placements[0]')
+    // 直す前の文面が残っていない
+    expect(confirm).not.toContain('この操作は元に戻せません。消さない限り課金が続きます。よろしいですか？')
+  })
+
+  it('★ ほかの公開先の名前は、読めなかったら投げる読み口（旧い記録の分も数える）で読む。空に倒す readPublishTargets に戻さない', () => {
+    // 2026-09-24 検分の指摘2: 巻き添えになる公開先の名前は、公開記録を読むだけで足りる（材料の読み方も共有）。
+    // 2026-10-08 検分 A: 読めなかったら**投げる**版（空に倒すと、「ほかの公開先の記録を読めなかった」注意が本物の口では立たない）。
+    expect(facts).toContain('otherTargets: async (dir, self) => (await readPublishTargetsWithLegacyOrThrow(dir))')
+    expect(facts).not.toMatch(/\breadPublishTargets\b/)
+    expect(facts).not.toMatch(/\breadPublishTargetsOrThrow\b/)
+  })
+
+  it('★ 画面（パネル・節）には確認の文を組み立てる処理が無い（組み立て直すと、📡 と食い違う）。手順6の削除は節が共通の流れ runTeardownFlow で行う', () => {
+    for (const [name, src] of [['パネル', panel], ['節', section]] as const) {
+      expect(src, name).not.toContain('buildTeardownConfirmBody(')
+      expect(src, name).not.toContain('buildTeardownConfirm(')
+      expect(src, name).not.toContain('teardownDataNoteForAll(')
+      expect(src, name).not.toContain('readPublishTargets(')
+    }
+    expect(section).toContain('runTeardownFlow(projectDir, dedicatedTeardownSpec, electronFlowDeps(projectDir, dedicatedTeardownSpec, {')
+  })
+
+  it('★ buildTeardownConfirmBody を定義するのは confirm.ts だけ。呼ぶのは buildTeardownConfirm だけ（確認の文を作る関数は1つ）', () => {
+    const files = walk(join(__dirname, '../src'))
+    const defs = files.filter(f => /\bfunction\s+buildTeardownConfirmBody\b/.test(codeOnlyPanel(readFileSync(f, 'utf8'))))
+    expect(defs.map(f => f.split('/src/')[1])).toEqual(['renderer/teardown/confirm.ts'])
+    const callers = files.filter(f => codeOnlyPanel(readFileSync(f, 'utf8')).includes('buildTeardownConfirmBody({'))
+    expect(callers.map(f => f.split('/src/')[1])).toEqual(['renderer/teardown/confirm.ts'])
+    // confirm.ts の中で呼ぶのは buildTeardownConfirm の1か所だけ
+    expect(confirm.split('buildTeardownConfirmBody({').length - 1).toBe(1)
+    const insideConfirm = confirm.slice(confirm.indexOf('export function buildTeardownConfirm<'))
+    expect(insideConfirm).toContain('const body = buildTeardownConfirmBody({')
+  })
+
+  it('★ 手本の名前（teardownConfirmMessage・buildDedicatedTeardownConfirm・runDedicatedTeardown）が src のどこにも無い', () => {
+    for (const f of walk(join(__dirname, '../src'))) {
+      const code = codeOnlyPanel(readFileSync(f, 'utf8'))
+      for (const gone of ['teardownConfirmMessage', 'buildDedicatedTeardownConfirm', 'runDedicatedTeardown']) {
+        expect(new RegExp(`\\b${gone}\\b`).test(code), `${f.split('/src/')[1]} に ${gone}`).toBe(false)
+      }
+    }
   })
 })
 
@@ -589,25 +579,27 @@ describe('手順6の確認ダイアログ: 保存場所を共有しているほ�
   const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
 
   it('★★ ほかの公開先が生きているときは、その名前と「データも消えます」を出す', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: TARGETS, placements: [PLACEMENT], dataNote: teardownDataNote(PLACEMENT),
       otherTargets: ['HANAMII'],
     })
     expect(msg).toContain('HANAMII')
+    expect(msg).toContain('でも使っているため')
     expect(msg).toContain('データも消えます')
     // アプリそのものは消えない（消しすぎの誤解を生まない）
     expect(msg).toContain('アプリ自体は消えません')
   })
 
   it('★★ ほかの公開先が無ければ、その段落自体を出さない', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: TARGETS, placements: [PLACEMENT], dataNote: teardownDataNote(PLACEMENT), otherTargets: [],
     })
-    expect(msg).not.toContain('でも使っています')
+    expect(msg).not.toContain('でも使っているため')
+    expect(msg).not.toContain('データも消えます')
   })
 
   it('★ 保存場所を使っていなければ、ほかの公開先の名前も出さない（消えるものが無い）', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: TARGETS, placements: [], dataNote: '', otherTargets: ['HANAMII'],
     })
     expect(msg).not.toContain('HANAMII')
@@ -638,12 +630,23 @@ describe('手順6「すべて削除する」を押し直せるか（指摘1）',
   })
 
   it('★★ 残っているバケット名と「もう一度押すと片づく」ことを言う', () => {
-    const note = storageLeftoverNote('koto-data-x')
+    const note = storageLeftoverNote(['koto-data-x'])
     expect(note).toContain('koto-data-x')
     expect(note).toContain('月額')
     expect(note).toContain('もう一度押す')
+    // 1件のときの文は、全件を言う形にしても1文字も変えない（B=2・段階3B-2）
+    expect(note).toBe('保存場所『koto-data-x』だけが残っています（消すまで月額が続きます）。もう一度押すと削除します。')
     expect(storageLeftoverNote(null)).toBe('')
-    expect(storageLeftoverNote('')).toBe('')
+    expect(storageLeftoverNote([])).toBe('')
+  })
+
+  it('★★★ 残りが2件なら両方の名前を言う（先頭の1件だけだと、もう1件の月額が黙って続く）。名前は記録から全件を読む', () => {
+    expect(storageLeftoverNote(['koto-a', 'koto-b'])).toBe('保存場所『koto-a』『koto-b』だけが残っています（消すまで月額が続きます）。もう一度押すと削除します。')
+    expect(storageLeftoverNote(dedicatedStorageLeftoverNames({ storageLeftoverBucket: 'koto-a', storageLeftoverBuckets: ['koto-a', 'koto-b'] })))
+      .toContain('『koto-a』『koto-b』')
+    // 旧い記録（storageLeftoverBuckets が無い）は1件
+    expect(storageLeftoverNote(dedicatedStorageLeftoverNames({ storageLeftoverBucket: 'koto-a' }))).toContain('『koto-a』だけが')
+    expect(storageLeftoverNote(dedicatedStorageLeftoverNames({ storageLeftoverBucket: null, storageLeftoverBuckets: null }))).toBe('')
   })
 })
 

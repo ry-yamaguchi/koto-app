@@ -84,7 +84,7 @@ export default function StatusBar({ activeFile, meta, apiKey }: Props) {
           )}
         </>
       )}
-      {activeFile ? (
+      {activeFile && (
         <>
           <span className="text-ink-muted">·</span>
           <span className="text-ink-secondary">{languageLabel(activeFile.language)}</span>
@@ -93,11 +93,6 @@ export default function StatusBar({ activeFile, meta, apiKey }: Props) {
           {activeFile.isDirty && (
             <span className="text-sakura font-medium">● 未保存</span>
           )}
-        </>
-      ) : (
-        <>
-          <span className="text-ink-muted">·</span>
-          <span className="text-ink-muted">ファイルを開くと情報が表示されます</span>
         </>
       )}
       <BrainToggle apiKey={apiKey} className="ml-auto" />

@@ -45,9 +45,9 @@ export const DEDICATED_TARGET = 'sakura-apprun-dedicated'
 
 /**
  * 専有型のパネル（手順5 作成・手順6 すべて削除・手順8 公開）が受け持つ IPC と、その種類。
- * 2026-10-08 から、📡 一覧の専有型の「🗑 破棄」も手順6と**同じ** apprunDedicated:teardown（アプリだけを消す口は廃止した）。
- * どちらの画面から始めた削除も記録は同じなので、どちらの画面でも進み具合と結果を読める（📡 の行は削除だけを受け持つ・
- * `watchDedicatedOps` の `kinds`）。
+ * 2026-10-08 から、📡 一覧の専有型の「🗑 削除」も手順6と**同じ** apprunDedicated:teardown（アプリだけを消す口は廃止した）。
+ * どちらの画面から始めた削除も記録は同じなので、どちらの画面でも進み具合と結果を読める（📡 の行は削除だけを受け持つ
+ * 共通の見張り `watchTeardownOps`〔teardown/watch.ts〕）。
  * `dedicatedOpKind`（apprunDedicatedActions.ts）はこの表を引く（複製しない）。
  */
 export const DEDICATED_PANEL_HANDLERS: Readonly<Record<string, 'create' | 'teardown' | 'publish'>> = Object.freeze({
@@ -164,6 +164,78 @@ export function ackShown(api: Pick<ProjectOpsApi, 'get' | 'ack'>, projectDir: st
       })
       .catch(() => {})
   } catch { /* 読めなくても画面は止めない */ }
+}
+
+// ── 走っている操作の見せ方（進み具合・経過）──────────────────────────────────────────────
+
+/**
+ * 進み具合の一文（記録の progress。main が秘密を伏せてある）。補足があれば続ける。
+ * 手順5・6・8（専有型のパネル）と、📡 の行・手順6の破棄の進み具合（teardown/）が、**この1つ**を通る
+ * （0.6.22 段階3B-3 で、`teardown/flow.ts` と `apprunDedicatedActions.ts` の同じ中身の2つを1つにした）。
+ */
+export function opProgressText(rec: { progress?: { label?: string; detail?: string } } | null | undefined): string {
+  const label = String(rec?.progress?.label ?? '').trim()
+  const detail = String(rec?.progress?.detail ?? '').trim()
+  return detail ? `${label} ${detail}`.trim() : label
+}
+
+/** 「始まってから約N分」（1分未満は「1分未満」）。時計は呼び出し側が渡す（テストで固定する）。`opProgressText` と同じく、この1つだけ。 */
+export function opElapsedText(startedAt: number, nowMs: number): string {
+  const min = Math.floor(Math.max(0, nowMs - startedAt) / 60000)
+  return min < 1 ? '始まってから1分未満' : `始まってから約${min}分`
+}
+
+// ── この画面が始めた操作の窓 ─────────────────────────────────────────────────────────────
+
+/**
+ * 記録と、この画面が始めた操作の関係。
+ *  'outside' … この画面が始めたものではない（記録から出す。別の入口が始めたもの・この画面が始める前に終わっていたもの・出し終えたあとに始まったもの）
+ *  'active'  … この画面が始めて、結果をまだ出している最中（出し終えるまで「見た」にしない）
+ *  'done'    … この画面が始めて、結果を出し終えた（「見た」にしてよい）
+ */
+export type LocalOpsState = 'outside' | 'active' | 'done'
+
+export interface LocalOpsWindow {
+  /** この画面が操作を始めるとき（IPC を呼ぶ直前）に呼ぶ。窓を張り直す（前の窓の上限は捨てる）。 */
+  begin(): void
+  /**
+   * その操作の結果を出し終えたとき。上限（出し終えた時刻）を打つ。`begin` が無ければ何もせず false
+   * （呼び手は、false のとき記録を読み直さない・ack もしない）。
+   */
+  end(): boolean
+  stateOf(rec: { startedAt: number }): LocalOpsState
+}
+
+/**
+ * 「この画面が始めた操作の窓」（0.6.22 段階3B-3・設計書 10.11.7 の最後・10.6.2 の7）。**窓の判断はこの1つだけ**。
+ * 📡 の行の見張り（teardown/watch.ts の `watchTeardownOps`）と、専有型のパネルの見張り（apprunDedicatedActions.ts の `watchDedicatedOps`。
+ * 手順5・6・8を**種類ごとに1つずつ**持つ）が、同じこれを通る。
+ *
+ * この画面が始めた操作の結果は、画面が自分の返り値から出す。だから記録からは二重に出さず（'outside' でない記録は渡さない）、
+ * 出し終えるまで ack もしない。ただし:
+ *  ・**上限**: 窓は `begin` の時刻（since）以上、出し終えた（`end`）時刻（until）以下に**始まった**記録だけを覆う。
+ *    出し終えたあとに別の入口が始めた同じ種類の操作は、この画面のものではない（窓を閉じないと、その結果が画面へ渡らないまま
+ *    ack されて、誰にも見せないまま「見た」になる）。
+ *  ・**渡したことにする**: 覆っている記録は、画面が自分で出したものなので、呼び手は「渡した」に数える
+ *    （警告つきの記録は ack されず残るので、同じ画面がもう一度始めて窓を張り直したとき、前の結果が「閉じている間に終わった記録」として
+ *    重ねて出てしまう。HANAMII の受付済みを押し直すと起きた）。
+ * `now` は時計（テストで固定する）。
+ */
+export function localOpsWindow(now: () => number): LocalOpsWindow {
+  let w: { since: number; until: number | null; active: boolean } | null = null
+  return {
+    begin() { w = { since: now(), until: null, active: true } },
+    end() {
+      if (!w) return false
+      w.active = false
+      w.until = Math.max(now(), w.since)
+      return true
+    },
+    stateOf(rec) {
+      if (!w || rec.startedAt < w.since || (w.until !== null && rec.startedAt > w.until)) return 'outside'
+      return w.active ? 'active' : 'done'
+    },
+  }
 }
 
 export interface OpsWatch {

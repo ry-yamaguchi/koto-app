@@ -296,7 +296,7 @@ describe('画面の言葉の見張り: 対象の取り方が正しい（空を�
       }
     }
     expect(tooLong).toEqual([])
-  })
+  }, 30_000) // 全ファイルを読むので、ほかの重い作業と重なると既定の5秒を超えることがある（2026-10-09 に6.4秒で1回落ちた）
 
   it('★ 検出器は、旧い言い方を実際に見つけ、普通の使い方は見つけない（変異試験の代わりの自己検査）', () => {
     // 見つける
@@ -342,7 +342,9 @@ describe('使う技術の選択肢は「指定しない」（「空のプロジ�
   const modal = readFileSync(join(__dirname, '..', 'src/renderer/components/NewProjectModal.tsx'), 'utf-8')
   it('★ 選択肢の名前と、見出しの案内が「指定しない」', () => {
     expect(modal).toContain("{ id: 'blank', label: '指定しない', hint: '最小構成（README のみ）'")
-    expect(modal).toContain('使う技術（わからなければ「指定しない」のままで大丈夫です）')
+    // 2026-10-09 画面の文を短くする（T138）: 「のままで大丈夫です」の安心の重ねは「のまま」にした。
+    expect(modal).toContain('使う技術（わからなければ「指定しない」のまま）')
+    expect(modal).not.toContain('「指定しない」のままで大丈夫です')
     // 直す前の形に戻らない
     expect(modal).not.toContain("{ id: 'blank', label: '空',")
     expect(modal).not.toContain('わからなければ「空」のままで')

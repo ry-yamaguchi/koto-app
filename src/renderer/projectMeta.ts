@@ -49,12 +49,18 @@ export async function dismissInterruptedPublish(projectDir: string): Promise<{ o
   return { ok: false, running: 'running' in r && r.running === true, message: r.message }
 }
 
-export type RunningOp = '作成' | '削除' | '公開' | null
+/**
+ * いま main が走らせている操作と公開先（publishMeta:runningOp の戻り）。`op` は記録の語で、共用型・HANAMII の破棄も専有型の削除も '削除'。
+ * **op を文に埋めない**——画面に出す言葉は `opWordFor(op, target)`（shared/opWord.ts）を通す。止めるか・走っているかの判断は op の値で見てよい。
+ */
+export type RunningOpEntry = { op: '作成' | '削除' | '公開'; target: PublishTargetKind | 'unknown' }
 
-/** 公開の画面が持つ2つ: いま main が走らせている操作と、公開の記録（.sakuraide.json）。 */
+export type RunningOp = RunningOpEntry | null
+
+/** 公開の画面が持つ2つ: いま main が走らせている操作（と公開先）と、公開の記録（.sakuraide.json）。 */
 export type PublishSnapshot = { runningOp: RunningOp; meta: Record<string, unknown> }
 
-/** いま main が走らせている操作。聞けなかったとき（preload 未注入など）は null（＝走っていない扱い）。 */
+/** いま main が走らせている操作と公開先。聞けなかったとき（preload 未注入など）は null（＝走っていない扱い）。 */
 export async function readRunningOp(projectDir: string): Promise<RunningOp> {
   try {
     return await window.electronAPI.publishMeta.runningOp(projectDir)

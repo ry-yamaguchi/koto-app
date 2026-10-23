@@ -426,7 +426,9 @@ describe.each(SPECS)('$name: 閉じて開き直したとき（外して付け直
 
       screen.button('🚀 公開する')!.click()
       await settle()
-      expect(screen.count('いま別の操作（削除）を実行中です'), '断られた理由が出ていない／二重に出ている').toBe(1)
+      // 走っているのは共用型の破棄なので、画面の言葉は「破棄」（記録の op の「削除」をそのまま言わない）
+      expect(screen.count('いま別の操作（破棄）を実行中です'), '断られた理由が出ていない／二重に出ている').toBe(1)
+      expect(screen.has('いま別の操作（削除）を実行中です'), '破棄が走っているのに「削除」と言っている').toBe(false)
 
       world.opGate.resolve()
       await busy

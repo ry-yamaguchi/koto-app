@@ -171,7 +171,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
             onClick={() => void doSwitch(null, '最新のバージョン')}
             disabled={anySwitching}
             className="border border-line rounded-lg px-3 py-1.5 text-xs font-semibold text-ink hover:border-sakura disabled:opacity-40"
-          >{switchingLatest ? '切り替えています…' : '↺ 最新に戻す（公開したものを反映させる）'}</button>
+          >{switchingLatest ? '切り替えています…' : '↺ 最新に戻す'}</button>
         </div>
       )}
 

@@ -13,8 +13,13 @@ const ROOT = join(__dirname, '..')
 const panel = readFileSync(join(ROOT, 'src/renderer/components/AppRunDedicatedPanel.tsx'), 'utf-8')
 const actions = readFileSync(join(ROOT, 'src/renderer/apprunDedicatedActions.ts'), 'utf-8')
 // 2026-10-08: 手順6の進み具合・結果の見た目と、進み具合の文の選び方は、📡 の行と共有する部品・関数へ移した。
-const teardownView = readFileSync(join(ROOT, 'src/renderer/components/DedicatedTeardownView.tsx'), 'utf-8')
-const flow = readFileSync(join(ROOT, 'src/renderer/dedicatedTeardownFlow.ts'), 'utf-8')
+// 0.6.22 3B-6a: 共有の先は、HANAMII・共用型・専有型で1つの共通の部品（TeardownProgress・TeardownResultView・teardown/flow.ts）。
+// 手順6の節は DedicatedTeardownSection.tsx、記録の見張りの付け外しは hooks/useDedicatedOpsWatch.ts へ切り出した（巨大ファイルの決まり）。
+const progressView = readFileSync(join(ROOT, 'src/renderer/components/teardown/TeardownProgress.tsx'), 'utf-8')
+const resultView = readFileSync(join(ROOT, 'src/renderer/components/teardown/TeardownResultView.tsx'), 'utf-8')
+const flow = readFileSync(join(ROOT, 'src/renderer/teardown/flow.ts'), 'utf-8')
+const section = readFileSync(join(ROOT, 'src/renderer/components/DedicatedTeardownSection.tsx'), 'utf-8')
+const watchHook = readFileSync(join(ROOT, 'src/renderer/hooks/useDedicatedOpsWatch.ts'), 'utf-8')
 
 const count = (src: string, needle: string) => src.split(needle).length - 1
 const between = (src: string, from: string, to: string) => {
@@ -26,24 +31,34 @@ const between = (src: string, from: string, to: string) => {
 }
 
 describe('記録を読む部品を、開いたとき付け・閉じたとき外している', () => {
-  it('★ watchDedicatedOps を projectOps・projectDir で作り、押し出しは state へ・外すときは stop する', () => {
-    expect(count(panel, 'watch = watchDedicatedOps({')).toBe(1)
-    const block = between(panel, 'watch = watchDedicatedOps({', "return () => { watch?.stop(); if (opsWatchRef.current === watch) opsWatchRef.current = null }\n  }, [projectDir])")
+  const END = "return () => { watch?.stop(); if (opsWatchRef.current === watch) opsWatchRef.current = null }\n  }, [projectDir])"
+  it('★ watchDedicatedOps を projectOps・projectDir で作り、押し出しは state へ・外すときは stop する（付け外しは useDedicatedOpsWatch。パネルは直接作らない）', () => {
+    expect(count(watchHook, 'watch = watchDedicatedOps({')).toBe(1)
+    expect(panel).not.toContain('watchDedicatedOps(')
+    expect(panel).toContain('useDedicatedOpsWatch(projectDir, panelVisible, finished => {')
+    const block = between(watchHook, 'watch = watchDedicatedOps({', END)
     expect(block).toContain('api: window.electronAPI.projectOps,')
     expect(block).toContain('projectDir,')
     expect(block).toContain('onRunning: setOpsRunning,')
     expect(block).toContain('onFinished: finished => {')
     // 開き直したとき、前のプロジェクト・前の開き方の表示を持ち越さない（掟11）
-    const effect = between(panel, "setOpsRunning({ running: null, other: null })\n    setResumedNotes(", 'let watch: DedicatedOpsWatch | null = null')
+    const effect = between(watchHook, "setOpsRunning({ running: null, other: null })\n    setResumedNotes(", 'let watch: DedicatedOpsWatch | null = null')
     expect(effect).toContain("{ create: [], teardown: [], publish: [] }")
+    // 付け外しは projectDir ごと（別のプロジェクトの記録を出さない）
+    expect(watchHook).toContain(END)
   })
 
   it('★★ 終わった結果は、手順5・6・8それぞれの既存の結果欄（state）へ入り、警告は知らせに集める', () => {
-    const block = between(panel, 'onFinished: finished => {', '} catch { /* preload 未注入')
-    expect(block).toContain('setCreateResult(resumedCreateResult(f.record)); setTeardownResult(null)')
-    expect(block).toContain('setTeardownResult(resumedTeardownResult(f.record))')
-    expect(block).toContain('setPublishResult(resumedPublishResult(f.record))')
+    // パネルが渡す「結果が届いたとき」の置き場（手順5・6・8それぞれの結果欄の state）
+    const panelBlock = between(panel, 'useDedicatedOpsWatch(projectDir, panelVisible, finished => {', '  const runningKind: DedicatedOpKind')
+    expect(panelBlock).toContain('setCreateResult(resumedCreateResult(f.record)); setTeardownView(null)')
+    expect(panelBlock).toContain("setTeardownView(resumedTeardownView('sakura-apprun-dedicated', f.record.result))")
+    expect(panelBlock).toContain('setPublishResult(resumedPublishResult(f.record))')
+    // 見張りの部品は、結果を渡したあとで、警告を知らせに集め、記録が変わったことを開いている画面へ知らせる
+    const block = between(watchHook, 'onFinished: finished => {', '} catch { /* preload 未注入')
+    expect(block).toContain('finishedRef.current(finished)')
     expect(block).toContain('setResumedNotes(prev => addResumedNotes(prev, finished.map(resumedNoteOf)))')
+    expect(block.indexOf('finishedRef.current(finished)')).toBeLessThan(block.indexOf('setResumedNotes(prev => addResumedNotes('))
     // 記録が変わったことを開いている画面へ知らせる（作られたもの・公開の記録を取り直す）
     expect(block).toContain("window.dispatchEvent(new Event('sakura-meta-changed'))")
   })
@@ -67,18 +82,26 @@ describe('記録を読む部品を、開いたとき付け・閉じたとき外�
 describe('この画面が始める操作は beginLocal〜endLocal で囲む（結果を二重に出さず、出し終えたら ack される）', () => {
   const cases: Array<{ kind: string; ipc: string; setter: string }> = [
     { kind: 'create', ipc: 'window.electronAPI.apprunDedicated.create(projectDir, auth, s, opts)', setter: 'setCreating(false)' },
-    // 手順6の IPC は、📡 の行と共有する流れ（dedicatedTeardownFlow.ts）が呼ぶ。画面（onStart）が beginLocal し、流れが onStart を IPC の前に呼ぶ
-    // （順序は下の別のテストと tests/dedicatedTeardownEntries.test.ts が固定している）。
+    // 手順6の IPC は、📡 の行と共有する流れ（teardown/flow.ts）が呼ぶ。画面（onStart）が beginLocal し、流れが onStart を IPC の前に呼ぶ
+    // （順序は下の別のテストと tests/dedicatedTeardownEntries.test.ts・tests/dedicatedTeardownSection.test.ts が固定している）。
     { kind: 'teardown', ipc: "setResumedNotes(n => ({ ...n, teardown: [] }))", setter: 'setTearingDown(false)' },
     { kind: 'publish', ipc: 'window.electronAPI.apprunDedicated.publishApp(projectDir, auth, i, opts)', setter: 'setPublishing(false)' },
   ]
-  it('★ 手順6: 共有の流れは onStart（beginLocal）を、キーの読み込み・IPC より前に呼ぶ', () => {
-    const at = flow.indexOf('teardown: async (opts) => {')
+  it('★ 手順6: 共有の流れは onStart（beginLocal）を、キーの読み込み・IPC より前に呼ぶ。節の onStart は画面の口（beginLocal を持つ）へつながる', () => {
+    const at = flow.indexOf('export async function runTeardownFlow<R, A, Res>(')
     expect(at).toBeGreaterThan(-1)
-    const block = flow.slice(at, at + 400)
+    const block = flow.slice(at, at + 5200)
     expect(block.indexOf('deps.onStart?.()')).toBeGreaterThan(-1)
-    expect(block.indexOf('deps.onStart?.()')).toBeLessThan(block.indexOf('await deps.loadKey()'))
-    expect(block.indexOf('await deps.loadKey()')).toBeLessThan(block.indexOf('deps.teardown(projectDir, auth, opts)'))
+    expect(block.indexOf('deps.onStart?.()')).toBeLessThan(block.indexOf('await deps.loadAuth(facts.record)'))
+    expect(block.indexOf('await deps.loadAuth(facts.record)')).toBeLessThan(block.indexOf('await deps.invoke(projectDir, auth, invokeOpts, facts.record)'))
+    // 節: 流れの onStart が、画面の onStart（パネルの onTeardownStart）を呼ぶ。パネルのそれが beginLocal('teardown') を持つ
+    expect(section).toContain('onStart: () => { setProgressLocal(null); panelRef.current.onStart() },')
+    expect(panel).toContain('onStart={onTeardownStart}')
+    // 画面を「削除中」にし、前の結果と知らせを片づけ、記録の見張りへ「この画面が始めた」と伝える（IPC の前）
+    const startBlock = between(panel, 'const onTeardownStart = () => {', 'const onTeardownDone')
+    expect(startBlock).toContain('setTearingDown(true); setTeardownView(null)')
+    expect(startBlock).toContain("opsWatchRef.current?.beginLocal('teardown')")
+    expect(startBlock).toContain('setResumedNotes(n => ({ ...n, teardown: [] }))')
   })
 
   for (const c of cases) {
@@ -113,14 +136,17 @@ describe('走っているか・進み具合は「この画面が始めたもの�
   })
 
   it('★ 進み具合の文は、走っている記録があればそれ（開き直した画面）・無ければ従来の進捗', () => {
-    // 手順6の進み具合の文の選び方は、📡 の行と同じ関数（dedicatedTeardownFlow.ts の teardownProgressText）
-    expect(panel).toContain("const teardownProgress = teardownProgressText({ runningKind, runningRecord, local: teardownProgressLocal })")
-    expect(flow).toContain("return s.runningKind === 'teardown' ? opProgressText(s.runningRecord) : s.local")
+    // 手順6の進み具合の文の選び方は、📡 の行と同じ関数（teardown/flow.ts の teardownProgressText）。手順6の節がそれで選ぶ
+    expect(section).toContain('progress={teardownProgressText({ running, runningRecord, local: progressLocal })}')
+    expect(flow).toContain('return s.running ? opProgressText(s.runningRecord) : s.local')
+    expect(panel).not.toContain('teardownProgressText')
     expect(panel).toContain("const publishProgress = runningKind === 'publish' ? opProgressText(runningRecord) : publishProgressLocal")
     expect(panel).toContain("const createProgress = runningKind === 'create' ? opProgressText(runningRecord) : ''")
     // 従来の進捗の購読（この画面が始めた操作の分）は残している
     expect(panel).toContain('window.electronAPI.apprunDedicated.onPublishProgress((msg) => setPublishProgress(msg))')
-    expect(panel).toContain('window.electronAPI.apprunDedicated.onTeardownProgress((msg) => setTeardownProgress(msg))')
+    // 手順6の削除の進み具合の購読は、専有型の仕様書の subscribeProgress の1行（節が受ける）。パネルには無い
+    expect(section).toContain('try { unsubscribe = dedicatedTeardownSpec.subscribeProgress?.(msg => setProgressLocal(msg)) ?? unsubscribe } catch')
+    expect(panel).not.toContain('onTeardownProgress')
   })
 
   it('★★ 手順6の節は、走っている間は記録が空でも出し続ける（消し切って保存場所を片づけている最中も進み具合を出す）', () => {
@@ -136,12 +162,12 @@ describe('走っているか・進み具合は「この画面が始めたもの�
 describe('各節に、進み具合・結果に添える知らせを出す', () => {
   it('手順5・6・8の結果欄の直前に、その操作の知らせ（警告）を出す', () => {
     expect(count(panel, '<ResumedNotesView notes={resumedNotes.create} />')).toBe(1)
-    // 手順6の知らせと結果は 📡 の行と共有する部品（DedicatedTeardownResultView）が描く。知らせは結果欄の直前。
+    // 手順6の知らせと結果は 📡 の行と共有する部品（TeardownResultView）が描く。知らせは結果欄の直前。パネルは知らせを節へ渡す。
     expect(count(panel, 'notes={resumedNotes.teardown}')).toBe(1)
-    expect(count(teardownView, '<ResumedNotesView notes={notes} />')).toBe(1)
+    expect(count(resultView, '<ResumedNotesView notes={notes} shownInResult={warnings.map(warningLine)} />')).toBe(1)
     expect(count(panel, '<ResumedNotesView notes={resumedNotes.publish} />')).toBe(1)
     expect(panel.indexOf('<ResumedNotesView notes={resumedNotes.create} />')).toBeLessThan(panel.indexOf('{shouldShowCreateResult(createResult, apprunState) && createResult && ('))
-    expect(teardownView.indexOf('<ResumedNotesView notes={notes} />')).toBeLessThan(teardownView.indexOf('{shouldShowTeardownResult(result) && result && ('))
+    expect(resultView.indexOf('<ResumedNotesView notes={notes} shownInResult={warnings.map(warningLine)} />')).toBeLessThan(resultView.indexOf('<div className="space-y-1" data-teardown-result>'))
     expect(panel.indexOf('<ResumedNotesView notes={resumedNotes.publish} />')).toBeLessThan(panel.indexOf('{publishResult && ('))
   })
 
@@ -163,11 +189,10 @@ describe('各節に、進み具合・結果に添える知らせを出す', () =
   it('手順5の進み具合・手順6・8の経過と、閉じても進むことの一文（Koto を終了すると止まる、も同じ定義から）', () => {
     expect(panel).toContain("{creating && runningKind === 'create' && (")
     expect(panel).toContain("{runningKind === 'publish' && runningRecord && (")
-    // 手順6の経過と一文は、📡 の行と共有する部品（DedicatedTeardownProgress）が出す
-    expect(teardownView).toContain('{recorded && runningRecord && (')
-    expect(teardownView).toContain("const recorded = runningKind === 'teardown' && !!runningRecord")
-    expect(count(teardownView, 'opElapsedText(runningRecord.startedAt, nowMs)')).toBe(1)
-    expect(teardownView).toContain('この画面を閉じても、削除は最後まで進みます。{PUBLISH_QUIT_STOPS}')
+    // 手順6の経過と一文は、📡 の行と共有する部品（TeardownProgress）が出す。「削除」の動詞は専有型の言葉（words.verb）から作る
+    expect(progressView).toContain('{running && runningRecord && (')
+    expect(count(progressView, 'opElapsedText(runningRecord.startedAt, nowMs)')).toBe(1)
+    expect(progressView).toContain('この画面を閉じても、{words.verb}は最後まで進みます。{PUBLISH_QUIT_STOPS}')
     // 経過（始まってから約N分）は手順5・8がパネルに、手順6が共有の部品に1か所ずつ
     expect(count(panel, 'opElapsedText(runningRecord.startedAt, nowMs)')).toBe(2)
     expect(panel).toContain('import { PUBLISH_QUIT_STOPS } from')
@@ -197,10 +222,13 @@ describe('画面に出す文の作法（掟5・掟8）', () => {
 // ここは画面の配線だけを、呼び出しの形ごとで確かめる（変異で落ちることを確かめてある）。
 describe('隠れているタブのパネルは、結果を「見た」と伝えない', () => {
   it('★★ 目の前に出ているか（visible）を watchDedicatedOps へ渡し、変わったら部品へ知らせる', () => {
-    const block = between(panel, 'watch = watchDedicatedOps({', "return () => { watch?.stop(); if (opsWatchRef.current === watch) opsWatchRef.current = null }\n  }, [projectDir])")
+    const block = between(watchHook, 'watch = watchDedicatedOps({', "return () => { watch?.stop(); if (opsWatchRef.current === watch) opsWatchRef.current = null }\n  }, [projectDir])")
     expect(block).toContain('isVisible: () => panelVisibleRef.current,')
-    expect(panel).toContain('useEffect(() => { opsWatchRef.current?.visibilityChanged() }, [panelVisible])')
+    expect(watchHook).toContain('panelVisibleRef.current = panelVisible')
+    expect(watchHook).toContain('useEffect(() => { opsWatchRef.current?.visibilityChanged() }, [panelVisible])')
+    // パネルは、目の前に出ているか（visible）を見張りへ渡す
     expect(panel).toContain('visible: panelVisible = true')
+    expect(panel).toContain('useDedicatedOpsWatch(projectDir, panelVisible, finished => {')
   })
 })
 

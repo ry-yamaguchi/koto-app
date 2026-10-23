@@ -60,7 +60,15 @@ export interface PendingPublish { target: PublishTargetKind; startedAt: string }
 // .sakuraide.json の publish 部分（このモジュールが読む範囲のみ・実際の型はより広い）。
 export interface PublishMeta {
   targets?: Partial<Record<PublishTargetKind, PublishTargetRecord>>
-  hanamii?: { projectId?: string | null }
+  hanamii?: {
+    projectId?: string | null
+    /**
+     * 前回の破棄で、HANAMII のプロジェクトは消えたが保存場所だけが残った印（main が書く。docs/teardown-unify-plan.md 10.4.1）。
+     * null／無い＝印なし。`[]`＝プロジェクトは消えたが、残った保存場所の名前は分からない。1件以上＝その保存場所が残っている。
+     * 全部消えた回と「一覧から削除」（withoutPublishTarget）が null に戻す。
+     */
+    storageLeftoverBuckets?: string[] | null
+  }
   lastPublishedAt?: string
   host?: string
   pending?: PendingPublish | null
@@ -231,7 +239,7 @@ export function judgePendingPublish(
  */
 export function pendingPublishMessage(view: PendingPublishView): string | null {
   if (view.kind === 'running') {
-    return `⏳ ${PUBLISH_TARGET_LABEL[view.pending.target]}への公開が進んでいます。この画面を閉じても、公開は最後まで進みます（Koto を終了すると途中で止まります）。公開に成功すると、公開状況に記録されます（失敗したときは記録されません）。`
+    return `⏳ ${PUBLISH_TARGET_LABEL[view.pending.target]}への公開が進んでいます。この画面を閉じても、公開は最後まで進みます（Koto を終了すると途中で止まります）。公開状況に記録されるのは、成功したときだけです。`
   }
   if (view.kind === 'interrupted') {
     return `⚠️ 前回、${PUBLISH_TARGET_LABEL[view.pending.target]}への公開が完了前に中断された可能性があります。実際に公開されたか、下の公開状況や公開先の管理画面でご確認ください。`

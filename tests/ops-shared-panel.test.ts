@@ -17,142 +17,11 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } 
 //   ほかの公開先・ほかのプロジェクトのものは出さず、巻き込んで「見た」ことにもしない（掟11）／
 //   この画面が動かした操作の結果を二重に出さない／閉じている間に終わった公開の結果が、開き直すと出る。
 
-/**
- * 偽の React。フックを回し、setState で描き直す（React 18 と同じく、更新はまとめて次のマイクロタスクで描く）。
- * 画面は作らない: jsx は `{ type, props }` を返すだけ。expand() で（フックを持たない）自作の部品だけを
- * 展開して、画面に出る文字・ボタンを読む。
- */
-const RT = vi.hoisted(() => {
-  const Fragment = Symbol('Fragment')
-  type EffSlot = { kind: 'effect'; deps: unknown[] | undefined; cleanup?: () => void; first: boolean }
-  class Inst {
-    slots: any[] = []
-    idx = 0
-    mounted = true
-    queued = false
-    tree: any = null
-    renders = 0
-    queue: { slot: EffSlot; fn: () => void | (() => void) }[] = []
-    constructor(public fn: (p: any) => any, public props: any) {}
-  }
-  let current: Inst | null = null
-  const depsChanged = (a?: unknown[], b?: unknown[]) =>
-    !a || !b || a.length !== b.length || a.some((x, i) => !Object.is(x, b[i]))
+import { RT } from './appRunPanelRt'
 
-  function renderOnce(inst: Inst) {
-    current = inst
-    inst.idx = 0
-    inst.queue = []
-    try { inst.tree = inst.fn(inst.props) } finally { current = null }
-    inst.renders++
-    const pend = inst.queue
-    for (const q of pend) if (q.slot.cleanup) { const c = q.slot.cleanup; q.slot.cleanup = undefined; try { c() } catch { /* 解除の失敗は無視 */ } }
-    for (const q of pend) { const c = q.fn(); q.slot.cleanup = typeof c === 'function' ? c : undefined }
-  }
-  function schedule(inst: Inst) {
-    if (inst.queued) return
-    inst.queued = true
-    queueMicrotask(() => { inst.queued = false; if (inst.mounted) renderOnce(inst) })
-  }
-  const need = () => { if (!current) throw new Error('フックが描画の外で呼ばれた'); return current }
-
-  const useState = (init: unknown) => {
-    const inst = need()
-    const i = inst.idx++
-    if (!(i in inst.slots)) inst.slots[i] = { v: typeof init === 'function' ? (init as () => unknown)() : init }
-    const slot = inst.slots[i]
-    if (!slot.set) {
-      slot.set = (nv: unknown) => {
-        if (!inst.mounted) return // 外れたあとの更新は捨てる（React 18 と同じ）
-        const next = typeof nv === 'function' ? (nv as (p: unknown) => unknown)(slot.v) : nv
-        if (Object.is(next, slot.v)) return
-        slot.v = next
-        schedule(inst)
-      }
-    }
-    return [slot.v, slot.set]
-  }
-  const useRef = (init: unknown) => {
-    const inst = need()
-    const i = inst.idx++
-    if (!(i in inst.slots)) inst.slots[i] = { current: init }
-    return inst.slots[i]
-  }
-  const useMemo = (fn: () => unknown, deps?: unknown[]) => {
-    const inst = need()
-    const i = inst.idx++
-    const slot = inst.slots[i]
-    if (!slot || depsChanged(slot.deps, deps)) inst.slots[i] = { deps, v: fn() }
-    return inst.slots[i].v
-  }
-  const useCallback = (fn: unknown, deps?: unknown[]) => useMemo(() => fn, deps)
-  const useEffect = (fn: () => void | (() => void), deps?: unknown[]) => {
-    const inst = need()
-    const i = inst.idx++
-    if (!(i in inst.slots)) inst.slots[i] = { kind: 'effect', deps: undefined, first: true } as EffSlot
-    const slot = inst.slots[i] as EffSlot
-    if (slot.first || depsChanged(slot.deps, deps)) {
-      slot.deps = deps
-      slot.first = false
-      inst.queue.push({ slot, fn })
-    }
-  }
-
-  const jsx = (type: unknown, props: any, key?: unknown) => ({ $$: 'el', type, props: props ?? {}, key })
-  const jsxDEV = (type: unknown, props: any, key?: unknown) => jsx(type, props, key)
-
-  function mount(fn: (p: any) => any, props: any): Inst {
-    const inst = new Inst(fn, props)
-    renderOnce(inst)
-    return inst
-  }
-  function setProps(inst: Inst, props: any) {
-    inst.props = props
-    renderOnce(inst)
-  }
-  function unmount(inst: Inst) {
-    if (!inst.mounted) return
-    inst.mounted = false
-    for (const s of inst.slots) if (s && s.kind === 'effect' && s.cleanup) { const c = s.cleanup; s.cleanup = undefined; try { c() } catch { /* 解除の失敗は無視 */ } }
-  }
-
-  /** フックを持たない自作の部品だけ展開する（OpResultView・StoppedResultView・WarningsBlock・CaptionLine・ConfirmDialog）。ほかの部品は箱のまま。 */
-  const EXPAND = new Set(['OpResultView', 'StoppedResultView', 'WarningsBlock', 'CaptionLine', 'ConfirmDialog'])
-  function expand(node: any): any {
-    if (node == null || typeof node === 'boolean') return null
-    if (typeof node === 'string' || typeof node === 'number') return String(node)
-    if (Array.isArray(node)) return node.map(expand).filter(x => x !== null)
-    if (node.$$ === 'el') {
-      const { type, props } = node
-      if (type === Fragment) return expand(props.children)
-      if (typeof type === 'function' && EXPAND.has(type.name)) return expand(type(props))
-      return { type: typeof type === 'string' ? type : (type?.name || 'Component'), props, kids: expand(props.children) }
-    }
-    return null
-  }
-  function textOf(n: any): string {
-    if (n == null) return ''
-    if (typeof n === 'string') return n
-    if (Array.isArray(n)) return n.map(textOf).join('')
-    return textOf(n.kids)
-  }
-  function findAll(n: any, pred: (x: any) => boolean, out: any[] = []): any[] {
-    if (n == null || typeof n === 'string') return out
-    if (Array.isArray(n)) { for (const c of n) findAll(c, pred, out); return out }
-    if (pred(n)) out.push(n)
-    findAll(n.kids, pred, out)
-    return out
-  }
-
-  return { Fragment, useState, useRef, useMemo, useCallback, useEffect, jsx, jsxDEV, mount, setProps, unmount, expand, textOf, findAll }
-})
-
-vi.mock('react', () => ({
-  useState: RT.useState, useRef: RT.useRef, useMemo: RT.useMemo, useCallback: RT.useCallback, useEffect: RT.useEffect,
-  default: {},
-}))
-vi.mock('react/jsx-runtime', () => ({ jsx: RT.jsx, jsxs: RT.jsx, Fragment: RT.Fragment }))
-vi.mock('react/jsx-dev-runtime', () => ({ jsxDEV: RT.jsxDEV, Fragment: RT.Fragment }))
+vi.mock('react', async () => (await import('./appRunPanelRt')).reactModule())
+vi.mock('react/jsx-runtime', async () => (await import('./appRunPanelRt')).jsxRuntimeModule())
+vi.mock('react/jsx-dev-runtime', async () => (await import('./appRunPanelRt')).jsxDevRuntimeModule())
 
 // ── 偽の electronAPI（cloud.* と projectOps の受け口。projectOps の中身は本物の main 側の記録）────────
 
@@ -171,6 +40,8 @@ const log = {
   gets: [] as string[],
   cloud: [] as string[],
   applyArgs: [] as unknown[],
+  /** 破棄の IPC に渡った引数（projectDir・認証の印・opts）。 */
+  teardownArgs: [] as unknown[][],
   progressCbs: new Set<(m: string) => void>(),
 }
 /** onChanged の購読（解除されたかを見る）。 */
@@ -186,6 +57,9 @@ let teardownGate: Gate | null = null
 let cleanupGate: Gate | null = null
 let applyValue: Record<string, unknown> = { ok: true, executed: ['アプリを更新'], message: '公開しました' }
 let teardownValue: Record<string, unknown> = { ok: true, executed: ['アプリを削除'], keptBucketName: null }
+/** 破棄の確認の材料（main の cloud:teardownRecord が返す記録）。既定は、Koto が作ったレジストリがある公開済みのプロジェクト。 */
+const DEFAULT_RECORD = { appNames: ['myapp'], registryName: 'koto-reg', registryOrigin: 'owned', registryUsers: [], placements: [] as unknown[], stateOnlyBuckets: [] as string[] }
+let teardownRecord: Record<string, unknown> = { ...DEFAULT_RECORD }
 
 const SPEC = {
   name: 'myapp', backend: 'apprun', region: 'is1a',
@@ -203,7 +77,7 @@ function installWindow() {
     appUrl: called('appUrl', { ok: true, url: null }),
     isPublished: called('isPublished', { ok: true, published: false }),
     getAccessLimit: called('getAccessLimit', { ok: true, deployed: false }),
-    registryName: called('registryName', { ok: true, name: 'koto-reg', adopted: false }),
+    registryName: called('registryName', { ok: true, name: 'koto-reg', origin: 'owned' }),
     preflight: called('preflight', { ok: true, canPublish: true, summary: '確認できました', checks: [] }),
     plan: called('plan', {
       ok: true,
@@ -221,17 +95,18 @@ function installWindow() {
         if (applyGate) await applyGate.promise
         return applyValue
       }, { target: 'sakura-apprun', handler: 'cloud:apply' })
-      return r.busy ? { ok: false, message: mainLock.projectBusyMessage(r.running) } : r.value
+      return r.busy ? { ok: false, message: mainLock.projectBusyMessage(r.running, r.runningTarget) } : r.value
     },
-    teardown: async (dir: string) => {
-      log.cloud.push('teardown')
+    teardownRecord: async () => { log.cloud.push('teardownRecord'); return { ok: true, record: teardownRecord } },
+    teardown: async (dir: string, auth?: unknown, opts?: unknown) => {
+      log.cloud.push('teardown'); log.teardownArgs.push([dir, auth, opts])
       const progress = mainOps.progressReporter(dir)
       const r = await mainLock.withProjectLock(dir, '削除', async () => {
-        progress('🗑 公開したものを削除しています…')
+        progress('🗑 公開したものを破棄しています…')
         if (teardownGate) await teardownGate.promise
         return teardownValue
       }, { target: 'sakura-apprun', handler: 'cloud:teardown' })
-      return r.busy ? { ok: false, message: mainLock.projectBusyMessage(r.running) } : r.value
+      return r.busy ? { ok: false, message: mainLock.projectBusyMessage(r.running, r.runningTarget) } : r.value
     },
     // 削除: 1回目（confirmed なし）は計画だけ、2回目（confirmed）は門で止めてから消したことにする
     cleanupImages: async (_dir: string, opts?: { confirmed?: boolean }) => {
@@ -244,7 +119,9 @@ function installWindow() {
   const api: any = {
     cloud,
     storage: { placement: async () => ({ ok: true, placements: [] }) },
-    fs: { readFile: async () => '{}', trash: async () => {} },
+    // 破棄の確認の「ほかの公開先」を読む口（公開の記録は空・旧い共用型の記録 state.json は無い）と、時間の目安（無い）
+    fs: { readFile: async () => '{}', exists: async () => false, trash: async () => {} },
+    stageTiming: { estimates: async () => null },
     publishMeta: { forgetTarget: async () => ({ ok: true, meta: {} }) },
     win: { setBusy: () => {} },
     secure: { decrypt: async () => '' },
@@ -341,15 +218,37 @@ function mainRun(dir: string, op: '公開' | '削除' | '作成', target: string
   mainFinish(dir, value)
 }
 
+/**
+ * 破棄の確認（共通の ConfirmModal。選択つき）。🗑 を押したあと、共通の流れが材料を読み終えると画面に出る。
+ * 出ていなければ、出るまで待ったうえで null を返す（出ていないことを確かめるテストも使う）。
+ */
+async function openTeardownConfirm(v: Mounted): Promise<{ props: any } | null> {
+  for (let k = 0; k < 20; k++) {
+    const hit = RT.findAll(v.tree(), (n: any) => n.type === 'ConfirmModal' && n.props.open === true)[0]
+    if (hit) return hit
+    await settle()
+  }
+  return null
+}
+/** 🗑 破棄する（削除）を押し、確認に「破棄する」と答える（選択は触らない＝既定のまま）。 */
+async function pressTeardownAndConfirm(v: Mounted): Promise<void> {
+  v.button('破棄する（削除）').props.onClick()
+  const modal = await openTeardownConfirm(v)
+  expect(modal, '破棄の確認（ConfirmModal）が出ていない').not.toBeNull()
+  modal!.props.onConfirm()
+  await settle()
+}
+
 beforeEach(() => {
   mainOps.resetProjectOpsForTests()
   panelMod.resetCleanupJobsForTests()
   subs.clear()
   mainOps.setProjectOpsListener((dir, snap) => { for (const cb of [...subs]) cb({ projectDir: dir, ...snap }) })
-  log.acks = []; log.gets = []; log.cloud = []; log.applyArgs = []; log.progressCbs.clear()
+  log.acks = []; log.gets = []; log.cloud = []; log.applyArgs = []; log.teardownArgs = []; log.progressCbs.clear()
   getGate = null; applyGate = null; teardownGate = null; cleanupGate = null
   applyValue = { ok: true, executed: ['アプリを更新'], message: '公開しました' }
   teardownValue = { ok: true, executed: ['アプリを削除'], keptBucketName: null }
+  teardownRecord = { ...DEFAULT_RECORD }
 })
 afterEach(() => {
   for (const m of opened) m.close()
@@ -358,7 +257,7 @@ afterEach(() => {
 })
 
 // 保存場所とレジストリが残った破棄の結果（警告の文は、画面が使う remainingCostWarning そのもの）
-const KEPT = { ok: true, executed: ['アプリを削除'], keptBucketName: 'koto-data-x', keptRegistryName: 'koto-reg', message: '保存場所にあった、このプロジェクトのデータを削除しました。' }
+const KEPT = { ok: true, executed: ['アプリを削除'], keptBucketName: 'koto-data-x', keptRegistryName: 'koto-reg', keptRegistryOrigin: 'owned', keptRegistryUsers: [] as string[], message: '保存場所にあった、このプロジェクトのデータを削除しました。' }
 const keptWarning = () => costMod.remainingCostWarning({ deleteRegistry: false, registryName: 'koto-reg', keptBucketName: 'koto-data-x' }) as string
 // 警告の無い破棄の結果。**警告つきの結果（KEPT）は、画面が出しても「見た」と伝えない**（上部の「結果を確認しました」まで残す・
 // 2026-09-30 検分）ので、「見たと伝わる／出し直さない」を確かめるテストは、警告の無い結果で行う。
@@ -379,6 +278,14 @@ describe('開き直したとき: 走っていれば、busy と進み具合が出
     expect(v.button('🚀 公開する').props.disabled, '公開ボタンが押せてしまう').toBe(true)
     expect(v.button('破棄する（削除）').props.disabled, '破棄ボタンが押せてしまう').toBe(true)
     expect(v.button('古いイメージを削除する').props.disabled, '削除ボタンが押せてしまう').toBe(true)
+  })
+
+  it('★★★ 走っているのが共用型の破棄なら、枠は「破棄が進んでいます」（記録の op は「削除」。この画面のボタン・確認・結果と同じ言葉・2026-10-20）', async () => {
+    mainStart(DIR, '削除', 'sakura-apprun', 'cloud:teardown', '🗑 公開したものを破棄しています…')
+    const v = mountPanel()
+    await settle()
+    expect(v.text()).toContain('破棄が進んでいます')
+    expect(v.text(), '「削除が進んでいます」と言っている（流れの中で言葉が割れる）').not.toContain('削除が進んでいます')
   })
 
   it('★ 開いている間は、進み具合が知らせで置き換わる（購読を続ける）', async () => {
@@ -981,12 +888,7 @@ describe('この画面が動かした操作', () => {
     teardownValue = KEPT
     const first = mountPanel()
     await settle()
-    await first.click('破棄する（削除）') // 確認画面
-    // 確認画面（ConfirmDialog）の実行ボタン
-    const doIt = RT.findAll(first.tree(), (n: any) => n.type === 'button' && RT.textOf(n).includes('理解した上で破棄する'))
-    expect(doIt.length, '破棄の確認画面が出ていない').toBe(1)
-    doIt[0].props.onClick()
-    await settle()
+    await pressTeardownAndConfirm(first) // 共通の確認（ConfirmModal）に「破棄する」と答える
     expect(mainOps.getOps(DIR).running?.op).toBe('削除')
     first.close() // 閉じる
     await settle()
@@ -1016,9 +918,7 @@ describe('この画面が動かした操作', () => {
     teardownValue = PLAIN_DELETED
     const v = mountPanel()
     await settle()
-    await v.click('破棄する（削除）')
-    RT.findAll(v.tree(), (n: any) => n.type === 'button' && RT.textOf(n).includes('理解した上で破棄する'))[0].props.onClick()
-    await settle()
+    await pressTeardownAndConfirm(v)
     const startedAt = mainOps.getOps(DIR).last!.startedAt
     v.close()
     await settle()
@@ -1033,9 +933,7 @@ describe('この画面が動かした操作', () => {
     teardownValue = KEPT
     const v = mountPanel()
     await settle()
-    await v.click('破棄する（削除）')
-    RT.findAll(v.tree(), (n: any) => n.type === 'button' && RT.textOf(n).includes('理解した上で破棄する'))[0].props.onClick()
-    await settle()
+    await pressTeardownAndConfirm(v)
     const startedAt = mainOps.getOps(DIR).last!.startedAt
     v.close()
     await settle()
@@ -1067,16 +965,18 @@ describe('この画面が動かした操作', () => {
     teardownValue = KEPT
     const v = mountPanel()
     await settle()
-    await v.click('破棄する（削除）')
-    const doIt = RT.findAll(v.tree(), (n: any) => n.type === 'button' && RT.textOf(n).includes('理解した上で破棄する'))
-    doIt[0].props.onClick()
-    await settle()
-    // 破棄の結果（この画面の選択どおり、レジストリも消す既定＝残るのは保存場所だけ）
+    await pressTeardownAndConfirm(v)
+    // 破棄の結果は共通の結果欄（SharedTeardownResultView）で描く。警告（月額が続く）は、本文に混ぜず黄色の知らせの枠に出る。
     const t = v.text()
-    expect(t).toContain('完了しました')
+    expect(t).toContain('✅ 破棄しました')
     expect(t).toContain('データの保存場所『koto-data-x』')
     expect(t).toContain('課金は続きます')
     expect(t, '返り値で出した結果を前の結果として出し直している').not.toContain('破棄の結果')
+    const warnBox = RT.findAll(v.tree(), (n: any) => n.type === 'div' && n.props['data-teardown-warnings'] !== undefined)
+    expect(warnBox.length, '月額が続く警告が、黄色の知らせの枠に出ていない').toBe(1)
+    expect(RT.textOf(warnBox[0])).toContain('課金は続きます')
+    // IPC には、認証の印・確認の印・レジストリの選択（Koto が作ったので既定でオン）と確認した時点の名前が渡る
+    expect(log.teardownArgs).toEqual([[DIR, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'koto-reg' }]])
   })
 })
 

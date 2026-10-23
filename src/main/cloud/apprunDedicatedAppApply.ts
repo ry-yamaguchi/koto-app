@@ -268,7 +268,7 @@ function formatPortNames(missing: { port: number; protocol: string }[]): string 
 
 function clusterPortsMissingMessage(missing: { port: number; protocol: string }[]): string {
   const names = formatPortNames(missing)
-  return `このクラスタには「${names}」が設定されていません。独自ドメインの証明書（https）を自動で受け取るために必要です。さくらのコントロールパネルで、クラスタの待ち受けポートに${names}を足してから、もう一度お試しください。`
+  return `このクラスタには待ち受けポート「${names}」が設定されていません。独自ドメインの証明書（https）を自動で受け取るために必要です。さくらのコントロールパネルで足してから、もう一度お試しください。`
 }
 
 // PATCH（Let's Encrypt のメール設定）のあとに欠けていたときは、直前の操作のせいかもしれないと
@@ -280,9 +280,9 @@ function clusterPortsMissingAfterPatchMessage(missing: { port: number; protocol:
 }
 
 const CLUSTER_PORTS_UNKNOWN_WARNING =
-  'クラスタの待ち受けポートを確認できませんでした。80（http）・443（https）が設定されているか、念のためさくらのコントロールパネルでご確認ください。'
+  'クラスタの待ち受けポートを確認できませんでした。80（http）・443（https）が設定されているか、さくらのコントロールパネルで確認してください。'
 const CLUSTER_PORTS_UNKNOWN_AFTER_PATCH_WARNING =
-  "Let's Encrypt のメールを設定したあと、クラスタの待ち受けポートを確認できませんでした。80（http）・443（https）が設定されているか、念のためさくらのコントロールパネルでご確認ください。"
+  "Let's Encrypt のメールを設定したあと、クラスタの待ち受けポートを確認できませんでした。80（http）・443（https）が設定されているか、さくらのコントロールパネルで確認してください。"
 
 /**
  * 記録済みのクラスタの上に、アプリケーション（独自ドメイン）を1つ公開する。
@@ -572,7 +572,7 @@ export async function publishAppFlow(
       break
     }
     if (lbElapsedMs >= timeoutMs) {
-      warnings.push('ロードバランサノードのアドレスが見つかりませんでした。IP が付くまで数分かかることがあります。数分待ってから、手順8の「🔄 IP を再取得」を押してください。')
+      warnings.push('ロードバランサノードのアドレスが見つかりませんでした。IP が付くまで数分かかることがあるので、待ってから手順8の「🔄 IP を再取得」を押してください。')
       stage(STAGE.publishLbAddress, UNMEASURED) // 付かないまま上限（3 分）まで待った（付くまでの時間は測れていない）
       clearRecordedLbAddresses()
       break
@@ -644,7 +644,7 @@ export async function publishAppFlow(
       verify = reachedOutcome ?? 'unreachable'
     } catch (e: any) {
       verify = 'unreachable'
-      warnings.push(`応答の確認中にエラーが発生したため、確認できませんでした（公開自体は完了しています）: ${e?.message ?? String(e)}`)
+      warnings.push(`応答の確認中にエラーが発生しました（公開自体は完了しています）: ${e?.message ?? String(e)}`)
     }
     // 応答を確かめられなかったとき（503・404・502・つながらない…）は、再試行の待ちを全部使った時間になる。
     // 「アプリが応答するまでの時間」の測定ではない＝保存しない（結果の「かかった時間を見る」には出る）。
@@ -658,7 +658,7 @@ export async function publishAppFlow(
     // **どちらの理由でとばしたのか**を1行残す。
     // D-19 以降、**とばす道はここしか無い**（像の種類ではとばさない）。
     warnings.push(lbAddresses.length === 0
-      ? 'ロードバランサの IP を取得できなかったため、応答の確認をスキップしました（確認する宛先が分からないためです）。手順8の「🔄 IP を再取得」を押したうえで、公開先を開いて表示されるかご自身で確かめてください。'
+      ? 'ロードバランサの IP を取得できなかったため、応答の確認をスキップしました。手順8の「🔄 IP を再取得」を押したうえで、公開先を開いて表示されるかご自身で確かめてください。'
       : 'ホスト名が分からないため、応答の確認をスキップしました。公開先を開いて、表示されるかご自身で確かめてください。')
   }
 

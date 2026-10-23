@@ -24,14 +24,15 @@
 // HANAMII は projectId を保存する前（初回の公開の最中）に二重に走ると、プロジェクトが二重に作られる。
 // 定義はこのファイル1か所（複製しない・掟10）。どのハンドラも、**`markPendingFs` より外側**で鍵を取る
 // （断られた側が、走っている公開の印を後始末の finally で消さないため）。
-// 「いま走っているか」は publishMeta:runningOp で画面へ伝え、「中断された可能性」の誤表示を防ぐ
+// 「いま走っているか」は publishMeta:runningOp で画面へ伝え（操作名と公開先）、「中断された可能性」の誤表示を防ぐ
 // （src/renderer/publishStatus.ts の judgePendingPublish）。
 //
 // ── `markPendingFs` を流用しないこと ──────────────────────────────────────────
 // あれは「途中で落ちたときのための印」であって鍵ではない。落ちたあとも残るので、
 // 鍵として使うと「二度と押せない」になる。ここは**プロセスの寿命だけ**の印にする。
 
-import { beginOp, finishOp, runningOpName, type ProjectOp, type OpMeta } from './projectOps'
+import { beginOp, finishOp, runningOpName, runningOpEntryOf, type ProjectOp, type OpMeta, type OpTarget, type RunningOpEntry } from './projectOps'
+import { opWordFor } from '../shared/opWord'
 import type { StageTimings } from '../shared/stageTiming'
 
 /** いま走っている操作（画面に出す日本語そのもの）。定義は projectOps.ts（記録と同じ場所）。 */
@@ -41,7 +42,7 @@ export type { ProjectOp } from './projectOps'
 // 以前はここに `Map<projectDir, ProjectOp>` を持っていた。いまは**走っている操作の記録**
 // （projectOps.ts の `live`）が鍵を兼ねる: 記録が1つ入っていれば、そのプロジェクトは使用中。
 // 「走っているか」と「何が起きているか」を**2か所で持たない**（掟10）。鍵を取るとき始まりを、
-// 抜けるとき（成功でも例外でも）終わりを、ここが自動で書く——9本のハンドラが**同じ道**で記録される。
+// 抜けるとき（成功でも例外でも）終わりを、ここが自動で書く——8本のハンドラが**同じ道**で記録される。
 //
 // **鍵はプロジェクト単位**（公開先をまたいでも、同じプロジェクトなら1つずつ）。
 // `.sakuraide.json` の publish.pending（開始マーカー）・`.sakura-cloud/` の記録・koto-data の置き直しは
@@ -51,14 +52,27 @@ export type { ProjectOp } from './projectOps'
 /**
  * 断るときの文面（純関数）。**何が走っているかを名指しする**——
  * 「いま使えません」だけでは、壊れているのと区別がつかない。
+ *
+ * 言葉は記録の op をそのまま使わず、公開先と合わせて `opWordFor`（shared/opWord.ts）で決める。
+ * 記録の op は共用型・HANAMII の破棄も専有型の削除も '削除' で持つが、画面では前者を「破棄」と言う
+ * （0.6.22 の決定 D3: 1回の流れの中は1つの言葉）。**`target` は必須**（渡し忘れると、破棄が走っている間に「（削除）」と出る）。
+ * 公開先が分からないとき（'unknown'）は、今までどおり op のまま。
  */
-export function projectBusyMessage(op: ProjectOp): string {
-  return `いま別の操作（${op}）を実行中です。終わってからもう一度お試しください。`
+export function projectBusyMessage(op: ProjectOp, target: OpTarget): string {
+  return `いま別の操作（${opWordFor(op, target)}）を実行中です。終わってからもう一度お試しください。`
 }
 
 /** いま走っている操作（画面へは publishMeta:runningOp と projectOps:get が同じ記録から答える。走っていなければ undefined）。 */
 export function runningOp(projectDir: string): ProjectOp | undefined {
   return runningOpName(projectDir)
+}
+
+/**
+ * いま走っている操作と、その公開先（`runningOp` と同じ記録から読む。走っていなければ undefined）。
+ * publishMeta:runningOp が画面へ返す形（画面が「破棄が進んでいます」と「削除が進んでいます」を言い分けるのに、公開先が要る）。
+ */
+export function runningOpEntry(projectDir: string): RunningOpEntry | undefined {
+  return runningOpEntryOf(projectDir)
 }
 
 /**
@@ -82,9 +96,9 @@ export async function withProjectLock<T>(
   op: ProjectOp,
   fn: () => Promise<T>,
   meta: OpMeta,
-): Promise<{ busy: true; running: ProjectOp } | { busy: false; value: T; stageTimings?: StageTimings }> {
-  const current = runningOpName(projectDir)
-  if (current) return { busy: true, running: current }
+): Promise<{ busy: true; running: ProjectOp; runningTarget: OpTarget } | { busy: false; value: T; stageTimings?: StageTimings }> {
+  const current = runningOpEntryOf(projectDir)
+  if (current) return { busy: true, running: current.op, runningTarget: current.target }
   beginOp(projectDir, op, meta)
   let outcome: { value: unknown } | { error: unknown } = { error: new Error('中断されました') }
   let value: T

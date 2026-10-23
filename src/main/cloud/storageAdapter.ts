@@ -14,6 +14,7 @@
 
 import type { StorageClientLike } from './apply'
 import type { CloudCredentials } from './auth'
+import { bucketNotListedMessage } from '../../shared/objectStorage'
 import { ObjectStorageClient, putObject, deleteObject, listAllKeys, type S3Auth, type StorageSite, type IssuedKey } from './objectStorage'
 
 /** 使い終わったら片づける必要があるストレージ操作。 */
@@ -115,20 +116,23 @@ export function makeStorageAdapter(
       const created = await client.createBucket(site.id, bucket)
       // **作れたと決めつけない（2026-08-14）。**
       // 作成APIは 409 を返すことがあり、それを「もうあるので大丈夫」と読んでいる。
-      // だが同じ名前を消した直後は「名前がまだ解放されていない」でも 409 になり得る。
+      // だが削除した名前は同じ月のうちは作り直せず（さくらの FAQ・2026-10-19 原本で確認）、
+      // 作られていないのに 409 になる。
       // その場合バケットは無いので、あとで書き込むと `403 AccessDenied` になり、
       // **原因の分からないエラーだけが残る**。だから一覧で存在を確かめる。
       const names = (await client.listBuckets(site.id)).map(b => b.name)
       if (!names.includes(bucket)) {
         // **応答をそのまま添える。** これが無いと、次に同じことが起きたときも
         // 「なぜ作られないのか」が誰にも分からない（2026-08-14 の教訓）
-        throw new Error(
-          `保存場所『${bucket}』を作成しましたが、一覧に見つかりません。`
-          + '同じ名前の保存場所を削除した直後は、名前が解放されるまで作り直せないことがあります。'
-          + 'しばらく待ってからお試しいただくか、設定の「データの保存」で別の名前の保存場所を作ってください。'
-          + `（作成の応答: HTTP ${created.status}${created.text ? ' ' + created.text : ''}／`
-          + `いまある保存場所: ${names.length > 0 ? names.join('、 ') : 'なし'}）`,
-        )
+        throw new Error(bucketNotListedMessage({
+          bucket,
+          status: created.status,
+          responseText: created.text,
+          nextStep: '「設定 → データの保存」で別の名前の保存場所を作ってから、【公開】を開き直して選び直してください。',
+          extra: `いまある保存場所: ${names.length > 0 ? names.join('、 ') : 'なし'}`,
+          // 呼び出し元の apply が「保存場所『X』を用意できませんでした: 」と前置きする。名前と失敗を2回言わない
+          omitHead: true,
+        }))
       }
     },
 

@@ -201,7 +201,7 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
                   if (!file.isDirty) { onClose(file.path); return }
                   await runCloseUnsaved(
                     file.path,
-                    `「${file.name}」には保存していない変更があります。保存せずに閉じますか？`,
+                    `「${file.name}」を保存せずに閉じますか？`,
                     {
                       confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
                       close: (path) => onClose(path),

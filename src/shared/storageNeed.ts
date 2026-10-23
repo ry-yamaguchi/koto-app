@@ -104,8 +104,7 @@ export function storageNeedFor(opts: {
     return {
       kind: 'will-lose-data',
       note: 'このアプリはファイルにデータを書いています。この公開先では、ファイルに書いたデータは残りません'
-        + '（何もしなくても消えることがあります）。保存場所を用意しないと、入力されたデータは失われます。'
-        + '用意すれば、データが残るようになります。',
+        + '（何もしなくても消えることがあります）。保存場所を用意すれば、データが残るようになります。',
     }
   }
 
@@ -202,7 +201,7 @@ export function shouldOfferStorage(need: StorageNeed): boolean {
  * 変えられる」という Koto の良さが、データを持ったアプリでも崩れない。
  */
 export const STORAGE_PORTABLE_NOTE =
-  '保存場所は公開先から独立しているため、公開先を変えてもデータはそのまま引き継がれます。'
+  '公開先を変えても、保存場所のデータはそのまま引き継がれます。'
 
 /** アプリのコードが使う環境変数の名前（AIへの説明にも使う）。 */
 export const STORAGE_ENV_NAMES = Object.values(STORAGE_ENV)

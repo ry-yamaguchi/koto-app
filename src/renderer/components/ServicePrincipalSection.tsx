@@ -182,7 +182,6 @@ export default function ServicePrincipalSection({ sp, onEdit }: Props) {
         <div className="mt-2 space-y-3">
           <p className="text-xs text-ink-secondary leading-relaxed">
             専有型のクラスタを作るには「サービスプリンシパル」が要りますが、<b className="text-ink">これは Koto からは作れません</b>。
-            作成に使う IAM API は、通常のAPIキーでは使えない設計のためです（実測で権限エラー）。
             さくら側のサービスプリンシパルは使い回せます（さくらのクラウドの「プロジェクト」のリソースで、Koto のプロジェクトとは別のものです。
             同じものでクラスタを2回作れたことを確かめています）。
             前のプロジェクトで使った ID があれば、ここに入れておきます。
@@ -218,9 +217,8 @@ export default function ServicePrincipalSection({ sp, onEdit }: Props) {
               <li>「作成」を押す（反映まで最大3分）</li>
             </ol>
             <p className="text-[11px] text-ink-muted leading-relaxed">
-              ※「リソース階層名」「リソース階層タイプ」は、選んだプロジェクトが表示されるだけの欄です（ここでは変更しません）。
-              組織やフォルダ単位でも付けられますが、<b className="text-ink-secondary">サービスプリンシパルにはプロジェクト単位で付けるのが確実</b>です
-              （上位で付けた権限は、サービスプリンシパルの制約で効かないことがあると公式に明記されています）。
+              ※「リソース階層名」「リソース階層タイプ」は、選んだプロジェクトが表示されるだけの欄です。
+              <b className="text-ink-secondary">サービスプリンシパルには、プロジェクト単位で付けてください</b>（組織やフォルダ単位で付けた権限は効かないことがあります）。
             </p>
           </div>
 
@@ -243,7 +241,7 @@ export default function ServicePrincipalSection({ sp, onEdit }: Props) {
           </div>
 
           <p className="text-[11px] text-ink-muted leading-relaxed">
-            ※ 確認できるのは文字数の形式だけです。存在するかどうかはここでは確認できません（IAM APIが使えないため）。実際にクラスタを作る段階になって初めて分かります。
+            ※ 確認できるのは形式（12桁の数字）だけです。存在するかどうかは、クラスタを作るときに分かります。
           </p>
         </div>
       </details>

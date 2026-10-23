@@ -532,7 +532,8 @@ describe('claudeNoProjectGuidance', () => {
 
 describe('claudeConsentDeclinedGuidance', () => {
   it('returns a cancellation notice when there is no AI Engine key to fall back to (mode B)', () => {
-    expect(claudeConsentDeclinedGuidance(false)).toBe('キャンセルしたので送信を中止しました。')
+    // 2026-10-09 画面の文を短くする（T154）: 「キャンセルしたので」は外した（利用者が自分で押した結果なので言い直さない）。
+    expect(claudeConsentDeclinedGuidance(false)).toBe('送信を中止しました。')
   })
 
   it('returns null when an AI Engine key is present (mode A falls back silently, unchanged behavior)', () => {

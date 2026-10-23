@@ -1,11 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+// E3 は本物の保存の部品（stageTimingStore）を一時フォルダに差して確かめる。electron の app は、userData を読んだら落ちる偽物。
+vi.mock('electron', () => ({ app: { getPath: () => { throw new Error('利用者の保存領域（userData）を読もうとした') }, getVersion: () => '0.0.0-test' }, ipcMain: { handle: () => {} } }))
+
 import {
-  getOps, progressReporter, stageReporter, reportStage, reportProgress, setStageTimingSink, setProjectOpsListener,
+  getOps, progressReporter, stageReporter, reportStage, reportProgress, setStageTimingSink, setProjectOpsListener, adoptStoppedOps,
   resetProjectOpsForTests, type StageTimingSinkEntry,
 } from '../src/main/projectOps'
 import { withProjectLock } from '../src/main/projectLock'
-import { resumedCreateResult, resumedTeardownResult, resumedPublishResult } from '../src/renderer/apprunDedicatedActions'
-import { readStageTimings } from '../src/shared/stageTiming'
+import { initStageTimingStore, loadStageTimings, recordStageTimings, stageTimingFilePath } from '../src/main/stageTimingStore'
+import { resumedCreateResult, resumedPublishResult } from '../src/renderer/apprunDedicatedActions'
+import { resumedTeardownView } from '../src/shared/teardownResult'
+import { readStageTimings, UNMEASURED } from '../src/shared/stageTiming'
+import type { StoppedEntry } from '../src/shared/inFlightOps'
 
 // ── 段ごとの所要時間の「記録」（projectOps・メモリ）（2026-10-07・どこにどれくらい時間がかかったか）───────────
 // 進み具合の送り口（reportProgress / progressReporter）に任意の `stage`（段の内部名）を渡せる。ハンドラが段の切り替わりで渡すと、
@@ -360,7 +370,7 @@ describe('双子: その場の結果と、開き直したときに記録から�
 
   it('★ 手順6（削除）', async () => {
     const { inPlace, record } = await run('apprunDedicated:teardown', '削除', { ok: true, executed: ['x'], message: 'ok', remaining: {} })
-    expect(resumedTeardownResult(record).stageTimings).toEqual(inPlace)
+    expect(resumedTeardownView('sakura-apprun-dedicated', record.result).stageTimings).toEqual(inPlace)
   })
 
   it('★ 手順8（公開）', async () => {
@@ -371,19 +381,104 @@ describe('双子: その場の結果と、開き直したときに記録から�
   it('★ 失敗した結果でも、記録から出す結果は同じ時間を持つ', async () => {
     const { inPlace, record } = await run('apprunDedicated:teardown', '削除', { ok: false, executed: [], message: '失敗', remaining: { clusterID: 'c' } })
     expect(inPlace).toBeTruthy()
-    expect(resumedTeardownResult(record).stageTimings).toEqual(inPlace)
+    expect(resumedTeardownView('sakura-apprun-dedicated', record.result).stageTimings).toEqual(inPlace)
   })
 
   it('記録の時間が壊れていても、結果は出る（時間だけ出さない）', async () => {
     const { record } = await run('apprunDedicated:teardown', '削除', { ok: true, executed: [], message: 'ok', remaining: {} })
     const broken = JSON.parse(JSON.stringify(record))
     broken.result.extra.stageTimings = { totalMs: 'x', stages: 'x' }
-    expect(resumedTeardownResult(broken).stageTimings).toBeUndefined()
-    expect(resumedTeardownResult(broken).ok).toBe(true)
+    expect(resumedTeardownView('sakura-apprun-dedicated', broken.result).stageTimings).toBeNull()
+    expect(resumedTeardownView('sakura-apprun-dedicated', broken.result).ok).toBe(true)
   })
 
   it('読み戻した値は、画面が使う読み取り（readStageTimings）を通った形', async () => {
     const { record } = await run('apprunDedicated:teardown', '削除', { ok: true, executed: [], message: 'ok', remaining: {} })
     expect(readStageTimings(record.result!.extra.stageTimings)).toEqual({ totalMs: 63_500, stages: [{ stage: 'a.first', ms: 2_500 }, { stage: 'a.second', ms: 61_000 }] })
+  })
+})
+
+// ── 目安に入れない（設計書 10.13.7・判断 K）──────────────────────────────────────────────────
+// 止まった回の時間は結果（かかった時間を見る）に出すが、所要時間の目安（stage-timings.json）には入れない。止まった回を合わせた回
+// （earlierRuns が付いた回）は、今回の段も含めて何も渡さない: 続きの回は、印の付かない段（アプリの削除の「コンテナがもう止まっていた」・
+// 保存場所の削除の「中身が途中まで消えていた」）が短い時間のままで目安に入り、狂わせうるため。
+describe('E 止まった回を合わせた回は、所要時間の目安に何も入れない', () => {
+  const NOW = T0 + 30 * 60_000
+  const stopped = (): Record<string, StoppedEntry> => ({
+    [A]: {
+      op: '削除', target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:teardown', noticeSeen: true,
+      runs: [{
+        op: '削除', target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:teardown', version: '0.6.22', endedBy: 'quit',
+        startedAt: T0, lastSeenAt: T0 + 400_000,
+        segments: [{ stage: 'teardown.app', startedAt: T0, endedAt: T0 + 60_000 }, { stage: 'teardown.lb', startedAt: T0 + 60_000 }],
+      }],
+    },
+  })
+  const run = async (stages: [string, number][], result: unknown = { ok: true }, mark?: { unmeasured?: boolean }) => {
+    const progress = progressReporter(A)
+    return withProjectLock(A, '削除', async () => {
+      for (const [stage, ms] of stages) { progress('…', { stage }); if (mark && stage === 'teardown.lb') reportStage(A, stage, mark); vi.setSystemTime(Date.now() + ms) }
+      return result
+    }, META)
+  }
+  beforeEach(() => { vi.setSystemTime(NOW); adoptStoppedOps(stopped(), NOW) })
+
+  it('★ E1 earlierRuns が付いた回でも、今回の段（timings.stages）に止まった回の段は混ざらない', async () => {
+    const r = await run([['teardown.cluster', 10_000]])
+    if (r.busy) throw new Error('busy')
+    expect(r.stageTimings!.stages).toEqual([{ stage: 'teardown.cluster', ms: 10_000 }])
+    expect(r.stageTimings!.totalMs).toBe(10_000)
+    expect(r.stageTimings!.earlierRuns!.map(x => x.stages.map(y => y.stage))).toEqual([['teardown.app', 'teardown.lb']]) // 止まった回の段は earlierRuns の中だけ
+    expect(getOps(A).last!.result!.extra.stageTimings).toEqual(r.stageTimings)
+  })
+
+  it('★ E4 earlierRuns が付いた回は sink を呼ばない（ok:true・印の付かない段だけの回でも）。付かない回は今までどおり丸ごと渡る', async () => {
+    const sunk = captureSink()
+    const first = await run([['teardown.cluster', 10_000]])
+    if (first.busy) throw new Error('busy')
+    expect(first.stageTimings!.earlierRuns).toHaveLength(1)
+    expect(sunk).toEqual([]) // 続きの回: 何も渡さない
+    // 止まった回を合わせたので消えている。次の回は付かず、今までどおり渡る。
+    const second = await run([['teardown.cluster', 10_000]])
+    if (second.busy) throw new Error('busy')
+    expect('earlierRuns' in second.stageTimings!).toBe(false)
+    expect(sunk).toEqual([{
+      op: '削除', target: 'sakura-apprun-dedicated', handler: 'apprunDedicated:teardown', finishedAt: Date.now(), zone: null,
+      stages: [{ stage: 'teardown.cluster', ms: 10_000 }],
+    }])
+  })
+
+  it('★ E2 今回の UNMEASURED の段は、earlierRuns があっても渡らない（印の付かない段も、付いた段も）。印だけの回でも同じ', async () => {
+    const sunk = captureSink()
+    const r = await run([['teardown.lb', 5_000], ['teardown.cluster', 10_000]], { ok: true }, UNMEASURED)
+    if (r.busy) throw new Error('busy')
+    expect(r.stageTimings!.earlierRuns).toHaveLength(1)
+    expect(sunk).toEqual([])
+    // 付かない回では、印の付いた段だけが外れ、ほかの段は渡る（E4 の対照。この検査が空振りでないことを示す）
+    const again = await run([['teardown.lb', 5_000], ['teardown.cluster', 10_000]], { ok: true }, UNMEASURED)
+    if (again.busy) throw new Error('busy')
+    expect(sunk).toHaveLength(1)
+    expect(sunk[0].stages).toEqual([{ stage: 'teardown.cluster', ms: 10_000 }])
+  })
+
+  it('★ E3 止まった回の段は stage-timings.json（本物の保存の部品・一時フォルダ）に1行も入らない。続きの回の段も入らない', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-stage-timing-resume-'))
+    initStageTimingStore(dir)
+    try {
+      setStageTimingSink(entry => {
+        recordStageTimings({ at: new Date(entry.finishedAt).toISOString(), version: 'test', zone: entry.zone, stages: entry.stages })
+      })
+      const first = await run([['teardown.cluster', 10_000]])
+      if (first.busy) throw new Error('busy')
+      expect(first.stageTimings!.earlierRuns).toHaveLength(1)
+      expect(fs.existsSync(stageTimingFilePath())).toBe(false) // 続きの回: 何も書かれない
+      const second = await run([['teardown.asg', 20_000]]) // 付かない回: 書かれる
+      if (second.busy) throw new Error('busy')
+      expect(Object.keys(loadStageTimings().stages)).toEqual(['teardown.asg'])
+      expect(fs.readFileSync(stageTimingFilePath(), 'utf-8')).not.toMatch(/teardown\.(app|lb|cluster)/) // 止まった回の段も、続きの回の段も入っていない
+    } finally {
+      initStageTimingStore(null)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -289,8 +289,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       {step === 'target' && (
         <>
           <div className="text-xs text-ink-secondary bg-surface border border-line rounded-lg px-3 py-2.5 leading-relaxed">
-            公開されているものをインポートし、編集できるようにします。<br />
-            パソコンが変わった・引き継いだ・引っ越したときに使えます。
+            パソコンが変わったときや、引き継いだときに使えます。
             <span className="text-ink-muted">公開先には何も作らず、何も消しません。</span>
           </div>
           <div>
@@ -469,9 +468,6 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
                 </button>
               ))}
             </div>
-            {!intent && (
-              <p className="mt-1 text-[11px] text-ink-muted">選ぶと、このあと何が起きるかが下に出ます。</p>
-            )}
           </div>
 
           <div className="text-xs bg-surface border border-line rounded-lg px-3 py-2.5 space-y-1.5 leading-relaxed">

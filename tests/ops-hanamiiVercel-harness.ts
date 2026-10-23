@@ -265,6 +265,10 @@ export function makeWorld(dir: string) {
     get: [] as string[],
     hanamiiPublish: [] as unknown[],
     hanamiiTeardown: [] as unknown[],
+    /** 破棄に渡ったトークン（`hanamiiTeardown` の記録の形は変えない）。 */
+    hanamiiTeardownTokens: [] as string[],
+    /** 窓を閉じるときの警告の登録（`win.setBusy` の引数。活動レジストリが数えたとき・外したときに呼ぶ）。 */
+    setBusy: [] as unknown[][],
     hanamiiStatus: 0,
     cleanUpKeys: 0,
     setInterval: 0,
@@ -292,10 +296,14 @@ export function makeWorld(dir: string) {
     readGate: null as Deferred | null,
     /** 公開・破棄の本体を、この約束が果たされるまで止める（走っている状態を作る）。 */
     opGate: null as Deferred | null,
+    /** プロジェクトごとの `opGate`（別々のプロジェクトの操作を、別々に止めて、別々に終わらせる）。`opGate` と両方あれば両方を待つ。 */
+    opGateByDir: {} as Record<string, Deferred>,
     publishReply: { ...HANAMII_READY } as any,
     teardownReply: { ok: true, appDeleted: true, executed: [] } as any,
     vercelReply: { ok: true, deploymentId: 'dpl_v1', url: 'https://app-test.vercel.test', readyState: 'READY' } as any,
     statusReply: { ok: true, url: 'https://app-test.example.test', readyState: 'READY', errorCode: null, runtime: { status: 'healthy', detail: null, syncedAt: null } } as any,
+    /** `storage.placement` の応答（保存場所の設定）。破棄の確認が押した時点にこれを読む。 */
+    placementReply: { ok: true, placement: null, placements: [] } as any,
     api: null as any,
     /** 好きな公開先・IPC の操作を、本物の鍵と記録の中で走らせる（別の公開先の操作を作るのにも使う）。 */
     guard: null as unknown as (project: string, op: '公開' | '削除' | '作成', meta: { target: any; handler: string }, first: string, body: () => Promise<any>) => Promise<any>,
@@ -306,9 +314,10 @@ export function makeWorld(dir: string) {
     const locked = await withProjectLock(project, op, async () => {
       progress(first)
       if (world.opGate) await world.opGate.promise
+      if (world.opGateByDir[project]) await world.opGateByDir[project].promise
       return body()
     }, { ...meta, secrets: [] })
-    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running) } : locked.value
+    return locked.busy ? { ok: false, message: projectBusyMessage(locked.running, locked.runningTarget) } : locked.value
   }
 
   world.guard = guard
@@ -338,10 +347,14 @@ export function makeWorld(dir: string) {
         calls.hanamiiPublish.push(opts)
         return guard(project, '公開', { target: 'hanamii', handler: 'hanamii:publish' }, '📦 公開するファイルをまとめています…', async () => world.publishReply)
       },
-      teardown: async (projectId: string, _token: string, project?: string) => {
-        calls.hanamiiTeardown.push([projectId, project])
-        if (!project) return world.teardownReply
-        return guard(project, '削除', { target: 'hanamii', handler: 'hanamii:teardown' }, '🗑 HANAMII のプロジェクトを削除しています…', async () => {
+      // 本物の呼び形は (projectDir, { token }, { confirmed, projectId })。呼ばれた記録は [projectId, projectDir] のまま。
+      teardown: async (project: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string }) => {
+        calls.hanamiiTeardown.push([opts?.projectId, project])
+        calls.hanamiiTeardownTokens.push(auth?.token)
+        // 本物の main の骨は、projectDir が無い・確認の印が true でない呼び出しを、何も呼ばずに断る（tests/hanamiiTeardownShell.test.ts）。
+        if (!project || opts?.confirmed !== true) return { ok: false, message: '確認ダイアログを通っていません' }
+        const projectId = opts.projectId
+        return guard(project, '削除', { target: 'hanamii', handler: 'hanamii:teardown' }, '🗑 HANAMII のプロジェクトを破棄しています…', async () => {
           // 本物の main（hanamii:teardown）は、保存場所まで片づいたら、鍵の中で記録（projectId・公開記録）も片づける。
           // ただし**記録が別のプロジェクトを指しているときは触らない**。その判断そのものは
           // tests/hanamiiTeardownRecord.test.ts が本物のハンドラ・本物のディスクで固定している（ここは偽の main の写し）。
@@ -362,9 +375,11 @@ export function makeWorld(dir: string) {
       },
     },
     storage: {
-      placement: async () => ({ ok: true, placement: null, placements: [] }),
+      placement: async () => world.placementReply,
       scan: async () => ({ usedBy: [] }),
     },
+    // 破棄の確認の材料（目安）。無くても確認は出るが、無いと材料の読み込みが TypeError で止まり、確認を出す前に失敗する。
+    stageTiming: { estimates: async () => null },
     fs: {
       // 呼んだ時点の中身を返す（応答は readGate が果たされるまで遅らせられる）。遅れて届いた古い値を作るのに使う。
       readFile: async (file: string) => {
@@ -373,6 +388,8 @@ export function makeWorld(dir: string) {
         if (world.readGate) await world.readGate.promise
         return snap
       },
+      // 確認の「ほかの公開先」が旧い共用型の記録（state.json）の有無を見る（D9=2）。.sakuraide.json だけがある。
+      exists: async (file: string) => String(file).endsWith('/.sakuraide.json'),
     },
     publishMeta: {
       merge: async (_p: string, patch: Record<string, unknown>) => {
@@ -384,7 +401,7 @@ export function makeWorld(dir: string) {
         return { ok: true, meta: world.meta }
       },
     },
-    win: { setBusy: () => {} },
+    win: { setBusy: (...a: unknown[]) => { calls.setBusy.push(a) } },
   }
   world.api = api
 
@@ -413,6 +430,16 @@ export function installWindow(world: World): void {
 
 export function resetMain(): void {
   resetProjectOpsForTests()
+}
+
+// ── HANAMII の認証情報（中央ストア）の偽物 ──────────────────────────────────────
+// 中央ストアの登録（id → トークン）と、使用中のトークン。記録の tokenId の登録だけで破棄を呼ぶこと（D8）を見るテスト
+// （tests/hanamiiTeardownSection*.test.ts）が、vi.mock の工場から使う。テストごとに中身を差し替える。
+export const hanamiiTokens = { byId: new Map<string, string>(), active: null as string | null }
+export const hanamiiCredentialsModalMock = {
+  getHanamiiToken: async () => hanamiiTokens.active,
+  getHanamiiTokenById: async (id: string) => hanamiiTokens.byId.get(id) ?? null,
+  listHanamiiTokenEntries: async () => ({ tokens: [{ id: 't1', label: 'テスト用' }], activeId: 't1' }),
 }
 
 export { getOps, reportProgress, withProjectLock, progressReporter }

@@ -10,7 +10,7 @@
 import { ipcMain } from 'electron'
 import * as path from 'path'
 import { mergeMetaPatchFs, forgetPublishTargetFs, dismissInterruptedPublishFs } from '../publishMetaFs'
-import { runningOp } from '../projectLock'
+import { runningOpEntry } from '../projectLock'
 import type { PublishTargetKind } from '../../shared/publishMeta'
 
 const BAD_DIR = { ok: false as const, message: 'プロジェクトフォルダが不正です' }
@@ -41,16 +41,18 @@ export function registerPublishMetaHandlers(): void {
     return dismissInterruptedPublishFs(projectDir)
   })
 
-  // いま main が走らせている操作（'作成' | '削除' | '公開'）。走っていなければ null。
+  // いま main が走らせている操作と、その公開先（`{ op: '作成' | '削除' | '公開', target }`）。走っていなければ null。
   // 公開の画面が「中断された可能性」と「いま進んでいます」を出し分けるのに使う（main の鍵が唯一の答え）。
+  // 公開先も返すのは、プロジェクト削除の赤字が「破棄が進んでいます」（共用型・HANAMII）と「削除が進んでいます」（専有型）を
+  // 言い分けるため（記録の op は、破棄も専有型の削除も '削除'。画面の言葉は src/shared/opWord.ts の opWordFor が決める）。
   //
   // ── projectOps:get との関係（2026-09-29）──────────────────────────────────
-  // **同じ記録から答える**（`runningOp` は projectOps.ts の「走っている記録」の操作名を返すだけ。
+  // **同じ記録から答える**（`runningOpEntry` は projectOps.ts の「走っている記録」の操作名と公開先を返すだけ。
   // 「走っているか」を2か所で持たない）。残してあるのは、公開の画面（projectMeta.ts の
-  // loadPublishSnapshot・PublishModal）がこの名前で読んでいるため。画面が `projectOps:get` の
-  // `running.op` へ移り終えたら、この IPC は3点セットごと消してよい（掟6）。
+  // loadPublishSnapshot・PublishModal）とプロジェクト削除がこの名前で読んでいるため。画面が `projectOps:get` の
+  // `running` へ移り終えたら、この IPC は3点セットごと消してよい（掟6）。
   ipcMain.handle('publishMeta:runningOp', (_, projectDir: unknown) => {
     if (!isProjectDir(projectDir)) return null
-    return runningOp(projectDir) ?? null
+    return runningOpEntry(projectDir) ?? null
   })
 }

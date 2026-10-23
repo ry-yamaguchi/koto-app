@@ -70,7 +70,6 @@ describe('進捗の送り口は1つ（progressReporter）: renderer へ進捗を
   const SENDERS: Array<[string, string, string]> = [
     ['src/main/ipc/cloud.ts', 'cloud:apply', "progressReporter(projectDir, msg => event.sender.send('cloud:apply-progress', msg))"],
     ['src/main/ipc/vercel.ts', 'vercel:publish', "progressReporter(projectDir, m => event.sender.send('vercel:progress', m))"],
-    ['src/main/ipc/apprunDedicated.ts', 'apprunDedicated:teardown', "progressReporter(projectDir, msg => event.sender.send('apprunDedicated:teardown-progress', msg))"],
     ['src/main/ipc/apprunDedicated.ts', 'apprunDedicated:publishApp', "progressReporter(projectDir, msg => event.sender.send('apprunDedicated:publish-progress', msg))"],
   ]
   for (const [file, channel, call] of SENDERS) {
@@ -81,4 +80,18 @@ describe('進捗の送り口は1つ（progressReporter）: renderer へ進捗を
       expect(block.split('event.sender.send(').length - 1).toBe(1)
     })
   }
+
+  // 専有型の削除は 0.6.22 段階3B-1 から共通の骨に載った: ハンドラは送り口（sendProgress）を骨へ渡し、骨が progressReporter を通す。
+  // 2つに分けて見る（ハンドラが自分で progressReporter を作る・直接 send する形に戻ると、記録が更新されなくなる）。
+  it('apprunDedicated:teardown: ハンドラは sendProgress を骨へ渡し、骨が progressReporter(projectDir, args.sendProgress) を通す。直接 send しない', () => {
+    const block = blockOf('src/main/ipc/apprunDedicatedTeardown.ts', 'apprunDedicated:teardown')
+    expect(block).toContain("sendProgress: msg => event.sender.send('apprunDedicated:teardown-progress', msg)")
+    // event.sender.send はその1行にしか無い
+    expect(block.split('event.sender.send(').length - 1).toBe(1)
+    // ハンドラが自前の送り口を作らない（作ると、骨が通す送り口と二重になる）
+    expect(block).not.toContain('progressReporter')
+    expect(codeOnly(read('src/main/cloud/teardownShell.ts'))).toContain('progress: progressReporter(projectDir, args.sendProgress),')
+    // 専有型の旧いハンドラ（ipc/apprunDedicated.ts）に、削除の送り口は残っていない
+    expect(codeOnly(read('src/main/ipc/apprunDedicated.ts'))).not.toContain('apprunDedicated:teardown-progress')
+  })
 })

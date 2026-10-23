@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { teardownConfirmMessage, teardownKindsOf } from '../src/renderer/apprunDedicatedActions'
+import { buildTeardownConfirmBody, teardownKindsOf } from '../src/renderer/teardown/confirm'
+
+// 0.6.22 段階3B-7: 専有型の確認の本文を作る手本（apprunDedicatedActions.ts の teardownConfirmMessage）は消え、3つの公開先で共通の
+// buildTeardownConfirmBody（teardown/confirm.ts）の1つになった。専有型の言葉（verb 削除・課金は止まると言う・元に戻せませんは常に言う）で呼ぶ。
+// 期待は変えていない（T161 の「ほかの公開先」の文だけは、この試験のどこにも出ない）。
+const confirmBody = (o: {
+  targets: string[]
+  placements: Array<{ bucket: string; prefix?: string; shared?: boolean } | null | undefined> | null | undefined
+  dataNote: string
+  otherTargets?: string[]
+  waitNote?: string
+}): string => buildTeardownConfirmBody({ verb: '削除', claimsComputeBillingStops: true, irreversibleNote: 'always', ...o })
 
 // ── W-14（2026-09-27 決定・案1+案2）: 専有型⑥「すべて削除する」の確認が「課金は止まります」と
 // 言い切っていた ────────────────────────────────────────────────────────
@@ -20,7 +31,7 @@ describe('W-14: ⑥の確認ダイアログ「保存場所（中のデータも�
   const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
 
   it('一覧の項目は「保存場所ごと消える」と読める言い方をしない', () => {
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [PLACEMENT], dataNote: 'ダミーのdataNote' })
+    const msg = confirmBody({ targets: TARGETS, placements: [PLACEMENT], dataNote: 'ダミーのdataNote' })
     const list = msg.split('\n\n')[0]
     expect(list).toContain('保存場所『koto-data-x』にある、このプロジェクトのデータ')
     // 直す前の文言（保存場所そのものが消えると読める）が残っていないこと
@@ -28,7 +39,7 @@ describe('W-14: ⑥の確認ダイアログ「保存場所（中のデータも�
   })
 
   it('保存場所が消えるかどうかは💾の行（dataNote）に任せる。一覧側では言わない', () => {
-    const msg = teardownConfirmMessage({ targets: TARGETS, placements: [PLACEMENT], dataNote: '💾のダミー文' })
+    const msg = confirmBody({ targets: TARGETS, placements: [PLACEMENT], dataNote: '💾のダミー文' })
     const list = msg.split('\n\n')[0]
     expect(list).not.toContain('消えます')
   })
@@ -38,7 +49,7 @@ describe('W-14: ⑥の確認ダイアログ「ここに挙げたものの月額�
   const PLACEMENT = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
 
   it('固定文言の「ここに挙げたものの月額の課金は止まります」はもう出さない', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: ['アプリ『myapp』', 'クラスタ『cluster-x』'],
       placements: [],
       dataNote: '',
@@ -49,8 +60,8 @@ describe('W-14: ⑥の確認ダイアログ「ここに挙げたものの月額�
   it('★★ 課金が止まる対象は targets（実際に消えるものの一覧）から組み立てる。名前は固定で書かない', () => {
     const targetsA = ['アプリ『myapp』', 'クラスタ『cluster-x』']
     const targetsB = ['クラスタ『別のクラスタ』']
-    const msgA = teardownConfirmMessage({ targets: targetsA, placements: [], dataNote: '' })
-    const msgB = teardownConfirmMessage({ targets: targetsB, placements: [], dataNote: '' })
+    const msgA = confirmBody({ targets: targetsA, placements: [], dataNote: '' })
+    const msgB = confirmBody({ targets: targetsB, placements: [], dataNote: '' })
     // targets を変えると、課金の文もそれに追従して変わる（固定文言なら変わらない＝この比較で捕まる）。
     // 2026-09-29（作者の決定）: 課金の文は**種類だけ**（ID は一覧の側で一度出している）。
     expect(msgA).toContain('アプリ・クラスタの課金は止まります。')
@@ -64,7 +75,7 @@ describe('W-14: ⑥の確認ダイアログ「ここに挙げたものの月額�
   })
 
   it('保存場所があるときは「共有なら残る」ことを、計算資源の課金停止とは分けて言う', () => {
-    const msg = teardownConfirmMessage({
+    const msg = confirmBody({
       targets: ['クラスタ『cluster-x』'],
       placements: [PLACEMENT],
       dataNote: 'ダミー',
@@ -77,7 +88,7 @@ describe('W-14: ⑥の確認ダイアログ「ここに挙げたものの月額�
 
   it('★★ 保存場所だけが残っている状態（targets が空）でも、無い費用の話をしない（W-14 の注意）', () => {
     // 計算資源はすべて消え、保存場所の片づけだけが前回失敗して残っている、という実在しうる状態。
-    const msg = teardownConfirmMessage({ targets: [], placements: [PLACEMENT], dataNote: 'ダミー' })
+    const msg = confirmBody({ targets: [], placements: [PLACEMENT], dataNote: 'ダミー' })
     // 一覧が「保存場所」だけになっても、存在しないアプリ・ロードバランサ等の課金停止を語らない
     expect(msg).not.toContain('アプリ')
     expect(msg).not.toContain('ロードバランサ')
@@ -87,13 +98,13 @@ describe('W-14: ⑥の確認ダイアログ「ここに挙げたものの月額�
   })
 
   it('計算資源も保存場所も無いとき（想定外の呼び出し）は、無い課金の話を作らない', () => {
-    const msg = teardownConfirmMessage({ targets: [], placements: [], dataNote: '' })
+    const msg = confirmBody({ targets: [], placements: [], dataNote: '' })
     expect(msg).not.toContain('課金')
     expect(msg).toContain('この操作は元に戻せません。よろしいですか？')
   })
 
   it('画面には素のテキストとして出る（Markdown 記法を使わない・掟5）', () => {
-    const msg = teardownConfirmMessage({ targets: ['クラスタ『cluster-x』'], placements: [PLACEMENT], dataNote: 'ダミー' })
+    const msg = confirmBody({ targets: ['クラスタ『cluster-x』'], placements: [PLACEMENT], dataNote: 'ダミー' })
     expect(msg).not.toMatch(/\*\*|__|`/)
   })
 })
@@ -112,14 +123,14 @@ describe('⑥の確認ダイアログ: 課金の文は種類だけ（ID は一�
   const costParagraph = (msg: string) => msg.split('\n\n').find(p => p.includes('この操作は元に戻せません')) ?? ''
 
   it('★★ 全部あるとき、作者が示した文そのもの（種類だけ）になる', () => {
-    const msg = teardownConfirmMessage({ targets: FULL, placements: [], dataNote: '' })
+    const msg = confirmBody({ targets: FULL, placements: [], dataNote: '' })
     expect(costParagraph(msg)).toBe(
       'この操作は元に戻せません。削除すると、アプリ・ロードバランサ・オートスケーリンググループ・クラスタの課金は止まります。よろしいですか？',
     )
   })
 
   it('★★ 課金の文に ID も『』も入らない。ID は一覧（最初の段落）にだけ、ちょうど1回出る', () => {
-    const msg = teardownConfirmMessage({ targets: FULL, placements: [], dataNote: '' })
+    const msg = confirmBody({ targets: FULL, placements: [], dataNote: '' })
     expect(costParagraph(msg)).not.toContain('『')
     for (const id of ['tsukaisute', '01a0b2c3d4e5', '02b1c2d3e4f5', '03c1d2e3f4a5']) {
       expect(msg.split(id).length - 1, `ID『${id}』が一覧のほかにも出ている`).toBe(1)
@@ -129,11 +140,11 @@ describe('⑥の確認ダイアログ: 課金の文は種類だけ（ID は一�
 
   it('★★ 種類は実際に消すものの一覧から作る。一覧に無い種類は言わない（固定で並べない）', () => {
     // アプリを公開していなかった（一覧にアプリが無い）プロジェクト
-    const noApp = teardownConfirmMessage({ targets: FULL.slice(1), placements: [], dataNote: '' })
+    const noApp = confirmBody({ targets: FULL.slice(1), placements: [], dataNote: '' })
     expect(costParagraph(noApp)).toContain('ロードバランサ・オートスケーリンググループ・クラスタの課金は止まります。')
     expect(costParagraph(noApp)).not.toContain('アプリ')
     // クラスタだけが残っているプロジェクト
-    const onlyCluster = teardownConfirmMessage({ targets: [FULL[3]], placements: [], dataNote: '' })
+    const onlyCluster = confirmBody({ targets: [FULL[3]], placements: [], dataNote: '' })
     expect(costParagraph(onlyCluster)).toContain('クラスタの課金は止まります。')
     expect(costParagraph(onlyCluster)).not.toContain('ロードバランサ')
     expect(costParagraph(onlyCluster)).not.toContain('オートスケーリンググループ')
@@ -145,12 +156,12 @@ describe('⑥の確認ダイアログ: 課金の文は種類だけ（ID は一�
     // 名前の付いていない項目は全体を種類として扱う
     expect(teardownKindsOf(['アプリ'])).toEqual(['アプリ'])
     // 種類が1つも取れない一覧では、壊れた「の課金は止まります。」を作らない
-    const msg = teardownConfirmMessage({ targets: ['『名前だけ』'], placements: [], dataNote: '' })
+    const msg = confirmBody({ targets: ['『名前だけ』'], placements: [], dataNote: '' })
     expect(msg).not.toContain('の課金は止まります')
   })
 
   it('★ 保存場所だけが残っていて一覧が空でも、無い費用の話はしない（保存場所の文は残る）', () => {
-    const msg = teardownConfirmMessage({ targets: [], placements: [{ bucket: 'koto-data-x' }], dataNote: 'ダミー' })
+    const msg = confirmBody({ targets: [], placements: [{ bucket: 'koto-data-x' }], dataNote: 'ダミー' })
     expect(costParagraph(msg)).toBe('この操作は元に戻せません。削除すると、保存場所は、ほかに使っているプロジェクトが無いときだけ止まります。よろしいですか？')
   })
 })

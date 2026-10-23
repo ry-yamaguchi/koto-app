@@ -110,8 +110,9 @@ export function beginActivity(
 //   **ウィンドウを閉じるだけ**で、アプリは終了しない（src/main/main.ts の close ハンドラ。macOS は window-all-closed で終了しない設計）。
 //   ⌘Q・Dock の「終了」から来た場合も、`app.quit()` は最初のウィンドウの close を `preventDefault` で止めたところで中断されており、
 //   確認のあとに閉じるのはそのウィンドウだけ。以前のボタン名「閉じて終了」は、押せば Koto が終了するように読め、
-//   処理も止まると思わせた（実際は処理が裏で続く）。事実と逆の名前なので直した。名前は本文（PUBLISH_CLOSE_NOTE の
-//   「ウィンドウを閉じても、処理はバックグラウンドで最後まで進み」）と同じ言い方に揃える。
+//   処理も止まると思わせた（実際は処理が裏で続く）。事実と逆の名前なので直した。
+//   「ウィンドウを閉じても処理は続く」は、このボタン名が言う。本文（detail）では言い直さない
+//   （2026-10-15 作者決定・掟5の2: 確認ダイアログのボタン名が言っていることを、本文で言い直さない）。
 //   Electron を起動した確認はしていない（コードを読んだ範囲）。⌘Q で押したあと Koto が残ることは、実機で一度見ておくとよい。
 //   「処理は続きます」が正しいのは macOS だけ（main.ts の window-all-closed は darwin 以外では app.quit() する）。配布は mac だけ
 //   （electron-builder.config.js）なので今は問題ない。別の OS を配るときは、このボタン名を見直すこと。
@@ -125,17 +126,17 @@ export function beginActivity(
 export const PUBLISH_QUIT_STOPS =
   'ただし Koto 自体を終了すると、処理は途中で止まり、作られたものが記録に残らないことがあります。'
 
-export const PUBLISH_CLOSE_NOTE =
-  `Koto のウィンドウを閉じても、処理はバックグラウンドで最後まで進み、作ったものの記録は Koto が残します。ウィンドウを開き直して公開の画面を開けば、進み具合と結果（成功か失敗か）が出ます。${PUBLISH_QUIT_STOPS}`
-
 /**
  * 窓を閉じる警告の確認ボタンの名前。**実際の動きどおり**: ウィンドウが閉じるだけで、Koto は終了せず、処理は続く。
- * 本文（PUBLISH_CLOSE_NOTE）の「ウィンドウを閉じても、処理はバックグラウンドで最後まで進み」と食い違わない言い方にする。
+ * 「処理は続きます」はここが言うので、本文（PUBLISH_CLOSE_WARNING.detail）は言い直さない。
  */
 export const PUBLISH_CLOSE_CONFIRM_LABEL = 'ウィンドウを閉じる（処理は続きます）'
 
 export const PUBLISH_CLOSE_WARNING = {
-  detail: `処理が進行中です。${PUBLISH_CLOSE_NOTE}よろしいですか？`,
+  // 本文は、ボタン名が言わないことだけ: 開き直すと結果が出ること／Koto を終了すると止まること（課金の歯止め・必ず残す）。
+  // 以前は「ウィンドウを閉じても、処理は最後まで進み、作ったものの記録も残ります。」から始まり「よろしいですか？」で終わっていたが、
+  // 前者はボタン名の言い直し、後者はボタン（閉じる／キャンセル）が問いに答えているので外した（2026-10-15 作者決定）。
+  detail: `開き直して公開の画面を開くと、進み具合と結果が出ます。${PUBLISH_QUIT_STOPS}`,
   confirmLabel: PUBLISH_CLOSE_CONFIRM_LABEL,
 }
 
@@ -143,7 +144,7 @@ export const PUBLISH_CLOSE_WARNING = {
 // 窓を閉じる警告と同じ定義（PUBLISH_QUIT_STOPS）から引く**（2か所で別々に書かない・掟10）。
 // 2026-09-24 検分の指摘4・7・10: 「閉じる」が何を指すのかを言い分ける（画面を閉じても進む／終了すると止まる）。
 export const PUBLISH_STOP_NOTE_MAIN_RECORD =
-  `この公開の画面を閉じても、公開は最後まで進みます（公開の記録は Koto が残すので、あとから手順6で削除できます）。開き直すと、ここに進み具合と結果（アプリが応答したか・ロードバランサの IP）が出ます。${PUBLISH_QUIT_STOPS}`
+  `この公開の画面を閉じても、公開は最後まで進みます（公開の記録は Koto が残すので、あとから手順6で削除できます）。開き直すと、ここに進み具合と結果が出ます。${PUBLISH_QUIT_STOPS}`
 
 // テスト用: 現在の実行中数（テスト以外で使わない）
 export function _activeCount() {

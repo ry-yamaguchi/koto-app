@@ -86,36 +86,33 @@ describe('groupPublishedByTarget', () => {
   })
 })
 
-// ── 借り物の置き場（2026-08-25・AppRun の引き継ぎ）──────────────────────────
-// 引き継ぎでは、利用者が前から持っていた置き場をそのまま使う。破棄の
-// 「置き場も削除する」は既定オンなので、**印を運ばないと、うっかり消せてしまう**。
-describe('コンテナレジストリの記録を一覧へ運ぶ', () => {
+// ── コンテナレジストリの名前を一覧へ運ぶ ──────────────────────────────────────────
+// 作ったか借りたかの印（registryAdopted）は、一覧の行へは運ばない（2026-10-19）。読む画面が無く、誤っても誰も気づかないため。
+// 破棄の「置き場も削除する」の既定は、押した時点の main の記録（cloud:teardownRecord）から作る（tests/sharedTeardownUsers.test.ts）。
+describe('コンテナレジストリの名前を一覧へ運ぶ', () => {
   const apprun = (meta: unknown) => proj(
     '/w/a', 'a',
     { targets: { 'sakura-apprun': { publishedAt: '2026-08-21T00:00:00.000Z', url: 'https://a.apprun/' } } },
     { name: 'a', backend: 'apprun', resources: [], meta },
   )
 
-  it('名前と、借り物かどうかの印を運ぶ', () => {
+  it('名前を運ぶ。作ったか借りたかの印は、行に載せない', () => {
     const rows = buildPublishedIndex([apprun({ registryName: 'landingtest', registryAdopted: true })])
     expect(rows[0].registryName).toBe('landingtest')
-    expect(rows[0].registryAdopted).toBe(true)
+    expect(Object.keys(rows[0]).filter(k => /adopt|origin/i.test(k))).toEqual([])
   })
 
-  // 印が無い＝Koto が作ったもの（今までのプロジェクトの動きを変えない）
-  it('印が無ければ「Koto が作ったもの」として扱う', () => {
+  it('印が無くても名前は運ぶ', () => {
     const rows = buildPublishedIndex([apprun({ registryName: 'landingtest' })])
     expect(rows[0].registryName).toBe('landingtest')
-    expect(rows[0].registryAdopted).toBe(false)
   })
 
   it('AppRun 以外の行には付けない（消す対象を取り違えさせない）', () => {
     const rows = buildPublishedIndex([proj(
       '/w/b', 'b',
       { targets: { vercel: { publishedAt: '2026-08-21T00:00:00.000Z', url: 'https://b.vercel.app/' } } },
-      { name: 'b', backend: 'apprun', resources: [], meta: { registryName: 'x', registryAdopted: true } },
+      { name: 'b', backend: 'apprun', resources: [], meta: { registryName: 'x', registryAdopted: false } },
     )])
     expect(rows[0].registryName).toBeNull()
-    expect(rows[0].registryAdopted).toBe(false)
   })
 })

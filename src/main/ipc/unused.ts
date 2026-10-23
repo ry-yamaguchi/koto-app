@@ -58,7 +58,7 @@ import {
 } from '../../shared/leftoverData'
 import type { LeftoverDataFile } from '../../shared/leftoverData'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
-import { PUBLISH_DIR, backupRelPath } from '../../shared/publishRoot'
+import { PUBLISH_DIR, PUBLISH_DIR_LABEL, backupRelPath } from '../../shared/publishRoot'
 import { isProtectedWritePath } from '../../shared/protectedPaths'
 import { snapshotBeforeChange } from '../backup/store'
 import { BACKUP_DIRNAME, nextFreeSnapshotId } from '../backup/plan'
@@ -320,6 +320,7 @@ export function moveFilesToFs(
   // 'unused-cleanup' を明示して渡す（🧹 使われていないファイルの確認からの一括移動）。
   // 呼び出し元を区別せず移動先だけで見出しを決めていたため、手で移したのに履歴には
   // 身に覚えのない「未使用ファイルの整理」と出ていた問題を直す。
+  // （2026-10-09 画面の文を短くした: 見出しは「ファイルを…へ移動」「未使用ファイルを…へ移動」。区別は「未使用」の有無）
   reason: 'manual' | 'unused-cleanup' = 'manual',
 ): MoveToMaterialsResult {
   if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
@@ -330,8 +331,8 @@ export function moveFilesToFs(
 
   const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
   const label = reason === 'unused-cleanup'
-    ? `未使用ファイルの整理（${MATERIALS_DIR}）`
-    : (dest === 'publish' ? `ファイルを移動（公開されるもの（${PUBLISH_DIR}）へ）` : `ファイルを移動（${MATERIALS_DIR}へ）`)
+    ? `未使用ファイルを${MATERIALS_DIR}へ移動`
+    : (dest === 'publish' ? `ファイルを${PUBLISH_DIR_LABEL}へ移動` : `ファイルを${MATERIALS_DIR}へ移動`)
 
   // (1) 検証（何も変えない）。保護パス等、名前を変えても解決しないものだけ弾く
   // （1件でも弾ければ全体を中止する・中途半端に動かさない）。

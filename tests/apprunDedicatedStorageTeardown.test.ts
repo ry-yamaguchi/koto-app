@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   keys: [] as string[],
   /** 一覧そのものが失敗する（＝中身を確かめられない）か。 */
   listThrows: false,
+  /** このバケットの一覧だけが失敗する（空なら無し。複数の保存場所の途中で止まる回に使う）。 */
+  listThrowsFor: '',
   /** createStorageAdapter が失敗する（＝保存場所に接続できない）か。 */
   adapterThrows: false,
   /** deletePermission が失敗するか。 */
@@ -65,7 +67,7 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
         async putMarker() { /* 破棄では使わない */ },
         async listAllKeys(bucket: string) {
           h.storageCalls.push(`listAllKeys ${bucket}`)
-          if (h.listThrows) throw new Error('一覧を取得できませんでした（テスト）')
+          if (h.listThrows || h.listThrowsFor === bucket) throw new Error('一覧を取得できませんでした（テスト）')
           return h.keys
         },
         async deleteKeys(bucket: string, keys: string[]) {
@@ -108,6 +110,7 @@ import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { writeApprunDedicatedRecordFs, readApprunDedicatedFs, writePublishRecordFs } from '../src/main/publishMetaFs'
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { BUCKET_MONTHLY_YEN, teardownRemainingWarnings } from '../src/shared/cloudCost'
+import { isolatedProjectDir, workspaceDirOf } from './isolatedProject'
 
 registerApprunDedicatedHandlers({} as any)
 const teardown = h.handlers.get('apprunDedicated:teardown')!
@@ -123,10 +126,11 @@ let projectDir = ''
 
 beforeEach(() => {
   resetProjectOpsForTests()
-  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-dedicated-teardown-'))
+  projectDir = isolatedProjectDir('koto-dedicated-teardown-')
   h.baseUrl = ''
   h.keys = [`${PREFIX}.koto-keep`]
   h.listThrows = false
+  h.listThrowsFor = ''
   h.adapterThrows = false
   h.revokeThrows = false
   h.permissions = []
@@ -288,8 +292,12 @@ describe('★★★ ⑥の破棄: バケットを残した回は、残った事�
     expect(rec.result!.warnings, '月額が続くのに、警告になっていない（折りたたみの中に隠れる）').toHaveLength(1)
     expect(rec.result!.warnings[0]).toContain(`『${BUCKET}』`)
     expect(rec.result!.warnings[0]).toContain(`月額${BUCKET_MONTHLY_YEN}円`)
-    // 共用型・HANAMII と同じ関数の文（公開先によって扱いが食い違わない）
-    expect(rec.result!.warnings).toEqual(teardownRemainingWarnings({ keptBucketName: BUCKET }))
+    // 共用型・HANAMII と同じ関数の文（公開先によって扱いが食い違わない）。残した理由（利用者のファイル）も事実として返り、文はそれを言う
+    expect(result.keptBucketsWithOwnFiles).toEqual([BUCKET])
+    expect(result.keptBucketsUsedByOthers).toBeUndefined()
+    expect(rec.result!.warnings).toEqual(teardownRemainingWarnings({ keptBucketName: BUCKET, keptBucketsWithOwnFiles: [BUCKET] }))
+    expect(rec.result!.warnings[0]).toContain('Koto が作ったのではないファイルがあります')
+    expect(rec.result!.warnings[0], '利用者のファイルが入った保存場所に、言われたとおり消してよいとは言わない').not.toContain('後で消す場合は')
   })
 
   it('★★ ほかのプロジェクトが使っている保存場所を残した回も、同じ', async () => {
@@ -298,6 +306,11 @@ describe('★★★ ⑥の破棄: バケットを残した回は、残った事�
     const { result } = await runTeardown()
     expect(result.keptBucketName).toBe(BUCKET)
     expect(getOps(projectDir).last!.result!.warnings).toHaveLength(1)
+    // 残した理由（ほかのプロジェクトも使っている）が返り、「後で消す場合は削除して」ではなく、消すとそのアプリが止まると言う（共用型・HANAMII と同じ判断）
+    expect(result.keptBucketsUsedByOthers).toEqual([BUCKET])
+    expect(result.keptBucketsWithOwnFiles).toBeUndefined()
+    expect(getOps(projectDir).last!.result!.warnings[0]).toContain('ほかのプロジェクトも使っています。消すと、そのプロジェクトのデータも消えます。')
+    expect(getOps(projectDir).last!.result!.warnings[0]).not.toContain('後で消す場合は')
   })
 
   it('★★ バケットごと消した回・保存場所を使っていない回は、残った事実を返さない（警告を出さない）', async () => {
@@ -543,7 +556,7 @@ describe('⑥の破棄: 保存場所だけが失敗したとき', () => {
     })
 
     expect(result.ok).toBe(false)            // 保存場所は残った
-    expect(result.appDeleted).toBe(true)     // でもアプリは消えた＝公開記録は片づけてよい
+    expect(result.appDeleted).toBe(true)     // でもアプリは消えた（公開記録＝📡 の行は残す。押し直して保存場所まで片づくと消える・D1=1）
     expect(readApprunDedicatedFs(projectDir).applicationID).toBeFalsy()
   })
 
@@ -639,6 +652,28 @@ describe('⑥の破棄: 同意済みの保存場所が2つあるとき', () => {
     expect(result.remaining.storageBucket).toBe(BUCKET)
     expect(h.deletedBuckets).toEqual([])
   })
+
+  // 途中で止まった回の返り値にも、それまでに残した保存場所の理由が載る（HANAMII の「片づけの途中で止まった回も…」と同じ形。
+  // 載らないと、止まった回だけ「理由が分からない」文になる＝ほかのプロジェクトも使う保存場所に、理由を言わずに「消す前に確かめてください」と言う）。
+  it('★★★ 2件目の一覧に失敗して止まった回も、1件目に残した保存場所の理由（ほかのプロジェクトも使っている）を返し、警告が言う', async () => {
+    setupTwoBuckets()
+    h.keys = [`${PREFIX}a.txt`, 'projects/other/data.json'] // 1件目: ほかのプロジェクトが使っているのでバケットは残る
+    h.listThrowsFor = BUCKET2                                 // 2件目: 一覧できず、そこで止まる
+    const { result } = await runTeardown()
+
+    expect(result.ok).toBe(false)
+    expect(result.keptBucketName).toBe(BUCKET)
+    expect(result.keptBucketNames).toEqual([BUCKET])
+    expect(result.keptBucketsUsedByOthers, '止まった回に、残した理由が載っていない').toEqual([BUCKET])
+    expect(result.keptBucketsWithOwnFiles).toBeUndefined()
+    expect(result.remainingBuckets).toEqual([BUCKET2])
+    expect(h.deletedBuckets).toEqual([])
+    const warnings = getOps(projectDir).last!.result!.warnings
+    const kept = warnings.find((w: string) => w.includes(`『${BUCKET}』`) && w.includes('月額'))!
+    expect(kept, '残した保存場所の月額の警告が無い').toBeTruthy()
+    expect(kept).toContain('ほかのプロジェクトも使っています。消すと、そのプロジェクトのデータも消えます。')
+    expect(kept).not.toContain('使っているプロジェクトが無いか確かめてください') // 理由が分からない側の文に倒れていない
+  })
 })
 
 // ── 8. この公開先の鍵をまとめて無効にする（2026-09-24 検分の指摘6） ────────────────────
@@ -713,5 +748,116 @@ describe('⑥の破棄: env.json が壊れているとき', () => {
     expect(result.message).toContain('保存場所の設定を読めないため')
     // 読めないので保存場所には1件も触っていない。
     expect(h.storageCalls).toEqual([])
+  })
+})
+
+// ── ほかのプロジェクトの記録を読んでから、バケットごと消すか決める（2026-10-21 実機の欠陥・rc1-ded1 の専有型の削除がそのまま起こした形）──────────
+//
+// 実機: 専有型の rc1-ded1 を手順6で削除したら、teardownPlanFor が S のキー一覧だけを見て「ほかに使う prefix が無い」と判断し、**S をバケットごと消した**。
+// rc1-shared の env.json には S が同意済みで残っていた（見ていなかった）。ここは専有型の破棄（apprunDedicated:teardown ＝ 手順6と 📡 の 🗑 が同じ道）で、
+// 兄弟の記録から使っていると分かるとき・わからないときに、バケット削除の要求が0件になることを固定する。
+describe('★★★ ⑥の破棄: ほかのプロジェクトの記録に同じ保存場所があれば、バケットごとは消さない', () => {
+  /** 兄弟のプロジェクトを同じ親フォルダに置く。`published` は公開の記録（.sakuraide.json の共用型の行）。兄弟が「いま使っている」と数えられるのは、公開の記録がまだあるとき。 */
+  function sibling(name: string, opts: { consent?: string[]; rawEnv?: string; published?: boolean } = {}) {
+    const dir = path.join(workspaceDirOf(projectDir), name)
+    fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
+    const file = path.join(dir, '.sakura-cloud', 'env.json')
+    if (opts.rawEnv !== undefined) fs.writeFileSync(file, opts.rawEnv)
+    else fs.writeFileSync(file, JSON.stringify({ persistence: { objectStorage: (opts.consent ?? []).map(bucket => ({ bucket, prefix: `projects/${name}/`, shared: true, consentedAt: '2026-10-19T00:00:00.000Z' })) } }))
+    if (opts.published) fs.writeFileSync(path.join(dir, '.sakuraide.json'), JSON.stringify({ publish: { targets: { 'sakura-apprun': { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.example/' } } } }))
+  }
+
+  it('★★★ 実機の再現: キーには自分の prefix しか無いが、兄弟の env.json に同意済みで残っている → バケット削除0件・自分のキーだけ消す・「ほかのプロジェクトも使っています」', async () => {
+    setupProject({ permissionId: 'perm-live' })
+    h.keys = [`${PREFIX}data.json`] // 自分の prefix しか無い
+    sibling('rc1-shared', { consent: [BUCKET], published: true })
+    const { result } = await runTeardown()
+
+    expect(result.ok).toBe(true)
+    expect(h.deletedBuckets, 'バケットごと消した（実機の欠陥）').toEqual([])
+    expect(touched()).not.toContain(`deleteBucket ${BUCKET}`)
+    expect(h.deletedKeys).toEqual([`${PREFIX}data.json`])
+    expect(h.deletedPermissions).toEqual(['perm-live'])
+    expect(result.keptBucketName).toBe(BUCKET)
+    expect(result.keptBucketsUsedByOthers).toEqual([BUCKET])
+    expect(teardownRemainingWarnings(result).join('\n')).toContain('ほかのプロジェクトも使っています')
+  })
+
+  it('★★★ 兄弟の記録を読めない（壊れた JSON）→ わからないので残す。「ほかのプロジェクトも使っています」とは言わない', async () => {
+    setupProject()
+    h.keys = [`${PREFIX}data.json`]
+    sibling('broken', { rawEnv: '{ not json' })
+    const { result } = await runTeardown()
+
+    expect(result.ok).toBe(true)
+    expect(h.deletedBuckets).toEqual([])
+    expect(h.deletedKeys).toEqual([`${PREFIX}data.json`])
+    expect(result.keptBucketName).toBe(BUCKET)
+    expect(result.keptBucketsUsedByOthers).toBeUndefined()
+    const warning = teardownRemainingWarnings(result).join('\n')
+    expect(warning).toContain('使っているプロジェクトが無いか確かめてください')
+    expect(warning).not.toContain('ほかのプロジェクトも使っています')
+  })
+
+  it('★ 兄弟が別のバケットだけを使っている → 今までどおりバケットごと消す', async () => {
+    setupProject()
+    h.keys = [`${PREFIX}data.json`]
+    sibling('uses-other', { consent: ['koto-data-other'], published: true })
+    const { result } = await runTeardown()
+
+    expect(result.ok).toBe(true)
+    expect(h.deletedBuckets).toEqual([BUCKET])
+    expect(result.executed).toContain(`保存場所『${BUCKET}』のデータを削除しました — 保存場所ごと削除しました。月額の課金も止まります。`)
+  })
+})
+
+// ── 兄弟が「いま使っている」かは、設定に加えて公開の記録（.sakuraide.json の行）で決める（8f5e9d8 の直後に見つかった回帰）────────────────
+// 共用型・HANAMII・専有型の破棄は、ほかが使うので残したバケットを env.json・state.json に残す（設定から外さない）。設定だけで数えると、
+// 同じ保存場所 S を使う A・B を順に破棄したとき、B の破棄が**破棄済みの A** を使用者と読み、S は誰にも消せず月額が続いた。
+describe('★★★ ⑥の破棄: 回帰 — 同じ保存場所を使う A・B を順に破棄すると、最後の破棄でバケットごと消える', () => {
+  const PREFIX_A = 'projects/proj-a/'
+  const PREFIX_B = 'projects/proj-b/'
+  /** 専有型で公開中のプロジェクト（保存場所を同意済み・クラスタの記録と公開の記録＝専有型の行あり）。 */
+  function publishedProject(dir: string, prefix: string) {
+    const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
+    spec.persistence = { objectStorage: [{ ...CONSENTED_BUCKET, prefix }] }
+    fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
+    fs.writeFileSync(path.join(dir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
+    writeApprunDedicatedRecordFs(dir, { clusterID: 'c1' })
+    writePublishRecordFs(dir, 'sakura-apprun-dedicated', { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.example/' })
+  }
+  /** 指定したプロジェクトの⑥の破棄を、偽サーバ（クラスタだけを消す最短の応答）へ流す。 */
+  async function teardownAt(dir: string) {
+    if (server) { server.close(); server = null }
+    h.baseUrl = await listen(routedServer(clusterGoneRoutes(), []))
+    return teardown(EVENT, dir, AUTH, { confirmed: true })
+  }
+  const metaTargets = (dir: string): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(dir, '.sakuraide.json'), 'utf-8'))?.publish?.targets ?? {}
+
+  it('A を破棄 → S は残る（B が公開中）。続けて B を破棄（A は破棄済みで行が無い）→ バケット削除の要求が1件・「保存場所ごと削除しました」', async () => {
+    const dirB = path.join(workspaceDirOf(projectDir), 'proj-b')
+    fs.mkdirSync(dirB)
+    publishedProject(projectDir, PREFIX_A)
+    publishedProject(dirB, PREFIX_B)
+
+    // 1. A を破棄。S のキーは A の prefix だけ（B の prefix は目印ごと消えていた・実機と同じ）。B は公開中なので S は残る
+    h.keys = [`${PREFIX_A}data.json`]
+    const first = await teardownAt(projectDir)
+    expect(first.ok).toBe(true)
+    expect(h.deletedBuckets, 'B が公開中なのに S を消した').toEqual([])
+    expect(first.keptBucketsUsedByOthers).toEqual([BUCKET])
+    // A の公開の記録（専有型の行）は消える。設定（env.json の S）は残る（設定から外さない作り）
+    expect(metaTargets(projectDir)['sakura-apprun-dedicated']).toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), 'utf-8')).persistence.objectStorage.map((b: any) => b.bucket)).toEqual([BUCKET])
+
+    // 2. 続けて B を破棄。A は破棄済み（公開の記録が無い）なので数えない → S をバケットごと消す
+    h.keys = [`${PREFIX_B}data.json`]
+    const second = await teardownAt(dirB)
+    expect(second.ok).toBe(true)
+    expect(h.deletedBuckets, '最後の破棄で S が消えない（月額が続く・回帰）').toEqual([BUCKET])
+    expect(h.storageCalls.filter(c => c === `deleteBucket ${BUCKET}`)).toHaveLength(1)
+    expect(second.keptBucketName).toBeUndefined()
+    expect(second.keptBucketsUsedByOthers).toBeUndefined()
+    expect(second.executed).toContain(`保存場所『${BUCKET}』のデータを削除しました — 保存場所ごと削除しました。月額の課金も止まります。`)
   })
 })

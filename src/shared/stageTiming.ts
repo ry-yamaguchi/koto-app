@@ -23,6 +23,14 @@
 // ・削除（teardownFlow）: アプリ → LB → ASG → クラスタ → 保存場所。各段は「DELETE → 一覧から消えるまで待つ」で、
 //   待ちがほとんどの時間を占める。途中で下位の資源が残っていて待ち直す（409 の回復）ときは、その資源の段へ移って戻る
 //   （同じ段に戻ったときは時間を足し合わせる）。
+//
+// ── 途中で止まった回の時間（2026-10-13・設計書 10.13）────────────────────────────────────
+// 削除の途中で Koto が終了して止まった回（または待ち切れず、続きから進める形で終わった回）の段と時間は、次に削除が
+// 終わったときの `StageTimings.earlierRuns` に並ぶ（作るのは shared/inFlightOps.ts の `stoppedRunTimings`）。
+// 今回の `totalMs` の意味は変えない。見せ方（`stageTimingView`）は、合計を「止まった回の分＋今回」にして、止まっていた間は数えない。
+// 止まった回の時間は、結果には出すが、所要時間の目安（stageEstimate.ts）には入れない。止まった回を合わせた回は、目安に何も渡さない（projectOps.ts の finishOp）。
+
+import { clockText, monthDayText } from './opsText'
 
 /** 段の内部名。画面の言葉を直しても変えない（記録はこの名前でつながる）。 */
 export const STAGE = {
@@ -40,7 +48,7 @@ export const STAGE = {
   publishVerify: 'publish.verify',
   publishContainers: 'publish.containers',
   publishKeyCleanup: 'publish.key-cleanup',
-  // 手順6 作ったものを削除する（📡 一覧の「🗑 破棄」も同じ流れ。アプリ → LB → ASG → クラスタ → 保存場所の順に通る）
+  // 手順6 作ったものを削除する（📡 一覧の「🗑 削除」も同じ流れ。アプリ → LB → ASG → クラスタ → 保存場所の順に通る）
   teardownApp: 'teardown.app',
   teardownLb: 'teardown.lb',
   teardownAsg: 'teardown.asg',
@@ -125,14 +133,45 @@ export type StageMark = { unmeasured?: boolean }
 /** 「この段の時間は測定になっていない」の印（定義はここ1か所。各 flow と IPC はこれを使う）。 */
 export const UNMEASURED: StageMark = Object.freeze({ unmeasured: true })
 
-/** 1回の操作の、段ごとの所要時間と合計（始まってから終わるまで）。 */
-export type StageTimings = { totalMs: number; stages: StageTimingRow[] }
+/**
+ * 止まった回がどう止まったか。'quit'＝Koto の終了で途中で止まった／'unfinished'＝待ち切れず、続きから進める形で終わった。
+ */
+export type StoppedEndedBy = 'quit' | 'unfinished'
+
+/**
+ * 止まった回の、段ごとの時間（`stoppedRunTimings` が作る。定義の置き場はここ＝`StageTimings` が持つ形なので）。
+ * `knownMs` は始まりから最後に分かった時刻まで。最後の段が途中までのとき（`partialLast`）、`stages` の**最後の行**がその段。
+ */
+export type StoppedRunTimings = {
+  startedAt: number
+  lastKnownAt: number
+  endedBy: StoppedEndedBy
+  knownMs: number
+  stages: StageTimingRow[]
+  partialLast: boolean
+}
+
+/** 結果に並べる止まった回の数の上限。 */
+export const MAX_EARLIER_RUNS = 3
+
+/**
+ * 1回の操作の、段ごとの所要時間と合計（始まってから終わるまで）。
+ * `earlierRuns` は、同じプロジェクト・同じ公開先の止まった回（古い順・3つまで）。`totalMs` は今回の分だけ（意味を変えない）。
+ */
+export type StageTimings = { totalMs: number; stages: StageTimingRow[]; earlierRuns?: StoppedRunTimings[] }
 
 /** 段に入ってから出るまで（epoch ミリ秒）。同じ段に何度か入ったときは複数ある。 */
 export type StageSegment = { stage: string; startedAt: number; endedAt: number }
 
 const MAX_ROWS = 50
 const MAX_MS = 7 * 24 * 60 * 60 * 1000
+/** 時刻（epoch ミリ秒）として受け入れる上限（2100-01-01）。記録・IPC から来た値を信用しないための検査。 */
+const MAX_EPOCH_MS = 4_102_444_800_000
+
+/** 読める時刻か（有限・0 以上・2100 年まで）。 */
+export function isEpochMs(x: unknown): x is number {
+  return typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= MAX_EPOCH_MS
+}
 
 /**
  * 段ごとの区間から、段ごとの所要時間と合計を作る（純関数）。
@@ -166,19 +205,51 @@ export function readStageTimings(x: unknown): StageTimings | null {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return null
   const raw = x as Record<string, unknown>
   if (!Array.isArray(raw.stages)) return null
-  const stages: StageTimingRow[] = []
-  for (const r of raw.stages.slice(0, MAX_ROWS)) {
-    if (!r || typeof r !== 'object') continue
-    const row = r as Record<string, unknown>
-    if (!isStageIdShape(row.stage)) continue
-    if (typeof row.ms !== 'number' || !Number.isFinite(row.ms) || row.ms < 0 || row.ms > MAX_MS) continue
-    stages.push({ stage: row.stage, ms: Math.round(row.ms) })
-  }
+  const stages = readRows(raw.stages)
   if (stages.length === 0) return null
   const total = typeof raw.totalMs === 'number' && Number.isFinite(raw.totalMs) && raw.totalMs >= 0 && raw.totalMs <= MAX_MS
     ? Math.round(raw.totalMs)
     : stages.reduce((n, r) => n + r.ms, 0)
-  return { totalMs: total, stages }
+  const earlierRuns = readEarlierRuns(raw.earlierRuns)
+  return earlierRuns.length > 0 ? { totalMs: total, stages, earlierRuns } : { totalMs: total, stages }
+}
+
+/** 段の行を読む（数でない・負・7日超・段の名前の形が違う行は捨てる）。 */
+function readRows(x: unknown): StageTimingRow[] {
+  const rows: StageTimingRow[] = []
+  if (!Array.isArray(x)) return rows
+  for (const r of x.slice(0, MAX_ROWS)) {
+    if (!r || typeof r !== 'object') continue
+    const row = r as Record<string, unknown>
+    if (!isStageIdShape(row.stage)) continue
+    if (typeof row.ms !== 'number' || !Number.isFinite(row.ms) || row.ms < 0 || row.ms > MAX_MS) continue
+    rows.push({ stage: row.stage, ms: Math.round(row.ms) })
+  }
+  return rows
+}
+
+/**
+ * 止まった回を読む。回ごとの形が合わないもの（`endedBy` が2つのどちらでもない・時刻や `knownMs` が数でない／負／7日超・
+ * 使える行が1つも無い）は、その回ごと捨てる。3つまで。全部捨てたら空。
+ */
+function readEarlierRuns(x: unknown): StoppedRunTimings[] {
+  const runs: StoppedRunTimings[] = []
+  if (!Array.isArray(x)) return runs
+  for (const r of x) {
+    if (runs.length >= MAX_EARLIER_RUNS) break
+    if (!r || typeof r !== 'object') continue
+    const run = r as Record<string, unknown>
+    if (run.endedBy !== 'quit' && run.endedBy !== 'unfinished') continue
+    if (!isEpochMs(run.startedAt) || !isEpochMs(run.lastKnownAt)) continue
+    if (typeof run.knownMs !== 'number' || !Number.isFinite(run.knownMs) || run.knownMs < 0 || run.knownMs > MAX_MS) continue
+    const stages = readRows(run.stages)
+    if (stages.length === 0) continue
+    runs.push({
+      startedAt: Math.round(run.startedAt), lastKnownAt: Math.round(run.lastKnownAt), endedBy: run.endedBy,
+      knownMs: Math.round(run.knownMs), stages, partialLast: run.partialLast === true,
+    })
+  }
+  return runs
 }
 
 // ── 時間の文 ─────────────────────────────────────────────────────────────────
@@ -199,20 +270,78 @@ export function formatDuration(ms: number): string {
   return `${s}秒`
 }
 
+/** 「かかった時間を見る」の1行（段の名前と、かかった時間の文）。 */
+export type StageTimingViewRow = { stage: string; label: string; text: string }
+
 /** 「かかった時間を見る」を開いたときに並べる行（純関数）。段の並びは通った順。 */
 export type StageTimingView = {
   summary: string
-  rows: { stage: string; label: string; text: string }[]
+  /** 今回の行。 */
+  rows: StageTimingViewRow[]
   total: { label: string; text: string }
+  /** 止まった回（古い順）。無いときはキーごと付けない（そのときの形は止まった回を足す前と同じ）。 */
+  earlier?: { heading: string; rows: StageTimingViewRow[] }[]
+  /** 止まった回があるときだけ付く、今回の行の見出し。 */
+  thisRunHeading?: string
 }
 
 /** 折りたたみの見出し（画面の言葉はここだけ）。 */
 export const STAGE_TIMING_SUMMARY = 'かかった時間を見る'
 
-export function stageTimingView(t: StageTimings): StageTimingView {
+/** 止まった回を並べるときの言葉（画面の言葉はここだけ）。 */
+export const STAGE_TIMING_STOPPED_WORDS = {
+  thisRun: '今回',
+  total: '合計',
+  /** 止まった回があるときの合計の行の名前。時計の経過と合わない理由を言う（「Koto が」は付けない＝待ち切れた回にも当てはまる）。 */
+  totalWithStopped: '合計（止まっていた間を除く）',
+  quitRun: 'Koto の終了で止まった回',
+  unfinishedRun: '待ち切れずに止まった回',
+} as const
+
+/** 時刻の文の作り方。テストが決まった文で比べられるよう、差し替えられる（既定は端末の時計）。 */
+export type StageTimingViewOptions = { clock?: (ms: number) => string; monthDay?: (ms: number) => string }
+
+/** 最後の段が途中までのときの、右側の文（1秒に満たないときは「少なくとも」を付けない）。 */
+function partialText(ms: number): string {
+  return ms < 1000 ? '途中まで（1秒未満）' : `途中まで（少なくとも${formatDuration(ms)}）`
+}
+
+/**
+ * 止まった回の見出し。「Koto の終了で止まった回（10/10 14:02〜14:09 ごろ）」・「待ち切れずに止まった回（10/10 14:02〜14:11）」。
+ * 終わりが別の日なら、終わりにも日付を添える。時刻が読めなければ括弧ごと省く。
+ */
+function earlierHeading(r: StoppedRunTimings, o: Required<StageTimingViewOptions>): string {
+  const end = Math.max(r.lastKnownAt, r.startedAt)
+  const startDay = o.monthDay(r.startedAt)
+  const endDay = o.monthDay(end)
+  const from = [startDay, o.clock(r.startedAt)].filter(Boolean).join(' ')
+  const to = [endDay !== startDay ? endDay : '', o.clock(end)].filter(Boolean).join(' ')
+  const range = from && to ? `${from}〜${to}` : from
+  if (r.endedBy === 'quit') return range ? `${STAGE_TIMING_STOPPED_WORDS.quitRun}（${range} ごろ）` : STAGE_TIMING_STOPPED_WORDS.quitRun
+  return range ? `${STAGE_TIMING_STOPPED_WORDS.unfinishedRun}（${range}）` : STAGE_TIMING_STOPPED_WORDS.unfinishedRun
+}
+
+function viewRows(rows: readonly StageTimingRow[], partialLast = false): StageTimingViewRow[] {
+  return rows.map((r, i) => ({
+    stage: r.stage, label: stageLabelOf(r.stage),
+    text: partialLast && i === rows.length - 1 ? partialText(r.ms) : formatDuration(r.ms),
+  }))
+}
+
+export function stageTimingView(t: StageTimings, opts: StageTimingViewOptions = {}): StageTimingView {
+  const rows = viewRows(t.stages)
+  const earlierRuns = t.earlierRuns ?? []
+  if (earlierRuns.length === 0) {
+    return { summary: STAGE_TIMING_SUMMARY, rows, total: { label: STAGE_TIMING_STOPPED_WORDS.total, text: formatDuration(t.totalMs) } }
+  }
+  const o = { clock: opts.clock ?? clockText, monthDay: opts.monthDay ?? monthDayText }
+  // 合計は「止まった回の分＋今回」。止まっていた間（最後に分かった時刻〜次の回の始まり）は数えない。
+  const totalMs = earlierRuns.reduce((n, r) => n + r.knownMs, t.totalMs)
   return {
     summary: STAGE_TIMING_SUMMARY,
-    rows: t.stages.map(r => ({ stage: r.stage, label: stageLabelOf(r.stage), text: formatDuration(r.ms) })),
-    total: { label: '合計', text: formatDuration(t.totalMs) },
+    rows,
+    total: { label: STAGE_TIMING_STOPPED_WORDS.totalWithStopped, text: formatDuration(totalMs) },
+    earlier: earlierRuns.map(r => ({ heading: earlierHeading(r, o), rows: viewRows(r.stages, r.partialLast) })),
+    thisRunHeading: STAGE_TIMING_STOPPED_WORDS.thisRun,
   }
 }

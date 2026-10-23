@@ -204,7 +204,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
       if (!harden.ok) { setInstallMsg(`鍵認証での接続は確認できましたが、パスワード認証の無効化に失敗しました: ${harden.message ?? ''}（鍵認証自体は有効です）`); return }
       setHardened(true)
       await saveVpsMeta({ sshdHardened: true, hardenedAt: new Date().toISOString() })
-      setInstallMsg('✅ 鍵認証で接続できます（パスワード認証は無効化しました）')
+      setInstallMsg('')
     } finally {
       setInstallBusy(false)
       setInitialPassword('') // 成否に関わらず必ず即クリア（保存しない）
@@ -217,7 +217,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
         <p className="text-sm font-semibold text-ink">🖥 さくらのVPSで公開（手順1 接続）</p>
         <p className="text-xs text-ink-muted leading-relaxed">
-          自由度の高い仮想サーバ。まずは「鍵認証だけで安全に接続できる状態」を作ります。手順2 初期セットアップ・手順3 公開は開発中のため、このバージョンでは接続確認までです。
+          自由度の高い仮想サーバ。まずは「鍵認証だけで安全に接続できる状態」を作ります。このバージョンでは接続確認までです。
         </p>
       </div>
 
@@ -305,7 +305,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
               ) : (
                 <>
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] text-ink-muted">初期設定スクリプト（公開鍵のみ含む・秘密情報なし・何度実行しても安全）</span>
+                    <span className="text-[11px] text-ink-muted">初期設定スクリプト（秘密情報なし・何度実行しても安全）</span>
                     <CopyButton text={script} title="スクリプトをコピー" />
                   </div>
                   <pre className="rounded-lg border border-line bg-overlay p-3 text-[11px] font-mono text-ink whitespace-pre-wrap break-all max-h-56 overflow-y-auto select-text">{script}</pre>

@@ -21,6 +21,8 @@ import { join } from 'path'
 // ここはソースの文字列を読まない。**偽の ObjectStorageClient**（作成は 409 を返し、
 // 一覧には現れない）へ実際に流し、**出た要求の一覧と順序**と返り値で固定する。
 
+const CONFLICT_BODY = vi.hoisted(() => '{"error":{"trace_id":"x","errors":[{"domain":"fed.objectstorage.sacloud","reason":"conflict","location":"name","location_type":"request_body","message":"koto-data-x has already been created"}],"code":409,"message":"Conflict"}}')
+
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
   /** loadCredentials が返す値（実キーは使わない・掟4）。 */
@@ -62,7 +64,8 @@ vi.mock('../src/main/cloud/objectStorage', async (importOriginal) => {
     async createBucket(_siteId: string, bucket: string) {
       h.calls.push('createBucket')
       h.created.push(bucket)
-      return { status: h.createStatus, text: h.createStatus === 409 ? 'bucket already exists' : '' }
+      // 実機（2026-10-19）で返ってきた 409 の本文の形
+      return { status: h.createStatus, text: h.createStatus === 409 ? CONFLICT_BODY : '' }
     }
     async listBuckets() { h.calls.push('listBuckets'); return h.existingBuckets.map(name => ({ name })) }
   }
@@ -105,13 +108,21 @@ afterEach(() => { h.calls = [] })
 describe('新しい保存場所を作る（偽のさくらへ実際に流す）', () => {
   it('★★★ 作成が409で一覧にも現れなければ、作れたことにしない', async () => {
     h.createStatus = 409
-    h.existingBuckets = []   // 消した直後で名前が解放されていない＝**作られていない**
+    h.existingBuckets = []   // 削除した名前は同じ月のうちは作り直せない＝**作られていない**
 
     const r = await createBucket({}, BUCKET)
 
     expect(r.ok, '作れていないのに「作れました」と返している').toBe(false)
-    expect(String(r.message ?? '')).toContain('一覧に見つかりません')
-    expect(String(r.message ?? '')).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
+    const msg = String(r.message ?? '')
+    // 409 は「削除した月のうちは作り直せない」と言い、この入口の次の操作を添える（「しばらく待って」とは言わない）
+    expect(msg).toContain(`保存場所『${BUCKET}』を作れませんでした。`)
+    expect(msg).toContain('削除した月のうちは作り直せません')
+    expect(msg).toContain('別の名前でお試しください。')
+    expect(msg).toContain('HTTP 409')
+    expect(msg).toContain('has already been created') // 応答をそのまま添える
+    expect(msg).not.toContain('直後')
+    expect(msg).not.toContain('しばらく待って')
+    expect(msg).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
     // 作成のあとに一覧を引いている（順序そのものを固定する）
     expect(h.calls.indexOf('listBuckets')).toBeGreaterThan(h.calls.indexOf('createBucket'))
   })
@@ -136,8 +147,14 @@ describe('新しい保存場所を作る（偽のさくらへ実際に流す）'
     const r = await createBucket({}, BUCKET)
 
     expect(r.ok).toBe(false)
-    expect(String(r.message ?? '')).toContain('一覧に見つかりません')
-    expect(String(r.message ?? '')).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
+    // 作成が 2xx なのに一覧に無い: 反映待ちの可能性があるので「しばらく待って」。作り直せないとは言わない
+    const msg = String(r.message ?? '')
+    expect(msg).toContain('一覧にまだ出ていません')
+    expect(msg).toContain('しばらく待ってからお試しください')
+    expect(msg).toContain('HTTP 200')
+    expect(msg).not.toContain('削除した月のうち')
+    expect(msg).not.toContain('作り直せません')
+    expect(msg).not.toContain('現れません') // 0.6.21: 「現れません」は「見つかりません」に揃えた。直す前の言い方は戻さない
   })
 
   it('★★ 409 でも、その名前が実在していれば作れたことにする（既にある保存場所を使える）', async () => {

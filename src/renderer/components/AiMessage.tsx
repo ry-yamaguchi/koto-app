@@ -1,5 +1,6 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { CHAT_TEXT_WRAP } from '../textWrap'
+import { parseChatText, type ChatInline } from '../chatMarkdown'
 
 type Part =
   | { type: 'text'; text: string }
@@ -102,20 +103,102 @@ function FileCard({ path, lang, code, onApply, applyHint }: {
   )
 }
 
-/** アシスタントメッセージの表示。説明文はテキスト、コードはカードに分離。 */
-export default function AiMessage({ content, onApplyFile, applyHint }: {
+/**
+ * 1 行ぶんの太字・コード・文字を React の要素にする。
+ * **文字列は React の子として渡すだけ**（HTML の文字列を差し込む書き方はしない）ので、
+ * AI の返事に <script> や <b> が入っても、タグではなく文字として出る。
+ */
+function Inlines({ inlines }: { inlines: ChatInline[] }) {
+  return (
+    <>
+      {inlines.map((n, i) => {
+        if (n.t === 'bold') return <strong key={i} className="font-bold">{n.s}</strong>
+        if (n.t === 'code') return <code key={i} className="rounded border border-line bg-overlay px-1 font-mono text-[0.9em] text-ink">{n.s}</code>
+        return <React.Fragment key={i}>{n.s}</React.Fragment>
+      })}
+    </>
+  )
+}
+
+/**
+ * 説明文（コードブロック以外）。段落・箇条書き・見出しに分けて描く。
+ * plain のときは何も解釈せず、今までどおり文字のまま出す（Koto 自身の一言: ChatMessage.toolNote）。
+ */
+function ChatText({ text, plain }: { text: string; plain?: boolean }) {
+  // 解析は text が変わったときだけ（流し込み中、別の部分だけが変わる描き直しで、全文を解析し直さない）
+  const blocks = useMemo(() => (plain ? [] : parseChatText(text)), [text, plain])
+  if (plain) return <p className={CHAT_TEXT_WRAP}>{text}</p>
+  return (
+    <div className="space-y-2">
+      {blocks.map((b, i) => {
+        if (b.kind === 'raw') {
+          // 閉じていない ```（流し込み中）。コードの途中なので、記号を消さずそのまま出す
+          return <p key={i} className={CHAT_TEXT_WRAP}>{b.text}</p>
+        }
+        if (b.kind === 'heading') {
+          return <p key={i} className={`font-bold ${CHAT_TEXT_WRAP}`}><Inlines inlines={b.inlines} /></p>
+        }
+        if (b.kind === 'list') {
+          return (
+            <ul key={i} className="list-disc pl-5 space-y-1">
+              {b.items.map((it, j) => <li key={j} className={CHAT_TEXT_WRAP}><Inlines inlines={it} /></li>)}
+            </ul>
+          )
+        }
+        return (
+          <p key={i} className={CHAT_TEXT_WRAP}>
+            {b.lines.map((ln, j) => (
+              <React.Fragment key={j}>{j > 0 ? '\n' : null}<Inlines inlines={ln} /></React.Fragment>
+            ))}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * AI が書いた文を描く、アプリで唯一の部品（2026-10-09 作者決定「そっちも直しましょう」）。
+ * 説明文は太字・箇条書き・見出し・インラインコードに、コードブロックはカードにする。
+ *
+ * 使う場所: チャットの吹き出し（AiMessage）／「資料に聞く」の回答（KnowledgeAnswer）／
+ * 公開前セキュリティチェックの結果のうち AI が書いた行（SecurityReportBody。Koto が組み立てた行は plain で出す）／
+ * 会話のまとめ（CompactNote）／推論モデルの思考（ThinkingBlock）。
+ * 場所ごとに描き方を変えない（双子を作らない・掟10）。**違うのは外側の見た目だけ**で、className で渡す
+ * （文字の大きさ・色・select-text・最大の高さ。ここでは決めない）。
+ * 説明文の折り返しは、どの場所も CHAT_TEXT_WRAP（区切りの無い長い URL・ファイル名も端で折る）。
+ *
+ * onApplyFile を渡さなければ、ファイル提案（file=）のカードに「プロジェクトに保存」は出ない
+ * （チャット以外の場所は保存先を持たない）。content が文字でなくても例外を投げない。
+ * plain: 説明文の ** ・` ・- ・# を解釈しない。Koto が出す作業中の一言（toolNote）に付ける。
+ * その一言には AI が渡したコマンドや glob の模様が入り、解釈すると実行する内容と違う文になる。
+ */
+export function AiText({ content, className, onApplyFile, applyHint, plain }: {
   content: string
+  className?: string
   onApplyFile?: (relPath: string, content: string, root?: string | null) => Promise<void>
   applyHint?: string
+  plain?: boolean
 }) {
-  const parts = parseMessage(content)
+  // コードブロックの切り出しも content が変わったときだけ（ThinkingBlock のように長い文を何度も描き直す所のため）
+  const parts = useMemo(() => parseMessage(typeof content === 'string' ? content : ''), [content])
   return (
-    <div className="text-sm leading-relaxed">
+    <div className={className}>
       {parts.map((p, i) => {
-        if (p.type === 'text') return <p key={i} className={CHAT_TEXT_WRAP}>{p.text}</p>
+        if (p.type === 'text') return <ChatText key={i} text={p.text} plain={plain} />
         if (p.type === 'file') return <FileCard key={i} path={p.path} lang={p.lang} code={p.code} onApply={onApplyFile} applyHint={applyHint} />
         return <InlineCode key={i} lang={p.lang} code={p.code} />
       })}
     </div>
   )
+}
+
+/** チャットの吹き出し。AiText に、吹き出しの文字の大きさ（text-sm・leading-relaxed）を付けただけ。 */
+export default function AiMessage({ content, onApplyFile, applyHint, plain }: {
+  content: string
+  onApplyFile?: (relPath: string, content: string, root?: string | null) => Promise<void>
+  applyHint?: string
+  plain?: boolean
+}) {
+  return <AiText content={content} className="text-sm leading-relaxed" onApplyFile={onApplyFile} applyHint={applyHint} plain={plain} />
 }

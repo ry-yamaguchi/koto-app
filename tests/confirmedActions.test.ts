@@ -20,7 +20,7 @@ import {
 describe('runClearConversation: confirm を通らなければ clear は一切呼ばれない', () => {
   it('confirm が false を返すと clear は呼ばれず、{cancelled:true} を返す', async () => {
     const clear = vi.fn()
-    const outcome = await runClearConversation('この会話をすべて削除します。よろしいですか？（元に戻せません）', {
+    const outcome = await runClearConversation('この操作は元に戻せません。よろしいですか？', {
       confirm: async () => false,
       clear,
     })
@@ -30,7 +30,7 @@ describe('runClearConversation: confirm を通らなければ clear は一切呼
 
   it('confirm が true を返すと clear を1回だけ呼ぶ', async () => {
     const clear = vi.fn()
-    const outcome = await runClearConversation('この会話をすべて削除します。よろしいですか？（元に戻せません）', {
+    const outcome = await runClearConversation('この操作は元に戻せません。よろしいですか？', {
       confirm: async () => true,
       clear,
     })
@@ -134,7 +134,7 @@ describe('runDiscardCredentialEdits: confirm を通らなければ discard は�
 describe('runEraseVpsKey: confirm を通らなければ erase は一切呼ばれない（★変異試験(b)）', () => {
   it('confirm が false を返すと erase は呼ばれず、{cancelled:true} を返す', async () => {
     const erase = vi.fn()
-    const outcome = await runEraseVpsKey('entry-1', '鍵を消去します（再生成が必要になります）。よろしいですか？', {
+    const outcome = await runEraseVpsKey('entry-1', '再生成が必要になります。よろしいですか？', {
       confirm: async () => false,
       erase,
     })
@@ -144,7 +144,7 @@ describe('runEraseVpsKey: confirm を通らなければ erase は一切呼ばれ
 
   it('confirm が true を返すと erase を entryId で1回だけ呼ぶ', async () => {
     const erase = vi.fn()
-    const outcome = await runEraseVpsKey('entry-1', '鍵を消去します（再生成が必要になります）。よろしいですか？', {
+    const outcome = await runEraseVpsKey('entry-1', '再生成が必要になります。よろしいですか？', {
       confirm: async () => true,
       erase,
     })

@@ -39,8 +39,8 @@ export function teardownSupport(target: PublishTargetKind): TeardownSupport {
  * その行の 🗑 を「すべて削除」として通すと、`teardownFlow` は「記録がありません」で ok:true を返し、そのあとの
  * 保存場所の片づけが**走ってしまう**——消すものを名指しできないまま、プロジェクトの保存場所のデータ
  * （ほかの公開先が使っているものを含む）が消える。だから、**消すものが記録に無いなら保存場所には触れない**。
- * 判断はここの1つだけ。main の `apprunDedicated:teardown`（保存場所に触れるか）と、画面の `runDedicatedTeardown`
- * （破壊の確認を出すか）が同じこれを使う。手順6のボタンの出し分け（shouldShowTeardownButton）と同じ答えになることは
+ * 判断はここの1つだけ。main の `apprunDedicated:teardown`（保存場所に触れるか）と、画面の共通の流れ（teardown/flow.ts の runTeardownFlow。
+ * 破壊の確認を出すか）が同じこれを使う。手順6のボタンの出し分け（shouldShowTeardownButton）と同じ答えになることは
  * tests/dedicatedTeardownEntries.test.ts が固定する。
  */
 export function dedicatedTeardownHasWork(record: {
@@ -51,6 +51,37 @@ export function dedicatedTeardownHasWork(record: {
   storageLeftoverBucket?: string | null
 } | null | undefined): boolean {
   return !!(record?.applicationID || record?.loadBalancerID || record?.asgID || record?.clusterID || record?.storageLeftoverBucket)
+}
+
+/**
+ * 保存場所の名前を、画面の文に並べる（『A』『B』。区切りは付けない）。Markdown 記法は使わない（掟5）。
+ * 3つの公開先の削除の「残っています」の行（main）・確認が挙げる保存場所の名前・手順6の 🗄️ の行・プロジェクトの削除を止める文・
+ * 残した保存場所の月額の警告が、同じこれを通る。**名前を『』で囲んで並べる整形は src にこの1つだけ**（tests/teardownSupport.test.ts が見張る。
+ * 3B の検分まで、HANAMII・共用型の main は自分用の整形を持っていて、区切りを変えても専有型の試験しか落ちなかった）。
+ */
+export function bucketNamesText(names: readonly string[]): string {
+  return names.map(b => `『${b}』`).join('')
+}
+
+/**
+ * 専有型の記録が言う「保存場所だけが残った」名前の**全件**（0.6.22 段階3B-2・B=2）。
+ *
+ * `storageLeftoverBuckets`（全件）があればそれ。無ければ `storageLeftoverBucket`（先頭の1件。全件を書く前の旧い記録も、
+ * 同じ回に両方を書く今の記録も、ここを通る）。同じ名前は1つ。文字列でない値・空の文字列は数えない（読めない値は「無い」に倒す）。
+ *
+ * 「消すものがあるか」（`dedicatedTeardownHasWork`）は `storageLeftoverBucket` の1件を見続ける——main は2つを必ず同時に書く
+ * （先頭1件が `storageLeftoverBucket`）ので、判断は変わらない。名前を**言う**側（手順6の 🗄️ の行・プロジェクトの削除を止める文）だけが、
+ * この関数で全件を言う。
+ */
+export function dedicatedStorageLeftoverNames(record: {
+  storageLeftoverBucket?: string | null
+  storageLeftoverBuckets?: readonly string[] | null
+} | null | undefined): string[] {
+  const listed: unknown = record?.storageLeftoverBuckets
+  const many = Array.isArray(listed) ? listed.filter((b): b is string => typeof b === 'string' && b !== '') : []
+  if (many.length > 0) return Array.from(new Set(many))
+  const one: unknown = record?.storageLeftoverBucket
+  return typeof one === 'string' && one !== '' ? [one] : []
 }
 
 /**
@@ -73,23 +104,6 @@ export function manualTeardownGuide(target: PublishTargetKind): string {
     case 'sakura-rental':
       return 'Koto からは削除できません。さくらのレンタルサーバのファイルマネージャか FTP で、'
         + 'アップロードしたファイルを削除してください。'
-    default:
-      return ''
-  }
-}
-
-/** 破棄したときに、その公開先で何が消えるかの一言（確認画面用）。 */
-export function teardownScopeNote(target: PublishTargetKind): string {
-  switch (target) {
-    case 'sakura-apprun':
-      return 'AppRun のアプリを削除します。'
-    case 'sakura-apprun-dedicated':
-      // 専有型の確認の文は、消えるもの・課金が止まること・ロードバランサの削除にかかる時間まで、
-      // src/renderer/dedicatedTeardownFlow.ts の buildDedicatedTeardownConfirm の1か所で作る
-      // （手順6も 📡 の 🗑 も同じ関数）。ここに別の文を持たない（2026-10-08・掟10）。
-      return ''
-    case 'hanamii':
-      return 'HANAMII のプロジェクトを削除します。'
     default:
       return ''
   }
@@ -131,10 +145,8 @@ export function teardownDataNote(placement: { bucket: string; prefix?: string; s
  *
  * ここに判断を1つだけ置き、📡 の確認も専有型手順6の確認も**同じ関数を通す**（掟10）。
  *
- * - `scope: 'list'` … 📡 一覧の「🗑 破棄」ボタン
- * - `scope: 'full'` … 専有型タブの手順6「すべて削除する」（計算資源＋保存場所）
- *
- * 専有型は 2026-10-08 から、どちらの入口も同じ流れ（保存場所まで片づける）なので、scope によらず true。
+ * 公開先だけで決まる（入口の引数は無い）。0.6.22 段階3B-3 で、入口の範囲を言う `scope`（'list'＝📡 一覧の 🗑・'full'＝専有型の手順6）を
+ * やめた。専有型は 2026-10-08 から、手順6も 📡 の 🗑 も同じ流れ（保存場所まで片づける）で、`'full'` を渡す入口は消えたため。
  *
  * ── ⚠️ ここが true でも、実物がそうしている保証にはならない（2026-09-25 検分）──────
  * 2026-09-25 まで HANAMII は**ここだけ true で、実物は保存場所へ1件も要求を出していなかった**
@@ -147,22 +159,16 @@ export function teardownDataNote(placement: { bucket: string; prefix?: string; s
  * **ここで true にする公開先は、実際に削除の要求を出すことを振る舞いのテストで固定してある**
  * （掟10「お金・破壊の歯止めは、振る舞いで固定する」）:
  *
- * - `sakura-apprun` … `cloud:teardown`（delete プラン）
+ * - `sakura-apprun` … `cloud:teardown` → `teardownStorageForProject` ／ tests/sharedTeardownMeasure.test.ts
  * - `hanamii` … `hanamii:teardown` → `teardownStorageForProject` ／ tests/hanamiiStorageTeardown.test.ts
- * - `sakura-apprun-dedicated`（`'full'` も `'list'` も）… 手順6 と 📡 の 🗑 は同じ `apprunDedicated:teardown`
+ * - `sakura-apprun-dedicated` … 手順6 と 📡 の 🗑 は同じ `apprunDedicated:teardown`
  *   ／ tests/apprunDedicatedStorageTeardown.test.ts・tests/dedicatedTeardownEntries.test.ts
  *
  * **新しい公開先をここで true にするときは、先に振る舞いのテストを書くこと。**
  */
-export function teardownRemovesStorage(target: PublishTargetKind, scope: 'list' | 'full'): boolean {
-  // `'full'` を持つのは専有型タブの手順6「すべて削除する」だけ（上のコメントの列挙どおり）。
-  // **ここも書き下す**（2026-09-25 検分の指摘25）。`if (scope === 'full') return true` と書くと、
-  // 公開先を見ずに全部 true ＝「保存場所そのものも削除して月額を止めます」と言い切ってしまう。
-  // いま 'full' を渡すのが専有型だけなので実害は無かったが、**すぐ下の 'list' で閉じたはずの穴
-  //（公開先を足すと黙って true に落ちる）が、直した行の隣にそのまま残っていた。**
-  if (scope === 'full') return target === 'sakura-apprun-dedicated'
-  // 📡 一覧からの破棄で保存場所まで片づけるのは、共用型 AppRun（cloud:teardown の delete プラン）・
-  // HANAMII（hanamii:teardown が teardownStorageForProject を通る）・専有型（2026-10-08 から、手順6と同じ
+export function teardownRemovesStorage(target: PublishTargetKind): boolean {
+  // 保存場所まで片づけるのは、共用型 AppRun（cloud:teardown が teardownStorageForProject を通る）・
+  // HANAMII（hanamii:teardown が teardownStorageForProject を通る）・専有型（2026-10-08 から、手順6と 📡 の 🗑 が同じ
   // apprunDedicated:teardown ＝ teardownProjectStorage を通る）。
   // **片づける側を書き下す。** `!== 'sakura-apprun-dedicated'` のような除外で書くと、
   // 破棄の口すら無い Vercel・レンタルサーバまで「片づけます」側に入り、
@@ -173,12 +179,28 @@ export function teardownRemovesStorage(target: PublishTargetKind, scope: 'list' 
 /**
  * 破棄の進み具合（保存場所のデータを削除している間）。
  *
- * 専有型（ipc/apprunDedicated.ts）と HANAMII（ipc/hanamii.ts）の2か所が**同じ文**を出す。
+ * 専有型（ipc/apprunDedicatedTeardown.ts）と HANAMII（ipc/hanamiiTeardown.ts）の2か所が**同じ文**を出す。
  * 前は両方に同じ文字列を別々に書いていたので、片方だけ直すと双子が食い違った（0.6.21 の検分）。
  * 「保存場所を削除」と言うと、note が「保存場所は残します」と続く回（利用者のファイルが
  * あってバケットごと消さなかったとき）と矛盾するので、**消すのは「データ」**と言う。
  */
 export const STORAGE_TEARDOWN_PROGRESS = '🗄️ 保存場所のデータを削除しています…'
+
+/**
+ * 保存場所が残ったとき、コントロールパネルで削除する前の確かめ（**保存場所ごと削除するよう、無条件に勧めない**）。
+ *
+ * 保存場所は、ほかのプロジェクトも使っていることがある（既定は共有の保存場所）。残ったのは、中身を一覧できなかった・途中で止まったなど、
+ * Koto が中身を確かめていない回が多い。そこで「削除してください」とだけ言うと、利用者は保存場所ごと消し、ほかのプロジェクトのデータを
+ * 失う（元に戻せない・2026-10-19 検分）。**保存場所が残ったとき、コントロールパネルでの削除を案内する文は、すべてこの1つを通る**
+ * （共用型・HANAMII の失敗の message、結果の「直接削除することもできます」の文と赤い欄、片づけない公開先の確認）。
+ */
+export const STORAGE_CHECK_BEFORE_DELETE = 'ほかのプロジェクトも使っていないか確かめてから削除してください。消すと、そのプロジェクトのデータも消えます。'
+
+/** コントロールパネルでの削除を案内する文（行き先から言う版）。 */
+export const STORAGE_PANEL_DELETE_GUIDE = `さくらのクラウドのコントロールパネル（オブジェクトストレージ）で、${STORAGE_CHECK_BEFORE_DELETE}`
+
+/** 「コントロールパネルから直接削除することもできます」の隣に添える版（保存場所が残ったものの一覧があるとき）。 */
+export const STORAGE_LISTED_CHECK = `保存場所は、${STORAGE_CHECK_BEFORE_DELETE}`
 
 /** 保存場所1件の削除（またはデータだけの削除）が済んだことの1行。`note` は「保存場所は残します」などの続き。 */
 export function storageTeardownDoneLine(bucket: string, note: string): string {
@@ -193,12 +215,11 @@ export function storageTeardownDoneLine(bucket: string, note: string): string {
  */
 export function teardownDataNoteFor(opts: {
   target: PublishTargetKind
-  scope: 'list' | 'full'
   placement: { bucket: string; prefix?: string; shared?: boolean } | null | undefined
 }): string {
   const p = opts.placement
   if (!p || typeof p.bucket !== 'string' || p.bucket.length === 0) return ''
-  if (teardownRemovesStorage(opts.target, opts.scope)) return teardownDataNote(p)
+  if (teardownRemovesStorage(opts.target)) return teardownDataNote(p)
   return `保存場所『${p.bucket}』とその中のデータは残ります（消すまで月額が続きます）。`
     + STORAGE_LEFTOVER_GUIDE
 }
@@ -220,14 +241,13 @@ export function teardownDataNoteFor(opts: {
  */
 export function teardownDataNoteForAll(opts: {
   target: PublishTargetKind
-  scope: 'list' | 'full'
   placements: Array<{ bucket: string; prefix?: string; shared?: boolean }> | null | undefined
 }): string {
   const list = (opts.placements ?? []).filter(p => p && typeof p.bucket === 'string' && p.bucket.length > 0)
   if (list.length === 0) return ''
-  if (list.length === 1) return teardownDataNoteFor({ target: opts.target, scope: opts.scope, placement: list[0] })
-  const names = list.map(p => `『${p.bucket}』`).join('')
-  if (teardownRemovesStorage(opts.target, opts.scope)) {
+  if (list.length === 1) return teardownDataNoteFor({ target: opts.target, placement: list[0] })
+  const names = bucketNamesText(list.map(p => p.bucket))
+  if (teardownRemovesStorage(opts.target)) {
     return `保存場所${names}にある、このプロジェクトのデータも削除します。`
       + 'ほかのプロジェクトのデータや、あなたが自分で置いたファイルは残します。'
       + 'それぞれの保存場所を使っているプロジェクトがほかに無ければ、保存場所そのものも削除して月額を止めます。'
@@ -243,4 +263,4 @@ export function teardownDataNoteForAll(opts: {
  * 2026-10-08 から（どの入口でも）保存場所まで片づけるので、この枝へ来る公開先は専有型ではなくなった。
  * 来るのは破棄の口が別にある公開先だけ＝**無い導線（専有型の手順6）を案内しない**。
  */
-const STORAGE_LEFTOVER_GUIDE = 'さくらのクラウドのコントロールパネル（オブジェクトストレージ）から削除してください。'
+const STORAGE_LEFTOVER_GUIDE = STORAGE_PANEL_DELETE_GUIDE
