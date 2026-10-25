@@ -178,6 +178,10 @@ export function useAiChat(args: UseAiChatArgs) {
   // アプリ再起動・プロジェクト再オープンをまたいで会話の続きを resume できるようにする
   // （失効時は main 側 agent.ts が新規セッションへ自動フォールバックするため行き止まりにならない）。
   const claudeSessionRef = useRef<string | null>(null)
+  // いま見ているプロジェクト（props の toolsProjectDir の最新）。ターンの途中で届く 'session' が、
+  // そのターンを始めたプロジェクトの番号を共有の claudeSessionRef へ入れてよいかの判定に使う
+  // （onStream の中の閉包は送信した瞬間の値のままなので、最新の値はここから読む。掟11）。
+  const toolsProjectDirRef = useRef<string | null>(toolsProjectDir)
 
   // 応答開始からの経過秒数（待ち時間の見える化・2026-08-03 ユーザー要望）。
   // 推論モデルは数十秒沈黙することがあり、「あと少し待つ／止める」の判断材料になる。
@@ -209,7 +213,23 @@ export function useAiChat(args: UseAiChatArgs) {
 
   // プロジェクトが変わったら、そのプロジェクトに保存済みのセッションIDを読み込む（所見10）。
   // 単独チャット（toolsProjectDir=null）は Claude 経路を使わないため常に null。
-  useEffect(() => { claudeSessionRef.current = getClaudeSessionId(toolsProjectDir) }, [toolsProjectDir])
+  useEffect(() => {
+    toolsProjectDirRef.current = toolsProjectDir
+    claudeSessionRef.current = getClaudeSessionId(toolsProjectDir)
+  }, [toolsProjectDir])
+
+  // 「🗑 会話をクリア」で、そのプロジェクトの Claude の覚えた会話の番号も忘れる（2026-10-24 の実機・rc.1）。
+  // 画面の会話を消すだけだと、番号が残ったまま毎回 resume へ渡り、保存されていない会話の番号だと
+  // 「No conversation found」で Claude が使えないままになる（クリアでも直らない）。
+  // 呼ぶのは会話の削除が確定したときだけ（ChatPanel の clear の中。キャンセルでは呼ばない）。
+  // 掟7: チャットの状態（番号の ref と保存）はこのフックが持つ。単独チャット（toolsProjectDir=null）は
+  // Claude 経路を使わないので、ref を空にするだけで保存には触れない（projectDir が null なら setClaudeSessionId は何もしない）。
+  // 共有の claudeSessionRef を空にするのは、いま見ているプロジェクトが、この関数を作ったときのプロジェクトと
+  // 同じときだけ（確認の窓の間に別のプロジェクトへ切り替わっていたら、切り替え先の番号を消さない。掟11）。
+  const forgetClaudeSession = useCallback(() => {
+    if (toolsProjectDirRef.current === toolsProjectDir) claudeSessionRef.current = null
+    setClaudeSessionId(toolsProjectDir, null)
+  }, [toolsProjectDir])
 
   // ⏹ は「いま見ているプロジェクトのターン」を止める（abortRef は廃止。registry に登録された
   // 関数を、いま見ている鍵から呼ぶ。登録が無ければ何もしない）。
@@ -469,9 +489,13 @@ export function useAiChat(args: UseAiChatArgs) {
           updateTurn(key, { lastActivityAt: Date.now() })
           switch (ev.kind) {
             case 'session':
-              // 継続会話用に保持しつつ、プロジェクト単位で永続化する（所見10・再起動後も resume できる）。
-              claudeSessionRef.current = ev.sessionId
+              // 継続会話用に、プロジェクト単位で永続化する（所見10・再起動後も resume できる）。保存はそのターンの
+              // プロジェクト（projectDir）へ。共有の claudeSessionRef（いま見ているプロジェクトの番号）へ入れるのは、
+              // そのターンのプロジェクトがいまも見ているプロジェクトのときだけ。別のプロジェクトへ切り替えたあとに
+              // 前のプロジェクトのターンの session が届いても、切り替え先の次の chatStart へ渡さない（掟11）。
+              // 戻ってきたときは、上の effect が保存済みの番号を読み直す。
               setClaudeSessionId(projectDir, ev.sessionId)
+              if (projectDir === toolsProjectDirRef.current) claudeSessionRef.current = ev.sessionId
               break
             case 'text':
               if (!assistantOpen) {
@@ -771,5 +795,5 @@ export function useAiChat(args: UseAiChatArgs) {
     void send(text, images)
   }, [send])
 
-  return { isLoading, statusNote, stalled, elapsedSec, routedModel, setRoutedModel, send, abort, switchToAiEngineAndResend, compactNow }
+  return { isLoading, statusNote, stalled, elapsedSec, routedModel, setRoutedModel, send, abort, switchToAiEngineAndResend, compactNow, forgetClaudeSession }
 }

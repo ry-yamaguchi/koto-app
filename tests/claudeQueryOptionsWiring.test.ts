@@ -282,8 +282,9 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
     const p = callCanUseTool(run, 'Write', { file_path: inWriteRoot('index.html'), content: '<html></html>' })
     await tick()
     expect(listPending()).toHaveLength(1)
-    // 文面は作業フォルダ基準の相対パス・出し先は退避先（projectDir）。引数の取り違え（scopeDir⇔writeRoot）も検知する
-    expect(listPending()[0].label).toBe('✏️ ファイルの保存（index.html）')
+    // 文面はプロジェクト直下からの相対パス（作業フォルダが public/ なので public/index.html。2026-10-23 に作業フォルダ基準から変えた）・
+    // 出し先は退避先（projectDir）。引数の取り違え（scopeDir⇔writeRoot）も検知する
+    expect(listPending()[0].label).toBe('✏️ ファイルの保存（public/index.html）')
     expect(listPending()[0].dir).toBe(projectDir)
     expect(answerApproval(listPending()[0].id, true)).toBe(true)
     expect(await p).toEqual({ behavior: 'allow' })
@@ -296,7 +297,7 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
     answerApproval(listPending()[0].id, false)
     const r = await p
     expect(r.behavior).toBe('deny')
-    expect(r.message).toBe(writeDenialMessage('write_file', JSON.stringify({ path: 'index.html' })))
+    expect(r.message).toBe(writeDenialMessage('write_file', JSON.stringify({ path: 'public/index.html' })))
   })
 
   it('★★ confirm: Bash も承認を求める（安全そうな ls でも、✋ 毎回確認なら聞く）', async () => {

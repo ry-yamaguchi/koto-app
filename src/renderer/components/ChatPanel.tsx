@@ -35,6 +35,7 @@ import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { turnKey, updateTurn } from '../chatTurnRegistry'
 import { useConfirm } from '../useConfirm'
 import { runClearConversation } from '../confirmedActions'
+import { clearConversationAction } from '../confirmedActions'
 import { chatStatusLine } from '../../shared/chatStatusLine'
 import { decideRagToggleAction } from '../../shared/aiToolsCore'
 
@@ -1042,7 +1043,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
                 'この操作は元に戻せません。よろしいですか？',
                 {
                   confirm: (body) => confirm({ title: '会話をすべて削除します', body, confirmLabel: '削除する', danger: true }),
-                  clear: () => applyOp({ kind: 'replaceAll', messages: [] }),
+                  // 画面の会話を消すとき、Claude の覚えた会話の番号も忘れる（確定したときだけ。キャンセルでは呼ばれない）
+                  clear: clearConversationAction({
+                    clearMessages: () => applyOp({ kind: 'replaceAll', messages: [] }),
+                    forgetClaudeSession: chat.forgetClaudeSession,
+                  }),
                 },
               )
             }}

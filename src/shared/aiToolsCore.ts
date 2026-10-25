@@ -9,7 +9,7 @@
 // requiresConfirmation / confirmReason / installTargetsFromCommand / isSensitiveCommand は、
 // 承認（approveToolCall）を main へ一元化する（掟10）ための材料。main（turnRunner.ts）・
 // renderer（aiTools.ts が re-export・互換維持）の両方から同じ実装を呼べるようにする。
-import { isDangerousCommand, leavesWorkingDir } from './commandGuard'
+import { isDangerousCommand, leavesWorkingDir, writesOutsideWorkingDir, type WritesOutsideOptions } from './commandGuard'
 import { PUBLISH_DIR_LABEL } from './publishRoot'
 // W-47: 「別のモデル（Kimi K2.7 Code など）に切り替えて」は、既定モデルと同じ名前なので
 // 既にそれを使っている人には「もう選んでいるのに」と読める。既定モデルのIDと一元定義から比べる。
@@ -206,15 +206,21 @@ export function isSensitiveCommand(cmd: string): boolean {
     /\bcurl\b|\bwget\b|\bnc\b|\bncat\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd) ||
     // コードの直接実行（ワンライナー）
     /\b(python3?|node|ruby|perl|php)\s+-(c|e)\b|\bosascript\b|\beval\b|\bbase64\s+-{1,2}d\b/i.test(cmd) ||
-    // システム/ホーム設定の変更
+    // システム/ホーム設定の変更。`>>?\s*~` は writesOutsideWorkingDir と重なって見えるが、重複ではない:
+    // 文字列のどこにあっても当たる安全網で、scanShell が読まない heredoc・パイプの中（`bash <<EOF … > ~/x`・
+    // `echo "… > ~/x" | bash`）の `> ~/…` も拾う。外さないこと。
     />>?\s*~|~\/\.(zshrc|bashrc|bash_profile|zprofile|profile|ssh)|\bcrontab\b|\blaunchctl\b|\bdefaults\s+write\b/i.test(cmd)
   )
 }
 
 /** run_command 実行前にユーザー確認が必要か（破壊的 or 上記カテゴリ）（旧 renderer/aiTools.ts から移した・B'-3d-3）。 */
-export function requiresConfirmation(cmd: string): boolean {
+export function requiresConfirmation(cmd: string, opts?: WritesOutsideOptions): boolean {
   // 作業フォルダの外へ出るコマンドも一度は目に入れる（止めはしない・2026-08-20）。
-  return isDangerousCommand(cmd) || isSensitiveCommand(cmd) || leavesWorkingDir(cmd)
+  // 外へ**書き込む**コマンドは、cd も ../ も使わない形（>> /abs、mv a ~/b）も含めて writesOutsideWorkingDir が見る
+  // （2026-10-23。Claude の Bash と AI Engine の run_command はどちらもここを通る）。
+  // opts.projectDir（プロジェクト直下の絶対パス）を渡すと、その配下を指す絶対パスは「外」に数えない。
+  // 渡さないと絶対パスはすべて外（安全側）。呼び出し元は必ず渡す（tests/commandWritesOutsideRoutes.test.ts が固定）。
+  return isDangerousCommand(cmd) || isSensitiveCommand(cmd) || leavesWorkingDir(cmd) || writesOutsideWorkingDir(cmd, opts)
 }
 
 /**
@@ -237,8 +243,10 @@ export function installTargetsFromCommand(cmd: string): string[] {
 }
 
 /** なぜ確認するのかを初心者向けに一言で説明する（旧 renderer/aiTools.ts から移した・B'-3d-3）。 */
-export function confirmReason(cmd: string, opts?: { dependencies?: readonly string[] }): string {
+export function confirmReason(cmd: string, opts?: { dependencies?: readonly string[] } & WritesOutsideOptions): string {
   if (isDangerousCommand(cmd)) return 'この操作はファイルやシステムを壊す可能性があります。'
+  // 外へ書き込むコマンドは、`install` などの語で下の「取得して実行」と取り違えないよう先に言う。
+  if (writesOutsideWorkingDir(cmd, opts)) return 'プロジェクトのフォルダの外に書き込みます。'
   if (/\binstall\b|\badd\b|\bnpx\b|\bget\b|\brequire\b|\btap\b/i.test(cmd)) {
     // **何が入るのかを見せる**（2026-08-18 Ryosuke 指摘）
     const named = installTargetsFromCommand(cmd)

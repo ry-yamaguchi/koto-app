@@ -51,6 +51,26 @@ export async function runClearConversation(message: string, deps: RunClearConver
   return gate(message, deps.confirm, () => deps.clear())
 }
 
+export interface ClearConversationActionDeps {
+  /** 画面の会話（吹き出し）を消す。 */
+  clearMessages: () => void
+  /** そのプロジェクトの Claude の覚えた会話の番号も忘れる（useAiChat の forgetClaudeSession）。 */
+  forgetClaudeSession: () => void
+}
+
+/**
+ * 「🗑 会話をクリア」が確定したときに実行する関数を作る（runClearConversation の deps.clear に渡す）。
+ * 画面の会話を消すだけだと、覚えた会話の番号が残り、保存されていない会話の番号で resume して
+ * 「No conversation found」のまま Claude が使えなくなる（2026-10-24・rc.1 の実機）。
+ * 2つは必ず一緒に起こす。キャンセルのとき（runClearConversation が clear を呼ばないとき）はどちらも起きない。
+ */
+export function clearConversationAction(deps: ClearConversationActionDeps): () => void {
+  return () => {
+    deps.clearMessages()
+    deps.forgetClaudeSession()
+  }
+}
+
 // ── ChatApp.tsx: 会話の削除 ──────────────────────────────────────────────────
 
 export interface RunDeleteConversationDeps {
