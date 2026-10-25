@@ -19,7 +19,9 @@ export type WriteMode = 'auto' | 'confirm'
 
 export type PlanApprovalOpts = {
   writeMode: WriteMode
-  /** このターンが縛られているプロジェクト（🕘 履歴・install の package.json 読み取りに使う）。 */
+  /** このターンが縛られているプロジェクト（🕘 履歴・install の package.json 読み取りに使う）。
+   *  run_command では、プロジェクトの中を指す絶対パスを「外へ書き込む」に数えない基準にも使う
+   *  （requiresConfirmation の projectDir。渡さないと絶対パスはすべて外＝承認が出る）。 */
   scopeDir?: string | null
   /** 実際に実行される根（write_file 等の書き込み先）。commandScopeNote の「実行先」に使う。 */
   scopeRoot?: string | null
@@ -53,8 +55,9 @@ export function planApproval(toolName: string, toolArgsJson: string, opts: PlanA
   if (toolName === 'run_command') {
     let cmd = ''
     try { cmd = JSON.parse(toolArgsJson || '{}').command ?? '' } catch { /* 不明でも確認は出す */ }
-    if (opts.writeMode === 'confirm' || requiresConfirmation(cmd)) {
-      const reason = requiresConfirmation(cmd) ? `\n理由: ${confirmReason(cmd, { dependencies: opts.deps ?? [] })}` : ''
+    const guard = { projectDir: opts.scopeDir }
+    if (opts.writeMode === 'confirm' || requiresConfirmation(cmd, guard)) {
+      const reason = requiresConfirmation(cmd, guard) ? `\n理由: ${confirmReason(cmd, { dependencies: opts.deps ?? [], ...guard })}` : ''
       // **いつもと違う場所なら、そのことだけを名前で伝える**（2026-08-24 の実害）。
       const scopeNote = commandScopeNote(opts.scopeDir, opts.scopeRoot)
       return { label: `コマンド実行: ${cmd || '(不明)'}${scopeNote}${reason}` }

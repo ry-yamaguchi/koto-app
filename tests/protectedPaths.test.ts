@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { isProtectedWritePath, protectedWriteMessage } from '../src/shared/protectedPaths'
 import { validateDelegatePath } from '../src/main/claude/toolText'
+import { resolveForWrite } from '../src/shared/toolExecCore'
+import { writeDelegatedFiles } from '../src/main/claude/tools'
 import { DATA_LAYER_LOCAL_DIR } from '../src/shared/objectStorage'
 
 // AI が書き換えてはいけない場所の判定（2026-08-05 追加）。
@@ -57,6 +59,73 @@ describe('Koto と git の管理領域は書かせない', () => {
     expect(isProtectedWritePath('./.sakuraide/chat.json')).toBe(true)
     expect(isProtectedWritePath('.sakuraide\\chat.json')).toBe(true)   // Windows風の区切り
     expect(isProtectedWritePath('  .git/config  ')).toBe(true)         // 前後の空白
+  })
+})
+
+// macOS の既定（APFS）は大文字小文字を区別しない。`.GIT/hooks/pre-commit` は `.git/hooks/pre-commit` と同じ実体なのに、
+// 区別して比べていたため守りから漏れた（2026-10-23 検分の実測）。
+describe('大文字小文字を変えても守りから漏れない', () => {
+  const casing = [
+    '.GIT/hooks/pre-commit', '.Git/config', 'a/b/.GIT/config',
+    '.Sakuraide.json', '.SAKURAIDE.JSON',
+    '.SAKURAIDE-BACKUP/x', '.Sakuraide-Backup/2026/_manifest.json',
+    '.SAKURAIDE/chat.json', '.Sakura-Cloud/env.json', '.SAKURA-CLOUD/env.json',
+    '.KOTO-DATA/dates/dates.json', 'public/.Koto-Data/config/join.json',
+    '.ENV', '.Env.local', 'config/.ENV.PRODUCTION',
+    './.GIT/config', '.GIT\\hooks\\pre-commit',
+  ]
+  for (const p of casing) {
+    it(`守る: ${p}`, () => expect(isProtectedWritePath(p)).toBe(true))
+  }
+
+  it('元の綴りのものは、いままでどおり守る', () => {
+    for (const p of ['.git/hooks/pre-commit', '.sakuraide.json', '.sakuraide-backup/x', '.env']) {
+      expect(isProtectedWritePath(p), p).toBe(true)
+    }
+  })
+
+  it('普通の名前は、大文字が混じっていても守らない（巻き込まない）', () => {
+    for (const p of [
+      'Readme.md', 'README.md', 'src/Env.ts', 'src/ENV.ts', 'Environment.js', 'Dockerfile', 'Makefile',
+      'Src/App.tsx', 'GitHub.md', 'docs/Git.md', 'Sakuraide-notes.md', 'MY-SAKURAIDE.JSON', 'public/Index.html',
+      'KOTO-DATA.cjs', 'koto-data/Memo.txt',
+    ]) {
+      expect(isProtectedWritePath(p), p).toBe(false)
+    }
+  })
+
+  it('拒否の説明には、書かれた綴りのままのパスが入る', () => {
+    expect(protectedWriteMessage('.GIT/hooks/pre-commit')).toContain('.GIT/hooks/pre-commit')
+    expect(protectedWriteMessage('.KOTO-DATA/x.json')).toContain('アプリの画面')
+  })
+
+  it('さくらのAI Engine の write_file / edit_file（resolveForWrite）も、大文字違いを断る', () => {
+    for (const p of ['.GIT/hooks/pre-commit', '.Sakuraide.json', '.SAKURAIDE-BACKUP/x', '.ENV']) {
+      const r = resolveForWrite('/p/public', p)
+      expect('error' in r, p).toBe(true)
+    }
+    expect(resolveForWrite('/p/public', 'Readme.md')).toEqual({ full: '/p/public/Readme.md' })
+    expect(resolveForWrite('/p/public', 'src/Env.ts')).toEqual({ full: '/p/public/src/Env.ts' })
+  })
+
+  it('委譲の書き込み本体（writeDelegatedFiles）も、大文字違いを聞かず・書かずに断る', async () => {
+    for (const p of ['.GIT/hooks/pre-commit', '.Sakuraide.json', '.SAKURAIDE-BACKUP/x', '.ENV']) {
+      const r = await writeDelegatedFiles([{ path: p, content: 'x' }], {
+        projectDir: '/nonexistent/proj', writeRoot: '/nonexistent/proj', snapshotId: 's', snapshotLabel: 'l',
+        onFileWritten: () => { throw new Error('書いてはいけない') }, writeMode: 'auto', turnId: 't', isStopped: () => false,
+      } as any)
+      expect(r.written, p).toEqual([])
+      expect(r.denied?.path, p).toBe(p)
+      expect(r.denied?.message, p).toBe(protectedWriteMessage(p))
+    }
+  })
+
+  it('委譲の書き込み（validateDelegatePath）も、大文字違いを断る', () => {
+    for (const p of ['.GIT/hooks/pre-commit', '.Sakuraide.json', '.SAKURAIDE-BACKUP/x', '.ENV']) {
+      expect(validateDelegatePath(p), p).toBe(false)
+    }
+    expect(validateDelegatePath('Readme.md')).toBe(true)
+    expect(validateDelegatePath('src/Env.ts')).toBe(true)
   })
 })
 

@@ -26,9 +26,11 @@ const dynamicImportSdk = new Function('specifier', 'return import(specifier)') a
 ) => Promise<typeof import('@anthropic-ai/claude-agent-sdk')>
 
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import type { Options, PermissionResult, CanUseTool, HookCallback, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { resolveClaudeBinary } from './client'
+import { claudeSdkEnv } from './sdkEnv'
 import { isDangerousCommand } from './guard'
 import { mapSdkMessage, type UiEvent } from './events'
 import { buildIdeToolsServer } from './tools'
@@ -49,6 +51,20 @@ import { requestApproval } from '../chat/approvalStore'
 /** Claude頭脳モードの既定モデル（dev-plan.md C2 で指定）。
  *  renderer の DEFAULT_CLAUDE_MODEL（claudeMode.ts）と一致させること（未指定時のみ使う保険）。 */
 export const CLAUDE_DEFAULT_MODEL = 'claude-opus-5'
+
+/** resume した番号の会話が SDK 側に無いときの誤りの文（実測: "No conversation found with session ID: <番号>"）。
+ *  番号は問わず、大文字小文字も区別しない。 */
+const NO_CONVERSATION_FOUND_RE = /no conversation found/i
+
+/** 会話が始まった印になる出来事か（session・error・result 以外＝text・tool など。events.ts の mapSdkMessage が出す kind）。 */
+function isConversationContentEvent(event: UiEvent): boolean {
+  return event.kind !== 'session' && event.kind !== 'error' && event.kind !== 'result'
+}
+
+/** resume のとき、終わりまで手元に貯めてよい出来事か（error と result だけ。session などはすぐ届ける）。 */
+function isHeldWhileResuming(event: UiEvent): boolean {
+  return event.kind === 'error' || event.kind === 'result'
+}
 
 /** C2a で有効化する SDK 内蔵ツール一覧（canUseTool 側の一覧チェック＝ALLOWED_TOOL_NAMES 用）。 */
 const BUILTIN_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'] as const
@@ -190,22 +206,59 @@ export function makeCanUseTool(scopeDir: string, writeRoot: string, writeMode: W
       }
       return result
     }
-    // Koto の管理領域（🕘履歴・チャット履歴・設定・.git・.env）への書き込みを拒否する。
-    // 特に .sakuraide-backup を書き換えられると「AIの失敗を取り消す仕組み」自体が壊れ、
-    // .git/hooks へ書けると commandGuard を迂回して任意のコードが実行されてしまう。
-    // 判定は shared/protectedPaths.ts に一本化（write_file / delegate と共通・2026-08-05）。
-    // ここは writeMode を問わず常に拒否する（承認しても書けない領域のため、確認より先に判定する）。
+    // 書き込み先の点検（Write / Edit）。順番が大事なので、番号の順に必ず通す。
+    //
+    // (1) パスを絶対パスに直す。SDK の相対パスは cwd（＝writeRoot）基準で解かれるので、こちらも同じ基準にする。
+    //     パスが分からない書き込みは許さない。
+    // (2) **プロジェクト直下（scopeDir）を基準に**「中か外か」を見て、外は断る（2026-10-23）。
+    //     以前は writeRoot（public/ があればその中）を基準にし、外を指すと点検を飛ばして承認の判定へ進んでいた。
+    //     おまかせ（auto）では承認の判定が「許可」を返すため、プロジェクトの外の任意のファイル
+    //     （~/.zshrc など）に書けた。public/ のあるプロジェクトでは、直下の管理領域（.sakuraide.json・
+    //     .sakuraide-backup/・.git/hooks/・.env）も点検の外だった。さくらのAI Engine 経路
+    //     （shared/toolExecCore.ts の resolveInProject / resolveForWrite）は絶対パスと .. を断ってプロジェクトの
+    //     中に閉じており、Claude 経路だけ抜けていた。Agent SDK が canUseTool の前に自分で止めるかは確かめて
+    //     いないが、止めていても Koto の守りとして塞ぐ（多重の守り）。
+    //     限界（直さない）: 「中か外か」は大文字小文字を区別して比べる（macOS で大文字小文字だけ違うプロジェクトのパスは
+    //     「外」とみなして断る＝安全側）。管理領域の名前（.GIT・.Sakuraide.json など）は isProtectedWritePath が区別せずに比べる。
+    //     シンボリックリンクは解決しない（AI Engine 経路と同じ限界）。
+    //     どちらも writeMode を問わず、承認より先に断る（承認しても書けない領域と同じ扱い）。
+    // (3) Koto の管理領域（🕘履歴・チャット履歴・設定・.git・.env）は、**プロジェクト直下からの相対パス**で点検する。
+    //     特に .sakuraide-backup を書き換えられると「AIの失敗を取り消す仕組み」自体が壊れ、
+    //     .git/hooks へ書けると commandGuard を迂回して任意のコードが実行されてしまう。
+    //     判定は shared/protectedPaths.ts に一本化（write_file / delegate と共通・2026-08-05）。
+    // (4) プロジェクトの中で writeRoot の外（public/ の外。例 <project>/server.js）は、これまでどおり
+    //     おまかせなら許可・毎回確認なら承認（振る舞いを広げも狭めもしない）。
     if (toolName === 'Write' || toolName === 'Edit') {
-      const filePath = typeof (input as any)?.file_path === 'string' ? (input as any).file_path as string : ''
-      const rel = filePath ? relPathInProject(writeRoot, filePath) : null
-      if (rel && isProtectedWritePath(rel)) {
-        const result: PermissionResult = { behavior: 'deny', message: protectedWriteMessage(rel) }
+      const rawPath = (input as any)?.file_path
+      if (typeof rawPath !== 'string' || rawPath === '') {
+        const result: PermissionResult = { behavior: 'deny', message: '書き込み先のパス（file_path）が分からないため、書き込めません。' }
+        return result
+      }
+      // `~` と `~/…` はホームフォルダを指す（SDK 側で展開される可能性があるため、こちらも展開して「外」と判定する）。
+      const expanded = rawPath === '~' || rawPath.startsWith('~/')
+        ? path.join(os.homedir(), rawPath.slice(1))
+        : rawPath
+      const absPath = path.resolve(writeRoot, expanded)
+      const relProject = relPathInProject(scopeDir, absPath)
+      if (relProject === null) {
+        const result: PermissionResult = {
+          behavior: 'deny',
+          message: `プロジェクトのフォルダの外（${absPath}）には書き込めません。プロジェクトの中のファイルだけを書き換えられます。`,
+        }
+        return result
+      }
+      if (isProtectedWritePath(relProject)) {
+        const result: PermissionResult = { behavior: 'deny', message: protectedWriteMessage(relProject) }
         return result
       }
       // W-18: さくらのAI Engine 経路（shared/approvalPlan.ts の planApproval）と同じ判定・同じ文面を
       // 使い回す。「✋ 毎回確認」のときは、保存の前に必ずここで止まる（tests/w-chat-claudeApproval.test.ts）。
+      // 承認の文に出すパス（と、断ったときの文に入るパス）は、**いつもプロジェクト直下からの相対**（relProject）。
+      // writeRoot 基準にすると、作業フォルダが <project>/public のとき <project>/index.html と
+      // <project>/public/index.html がどちらも「index.html」になり、利用者に区別がつかない（2026-10-23）。
+      // public/ の無いプロジェクト（writeRoot＝プロジェクト直下）では、これまでと表示は変わらない。
       const mappedName = toolName === 'Write' ? 'write_file' : 'edit_file'
-      const argsJson = JSON.stringify({ path: rel ?? filePath })
+      const argsJson = JSON.stringify({ path: relProject })
       const plan = planApproval(mappedName, argsJson, { writeMode })
       if (plan) {
         const approved = await requestApproval({ turnId, dir: scopeDir, label: plan.label })
@@ -224,8 +277,11 @@ export function makeCanUseTool(scopeDir: string, writeRoot: string, writeMode: W
       // W-18: run_command 側も同じ仕組み。危険コマンドは上で既に拒否済みなので、ここに来るのは
       // 「確認すれば実行してよい」コマンドだけ（planApproval が writeMode==='confirm' か
       // requiresConfirmation(cmd) のときだけ承認要と判定する。おまかせでも危険寄りのコマンドは駐機する）。
+      // **プロジェクト直下（scopeDir）を必ず渡す**: プロジェクトの中を指す絶対パスを「外」に数えないため（渡し忘れると
+      // 絶対パスがすべて外になり、おまかせが承認だらけになる。planApproval にも同じ scopeDir を渡している・
+      // tests/commandWritesOutsideRoutes.test.ts が固定）。
       let deps: string[] = []
-      if (writeMode === 'confirm' || requiresConfirmation(command)) {
+      if (writeMode === 'confirm' || requiresConfirmation(command, { projectDir: scopeDir })) {
         try {
           if (scopeDir && /\b(install|i|add)\b/.test(command)) {
             const raw = fs.readFileSync(`${scopeDir}/package.json`, 'utf-8')
@@ -350,9 +406,11 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // C2c: renderer で選択されたモデル（claudeMode.ts CLAUDE_MODELS）。未指定時は既定定数。
     model: model || CLAUDE_DEFAULT_MODEL,
     resume: resumeSessionId ?? undefined,
-    // env は process.env を丸ごと置き換える仕様（マージされない）ため、自分で展開してから
-    // ANTHROPIC_API_KEY を上書きする（方式B: このプロセス呼び出し内でのみ使用・保存しない）。
-    env: { ...process.env, ANTHROPIC_API_KEY: apiKey },
+    // env は process.env を丸ごと置き換える仕様（マージされない）ため、自分で写してから
+    // ANTHROPIC_API_KEY を入れる（方式B: このプロセス呼び出し内でのみ使用・保存しない）。
+    // 親の環境の Claude の印（CLAUDE_CODE_ENTRYPOINT など）と ANTHROPIC_ の宛先・認証は外す
+    // （sdkEnv.ts。引き継ぐと SDK が自分の印を付けず、Anthropic 側で Claude Code の利用に見える・2026-10-24 の実機）。
+    env: claudeSdkEnv(process.env, apiKey),
     // IDE固有MCPツールは修飾名（mcp__ide__<tool名>）で許可する（toolText.ts の修飾規則参照）。
     // delegate_implementation（C3）も常に許可リストへ含める（実際に呼べるかはツール登録の有無で決まる。
     // buildIdeToolsServer 側が aiEngineKey が無いモード（B）では tools 配列に入れないため、
@@ -410,25 +468,76 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // 出したか（開始直後の失敗か、途中まで進んで失敗したかを区別するために使う）。
     // renderer は result/error のどちらかで待機を解くため、終端イベントなしにストリームが尽きた場合
     // （子プロセスの異常終了等）は error で補完する。
+    //
+    // ── resume を渡したときだけ、error と result をいったん貯める（2026-10-24 の実機・rc.1）──────
+    // 保存済みの会話が無い番号で resume すると、いまの SDK は例外ではなく**ストリームの中の誤りの結果**
+    // （error → result → 終了時に例外）で返す。これを素直に流すと emittedAny=true になり、下の
+    // 自己修復（resume 無しのやり直し）が効かず、そのプロジェクトで Claude が二度と使えなくなる。
+    // そこで resume のときは、error と result だけを手元に貯める。
+    //   - session（会話の番号）は貯めず、来たらすぐ流す。貯めると番号の知らせが数秒〜数十秒遅れ、その間に
+    //     「会話をクリア」で番号を忘れたり別のプロジェクトへ切り替えたりしたあとに、古い番号が書き戻されてしまう
+    //   - 中身（text・tool など会話が始まった印）が来た → 貯めた error/result を先に順に流し、以後はそのまま流す
+    //   - 中身が来ないまま終わり、誤りの文に「No conversation found」がある → 貯めた分を捨てて
+    //     「何も出していない失敗」として返す（呼び出し側の自己修復＝resume 無しのやり直しへ合流）。
+    //     先に流れた session は失敗した回の番号（renderer はそれを保存する）。やり直しが新しい session を
+    //     流せば上書きされる。やり直しが session より前に失敗すると残るが、次の依頼でもう一度ここを通って
+    //     自己修復されるので、行き止まりにはならない
+    //   - 中身が来ないまま終わり、別の誤り（請求・429 など） → 貯めた分をそのまま流す（やり直さない。
+    //     会話の続きを勝手に捨てない）
+    // resume を渡さないときは貯めずにすぐ流す。
     const runOnce = async (useResume: boolean): Promise<{ ok: boolean; emittedAny: boolean; error?: any }> => {
+      const resumeThisRun = useResume ? (resumeSessionId ?? undefined) : undefined
       let emittedAny = false
       let sawTerminal = false
+      // null = 貯めていない（すぐ流す／もう流し始めた）。配列 = 中身の出来事を待って error/result を貯めている最中。
+      let pending: UiEvent[] | null = resumeThisRun ? [] : null
+      const deliver = (event: UiEvent) => { emittedAny = true; onEvent(event) }
+      const flushPending = () => {
+        if (!pending) return
+        const held = pending
+        pending = null
+        for (const event of held) deliver(event)
+      }
+      // 貯めたまま終わったとき、「会話の続きが見つからない」失敗か（貯めた誤りの文か、投げられた例外の文）。
+      const heldConversationNotFound = (thrown?: any): string | null => {
+        if (!pending || abortController.signal.aborted) return null
+        for (const event of pending) {
+          if (event.kind === 'error' && NO_CONVERSATION_FOUND_RE.test(event.message)) return event.message
+        }
+        const thrownMessage = thrown?.message ?? (thrown === undefined ? '' : String(thrown))
+        return NO_CONVERSATION_FOUND_RE.test(thrownMessage) ? thrownMessage : null
+      }
       try {
-        const runOptions: Options = { ...options, resume: useResume ? (resumeSessionId ?? undefined) : undefined }
+        const runOptions: Options = { ...options, resume: resumeThisRun }
         const stream = sdk.query({ prompt: makePromptArg(), options: runOptions })
         for await (const message of stream) {
           for (const event of mapSdkMessage(message)) {
             if (event.kind === 'result' || event.kind === 'error') sawTerminal = true
-            emittedAny = true
-            onEvent(event)
+            if (pending) {
+              if (isHeldWhileResuming(event)) { pending.push(event); continue }
+              // 中身が来たら、貯めた error/result を先に流す。session はそのまま（貯めずに）流す。
+              if (isConversationContentEvent(event)) flushPending()
+            }
+            deliver(event)
           }
         }
+        const notFound = heldConversationNotFound()
+        if (notFound !== null) {
+          pending = null // 捨てる（renderer には何も届けない）
+          return { ok: false, emittedAny: false, error: new Error(notFound) }
+        }
+        flushPending()
         if (!sawTerminal && !abortController.signal.aborted) {
-          onEvent({ kind: 'error', message: '応答が予期せず終了しました。もう一度お試しください。' })
-          emittedAny = true
+          deliver({ kind: 'error', message: '応答が予期せず終了しました。もう一度お試しください。' })
         }
         return { ok: true, emittedAny }
       } catch (e: any) {
+        const notFound = heldConversationNotFound(e)
+        if (notFound !== null) {
+          pending = null // 捨てる（renderer には何も届けない）
+          return { ok: false, emittedAny: false, error: e }
+        }
+        flushPending()
         return { ok: false, emittedAny, error: e }
       }
     }
@@ -440,6 +549,8 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // 保存済みセッションIDが失効・不在で復元に失敗した可能性が高い。resume 無し（新規セッション）で
     // 1回だけ自己修復リトライする（同ターンのプロンプトを作り直して再送。開始前失敗のため副作用は無い）。
     // 新しい session イベントが流れれば renderer 側の保存IDも更新される。
+    // 「No conversation found」がストリームの中の誤りの結果として返った場合も、runOnce が貯めた分を捨てて
+    // emittedAny=false で返すので、ここへ合流する（2026-10-24・rc.1 の実機）。
     if (resumeSessionId && !first.emittedAny) {
       const second = await runOnce(false)
       if (abortController.signal.aborted) return

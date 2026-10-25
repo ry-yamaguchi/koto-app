@@ -226,6 +226,72 @@ describe('ChatPanel.tsx: 会話の全削除は runClearConversation を通す（
   it('confirmedActions.ts から runClearConversation を import している', () => {
     expect(chatPanel).toContain("import { runClearConversation } from '../confirmedActions'")
   })
+  // 2026-10-24（0.6.23-rc.2）: クリアが確定したときは、Claude の覚えた会話の番号も忘れる（振る舞いは
+  // tests/claudeClearConversationSession.test.ts が実物の useAiChat で固定する）。ここは ChatPanel が
+  // その関数を clear に渡していること（呼び出しの形ごと。これが消えると、振る舞いのテストは緑のまま番号が残る）。
+  it('clear には clearConversationAction({ …, forgetClaudeSession: chat.forgetClaudeSession }) を渡す', () => {
+    const at = chatPanel.indexOf('await runClearConversation(')
+    const end = chatPanel.indexOf('title="会話をクリア"', at)
+    expect(at).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(at)
+    const block = chatPanel.slice(at, end)
+    expect(block).toContain('clear: clearConversationAction({')
+    expect(block).toContain('clearMessages: () => applyOp({ kind: \'replaceAll\', messages: [] }),')
+    expect(block).toContain('forgetClaudeSession: chat.forgetClaudeSession,')
+    expect(chatPanel).toContain("import { clearConversationAction } from '../confirmedActions'")
+  })
+  // 2026-10-25（0.6.23-rc.2・2巡目）: 上のテストは `await runClearConversation(` から先だけを見るので、
+  // ChatPanel が**確認の前**（キャンセルでも）に forgetClaudeSession を呼ぶ形を捕まえなかった（変異で実証済み）。
+  // 🗑 のボタンの onClick **全体**を見て、forgetClaudeSession が clearConversationAction({ … }) の引数の中に
+  // だけ出ること（確認の前・confirm の中・別の場所では呼ばない）を固定する。
+  describe('🗑 の onClick 全体: forgetClaudeSession は clearConversationAction の引数の中にだけ出る', () => {
+    // 当て先: title="会話をクリア"（ファイルで1回だけ）の直前の onClick から title まで＝🗑 のボタンの onClick 全体
+    const titleAt = chatPanel.indexOf('title="会話をクリア"')
+    const onClickAt = chatPanel.lastIndexOf('onClick={async () => {', titleAt)
+    const block = chatPanel.slice(onClickAt, titleAt)
+    /** `name(` の開き括弧から対応する閉じ括弧までの引数の文字列（括弧の入れ子を数える）。 */
+    const argsOf = (src: string, name: string): { start: number; end: number } => {
+      const open = src.indexOf(`${name}(`)
+      if (open < 0) return { start: -1, end: -1 }
+      let depth = 0
+      for (let i = open + name.length; i < src.length; i++) {
+        if (src[i] === '(') depth++
+        else if (src[i] === ')') { depth--; if (depth === 0) return { start: open + name.length + 1, end: i } }
+      }
+      return { start: -1, end: -1 }
+    }
+
+    it('当て先が一意（title が1回・onClick が見つかる・block に onClick= が1つだけ・先頭は空の会話を弾く行）', () => {
+      expect(chatPanel.split('title="会話をクリア"').length - 1).toBe(1)
+      expect(titleAt).toBeGreaterThan(-1)
+      expect(onClickAt).toBeGreaterThan(-1)
+      expect(onClickAt).toBeLessThan(titleAt)
+      expect(block.split('onClick=').length - 1).toBe(1)
+      expect(block).toContain('if (messages.filter(m => !m.hidden).length === 0) return')
+      expect(block).toContain('await runClearConversation(')
+    })
+
+    it('★★★ forgetClaudeSession は、ChatPanel 全体で clearConversationAction({ … }) の引数の中にだけある（確認の前・confirm の中・別の場所では呼ばない）', () => {
+      const { start, end } = argsOf(block, 'clearConversationAction')
+      expect(start).toBeGreaterThan(-1)
+      expect(end).toBeGreaterThan(start)
+      const args = block.slice(start, end)
+      // 引数の中: `forgetClaudeSession: chat.forgetClaudeSession` の1組だけ（キー1・値1）
+      expect(args.match(/forgetClaudeSession/g)?.length).toBe(2)
+      expect(args.match(/forgetClaudeSession\s*:/g)?.length).toBe(1)
+      expect(args.match(/chat\.forgetClaudeSession\b/g)?.length).toBe(1)
+      expect(args).toContain('forgetClaudeSession: chat.forgetClaudeSession,')
+      // 引数の外（onClick の残り）には1回も出ない。`chat.forgetClaudeSession()` を確認の前に置いた形はここで落ちる
+      const outside = block.slice(0, start) + block.slice(end)
+      expect(outside).not.toContain('forgetClaudeSession')
+      // ファイル全体でも、出現はこの引数の中の2か所（キーと値）だけ
+      expect(chatPanel.match(/forgetClaudeSession/g)?.length).toBe(2)
+      // clear: の値として渡している（confirm: の値ではない）
+      expect(block).toContain('clear: clearConversationAction({')
+      expect(block.indexOf('confirm: (body)')).toBeGreaterThan(-1)
+      expect(block.indexOf('confirm: (body)')).toBeLessThan(block.indexOf('clear: clearConversationAction({'))
+    })
+  })
 })
 
 describe('ChatApp.tsx: 会話の削除は runDeleteConversation を通す（UX-B3・完了条件の変異試験(c)）', () => {

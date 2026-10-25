@@ -25,6 +25,12 @@ import { DATA_LAYER_LOCAL_DIR } from './objectStorage'
 /** Koto 自身の管理領域に加えて保護するもの。 */
 const OTHER_PROTECTED_DIRS = ['.git'] as const
 
+// ── 大文字小文字を区別せずに比べる（2026-10-23）──────────────────────────────
+// macOS の既定（APFS）は大文字小文字を区別しない。`.GIT/hooks/pre-commit`・`.Sakuraide.json`・
+// `.SAKURAIDE-BACKUP/x`・`.ENV` は、別の名前に見えて**同じ実体**を指すのに、区別して比べていたため守りから漏れた
+// （検分の実測）。比べる前に小文字にそろえる。表示する文（protectedWriteMessage）は元の綴りのまま出す。
+const lower = (s: string) => s.toLowerCase()
+
 /** パス区切りを `/` に正規化し、先頭の `./` を落とす。 */
 function normalize(rel: string): string {
   return String(rel ?? '').trim().replace(/\\/g, '/').replace(/^\.\//, '')
@@ -42,14 +48,14 @@ export function isProtectedWritePath(rel: string): boolean {
   if (!segments.length) return false
 
   // (1) Koto と git の管理フォルダ配下（どの階層にあっても保護する）
-  const protectedDirs = new Set<string>([...KOTO_INTERNAL_DIRS, ...OTHER_PROTECTED_DIRS])
-  if (segments.some(seg => protectedDirs.has(seg))) return true
+  const protectedDirs = new Set<string>([...KOTO_INTERNAL_DIRS, ...OTHER_PROTECTED_DIRS].map(lower))
+  if (segments.some(seg => protectedDirs.has(lower(seg)))) return true
 
   // (2) Koto のメタ情報ファイル（プロジェクト直下）
-  if (segments.length === 1 && (KOTO_INTERNAL_FILES as readonly string[]).includes(segments[0])) return true
+  if (segments.length === 1 && (KOTO_INTERNAL_FILES as readonly string[]).map(lower).includes(lower(segments[0]))) return true
 
   // (3) 秘密情報が入るファイル（.env / .env.local / .env.production …）
-  const base = segments[segments.length - 1]
+  const base = lower(segments[segments.length - 1])
   if (base.startsWith('.env')) return true
 
   return false
@@ -61,7 +67,7 @@ export function protectedWriteMessage(rel: string): string {
   // 「Koto が管理する領域（履歴・設定・秘密）」という説明が当てはまらない。
   // 「テスト用のデータを入れておいて」と頼んだ利用者に理由が伝わらず、AI も
   // 別の場所へ書こうとして空回りするので、この場合の一文をここに持つ（2026-09-23 検分）。
-  if (normalize(rel).split('/').filter(Boolean).includes(DATA_LAYER_LOCAL_DIR)) {
+  if (normalize(rel).split('/').filter(Boolean).some(seg => lower(seg) === lower(DATA_LAYER_LOCAL_DIR))) {
     return `${rel} はアプリが保存したデータのフォルダなので、AI からは書き換えません。`
       + 'データの追加・変更・削除は、アプリの画面から行ってください。'
   }

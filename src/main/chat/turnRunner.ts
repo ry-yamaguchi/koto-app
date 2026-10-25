@@ -255,7 +255,9 @@ export async function decideApproval(
   if (name === 'run_command') {
     let cmd = ''
     try { cmd = JSON.parse(argsJson || '{}')?.command ?? '' } catch { /* 不明でも確認は出す */ }
-    if (writeMode === 'confirm' || requiresConfirmation(cmd)) {
+    // プロジェクト直下（scopeDir）を必ず渡す（プロジェクトの中を指す絶対パスを「外」に数えないため。
+    // planApproval にも同じ scopeDir を渡している・tests/commandWritesOutsideRoutes.test.ts が固定）。
+    if (writeMode === 'confirm' || requiresConfirmation(cmd, { projectDir: scopeDir })) {
       try {
         if (scopeDir && /\b(install|i|add)\b/.test(cmd)) {
           const raw = fs.readFileSync(`${scopeDir}/package.json`, 'utf-8')
