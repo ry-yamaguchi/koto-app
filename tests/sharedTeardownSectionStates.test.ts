@@ -275,7 +275,7 @@ describe('S1: ほかの確認（公開の確認・全面表示）と重なって
     await until(() => v.text().includes('以下の内容で さくらのAppRun に公開します'), '公開の確認が出ない')
     expect(v.confirm(), '前提: 公開の確認の全面表示の間は、破棄の確認は描かれない').toBeNull()
     expect(h.calls, '確認の答えを待つ間に、外へ出た').toEqual([])
-    v.button('やめる').props.onClick() // 公開の確認をやめる
+    v.button('キャンセル').props.onClick() // 公開の確認をキャンセルする
     await settle()
     const back = v.confirm()
     expect(back, '公開の確認を閉じても、破棄の確認が戻らない（詰まる）').not.toBeNull()

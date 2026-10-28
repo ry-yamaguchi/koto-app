@@ -100,8 +100,8 @@ describe('F-1 専有型の削除の呼び口は1つずつ', () => {
     expect(count(SPEC, 'electronAPI.apprunDedicated.teardown(')).toBe(1)
   })
 
-  it('★★★ その1行は projectDir・認証・{ confirmed: opts.confirmed } を渡す（確認の答えをそのまま。true の決め打ちにしない）', () => {
-    expect(code(SPEC)).toContain('window.electronAPI.apprunDedicated.teardown(projectDir, auth, { confirmed: opts.confirmed })')
+  it('★★★ その1行は projectDir・認証・{ confirmed: opts.confirmed, shownPlacements: opts.shownPlacements } を渡す（確認の答えをそのまま。true の決め打ちにしない。shownPlacements は確認で見せた保存場所の組。0.6.24 F）', () => {
+    expect(code(SPEC)).toContain('window.electronAPI.apprunDedicated.teardown(projectDir, auth, { confirmed: opts.confirmed, shownPlacements: opts.shownPlacements })')
   })
 
   it('★★★ 進み具合の購読 `apprunDedicated.onTeardownProgress(` を呼ぶのも仕様書の1行だけ', () => {
@@ -124,11 +124,12 @@ describe('F-1 専有型の削除の呼び口は1つずつ', () => {
     expect(code(MAIN_ROOT)).toContain('registerApprunDedicatedTeardownHandler()')
   })
 
-  it('★★ 3点セット（main・preload・global.d.ts）が同じ形: opts は必須の { confirmed: boolean }、結果に remainingBuckets を持つ', () => {
+  it('★★ 3点セット（main・preload・global.d.ts）が同じ形: opts は必須の { confirmed: boolean; shownPlacements }、結果に remainingBuckets・skippedBuckets を持つ', () => {
     const d = code(GLOBAL_DTS)
-    expect(d).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean }): Promise<{')
+    expect(d).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{')
     expect(d).toContain('remainingBuckets?: string[]')
-    expect(code(PRELOAD)).toContain('teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean }) =>')
+    expect(d).toContain('skippedBuckets?: string[]')
+    expect(code(PRELOAD)).toContain('teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>')
     expect(code(PRELOAD)).toContain("ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts)")
     // opts が任意（`?`）の旧い形は、削除の口に残っていない（作成の `opts?: { confirmed?: boolean }` は別の口）
     expect(d).not.toMatch(/teardown\(projectDir: string, auth: \{[^)]*\}, opts\?:/)

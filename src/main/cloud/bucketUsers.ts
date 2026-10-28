@@ -28,6 +28,24 @@
 //     （`teardownPlanFor` の判断のまま）。
 //   ・**残る穴**: 目印の無い古い「用意しただけ」（9/24 より前に用意して、一度も公開していない）は、ここでもキーの一覧でも見えない。
 //
+// ── 同じ prefix の兄弟（`samePrefix`・0.6.24 I-1）──────────────────────────────────────
+// 「使っている」とは別に、兄弟のうち**同じバケットの同じ prefix を記録に持つ**もの（フォルダを複製したときにできる）の名前も返す。
+// 複製のどちらかを破棄・削除すると、**もう一方のデータが prefix ごと消える**（元に戻せない）。`teardownPlanFor` は samePrefix が1件でもあれば、
+// データにもバケットにも手を付けない。
+//   ・**公開の記録の有無は問わない**（元が「用意しただけ」で公開していなくても、データは複製と同じ場所にある。上の「使っている」の条件とは別）
+//   ・数えるのは: env.json の同意済みで、同じバケット・同じ prefix ／ state.json の bucket 資源で、同じ id・同じ prefix
+//   ・prefix が空（`''`）のときは同じと数えない（専用バケットの中を丸ごと指す意味になり、複製かどうかを prefix からは言えない）
+//   ・**読めた記録で確かめられたものだけ**を数える（読めない・壊れている・形が違う兄弟は `samePrefix` には数えない）
+//   ・`known: false` の回も、見つかった分は返す（一部の兄弟を読めなくても、見つかった複製の事実は動かない）
+//
+// ── 複製かどうか確かめられなかった兄弟（`samePrefixUnread`・`samePrefixChecked`・0.6.24 R1-b・作者の決定 K3）─────────────
+// 読めない兄弟は、複製かもしれない（複製なら、破棄が元のデータを prefix ごと消す）。そういう兄弟の名前を `samePrefixUnread` に返し、
+// 呼び手（`twinRiskOf` → `teardownPlanFor`）が、データにもバケットにも鍵にも手を付けない側に倒す。
+//   ・確かめられなかった兄弟 = たどれないリンク／env.json か state.json が ENOENT 以外で読めない・壊れている・形が違う（`envUse`・`stateUse` が `unknown` を返すもの）
+//   ・**`.sakuraide.json` だけが読めない兄弟は入れない**（env と state が読めれば、複製かどうかは確かめられている。使っているかわからない＝`known: false` のまま）
+//   ・`samePrefixChecked` … 確かめ自体ができたか。絶対パスでない・バケット名が空・prefix が文字列でない・親フォルダの一覧を読めない回は false
+//   ・prefix が空の回は複製を言えない（確かめる対象が無い）ので、`samePrefixUnread` は空
+//
 // ── 読めなかったら「わからない」（known:false）──────────────────────────────────────
 // 「いない」に倒さない。親フォルダの一覧を読めなかった・兄弟の記録が JSON として読めない・形が想定と違う・たどれないシンボリックリンクがある、のどれでも、
 // 使っているかどうかは確かめられていない。わからないときは、呼び手（teardownPlanFor）が**バケットを消さない**。
@@ -78,6 +96,33 @@ function stateUse(read: RecordRead, bucket: string): SiblingUse {
   if (v.resources === undefined) return 'not'
   if (!Array.isArray(v.resources)) return 'unknown'
   return v.resources.some(r => isObject(r) && r.kind === 'bucket' && r.id === bucket) ? 'uses' : 'not'
+}
+
+/**
+ * env.json の読み結果から: 同意済みの保存場所に、**同じバケット・同じ prefix**があるか。読めない・形が違うときは false（確かめられたものだけ数える）。
+ * prefix が空なら常に false。比べるのは文字列の完全一致（prefix の読み方は `consentedPlacementsOf` の1つ）。
+ */
+function envSamePrefix(read: RecordRead, bucket: string, prefix: string): boolean {
+  if (prefix === '' || read.kind !== 'ok') return false
+  const v = read.value
+  if (!isObject(v) || !isObject(v.persistence) || !Array.isArray(v.persistence.objectStorage)) return false
+  return consentedPlacementsOf(v.persistence.objectStorage).some(p => p.bucket === bucket && p.prefix === prefix)
+}
+
+/** state.json の読み結果から: bucket 資源に、**同じ id・同じ prefix**があるか。読めない・形が違うときは false。prefix が空なら常に false。 */
+function stateSamePrefix(read: RecordRead, bucket: string, prefix: string): boolean {
+  if (prefix === '' || read.kind !== 'ok') return false
+  const v = read.value
+  if (!isObject(v) || !Array.isArray(v.resources)) return false
+  return v.resources.some(r => isObject(r) && r.kind === 'bucket' && r.id === bucket && r.prefix === prefix)
+}
+
+/**
+ * 兄弟1つの記録が、そのバケットの**同じ prefix**を持っているか（純関数）。公開の記録は見ない（元が「用意しただけ」でも数える）。
+ * env.json と state.json のどちらか一方でも持っていれば true。
+ */
+export function siblingHasSamePrefix(env: RecordRead, state: RecordRead, bucket: string, prefix: string): boolean {
+  return envSamePrefix(env, bucket, prefix) || stateSamePrefix(state, bucket, prefix)
 }
 
 /** 公開の記録がまだあるか。`unknown` は読めない・形が想定と違う（あるともないとも言えない）。 */
@@ -136,7 +181,8 @@ export function siblingUseOfBucket(env: RecordRead, state: RecordRead, meta: Rec
   return published === 'yes' ? 'uses' : published === 'unknown' ? 'unknown' : 'not'
 }
 
-function readRecord(file: string): RecordRead {
+/** 記録ファイル1つを読む（無い＝missing・読めない／壊れている＝unreadable。投げない）。複製の確かめ（`recordTwins.ts`）も、兄弟の記録をこれで読む。 */
+export function readRecord(file: string): RecordRead {
   let text: string
   try {
     text = fs.readFileSync(file, 'utf-8')
@@ -150,15 +196,40 @@ function readRecord(file: string): RecordRead {
   }
 }
 
+/**
+ * 2つのパスが**同じフォルダ**か（0.6.24 R2-b）。`dev` と `ino` で比べる（リンクは辿る。大文字小文字だけ違うパス・NFC/NFD の違いも、同じ実体なら同じ）。
+ * **どちらかの stat が失敗したら false**（別と読む）。文字列の一致は呼び手が別に見る（`a === b || isSameDirFs(a, b)`）。投げない。
+ * 兄弟を歩く3つ——`recordTwins.ts`・`bucketUsers.ts`（この下）・`registryUsers.ts`——が「自分」を除くのに、フォルダ名の文字列の比べ方だけだと、
+ * 自分を指すリンク・APFS で大文字小文字だけ違うパスで、自分を複製・使用者と数える。
+ */
+export function isSameDirFs(a: string, b: string): boolean {
+  try {
+    return isSameDirStat(fs.statSync(a), fs.statSync(b))
+  } catch {
+    return false
+  }
+}
+
+/** `isSameDirStat` が見る stat の部分（`fs.Stats` の一部。BigInt の stat も同じ形）。 */
+export type DirStatLike = { dev: number | bigint; ino: number | bigint; isDirectory(): boolean }
+
+/**
+ * 2つの stat が**同じフォルダ**か（0.6.24 R3-f。`isSameDirFs` の比べる部分を、fs に触れない純関数に切り出した）。**両方がフォルダで、`dev` と `ino` がどちらも等しい**ときだけ true。
+ * `dev` が違えば、`ino` が同じでも別のフォルダ（別のボリュームの inode 番号は重なりうる）。表で固定する（tests/isSameDirStat.test.ts）。
+ */
+export function isSameDirStat(x: DirStatLike, y: DirStatLike): boolean {
+  return x.isDirectory() && y.isDirectory() && x.dev === y.dev && x.ino === y.ino
+}
+
 /** 親フォルダの直下の1つが、プロジェクトのフォルダか。`unknown` はリンクをたどれない（先が無い・権限・ループ）——プロジェクトではないと決めつけない。 */
-type EntryKind = 'dir' | 'other' | 'unknown'
+export type EntryKind = 'dir' | 'other' | 'unknown'
 
 /**
  * ディレクトリか。シンボリックリンクはリンク先を見る（リンクされたプロジェクトも兄弟）。
  * **たどれないリンクは `unknown`**（使っているプロジェクトが、外付けのドライブの外れた先・権限の無い先にあるかもしれない。以前は握りつぶして「プロジェクトではない」としていた）。
  * リンクそのものが無い（読み出しと確認のあいだに消えた）ときも、リンクが見えている以上は同じ `unknown`（消す側に倒さない）。
  */
-function entryKind(workspace: string, e: fs.Dirent): EntryKind {
+export function entryKind(workspace: string, e: fs.Dirent): EntryKind {
   if (e.isDirectory()) return 'dir'
   if (!e.isSymbolicLink()) return 'other'
   try { return fs.statSync(path.join(workspace, e.name)).isDirectory() ? 'dir' : 'other' } catch { return 'unknown' }
@@ -168,12 +239,22 @@ function entryKind(workspace: string, e: fs.Dirent): EntryKind {
  * `projectDir` 以外のプロジェクトで、`bucket` を使っているものの名前（フォルダ名・文字コード順）を、記録から読む。**投げない。**
  * 読めなかったときは `{ known: false }`（理由を持たない。呼び手が「消さない」に倒す）。
  * 使っているプロジェクトが1つでも見つかれば、ほかの兄弟が読めなくても `known: true`（使っているという事実は動かない）。
+ *
+ * 複製の確かめ（0.6.24 R1-b）も、どちらの形にも返す: `samePrefix`（見つかった複製）・`samePrefixUnread`（複製かどうかを確かめられなかった兄弟）・
+ * `samePrefixChecked`（確かめ自体ができたか）。「確かめられなかった」= たどれないリンク／env.json か state.json が ENOENT 以外で読めない・壊れている・形が違う
+ * （`envUse`・`stateUse` が `unknown` を返すもの。`siblingUseOfBucket` の「わからない」より狭い: そちらは `.sakuraide.json` も見る）。**`.sakuraide.json` だけが読めない兄弟は入れない**。
+ * prefix が空の回は複製を言えない（確かめる対象が無い）ので、`samePrefixUnread` は空・`samePrefixChecked` は親フォルダの一覧を読めたかのまま。
  */
-export function bucketUsersFromRecords(projectDir: string, bucket: string): BucketRecordUsers {
+export function bucketUsersFromRecords(projectDir: string, bucket: string, prefix: string): BucketRecordUsers {
+  // 見つかった複製・確かめられなかった兄弟は、途中で例外になっても返す（見つかった事実は動かない）
+  const samePrefix: string[] = []
+  const samePrefixUnread: string[] = []
   try {
     // 絶対パスでなければ、親フォルダが決まらない（空文字は path.resolve で作業中のフォルダになる）。確かめられない
-    if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) return { known: false }
-    if (typeof bucket !== 'string' || bucket === '') return { known: false }
+    if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) return { known: false, samePrefix, samePrefixUnread, samePrefixChecked: false }
+    if (typeof bucket !== 'string' || bucket === '') return { known: false, samePrefix, samePrefixUnread, samePrefixChecked: false }
+    // prefix の渡し忘れ（文字列でない）も確かめられない（複製の有無を言えない＝バケットを消さない側へ倒す）。空文字は「prefix なし」で、複製とは数えない
+    if (typeof prefix !== 'string') return { known: false, samePrefix, samePrefixUnread, samePrefixChecked: false }
     const self = path.resolve(projectDir)
     const workspace = path.dirname(self)
     const entries = fs.readdirSync(workspace, { withFileTypes: true })
@@ -182,22 +263,27 @@ export function bucketUsersFromRecords(projectDir: string, bucket: string): Buck
     for (const e of entries) {
       if (e.name.startsWith('.')) continue
       const dir = path.join(workspace, e.name)
-      if (dir === self) continue // 自分自身の記録は数えない
+      if (dir === self || isSameDirFs(dir, self)) continue // 自分自身の記録は数えない（文字列が違っても、同じフォルダ〔リンク・大文字小文字・NFC/NFD〕は自分。R2-b）
       const kind = entryKind(workspace, e)
       if (kind === 'other') continue
-      if (kind === 'unknown') { unknown++; continue } // たどれないリンクは、使っているかわからない
-      const use = siblingUseOfBucket(
-        readRecord(path.join(dir, CLOUD_DIR, CLOUD_ENV_FILE)),
-        readRecord(path.join(dir, CLOUD_DIR, CLOUD_STATE_FILE)),
-        readMetaFs(dir),
-        bucket,
-      )
+      if (kind === 'unknown') { unknown++; if (prefix !== '') samePrefixUnread.push(e.name); continue } // たどれないリンクは、使っているか・複製かわからない
+      const env = readRecord(path.join(dir, CLOUD_DIR, CLOUD_ENV_FILE))
+      const state = readRecord(path.join(dir, CLOUD_DIR, CLOUD_STATE_FILE))
+      // 同じ prefix（複製）か。公開の記録は見ない。「使っている」の判断とは別に数える
+      if (siblingHasSamePrefix(env, state, bucket, prefix)) samePrefix.push(e.name)
+      // 複製かどうかを確かめられなかったか。env.json か state.json が読めない・壊れている・形が違う（`.sakuraide.json` は見ない）。prefix が空なら確かめる対象が無い
+      if (prefix !== '' && (envUse(env, bucket) === 'unknown' || stateUse(state, bucket) === 'unknown')) samePrefixUnread.push(e.name)
+      const use = siblingUseOfBucket(env, state, readMetaFs(dir), bucket)
       if (use === 'uses') users.push(e.name)
       else if (use === 'unknown') unknown++
     }
-    if (users.length > 0) return { known: true, users: users.sort() } // 文字コード順（実行する環境の言語設定で並びが変わらない）
-    return unknown > 0 ? { known: false } : { known: true, users: [] }
+    samePrefix.sort() // 文字コード順（users と同じ）
+    samePrefixUnread.sort()
+    if (users.length > 0) return { known: true, users: users.sort(), samePrefix, samePrefixUnread, samePrefixChecked: true } // 文字コード順（実行する環境の言語設定で並びが変わらない）
+    return unknown > 0
+      ? { known: false, samePrefix, samePrefixUnread, samePrefixChecked: true }
+      : { known: true, users: [], samePrefix, samePrefixUnread, samePrefixChecked: true }
   } catch {
-    return { known: false } // 親フォルダの一覧を読めなかった
+    return { known: false, samePrefix, samePrefixUnread, samePrefixChecked: false } // 親フォルダの一覧を読めなかった
   }
 }

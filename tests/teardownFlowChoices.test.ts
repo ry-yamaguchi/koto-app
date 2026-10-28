@@ -131,7 +131,7 @@ describe('A 流れ: 選択（choices）つきの確認', () => {
       const out = await runTeardownFlow('/p', withChoices(), deps)
       expect(out).toEqual({ cancelled: false, result: { ok: true } })
       expect(calls.invoke).toHaveLength(1)
-      expect(calls.invoke[0].opts).toEqual({ confirmed: true, choices: { deleteRegistry: v } })
+      expect(calls.invoke[0].opts).toEqual({ confirmed: true, shownPlacements: [], choices: { deleteRegistry: v } })
       expect(calls.begin).toBe(1)
     }
   })
@@ -140,17 +140,17 @@ describe('A 流れ: 選択（choices）つきの確認', () => {
     const two = makeSpec({ choices: () => [REG, { id: 'other', label: '別', defaultChecked: false }] })
     const { deps, calls } = fakeDeps({ choicesAnswer: { confirmed: true, choices: { deleteRegistry: 'yes', stranger: true } } })
     await runTeardownFlow('/p', two, deps)
-    expect(calls.invoke[0].opts).toEqual({ confirmed: true, choices: { deleteRegistry: false, other: false } })
+    expect(calls.invoke[0].opts).toEqual({ confirmed: true, shownPlacements: [], choices: { deleteRegistry: false, other: false } })
     const { deps: d2, calls: c2 } = fakeDeps({ choicesAnswer: { confirmed: true } })      // choices ごと欠けた答え
     await runTeardownFlow('/p', two, d2)
-    expect(c2.invoke[0].opts).toEqual({ confirmed: true, choices: { deleteRegistry: false, other: false } })
+    expect(c2.invoke[0].opts).toEqual({ confirmed: true, shownPlacements: [], choices: { deleteRegistry: false, other: false } })
     const { deps: d3, calls: c3 } = fakeDeps({ choicesAnswer: { confirmed: true, choices: { deleteRegistry: 1, other: true } } })
     await runTeardownFlow('/p', two, d3)
-    expect(c3.invoke[0].opts).toEqual({ confirmed: true, choices: { deleteRegistry: false, other: true } })
+    expect(c3.invoke[0].opts).toEqual({ confirmed: true, shownPlacements: [], choices: { deleteRegistry: false, other: true } })
   })
 
   it.each([
-    ['やめる', { confirmed: false, choices: {} }],
+    ['キャンセル', { confirmed: false, choices: {} }],
     ["confirmed が 'yes'", { confirmed: 'yes', choices: { deleteRegistry: true } }],
     ['confirmed が 1', { confirmed: 1, choices: { deleteRegistry: true } }],
     ['confirmed が無い', { choices: { deleteRegistry: true } }],
@@ -172,8 +172,8 @@ describe('A 流れ: 選択（choices）つきの確認', () => {
     expect(out).toEqual({ cancelled: false, result: { ok: true } })
     expect(calls.confirm).toHaveLength(1)
     expect(calls.confirmWithChoices).toEqual([])
-    expect(calls.invoke[0].opts).toEqual({ confirmed: true })
-    expect(Object.keys(calls.invoke[0].opts as object)).toEqual(['confirmed'])
+    expect(calls.invoke[0].opts).toEqual({ confirmed: true, shownPlacements: [] })
+    expect(Object.keys(calls.invoke[0].opts as object)).toEqual(['confirmed', 'shownPlacements']) // choices の鍵は付かない（確認で見せた保存場所の組は、選択の有る無しによらず付く）
   })
 
   it('★★ 選択を持たない仕様書（HANAMII）: confirm で聞き、confirmWithChoices は使わない。opts は { confirmed:true } だけ', async () => {
@@ -181,7 +181,7 @@ describe('A 流れ: 選択（choices）つきの確認', () => {
     await runTeardownFlow('/p', makeSpec(), deps)
     expect(calls.confirm).toHaveLength(1)
     expect(calls.confirmWithChoices).toEqual([])
-    expect(Object.keys(calls.invoke[0].opts as object)).toEqual(['confirmed'])
+    expect(Object.keys(calls.invoke[0].opts as object)).toEqual(['confirmed', 'shownPlacements']) // choices の鍵は付かない（確認で見せた保存場所の組は、選択の有る無しによらず付く）
   })
 
   it('★ 選択は記録（facts.record）から作る（押した時点の記録）', async () => {

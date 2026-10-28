@@ -8,7 +8,7 @@ import path from 'node:path'
 // どの入口・IPC からもまだ呼ばれない（部品と単体テストだけ）。設計書: docs/teardown-unify-plan.md の 10.3.4 の E。
 // **ソースの文字列を読まない**（掟10「お金・破壊の歯止めは、振る舞いで固定する」。配線の形は tests/teardownCommonWiring.test.ts）。
 //
-//   E-1 やめる               … IPC 0回・結果も出ず・窓を閉じる警告も立たない
+//   E-1 キャンセル              … IPC 0回・結果も出ず・窓を閉じる警告も立たない
 //   E-2 破棄する             … onOutcome 1回。beginLocal → endLocal。ack は結果を出し終えたあと
 //   E-3 窓を閉じる警告       … 実行中は win.setBusy に警告つきで載り、終われば外れる
 //   E-4 二重押し             … IPC 1回
@@ -124,6 +124,7 @@ const shellSpec: TeardownShellSpec<Auth, Reply> = {
   },
   authMissingMessage: 'トークンが未登録です',
   secretsOf: a => [a.token],
+  twinsOf: () => [], // 複製なし
   run: async ctx => {
     runCount++; win.events.push('run')
     if (runProgress) ctx.progress(runProgress)
@@ -285,7 +286,7 @@ const closeWarningCall = [true, 'HANAMII の破棄', true, 'HANAMII の破棄', 
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('E フック useTeardownFlow: 押す → 確認 → 破棄 → 結果', () => {
-  it('★★★ E-1 やめる: IPC は0回・キーも読まず・結果も出ず、窓を閉じる警告も立たない。処理の記録も増えない', async () => {
+  it('★★★ E-1 キャンセル: IPC は0回・キーも読まず・結果も出ず、窓を閉じる警告も立たない。処理の記録も増えない', async () => {
     const m = mountHook(makeSpec())
     const started = m.latest.start()
     await answer(m, false)
@@ -311,7 +312,7 @@ describe('E フック useTeardownFlow: 押す → 確認 → 破棄 → 結果',
     await tick()
 
     expect(invokes).toHaveLength(1)
-    expect(invokes[0]).toEqual({ dir, auth: AUTH, opts: { confirmed: true }, record: RECORD })
+    expect(invokes[0]).toEqual({ dir, auth: AUTH, opts: { confirmed: true, shownPlacements: [] }, record: RECORD })
     expect(runCount).toBe(1)
     expect(m.outcomes).toHaveLength(1) // 記録からの二重の結果は出ない
     expect(m.outcomes[0].view.ok).toBe(true)

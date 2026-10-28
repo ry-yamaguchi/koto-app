@@ -50,6 +50,25 @@ describe('破棄できない公開先の案内', () => {
     expect(g).toContain('コントロールパネル')  // どこで消すか（無い導線を案内しない）
   })
 
+  // 0.6.24 A-9。プロジェクトの削除で、保存場所も一緒に破棄する回は、最後の文「保存場所（バケット）自体は…残ります。」を言わない（事実と食い違うため）。
+  // 真かどうかを決めるのは画面側（projectDeleteWords.ts の vercelStorageTornDown）。ここは `=== true` のときだけ外す（渡し忘れ・形違いは今の文）。
+  it('★★★ storageTornDown が真のときだけ、Vercel の最後の文を外す。鍵の片づけ方（1・2）は残す。偽・無し・形違いは今の文', () => {
+    const KEEP = '保存場所（バケット）自体は、ほかの公開先と共有していることがあるため残ります。'
+    const full = manualTeardownGuide('vercel')
+    expect(full.endsWith(KEEP)).toBe(true)
+    expect(manualTeardownGuide('vercel', {})).toBe(full)
+    expect(manualTeardownGuide('vercel', { storageTornDown: false })).toBe(full)
+    expect(manualTeardownGuide('vercel', { storageTornDown: 'true' as unknown as boolean })).toBe(full)
+    const short = manualTeardownGuide('vercel', { storageTornDown: true })
+    expect(short).toBe(full.slice(0, full.length - KEEP.length))
+    expect(short).not.toContain('残ります')
+    expect(short).toContain('_vercel')
+    expect(short.endsWith('（アプリ用のアクセスキーも一緒に無効になります）。')).toBe(true)
+    // ほかの公開先の案内は変わらない
+    expect(manualTeardownGuide('sakura-rental', { storageTornDown: true })).toBe(manualTeardownGuide('sakura-rental'))
+    expect(manualTeardownGuide('hanamii', { storageTornDown: true })).toBe('')
+  })
+
   it('破棄できる公開先には案内を出さない', () => {
     expect(manualTeardownGuide('sakura-apprun')).toBe('')
     expect(manualTeardownGuide('sakura-apprun-dedicated')).toBe('')
@@ -298,7 +317,7 @@ describe('📡 公開したもの一覧が、出し分けの純関数を通し�
 
 // ── 2026-09-25 検分の指摘5: 確認で見せるものと、実際に消すものを一致させる ──────────
 //
-// 破棄は `teardownStorageForProject` が同意済みの保存場所を**全件**片づける
+// 破棄は `teardownStorageForProject` が、確認で見せた保存場所だけを消す（見せるのは同意済みの**全件**。0.6.24 F）
 // （tests/hanamiiStorageTeardown.test.ts の「2つあれば2つとも片づける」が実物で固定している）。
 // ところが確認画面は `storage:placement` の `placement`（**先頭1件**）で文を組み立てていたので、
 // env.json に2件あると「保存場所『A』のデータも削除します」としか出ないまま、
@@ -394,26 +413,32 @@ describe('HANAMII の破棄の確認の文と、プロジェクト削除の 💾
   //
   // 判定は一元定義（teardownSupport / teardownRemovesStorage）に通す。そうすれば
   // **新しい公開先が増えても勝手に正しくなる**。決め打ちは `not.toContain` で禁じる。
-  it('★★ プロジェクト削除の 💾 は、公開先を決め打ちせず teardownRemovesStorage で選ぶ', () => {
-    const raw = readFileSync(join(__dirname, '../src/renderer/components/ProjectDeleteDialog.tsx'), 'utf8')
+  it('★★ プロジェクト削除の 💾 は、公開先を決め打ちせず teardownRemovesStorage で選ぶ（選ぶ所は projectDeleteWords.ts の rowStorageNotesOf の1か所。ダイアログは呼んで描くだけ。0.6.24 A-4・U12）', () => {
     // 「直す前の形」はコメントで説明してあるので、**コードだけ**を見る（コメントの引用に当たらない）。
-    const src = raw
+    const codeOf = (rel: string) => readFileSync(join(__dirname, '..', rel), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')   // ブロックコメント（JSX の {/* … */} もこれで落ちる）
       .replace(/^[ \t]*\/\/.*$/gm, '')     // 行コメント
-    // (1)出す公開先の選び方: 先に破棄する公開先（plan.teardown。Koto から破棄できるもの）を、一元定義（teardownRemovesStorage）に通す
-    expect(src, '💾 を出す公開先を、先に破棄する公開先（plan.teardown）から一元定義（teardownRemovesStorage）で選んでいない')
-      .toMatch(/teardownOnDelete && shownTeardown\s*\.filter\(t => teardownRemovesStorage\(t\)\)/)
+    const src = codeOf('src/renderer/components/ProjectDeleteDialog.tsx')
+    const words = codeOf('src/renderer/teardown/projectDeleteWords.ts')
+    // (1)出す公開先の選び方: 箱に出している公開先（shownTeardown）を、一元定義（teardownRemovesStorage）に通す。選ぶのは rowStorageNotesOf の1か所
+    expect(src, 'ダイアログが 💾 の行を rowStorageNotesOf（箱に出している段・チェックがオンのとき）から作っていない')
+      .toContain('const rowNotes = facts && plan ? rowStorageNotesOf(plan, facts, shownTeardown) : []')
+    expect(src).toMatch(/teardownOnDelete && rowNotes\.map\(x => \(/)
+    expect(words, '💾 を出す公開先を、一元定義（teardownRemovesStorage）で選んでいない')
+      .toMatch(/return shownTeardown\s*\.filter\(t => teardownRemovesStorage\(t\) && !\(t === 'sakura-apprun' && plan\.leftover\)\)/)
     // shownTeardown は plan.teardown から済んだ公開先を除いたもの（別の出どころから選ばない）
     expect(src).toContain('const shownTeardown = plan ? withoutDoneTargets(plan.teardown, doneSteps) : []')
     // (2)文の組み立て（公開先ごと・全件）
-    expect(src, '公開先ごとに teardownDataNoteForAll（全件）を通していない')
+    expect(words, '公開先ごとに teardownDataNoteForAll（全件）を通していない')
       .toContain("teardownDataNoteForAll({ target: t, placements: facts.placements })")
     // (3)実際に 💾 の行として出している
-    expect(src, '💾 の行を実際に出していない').toContain('💾 {PUBLISH_TARGET_LABEL[x.t]}: {x.note}')
+    expect(src, '💾 の行を実際に出していない').toContain('💾 {PUBLISH_TARGET_LABEL[x.target]}: {x.note}')
     // (4)直す前の形（HANAMII 決め打ち）が戻っていないか
     expect(src, "公開先の決め打ち（includes('hanamii')）が残っている").not.toMatch(/includes\(\s*'hanamii'\s*\)/)
     expect(src, '💾 の行が HANAMII 決め打ちのまま残っている')
       .not.toContain("💾 {teardownDataNoteForAll({ target: 'hanamii'")
+    // ダイアログは文の作り手（teardownDataNoteForAll）を直接は呼ばない（作り手は words の1か所）
+    expect(src).not.toContain('teardownDataNoteForAll(')
     // (5)Sidebar には 💾 の行が無い（ダイアログへ移した）
     expect(readFileSync(join(__dirname, '../src/renderer/components/Sidebar.tsx'), 'utf8')).not.toContain('teardownDataNoteForAll')
   })
@@ -426,7 +451,7 @@ describe('HANAMII の破棄の確認の文と、プロジェクト削除の 💾
     // 枝にあり、専有型が残っていれば削除そのものを止める（projectDeleteBlockOf）ので、専有型の行は実際には出ない。
     expect(shown, '共用型 AppRun がデータの注意書きから漏れている').toEqual(['sakura-apprun', 'sakura-apprun-dedicated', 'hanamii'])
     // ダイアログが回すのは先に破棄する公開先（plan.teardown）。専有型は入らず、共用型・HANAMII が入る（並びは HANAMII が先）
-    const facts = { targets: all, unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null }
+    const facts = { targets: all, unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null }
     expect(planProjectDeleteTeardown(facts).teardown.filter(t => teardownRemovesStorage(t))).toEqual(['hanamii', 'sakura-apprun'])
   })
 
@@ -491,7 +516,7 @@ describe('保存場所の削除の進み具合・完了の1行は、専有型と
     const src = readFileSync(join(__dirname, rel), 'utf8')
     // 専有型は 2026-10-07 から、文はそのままに段の内部名（teardown.storage）を添えて渡す。定数から引くことは変わらない。
     expect(src).toMatch(/progress\(STORAGE_TEARDOWN_PROGRESS[,)]/)
-    expect(src).toContain('storageTeardownDoneLine(b.bucket, b.note)')
+    expect(src).toContain('storageTeardownDoneLine(b.bucket, b.note, b.keptData)')
     expect(src).not.toContain("progress('🗄️ 保存場所")
     expect(src).not.toContain('のデータを削除しました — ${b.note}')
   })
@@ -522,7 +547,8 @@ describe('bucketNamesText: 保存場所の名前を『A』『B』で並べる', 
   })
 
   it.each([
-    '../src/main/ipc/apprunDedicatedTeardown.ts', '../src/main/ipc/hanamiiTeardown.ts', '../src/main/ipc/cloudTeardown.ts',
+    '../src/main/ipc/apprunDedicatedTeardown.ts', '../src/main/ipc/hanamiiTeardown.ts',
+    '../src/main/ipc/cloudTeardownStorage.ts', // 共用型の保存場所の段と、その失敗の文（0.6.24 R1-a で cloudTeardown.ts から切り出した）
   ])('★★ %s は、残っている保存場所の名前を bucketNamesText で並べる（3つの公開先の main が同じ関数を通る）', (rel) => {
     const src = readFileSync(join(__dirname, rel), 'utf8')
     expect(src).toMatch(/\bbucketNamesText\(/)

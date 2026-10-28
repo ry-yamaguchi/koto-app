@@ -33,10 +33,10 @@ vi.mock('react/jsx-dev-runtime', () => {
   return { jsxDEV, Fragment: () => null }
 })
 const fake = vi.hoisted(() => ({
-  facts: { targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null } as any,
+  facts: { targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null } as any,
   readCalls: [] as string[],
   gate: null as Promise<void> | null,
-  teardownCalls: [] as Array<{ dir: string; targets: string[]; ctx: any }>,
+  teardownCalls: [] as Array<{ dir: string; targets: string[]; ctx: any; opts?: any }>,
   teardownResult: (() => Promise.resolve([])) as () => Promise<any[]>,
 }))
 vi.mock('../src/renderer/teardown/projectDeleteFacts', () => ({
@@ -44,7 +44,7 @@ vi.mock('../src/renderer/teardown/projectDeleteFacts', () => ({
 }))
 vi.mock('../src/renderer/teardown/projectDelete', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/renderer/teardown/projectDelete')>()),
-  teardownPublished: async (dir: string, targets: string[], ctx: any) => { fake.teardownCalls.push({ dir, targets, ctx }); return fake.teardownResult() },
+  teardownPublished: async (dir: string, targets: string[], ctx: any, opts?: any) => { fake.teardownCalls.push({ dir, targets, ctx, opts }); return fake.teardownResult() },
 }))
 const onUnhandled = () => {}
 process.on('unhandledRejection', onUnhandled)
@@ -110,6 +110,14 @@ describe('押す: 全部済んだら、フォルダを移して、後始末を�
     expect(results()).toBeUndefined()
   })
 
+  it('★★★ フォルダを移す口は fs.trashProject を { confirmed: true, skippedForTwins: [] } つきで 1 回だけ（複製を外した公開先が無ければ空）（汎用の fs.trash は呼ばない。呼べば calls に fs.trash が残る）', async () => {
+    withTargets([]); await open(); await press()
+    expect(t.calls).toEqual(MOVE)
+    expect(t.calls).not.toContain('fs.trash')
+    expect(t.trashOpts).toEqual([{ confirmed: true, skippedForTwins: [] }])
+    expect(t.trashed).toEqual([DIR])
+  })
+
   it('★★★ 破棄の口が無い公開先（Vercel・レンタルサーバ）だけなら、破棄は呼ばずにそのまま移す', async () => {
     withTargets(['vercel', 'sakura-rental']); await open(); await press()
     expect(fake.teardownCalls).toEqual([])
@@ -167,7 +175,7 @@ describe('押す: 破棄が済まなかった回（stopped）は、フォルダ�
 
   it('★★★ やめた（cancelled）も、移さずに結果の欄へ。残りの公開先の破棄は始めていない', async () => {
     withTargets(['hanamii', 'sakura-apprun'])
-    fake.teardownResult = async () => [cancelled('hanamii', 'HANAMII: 破棄をやめました。さくらのAppRunの破棄も始めていません')]
+    fake.teardownResult = async () => [cancelled('hanamii', 'HANAMII: 破棄をキャンセルしました。さくらのAppRunの破棄も始めていません')]
     await open(); await press()
     expect(t.calls).toEqual([])
     expect(results()!.run.phase).toBe('stopped')
@@ -214,12 +222,12 @@ describe('押す: 済んだが残ったものがある回（review）は、見�
     await open(); await press()
   }
 
-  it('★★★ 1 回目は移さず、結果の欄に残ったものを出す。キャンセルの文字は「移さずに閉じる」', async () => {
+  it('★★★ 1 回目は移さず、結果の欄に残ったものを出す。キャンセルの文字は、最初の回と同じ「キャンセル」のまま', async () => {
     await setup()
     expect(t.calls, '移す前に見せる（移すと保存場所と鍵の唯一の記録も消える）').toEqual([])
     expect(results()!.run.phase).toBe('review')
     expect(results()!.run.steps[0].view.warnings).toEqual(['保存場所「koto-data」は残しました'])
-    expect(textOf(cancelButton().props)).toBe('移さずに閉じる')
+    expect(textOf(cancelButton().props), '済んだが残った回も、取り消しのボタンは「キャンセル」（「移さずに閉じる」ではない）').toBe('キャンセル')
     expect(cancelButton().props.onClick).toBe(props.onClose)
     expect(mainButton().props.disabled).toBe(false)
   })
@@ -232,7 +240,7 @@ describe('押す: 済んだが残ったものがある回（review）は、見�
     expect(t.calls).toEqual(MOVE)
   })
 
-  it('★★ 「移さずに閉じる」は onClose だけ。フォルダは移さない', async () => {
+  it('★★ 結果を見せている回の「キャンセル」は onClose だけ。フォルダは移さない', async () => {
     await setup()
     clearCalls()
     cancelButton().props.onClick()
@@ -256,6 +264,25 @@ describe('押す: フォルダを移せなかった回（trashFailed）は、移
     expect(fake.teardownCalls, '破棄は走らせ直さない').toHaveLength(1)
     expect(fake.readCalls, '材料も読み直さない').toEqual([DIR])
     expect(t.calls).toEqual(MOVE)
+  })
+
+  it('★★★ main が移さなかった（ok:false・文つき）→ 移せなかった扱い。後始末も閉じるも呼ばない', async () => {
+    withTargets([]); api.trash = new Error('このプロジェクトで処理が進んでいます。終わってから、もう一度削除してください。'); await open(); await press()
+    expect(results()!.run).toMatchObject({ phase: 'trashFailed', message: 'プロジェクトを削除できませんでした: このプロジェクトで処理が進んでいます。終わってから、もう一度削除してください。' })
+    expect(t.calls).toEqual(['runningOp', 'exists', 'trash'])
+    expect(t.deleted).toEqual([])
+  })
+
+  it('★★★ main の呼び出しが投げた（IPC の失敗）・形の違う答え（undefined・null・{}・ok が true でない）は、どれも移せなかった扱い（移せた扱いにしない）', async () => {
+    withTargets([]); api.trashThrows = new Error('IPC 失敗'); await open(); await press()
+    expect(results()!.run).toMatchObject({ phase: 'trashFailed', message: 'プロジェクトを削除できませんでした: IPC 失敗' })
+    expect(t.deleted).toEqual([])
+    for (const odd of [null, {}, { ok: 'yes' }, { ok: 1 }, 'ok']) {
+      reset(); withTargets([]); api.trashAnswer = odd; await open(); await press()
+      expect(results()!.run, JSON.stringify(odd)).toMatchObject({ phase: 'trashFailed', message: 'プロジェクトを削除できませんでした: 原因不明' })
+      expect(t.deleted, JSON.stringify(odd)).toEqual([])
+      expect(t.calls, JSON.stringify(odd)).not.toContain('close')
+    }
   })
 
   it('★★ 存在の確認が投げた回も、移せなかった扱い（理由は元の文）', async () => {

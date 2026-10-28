@@ -64,8 +64,8 @@ describe('AppRunPanel.tsx: 選択カード（scaleAsk）', () => {
     expect(block).toContain("onClick={() => doApply(nextApplyOpts({ confirmed: scaleAsk.confirmed }, 'sakura'))}")
   })
 
-  it('やめる（選び直さず閉じられる）', () => {
-    expect(block).toContain('>やめる</button>')
+  it('キャンセル（選び直さず閉じられる）', () => {
+    expect(block).toContain('>キャンセル</button>')
     expect(block).toContain('onClick={() => setScaleAsk(null)}')
   })
 })

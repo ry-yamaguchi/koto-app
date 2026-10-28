@@ -45,7 +45,7 @@ afterEach(() => { h.cleanup() })
 const confirmText = (m: { text(): string }): string => m.text()
 
 describe('H1: 確認は ConfirmModal。「破棄する」と答えなければ、main へも窓の警告へも出ない（掟10）', () => {
-  it('★★★ 入口を押すと確認が出る。main には1本も出ない。「やめる」で何も起きず、入口は押せるまま', async () => {
+  it('★★★ 入口を押すと確認が出る。main には1本も出ない。「キャンセル」で何も起きず、入口は押せるまま', async () => {
     published()
     world.placementReply = { ok: true, placement: A, placements: [A] }
     const screen = open()

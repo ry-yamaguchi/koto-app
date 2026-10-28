@@ -114,9 +114,10 @@ import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { BUCKET_MONTHLY_YEN, teardownRemainingWarnings } from '../src/shared/cloudCost'
 import { deleteProjectReply } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir, workspaceDirOf } from './isolatedProject'
+import { shownTeardown } from './shownFromEnv'
 
 registerHanamiiHandlers({} as any)
-const teardown = h.handlers.get('hanamii:teardown')!
+const teardown = shownTeardown(h.handlers.get('hanamii:teardown')!) // 画面の代わりに、確認で見せた保存場所（env.json の記録）を渡す
 const publish = h.handlers.get('hanamii:publish')!
 
 const EVENT = {}
@@ -596,7 +597,7 @@ describe('HANAMII の破棄: 2度目（プロジェクトはもう無い）で�
 
 // ── 8. 片づけ残りは「全部」名指しする（2026-09-25 検分の指摘5）──────────────────
 //
-// 破棄は同意済みの保存場所を全件片づける。にもかかわらず、残りの案内は `placements[0]`
+// 破棄は同意済みの保存場所を複数まとめて扱う（消すのは確認で見せた分だけ。0.6.24 F）。にもかかわらず、残りの案内は `placements[0]`
 // ＝**先頭の1件しか名指ししていなかった**。2件目は名前すら出ないまま月額（495円）が続く。
 
 describe('HANAMII の破棄: 残った保存場所は全部名指しする', () => {
@@ -935,7 +936,8 @@ describe('★★★ HANAMII の破棄: ほかのプロジェクトの記録に�
 
     expect(result.ok).toBe(true)
     expect(h.deletedBuckets).toEqual([])
-    expect(h.deletedKeys).toEqual([`${PREFIX}data.json`])
+    expect(h.deletedKeys, '0.6.24 R1-b: 読めない兄弟は複製かもしれない。データ（キー）にも手を付けない').toEqual([])
+    expect(result.executed).toContain(`保存場所『${BUCKET}』のデータは残しました — フォルダ『broken』の記録を読めないため、同じデータを使っているか確かめられませんでした。`)
     expect(result.keptBucketName).toBe(BUCKET)
     expect(result.keptBucketsUsedByOthers).toBeUndefined()
     const warning = teardownRemainingWarnings(result).join('\n')
@@ -962,13 +964,15 @@ describe('★★★ HANAMII の破棄: 回帰 — 同じ保存場所を使う A�
   const PREFIX_A = 'projects/proj-a/'
   const PREFIX_B = 'projects/proj-b/'
   /** HANAMII で公開中のプロジェクト（保存場所を同意済み・公開の記録＝hanamii の行と projectId あり）。 */
-  function publishedProject(dir: string, prefix: string) {
+  // A と B は別のプロジェクト＝別の projectId（同じ projectId なら、同じ親フォルダの複製として破棄が断られる。0.6.24 I-2）
+  const PROJECT_ID_B = 'hnm-proj-b'
+  function publishedProject(dir: string, prefix: string, projectId: string = PROJECT_ID) {
     fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
     const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
     spec.persistence = { objectStorage: [{ ...CONSENTED_BUCKET, prefix }] } as any
     fs.writeFileSync(path.join(dir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
     fs.writeFileSync(path.join(dir, '.sakuraide.json'), JSON.stringify({
-      publish: { hanamii: { projectId: PROJECT_ID }, targets: { hanamii: { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.hanamii.example/' } } },
+      publish: { hanamii: { projectId }, targets: { hanamii: { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.hanamii.example/' } } },
     }, null, 2), 'utf-8')
   }
 
@@ -976,7 +980,7 @@ describe('★★★ HANAMII の破棄: 回帰 — 同じ保存場所を使う A�
     const dirB = path.join(workspaceDirOf(projectDir), 'proj-b')
     fs.mkdirSync(dirB)
     publishedProject(projectDir, PREFIX_A)
-    publishedProject(dirB, PREFIX_B)
+    publishedProject(dirB, PREFIX_B, PROJECT_ID_B)
 
     // 1. A を破棄。S のキーは A の prefix だけ（B の prefix は目印ごと消えていた・実機と同じ）。B は公開中なので S は残る
     h.keys = [`${PREFIX_A}data.json`]
@@ -991,7 +995,7 @@ describe('★★★ HANAMII の破棄: 回帰 — 同じ保存場所を使う A�
 
     // 2. 続けて B を破棄。A は破棄済み（公開の記録が無い）なので数えない → S をバケットごと消す
     h.keys = [`${PREFIX_B}data.json`]
-    const second = await call({ projectDir: dirB })
+    const second = await call({ projectDir: dirB, opts: { confirmed: true, projectId: PROJECT_ID_B } })
     expect(second.ok).toBe(true)
     expect(h.deletedBuckets, '最後の破棄で S が消えない（月額が続く・回帰）').toEqual([BUCKET])
     expect(h.storageCalls.filter(c => c === `deleteBucket ${BUCKET}`)).toHaveLength(1)

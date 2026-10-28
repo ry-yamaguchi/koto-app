@@ -5,7 +5,7 @@ import { cleanRemoteError } from '../remoteError'
 
 interface Props {
   onSetApiKey: (key: string) => void
-  onClose: () => void          // 「あとで設定する」も含め閉じる（呼び出し側でonboardedフラグを立てる）
+  onClose: () => void          // 「キャンセル」も含め閉じる（呼び出し側でonboardedフラグを立てる）
   onCreateProject: () => void  // 完了時「最初のプロジェクトを作る」
   /** 「他のAPIキーも登録する」→ 認証情報（APIキー）ダイアログを開く（ユーザー要望 2026-07-13:
    *  Claude・GitHub 等のキーも初期にまとめて登録しておくと、その後の作業効率が良いため）。 */
@@ -65,7 +65,7 @@ export default function OnboardingModal({ onSetApiKey, onClose, onCreateProject,
             </p>
             <div className="flex items-center justify-between">
               <button onClick={onClose} className="text-sm text-ink-muted hover:text-ink transition-colors">
-                あとで設定する
+                キャンセル
               </button>
               <button
                 onClick={() => setStep(2)}
@@ -161,7 +161,7 @@ export default function OnboardingModal({ onSetApiKey, onClose, onCreateProject,
 
             <div className="flex items-center justify-between mt-4">
               <button onClick={onClose} className="text-sm text-ink-muted hover:text-ink transition-colors">
-                あとで設定する
+                キャンセル
               </button>
               <div className="flex items-center gap-3">
                 <button onClick={() => setStep(2)} className="text-sm text-ink-muted hover:text-ink transition-colors">

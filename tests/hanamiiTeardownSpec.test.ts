@@ -310,12 +310,13 @@ describe('B 確認の文: HANAMII の仕様書で', () => {
     expect(c.body).not.toContain('📦 さくらのAppRun')
   })
 
-  it('★★★ B-5 読めなかった材料の注意: call（問い合わせの失敗）は「削除される場合があります」と「元に戻せません」の両方を言い、ほかの公開先の名前も出す', () => {
+  it('★★★ B-5 読めなかった材料の注意: call（問い合わせの失敗）は「名前を挙げられない保存場所は削除しません」と言う。「削除される場合があります」・元に戻せない・ほかの公開先のデータが消える、とは言わない（0.6.24 F-6）', () => {
     const c = confirmOf({ placementsUnreadable: true, placementsUnreadableCause: 'call', otherTargets: ['📦 さくらのAppRun'] })
-    expect(c.body).toContain('削除される場合があります')
-    expect(c.body).toContain('削除されたデータは元に戻せません')
-    expect(c.body).toContain('ほかの公開先（📦 さくらのAppRun）')
-    // ほかの公開先が0件なら、その文は足さない
+    expect(c.body).toContain('保存場所の設定を問い合わせられなかったため、保存場所の名前を挙げられません。名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。')
+    expect(c.body).not.toContain('削除される場合があります')
+    expect(c.body).not.toContain('削除されたデータは元に戻せません')
+    expect(c.body).not.toContain('ほかの公開先（')
+    expect(c.body).not.toContain('📦 さくらのAppRun')
     expect(confirmOf({ placementsUnreadable: true, placementsUnreadableCause: 'call' }).body).not.toContain('ほかの公開先（')
   })
 

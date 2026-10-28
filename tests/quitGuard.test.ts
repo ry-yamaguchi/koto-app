@@ -18,9 +18,9 @@ import { withProjectLock } from '../src/main/projectLock'
 //
 // ここで固定するもの:
 //   1. 判断（quitGuardDecision・純関数）  2. main の記録を読む listRunningOps（本物の withProjectLock）
-//   3. 流れ（createQuitGuard）を本物の記録に流して、聞く・やめる・終了する・二重に聞かない
+//   3. 流れ（createQuitGuard）を本物の記録に流して、聞く・キャンセル・終了する・二重に聞かない
 //   3b. ダイアログへ渡す設定と、押されたボタンの扱い（偽のダイアログに流す。Enter・Esc・各ボタン）
-//   3c. macOS で Return（青）と Escape が付くボタン（Electron の原本の写し。「終了しない」が青くなる形）
+//   3c. macOS で Return（青）と Escape が付くボタン（Electron の原本の写し。「キャンセル」が青くなる形）
 //   4. main.ts の配線（ソースの呼び出しの形。コメントを除く）  5. 自動更新との関係
 
 const read = (rel: string) => readFileSync(join(__dirname, '..', rel), 'utf-8')
@@ -51,13 +51,13 @@ describe('quitGuardDecision: 走っている操作があるときだけ止める
       block: true,
       message: '処理を実行中です',
       detail: '「newname」の削除が進行中です。いま Koto を終了すると、処理は途中で止まります。',
-      buttons: ['終了しない', '終了する（処理は途中で止まります）'],
+      buttons: ['キャンセル', '終了する（処理は途中で止まります）'],
       defaultId: 0,
       cancelId: 2,
     })
   })
 
-  it('既定（Return）は「終了しない」。「終了する」の番号は定数と一致する', () => {
+  it('既定（Return）は「キャンセル」。「終了する」の番号は定数と一致する', () => {
     const d = quitGuardDecision([{ projectDir: '/p/a', op: '公開' }])
     if (!d.block) throw new Error('block のはず')
     expect(d.buttons[d.defaultId]).toBe(QUIT_GUARD_CANCEL_LABEL)
@@ -219,7 +219,7 @@ describe('createQuitGuard: 走っている処理があれば、聞いてから�
     g.open(); await p
   })
 
-  it('★ 「終了しない」: 終了しない・印も立てない・次の終了でまた聞く', async () => {
+  it('★ 「キャンセル」: 終了しない・印も立てない・次の終了でまた聞く', async () => {
     const g = gate()
     const p = withProjectLock('/p/a', '削除', async () => { await g.wait }, META)
     await flush()
@@ -315,7 +315,7 @@ describe('createQuitGuard: 走っている処理があれば、聞いてから�
 // ── 3b. ダイアログへ渡す設定と、押されたボタンの扱い（偽のダイアログに流す）──────────────────────
 // main.ts は electron の dialog につなぐだけ。設定の作り方（Enter・Esc の番号）と、答えをそのまま返すことは、ここで固定する。
 // 変異（rc.2 の検分）: cancelId を 1 に（Esc で終了）／defaultId を 1 に（Enter で終了）／返す答えを 1 に固定（どのボタンでも終了）／
-// ボタンの並びを逆に（「終了しない」を押すと終了）——いずれも、下のテストのどれかが落ちる。
+// ボタンの並びを逆に（「キャンセル」を押すと終了）——いずれも、下のテストのどれかが落ちる。
 
 describe('ダイアログへ渡す設定と、押されたボタンの扱い', () => {
   const blocked = () => {
@@ -334,12 +334,12 @@ describe('ダイアログへ渡す設定と、押されたボタンの扱い', (
     return { calls, showMessageBox }
   }
 
-  it('★ 設定: 警告の種類・見出し・詳細・ボタン、既定（Return）は「終了しない」の番号 0・取消の番号はボタンの数（2）', () => {
+  it('★ 設定: 警告の種類・見出し・詳細・ボタン、既定（Return）は「キャンセル」の番号 0・取消の番号はボタンの数（2）', () => {
     expect(quitGuardDialogOptions(blocked())).toEqual({
       type: 'warning',
       message: '処理を実行中です',
       detail: '「newname」の削除が進行中です。いま Koto を終了すると、処理は途中で止まります。',
-      buttons: ['終了しない', '終了する（処理は途中で止まります）'],
+      buttons: ['キャンセル', '終了する（処理は途中で止まります）'],
       defaultId: 0,
       cancelId: 2,
     })
@@ -402,7 +402,7 @@ describe('ダイアログへ渡す設定と、押されたボタンの扱い', (
     expect(r).toMatchObject({ quit: 0, prevented: 1, confirmed: false })
   })
 
-  it('★★ 「終了しない」と書かれたボタンを押しても終了しない（ボタンの並びが逆でも、名前で押す）', async () => {
+  it('★★ 「キャンセル」と書かれたボタンを押しても終了しない（ボタンの並びが逆でも、名前で押す）', async () => {
     const r = await runWith(o => o.buttons.indexOf(QUIT_GUARD_CANCEL_LABEL))
     expect(r).toMatchObject({ quit: 0, prevented: 1, confirmed: false })
   })
@@ -414,13 +414,13 @@ describe('ダイアログへ渡す設定と、押されたボタンの扱い', (
 })
 
 // ── 3c. macOS で、どのボタンに Return（青）と Escape が付くか（Electron の原本の写し）────────────────
-// 0.6.21-rc.2 の実際の画面: 「終了しない」が青くならなかった（defaultId=0・cancelId=0 で、どちらのボタンも灰色）。
+// 0.6.21-rc.2 の実際の画面: 0 番目のボタン（当時の名前は「終了しない」。0.6.23 で「キャンセル」に改名）が青くならなかった（defaultId=0・cancelId=0 で、どちらのボタンも灰色）。
 // 原本（Electron 33.4.11）:
 //   shell/browser/ui/message_box_mac.mm 68〜85 行 — defaultId のボタンに Return（\r）を付け、cancelId のボタンに Escape（\e）を付ける。
 //     1つのボタンはキーを1つしか持てないので、同じボタンだと Return が Escape に上書きされる＝青いボタンが無くなる。
 //     cancelId がボタンの数以上なら、Escape はどのボタンにも付かない。
 //   lib/browser/api/dialog.ts 195〜203 行 — cancelId を省く（null）と、defaultId=0 のとき cancelId=1 を当てる（「終了する」に Escape が付く）。
-// 以下はその規則の写し。ダイアログの設定が、この規則の上で「終了しない」に Return・「終了する」にはキーなし、となることを固定する。
+// 以下はその規則の写し。ダイアログの設定が、この規則の上で「キャンセル」に Return・「終了する」にはキーなし、となることを固定する。
 // ※ 実際の見た目（青く描かれるか）は、署名した版の実機でしか確かめられない。実機で未確認。
 
 /** dialog.ts 195〜203 行の写し（text が cancel / no のボタンを探す処理は省く。このテストのボタンには無い）。 */
@@ -444,14 +444,14 @@ function macKeys(o: { buttons: string[]; defaultId: number; cancelId?: number | 
   return { returnTo: idx('\r'), escapeTo: idx('\e') }
 }
 
-describe('macOS のキーの付き方（Electron の原本の写し）: 「終了しない」に Return・Escape は何もしない', () => {
+describe('macOS のキーの付き方（Electron の原本の写し）: 「キャンセル」に Return・Escape は何もしない', () => {
   const blockedOpts = () => {
     const d = quitGuardDecision([{ projectDir: '/Users/a/Projects/newname', op: '削除' }])
     if (!d.block) throw new Error('block のはず')
     return quitGuardDialogOptions(d)
   }
 
-  it('★★ 終了の確認: Return は「終了しない」（青くなる）。Escape はどのボタンにも付かない', () => {
+  it('★★ 終了の確認: Return は「キャンセル」（青くなる）。Escape はどのボタンにも付かない', () => {
     const k = macKeys(blockedOpts())
     expect(k.returnTo).toBe(0)
     expect(blockedOpts().buttons[k.returnTo!]).toBe(QUIT_GUARD_CANCEL_LABEL)
@@ -611,7 +611,12 @@ describe('自動更新: 走っている処理を、聞かずに止めない', ()
 describe('CHANGELOG: 0.6.21 の節に、この修理の項目がある', () => {
   const changelog = read('CHANGELOG.md')
   // 0.6.21 を出したので、未リリースの節は 0.6.21 の節になった（2026-10-15）
-  const unreleased = changelog.slice(changelog.indexOf('## [0.6.21]'), changelog.indexOf('\n## [0.6.20]'))
+  // 公開の木では見出しの角括弧が外れる（`## [0.6.21]` → `## 0.6.21`。反映の変換）。**どちらの形でも節を取る**
+  // （2026-10-26、角括弧つきの文字列で探していたため、公開リポジトリの CI だけが落ちていた）
+  const unreleased = changelog.slice(
+    changelog.search(/^## (?:\[0\.6\.21\]|0\.6\.21(?![\w.-]))/m),
+    changelog.search(/\n## (?:\[0\.6\.20\]|0\.6\.20(?![\w.-]))/),
+  )
 
   it('🐛 の項目で、直したことと、確かめた範囲を書く（「実機」と書かない）', () => {
     const item = unreleased.split('\n').find(l => l.startsWith('- 🐛') && l.includes('⌘Q') && l.includes('警告なしに'))

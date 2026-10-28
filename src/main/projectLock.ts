@@ -31,7 +31,8 @@
 // あれは「途中で落ちたときのための印」であって鍵ではない。落ちたあとも残るので、
 // 鍵として使うと「二度と押せない」になる。ここは**プロセスの寿命だけ**の印にする。
 
-import { beginOp, finishOp, runningOpName, runningOpEntryOf, type ProjectOp, type OpMeta, type OpTarget, type RunningOpEntry } from './projectOps'
+import * as path from 'path'
+import { beginOp, finishOp, runningOpName, runningOpEntryOf, listRunningOps, type ProjectOp, type OpMeta, type OpTarget, type RunningOpEntry } from './projectOps'
 import { opWordFor } from '../shared/opWord'
 import type { StageTimings } from '../shared/stageTiming'
 
@@ -73,6 +74,24 @@ export function runningOp(projectDir: string): ProjectOp | undefined {
  */
 export function runningOpEntry(projectDir: string): RunningOpEntry | undefined {
   return runningOpEntryOf(projectDir)
+}
+
+/**
+ * `projectDir` と**同じフォルダ**で走っている操作と、その公開先（0.6.24 R2-b）。鍵は `path.resolve` した文字列なので、`runningOpEntry` は
+ * 大文字小文字だけ違うパス・リンク経由のパスでは走っていないと答える。ここは文字列が違っても、`isSameDir`（呼び手が渡す。実体で比べる `isSameDirFs`）が真なら走っているとする。
+ * `isSameDir` を受け取る形なのは、この鍵のモジュールが fs・記録の読み口に依存しないため。**投げない**（`isSameDir` が投げたら、その1件は別のフォルダと読む）。
+ */
+export function runningOpEntryAt(projectDir: string, isSameDir: (a: string, b: string) => boolean): RunningOpEntry | undefined {
+  const direct = runningOpEntryOf(projectDir)
+  if (direct) return direct
+  if (typeof projectDir !== 'string' || !projectDir) return undefined
+  const here = path.resolve(projectDir)
+  for (const r of listRunningOps()) {
+    let same = false
+    try { same = isSameDir(r.projectDir, here) } catch { same = false }
+    if (same) return { op: r.op, target: r.target }
+  }
+  return undefined
 }
 
 /**

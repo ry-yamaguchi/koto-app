@@ -128,7 +128,7 @@ describe('専有型のハンドラは、段の切り替わりを記録へ渡し�
 
   it('保存場所の段は、文（STORAGE_TEARDOWN_PROGRESS）に段の内部名を添えて渡す。手順6も 📡 の 🗑 も同じ破棄の道（apprunDedicated:teardown）を通る', () => {
     expect(td).toContain('progress(STORAGE_TEARDOWN_PROGRESS, { stage: STAGE.teardownStorage })')
-    expect(td).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage)')
+    expect(td).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage, ctx.opts.shownPlacements)')
     expect(ipc).not.toContain('STORAGE_TEARDOWN_PROGRESS')
   })
 

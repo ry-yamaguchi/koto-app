@@ -17,6 +17,7 @@ import { PUBLISH_CLOSE_WARNING } from '../src/renderer/activity'
 import type { PublishedEntry } from '../src/renderer/publishedIndex'
 import type { RowRt } from './hanamiiRowHarness'
 import { h, resetHarness, newProjectDir, setup as setupProject, writePublishRecord, A, APP, bucketRef, REGISTRY_ROW } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 import type { ResourceRef } from '../src/main/cloud/state'
 import type { EnvState } from '../src/main/cloud/state'
 
@@ -187,7 +188,8 @@ export function createSharedRowHarness(rt: RowRt) {
     setup, cleanup, mountRow, pressAndWaitConfirm, pressAndConfirm, writeProject, readMeta, metaFile,
     get dir() { return dir },
     get win() { return win },
-    mainTeardown: (opts: unknown) => mainTeardown({}, dir, { heldByMain: true }, opts),
+    // 直接呼ぶ回は、画面の代わりに、確認で見せた保存場所（記録から作る）を足す（0.6.24 F）
+    mainTeardown: (opts: unknown) => shownTeardown(mainTeardown)({}, dir, { heldByMain: true }, opts),
     /** 公開の記録（.sakuraide.json）の publish.targets の公開先の名前。 */
     publishedTargets: (): string[] => Object.keys(readMeta().publish?.targets ?? {}),
   }

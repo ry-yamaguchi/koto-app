@@ -16,6 +16,8 @@ import { bucketUsersFromRecords, siblingUseOfBucket, STORAGE_PUBLISH_TARGETS, ty
 // （旧い記録は state.json の apprun-app 資源・publish.hanamii.projectId も）。
 
 const S = 'koto-rc-s1019'
+/** 自分（`me`）の prefix。兄弟の env.json の prefix（`projects/x/`）とは違う＝複製ではない（複製の試験は tests/bucketUsersSamePrefix.test.ts）。 */
+const PFX = 'projects/me/'
 const CONSENTED_AT = '2026-10-19T00:00:00.000Z'
 
 const workspaces: string[] = []
@@ -146,26 +148,26 @@ describe('bucketUsersFromRecords（同じ親フォルダの兄弟のプロジェ
   it('★★★ 実機の再現: 兄弟の env.json に S が同意済みで残っていて、公開もしていれば、その名前が返る', () => {
     const { ws, me } = newWorkspace()
     sibling(ws, 'rc1-shared', { env: envWith(S), state: stateWith(S), meta: publishedTo('sakura-apprun') })
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: ['rc1-shared'] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: ['rc1-shared'], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('★ 兄弟の state.json にだけ S がある（env.json は無い・S を外している）が、公開もしていれば使っている', () => {
     const { ws, me } = newWorkspace()
     sibling(ws, 'only-state', { state: stateWith(S), meta: publishedTo('hanamii') })
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: ['only-state'] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: ['only-state'], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('★★★ 回帰: 設定に S が残っていても、公開の記録が無い兄弟（破棄が済んだ・一度も公開していない）は数えない → 誰もいない（バケットを消してよい側）', () => {
     const { ws, me } = newWorkspace()
     sibling(ws, 'torn-down', { env: envWith(S), state: stateWith(S), meta: { publish: { targets: {} } } }) // 破棄が済んだ（行が消えた）
     sibling(ws, 'prepared-only', { env: envWith(S) })                                                       // 一度も公開していない（.sakuraide.json が無い）
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: [] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: [], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('★★★ 旧い記録: 兄弟の state.json に apprun-app 資源だけ（.sakuraide.json は無い）→ 公開あり＝使っている', () => {
     const { ws, me } = newWorkspace()
     sibling(ws, 'legacy', { env: envWith(S), state: { resources: [{ kind: 'bucket', id: S }, { kind: 'apprun-app', id: 'app-1' }] } })
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: ['legacy'] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: ['legacy'], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('★ 兄弟が別のバケットだけを使っている・記録が無い → 誰もいない（known:true・0件。バケットを消してよい側）', () => {
@@ -174,7 +176,7 @@ describe('bucketUsersFromRecords（同じ親フォルダの兄弟のプロジェ
     sibling(ws, 'no-storage', { env: { persistence: {} } })
     fs.mkdirSync(path.join(ws, 'plain-folder'))             // 記録の無いただのフォルダ
     fs.mkdirSync(path.join(ws, 'has-dir-only', '.sakura-cloud'), { recursive: true }) // .sakura-cloud だけで env.json が無い
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: [] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: [], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('★ 自分自身の記録は数えない（自分の env.json に S が同意済みで書いてあっても・公開していても）', () => {
@@ -183,7 +185,7 @@ describe('bucketUsersFromRecords（同じ親フォルダの兄弟のプロジェ
     fs.writeFileSync(path.join(me, '.sakura-cloud', 'env.json'), JSON.stringify(envWith(S)))
     fs.writeFileSync(path.join(me, '.sakura-cloud', 'state.json'), JSON.stringify(stateWith(S)))
     fs.writeFileSync(path.join(me, '.sakuraide.json'), JSON.stringify(publishedTo('sakura-apprun')))
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: [] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: [], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('兄弟が複数なら名前順（文字コード順）。隠しフォルダ・ファイルは見ない。リンクされたプロジェクトは兄弟', () => {
@@ -195,25 +197,25 @@ describe('bucketUsersFromRecords（同じ親フォルダの兄弟のプロジェ
     fs.writeFileSync(path.join(ws, 'note.txt'), 'x')              // ファイルは見ない
     const real = sibling(ws, '.real-c', { env: envWith(S), meta })       // リンク先は隠しだが、リンク自体は隠しでない名前
     fs.symlinkSync(real, path.join(ws, 'c-link'))
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: ['a-app', 'b-app', 'c-link'] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: ['a-app', 'b-app', 'c-link'], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('★★★ 兄弟の記録が壊れている（JSON として読めない）→ わからない。「いない」に倒さない', () => {
     const { ws, me } = newWorkspace()
     sibling(ws, 'broken-env', { rawEnv: '{ not json' })
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: false })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: ['broken-env'], samePrefixChecked: true })
     const w2 = newWorkspace()
     sibling(w2.ws, 'broken-state', { rawState: '' })
-    expect(bucketUsersFromRecords(w2.me, S)).toEqual({ known: false })
+    expect(bucketUsersFromRecords(w2.me, S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: ['broken-state'], samePrefixChecked: true })
   })
 
   it('★★★ 兄弟の公開の記録（.sakuraide.json）が壊れている → S を使う設定があれば、わからない（公開していないとは言わない）。S を使っていなければ関係ない', () => {
     const { ws, me } = newWorkspace()
     sibling(ws, 'broken-meta', { env: envWith(S), rawMeta: '{ not json' })
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: false })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
     const w2 = newWorkspace()
     sibling(w2.ws, 'broken-meta-other', { env: envWith('koto-other'), rawMeta: '{ not json' })
-    expect(bucketUsersFromRecords(w2.me, S)).toEqual({ known: true, users: [] })
+    expect(bucketUsersFromRecords(w2.me, S, PFX)).toEqual({ known: true, users: [], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 
   it('★★★ 兄弟の記録を開けない（権限が無い）→ わからない。env.json でも、公開の記録でも', () => {
@@ -223,7 +225,7 @@ describe('bucketUsersFromRecords（同じ親フォルダの兄弟のプロジェ
     const file = path.join(dir, '.sakura-cloud', 'env.json')
     fs.chmodSync(file, 0o000)
     try {
-      expect(bucketUsersFromRecords(me, S)).toEqual({ known: false })
+      expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: ['locked'], samePrefixChecked: true })
     } finally {
       fs.chmodSync(file, 0o600)
     }
@@ -233,7 +235,7 @@ describe('bucketUsersFromRecords（同じ親フォルダの兄弟のプロジェ
     const meta = path.join(dir2, '.sakuraide.json')
     fs.chmodSync(meta, 0o000)
     try {
-      expect(bucketUsersFromRecords(w2.me, S)).toEqual({ known: false })
+      expect(bucketUsersFromRecords(w2.me, S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
     } finally {
       fs.chmodSync(meta, 0o600)
     }
@@ -243,20 +245,20 @@ describe('bucketUsersFromRecords（同じ親フォルダの兄弟のプロジェ
     const { ws, me } = newWorkspace()
     sibling(ws, 'broken', { rawEnv: '{ not json' })
     sibling(ws, 'user', { env: envWith(S), meta: publishedTo('sakura-apprun') })
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: ['user'] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: ['user'], samePrefix: [], samePrefixUnread: ['broken'], samePrefixChecked: true })
   })
 
   it('★★★ 親フォルダの一覧を読めない（親が無い）→ わからない', () => {
-    expect(bucketUsersFromRecords(path.join(os.tmpdir(), 'koto-no-such-workspace-xyz', 'me'), S)).toEqual({ known: false })
+    expect(bucketUsersFromRecords(path.join(os.tmpdir(), 'koto-no-such-workspace-xyz', 'me'), S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: [], samePrefixChecked: false })
   })
 
   it('★★★ プロジェクトのフォルダが絶対パスでない・空・文字列でない、バケット名が空 → わからない（作業中のフォルダを親と読まない）', () => {
     for (const bad of ['', 'relative/dir', '.', undefined, null, 42] as unknown[]) {
-      expect(bucketUsersFromRecords(bad as string, S), String(bad)).toEqual({ known: false })
+      expect(bucketUsersFromRecords(bad as string, S, PFX), String(bad)).toEqual({ known: false, samePrefix: [], samePrefixUnread: [], samePrefixChecked: false })
     }
     const { me } = newWorkspace()
     for (const bad of ['', undefined, null] as unknown[]) {
-      expect(bucketUsersFromRecords(me, bad as string), String(bad)).toEqual({ known: false })
+      expect(bucketUsersFromRecords(me, bad as string, PFX), String(bad)).toEqual({ known: false, samePrefix: [], samePrefixUnread: [], samePrefixChecked: false })
     }
   })
 })
@@ -268,7 +270,7 @@ describe('★★★ 兄弟を調べる途中の例外: ENOENT 以外は「わか
   it('たどれないシンボリックリンク（先が存在しない）→ わからない', () => {
     const { ws, me } = newWorkspace()
     fs.symlinkSync(path.join(ws, 'no-such-place'), path.join(ws, 'dangling-link'))
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: false })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: ['dangling-link'], samePrefixChecked: true })
   })
 
   it('たどれないシンボリックリンク（先へ入る権限が無い・EACCES）→ わからない', () => {
@@ -282,7 +284,7 @@ describe('★★★ 兄弟を調べる途中の例外: ENOENT 以外は「わか
     fs.symlinkSync(path.join(locked, 'proj'), path.join(ws, 'link-to-locked'))
     fs.chmodSync(locked, 0o000)
     try {
-      expect(bucketUsersFromRecords(me, S)).toEqual({ known: false })
+      expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: false, samePrefix: [], samePrefixUnread: ['link-to-locked'], samePrefixChecked: true })
     } finally {
       fs.chmodSync(locked, 0o700)
     }
@@ -292,7 +294,7 @@ describe('★★★ 兄弟を調べる途中の例外: ENOENT 以外は「わか
     const { ws, me } = newWorkspace()
     fs.symlinkSync(path.join(ws, 'no-such-place'), path.join(ws, 'dangling-link'))
     sibling(ws, 'user', { env: envWith(S), meta: publishedTo('sakura-apprun') })
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: ['user'] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: ['user'], samePrefix: [], samePrefixUnread: ['dangling-link'], samePrefixChecked: true })
   })
 
   it('ENOENT（そもそも無い）は「無い」として扱う: 記録も .sakura-cloud も無いフォルダ・ファイルへのリンクは、プロジェクトではない', () => {
@@ -300,6 +302,6 @@ describe('★★★ 兄弟を調べる途中の例外: ENOENT 以外は「わか
     fs.mkdirSync(path.join(ws, 'empty-folder'))                          // 記録が1つも無い（env.json・state.json・.sakuraide.json すべて ENOENT）
     fs.writeFileSync(path.join(ws, 'a-file.txt'), 'x')
     fs.symlinkSync(path.join(ws, 'a-file.txt'), path.join(ws, 'link-to-file')) // たどれるが、ディレクトリではない
-    expect(bucketUsersFromRecords(me, S)).toEqual({ known: true, users: [] })
+    expect(bucketUsersFromRecords(me, S, PFX)).toEqual({ known: true, users: [], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true })
   })
 })

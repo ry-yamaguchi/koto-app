@@ -11,6 +11,7 @@ import path from 'node:path'
 // 専有型（ipc/apprunDedicatedTeardown.ts）は 3B-2 から同じ案内を出す（本物の main での振る舞いは tests/dedicatedTeardownStorageAll.test.ts の C-5）。
 // 文は書き下す（関数を通すと同語反復になる）。
 import { A, h, resetHarness, newProjectDir, setup, APP, bucketRef, OK_AUTH, stateMeta } from './sharedTeardownHarness'
+import { shownTeardown, shownFromEnv } from './shownFromEnv'
 import { deleteProjectReply } from './hanamiiTeardownFixtures'
 
 /** 保存場所へ最初の deleteKeys が入った直後に呼ぶ関数（env.json が読めなくなる回を作る）。 */
@@ -42,8 +43,9 @@ import { toTeardownView } from '../src/shared/teardownResult'
 
 registerCloudHandlers({} as any)
 registerHanamiiHandlers({} as any)
-const sharedTeardown = h.handlers.get('cloud:teardown')!
-const hanamiiTeardown = h.handlers.get('hanamii:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const sharedTeardown = shownTeardown(h.handlers.get('cloud:teardown')!)
+const hanamiiTeardown = shownTeardown(h.handlers.get('hanamii:teardown')!) // 画面の代わりに、確認で見せた保存場所（env.json の記録）を渡す
 const EVENT = {}
 const GO = { confirmed: true, deleteRegistry: false, registryName: null }
 const PROJECT_ID = 'hnm-proj-1'
@@ -232,7 +234,7 @@ describe('不変の約束: teardownStorageForProject の warnings は鍵の行�
     // (1) 記録の鍵の無効化が失敗
     setup(dir, { env: [A], resources: [], meta: { storagePermissionId: 'perm-1' } })
     h.fail['deletePermission perm-1'] = 'throw'
-    const one = await teardownStorageForProject({ creds: creds(), projectDir: dir, permissionId: 'perm-1' })
+    const one = await teardownStorageForProject({ creds: creds(), projectDir: dir, permissionId: 'perm-1', shown: shownFromEnv(dir) })
     expect(one).toMatchObject({ ok: true, reason: 'done' })
     expect((one as { warnings: string[] }).warnings).toEqual([KEY_REVOKE_FAILED_WARNING])
     lines.push(...(one as { warnings: string[] }).warnings)
@@ -240,12 +242,12 @@ describe('不変の約束: teardownStorageForProject の warnings は鍵の行�
     resetHarness(); setup(dir, { env: [A], resources: [] })
     h.permissions = [{ id: 'perm-x', displayName: 'koto-myapp' }]
     h.fail['deletePermission perm-x'] = 'throw'
-    const two = await teardownStorageForProject({ creds: creds(), projectDir: dir, permissionId: null, sweepKeysFor: 'apprun' })
+    const two = await teardownStorageForProject({ creds: creds(), projectDir: dir, permissionId: null, sweepKeysFor: 'apprun', shown: shownFromEnv(dir) })
     lines.push(...(two as { warnings: string[] }).warnings)
     // (3) 鍵の一覧が取れない
     resetHarness(); setup(dir, { env: [A], resources: [] })
     h.fail.listPermissions = 'throw'
-    const three = await teardownStorageForProject({ creds: creds(), projectDir: dir, permissionId: null, sweepKeysFor: 'hanamii' })
+    const three = await teardownStorageForProject({ creds: creds(), projectDir: dir, permissionId: null, sweepKeysFor: 'hanamii', shown: shownFromEnv(dir) })
     lines.push(...(three as { warnings: string[] }).warnings)
     expect(lines).toHaveLength(3)
     expect(lines.every(l => l.includes('アクセスキー'))).toBe(true)
@@ -285,14 +287,16 @@ describe('storageProjectNameOf: プロジェクトの名前（env.json）。読�
   })
 })
 
-// 鍵の案内を出す所は5つ（設計書 10.11.15）: cloudTeardown.ts の2か所（記録の鍵・一括）・hanamiiTeardown.ts・apprunDedicatedTeardown.ts・cloud/apply.ts。
+// 鍵の案内を出す所は5つ（設計書 10.11.15）: cloudTeardownStorage.ts の2か所（記録の鍵・一括。保存場所の段は 0.6.24 R1-a で cloudTeardown.ts から切り出した）・hanamiiTeardown.ts・apprunDedicatedTeardown.ts・cloud/apply.ts。
 // どこも keyWarningLines に案内を渡して行を作る（⚠️ の行を自分で作らない）。専有型は 3B-2 から。呼び形ごと数える（コメントは除く）。
 describe('鍵の警告の行を作る所は keyWarningLines を通る（5か所）', () => {
   const src = (f: string) => fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf-8').replace(/^\s*\/\/.*$/gm, '')
   const times = (text: string, needle: string) => text.split(needle).length - 1
   it.each([
-    ['main/ipc/cloudTeardown.ts', 'keyWarningLines(st.warnings, keyGuide)', 1],
-    ['main/ipc/cloudTeardown.ts', 'keyWarningLines([why], keyGuide)', 1],
+    ['main/ipc/cloudTeardownStorage.ts', 'keyWarningLines(st.warnings, keyGuide)', 1],
+    ['main/ipc/cloudTeardownStorage.ts', 'keyWarningLines([why], keyGuide)', 1],
+    // 切り出したあとの元のファイルには、鍵の行を作る所が残っていない（コピーが戻れば数が合わなくなる）
+    ['main/ipc/cloudTeardown.ts', 'keyWarningLines(', 0],
     ['main/ipc/hanamiiTeardown.ts', 'keyWarningLines(st.warnings, keyGuide)', 1],
     ['main/ipc/apprunDedicatedTeardown.ts', 'keyWarningLines(st.warnings, keyGuide)', 1],
     ['main/cloud/apply.ts', "keyWarningLines(outcome.warnings, keyRevokeGuide(spec.name || null, 'apprun'))", 1],

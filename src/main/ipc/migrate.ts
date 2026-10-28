@@ -11,9 +11,10 @@ import { ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
-import { planMigrate, needsMigration, shouldOfferMigration, type Entry, type MigratePlan } from '../../shared/migratePlan'
+import { planMigrate, needsMigration, shouldOfferMigration, withholdFromMove, type Entry, type MigratePlan } from '../../shared/migratePlan'
 import { isPublished } from '../../shared/publishExclude'
 import { snapshotBeforeChange } from '../backup/store'
+import { verdictOf } from './fsTrash'
 
 /** プロジェクト直下の一覧（読めなければ空）。 */
 function readEntries(projectDir: string): Entry[] {
@@ -37,6 +38,14 @@ function readTarget(projectDir: string): string | null {
   }
 }
 
+/**
+ * 計画を立てる。**実フォルダで調べて、`'plain'` 以外（子のプロジェクト・記録・中にプロジェクトがあるフォルダ・調べられないもの）は移さず、「そのまま残すもの」へ回す**（R2-a）。
+ * 判断は `fs:trash` と同じ `verdictOf`。調べるのは移す計画に入ったものだけ。
+ */
+export function planMigrateFs(projectDir: string, entries: readonly Entry[]): MigratePlan {
+  return withholdFromMove(planMigrate(entries, isPublished), name => verdictOf(path.join(projectDir, name)) === 'plain')
+}
+
 export function registerMigrateHandlers(): void {
   /** 移行が要るか調べ、計画を返す（**何も変えない**）。 */
   ipcMain.handle('project:migrateCheck', (_, projectDir: string) => {
@@ -45,7 +54,7 @@ export function registerMigrateHandlers(): void {
     }
     const entries = readEntries(projectDir)
     if (!needsMigration(entries, readTarget(projectDir))) return { needed: false, plan: { move: [], keep: [] } as MigratePlan }
-    const plan = planMigrate(entries, isPublished)
+    const plan = planMigrateFs(projectDir, entries)
     // 改善1-3（2026-08-29）: 移すものが1件も無ければ案内しない（「0件をその中へ移します」を防ぐ）。
     if (!shouldOfferMigration(plan)) return { needed: false, plan }
     return { needed: true, plan }
@@ -61,7 +70,7 @@ export function registerMigrateHandlers(): void {
     }
     const entries = readEntries(projectDir)
     if (!needsMigration(entries, readTarget(projectDir))) return { ok: true, moved: [], restored: true }
-    const plan = planMigrate(entries, isPublished)
+    const plan = planMigrateFs(projectDir, entries)
     const dest = path.join(projectDir, PUBLISH_DIR)
 
     // 🕘 履歴へ「移す直前」を残す。**取れなくても移行は続ける**（履歴の欠落より

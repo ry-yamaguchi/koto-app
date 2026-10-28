@@ -110,10 +110,11 @@ import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { writeApprunDedicatedRecordFs, readApprunDedicatedFs, writePublishRecordFs } from '../src/main/publishMetaFs'
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { BUCKET_MONTHLY_YEN, teardownRemainingWarnings } from '../src/shared/cloudCost'
+import { shownTeardown } from './shownFromEnv'
 import { isolatedProjectDir, workspaceDirOf } from './isolatedProject'
 
 registerApprunDedicatedHandlers({} as any)
-const teardown = h.handlers.get('apprunDedicated:teardown')!
+const teardown = shownTeardown(h.handlers.get('apprunDedicated:teardown')!) // 画面の代わりに、確認で見せた保存場所（env.json の記録）を渡す（0.6.24 F。main は見せたものだけを消す）
 
 const EVENT = { sender: { send: () => {} } }
 const AUTH = { token: 'tok', secret: 'sec' }
@@ -727,8 +728,10 @@ describe('⑥の破棄: 古い鍵も含めてまとめて無効にする', () =>
     expect(result.ok).toBe(true)
     expect(result.executed.some((e: string) => e.includes('パーミッション（アクセスキー）の一覧を取得できなかった'))).toBe(true)
     expect(result.executed.some((e: string) => e.includes('保存場所の鍵の一覧'))).toBe(false) // 0.6.21: 直す前の言い方は戻さない
-    // 一覧が引けないので現役が分からない＝記録の鍵のIDは残す（辿れない鍵を作らない）。
-    expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBe('perm-live')
+    // 記録の鍵（perm-live）は実際に無効にできた（permissionRevoked）ので、記録から外す（0.6.24 R1-c。以前は「一括の無効化の一覧が引けない＝警告が出た」を理由に、
+    // 無効にできた鍵の ID まで残していた。外す判断は「記録の鍵を実際に無効にできたか」だけ）。一括の無効化の一覧が引けないことは、上の警告が別に言う。
+    expect(h.deletedPermissions).toEqual(['perm-live'])
+    expect(readApprunDedicatedFs(projectDir).storagePermissionId ?? null).toBeNull()
   })
 })
 
@@ -791,7 +794,8 @@ describe('★★★ ⑥の破棄: ほかのプロジェクトの記録に同じ�
 
     expect(result.ok).toBe(true)
     expect(h.deletedBuckets).toEqual([])
-    expect(h.deletedKeys).toEqual([`${PREFIX}data.json`])
+    expect(h.deletedKeys, '0.6.24 R1-b: 読めない兄弟は複製かもしれない。データ（キー）にも手を付けない').toEqual([])
+    expect(result.executed).toContain(`保存場所『${BUCKET}』のデータは残しました — フォルダ『broken』の記録を読めないため、同じデータを使っているか確かめられませんでした。`)
     expect(result.keptBucketName).toBe(BUCKET)
     expect(result.keptBucketsUsedByOthers).toBeUndefined()
     const warning = teardownRemainingWarnings(result).join('\n')
@@ -818,18 +822,20 @@ describe('★★★ ⑥の破棄: 回帰 — 同じ保存場所を使う A・B �
   const PREFIX_A = 'projects/proj-a/'
   const PREFIX_B = 'projects/proj-b/'
   /** 専有型で公開中のプロジェクト（保存場所を同意済み・クラスタの記録と公開の記録＝専有型の行あり）。 */
-  function publishedProject(dir: string, prefix: string) {
+  // A と B は別のプロジェクト＝別のクラスタ（同じ clusterID なら、同じ親フォルダの複製として破棄が断られる。0.6.24 I-2）
+  function publishedProject(dir: string, prefix: string, clusterID: string = 'c1') {
     const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
     spec.persistence = { objectStorage: [{ ...CONSENTED_BUCKET, prefix }] }
     fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
     fs.writeFileSync(path.join(dir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
-    writeApprunDedicatedRecordFs(dir, { clusterID: 'c1' })
+    writeApprunDedicatedRecordFs(dir, { clusterID })
     writePublishRecordFs(dir, 'sakura-apprun-dedicated', { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.example/' })
   }
   /** 指定したプロジェクトの⑥の破棄を、偽サーバ（クラスタだけを消す最短の応答）へ流す。 */
-  async function teardownAt(dir: string) {
+  async function teardownAt(dir: string, clusterID: string = 'c1') {
     if (server) { server.close(); server = null }
-    h.baseUrl = await listen(routedServer(clusterGoneRoutes(), []))
+    const routes = clusterID === 'c1' ? clusterGoneRoutes() : { ...clusterGoneRoutes(), [`DELETE /clusters/${clusterID}`]: { status: 204, body: {} } }
+    h.baseUrl = await listen(routedServer(routes, []))
     return teardown(EVENT, dir, AUTH, { confirmed: true })
   }
   const metaTargets = (dir: string): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(dir, '.sakuraide.json'), 'utf-8'))?.publish?.targets ?? {}
@@ -838,7 +844,7 @@ describe('★★★ ⑥の破棄: 回帰 — 同じ保存場所を使う A・B �
     const dirB = path.join(workspaceDirOf(projectDir), 'proj-b')
     fs.mkdirSync(dirB)
     publishedProject(projectDir, PREFIX_A)
-    publishedProject(dirB, PREFIX_B)
+    publishedProject(dirB, PREFIX_B, 'c2')
 
     // 1. A を破棄。S のキーは A の prefix だけ（B の prefix は目印ごと消えていた・実機と同じ）。B は公開中なので S は残る
     h.keys = [`${PREFIX_A}data.json`]
@@ -852,7 +858,7 @@ describe('★★★ ⑥の破棄: 回帰 — 同じ保存場所を使う A・B �
 
     // 2. 続けて B を破棄。A は破棄済み（公開の記録が無い）なので数えない → S をバケットごと消す
     h.keys = [`${PREFIX_B}data.json`]
-    const second = await teardownAt(dirB)
+    const second = await teardownAt(dirB, 'c2')
     expect(second.ok).toBe(true)
     expect(h.deletedBuckets, '最後の破棄で S が消えない（月額が続く・回帰）').toEqual([BUCKET])
     expect(h.storageCalls.filter(c => c === `deleteBucket ${BUCKET}`)).toHaveLength(1)

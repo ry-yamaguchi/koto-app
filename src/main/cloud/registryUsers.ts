@@ -16,6 +16,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { CLOUD_STATE_FILE, cloudFilePath } from './specStore'
+import { isSameDirFs } from './bucketUsers'
 import type { RegistryOrigin } from '../../shared/cloudCost'
 
 /** `dir` のプロジェクトが、`registryName` のレジストリを、公開したアプリの置き場として記録しているか。 */
@@ -48,7 +49,7 @@ export function otherProjectsUsingRegistry(projectDir: string, registryName: str
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith('.')) continue
     const dir = path.join(workspace, e.name)
-    if (dir === self) continue
+    if (dir === self || isSameDirFs(dir, self)) continue // 文字列が違っても同じフォルダ（リンク・大文字小文字・NFC/NFD）は自分（R2-b）
     if (recordsAppOnRegistry(dir, registryName)) users.push(e.name)
   }
   return users.sort() // 文字コード順（実行する環境の言語設定で並びが変わらない）

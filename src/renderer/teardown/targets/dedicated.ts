@@ -124,7 +124,9 @@ export const dedicatedTeardownSpec: TargetSpec<DedicatedTeardownRecord, { token:
     return key && nonEmpty(key.token) && nonEmpty(key.secret) ? { token: key.token, secret: key.secret } : null
   },
   // 確認の印は流れが付ける（`opts.confirmed` は true だけ）。選択の欄は無いので choices は渡さない。
-  invoke: (projectDir, auth, opts) => window.electronAPI.apprunDedicated.teardown(projectDir, auth, { confirmed: opts.confirmed }),
+  // shownPlacements は確認で見せた保存場所の組（0.6.24 F）。流れが作った値をそのまま渡す。
+  invoke: (projectDir, auth, opts) =>
+    window.electronAPI.apprunDedicated.teardown(projectDir, auth, { confirmed: opts.confirmed, shownPlacements: opts.shownPlacements }),
   failure: message => ({ ok: false, executed: [], message, remaining: {} }),
   toView: raw => toTeardownView('sakura-apprun-dedicated', raw),
   subscribeProgress: cb => window.electronAPI.apprunDedicated.onTeardownProgress(cb),

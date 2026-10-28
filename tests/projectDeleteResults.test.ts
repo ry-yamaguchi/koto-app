@@ -27,9 +27,9 @@ const done = (target: ProjectDeleteStep['target'], over: Partial<TeardownView> =
   ({ target, kind: 'done', view: view(over), words: target === 'hanamii' ? HANAMII_TEARDOWN_WORDS : SHARED_TEARDOWN_WORDS })
 const html = (run: ProjectDeletePhase, showBlockNote = true) => renderToStaticMarkup(createElement(ProjectDeleteResults, { run, showBlockNote }))
 
-const STOPPED_HEAD = '公開の破棄を完了できなかったため、プロジェクトの削除を中止しました。'
+const STOPPED_HEAD = '破棄を完了できなかったため、プロジェクトの削除を中止しました。'
 const STOPPED_TAIL = 'このままフォルダを削除すると、どこに何を公開したかの記録も消えて、Koto から破棄できなくなります。【公開】の画面から破棄するか、各サービスの管理画面で削除してください。'
-const REVIEW_HEAD = '公開の破棄は済みましたが、残ったものがあります。'
+const REVIEW_HEAD = '破棄は済みましたが、残ったものがあります。'
 const REVIEW_TAIL = '「🗑 ゴミ箱に移動」を押すと、フォルダをゴミ箱へ移します。残ったものは、各サービスの管理画面から削除できます。ほかのプロジェクトも使う保存場所とコンテナレジストリは、消さないでください。消すと、保存場所はそのプロジェクトのデータが消え、コンテナレジストリはそのアプリが止まります。'
 
 describe('phase ごとの見出しと末尾', () => {
@@ -56,6 +56,18 @@ describe('phase ごとの見出しと末尾', () => {
     expect(h.indexOf('koto-data')).toBeLessThan(h.indexOf(REVIEW_TAIL))
     expect(h).not.toContain(STOPPED_HEAD)
     expect(h).not.toContain(STOPPED_TAIL)
+  })
+})
+
+describe('twinsGone（0.6.24 R2-e）: main の断りの文を、選択・コピーできる形でそのまま出す。移していない', () => {
+  const MESSAGE = '同じ公開の記録を持つフォルダが見つからなくなったため、移していません。もう一度「ゴミ箱に移動」を押すと、破棄から始めます。'
+  it('★★★ 見出し・末尾は出さず、済んだ公開先の結果 → main の文（コピーつき）の順。stopped・review の文は出さない', () => {
+    const h = html({ phase: 'twinsGone', steps: [done('sakura-apprun')], message: MESSAGE })
+    expect(h).toContain(`data-project-delete-result="twinsGone"`)
+    expect(h).toContain(MESSAGE)
+    expect(h).toContain('コピー')
+    expect(h.indexOf('📦 さくらのAppRun')).toBeLessThan(h.indexOf('同じ公開の記録を持つフォルダが見つからなくなった'))
+    for (const w of [STOPPED_HEAD, STOPPED_TAIL, REVIEW_HEAD, REVIEW_TAIL]) expect(h).not.toContain(w)
   })
 })
 
@@ -92,8 +104,8 @@ describe('step: 結果の部品で出すもの・1 行で出すもの', () => {
   })
 
   it('★★ やめた（cancelled）は 1 行（選択できる）。残りの公開先を始めていない文もそのまま', () => {
-    const h = html({ phase: 'stopped', steps: [{ target: 'hanamii', kind: 'cancelled', line: 'HANAMII: 破棄をやめました。さくらのAppRunの破棄も始めていません' }] })
-    expect(h).toMatch(/<p class="[^"]*select-text[^"]*">HANAMII: 破棄をやめました。さくらのAppRunの破棄も始めていません<\/p>/)
+    const h = html({ phase: 'stopped', steps: [{ target: 'hanamii', kind: 'cancelled', line: 'HANAMII: 破棄をキャンセルしました。さくらのAppRunの破棄も始めていません' }] })
+    expect(h).toMatch(/<p class="[^"]*select-text[^"]*">HANAMII: 破棄をキャンセルしました。さくらのAppRunの破棄も始めていません<\/p>/)
   })
 
   it('★★ 消すものが無い（nothingToDo）は、失敗の赤ではなく中立の 1 行「公開先: 文」', () => {

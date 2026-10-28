@@ -27,8 +27,9 @@ function blockFrom(text: string, start: string): string {
 }
 
 describe('★★ hanamii:teardown の3点セット（main・preload・global.d.ts）が同じ形', () => {
-  const PRELOAD_CALL = "teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string }) =>\n      ipcRenderer.invoke('hanamii:teardown', projectDir, auth, opts),"
-  const DTS_HEAD = 'teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string }): Promise<{'
+  // 0.6.24 F: opts に、確認で見せた保存場所（名前と prefix の組）を必須で足した
+  const PRELOAD_CALL = "teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>\n      ipcRenderer.invoke('hanamii:teardown', projectDir, auth, opts),"
+  const DTS_HEAD = 'teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{'
 
   it('★★ preload: (projectDir, 認証, { confirmed, projectId }) をそのまま invoke に渡す。直す前の形（projectId・token・任意の projectDir）が無い', () => {
     const src = code('src/main/preload.ts')
@@ -44,11 +45,11 @@ describe('★★ hanamii:teardown の3点セット（main・preload・global.d.t
     expect(src).not.toContain('teardown(projectId: string, token: string, projectDir?: string)')
   })
 
-  it('★★★ global.d.ts の返り値の項目は、main の HanamiiTeardownResult の項目をすべて含む（remainingBuckets・deletionAccepted が落ちていない）', () => {
+  it('★★★ global.d.ts の返り値の項目は、main の HanamiiTeardownResult の項目をすべて含む（remainingBuckets・skippedBuckets・deletionAccepted が落ちていない）', () => {
     const main = blockFrom(code('src/main/ipc/hanamiiTeardown.ts'), 'export type HanamiiTeardownResult = {')
     const keys = [...main.matchAll(/^ {2}(\w+)\??:/gm)].map(m => m[1])
     // 項目を書き下す（読み取りが空になって何も見ないテストにしない）
-    expect(keys).toEqual(['ok', 'appDeleted', 'executed', 'remainingBucket', 'remainingBuckets', 'keptBucketName', 'keptBucketNames', 'keptBucketsUsedByOthers', 'keptBucketsWithOwnFiles', 'deletionAccepted', 'message'])
+    expect(keys).toEqual(['ok', 'appDeleted', 'executed', 'remainingBucket', 'remainingBuckets', 'skippedBuckets', 'keptBucketName', 'keptBucketNames', 'keptBucketsUsedByOthers', 'keptBucketsWithOwnFiles', 'deletionAccepted', 'message'])
     const dts = blockFrom(code('src/renderer/global.d.ts'), DTS_HEAD)
     for (const k of keys) expect(dts, `renderer の型に ${k} が無い`).toMatch(new RegExp(`\\b${k}\\??: `))
   })

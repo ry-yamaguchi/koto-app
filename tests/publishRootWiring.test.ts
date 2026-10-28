@@ -242,7 +242,9 @@ describe('移行（既存プロジェクトを新しい形へ）', () => {
   // 中身（純関数）の検証は tests/migratePlan.test.ts。ここは「実際に呼ばれているか」を固定する。
   it('project:migrateCheck は plan まで見て、移すもの0件なら needed:false へ倒す', () => {
     const src = read('src/main/ipc/migrate.ts')
-    expect(src).toContain('const plan = planMigrate(entries, isPublished)')
+    // 計画は実フォルダで調べて立てる（R2-a。子のプロジェクトは移さない）。調べるときと実際に移すときの**両方**
+    expect(src.split('const plan = planMigrateFs(projectDir, entries)').length - 1).toBe(2)
+    expect(src).not.toContain('const plan = planMigrate(entries, isPublished)')
     expect(src).toContain('if (!shouldOfferMigration(plan)) return { needed: false, plan }')
   })
 

@@ -7,7 +7,7 @@
 // window.confirm はブラウザ標準のダイアログで、Koto の見た目（テーマ・フォント・
 // select-text＋コピー可能なエラー文言）に乗らず、ライトモードでの見え方も統一できない。
 // ここに(1)の見た目（rounded-xl border border-brand-red/70 bg-surface p-4・本文
-// select-text・「やめる」／実行の2ボタン）を一般化し、以後はこれだけを使う
+// select-text・「キャンセル」／実行の2ボタン）を一般化し、以後はこれだけを使う
 // （2026-09-11 CLAUDE.md 掟5 改定）。
 //
 // 判断ロジック（open/onConfirm/onCancel のどれが呼ばれるか）はこのコンポーネント自身は
@@ -50,7 +50,7 @@ export default function ConfirmModal({
   title,
   body,
   confirmLabel = '実行する',
-  cancelLabel = 'やめる',
+  cancelLabel = 'キャンセル',
   danger = false,
   choices,
   choiceValues,

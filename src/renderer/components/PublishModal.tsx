@@ -900,7 +900,7 @@ function PublishStatusBox({ publish, latestChangeAt, apprunLegacy, onForget }: {
                         className="text-brand-red hover:underline font-semibold"
                       >一覧から削除（公開したものは残ります）</button>
                       {'　'}
-                      <button onClick={() => setConfirming(null)} className="text-ink-muted hover:underline">やめる</button>
+                      <button onClick={() => setConfirming(null)} className="text-ink-muted hover:underline">キャンセル</button>
                     </>
                   ) : (
                     <>

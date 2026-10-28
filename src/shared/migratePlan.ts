@@ -69,6 +69,18 @@ export function planMigrate(
   return { move, keep }
 }
 
+/**
+ * 計画から、**移してはいけないもの**を残すほうへ回す（R2-a・純関数）。`canMove(name)` が偽の名前は `move` から外し、`keep` の末尾へ足す
+ * （画面は「そのまま残すもの」として言う）。作業場所などの親フォルダを開いていると、子のプロジェクトのフォルダが「公開されるもの」として `public/` へ移る計画に入ってしまう。
+ * 何が移してよいかは呼び手（main が実フォルダで調べる）が決める。ここは並べ替えるだけ。
+ */
+export function withholdFromMove(plan: MigratePlan, canMove: (name: string) => boolean): MigratePlan {
+  const move: string[] = []
+  const held: string[] = []
+  for (const name of plan.move) (canMove(name) ? move : held).push(name)
+  return { move, keep: [...plan.keep, ...held] }
+}
+
 /** すでに移行済みか（フォルダがある）。 */
 export function alreadyMigrated(entries: readonly Entry[]): boolean {
   return (entries ?? []).some(e => e?.name === PUBLISH_DIR && e.isDir)

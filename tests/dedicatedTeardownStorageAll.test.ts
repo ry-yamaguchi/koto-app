@@ -101,10 +101,11 @@ import { writeApprunDedicatedRecordFs, writePublishRecordFs, readApprunDedicated
 import { getOps, resetProjectOpsForTests, summarizeResult } from '../src/main/projectOps'
 import { toTeardownView } from '../src/shared/teardownResult'
 import { KEY_REVOKE_FAILED_WARNING } from '../src/main/cloud/storageTeardown'
+import { shownTeardown } from './shownFromEnv'
 import { isolatedProjectDir } from './isolatedProject'
 
 registerApprunDedicatedHandlers({} as any)
-const teardown = h.handlers.get('apprunDedicated:teardown')!
+const teardown = shownTeardown(h.handlers.get('apprunDedicated:teardown')!) // 画面の代わりに、確認で見せた保存場所（env.json の記録）を渡す（0.6.24 F。main は見せたものだけを消す）
 
 const AUTH = { token: 'dedicated-token-AAAA1111', secret: 'dedicated-secret-BBBB2222' }
 const A = 'koto-data-a'

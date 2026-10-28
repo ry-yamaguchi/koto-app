@@ -9,7 +9,7 @@ import type { IpcDeps } from './types'
 // ── AI専用：プロジェクト内に閉じ込めたファイル読み書き（多層防御） ──
 // rel はプロジェクトルートからの相対パス。絶対パスや .. での脱出は拒否する。
 import { destinationDir, uniqueName, isImageFileName, type AssetPurpose } from '../../shared/assetImport'
-import { canTrash } from '../../shared/trashGuard'
+import { trashFs, trashCheckFs, trashProjectFs, renameFs } from './fsTrash'
 import { createProjectOnDisk } from '../projectCreateFs'
 import { publishExcludedDirNames, excludedFileNames } from '../../shared/publishExclude'
 
@@ -351,25 +351,20 @@ export function registerFsHandlers(deps: IpcDeps) {
     }
   })
 
-  // ファイルをゴミ箱へ（完全削除はしない）
-  // ── ゴミ箱は「ホームの深さ2以上」だけ（2026-08-20 セキュリティ点検）──────
-  // どんな絶対パスでも送れる作りだった。到達する道はいま無いが、1枚目の守りに
-  // 頼り切らない。判断は shared/trashGuard.ts（テスト付き）。
-  ipcMain.handle('fs:trash', async (_, p: string) => {
-    // home は fs:homeDir と同じ os.homedir() を使う（別ソースだと HOME 差し替え時に
-    // ワークスペースの home とガードの home がズレる）
-    const check = canTrash(os.homedir(), path.resolve(String(p ?? '')), path.sep)
-    if (!check.ok) throw new Error(check.reason)
-    return shell.trashItem(path.resolve(String(p)))
-  })
-  // リネーム（同フォルダ内での名前変更のみ）
-  ipcMain.handle('fs:rename', async (_, oldPath: string, newName: string) => {
-    if (!newName || newName.includes('/') || newName.includes('..')) throw new Error('不正なファイル名です')
-    const newPath = path.join(path.dirname(oldPath), newName)
-    if (fs.existsSync(newPath)) throw new Error('同名のファイルが既に存在します')
-    fs.renameSync(oldPath, newPath)
-    return newPath
-  })
+  // ファイルをゴミ箱へ（完全削除はしない）・名前の変更・プロジェクトのフォルダをゴミ箱へ。
+  // ── ゴミ箱は「ホームの深さ2以上」だけ（2026-08-20 セキュリティ点検）＋ 記録とプロジェクトのフォルダは移さない（0.6.24 E）──────
+  // 判断は shared/trashGuard.ts（canTrash・fileOpVerdict。テスト付き）。ここは呼ぶだけ（実体は ipc/fsTrash.ts）。
+  // home は fs:homeDir と同じ os.homedir() を使う（別ソースだと HOME 差し替え時に
+  // ワークスペースの home とガードの home がズレる）
+  ipcMain.handle('fs:trash', (_, p: string) => trashFs(p, { home: os.homedir(), trashItem: abs => shell.trashItem(abs) }))
+  // 削除を始める前に、移してよいか聞く（読むだけ。プロジェクトの根なら kind:'project' で、画面は削除の画面へ振り分ける）
+  ipcMain.handle('fs:trashCheck', (_, p: string) => trashCheckFs(p, { home: os.homedir() }))
+  // プロジェクトの削除が、公開の破棄のあとで最後にフォルダを移す口（確認 → 深さ → 記録でない → 処理が走っていない → 記録が読める → skippedForTwins の覆う複製を読み直す → 専有型が残っていない）。
+  // skippedForTwins は必須（画面の plan が、覆う複製があるために破棄を外した公開先。0.6.24 R2-e）
+  ipcMain.handle('fs:trashProject', (_, dir: string, opts: { confirmed: true; skippedForTwins: string[] }) =>
+    trashProjectFs(dir, opts, { home: os.homedir(), trashItem: abs => shell.trashItem(abs) }))
+  // リネーム（同フォルダ内での名前変更のみ。記録・プロジェクトのフォルダは変えない）
+  ipcMain.handle('fs:rename', (_, oldPath: string, newName: string) => renameFs(oldPath, newName))
 
   // ── フォルダ監視（ファイルツリーの自動更新用） ──
   const dirWatchers = new Map<number, fs.FSWatcher>()

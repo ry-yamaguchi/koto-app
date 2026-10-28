@@ -226,7 +226,7 @@ function touch(entry: Live, now: number): void {
 /**
  * 終了の直前（`app.on('will-quit')`）に、いまの状態を同期で書き切る。走っているものがあるか、前の書き込みが失敗したままのときだけ
  * 書く（走っているものの最後に分かった時刻は、すべて `now` にして1回）。走っていなくて失敗もなければ何もしない。
- * 「終了しない」を選べば will-quit は来ないので、書かない。
+ * 終了の確認で「キャンセル」を選べば will-quit は来ないので、書かない。
  */
 export function flushInFlightOps(now: number): void {
   if (!isInFlightSinkConnected() || (live.size === 0 && !isInFlightDirty())) return

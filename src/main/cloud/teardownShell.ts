@@ -12,9 +12,15 @@
 //        以前の専有型は鍵を取ってから teardownFlow の中で断っていたため、確認の印が無い呼び出しでも「削除」の記録が1件できた
 //   3. 認証の形が違えば断る
 //   4. withProjectLock（同じプロジェクトで作成・削除・公開を同時に走らせない）。断られたら外へ1本も出さない
-//   5. 鍵の中で: 公開の記録の有無を**先に**読む → run → 規則が true のときだけ記録を消す
+//   5. 鍵の中で: **同じ公開の記録を持つ複製（同じ親フォルダの別のフォルダ）があれば断る**（`twinsOf`。0.6.24 I-2・作者の決定 K1）
+//        → 公開の記録の有無を**先に**読む → run → 規則が true のときだけ記録を消す
 //   6. 段ごとの所要時間を足して返す
-// 外部サービスへ要求を出してよいのは run の中だけ。1〜4 で断った回は、run を呼ばない。
+// 外部サービスへ要求を出してよいのは run の中だけ。1〜4 と、5 の複製の断りは、run を呼ばない（外へ1本も出さず、記録も消さない）。
+//
+// ── 複製の断り（I-2）──────────────────────────────────────────────────────────
+// Finder で複製したフォルダは、元と同じ公開の記録（HANAMII の projectId・共用型の apprun-app の id・専有型のリソース ID）を持つ。
+// 複製から破棄すると、**元が公開している動いているアプリが消える**。3つの公開先すべてに効く守りなので、骨に**必須**で置く（公開先ごとに書くと、書き忘れた公開先だけ穴が空く）。
+// 兄弟の読み方（読めない兄弟は数えない）は `recordTwins.ts` の1つ。鍵の**中**に置くのは、複製の確かめと本体のあいだに別の操作が割り込まないため。
 //
 // ── 載っている IPC ───────────────────────────────────────────────────────────
 // HANAMII（hanamii:teardown・段階1）・共用型（cloud:teardown・段階2）・専有型（apprunDedicated:teardown・段階3B-1）の3つが載っている。
@@ -24,6 +30,7 @@ import { withProjectLock, projectBusyMessage } from '../projectLock'
 import { progressReporter, stageReporter } from '../projectOps'
 import { hasPublishRecordFs } from '../publishMetaFs'
 import type { PublishTargetKind } from '../../shared/publishMeta'
+import { folderNamesText } from '../../shared/objectStorage'
 import type { StageMark, StageTimings } from '../../shared/stageTiming'
 
 /** run と forgetRecord が受け取るもの。 */
@@ -51,6 +58,12 @@ export interface TeardownShellSpec<A, R extends TeardownShellResultBase> {
   secretsOf(auth: A): ReadonlyArray<string | null | undefined>
   /** 段の所要時間を保存するときに添えるゾーン（分かるときだけ）。 */
   zoneOf?(projectDir: string): string | null
+  /**
+   * 同じ公開の記録を持つ、同じ親フォルダの別のフォルダ（複製）の名前。**必須**（付け忘れると型で落ちる）。読むだけで、投げない（`recordTwinsFs`）。
+   * 1件でもあれば、骨は `run` を呼ばず、公開の記録も消さずに断る（`refused`）。読めない兄弟は数えない。
+   * **`'unknown'`（親フォルダの一覧を読めない。0.6.24 R2-f）・配列でない答え・投げた回も、確かめられないので同じく断る**（`TWINS_UNKNOWN_MESSAGE`）。
+   */
+  twinsOf(projectDir: string): string[] | 'unknown'
   /** 外部サービスへ要求を出す本体。ここだけが外へ出てよい。 */
   run(ctx: TeardownShellCtx<A>): Promise<R>
   /** 公開の記録（📡 の行）を消してよいか。run の結果と、run の前に読んだ記録の有無から決める。 */
@@ -72,6 +85,17 @@ export const BAD_PROJECT_DIR_MESSAGE = 'プロジェクトフォルダが不正�
 export function isConfirmed(opts: unknown): boolean {
   return !!opts && typeof opts === 'object' && (opts as any).confirmed === true
 }
+
+/**
+ * 複製があるために破棄しなかったときの文（0.6.24 I-2）。フォルダ名の並べ方は `objectStorage.ts` の同じフォルダを言う文（『A』・『B』）と同じ。
+ * 次の一手（要らないほうを削除する）を言う。
+ */
+export function twinsRefusedMessage(twins: readonly string[]): string {
+  return `${folderNamesText(twins)}にも同じ公開の記録があるため、何も破棄していません。要らないほうのフォルダを削除すると、残ったほうから破棄できます。`
+}
+
+/** 複製があるか確かめられなかったとき（`twinsOf` が `'unknown'`〔親フォルダの一覧を読めない〕を返した・投げた〔投げない約束。偽の仕様書など〕）の断り。確かめられないまま破棄しない（安全側）。 */
+export const TWINS_UNKNOWN_MESSAGE = '同じ公開の記録を持つフォルダがあるか確かめられなかったため、何も破棄していません。'
 
 /** 公開の記録を消せなかったときの、結果の起きたことへ足す1行（hanamii.ts:799-807 の文と同じ）。 */
 function forgetFailedLine(message: string): string {
@@ -122,7 +146,12 @@ export async function runTeardownShell<A, R extends TeardownShellResultBase>(
       progress: progressReporter(projectDir, args.sendProgress),
       onStage: stageReporter(projectDir),
     }
-    // 5. 公開の記録の有無を**先に**読む。run の中で記録が外れても、「破棄の前に行があったか」で決めるため。
+    // 5. 複製があれば断る。**公開の記録の有無を読むより前・run より前**（外へ1本も出さず、記録も消さない）。確かめられないときも断る。
+    let twins: string[] | 'unknown'
+    try { twins = spec.twinsOf(projectDir) } catch { return spec.refused(TWINS_UNKNOWN_MESSAGE) }
+    if (!Array.isArray(twins)) return spec.refused(TWINS_UNKNOWN_MESSAGE) // 'unknown'（親フォルダの一覧を読めない）・形の違う答え。確かめられていない（R2-f）
+    if (twins.length > 0) return spec.refused(twinsRefusedMessage(twins))
+    // 公開の記録の有無を**先に**読む。run の中で記録が外れても、「破棄の前に行があったか」で決めるため。
     const hadPublishRecord = hasPublishRecordFs(projectDir, spec.target)
     const result = await spec.run(ctx)
     // 記録を消すのは run のあと・鍵の中。消し損ねても run の結果は返す。

@@ -123,32 +123,32 @@ describe('R moveProjectToTrash: 移す直前に、走っている操作をもう
   it.each(['作成', '削除', '公開'] as const)('★★★ %s が走っている: 移さない（blocked）。exists も trash も呼ばれない。steps は残る', async (op) => {
     const { h, deps } = harness({ running: RUNNING(op, 'sakura-apprun') })
     const steps = [done('hanamii')]
-    expect(await moveProjectToTrash(DIR, steps, deps)).toEqual({ phase: 'blocked', block: { reason: 'running', op, target: 'sakura-apprun' }, steps })
+    expect(await moveProjectToTrash(DIR, steps, deps, [])).toEqual({ phase: 'blocked', block: { reason: 'running', op, target: 'sakura-apprun' }, steps })
     expect(h.calls).toEqual(['runningOp'])
   })
 
   it('★★ 走っていない・聞けない（投げた）: 走っていない扱いで、移す', async () => {
     const a = harness()
-    expect((await moveProjectToTrash(DIR, [], a.deps)).phase).toBe('trashed')
+    expect((await moveProjectToTrash(DIR, [], a.deps, [])).phase).toBe('trashed')
     expect(a.h.calls).toEqual(TRASH)
     const b = harness({ running: 'throws' })
-    expect((await moveProjectToTrash(DIR, [], b.deps)).phase).toBe('trashed')
+    expect((await moveProjectToTrash(DIR, [], b.deps, [])).phase).toBe('trashed')
     expect(b.h.calls).toEqual(TRASH)
   })
 
   it('★★ もうフォルダが無い（一覧が古かった）: ゴミ箱は呼ばず、成功扱い', async () => {
     const { h, deps } = harness({ exists: false })
-    expect(await moveProjectToTrash(DIR, [], deps)).toEqual({ phase: 'trashed', steps: [] })
+    expect(await moveProjectToTrash(DIR, [], deps, [])).toEqual({ phase: 'trashed', steps: [] })
     expect(h.calls).toEqual(['runningOp', 'exists'])
   })
 
   it('★★★ ゴミ箱が投げた・exists が投げた: trashFailed。message に元の文。steps は残る', async () => {
     const a = harness({ trashThrows: 'EPERM（テスト）' })
     const steps = [done('sakura-apprun')]
-    expect(await moveProjectToTrash(DIR, steps, a.deps)).toEqual({ phase: 'trashFailed', steps, message: 'プロジェクトを削除できませんでした: EPERM（テスト）' })
+    expect(await moveProjectToTrash(DIR, steps, a.deps, [])).toEqual({ phase: 'trashFailed', steps, message: 'プロジェクトを削除できませんでした: EPERM（テスト）' })
     const b = harness()
     b.deps.exists = async () => { throw new Error('存在を確かめられない（テスト）') }
-    const r = await moveProjectToTrash(DIR, steps, b.deps)
+    const r = await moveProjectToTrash(DIR, steps, b.deps, [])
     expect(r).toMatchObject({ phase: 'trashFailed', message: 'プロジェクトを削除できませんでした: 存在を確かめられない（テスト）' })
     expect(b.h.trashed).toEqual([])
   })
@@ -301,7 +301,7 @@ describe('R 配線: 走らせる関数は React・window を持たず、1つの�
   })
 
   it('★★★ 材料を読み直す・フォルダを移す・破棄を走らせるのは、それぞれ1か所（経路は pressProjectDelete の1つ）', () => {
-    // 材料を読み直すのは2か所だけ: stopped・blocked の押し直しの枝と、stopped になった直後（withFreshFactsIfStopped）
+    // 材料を読み直すのは2か所だけ: stopped・blocked・twinsGone の押し直しの枝と、stopped・twinsGone になった直後（withFreshFactsIfStopped）
     expect(code.match(/deps\.readFacts\(/g)).toHaveLength(2)
     expect(code.match(/deps\.trash\(/g)).toHaveLength(1)
     expect(code.match(/deps\.teardown\(/g)).toHaveLength(1)
@@ -310,9 +310,9 @@ describe('R 配線: 走らせる関数は React・window を持たず、1つの�
     const at = code.indexOf('deps.readFacts(', code.indexOf('export async function pressProjectDelete'))
     expect(code.lastIndexOf("case 'stopped':", at)).toBeGreaterThan(code.lastIndexOf("case 'review':", at))
     expect(code.slice(code.lastIndexOf("case 'stopped':", at), at)).toContain("case 'blocked'")
-    // 直後の読み直しは、stopped のときだけ（それ以外の phase では読まない）
+    // 直後の読み直しは、stopped・twinsGone のときだけ（それ以外の phase では読まない）
     const helper = code.slice(code.indexOf('async function withFreshFactsIfStopped'), code.indexOf('export async function pressProjectDelete'))
-    expect(helper).toContain("if (next.phase !== 'stopped') return { run: next, facts: current }")
+    expect(helper).toContain("if (next.phase !== 'stopped' && next.phase !== 'twinsGone') return { run: next, facts: current }")
     expect(helper.indexOf("next.phase !== 'stopped'")).toBeLessThan(helper.indexOf('deps.readFacts('))
   })
 })

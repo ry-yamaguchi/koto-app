@@ -4,6 +4,16 @@ import type { Theme } from '../App'
 
 export type AppMode = 'ide' | 'chat'
 
+/**
+ * ウィンドウをつかむ場所（ドラッグ）と、押せる場所（ボタン）。
+ * **バーの空き地はどこでもドラッグできる場所にする**（2026-10-20 作者）。ドラッグできる場所なら、
+ * ダブルクリックで macOS の標準の動き（「システム設定 → デスクトップとDock」のダブルクリックの設定どおり。既定は拡大）
+ * になり、つかんでウィンドウを動かせる。以前は右半分を丸ごと押せる場所にしていたため、ボタンの無い所でも効かなかった。
+ * 押せるもの（ボタン）には必ず `NO_DRAG` を付ける。付け忘れると、そのボタンは押せなくなる（ドラッグの場所が勝つ）。
+ */
+export const DRAG = { WebkitAppRegion: 'drag' } as React.CSSProperties
+export const NO_DRAG = { WebkitAppRegion: 'no-drag' } as React.CSSProperties
+
 interface Props {
   mode: AppMode
   onSwitchMode: (m: AppMode) => void
@@ -27,7 +37,7 @@ export default function TitleBar({
   return (
     <div
       className="h-10 flex items-center px-4 bg-surface border-b border-line flex-none"
-      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      style={DRAG}
     >
       {/* ── 3つの区画（2026-08-14 Ryosuke 指摘）──────────────────────────
           以前は真ん中の切替を `absolute left-1/2` で浮かせていた。
@@ -46,7 +56,7 @@ export default function TitleBar({
       {/* Mode switcher — 左右に挟まれて中央に来る（浮かせない） */}
       <div
         className="flex-none flex items-center bg-elevated rounded-xl p-1 gap-1 border border-line-soft"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        style={NO_DRAG}
       >
         <ModeButton active={mode === 'ide'} onClick={() => onSwitchMode('ide')} label="IDE">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -69,13 +79,13 @@ export default function TitleBar({
           「公開」が隠れると操作できなくなる。 */}
       <div
         className="flex-1 flex items-center justify-end gap-1.5"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         {mode === 'ide' && (
           <>
             <button
               onClick={onPublish}
               title="プロジェクトを公開（レンタルサーバ / AppRun / HANAMII）"
+              style={NO_DRAG}
               className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity shadow-sm"
             >
               🚀 公開
@@ -83,6 +93,7 @@ export default function TitleBar({
             <button
               onClick={onOpenGithubSave}
               title="GitHubに保存（バックアップ・共有）"
+              style={NO_DRAG}
               className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
             >
               💾 GitHubに保存
@@ -92,6 +103,7 @@ export default function TitleBar({
             <button
               onClick={onOpenHistory}
               title="前の状態に戻す（作業の履歴から選びます）"
+              style={NO_DRAG}
               className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
             >
               🕘 元に戻す
@@ -105,6 +117,7 @@ export default function TitleBar({
         <button
           onClick={onOpenKnowledge}
           title="📚 資料（AIに読ませる資料の管理）"
+          style={NO_DRAG}
           className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-secondary hover:text-ink hover:bg-overlay transition-colors text-[15px]"
         >
           📚
@@ -113,6 +126,7 @@ export default function TitleBar({
         <button
           onClick={onOpenSettings}
           title="設定（AIの利用設定・使用量）"
+          style={NO_DRAG}
           className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -130,6 +144,7 @@ function ThemeToggle({ theme, onSwitch }: { theme: Theme; onSwitch: (t: Theme) =
     <button
       onClick={() => onSwitch(isDark ? 'light' : 'dark')}
       title={isDark ? 'ライトモードに切り替え' : 'ダークモードに切り替え'}
+      style={NO_DRAG}
       className="w-7 h-7 flex items-center justify-center rounded-lg text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
     >
       {isDark ? (
@@ -153,6 +168,7 @@ function ModeButton({ active, onClick, label, children }: {
   return (
     <button
       onClick={onClick}
+      style={NO_DRAG}
       className={`flex items-center gap-1.5 px-3.5 py-1 rounded-lg text-xs font-medium transition-all duration-150 ${
         active
           ? 'sakura-gradient text-white shadow-sm'
@@ -172,6 +188,7 @@ function ToggleChip({ active, onClick, label, title }: {
     <button
       onClick={onClick}
       title={title}
+      style={NO_DRAG}
       className={`flex-none whitespace-nowrap text-xs px-2.5 py-1 rounded-lg font-medium transition-colors ${
         active
           ? 'bg-overlay text-ink border border-line'

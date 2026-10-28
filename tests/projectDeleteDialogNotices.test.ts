@@ -33,10 +33,10 @@ vi.mock('react/jsx-dev-runtime', () => {
   return { jsxDEV, Fragment: () => null }
 })
 const fake = vi.hoisted(() => ({
-  facts: { targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null } as any,
+  facts: { targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null } as any,
   readCalls: [] as string[],
   gate: null as Promise<void> | null,
-  teardownCalls: [] as Array<{ dir: string; targets: string[]; ctx: any }>,
+  teardownCalls: [] as Array<{ dir: string; targets: string[]; ctx: any; opts?: any }>,
   teardownResult: (() => Promise.resolve([])) as () => Promise<any[]>,
 }))
 vi.mock('../src/renderer/teardown/projectDeleteFacts', () => ({
@@ -44,12 +44,13 @@ vi.mock('../src/renderer/teardown/projectDeleteFacts', () => ({
 }))
 vi.mock('../src/renderer/teardown/projectDelete', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/renderer/teardown/projectDelete')>()),
-  teardownPublished: async (dir: string, targets: string[], ctx: any) => { fake.teardownCalls.push({ dir, targets, ctx }); return fake.teardownResult() },
+  teardownPublished: async (dir: string, targets: string[], ctx: any, opts?: any) => { fake.teardownCalls.push({ dir, targets, ctx, opts }); return fake.teardownResult() },
 }))
 const onUnhandled = () => {}
 process.on('unhandledRejection', onUnhandled)
 afterAll(() => { process.off('unhandledRejection', onUnhandled) })
 
+import { BUCKET_MONTHLY_YEN, REGISTRY_MONTHLY_YEN } from '../src/shared/cloudCost'
 import { createDialogHarness, DIR } from './projectDeleteDialogHarness'
 
 const { t, api, reset, clearCalls, rerender, open, els, paragraphs, checkbox, results, press, done, failed, withFacts, withTargets } = createDialogHarness(hooks, fake)
@@ -137,18 +138,38 @@ describe('押す: 押し直しで増えた注意は、見せてから移す（�
     expect(t.trashed).toEqual([DIR])
   })
 
-  it('★★★ 共用型の残り（レジストリ・保存場所）だけが新しく出てきた回も、移さずに💾 を見せる', async () => {
+  const LEFT = { appNames: [], registryName: 'myreg', registryOrigin: 'owned', registryUsers: [], placements: [{ bucket: 'bkt', prefix: 'projects/a/', shared: false }] }
+
+  it('★★★ チェックを外している回: 共用型の残り（レジストリ・保存場所）だけが新しく出てきたら、移さずに止める。新しい 💾 の文（keptStorageNoteOf）で見せ、見たあとにもう一度押すと進む（0.6.24 A-6・A-4）', async () => {
+    withTargets(['sakura-apprun'])
+    fake.teardownResult = async () => [failed('sakura-apprun', 'さくらのAppRun: 削除できませんでした')]
+    await open(); await press()
+    checkbox().props.onChange({ target: { checked: false } }); rerender()
+    clearCalls(); fake.teardownCalls = []
+    expect(paragraphs().filter(p => p.startsWith('💾 ')), '押し直す前は、新しい残りを知らない').toEqual([])
+    withFacts({ targets: [], sharedLeftover: LEFT })
+    await press()
+    expect(t.calls).toEqual([])
+    expect(t.trashed).toEqual([])
+    expect(fake.teardownCalls).toEqual([])
+    // 見せる: チェックを外したままの箱が、増えた保存場所とレジストリを言う（state にだけある残りを落とさない）
+    expect(paragraphs().filter(p => p.startsWith('💾 '))).toEqual([
+      `💾 保存場所「bkt」とその中のデータは残ります（消すまで月額${BUCKET_MONTHLY_YEN}円・税込が続きます）。`
+      + `コンテナレジストリ『myreg』も残ります（消すまで月額${REGISTRY_MONTHLY_YEN}円・税込が続きます）。`,
+    ])
+    await press()
+    expect(t.calls).toEqual(MOVE)
+  })
+
+  it('★★★ チェックがオンの回は、共用型の残りが新しく出てきても止めない。残りの段を破棄する（確認が名指しする。0.6.24 A-6）', async () => {
     withTargets(['sakura-apprun'])
     fake.teardownResult = async () => [failed('sakura-apprun', 'さくらのAppRun: 削除できませんでした')]
     await open(); await press()
     clearCalls(); fake.teardownCalls = []
-    withFacts({ targets: [], sharedLeftover: { registryName: 'myreg', registryOrigin: 'owned', registryUsers: [], placements: [{ bucket: 'bkt', prefix: 'projects/a/', shared: false }] } })
+    withFacts({ targets: [], sharedLeftover: LEFT })
     await press()
-    expect(t.calls).toEqual([])
-    expect(t.trashed).toEqual([])
-    expect(paragraphs().some(p => p.startsWith('💾') && p.includes('myreg'))).toBe(true)
-    await press()
-    expect(t.calls).toEqual(MOVE)
+    expect(fake.teardownCalls.map(c => c.targets)).toEqual([['sakura-apprun']])
+    expect(t.trashed, '破棄が失敗したので移さない').toEqual([])
   })
 
   it('★★ 注意が増えていなければ、いつもどおり進む（記録が読めなかったことを、すでに見せていた）', async () => {

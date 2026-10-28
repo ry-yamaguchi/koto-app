@@ -555,6 +555,8 @@ export type TeardownFlowResult = {
    * 先頭は止まった1件で、`remaining.storageBucket` と同じ（そちらは止まった1件のまま）。無い回は全部片づいた回・保存場所に触れなかった回。
    */
   remainingBuckets?: string[]
+  /** 確認で見せていない・形が違うために消さなかった保存場所（`remainingBuckets` にも入る。0.6.24 F・R1-d。共用型 `cloud:teardown` の `skippedBuckets` と同じ事実。立てるのは `ipc/apprunDedicatedTeardown.ts` の保存場所の片づけ）。 */
+  skippedBuckets?: string[]
 }
 
 /**

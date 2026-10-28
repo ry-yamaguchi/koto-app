@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** 手元のファイルをプロジェクトへ複製する。purpose 未指定は 'app'（アプリで使う）。 */
     importFile: (src: string, projectDir: string, purpose?: 'app' | 'material') => ipcRenderer.invoke('fs:importFile', { src, projectDir, purpose }),
     trash: (p: string) => ipcRenderer.invoke('fs:trash', p),
+    /** ファイル一覧の削除を始める前に、移してよいか聞く（読むだけ）。 */
+    trashCheck: (p: string) => ipcRenderer.invoke('fs:trashCheck', p),
+    /** プロジェクトの削除が、公開の破棄のあとで最後にフォルダを移す口（`confirmed: true` が無ければ移さない）。 */
+    trashProject: (dir: string, opts: { confirmed: true; skippedForTwins: string[] }) => ipcRenderer.invoke('fs:trashProject', dir, opts),
     rename: (oldPath: string, newName: string) => ipcRenderer.invoke('fs:rename', oldPath, newName),
     // フォルダ監視。変更があるたび cb を呼ぶ。戻り値で監視解除。
     watchDir: (dir: string, cb: () => void) => {
@@ -257,10 +261,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     apply: (projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }) => ipcRenderer.invoke('cloud:apply', projectDir, opts),
     // 3つとも必須（HANAMII hanamii:teardown・専有型 apprunDedicated:teardown と同じ形）。auth は秘密を含まない印だけ（鍵は main が持つ）。
     // `confirmed` が true でなければ main は何もしない。`deleteRegistry` は true のときだけ消し、`registryName` は確認のときに見せた名前（記録と一致しなければ消さない）。
-    teardown: (projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null }) =>
+    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F。HANAMII・専有型も同じ）。
+    teardown: (projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>
       ipcRenderer.invoke('cloud:teardown', projectDir, auth, opts),
     // 破棄の確認に出す材料（アプリ・レジストリ・消す保存場所）。読むだけ。main の破棄と同じ純関数から作る。
     teardownRecord: (projectDir: string) => ipcRenderer.invoke('cloud:teardownRecord', projectDir),
+    // 同じ公開の記録を持つ、同じ親フォルダの別のフォルダ（複製）を、公開先ごとに返す。読むだけ。プロジェクトの削除の画面が、複製のある公開先を破棄から外すのに使う（0.6.24 I-3）。
+    recordTwins: (projectDir: string) => ipcRenderer.invoke('cloud:recordTwins', projectDir),
     // 破棄画面に出すレジストリ名（パスワードは返らない）
     registryName: (projectDir: string) => ipcRenderer.invoke('cloud:registryName', projectDir),
     checkExpiry: (projectDir: string) => ipcRenderer.invoke('cloud:checkExpiry', projectDir),
@@ -322,7 +329,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 3つとも必須（共用型 cloud:teardown・専有型 apprunDedicated:teardown と同じ形）。`confirmed` が true でなければ、main は
     // HANAMII へも保存場所へも1本も要求を出さずに断る（掟10。画面の確認だけに頼らない）。projectDir は保存場所
     // （`.sakura-cloud/env.json`）と同時実行の鍵の相手、projectId は記録が指すものと一致するときだけ消すための照合。
-    teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string }) =>
+    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
+    teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>
       ipcRenderer.invoke('hanamii:teardown', projectDir, auth, opts),
     detectEnvKeys: (projectDir: string) => ipcRenderer.invoke('hanamii:detectEnvKeys', projectDir),
     logs: (token: string, projectId: string, opts?: { limit?: number; since?: string }) =>
@@ -460,7 +468,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec, opts),
     // 段階4: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
     // 共通の骨（cloud/teardownShell.ts）に載っている（0.6.22 段階3B-1）。opts は必須（確認の印を付け忘れた呼び出しを型で止める。HANAMII・共用型と同じ）。
-    teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean }) =>
+    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
+    teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>
       ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts),
     // #39: 破棄の進捗メッセージ購読（各段が一覧から消えるまで待つ間、30秒ごとに1行）。
     // cloud.onApplyProgress と同じ形。戻り値の関数を呼ぶと購読解除。

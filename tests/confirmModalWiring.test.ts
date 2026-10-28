@@ -78,15 +78,19 @@ describe('Sidebar.tsx: window.confirm → ConfirmModal（ファイル移動・�
     const end = sidebar.indexOf('\n  }\n', at)
     expect(sidebar.slice(at, end)).not.toContain('window.confirm(')
   })
-  it('deleteEntry（ゴミ箱移動）の window.confirm も無くなっている（2026-09-11 UX-B2 で対象化。moveEntry と同じ confirm を共有）', () => {
-    const at = sidebar.indexOf('const deleteEntry = async (entry: FileEntry) => {')
+  it('deleteEntry（ゴミ箱移動）の window.confirm も無くなっている（2026-09-11 UX-B2 で対象化。moveEntry と同じ confirm を共有）。0.6.24 E-4 で、確認は fileEntryOps.ts の deleteFileEntry へ移り、Sidebar は同じ confirm を口として渡す', () => {
+    const at = sidebar.indexOf('const deleteEntry = (entry: FileEntry) => deleteFileEntry(entry, {')
     expect(at).toBeGreaterThan(-1)
-    const end = sidebar.indexOf('\n  }\n', at)
+    const end = sidebar.indexOf('\n  })\n', at)
     const block = sidebar.slice(at, end)
     expect(block).not.toContain('window.confirm(')
-    expect(block).toContain('const ok = await confirm(')
-    // 確認より前に実行（ゴミ箱への移動）が来ていないか（掟10）
-    expect(block.indexOf('const ok = await confirm(')).toBeLessThan(block.indexOf('window.electronAPI.fs.trash'))
+    expect(block).toContain('\n    confirm,\n') // moveEntry と共有する useConfirm の confirm
+    // 確認の前に聞き（fs.trashCheck）、確認より前に実行（ゴミ箱への移動）が来ない（掟10。呼ばれた順は tests/fileEntryOps.test.ts が固定する）
+    const ops = read('src/renderer/fileEntryOps.ts')
+    expect(ops).not.toContain('window.confirm(')
+    expect(ops).toContain('const ok = await deps.confirm({')
+    expect(ops.indexOf('deps.trashCheck(')).toBeLessThan(ops.indexOf('const ok = await deps.confirm('))
+    expect(ops.indexOf('const ok = await deps.confirm(')).toBeLessThan(ops.indexOf('await deps.trash('))
   })
   it('useConfirm を import し、confirmElement を描画している', () => {
     expect(sidebar).toContain("import { useConfirm } from '../useConfirm'")

@@ -67,7 +67,7 @@ function projectNameOf(projectDir: string): string {
  * - 保存場所・ほかの公開先・目安は、読めなくても破棄そのものはできるので、空に倒して続ける。ただし
  *   **保存場所・ほかの公開先が読めなかった事実は残し**（`placementsUnreadable`・`otherTargetsUnreadable`）、確認の文で言う。
  *   保存場所の設定そのものが読めないとき（`placementsUnreadableCause: 'settings'`）、main も保存場所に触れない（残る）。
- *   問い合わせそのものが失敗したとき（`'call'`）は、main がどうするかは分からない。
+ *   問い合わせそのものが失敗したとき（`'call'`）は、名前を挙げられない。どちらも流れ（flow.ts の `shownPlacementsOf`）は「見せた保存場所」を空にして渡し、main は見せていない保存場所を消さない（0.6.24 F）。
  *   目安だけは、読めなくても確認の中身（何が消えるか）は変わらない。
  * - 時間の予告（`waitNote`）は、公開先の仕様書が記録と目安から作る（無ければ null。測っていない段に目安を作らない）。
  */

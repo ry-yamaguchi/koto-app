@@ -78,7 +78,7 @@ const STORAGE_A = ['connect', `listAllKeys ${A}`, `deleteKeys ${A}`, `deleteBuck
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('E 行 → 流れ → 本物の main: 確認', () => {
-  it('★★★ E-1 やめる: さくらのクラウドへも保存場所へも要求0件。結果も出ず、窓を閉じる警告も立たず、処理の記録も増えず、公開の記録はそのまま', async () => {
+  it('★★★ E-1 キャンセル: さくらのクラウドへも保存場所へも要求0件。結果も出ず、窓を閉じる警告も立たず、処理の記録も増えず、公開の記録はそのまま', async () => {
     withRegistry()
     const m = H.mountRow()
     const props = await H.pressAndWaitConfirm(m)

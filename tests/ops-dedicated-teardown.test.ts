@@ -37,6 +37,7 @@ import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated
 import { shouldForgetPublishRecord } from '../src/main/cloud/apprunDedicatedApply'
 import { writeApprunDedicatedRecordFs, writePublishRecordFs, readApprunDedicatedFs } from '../src/main/publishMetaFs'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
+import { isolatedProjectDir } from './isolatedProject'
 
 registerApprunDedicatedHandlers({} as any)
 
@@ -46,7 +47,7 @@ const teardown = (dir: string) => h.handlers.get('apprunDedicated:teardown')!(EV
 
 let dirs: string[] = []
 function newProject(opts: { app: boolean; brokenEnv?: boolean; row?: boolean } = { app: true }): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-ops-dedicated-td-'))
+  const dir = isolatedProjectDir('koto-ops-dedicated-td-') // 自分だけの親フォルダの中（複製の確かめが、ほかの試験の残りを兄弟として読まない。0.6.24 I-2）
   dirs.push(dir)
   writeApprunDedicatedRecordFs(dir, {
     clusterID: 'c1', asgID: 'a1', loadBalancerID: 'l1',

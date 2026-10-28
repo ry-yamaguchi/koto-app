@@ -100,7 +100,7 @@ export const GOLDEN_CONFIRM_CASES: GoldenConfirmCase[] = [
   { name: 'アプリだけ', record: { applicationID: 'app1', applicationName: 'myapp' } },
   { name: 'アプリが消えたあとの押し直し（ID だけ・アプリ名なし）', record: { loadBalancerID: 'l1', asgID: 'a1', clusterID: 'c1' }, placements: [GOLDEN_A], estimate: GOLDEN_LB_LINE },
   { name: '保存場所だけ残った印だけ（押し直し）', record: { storageLeftoverBucket: 'koto-a' }, placements: [GOLDEN_A] },
-  // 'call' の回でほかの公開先の名前を読めているとき（写しは名前を挙げる1段落を足す＝V4。表は tests/teardownFlowCommon.test.ts）
+  // 'call' の回でほかの公開先の名前を読めているとき（0.6.24 F-6 で、'call' の注意は名前を挙げない1段落になった。表の F6 が当たる）
   { name: 'call＋ほかの公開先を読めている', placementsUnreadable: true, cause: 'call', otherTargets: ['HANAMII', 'Vercel'] },
   { name: '理由が null＋ほかの公開先を読めている（call と同じ扱い）', placementsUnreadable: true, cause: null, otherTargets: ['HANAMII'] },
   { name: 'settings＋ほかの公開先を読めている（足さない）', placementsUnreadable: true, cause: 'settings', otherTargets: ['HANAMII'] },
@@ -111,7 +111,7 @@ export const GOLDEN_CONFIRM_CASES: GoldenConfirmCase[] = [
 // 本物の仕様書だけが足す違い（D10 の1行・V2）は、後者がこの表の後ろに足す。
 // 写しの文（旧）に当てると、新しい部品の文（新）になる置き換え。**この表に無い違いは落ちる**（載せ替えの誤り）。
 // 行を足すとき: id は設計書 10.11.12 の V の番号、why は理由、count は当たる材料の数（表と実物がずれたら落ちる）。
-// 3B-3 で、「読めなかった」注意の例（V5）・T161（V6）の行を足した（3B-4 で、この表を2つの試験が読むようにここへ移した）。
+// 3B-3 で、「読めなかった」注意の例（V5）・T161（V6）の行を足した（3B-4 で、この表を2つの試験が読むようにここへ移した）。0.6.24 R1-e で R1e の行を足した。
 export type IntendedConfirmDifference = {
   id: string
   why: string
@@ -120,8 +120,14 @@ export type IntendedConfirmDifference = {
 }
 
 export const CALL_CAUTION_HEAD = '⚠️ 保存場所の設定を問い合わせられなかったため'
+/** 0.6.24 F-6 の 'call' の注意（1段落。写しの「…削除される場合があります。」を置き換える）。 */
+export const CALL_CAUTION_F6 = `${CALL_CAUTION_HEAD}、保存場所の名前を挙げられません。名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。`
+/** 以前の V4 が足していた、ほかの公開先の名前を挙げる段落。0.6.24 F-6 で足さなくなった（消えない保存場所のデータが消えると言わない）。足されていないことを見張る。 */
 export const ADDED_SENTENCE = (names: string) =>
   `⚠️ このプロジェクトが保存場所を使っていて、それをほかの公開先（${names}）も使っていれば、そちらで公開中のアプリのデータも消えます（アプリ自体は消えません）。`
+
+/** 「ほかの公開先の記録を読めなかった」注意の段落の先頭（0.6.24 R1-e が、保存場所に触れない回では出さなくなった）。 */
+export const OTHERS_UNREADABLE_HEAD = '⚠️ ほかの公開先の記録を読めなかったため'
 
 export const OLD_EXAMPLE = '保存場所をほかの公開先（HANAMII・共用型など）が使っていれば'
 export const NEW_EXAMPLE = '保存場所をほかの公開先（HANAMII・Vercel・共用型など）が使っていれば'
@@ -129,16 +135,28 @@ export const T161_NEW = 'でも使っているため、そちらで公開中の�
 
 export const INTENDED_CONFIRM_DIFFERENCES: IntendedConfirmDifference[] = [
   {
-    id: 'V4',
-    why: "'call' の回（保存場所を問い合わせられなかった）で、ほかの公開先の名前を読めているとき、その名前を挙げる1段落を足す（設計書 10.6.2 の6・10.11.20 の D。手本は名前を出さない）。'settings' の回は足さない",
-    count: 2,
+    // 以前の V4（'call' の回でほかの公開先の名前を挙げる1段落を足す。設計書 10.6.2 の6・10.11.20 の D）は、0.6.24 F-6 でこの行に替わった。
+    id: 'F6',
+    why: "0.6.24 F-6: 'call' の回（保存場所を問い合わせられなかった）の注意が、写しの「…その中のこのプロジェクトのデータも削除される場合があります。」から「名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。」になる。画面は見せた保存場所を空にして渡し、main は見せていない保存場所を消さないので、ほかの公開先のデータが消えるとも言わない（V4 の段落は足さない）。'settings' の回は変えない",
+    count: 5,
     apply: (body, c) => {
-      if (!c.placementsUnreadable || c.cause === 'settings' || (c.otherTargets ?? []).length === 0) return body
+      if (!c.placementsUnreadable || c.cause === 'settings') return body
       const paragraphs = body.split('\n\n')
       const at = paragraphs.findIndex(p => p.startsWith(CALL_CAUTION_HEAD))
       if (at < 0) throw new Error(`'call' の注意の段落が写しに無い: ${c.name}`)
-      paragraphs.splice(at + 1, 0, ADDED_SENTENCE((c.otherTargets ?? []).join('・')))
+      paragraphs[at] = CALL_CAUTION_F6
       return paragraphs.join('\n\n')
+    },
+  },
+  {
+    id: 'R1e',
+    why: "0.6.24 R1-e: 保存場所に触れない回（'settings'・'call'）に、「ほかの公開先の記録を読めなかった」注意の段落（「…そちらのアプリのデータも消えます」）を出さない。保存場所は消えないので、同じ確認の「保存場所は削除しません」と正反対のことを言っていた。保存場所を読めた回（placementsUnreadable:false）は変えない",
+    count: 2,
+    apply: (body, c) => {
+      if (!c.placementsUnreadable || !c.otherTargetsUnreadable) return body
+      const paragraphs = body.split('\n\n')
+      if (!paragraphs.some(p => p.startsWith(OTHERS_UNREADABLE_HEAD))) throw new Error(`「ほかの公開先の記録を読めなかった」の段落が写しに無い: ${c.name}`)
+      return paragraphs.filter(p => !p.startsWith(OTHERS_UNREADABLE_HEAD)).join('\n\n')
     },
   },
   {

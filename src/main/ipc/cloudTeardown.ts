@@ -1,17 +1,18 @@
-// cloudTeardown.ts — 共用型 AppRun の破棄（cloud:teardown）と、確認の材料の口（cloud:teardownRecord）。
+// cloudTeardown.ts — 共用型 AppRun の破棄（cloud:teardown）と、確認の材料の口（cloud:teardownRecord）、複製の有無を読む口（cloud:recordTwins）。
 // cloud.ts から切り出した（設計書 docs/teardown-unify-plan.md 10.7.4）。
 //
 // ── 呼び形 ───────────────────────────────────────────────────────────────────
-//   cloud:teardown       (projectDir, { heldByMain: true }, { confirmed, deleteRegistry, registryName })
+//   cloud:teardown       (projectDir, { heldByMain: true }, { confirmed, deleteRegistry, registryName, shownPlacements })
 //   cloud:teardownRecord (projectDir)   … 読むだけ。外部へ要求を出さない。同じフォルダの兄弟プロジェクトの記録も読む（同じレジストリを使うプロジェクトを数える。cloud/registryUsers.ts）
+//   cloud:recordTwins   (projectDir)   … 読むだけ。外部へ要求を出さない。自分の公開の記録（破棄で消すものの事実）をすべて持つ、同じ親フォルダの別のフォルダ（覆う複製）を、3つの公開先ごとに返す（cloud/recordTwins.ts の recordCoverFs。0.6.24 I-3・R2-d）
 // 順序は共通の骨（cloud/teardownShell.ts）が持つ: projectDir → 確認の印 → 認証の形 → 鍵（同時に1つだけ）→ run → 公開の記録の削除。
 // 断った回（確認の印が無い・認証の形が違う・別の操作が走っている）は、さくらのクラウドへも保存場所へも1本も要求を出さず、処理の記録も作らない。
 //
 // ── run の順序（アプリ → コンテナレジストリ → 保存場所）────────────────────────────
 // 専有型・HANAMII と同じく保存場所は最後。まだ動いているアプリの足元のデータと鍵を先に消すと、アプリが 403 で落ちる（2026-08-14）。
 // アプリを消せなかった回は、レジストリにも保存場所にも触れない。
-// 消す保存場所は `sharedTeardownRecordOf` が決める（env.json の同意済み全件 + state にだけある保存場所）。確認の材料（cloud:teardownRecord）と
-// run は同じこの関数を通るので、確認が名前を出した保存場所と実際に消す保存場所は食い違わない（P5）。
+// 消す保存場所の候補は `sharedTeardownRecordOf` が決める（env.json の同意済み全件 + state にだけある保存場所）。確認の材料（cloud:teardownRecord）と
+// run は同じこの関数を通る（P5）。run が実際に消すのは、そのうち確認で見せた保存場所（名前と prefix の組）だけ。見せていないものは消さず、残して ok:false（0.6.24 F）。
 //
 // ── 掟 ───────────────────────────────────────────────────────────────────────
 // ・保存した記録（state.json）は、失敗した回も `stateToSave` を通して残す（2026-08-14: 消えたアプリが記録に残り、次の公開が 404 になった）
@@ -20,23 +21,21 @@
 import * as fs from 'fs'
 import { ipcMain } from 'electron'
 import { applyPlan } from '../cloud/apply'
-import { loadCredentials, type CloudCredentials } from '../cloud/auth'
+import { loadCredentials } from '../cloud/auth'
 import { SakuraCloudClient, pickContainerRegistries } from '../cloud/client'
 import { loadRegistryCredentials, clearRegistryCredentials } from '../cloud/registry-auth'
-import { createStorageAdapter } from '../cloud/storageAdapter'
-import { KEY_REVOKE_FAILED_WARNING, keyWarningLines } from '../cloud/storageTeardown'
-import { forgetDeletedBuckets, keptBucketReasonFields, teardownStorageForProject } from '../cloud/storageForTarget'
 import { CLOUD_STATE_FILE, cloudFilePath, loadCloudSpec, loadCloudState, saveCloudState } from '../cloud/specStore'
 import { registryDeletionTarget, stateToSave, type EnvState } from '../cloud/state'
 import type { EnvSpec } from '../cloud/spec'
 import { deleteDescription, type Plan } from '../cloud/planner'
+import { recordTwinsFs, readRecordTwins } from '../cloud/recordTwins'
 import { runTeardownShell, BAD_PROJECT_DIR_MESSAGE, type TeardownShellCtx, type TeardownShellSpec } from '../cloud/teardownShell'
 import { forgetPublishTargetFs } from '../publishMetaFs'
 import { consentedPlacementsOf, type StoragePlacement } from '../../shared/objectStorage'
-import { STORAGE_TEARDOWN_PROGRESS, STORAGE_PANEL_DELETE_GUIDE, storageTeardownDoneLine, bucketNamesText } from '../../shared/teardownSupport'
 import { keyRevokeGuide } from '../../shared/storageKeys'
 import { registryOriginOf, type RegistryOrigin } from '../../shared/cloudCost'
 import { otherProjectsUsingRegistry, keptRegistryFacts } from '../cloud/registryUsers'
+import { runStorageStage, storageFailureFields, SAVE_FAILED_NOTE } from './cloudTeardownStorage'
 
 /** 記録（env.json・state.json）だけから決まる、このプロジェクトの破棄の材料。run も同じものを使う。 */
 export type SharedTeardownBase = {
@@ -45,7 +44,7 @@ export type SharedTeardownBase = {
   registryName: string | null
   /** そのレジストリを、このプロジェクトのために Koto が作ったか（owned）・借りたか（adopted）・分からないか（unknown）。既定の選びがこれで決まる。 */
   registryOrigin: RegistryOrigin
-  /** 消す保存場所の全件 = env.json の同意済み + state にだけある保存場所（後ろ）。 */
+  /** 消す保存場所の候補の全件 = env.json の同意済み + state にだけある保存場所（後ろ）。run が消すのは、確認で見せたものだけ（0.6.24 F）。 */
   placements: StoragePlacement[]
   /** placements のうち、env.json に無く state にだけあるもの（確認が「設定から外した保存場所」と言い分ける）。 */
   stateOnlyBuckets: string[]
@@ -68,6 +67,8 @@ export type SharedTeardownResult = {
   skipped?: string[]
   remainingBucket?: string
   remainingBuckets?: string[]
+  /** 確認で見せていないため消さなかった保存場所（0.6.24 F。`remainingBuckets` にも入る）。 */
+  skippedBuckets?: string[]
   keptBucketName?: string | null
   keptBucketNames?: string[]
   /** 残した保存場所の理由（ほかのプロジェクトも使っている／Koto が作ったのではないファイルがある。`teardownPlanFor` の `keptReasons`）。結果の警告が「後で消す場合は削除して」と言ってよいかを決める。 */
@@ -193,9 +194,6 @@ const NO_KEY_MESSAGE = 'APIキー未登録（先にアクセストークン/シ�
 const REGISTRY_UNKNOWN_NOTE = '※ このプロジェクトがどのコンテナレジストリを使っていたかの記録がないため、レジストリは削除していません。'
   + 'さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額220円がかかり続けます）。'
 const REGISTRY_CHANGED_NOTE = '※ 確認のあとで、記録にあるコンテナレジストリが変わったため、レジストリは削除していません。もう一度破棄を押して確かめてください。'
-const ENV_KEPT_NOTE = '⚠️ 保存場所の記録（公開の設定・env.json）は残しています。次に公開する前に、【公開】の「保存場所を用意する」からやり直してください'
-const SAVE_FAILED_NOTE = '記録を保存できませんでした。もう一度 🗑 破棄を押すと続きからやり直せます。'
-const PANEL_GUIDE = `消えないときは、${STORAGE_PANEL_DELETE_GUIDE}`
 
 /** state の apprun-app など、バケット以外を削除するプラン。保存場所は applyPlan に渡さず、あとで teardownStorageForProject が消す。実行内容の言い方は planner の deleteDescription（種類名を画面に出さない）。 */
 function deletePlanWithoutBuckets(state: EnvState): Plan {
@@ -220,17 +218,6 @@ function withoutRegistryMeta(state: EnvState): EnvState {
   const { registryName: _n, registryAdopted: _a, ...rest } = state.meta ?? {}
   const { meta: _m, ...base } = state
   return Object.keys(rest).length > 0 ? { ...base, meta: rest } : base
-}
-
-/** 保存場所0件で記録の鍵だけがあるとき、その鍵を無効にする。失敗は文で返す（null＝無効にできた）。 */
-async function revokeRecordedKey(creds: CloudCredentials, permissionId: string): Promise<string | null> {
-  try {
-    const storage = await createStorageAdapter(creds)
-    try { await storage.deletePermission(permissionId) } finally { await storage.dispose() }
-    return null
-  } catch (e) {
-    return `${KEY_REVOKE_FAILED_WARNING}: ${msgOf(e)}`
-  }
 }
 
 async function runSharedTeardown(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<SharedTeardownResult> {
@@ -308,48 +295,14 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
     } catch { /* レジストリの失敗は致命ではない（アプリは削除済み）。teardownRegistry は投げないので、ここは判定が壊れたときだけ */ }
   }
 
-  // 3. 保存場所。env.json の同意済み全件 + state にだけあるもの。最後に消す
-  const placements = record.placements
-  const names = placements.map(p => p.bucket)
-  let kept: string[] = []
-  let keptWhy: ReturnType<typeof keptBucketReasonFields> = {}
-  let touched = false
-  let keyKept: string | null = recordedKey
-  let failure: { remaining: string[]; first: string; message: string } | null = null
-  if (placements.length > 0) {
-    progress(STORAGE_TEARDOWN_PROGRESS)
-    try {
-      const st = await teardownStorageForProject({ creds, projectDir, permissionId: recordedKey, sweepKeysFor: hadApp ? 'apprun' : null, placements })
-      if (st.reason !== 'none') {
-        touched = st.done.length > 0
-        executed.push(...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note)), ...keyWarningLines(st.warnings, keyGuide))
-        kept = st.done.filter(b => !b.deletedBucket).map(b => b.bucket)
-        keptWhy = keptBucketReasonFields(st.done)
-        const gone = st.done.filter(b => b.deletedBucket).map(b => b.bucket)
-        cur = { ...cur, resources: cur.resources.filter(r => !(r.kind === 'bucket' && gone.includes(r.id))) }
-        // 消したバケットの宛先は env.json からも外す（HANAMII・専有型と同じ）。env.json に無い（state にだけある）分は外すものが無い
-        const inEnv = gone.filter(b => !record.stateOnlyBuckets.includes(b))
-        if (inEnv.length > 0 && !forgetDeletedBuckets(projectDir, inEnv)) executed.push(ENV_KEPT_NOTE)
-        // 記録の鍵は、無効にできたとき（1件以上消して、失敗の行が出ていない）だけ記録から外す
-        if (recordedKey && touched && !st.warnings.includes(KEY_REVOKE_FAILED_WARNING)) {
-          keyKept = null
-          cur = { ...cur, meta: { ...cur.meta, storagePermissionId: undefined } }
-        }
-        if (!st.ok) {
-          const doneNames = new Set(st.done.map(b => b.bucket))
-          failure = { remaining: names.filter(b => !doneNames.has(b)), first: st.remainingBucket, message: st.message }
-        }
-      }
-    } catch (e) {
-      failure = { remaining: names, first: names[0], message: `保存場所${bucketNamesText(names)}を削除できませんでした: ${msgOf(e)}` }
-    }
-  } else if (recordedKey) {
-    // 保存場所が0件でも、記録の鍵は無効にする（残すと、消えた保存場所へ読み書きできる鍵がどこからも辿れないまま生き残る）
-    progress(STORAGE_TEARDOWN_PROGRESS)
-    const why = await revokeRecordedKey(creds, recordedKey)
-    if (why) executed.push(...keyWarningLines([why], keyGuide))
-    else { keyKept = null; cur = { ...cur, meta: { ...cur.meta, storagePermissionId: undefined } } }
-  }
+  // 3. 保存場所。候補は env.json の同意済み全件 + state にだけあるもの。消すのは確認で見せたものだけ。最後に消す（段の中身は ./cloudTeardownStorage.ts）
+  const stage = await runStorageStage({
+    creds, projectDir, placements: record.placements, stateOnlyBuckets: record.stateOnlyBuckets, hadApp, cur, recordedKey, keyGuide,
+    shown: ctx.opts.shownPlacements, progress,
+  })
+  cur = stage.cur
+  executed.push(...stage.lines)
+  const { kept, keptWhy, dataDeleted, keyKept, failure } = stage
 
   // 4. 記録を保存して返す
   progress('📝 記録を更新しています…')
@@ -359,18 +312,10 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
     keptBucketName: kept[0] ?? null, ...(kept.length > 0 ? { keptBucketNames: kept } : {}), ...keptWhy, ...keptRegistry(),
   }
   if (failure) {
-    const registryRemains = !!cur.meta?.registryName
-    const retry = registryRemains
-      ? 'もう一度 🗑 破棄を押すと、保存場所の削除をやり直せます（コンテナレジストリを消すかどうかの選択も、もう一度出ます）。'
-      : 'もう一度 🗑 破棄を押すと、保存場所の削除だけをやり直します。'
-    return {
-      ok: false, ...base, remainingBucket: failure.first, remainingBuckets: failure.remaining,
-      message: `${failure.message}\n保存場所${bucketNamesText(failure.remaining)}が残っています（消すまで月額が続きます）。${retry}${PANEL_GUIDE}`
-        + (saveError ? `\n${SAVE_FAILED_NOTE}` : ''),
-    }
+    return { ok: false, ...base, ...storageFailureFields(failure, { registryRemains: !!cur.meta?.registryName, saveFailed: !!saveError }) }
   }
   if (saveError) return { ok: false, ...base, message: SAVE_FAILED_NOTE }
-  return { ok: true, ...base, ...(touched ? { message: '保存場所にあった、このプロジェクトのデータを削除しました。' } : {}) }
+  return { ok: true, ...base, ...(dataDeleted ? { message: '保存場所にあった、このプロジェクトのデータを削除しました。' } : {}) }
 }
 
 /** 共用型の破棄を骨に載せる定義。公開の記録を消すのは、保存場所まで済んだ（ok）回だけ。 */
@@ -385,15 +330,18 @@ export const SHARED_TEARDOWN_SHELL: TeardownShellSpec<{ heldByMain: true }, Shar
   },
   authMissingMessage: '破棄の呼び出しが正しくありません。',
   secretsOf: () => [],
+  twinsOf: dir => recordTwinsFs(dir, 'sakura-apprun'), // 同じ apprun-app の id を持つ兄弟（重なる）があれば断る（0.6.24 I-2。断るのは何も消さない側なので、覆うより広い recordTwinsFs）
   run: runSharedTeardown,
   shouldForgetRecord: ({ result }) => result.ok === true,
   forgetRecord: ctx => forgetPublishTargetFs(ctx.projectDir, 'sakura-apprun'),
   refused: message => ({ ok: false, message }),
 }
 
-/** cloud:teardown と cloud:teardownRecord を登録する（registerCloudHandlers から呼ぶ）。 */
+/** cloud:teardown・cloud:teardownRecord・cloud:recordTwins を登録する（registerCloudHandlers から呼ぶ）。 */
 export function registerCloudTeardownHandlers(): void {
   ipcMain.handle('cloud:teardown', (_event, projectDir: unknown, auth: unknown, opts: unknown) =>
     runTeardownShell(SHARED_TEARDOWN_SHELL, { projectDir, auth, opts }))
   ipcMain.handle('cloud:teardownRecord', (_event, projectDir: unknown) => readSharedTeardownRecord(projectDir))
+  // プロジェクトの削除の画面が、覆う複製のある公開先を破棄から外すために読む（読むだけ。「覆う」の判断は recordCoverFs。破棄の骨の twinsOf は、より広い「重なる」の recordTwinsFs。0.6.24 I-3・R2-d）
+  ipcMain.handle('cloud:recordTwins', (_event, projectDir: unknown) => readRecordTwins(projectDir))
 }

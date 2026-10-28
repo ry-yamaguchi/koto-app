@@ -116,7 +116,7 @@ async function pressAndWaitConfirm(v: ReturnType<typeof mount>) {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 describe('手順6の節: 確認 → 実行は共通の流れを、決まった順序で通る', () => {
-  it('★★★ 確認に「やめる」と答えたら、さくらへの要求も onStart も onDone も窓を閉じる警告も起きない', async () => {
+  it('★★★ 確認に「キャンセル」と答えたら、さくらへの要求も onStart も onDone も窓を閉じる警告も起きない', async () => {
     const v = mount()
     const c = await pressAndWaitConfirm(v)
     c.props.onCancel()
@@ -142,7 +142,7 @@ describe('手順6の節: 確認 → 実行は共通の流れを、決まった�
     c.props.onConfirm()
     await until(() => v.onDone.mock.calls.length === 1, 'onDone が呼ばれない')
     expect(events).toEqual(['onStart', 'ipc', 'onDone'])
-    expect(ipcCalls).toEqual([['/tmp/proj-a', KEY, { confirmed: true }]])
+    expect(ipcCalls).toEqual([['/tmp/proj-a', KEY, { confirmed: true, shownPlacements: [] }]]) // 確認で見せた保存場所（この回は0件）
     const [view, stale] = v.onDone.mock.calls[0] as [TeardownView, boolean]
     expect(stale).toBe(false)
     expect(view.ok).toBe(true)

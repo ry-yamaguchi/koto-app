@@ -45,6 +45,7 @@ const count = (rel: string, needle: string | RegExp) => {
 
 const SPEC = 'src/renderer/teardown/targets/shared.ts'
 const MAIN = 'src/main/ipc/cloudTeardown.ts'
+const MAIN_STORAGE = 'src/main/ipc/cloudTeardownStorage.ts' // 保存場所の段（0.6.24 R1-a で MAIN から切り出した）
 const PRELOAD = 'src/main/preload.ts'
 const FLOW = 'src/renderer/teardown/flow.ts'
 const S1 = 'src/renderer/components/SharedTeardownSection.tsx'
@@ -70,8 +71,8 @@ describe('F-1 共用型の破棄の呼び口は1つずつ', () => {
     expect(count(SPEC, 'electronAPI.cloud.teardown(')).toBe(1)
   })
 
-  it('★★★ その1行は projectDir・認証・{ confirmed, deleteRegistry, registryName } の3つを渡す。deleteRegistry は選択が true のときだけ true、registryName は確認を出した時点の記録の名前', () => {
-    expect(code(SPEC)).toMatch(/electronAPI\.cloud\.teardown\(projectDir, auth, \{\s*confirmed: opts\.confirmed,\s*deleteRegistry: opts\.choices\?\.deleteRegistry === true,\s*registryName: record\.registryName,\s*\}\)/)
+  it('★★★ その1行は projectDir・認証・{ confirmed, deleteRegistry, registryName, shownPlacements } を渡す。deleteRegistry は選択が true のときだけ true、registryName は確認を出した時点の記録の名前、shownPlacements は確認で見せた保存場所の組（流れが作ったものをそのまま。0.6.24 F）', () => {
+    expect(code(SPEC)).toMatch(/electronAPI\.cloud\.teardown\(projectDir, auth, \{\s*confirmed: opts\.confirmed,\s*deleteRegistry: opts\.choices\?\.deleteRegistry === true,\s*registryName: record\.registryName,\s*shownPlacements: opts\.shownPlacements,\s*\}\)/)
   })
 
   it('★★ 確認の材料の口 `electronAPI.cloud.teardownRecord(` を呼ぶのも仕様書だけ（入口が自分で記録を読んで確認を作らない）', () => {
@@ -93,7 +94,8 @@ describe('F-1 共用型の破棄の呼び口は1つずつ', () => {
 
   it('★★ 3点セット（main・preload・global.d.ts）が同じ形: cloud の teardown は { heldByMain: true } と { confirmed, deleteRegistry, registryName }、teardownRecord が並ぶ', () => {
     const d = code('src/renderer/global.d.ts')
-    expect(d).toContain('teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null })')
+    expect(d).toContain('teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> })')
+    expect(code(PRELOAD)).toContain('opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>')
     expect(d).toContain('teardownRecord(projectDir: string)')
     expect(code(PRELOAD)).toContain("ipcRenderer.invoke('cloud:teardown', projectDir, auth, opts)")
     expect(code(PRELOAD)).toContain("teardownRecord: (projectDir: string) => ipcRenderer.invoke('cloud:teardownRecord', projectDir)")
@@ -154,7 +156,8 @@ describe('F-3 入口ごとの呼び出しの形（この文字列のとおり）
     expect(c).toContain('const { confirm, confirmWithChoices, element } = useConfirmChoices()')
     expect(count(DIALOG, 'useConfirmChoices()')).toBe(1)
     // 3A-5b: 破棄は、押す口 pressProjectDelete に渡す deps の teardown として 1 か所だけ呼ぶ
-    expect(c).toContain('teardown: (d, ts) => teardownPublished(d, ts, { confirm, confirmWithChoices }),')
+    // 第3引数 o は残りの段の印（plan.leftover）。渡さないと、残りの段の step に印と呼び名が付かない（0.6.24 A-5・U12）
+    expect(c).toContain('teardown: (d, ts, o) => teardownPublished(d, ts, { confirm, confirmWithChoices }, o),')
     expect(count(DIALOG, 'teardownPublished(')).toBe(1)
     for (const w of ['runTeardownFlow', 'electronFlowDeps', 'sharedTeardownSpec', 'cloud.teardown(', 'targets/shared']) expect(c, w).not.toContain(w)
     // 確認の要素 {element} は、背景の div の外（後ろの兄弟）に描く。中に描くと、確認の背景を押した click がダイアログの背景の onClick まで届いて両方閉じる
@@ -254,8 +257,8 @@ describe('F-5b プロジェクト削除の共用型の枝（projectDelete.ts）'
   it('★★★ やめた（cancelled）ときは失敗に積んで、残りの公開先へ進まない（break）', () => {
     const b = branch()
     expect(b).toContain('if (outcome.cancelled) {')
-    expect(b).toContain('破棄をやめました')
-    expect(b).toMatch(/破棄をやめました[\s\S]*?\n\s*break\n/)
+    expect(b).toContain('破棄をキャンセルしました')
+    expect(b).toMatch(/破棄をキャンセルしました[\s\S]*?\n\s*break\n/)
   })
 
   it('★★★ 「破棄するものはありません」（nothingToDo）は成功として扱い、失敗に積む判断（!outcome.result.ok）より先に見る。順序を逆にすると、幽霊の行でフォルダを移せなくなる', () => {
@@ -266,7 +269,7 @@ describe('F-5b プロジェクト削除の共用型の枝（projectDelete.ts）'
     expect(failure, 'ok:false の判断が無い').toBeGreaterThan(0)
     expect(ghost).toBeLessThan(failure)
     expect(b).toContain("kind: 'failed'")
-    expect(b).toContain("line: `${PUBLISH_TARGET_LABEL[t]}: ${outcome.result.message ?? '原因不明'}`")
+    expect(b).toContain("line: `${nameOf(t)}: ${outcome.result.message ?? '原因不明'}`") // 残りの段は名詞で言う（0.6.24 A-5）
     // nothingToDo の枝（`{` から `} else if`）は nothingToDo の step を積み、失敗・済んだの step を積まない（積むと、幽霊の行でフォルダを移せなくなる／偽の知らせが出る）
     const ghostBranch = b.slice(b.indexOf('{', ghost), b.indexOf('} else if (!outcome.result.ok)'))
     expect(ghostBranch).toContain("kind: 'nothingToDo'")
@@ -284,8 +287,9 @@ describe('F-5b プロジェクト削除の共用型の枝（projectDelete.ts）'
 
   it('★★★ フォルダをゴミ箱へ移してよいかは projectDeleteVerdict の 1 つ（全部 ok のときだけ移す。nothingToDo は失敗に積まれないので移せる）。ダイアログは判断せず、フォルダを移す口 fs.trash( は deps の 1 か所だけ', () => {
     const c = code(DIALOG)
-    expect(count(DIALOG, 'fs.trash(')).toBe(1)
-    expect(c).toContain('trash: p => window.electronAPI.fs.trash(p),')
+    expect(count(DIALOG, 'fs.trashProject(')).toBe(1) // 0.6.24 E-4: プロジェクトのフォルダを移す口は fs.trashProject（確認の印つき）。汎用の fs.trash( はダイアログに無い
+    expect(count(DIALOG, 'fs.trash(')).toBe(0)
+    expect(c).toContain('const r = await window.electronAPI.fs.trashProject(p, { confirmed: true, skippedForTwins })')
     expect(c).not.toContain('failed.length')
     expect(count(SIDEBAR, 'fs.trash(path)')).toBe(0)
     const run = code(S4)
@@ -298,7 +302,7 @@ describe('F-6 新しいファイルは各400行以下。巨大ファイルは移
   const lines = (rel: string) => read(rel).split('\n').length
 
   it.each([
-    MAIN, SPEC, S1, S4, 'src/renderer/useConfirmChoices.tsx',
+    MAIN, MAIN_STORAGE, SPEC, S1, S4, 'src/renderer/useConfirmChoices.tsx',
     'tests/sharedTeardownEntries.test.ts', 'tests/sharedProjectDelete.test.ts', 'tests/hanamiiProjectDelete.test.ts',
     'tests/sharedTeardownHarness.ts', 'tests/sharedTeardownShell.test.ts', 'tests/sharedTeardownShell2.test.ts', 'tests/sharedTeardownRecord.test.ts',
     'tests/sharedTeardownMeasure.test.ts', 'tests/teardownResultSharedTwin.test.ts', 'tests/sharedTeardownSpec.test.ts', 'tests/sharedTeardownConfirm.test.ts',
@@ -309,6 +313,11 @@ describe('F-6 新しいファイルは各400行以下。巨大ファイルは移
     expect(fs.existsSync(path.join(ROOT, rel)), rel).toBe(true)
     // hanamiiProjectDelete.test.ts は段階1からある（409 行だった）ファイル。共用型の旧い枝のテストを外したので、400 行以下に戻った。
     expect(lines(rel), `${rel} は ${lines(rel)} 行`).toBeLessThanOrEqual(400)
+  })
+
+  it('★ 保存場所の段（cloudTeardownStorage.ts）は200行以下。cloudTeardown.ts は段を足したあとも400行以下に収まる（超えたら、足す先を段のファイルに戻す＝0.6.24 R1-a）', () => {
+    expect(lines(MAIN_STORAGE)).toBeLessThanOrEqual(200)
+    expect(lines(MAIN)).toBeLessThanOrEqual(400)
   })
 
   it('★ cloud.ts（今の 2,339 行→移した分だけ短くなった）・AppRunPanel.tsx（2,888 行）・PublishedListModal.tsx（593 行）は、段階2の前より減っている', () => {

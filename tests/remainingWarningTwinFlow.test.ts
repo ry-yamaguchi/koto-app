@@ -8,6 +8,7 @@ import path from 'node:path'
 // 作者の実例の形: 共用型で、借りた（adopted）「scheduleapp」を5つのプロジェクトが使っている。そのレジストリを残した回に「後で消す場合は」と言わない。
 // 偽の client・偽の保存場所と、同じ親フォルダの兄弟プロジェクト（実フォルダ）は tests/sharedTeardownHarness.ts と tests/sharedTeardownUsers.test.ts と同じ作り。
 import { A, B, PREFIX, APP, OK_AUTH, REGISTRY_ROW, bucketRef, h, resetHarness, newProjectDir, workspaceOf, setup } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
 vi.mock('../src/main/cloud/auth', async (orig) => (await import('./sharedTeardownHarness')).authMock(await orig()))
@@ -23,7 +24,8 @@ import { PUBLISH_TARGET_LABEL } from '../src/renderer/publishStatus'
 import { keptBucketReasonFields } from '../src/main/cloud/storageForTarget'
 
 registerCloudHandlers({} as any)
-const teardown = h.handlers.get('cloud:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
 const EVENT = {}
 const SHARED = 'sakura-apprun' as const
 const REG = 'scheduleapp'
@@ -108,8 +110,10 @@ describe('★★★ 本物の main: 残したレジストリの由来と借り�
     expect(reply.keptRegistryUsers).toEqual([])
   })
 
+  // 公開したアプリ（apprun-app）の記録がある回は、親フォルダの一覧を読めないと複製の有無を確かめられず、骨が破棄ごと断る（0.6.24 R2-f。tests/twinsParentUnreadable.test.ts）。
+  // ここは、複製の確かめの対象が無い回（アプリの記録が無く、レジストリの名前だけがある）で、借り手を調べる側が「いない」と言わないことを見る。
   it.skipIf(typeof process.getuid === 'function' && process.getuid() === 0)('★★★ 親フォルダの一覧を読めない → 借り手は「いない」でなく「分からない」。このプロジェクトだけのものと言わない（月額・後で消す場合は、を言わない）', async () => {
-    setup(dir, { env: [], resources: [APP], meta: { registryName: REG, registryAdopted: false } })
+    setup(dir, { env: [], resources: [], meta: { registryName: REG, registryAdopted: false } })
     h.registryRows = [{ ...REGISTRY_ROW, Status: { registry_name: REG } }]
     fs.chmodSync(ws(), 0o300) // 入れる（x）が、一覧は読めない（r なし）
     let reply: any

@@ -20,22 +20,35 @@
 // ただし、チェックを外したときの「コンテナレジストリの月額が続きます」は、このプロジェクトのために Koto が作った・ほかが借りていないレジストリがあるときだけ
 // 言う（判断は ownRegistryBillingNote。材料は開いたときに読む facts.sharedRegistry）。共用型の行があるだけでは言わない（0.6.22-rc.1 の実機）。
 //
+// 行の無い保存場所・コンテナレジストリ・アプリ（共用型の公開先の行は無いのに、共用型の記録に消すものが残る回）は、plan が残りの段（plan.leftover）を足す（0.6.24 A）。
+// ダイアログは、それを言い、走らせるだけ（判断は持たない）:
+//   ・箱は、先に破棄する段があれば（shownTeardown）公開先の行が無くても出す（出さないとチェックが無く、行き止まりになる）
+//   ・チェックの文・実行中のボタンの文は projectDeleteCheckWords（公開のある回は今のまま。公開していない回は「保存場所も一緒に破棄する」など。箱に出している段で決める）
+//   ・💾 の行は projectDeleteWords.ts の3つ（rowStorageNotesOf・leftoverStorageNoteLine・keptStorageNoteOf）。公開先の行・残りの段の行・外したときの1行
+//   ・押したとき、残りの段の印（plan.leftover）を teardownPublished の第4引数へ素通しする（deps.teardown の第3引数。渡さないと結果の見出し・尻が公開の言い方のままになる）
+//   ・Vercel の案内は、保存場所も一緒に破棄する回だけ最後の文（保存場所は残ります）を言わない（vercelStorageTornDown → ManualTeardownNote の storageTornDown）
+//
 // 別のプロジェクトを開き直したときは、Sidebar が key で作り直す（前の結果・チェック・材料を持ち越さない。掟11）。
 // 確認の要素 {element} は、背景の div の外（後ろの兄弟）に描く。確認の背景を押した click が、このダイアログの背景の onClick まで届いて両方閉じるのを防ぐ。
-// プロジェクトのフォルダをゴミ箱へ移す口（deps.trash）は、この削除の流れではここの 1 か所だけ。ただし、ファイルツリーの deleteEntry（Sidebar.tsx）も
-// 汎用の確認だけで fs.trash する。親フォルダを開いていると、子のプロジェクトのフォルダも、この判断（止める理由・破棄・走っている操作の確認）を通らずに移せる
-// （3A の範囲外。docs/teardown-unify-plan.md の 10.9.18 の F の (ii) と同じ根で、扱いは親が決める）。公開の記録は、ここでも画面でも消さない（消すのは main の破棄の骨の 1 か所）。
+// プロジェクトのフォルダをゴミ箱へ移す口（deps.trash）は、この削除の流れではここの 1 か所だけで、main の fs:trashProject を呼ぶ（0.6.24 E。fs:trash はプロジェクトの根を断る）。
+// ファイルツリーの deleteEntry（Sidebar.tsx → fileEntryOps.ts）は、先に fs:trashCheck で聞き、プロジェクトの根ならこのダイアログを開く
+// （親フォルダを開いていて、子のプロジェクトのフォルダの行を削除した回も、この判断〔止める理由・破棄・走っている操作の確認〕を通る）。
+// 複製（同じ親フォルダの別のフォルダで、同じ公開の記録を持つもの）がある公開先は、破棄の対象に入れず「破棄しません（フォルダ『C』にも…）」と見せる（plan.twinned。0.6.24 I-3）。
+// 複製を読めなかった回は何も外さない（main の破棄の骨が断る）。公開の記録は、ここでも画面でも消さない（消すのは main の破棄の骨の 1 か所）。
+// 押したときの複製の判断は、開いたときの写し。移す直前に main が、外した公開先（skippedForTwins）の覆う複製を読み直し、無くなっていれば断る（R2-e）。
+// その断りが返ったら、材料を読み直して plan を作り直す（pressProjectDelete の twinsGone。もう一度押すと、破棄から始める）。
 
 import { useState, useEffect } from 'react'
 import { PUBLISH_TARGET_LABEL } from '../publishStatus'
 import { readRunningOp } from '../projectMeta'
-import { teardownPublished, pressProjectDelete, type ProjectDeletePhase, type ProjectDeleteRunDeps } from '../teardown/projectDelete'
+import { teardownPublished, pressProjectDelete, TwinsGoneError, type ProjectDeletePhase, type ProjectDeleteRunDeps } from '../teardown/projectDelete'
 import { readProjectDeleteFacts } from '../teardown/projectDeleteFacts'
+import { twinnedNote } from '../teardown/projectDeleteTwins'
 import {
-  planProjectDeleteTeardown, projectDeleteBlockNote, sharedLeftoverNote, ownRegistryBillingNote, PUBLISH_RECORD_UNREADABLE_NOTE, remainingPlacementsNote, withoutDoneTargets,
+  planProjectDeleteTeardown, projectDeleteBlockNote, sharedLeftoverNote, ownRegistryBillingNote, PUBLISH_RECORD_UNREADABLE_NOTE, withoutDoneTargets,
   type ProjectDeleteFacts,
 } from '../teardown/projectDeletePlan'
-import { teardownDataNoteForAll, teardownRemovesStorage } from '../../shared/teardownSupport'
+import { projectDeleteCheckWords, rowStorageNotesOf, leftoverStorageNoteLine, keptStorageNoteOf, vercelStorageTornDown } from '../teardown/projectDeleteWords'
 import { useConfirmChoices } from '../useConfirmChoices'
 import ManualTeardownNote from './teardown/ManualTeardownNote'
 import ProjectDeleteResults from './teardown/ProjectDeleteResults'
@@ -73,10 +86,20 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
   /** 押したときの口。破棄・フォルダの有無・ゴミ箱は、ここで渡す。 */
   const deps: ProjectDeleteRunDeps = {
     readFacts: readProjectDeleteFacts,
-    teardown: (d, ts) => teardownPublished(d, ts, { confirm, confirmWithChoices }),
+    // 第3引数（残りの段の印。plan.leftover の noun）を素通しする（渡さないと、残りの段の step に印と呼び名が付かず、結果の見出し・尻が公開の言い方のままになる。0.6.24 A-5）
+    teardown: (d, ts, o) => teardownPublished(d, ts, { confirm, confirmWithChoices }, o),
     runningOp: readRunningOp,
     exists: p => window.electronAPI.fs.exists(p),
-    trash: p => window.electronAPI.fs.trash(p),
+    // フォルダを移す口は fs.trashProject（確認の印と、plan が覆う複製のために破棄を外した公開先 skippedForTwins つき）。main が、走っている操作・専有型の残り・中にプロジェクトがあるフォルダ・記録・
+    // 覆う複製（skippedForTwins の公開先それぞれを移す直前に読み直す）を改めて確かめ、断れば ok:false（文つき）。
+    // ok:true 以外はすべて移せなかった扱い（moveProjectToTrash の catch が trashFailed にする）。ただし覆う複製が見つからなくなった断り（reason: 'twins-gone'）は
+    // TwinsGoneError で投げ、材料を読み直して plan を作り直す道（twinsGone）に乗せる（R2-e）。
+    trash: async (p, skippedForTwins) => {
+      const r = await window.electronAPI.fs.trashProject(p, { confirmed: true, skippedForTwins })
+      if (r?.ok === true) return
+      if (r?.reason === 'twins-gone') throw new TwinsGoneError(r.message)
+      throw new Error(r?.message ?? '原因不明')
+    },
   }
 
   const press = async () => {
@@ -100,13 +123,25 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
     }
   }
 
-  const leftoverNote = facts && plan && facts.sharedLeftover !== null && plan.teardown.length === 0 ? sharedLeftoverNote(facts.sharedLeftover) : ''
   // 箱に出すのは、まだ破棄していない公開先だけ（済んだ公開先を「これから消す」と言わない。全部済んだ review・移せなかった回では、一覧もチェックも出ない）
   const doneSteps = run?.steps ?? []
   const shownTargets = facts ? withoutDoneTargets(facts.targets, doneSteps) : []
   const shownTeardown = plan ? withoutDoneTargets(plan.teardown, doneSteps) : []
   // チェックを外したときに言うレジストリの月額。このプロジェクトのために Koto が作った、ほかが使っていないレジストリがあるときだけ（判断は純関数）
   const registryBillingNote = facts ? ownRegistryBillingNote(facts, shownTeardown) : ''
+  // チェックの文（公開の回は今のまま。公開していない回は「{保存場所・コンテナレジストリ}も一緒に破棄する」。0.6.24 A-3）。箱に出している段で決める（済んだ段を数えない）。
+  const words = plan ? projectDeleteCheckWords({ teardown: shownTeardown, leftover: plan.leftover }, facts) : null
+  // 💾 の行（判断は純関数。チェックがオンのときの公開先の行・残りの段の行と、オフのときの1行。0.6.24 A-4）
+  const rowNotes = facts && plan ? rowStorageNotesOf(plan, facts, shownTeardown) : []
+  const leftoverLine = facts && plan ? leftoverStorageNoteLine(plan, facts, shownTeardown) : ''
+  const keptNote = facts ? keptStorageNoteOf(facts) : ''
+  // 段を足さなかった残り（共用型の記録に残りがあるのに plan.leftover が無い。借り手のいるレジストリだけの回〔K2〕・覆う複製がある回など）の注意。HANAMII の行などで
+  // 破棄する段があっても、チェックがオンのときに出す（0.6.24 R4-d。以前は teardown が空の回だけで、K2 のレジストリが「残ります」と言われなかった）。
+  // チェックを外した回は、外したときの 💾（keptNote。同じ残りを含む）が言うので、重ねない。
+  const keptNoteShown = plan !== null && plan.block === null && shownTeardown.length > 0 && !teardownOnDelete && keptNote !== ''
+  const leftoverNote = facts && plan && facts.sharedLeftover !== null && !plan.leftover && !keptNoteShown ? sharedLeftoverNote(facts.sharedLeftover) : ''
+  // Vercel の案内の最後の文を言わない回（保存場所も一緒に破棄する回だけ。0.6.24 A-9）
+  const vercelStorageGone = facts && plan ? vercelStorageTornDown(plan, facts, teardownOnDelete, shownTeardown) : false
 
   return (
     <>
@@ -130,7 +165,7 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
                 フォルダを消すと .sakura-cloud/state.json（どのレジストリを使っているかの
                 唯一の記録）も一緒に消える。消えた後は Koto から後片付けできず、
                 月220円が黙って続く。だから削除の前にここで止められるようにする。 */}
-            {facts && plan && (shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '') && (
+            {facts && plan && (shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (
               <div className="rounded-lg border border-brand-red/50 bg-surface p-2.5 space-y-1.5">
                 {facts.unreadable && (
                   <p className="text-brand-red font-medium select-text">⚠️ {PUBLISH_RECORD_UNREADABLE_NOTE}</p>
@@ -142,12 +177,17 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
                       {shownTargets.map(t => (
                         <li key={t}>
                           {PUBLISH_TARGET_LABEL[t]}
-                          <ManualTeardownNote target={t} />
+                          <ManualTeardownNote target={t} storageTornDown={vercelStorageGone} />
                         </li>
                       ))}
                     </ul>
                   </>
                 )}
+                {/* 複製（同じ親フォルダの別のフォルダが、同じ公開の記録を持つ）がある公開先は、破棄しない。フォルダだけ移す（0.6.24 I-3・K1）。
+                    破棄しないことを見せる（チェックの対象には出ない）。文は projectDeleteTwins.ts の twinnedNote の1つ。 */}
+                {plan.twinned.map(x => (
+                  <p key={x.target} className="text-ink-secondary select-text">{twinnedNote(x)}</p>
+                ))}
                 {plan.block !== null ? (
                   // 止める文は、ここの 1 か所だけ（T094）。専有型の資源（クラスタ・ASG・LB）や保存場所が残っている間・公開や破棄が進んでいる間は、
                   // この画面から削除できない（記録はフォルダの中にしかなく、フォルダを先に消すと月額を二度と止められなくなる）。
@@ -166,20 +206,19 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
                         disabled={busy}
                         className="mt-0.5 accent-[rgb(var(--sakura-rgb))]"
                       />
-                      <span className="text-ink font-medium">公開も一緒に破棄する</span>
+                      <span className="text-ink font-medium">{words!.label}</span>
                     </label>
                     <p className={`pl-5 ${teardownOnDelete ? 'text-ink-muted' : 'text-brand-red'}`}>
                       {teardownOnDelete
-                        ? '先に公開を破棄してから、フォルダをゴミ箱へ移します。破棄に失敗したときは削除しません。'
-                        : '公開はそのまま残ります。フォルダを消すと「どこに何を公開したか」の記録も消えるため、あとから Koto では破棄できなくなります。'
-                          + (registryBillingNote ? ` ${registryBillingNote}` : '')}
+                        ? words!.on
+                        : words!.off + (registryBillingNote ? ` ${registryBillingNote}` : '')}
                     </p>
                     {/* W-22（案1後半）: チェックを外して破棄しないときも、保存場所が残ることをその場で伝える（下の💾行は teardownOnDelete のときだけ
                         描くため、外したときはこちらが無いと保存場所の話が画面から消えてしまう）。同じ保存場所をプレフィックス違いで2件持つと
                         bucket 名が重複するので、名前の重複を除き、2件以上あるときは「1つにつき」と明記する（remainingPlacementsNote）。 */}
-                    {!teardownOnDelete && facts.placements.length > 0 && (
+                    {keptNoteShown && (
                       <p className="pl-5 text-brand-red select-text">
-                        💾 {remainingPlacementsNote(facts.placements)}
+                        💾 {keptNote}
                       </p>
                     )}
                     {/* ── 保存場所のデータも消える（2026-09-25 検分の指摘2・3巡目の指摘3）──────
@@ -188,15 +227,17 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
                         ⚠️ **公開先を決め打ちで書かない。** 判定は一元定義（teardownRemovesStorage）に通し、**新しい公開先が増えても勝手に正しくなる**形にする。
                         先に破棄する公開先（plan.teardown）だけを回し、文の組み立ては shared/teardownSupport.ts の純関数に任せ、placements（全件）で
                         組み立てる。公開先ごとに1行出すので、HANAMII と共用型が両方ある案件でも取りこぼさない。 */}
-                    {teardownOnDelete && shownTeardown
-                      .filter(t => teardownRemovesStorage(t))
-                      .map(t => ({ t, note: teardownDataNoteForAll({ target: t, placements: facts.placements }) }))
-                      .filter(x => !!x.note)
-                      .map(x => (
-                        <p key={x.t} className="pl-5 text-brand-red select-text">
-                          💾 {PUBLISH_TARGET_LABEL[x.t]}: {x.note}
-                        </p>
-                      ))}
+                    {teardownOnDelete && rowNotes.map(x => (
+                      <p key={x.target} className="pl-5 text-brand-red select-text">
+                        💾 {PUBLISH_TARGET_LABEL[x.target]}: {x.note}
+                      </p>
+                    ))}
+                    {/* 共用型の行は無いのに、記録の残りを破棄する段（plan.leftover）の行。公開先の名前は前に付けない。前の行（HANAMII）が名指しした保存場所は除く（0.6.24 A-4）。 */}
+                    {teardownOnDelete && leftoverLine !== '' && (
+                      <p className="pl-5 text-brand-red select-text">
+                        💾 {leftoverLine}
+                      </p>
+                    )}
                   </>
                 )}
                 {/* 共用型の公開先の行は無いのに、共用型の記録（保存場所・コンテナレジストリ）に消すものが残っているとき。
@@ -217,12 +258,12 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
               onClick={onClose}
               disabled={busy}
               className="px-3 py-1.5 rounded-md text-[12px] text-ink-secondary hover:bg-overlay transition-colors disabled:opacity-40"
-            >{run?.phase === 'review' ? '移さずに閉じる' : 'キャンセル'}</button>
+            >キャンセル</button>
             <button
               onClick={press}
               disabled={busy || plan === null || plan.block !== null}
               className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red-fill hover:opacity-90 transition-opacity disabled:opacity-40"
-            >{busy ? '公開を破棄しています…' : '🗑 ゴミ箱に移動'}</button>
+            >{busy ? (words?.running ?? '公開を破棄しています…') : '🗑 ゴミ箱に移動'}</button>
           </div>
         </div>
       </div>

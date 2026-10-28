@@ -332,8 +332,9 @@ describe('破棄で「置き場も削除する」の最初の状態', () => {
       }
     }
     expect(readCode('src/renderer/components/SharedTeardownSection.tsx')).toContain('runTeardownFlow(projectDir, sharedTeardownSpec, electronFlowDeps(projectDir, sharedTeardownSpec, {')
-    // 仕様書は選択の既定を、借り物なら外す判断（registryDeleteDefault）に通す
-    expect(readCode('src/renderer/teardown/targets/shared.ts')).toContain('defaultChecked: registryDeleteDefault({ registryName: r.registryName, origin: r.registryOrigin, otherUsers: r.registryUsers.length })')
+    // 仕様書は選択の既定を、借り物なら外す判断（registryDeleteDefault）に通す。通す口は sharedRegistryDeleteDefault の1つ（0.6.24 A-3。プロジェクトの削除のチェックの文も同じ口を使う）
+    expect(readCode('src/renderer/teardown/targets/shared.ts')).toContain('defaultChecked: sharedRegistryDeleteDefault(r),')
+    expect(readCode('src/renderer/teardown/targets/shared.ts')).toContain('registryDeleteDefault({ registryName: r.registryName, origin: r.registryOrigin, otherUsers: r.registryUsers.length })')
   })
 
   // プロジェクト削除のダイアログは、コンテナレジストリの注記（「残します」）を持たない（段階3A の 3A-5b。10.9.18 の D=1）。

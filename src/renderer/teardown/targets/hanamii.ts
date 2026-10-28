@@ -116,7 +116,8 @@ export const hanamiiTeardownSpec: TargetSpec<HanamiiTeardownRecord, { token: str
     return token ? { token } : null
   },
   invoke: (projectDir, auth, opts, record) =>
-    window.electronAPI.hanamii.teardown(projectDir, auth, { confirmed: opts.confirmed, projectId: record.projectId ?? '' }),
+    // shownPlacements は確認で見せた保存場所の組（0.6.24 F）。流れが作った値をそのまま渡す。
+    window.electronAPI.hanamii.teardown(projectDir, auth, { confirmed: opts.confirmed, projectId: record.projectId ?? '', shownPlacements: opts.shownPlacements }),
   failure: message => ({ ok: false, message }),
   toView: raw => toTeardownView('hanamii', raw),
 }

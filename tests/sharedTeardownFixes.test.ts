@@ -9,6 +9,7 @@ import path from 'node:path'
 //   F4  applyPlan が積んだ対応外の処理（skipped）は、成功の回の返り値と処理の記録に残す（設計書 10.7.6）
 //   F10 アプリを消す段で失敗した回も、途中まで起きたこと（消えたアプリ）を state.json に残す（2026-08-14 の 404 の形。掟10）
 import { A, B, APP, OK_AUTH, bucketRef, h, resetHarness, newProjectDir, setup, envBuckets, stateKinds } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 import type { ResourceRef } from '../src/main/cloud/state'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
@@ -23,7 +24,8 @@ import { runTeardownFlow, electronFlowDeps } from '../src/renderer/teardown/flow
 import { sharedTeardownSpec, SHARED_KEY_MISSING_MESSAGE } from '../src/renderer/teardown/targets/shared'
 
 registerCloudHandlers({} as any)
-const teardown = h.handlers.get('cloud:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
 const record = h.handlers.get('cloud:teardownRecord')!
 const EVENT = {}
 const GO = { confirmed: true, deleteRegistry: false, registryName: null }

@@ -63,8 +63,8 @@ describe('F-1 HANAMII の破棄の呼び口は1つずつ', () => {
     expect(code(SPEC).match(/electronAPI\.hanamii\.teardown\(/g)).toHaveLength(1)
   })
 
-  it('★★★ その1行は projectDir・認証・{ confirmed, projectId } の3つを渡す（projectDir を渡し忘れると、保存場所に触れずに ok を返していた。指摘1・2）', () => {
-    expect(code(SPEC)).toContain("window.electronAPI.hanamii.teardown(projectDir, auth, { confirmed: opts.confirmed, projectId: record.projectId ?? '' })")
+  it('★★★ その1行は projectDir・認証・{ confirmed, projectId, shownPlacements } の3つを渡す（projectDir を渡し忘れると、保存場所に触れずに ok を返していた。指摘1・2。shownPlacements は確認で見せた保存場所の組。0.6.24 F）', () => {
+    expect(code(SPEC)).toContain("window.electronAPI.hanamii.teardown(projectDir, auth, { confirmed: opts.confirmed, projectId: record.projectId ?? '', shownPlacements: opts.shownPlacements })")
   })
 
   it('★★ 別の書き方（hanamii?.teardown・hanamii["teardown"]・分割代入のあとの呼び出し）でも、HANAMII の破棄を呼ぶのは仕様書だけ', () => {
@@ -119,10 +119,11 @@ describe('F-3 入口ごとの呼び出しの形（この文字列のとおり）
 
   it('★★ ダイアログは teardownPublished を import して呼ぶだけ。流れも HANAMII の破棄も仕様書も持たない。Sidebar は破棄を呼ばない', () => {
     const c = code(DIALOG)
-    expect(c).toContain("import { teardownPublished, pressProjectDelete, type ProjectDeletePhase, type ProjectDeleteRunDeps } from '../teardown/projectDelete'")
+    expect(c).toContain("import { teardownPublished, pressProjectDelete, TwinsGoneError, type ProjectDeletePhase, type ProjectDeleteRunDeps } from '../teardown/projectDelete'")
     // 3A-5b: 破棄は、押す口 pressProjectDelete に渡す deps の teardown として 1 か所だけ呼ぶ。先に破棄する公開先は pressProjectDelete が plan.teardown から渡す。
     // 返り値は公開先ごとの step。失敗の文・残ったもの（月額が続く保存場所など）は、step を結果の欄（ProjectDeleteResults）が描く（見せるのはフォルダを移す前。振る舞いは hanamiiProjectDelete.test.ts・projectDeleteRun.test.ts）
-    expect(c).toContain('teardown: (d, ts) => teardownPublished(d, ts, { confirm, confirmWithChoices }),')
+    // 第3引数 o は残りの段の印（plan.leftover）。渡さないと、残りの段の step に印と呼び名が付かない（0.6.24 A-5・U12）
+    expect(c).toContain('teardown: (d, ts, o) => teardownPublished(d, ts, { confirm, confirmWithChoices }, o),')
     expect(c).toContain('await pressProjectDelete(projectDir, { plan, run, seen: facts }, teardownOnDelete, deps)')
     expect(c, '知らせを受け取る口 onWarnings は無くなった（同じ事実を2つの道で返さない）').not.toContain('onWarnings')
     expect(c.match(/teardownPublished\(/g)).toHaveLength(1)
@@ -208,10 +209,12 @@ describe('F-5 プロジェクト削除の HANAMII の枝（projectDelete.ts）',
     const b = branch()
     expect(b).toContain('if (outcome.cancelled) {')
     expect(b).toContain("kind: 'cancelled'")
-    expect(b).toContain('破棄をやめました')
-    expect(b).toMatch(/破棄をやめました[\s\S]*?\n\s*break\n/) // やめたあとで共用型の破棄へ進むと、残すと決めた HANAMII のアプリのデータが消える（振る舞いは hanamiiProjectDelete.test.ts）
+    expect(b).toContain('破棄をキャンセルしました')
+    expect(b).toMatch(/破棄をキャンセルしました[\s\S]*?\n\s*break\n/) // やめたあとで共用型の破棄へ進むと、残すと決めた HANAMII のアプリのデータが消える（振る舞いは hanamiiProjectDelete.test.ts）
     expect(b).toContain("kind: 'failed'")
-    expect(b).toContain("line: `${PUBLISH_TARGET_LABEL[t]}: ${outcome.result.message ?? '原因不明'}`")
+    expect(b).toContain("const base = `${PUBLISH_TARGET_LABEL[t]}: ${outcome.result.message ?? '原因不明'}`")
+    // HANAMII が済んでいない（ok:false）ときも、あとの公開先（共用型・残りの段）は始めない（0.6.24 A-5。振る舞いは tests/projectDeleteLeftoverRun.test.ts の T-A3）
+    expect(b).toMatch(/kind: 'failed'[\s\S]*?\n\s*break\n/)
     expect(b).toContain("kind: 'done'")
   })
 
@@ -226,17 +229,18 @@ describe('F-5 プロジェクト削除の HANAMII の枝（projectDelete.ts）',
     const c = code(DIALOG)
     expect(c).not.toContain('failed.length')
     expect(c).not.toContain('kept.length')
-    expect(c.match(/fs\.trash\(/g)).toHaveLength(1)
-    expect(c).toContain('trash: p => window.electronAPI.fs.trash(p),')
+    expect(c.match(/fs\.trashProject\(/g)).toHaveLength(1) // 0.6.24 E-4: プロジェクトのフォルダを移す口は fs.trashProject（確認の印つき）。汎用の fs.trash( はダイアログに無い
+    expect(c).toContain('const r = await window.electronAPI.fs.trashProject(p, { confirmed: true, skippedForTwins })')
+    expect(c).not.toContain('fs.trash(')
     // 判断は純関数。済んだが残ったもの（月額が続く保存場所など）は、移す前に結果の欄で見せる（review。移すと保存場所と鍵の唯一の記録も消える）
     const run = code(H3)
     expect(run).toContain('const verdict = projectDeleteVerdict(plan, teardownOnDelete, steps)')
     expect(run).toContain("if (!verdict.moveToTrash) return { phase: 'stopped', steps: all }")
     expect(run).toContain("if (verdict.hold || keptLinesOf(carried).length > 0) return { phase: 'review', steps: all }")
-    expect(run.indexOf('projectDeleteVerdict(plan'), '判断が先').toBeLessThan(run.indexOf('moveProjectToTrash(dir, all, deps)'))
+    expect(run.indexOf('projectDeleteVerdict(plan'), '判断が先').toBeLessThan(run.indexOf('moveProjectToTrash(dir, all, deps, skippedForTwinsOf(plan))'))
     // プロジェクトのフォルダを移す口は、Sidebar には無い
     expect(code(SIDEBAR)).not.toContain('fs.trash(path)')
-    expect(code(SIDEBAR).match(/fs\.trash\(/g), 'Sidebar のファイルの削除の 1 か所だけ').toHaveLength(1)
+    expect(code(SIDEBAR).match(/fs\.trash\(/g), 'Sidebar のファイルの削除の 1 か所だけ（deleteFileEntry に渡す口。先に fs.trashCheck で聞く）').toHaveLength(1)
   })
 })
 

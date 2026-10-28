@@ -7,11 +7,14 @@
 //   dedicated            … 専有型の記録（apprunDedicated.state。読めなければ null）
 //   placements           … 保存場所の全件（読めなければ []）
 //   running              … いま main が走らせている操作（readRunningOp。聞けなければ null）。**公開の記録より先に聞く**（下の注）
-//   sharedLeftover       … 共用型の行が無いのに、共用型の記録に消すものがある（10.9.18 の E）。レジストリの名前・由来・借り手と保存場所（月額を言ってよいかは由来と借り手で決まる）。
+//   sharedLeftover       … 共用型の行が無いのに、共用型の記録に消すものがある（10.9.18 の E）。アプリの名前（appNames。📡 の「一覧から削除」で行だけ外した回に、アプリが残っていることを言う。0.6.24 A-1）・
+//                           レジストリの名前・由来・借り手と保存場所（月額を言ってよいかは由来と借り手で決まる）。残りの段を足すか（A の門）は projectDeletePlan.ts。
 //                           読めなかったら null にして unreadable を立てる
 //   sharedRegistry       … 共用型の行があるときの、共用型の記録のコンテナレジストリ（名前・由来〔owned・adopted・unknown〕・使っているほかのプロジェクト）。
 //                           「公開も一緒に破棄する」を外したときに、月額が続くと言ってよいかの材料（判断は projectDeletePlan.ts の ownRegistryBillingNote）。
 //                           記録にレジストリが無い・読めなかったら null（言わない）。行は読めているので、読めなかったことで unreadable は立てない
+//   twins               … 覆う複製（同じ親フォルダの別のフォルダで、自分の公開の記録をすべて持つもの）の名前を公開先ごとに（readRecordTwins〔cloud:recordTwins〕。0.6.24 I-3・R2-d）。
+//                           読めなかったら null（plan は何も外さない。main の破棄の骨が改めて確かめて断る）
 // 共用型の記録は、行の有無に関わらず 1 回だけ読む（readSharedTeardownRecord。新しい IPC は作らない）。
 // コンテナレジストリの名前（cloud.registryName）は読まない（選ぶのは続く確認。10.9.18 の D）。
 // 専有型のパネルの部品（apprunDedicatedActions.ts・AppRunDedicatedPanel.tsx ほか）は import しない（10.3.1）。
@@ -19,6 +22,7 @@
 import { readPublishTargetsWithLegacyChecked } from '../publishRecord'
 import { readRunningOp } from '../projectMeta'
 import { readSharedTeardownRecord, sharedTeardownHasWork } from './targets/shared'
+import { readRecordTwins } from './readTwins'
 import type { DedicatedResourceIds, ProjectDeleteFacts, SharedLeftover, SharedRegistry } from './projectDeletePlan'
 
 export async function readProjectDeleteFacts(dir: string): Promise<ProjectDeleteFacts> {
@@ -51,7 +55,7 @@ export async function readProjectDeleteFacts(dir: string): Promise<ProjectDelete
     if (hasSharedRow) {
       if (rec.registryName) sharedRegistry = { registryName: rec.registryName, origin: rec.registryOrigin, users: rec.registryUsers }
     } else if (sharedTeardownHasWork(rec)) {
-      sharedLeftover = { registryName: rec.registryName, registryOrigin: rec.registryOrigin, registryUsers: rec.registryUsers, placements: rec.placements }
+      sharedLeftover = { appNames: rec.appNames, registryName: rec.registryName, registryOrigin: rec.registryOrigin, registryUsers: rec.registryUsers, placements: rec.placements }
     }
   } catch {
     // 行が無い回: 共用型の記録が読めなかった。消すものがあるか分からないので、公開の記録が読めないときの注意を出す。
@@ -59,5 +63,8 @@ export async function readProjectDeleteFacts(dir: string): Promise<ProjectDelete
     if (!hasSharedRow) unreadable = true
   }
 
-  return { targets, unreadable, dedicated, placements, running, sharedLeftover, sharedRegistry }
+  // 複製（同じ公開の記録を持つ別のフォルダ）。読めなければ null（外さない側。読む関数は投げない）
+  const twins = await readRecordTwins(dir)
+
+  return { targets, unreadable, dedicated, placements, running, sharedLeftover, sharedRegistry, twins }
 }

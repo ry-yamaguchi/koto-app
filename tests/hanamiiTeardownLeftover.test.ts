@@ -72,9 +72,10 @@ import { resetProjectOpsForTests } from '../src/main/projectOps'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { deleteProjectReply } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
+import { shownTeardown } from './shownFromEnv'
 
 registerHanamiiHandlers({} as any)
-const teardown = h.handlers.get('hanamii:teardown')!
+const teardown = shownTeardown(h.handlers.get('hanamii:teardown')!) // 画面の代わりに、確認で見せた保存場所（env.json の記録）を渡す
 
 const EVENT = {}
 const P1 = 'hnm-proj-1'

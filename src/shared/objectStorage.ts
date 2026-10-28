@@ -43,6 +43,14 @@ export type StorageTeardown = {
    * （ほかのプロジェクトが使う保存場所を、言われたとおり消すと、そのプロジェクトのデータも消える）。
    */
   keptReasons?: { ownFiles: boolean; usedByOthers: boolean }
+  /**
+   * **このプロジェクトのデータにも手を付けない**（`deletePrefix: null`・`deleteBucket: false`）ときだけ true。
+   * 同じ親フォルダの別のフォルダ（複製）が、同じバケットの**同じ prefix** を記録に持っているため（`BucketRecordUsers.samePrefix`）、
+   * または、複製かどうかを確かめられなかった（記録を読めない兄弟がいる・確かめ自体ができなかった。`twinRiskOf` が `'unread'`・0.6.24 R1-b）ため。
+   * 複製を破棄・削除すると、元のプロジェクトのデータが prefix ごと消える（元に戻せない）ので、データもバケットも残す。
+   * 結果の行は「データを削除しました」ではなく「データは残しました」と言う（`storageTeardownDoneLine`）。
+   */
+  keptData?: true
 }
 
 /**
@@ -51,10 +59,49 @@ export type StorageTeardown = {
  * 使っていると数えるのは、**同じバケットを同意済みで使い、かつ公開の記録がまだあるプロジェクトだけ**（破棄が済んだプロジェクトは、設定にバケットが残っていても数えない）。
  *   ・`known: true` … 兄弟のプロジェクトを全部読めた。`users` はそのバケットを使っているプロジェクトの名前（0件なら、記録の上では誰も使っていない）
  *   ・`known: false` … 読めなかった（親フォルダの一覧・兄弟の記録・たどれないリンク）。**「いない」ではない**——わからないときは消さない
+ *   ・`samePrefix`（どちらの形にも必須）… 兄弟のうち、**同じバケットの同じ prefix を記録に持つ**もの（複製したフォルダ）の名前。
+ *     **公開の記録の有無は問わない**（元が「用意しただけ」でも、データは複製と同じ場所にある）。prefix が空のときは同じと数えない。
+ *     1件でもあれば、`teardownPlanFor` はこのプロジェクトのデータにも手を付けない（複製から元のデータを消さない）。
+ *     `known: false`（一部の兄弟を読めなかった）でも、読めた兄弟から見つかった分は返る（見つかった事実は動かない）。
+ *   ・`samePrefixUnread`（どちらの形にも必須）… **複製かどうかを確かめられなかった兄弟**の名前（0.6.24 R1-b・作者の決定 K3）。次のどれか:
+ *     たどれないリンク／兄弟の env.json か state.json が、無いだけ（ENOENT）ではなく読めない・壊れている・形が違う。
+ *     **`.sakuraide.json` だけが読めない兄弟は入れない**（env と state が読めれば、複製かどうかは確かめられている）。prefix が空の回は、確かめる対象が無いので空。
+ *   ・`samePrefixChecked`（どちらの形にも必須）… 複製かどうかの確かめ自体ができたか。親フォルダの一覧を読めた回だけ true
+ *     （絶対パスでない・バケット名が空・prefix が文字列でない・親フォルダの一覧を読めなかった回は false）。
+ *   この2つ（と `samePrefix`）から「複製（かもしれない）ものがいるか」を決めるのは `twinRiskOf` の1つ。
  * キーの一覧（`allKeys`）だけでは、保存場所を用意しただけでまだ何も書いていない・目印（.koto-keep）が消えたプロジェクトが見えない
  * （2026-10-21 実機: 共用型 AppRun の公開が使い続けている保存場所を、別のプロジェクトの削除がバケットごと消した）。
  */
-export type BucketRecordUsers = { known: true; users: readonly string[] } | { known: false }
+export type BucketRecordUsers =
+  | { known: true; users: readonly string[]; samePrefix: readonly string[]; samePrefixUnread: readonly string[]; samePrefixChecked: boolean }
+  | { known: false; samePrefix: readonly string[]; samePrefixUnread: readonly string[]; samePrefixChecked: boolean }
+
+/**
+ * 同じ公開の記録・同じデータを持つ、ほかのフォルダの名前を文に並べる（`フォルダ『A』・『B』`）。複製の断りの文・データを残した文・
+ * プロジェクトの削除の赤い箱の文が、同じこれを通る（`『』` で囲む整形を、複製の話で3つ書かない）。
+ */
+export function folderNamesText(names: readonly string[]): string {
+  return `フォルダ${names.map(n => `『${n}』`).join('・')}`
+}
+
+/**
+ * 複製（または複製かもしれないもの）がいるか（純関数。**判断はここの1か所**。teardownPlanFor も、鍵に触るかの判断〔storageForTarget.ts・storageTeardown.ts〕もこれを見る）。
+ *   ・`'twin'` … 同じバケットの同じ prefix を記録に持つ兄弟がいる（`samePrefix` が1件以上。0.6.24 I-1）
+ *   ・`'unread'` … 複製かどうかを確かめられなかった（`samePrefixChecked` が true でない・`samePrefixUnread` が配列でない／1件以上・`samePrefix` が配列でない）。
+ *     **不明を「複製はいない」にしない**——渡し忘れ・古い形も `'unread'`（0.6.24 R1-b。記録を読めない兄弟が、実は複製かもしれない）
+ *   ・`null` … 確かめられて、複製はいない
+ * どちらでも非 null なら、データにも、記録の鍵にも、名前での鍵の一括の無効化にも手を付けない（複製は元の env.json の名前と記録の鍵 ID を写すので、元の現役の鍵が切れる）。
+ */
+export function twinRiskOf(recordUsers: BucketRecordUsers): 'twin' | 'unread' | null {
+  if (Array.isArray(recordUsers?.samePrefix) && recordUsers.samePrefix.length > 0) return 'twin'
+  if (
+    !Array.isArray(recordUsers?.samePrefix)
+    || recordUsers.samePrefixChecked !== true
+    || !Array.isArray(recordUsers.samePrefixUnread)
+    || recordUsers.samePrefixUnread.length > 0
+  ) return 'unread'
+  return null
+}
 
 /**
  * さくらのオブジェクトストレージのバケット名として使えるか（純関数）。
@@ -292,12 +339,17 @@ const KEPT_STORAGE_NOTE = '保存場所は残します。'
 /**
  * 破棄のとき、何を消してよいかを決める（純関数）。
  *
- * **判断は3段構え。**
+ * **判断は、最初の守りに続く3段構え。**
+ *   0. **最初に**（下のどれより前に）、`twinRiskOf(recordUsers)` を見る。
+ *      ・`'twin'`（同じ親フォルダの別のフォルダ〔複製〕が、同じバケットの**同じ prefix** を記録に持つ。`samePrefix` が1件以上）
+ *      ・`'unread'`（複製かどうかを確かめられなかった兄弟がいる・確かめ自体ができなかった・渡し忘れ。0.6.24 R1-b）
+ *      → **このプロジェクトのデータにも手を付けない**（`deletePrefix: null`・`deleteBucket: false`・`keptData: true`）。複製から元のプロジェクトのデータを prefix ごと消さない。
+ *      公開の記録の有無は問わない（元が「用意しただけ」でも守る）。note は複製のフォルダ名（`'unread'` は読めなかったフォルダ名）を言う
  *   1. `projects/` の外に何かあれば → **バケットは消さない**（利用者のデータ）
  *   2. ほかのプロジェクトが使っていれば → バケットは消さない（道連れになる）。見るのは2つ:
  *      ・バケットの中のキー（`allKeys`）に、ほかのプロジェクトの prefix がある
  *      ・ほかのプロジェクトの記録（`recordUsers`）に、同じバケットが書かれていて、そのプロジェクトがまだ公開している（公開の記録がある）
- *   3. 記録を読めなかった（`recordUsers` が known:false・渡されなかった）→ **消さない**
+ *   3. 記録を読めなかった（`recordUsers` が known:false・渡されなかった・`samePrefix` が配列でない古い形）→ **消さない**
  * どれも無いときだけ、バケットごと消してよい（残すと課金が続くため）。
  *
  * **キーの一覧だけでは足りない。** 保存場所を用意しただけでまだ何も書いていない・目印が消えたプロジェクトは、一覧に出ない。
@@ -317,6 +369,31 @@ const KEPT_STORAGE_NOTE = '保存場所は残します。'
  * @param recordUsers ほかのプロジェクトの記録から分かった利用者（`main/cloud/bucketUsers.ts` の `bucketUsersFromRecords`）。
  */
 export function teardownPlanFor(placement: StoragePlacement, allKeys: string[], recordUsers: BucketRecordUsers): StorageTeardown {
+  // **最初に見る**（foreign・usedByOthers より前）。複製（または複製かもしれないもの）が1つでもいれば、データにも手を付けない。判断は `twinRiskOf` の1つ。
+  const risk = twinRiskOf(recordUsers)
+  if (risk === 'twin') {
+    const twins = recordUsers.samePrefix
+    return {
+      deleteBucket: false,
+      deletePrefix: null,
+      note: `${folderNamesText(twins)}も同じデータを使っています。`,
+      keptReasons: { ownFiles: false, usedByOthers: true },
+      keptData: true,
+    }
+  }
+  if (risk === 'unread') {
+    // 複製かどうかを確かめられなかった（0.6.24 R1-b）。複製かもしれないので、データにもバケットにも手を付けない。使っているとは確かめていないので、理由は「どちらでもない」
+    const names = Array.isArray(recordUsers?.samePrefixUnread) ? recordUsers.samePrefixUnread : []
+    return {
+      deleteBucket: false,
+      deletePrefix: null,
+      note: names.length > 0
+        ? `${folderNamesText(names)}の記録を読めないため、同じデータを使っているか確かめられませんでした。`
+        : 'ほかのフォルダの記録を読めないため、同じデータを使っているか確かめられませんでした。',
+      keptReasons: { ownFiles: false, usedByOthers: false },
+      keptData: true,
+    }
+  }
   const keys = allKeys ?? []
   const foreign = foreignKeys(keys)
   const others = projectPrefixesFromKeys(keys).filter(p => p !== placement.prefix)
@@ -339,6 +416,7 @@ export function teardownPlanFor(placement: StoragePlacement, allKeys: string[], 
     }
   }
   // 記録を読めなかった（`known: true` と確かめられたときだけ先へ進む）。**「いない」に倒さない。**
+  // （`samePrefix` が配列でない古い形・渡し忘れは、上の `twinRiskOf` が `'unread'` で止めている）
   if (recordUsers?.known !== true) {
     return {
       deleteBucket: false,

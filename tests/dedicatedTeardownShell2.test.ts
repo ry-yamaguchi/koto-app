@@ -20,11 +20,12 @@ vi.mock('../src/main/publishMetaFs', async (orig) => (await import('./dedicatedT
 import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated'
 import { getOps, setStageTimingSink, type StageTimingSinkEntry } from '../src/main/projectOps'
 import { STORAGE_TEARDOWN_PROGRESS } from '../src/shared/teardownSupport'
+import { shownTeardown } from './shownFromEnv'
 import { h } from './dedicatedTeardownShellMocks'
 import { AUTH, EMPTY_OPS, EVENT, sent, setupEach, teardownEach, startServer, LB_ASG_CLUSTER_GONE, project } from './dedicatedTeardownShellHarness'
 
 registerApprunDedicatedHandlers({} as any)
-const teardown = h.handlers.get('apprunDedicated:teardown')!
+const teardown = shownTeardown(h.handlers.get('apprunDedicated:teardown')!) // 画面の代わりに、確認で見せた保存場所（env.json の記録）を渡す（0.6.24 F。main は見せたものだけを消す）
 
 let dir = ''
 beforeEach(() => { dir = setupEach() })

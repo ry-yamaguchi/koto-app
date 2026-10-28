@@ -8,6 +8,7 @@ import path from 'node:path'
 //   C-6 アプリの削除に失敗 / C-7 保存場所の一覧に失敗 / C-8 レジストリ / D 公開の記録（📡 の行）の片づけ
 // 後半（鍵・押し直し・例外）は sharedTeardownShell2.test.ts。
 import { A, B, APP, OK_AUTH, REGISTRY_ROW, bucketRef, h, resetHarness, newProjectDir, setup, envBuckets, stateKinds, stateMeta, writePublishRecord, publishTargets } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
 vi.mock('../src/main/cloud/auth', async (orig) => (await import('./sharedTeardownHarness')).authMock(await orig()))
@@ -22,7 +23,8 @@ import { getOps, resetProjectOpsForTests, setProjectOpsListener } from '../src/m
 import { STORAGE_TEARDOWN_PROGRESS } from '../src/shared/teardownSupport'
 
 registerCloudHandlers({} as any)
-const teardown = h.handlers.get('cloud:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
 const EVENT = {}
 const GO = { confirmed: true, deleteRegistry: false, registryName: null }
 
@@ -142,12 +144,14 @@ describe('C-7 保存場所の削除に失敗: 残りを全件言い、押し直�
     expect(envBuckets(dir)).toEqual([A])
     expect(publishTargets(dir)['sakura-apprun']).toBeDefined()
 
-    // 押し直し: アプリは記録に無いので deleteApp は出ない。保存場所だけをやり直して行が消える
+    // 押し直し: アプリは記録に無いので deleteApp は出ない。保存場所だけをやり直して行が消える。1回目はアプリがあったのに保存場所の段が止まったので、一括の無効化の印が立っている（0.6.24 R1-a）
+    expect(stateMeta(dir)?.keySweepPending).toBe('apprun')
     h.fail = {}
     h.calls = []
     const second = await teardown(EVENT, dir, OK_AUTH, GO)
     expect(second.ok).toBe(true)
-    expect(h.calls).toEqual(['connect', ...storageOf(A), 'dispose'])    // アプリが無い回は、一括の無効化（listPermissions）も走らない
+    expect(h.calls).toEqual(['connect', ...storageOf(A), 'listPermissions', 'dispose'])    // 印があるので、アプリが無い回でも一括の無効化（listPermissions）が走る。押し直しの詳細は tests/keySweepPending.test.ts
+    expect(stateMeta(dir)).toBeUndefined()                                                  // 最後まで済んだ回は印が消える
     expect(stateKinds(dir)).toEqual([])
     expect(envBuckets(dir)).toEqual([])
     expect(publishTargets(dir)['sakura-apprun']).toBeUndefined()

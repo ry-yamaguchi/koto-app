@@ -1,7 +1,7 @@
 // hanamiiTeardown.ts — HANAMII の破棄（hanamii:teardown）。hanamii.ts（公開・状態・ログ）から切り出した（設計書 docs/teardown-unify-plan.md 10.4.1）。
 //
 // ── 呼び形 ───────────────────────────────────────────────────────────────────
-//   hanamii:teardown (projectDir, { token }, { confirmed, projectId })
+//   hanamii:teardown (projectDir, { token }, { confirmed, projectId, shownPlacements })
 // 順序は共通の骨（cloud/teardownShell.ts の runTeardownShell）が持つ: projectDir → 確認の印 → 認証の形 → 鍵（同時に1つだけ）→ run → 記録の片づけ。
 // 断った回（確認の印が無い・projectDir が無い・トークンが無い・別の操作が走っている）は、HANAMII へも保存場所へも1本も要求を出さない
 // （P1。以前は確認の印の引数そのものが無く、画面のボタンの確認だけが歯止めだった・掟10）。
@@ -10,7 +10,8 @@
 //   ・渡された projectId が記録（.sakuraide.json）が指すものと一致するときだけ消す（掟11）。**鍵の中**で読むので、断った回も処理の記録に残る
 //   ・DELETE の応答の読み方（D7）: `project.deleted === true` か 404 のときだけ「消えた」。202（`deleted=false`）などは「受け付けただけ」で、
 //     保存場所にも記録にも触れずに `deletionAccepted` で返す（記録を消したあとに HANAMII 側の削除が終わらないと、Koto から辿れなくなる）
-//   ・消えたあとに保存場所を片づける（teardownHanamiiStorage。手順と守りは cloud/storageTeardown.ts の1つ）
+//   ・消えたあとに保存場所を片づける（teardownHanamiiStorage。手順と守りは cloud/storageTeardown.ts の1つ）。消すのは、**確認で見せた保存場所（名前と prefix の組）だけ**
+//     （`shownPlacements`。絞るのは storageForTarget.ts の teardownStorageForProject の1か所で、ここでは選ばない・残りも数え直さない。0.6.24 F）
 //   ・保存場所だけが残った回は、`publish.hanamii.storageLeftoverBuckets` に印を書く（押し直したときの確認が、消えたプロジェクトの名前を挙げない）
 // 公開の記録（📡 の行・projectId）は、全部片づいた回だけ骨が消す（settleHanamiiTeardownFs）。画面は消さない。
 //
@@ -26,6 +27,7 @@ import { HanamiiClient, type HanamiiResult } from '../hanamii/client'
 import { storagePlacementsOf, storageProjectNameOf, teardownStorageForProject, forgetDeletedBuckets, keptBucketReasonFields, type TorndownBucket } from '../cloud/storageForTarget'
 import { keyWarningLines } from '../cloud/storageTeardown'
 import { loadCredentials } from '../cloud/auth'
+import { recordTwinsFs } from '../cloud/recordTwins'
 import { runTeardownShell, type TeardownShellCtx, type TeardownShellSpec } from '../cloud/teardownShell'
 import { STORAGE_TEARDOWN_PROGRESS, STORAGE_PANEL_DELETE_GUIDE, storageTeardownDoneLine, bucketNamesText } from '../../shared/teardownSupport'
 import { keyRevokeGuide } from '../../shared/storageKeys'
@@ -49,10 +51,12 @@ export type HanamiiTeardownResult = {
   remainingBucket?: string
   /**
    * まだ残っている保存場所の名前を**全部**（2026-09-25 検分の指摘5）。
-   * 破棄は同意済みの保存場所を全件片づけるので、残りも全件言わないと
+   * 破棄は同意済みの保存場所を複数まとめて扱い、確認で見せた分だけを片づける（見せていない分は残る。0.6.24 F）ので、残りも全件言わないと
    * **名前が一度も出なかった保存場所の月額が、黙って続く**。
    */
   remainingBuckets?: string[]
+  /** 確認で見せていない・形が違うために消さなかった保存場所（`remainingBuckets` にも入る。0.6.24 F・R1-d。共用型 `cloud:teardown` の `skippedBuckets` と同じ事実）。 */
+  skippedBuckets?: string[]
   /**
    * **片づけたのに、バケットごとは消さなかった**保存場所（利用者が自分で置いたファイルがある・ほかのプロジェクトが
    * 使っている）の名前。先頭の1件。**残れば月額も続く**（共用型の `cloud:teardown` の `keptBucketName` と同じ事実）。
@@ -126,7 +130,7 @@ const RETRY_GUIDE = '📡 公開したもの一覧で、もう一度 🗑 を押
  * storageKeys.ts の「現役が分からないときは消さない」規則とは矛盾しない。
  * 名前は完全一致で見るので、共用型・専有型・ほかのプロジェクトの鍵には触れない（掟11）。
  */
-async function teardownHanamiiStorage(projectDir: string): Promise<HanamiiTeardownResult> {
+async function teardownHanamiiStorage(projectDir: string, shown: unknown): Promise<HanamiiTeardownResult> {
   // ここへ来た時点で HANAMII のプロジェクトは消えている。以降どう転んでも、
   // **消えたという事実は落とさない**（呼び出し側が公開の記録を片づけられるように）。
   const done: HanamiiTeardownResult = { ok: true, appDeleted: true, executed: [] }
@@ -168,7 +172,9 @@ async function teardownHanamiiStorage(projectDir: string): Promise<HanamiiTeardo
   }
   let st: Awaited<ReturnType<typeof teardownStorageForProject>>
   try {
-    st = await teardownStorageForProject({ creds, projectDir, permissionId: null, sweepKeysFor: 'hanamii' })
+    // 消すのは、確認で見せた保存場所（名前と prefix の組）だけ。見せていないものは main が消さず、残りに数える（0.6.24 F）。
+    // キーごと渡す（画面が運ばなかった・形が違う値なら「見せていない」扱いで、1件も消さない）。
+    st = await teardownStorageForProject({ creds, projectDir, permissionId: null, sweepKeysFor: 'hanamii', shown })
   } catch (e: any) {
     return {
       ...done, ok: false, remainingBucket: placements[0].bucket, remainingBuckets: allBuckets,
@@ -178,7 +184,7 @@ async function teardownHanamiiStorage(projectDir: string): Promise<HanamiiTeardo
   }
   if (st.reason === 'none') return done
   const executed = [
-    ...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note)),
+    ...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note, b.keptData)),
     ...keyWarningLines(st.warnings, keyGuide),
   ]
   // **バケットごと消したものは、env.json の記録からも外す**（専有型の指摘3・8 と同じ）。
@@ -189,12 +195,12 @@ async function teardownHanamiiStorage(projectDir: string): Promise<HanamiiTeardo
   }
   if (!st.ok) {
     // HANAMII のプロジェクトは消えている（そのぶんは止まった）が、保存場所は残った。**黙らない。**
-    // 途中で止まったので、**片づいた分の後ろにある保存場所も丸ごと残っている**。
     // 残りは全件名指しする（検分の指摘5。1件だけ名指しすると、出なかったぶんの月額が黙って続く）。
-    const doneBuckets = new Set(st.done.map(b => b.bucket))
-    const remaining = allBuckets.filter(b => !doneBuckets.has(b))
+    // 数え直さない: 止まった1件・後ろの未着手・確認で見せていなくて飛ばした分は、`teardownStorageForProject` が重ならない並びで返す。
+    const remaining = st.remainingBuckets
     return {
       ...done, ok: false, executed, remainingBucket: st.remainingBucket, remainingBuckets: remaining,
+      ...(st.skippedBuckets ? { skippedBuckets: st.skippedBuckets } : {}), // 確認で見せていなくて飛ばした分（共用型と同じ形。0.6.24 R1-d）
       ...keptBucketFields(st.done),
       message: st.message
         + (remaining.length > 0 ? `\n保存場所${bucketNamesText(remaining)}が残っています（消すまで月額が続きます）。${RETRY_GUIDE}` : ''),
@@ -289,7 +295,8 @@ async function runHanamiiTeardown(ctx: TeardownShellCtx<HanamiiAuth>): Promise<H
   // 'deleted' も 'not-found' も「動いているアプリはもう無い」＝鍵を消しても 403 で落ちるものが無いので、保存場所へ進んでよい
   // （2026-09-25 検分の指摘3。2度目の破棄は 404 になる。共用型 apply.ts の削除も 404 を同じ扱いにしている）。
   progress(STORAGE_TEARDOWN_PROGRESS)
-  const res = await teardownHanamiiStorage(projectDir)
+  // 確認で見せた保存場所の組は、画面が運んだものをそのまま渡す（形は信用しない。読むのは teardownStorageForProject の中）
+  const res = await teardownHanamiiStorage(projectDir, ctx.opts.shownPlacements)
   // 全部片づいた回は、公開の記録を骨が消す（settleHanamiiTeardownFs）。保存場所だけ残った回は、行も projectId も残し、印を書く。
   return res.ok ? res : withLeftoverMark(projectDir, projectId, res)
 }
@@ -305,6 +312,7 @@ export const HANAMII_TEARDOWN_SHELL: TeardownShellSpec<HanamiiAuth, HanamiiTeard
   },
   authMissingMessage: 'HANAMII のトークンが未登録です',
   secretsOf: auth => [auth.token],
+  twinsOf: dir => recordTwinsFs(dir, 'hanamii'), // 同じ projectId を持つ複製があれば断る（0.6.24 I-2）
   run: runHanamiiTeardown,
   // 以前の hanamii.ts と同じ（`if (!res.ok) return res`）。`hadPublishRecord` は見ない: targets.hanamii が無く hanamii.projectId だけの旧い記録も
   // 片づける必要があり、その判断は settleHanamiiTeardownFs の中にある。

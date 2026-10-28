@@ -4,10 +4,9 @@ import path from 'node:path'
 
 // ── 段階2（2d）S4: プロジェクト削除（Sidebar）の「公開も一緒に破棄する」の共用型（さくらのAppRun）の枝を、
 //    本物の流れ・本物の main（cloud:teardown・cloud:teardownRecord）・偽の client／偽の保存場所に通す ──────────────────────
-// 設計書: docs/teardown-unify-plan.md の 10.7.9 の S4・10.7.12 の S4・10.7.16 末尾の親の判断（2026-10-10）。
-// teardown/projectDelete.ts の teardownPublished（Sidebar から切り出した関数）を、偽の confirm／confirmWithChoices と偽の window.electronAPI で呼ぶ。
+// 設計書: docs/teardown-unify-plan.md の 10.7.9 の S4・10.7.12 の S4・10.7.16 末尾の親の判断（2026-10-10 → 0.6.24 A-5 で改めた）。teardown/projectDelete.ts の teardownPublished（Sidebar から切り出した関数）を、偽の confirm／confirmWithChoices と偽の window.electronAPI で呼ぶ。
 //   ・戻り値は公開先ごとの結果（ProjectDeleteStep）。失敗の説明は failureLinesOf で取り出す（空のときだけ移してよい。判断は tests/projectDeletePlan.test.ts と
-//     tests/projectDeleteRun.test.ts。呼び出し側の守りは tests/hanamiiTeardownEntries.test.ts）
+//     tests/projectDeleteRun.test.ts。呼び出し側の守りは tests/hanamiiTeardownEntries.test.ts。行の無い保存場所〔残りの段〕は projectDeleteLeftoverRun.test.ts）
 //   ・確認の答えが true でなければ、client へも保存場所へも要求は0件（偽の client・保存場所に出た要求の一覧 h.calls で見る。ソースの文字列は読まない・掟10）
 //   ・画面は公開の記録を一度も消さない（publishMeta の口が0回）。消すのは main の cloud:teardown の1か所
 //   ・置き場（コンテナレジストリ）を消すかは、確認の選択の答えで決まる。既定は押した時点の main の記録から（借り物はオフ）
@@ -32,12 +31,14 @@ import type { ConfirmOptions } from '../src/renderer/useConfirm'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../src/renderer/publishStatus'
 import { PUBLISH_CLOSE_WARNING } from '../src/renderer/activity'
 import { failureLinesOf } from '../src/renderer/teardown/projectDeletePlan'
-import { h, resetHarness, newProjectDir, setup as setupProject, writePublishRecord, publishTargets, envBuckets, A, APP, bucketRef, REGISTRY_ROW } from './sharedTeardownHarness'
+import { h, resetHarness, newProjectDir, setup as setupProject, writePublishRecord, publishTargets, envBuckets, A, APP, PREFIX, bucketRef, REGISTRY_ROW } from './sharedTeardownHarness'
 import type { ResourceRef, EnvState } from '../src/main/cloud/state'
 
 const SHARED = PUBLISH_TARGET_LABEL['sakura-apprun']
 const HANAMII = PUBLISH_TARGET_LABEL.hanamii
 const SHARED_ROW = { publishedAt: '2026-09-29T00:00:00.000Z', url: 'https://myapp.example.test' }
+/** 確認で見せた保存場所（名前と prefix の組）。確認の 💾 が名指しした A を、記録の prefix のまま main へ運ぶ（0.6.24 F）。 */
+const SHOWN_A = [{ bucket: A, prefix: PREFIX }]
 
 registerCloudHandlers({} as any)
 const mainTeardown = h.handlers.get('cloud:teardown')!
@@ -123,7 +124,7 @@ describe('S4 共用型: 確認（選択つき）の答えが true のときだ�
     expect(o.choices.map(c => ({ id: c.id, defaultChecked: c.defaultChecked }))).toEqual([{ id: 'deleteRegistry', defaultChecked: true }])
     expect(o.body).toContain('『myapp』')
     expect(o.body).toContain('保存場所『koto-data-a』')
-    expect(win.teardownCalls).toEqual([[dir, SHARED_TEARDOWN_AUTH, { confirmed: true, deleteRegistry: true, registryName: 'myreg' }]])
+    expect(win.teardownCalls).toEqual([[dir, SHARED_TEARDOWN_AUTH, { confirmed: true, deleteRegistry: true, registryName: 'myreg', shownPlacements: SHOWN_A }]])
     expect(r.steps).toHaveLength(1)
     expect(r.steps[0]).toMatchObject({ target: 'sakura-apprun', kind: 'done', words: SHARED_TEARDOWN_WORDS, view: { ok: true, state: 'done' } })
     expect(h.calls).toContain('deleteApp app-1')
@@ -145,11 +146,11 @@ describe('S4 共用型: 確認（選択つき）の答えが true のときだ�
     expect(win.busy).toEqual([]) // 実行が始まっていない
   })
 
-  it.each([false, undefined, null, 'yes', 1, {}])('★★★ 確認の答えが true でない値（%j）は、やめたと同じ。「破棄をやめました」が積まれ、要求0件・IPC 0（不明値を肯定に戻さない）', async (answer) => {
+  it.each([false, undefined, null, 'yes', 1, {}])('★★★ 確認の答えが true でない値（%j）は、やめたと同じ。「破棄をキャンセルしました」が積まれ、要求0件・IPC 0（不明値を肯定に戻さない）', async (answer) => {
     put({ meta: { registryName: 'myreg', registryAdopted: false } })
     const r = await run(['sakura-apprun'], fakeAsk(answer))
-    expect(r.failed).toEqual([`${SHARED}: 破棄をやめました`])
-    expect(r.steps).toEqual([{ target: 'sakura-apprun', kind: 'cancelled', line: `${SHARED}: 破棄をやめました` }])
+    expect(r.failed).toEqual([`${SHARED}: 破棄をキャンセルしました`])
+    expect(r.steps).toEqual([{ target: 'sakura-apprun', kind: 'cancelled', line: `${SHARED}: 破棄をキャンセルしました` }])
     expect(win.teardownCalls).toEqual([])
     expect(h.calls).toEqual([])
     expect(publishTargets(dir)['sakura-apprun']).toBeTruthy()
@@ -158,7 +159,7 @@ describe('S4 共用型: 確認（選択つき）の答えが true のときだ�
   it('★★★ やめた共用型のあとに続く公開先があれば、名前を挙げて「始めていません」と言い、破棄の口が無いものは挙げない', async () => {
     put({ meta: { registryName: 'myreg', registryAdopted: false } })
     const r = await run(['sakura-apprun', 'sakura-apprun-dedicated', 'vercel'], fakeAsk(false))
-    expect(r.failed).toEqual([`${SHARED}: 破棄をやめました。${PUBLISH_TARGET_LABEL['sakura-apprun-dedicated']}の破棄も始めていません`])
+    expect(r.failed).toEqual([`${SHARED}: 破棄をキャンセルしました。${PUBLISH_TARGET_LABEL['sakura-apprun-dedicated']}の破棄も始めていません`])
   })
 
   it.each([false, undefined, null, 'yes', 1, {}])('★★★ 選択の無い確認（レジストリの記録が無い回）も、答えが true でない値（%j）ならやめたと同じ。IPC 0・要求0件', async (answer) => {
@@ -166,7 +167,7 @@ describe('S4 共用型: 確認（選択つき）の答えが true のときだ�
     const ask = fakeAsk(answer)
     const r = await run(['sakura-apprun'], ask)
     expect(ask.plain).toHaveLength(1)
-    expect(r.failed).toEqual([`${SHARED}: 破棄をやめました`])
+    expect(r.failed).toEqual([`${SHARED}: 破棄をキャンセルしました`])
     expect(win.teardownCalls).toEqual([])
     expect(h.calls).toEqual([])
   })
@@ -178,7 +179,7 @@ describe('S4 共用型: 確認（選択つき）の答えが true のときだ�
     expect(r.failed).toEqual([])
     expect(ask.withChoices).toEqual([])
     expect(ask.plain).toHaveLength(1)
-    expect(win.teardownCalls).toEqual([[dir, SHARED_TEARDOWN_AUTH, { confirmed: true, deleteRegistry: false, registryName: null }]])
+    expect(win.teardownCalls).toEqual([[dir, SHARED_TEARDOWN_AUTH, { confirmed: true, deleteRegistry: false, registryName: null, shownPlacements: SHOWN_A }]])
     expect(h.calls.some(c => c.startsWith('deleteContainerRegistry'))).toBe(false)
     expect(r.warned).toHaveLength(1) // 記録が無いので残るかもしれない、という知らせ
     expect(r.warned[0].target).toBe('sakura-apprun')
@@ -194,7 +195,7 @@ describe('S4 共用型: 置き場（コンテナレジストリ）を消すか�
     const ask = fakeAsk(true)
     const r = await run(['sakura-apprun'], ask)
     expect(ask.withChoices[0].choices.map(c => c.defaultChecked)).toEqual([false])
-    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'scheduleapp' })
+    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'scheduleapp', shownPlacements: SHOWN_A })
     expect(h.calls.some(c => c.startsWith('deleteContainerRegistry'))).toBe(false)
     expect(h.calls.some(c => c === 'listContainerRegistries')).toBe(false)
     expect(r.failed).toEqual([])
@@ -206,7 +207,7 @@ describe('S4 共用型: 置き場（コンテナレジストリ）を消すか�
     put({ meta: { registryName: 'scheduleapp' } })
     h.registryRows = [{ ...REGISTRY_ROW, Status: { registry_name: 'scheduleapp' } }]
     await run(['sakura-apprun'], fakeAsk(true, () => ({ confirmed: true, choices: { deleteRegistry: true } })))
-    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: true, registryName: 'scheduleapp' })
+    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: true, registryName: 'scheduleapp', shownPlacements: SHOWN_A })
     expect(h.calls).toContain('deleteContainerRegistry reg-1')
   })
 
@@ -215,7 +216,7 @@ describe('S4 共用型: 置き場（コンテナレジストリ）を消すか�
     const ask = fakeAsk(true)
     const r = await run(['sakura-apprun'], ask)
     expect(ask.withChoices[0].choices.map(c => c.defaultChecked)).toEqual([false])
-    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg' })
+    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg', shownPlacements: SHOWN_A })
     expect(h.calls.some(c => c.startsWith('deleteContainerRegistry'))).toBe(false)
     expect(r.failed).toEqual([])
     expect(r.warned).toHaveLength(1)
@@ -225,13 +226,13 @@ describe('S4 共用型: 置き場（コンテナレジストリ）を消すか�
   it('★★★ 借り物でも、利用者が選んだら消す。Koto が作った置き場でも、外したら消さない（選択の値がそのまま main へ届く）', async () => {
     put({ meta: { registryName: 'myreg', registryAdopted: true } })
     await run(['sakura-apprun'], fakeAsk(true, () => ({ confirmed: true, choices: { deleteRegistry: true } })))
-    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: true, registryName: 'myreg' })
+    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: true, registryName: 'myreg', shownPlacements: SHOWN_A })
     expect(h.calls).toContain('deleteContainerRegistry reg-1')
 
     resetHarness(); h.registryRows = [REGISTRY_ROW]; win.teardownCalls = []
     put({ meta: { registryName: 'myreg', registryAdopted: false } })
     await run(['sakura-apprun'], fakeAsk(true, () => ({ confirmed: true, choices: { deleteRegistry: false } })))
-    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg' })
+    expect(win.teardownCalls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg', shownPlacements: SHOWN_A })
     expect(h.calls.some(c => c.startsWith('deleteContainerRegistry'))).toBe(false)
   })
 
@@ -346,7 +347,7 @@ describe('S4 共用型: 済んだ回（ok:true）の知らせは、フォルダ�
   })
 })
 
-describe('S4 親の判断（2026-10-10）: HANAMII の破棄が失敗しても共用型へ進む。ただし確認は、同じ保存場所を使う HANAMII のデータも消えることを言う', () => {
+describe('S4 HANAMII が済んでいなければ共用型へ進まない（0.6.24 A-5。2026-10-10 の親の判断「HANAMII が失敗しても共用型へ進む」を、決定 D1 に合わせて改めた）', () => {
   function putWithHanamii() {
     put({ meta: { registryName: 'myreg', registryAdopted: false } })
     fs.writeFileSync(path.join(dir, '.sakuraide.json'), JSON.stringify({
@@ -358,18 +359,30 @@ describe('S4 親の判断（2026-10-10）: HANAMII の破棄が失敗しても�
     }, null, 2), 'utf-8')
   }
 
-  it('★★★ HANAMII が ok:false: 失敗に HANAMII が積まれたうえで、共用型の確認が出る。本文に HANAMII の名前と「データも消えます」がある', async () => {
+  it('★★★ HANAMII が ok:false（受け付けただけ・消せなかった）: HANAMII の行だけが積まれ、行に「共用型の破棄も始めていません」が付く。共用型の確認0・cloud:teardown 0・要求0件・共用型の step は積まない', async () => {
     putWithHanamii()
     const ask = fakeAsk(true)
     const r = await run(['hanamii', 'sakura-apprun'], ask)
     expect(win.hanamiiCalls).toHaveLength(1)
-    expect(r.failed).toEqual([`${HANAMII}: HANAMII の削除を受け付けました（テスト）`])
-    // 共用型の確認（選択つき）は出て、実行された
+    expect(r.failed).toEqual([`${HANAMII}: HANAMII の削除を受け付けました（テスト）。${SHARED}の破棄も始めていません`])
+    expect(r.steps.map(s => `${s.target}:${s.kind}`)).toEqual(['hanamii:failed']) // 共用型の step は積まない（判断が「step が無い」として移さない）
+    expect(r.steps[0]).toMatchObject({ notStarted: `${SHARED}の破棄も始めていません` }) // 結果の部品で出す回は line を描かないので、別に持つ
+    expect(ask.withChoices).toEqual([])
+    expect(win.teardownCalls).toEqual([])
+    expect(h.calls).toEqual([])
+  })
+
+  it('★★★ HANAMII が済んだ（ok:true）なら共用型へ進む。確認は、同じ保存場所を使う HANAMII の名前と「データも消えます」を言う', async () => {
+    putWithHanamii()
+    win.hanamiiReply = { ok: true }
+    const ask = fakeAsk(true)
+    const r = await run(['hanamii', 'sakura-apprun'], ask)
+    expect(r.failed).toEqual([])
+    expect(r.steps.map(s => `${s.target}:${s.kind}`)).toEqual(['hanamii:done', 'sakura-apprun:done'])
     expect(ask.withChoices).toHaveLength(1)
     const body = ask.withChoices[0].body
     expect(body).toContain(`${HANAMII} でも使っているため`)
     expect(body).toContain('そちらで公開中のアプリのデータも消えます')
-    expect(win.teardownCalls).toHaveLength(1)
     expect(h.calls).toContain('deleteBucket koto-data-a')
   })
 
@@ -377,7 +390,7 @@ describe('S4 親の判断（2026-10-10）: HANAMII の破棄が失敗しても�
     putWithHanamii()
     const ask = fakeAsk(false)
     const r = await run(['hanamii', 'sakura-apprun'], ask)
-    expect(r.failed).toEqual([`${HANAMII}: 破棄をやめました。${SHARED}の破棄も始めていません`])
+    expect(r.failed).toEqual([`${HANAMII}: 破棄をキャンセルしました。${SHARED}の破棄も始めていません`])
     expect(ask.withChoices).toEqual([])
     expect(win.teardownCalls).toEqual([])
     expect(win.hanamiiCalls).toEqual([])

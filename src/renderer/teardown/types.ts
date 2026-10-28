@@ -62,8 +62,22 @@ export type TeardownFacts<R> = {
  */
 export type TeardownOutcome<Res> = { cancelled: true } | { cancelled: false; result: Res; nothingToDo?: true }
 
-/** 実行に渡す opts（確認の済みの印と、選択つきの確認で選ばれた値）。選択の無い確認では `choices` を付けない。 */
-export type TeardownInvokeOpts = { confirmed: true; choices?: Readonly<Record<string, boolean>> }
+/**
+ * 確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
+ * 名前だけでは消す範囲が決まらない（実際に消すのは prefix の配下）ので、組で運ぶ。prefix の無い保存場所は `''`。
+ */
+export type ShownPlacement = { bucket: string; prefix: string }
+
+/**
+ * 実行に渡す opts（確認の済みの印・確認で見せた保存場所・選択つきの確認で選ばれた値）。選択の無い確認では `choices` を付けない。
+ * `shownPlacements` は必須（付け忘れを型で止める）。値は flow.ts の `shownPlacementsOf(facts)` の1か所だけが作る。
+ * 保存場所の設定を読めなかった回は `[]`（何も見せていない）。
+ */
+export type TeardownInvokeOpts = {
+  confirmed: true
+  shownPlacements: ShownPlacement[]
+  choices?: Readonly<Record<string, boolean>>
+}
 
 /** 公開先の仕様書。公開先ごとの違いは全部ここに置く（項目の説明は設計書 10.3.3）。 */
 export interface TargetSpec<R, A, Res> {
@@ -82,6 +96,12 @@ export interface TargetSpec<R, A, Res> {
   readRecord(projectDir: string): Promise<R>
   hasWork(record: R): boolean
   targets(record: R): string[]
+  /**
+   * 確認の見出し（`words.confirmTitle`）を、記録の中身で言い換える（0.6.24 A-8）。null・無いときは `words.confirmTitle` のまま。
+   * 共用型は、アプリが無く保存場所・コンテナレジストリだけが残る回に「保存場所を破棄します」と言う（公開を破棄すると言わない）。
+   * **3つの入口（【公開】の 🗑・📡・プロジェクトの削除）は同じ確認の文の作り手（confirm.ts の buildTeardownConfirm）を通る**ので、これ1つで全部に効く。
+   */
+  confirmTitleOf?(record: R): string | null
   /**
    * 確認の中に出す選択（チェック）。無い・空なら、選択の無い確認を出す（今までどおり）。共用型の「コンテナレジストリも削除する」。
    * 1件以上あるのに入口が `confirmWithChoices` を渡していなければ、確認も IPC も出さずに失敗の結果にする（選べない確認で破棄させない）。
