@@ -91,6 +91,37 @@ export async function readSharedTeardownRecord(projectDir: string): Promise<Shar
  */
 export const sharedTeardownHasWork = (r: SharedTeardownRecord): boolean => r.appNames.length > 0 || !!r.registryName || r.placements.length > 0
 
+/**
+ * プロジェクトの削除が「残りの段」として**数える**コンテナレジストリか（0.6.24 A-2・作者の決定 K2）。名前があり、使っているほかのプロジェクトがいないものだけ。
+ * 借り手のいるレジストリだけが残る回は、段を足さない（記録は借りている側に残るので、月額は Koto から辿れる。何も消さない確認とチェックの文の食い違いも増やさない）。
+ * 借り手のいない借り物（adopted）・由来の分からないもの（unknown）は数える（由来は問わない。確認の既定がオフになるだけ）。
+ * `registryUsers` が配列でない（形が読めない）ときは「借り手がいる」側に倒す（数えない＝段を足さない。何も消さない側）。
+ */
+export const sharedRegistryCounted = (r: { registryName: string | null; registryUsers: readonly string[] }): boolean =>
+  !!r.registryName && Array.isArray(r.registryUsers) && r.registryUsers.length === 0
+
+/**
+ * 確認の「コンテナレジストリも削除する」が、既定でオンか（Koto がこのプロジェクトのために作ったと分かっていて、ほかのプロジェクトが使っていないものだけ）。
+ * 確認の選択（choices）と、プロジェクトの削除のチェックの文（「コンテナレジストリを消すかは、次の確認で選べます」。projectDeleteWords.ts）が、同じこの1つを通る（判断を2つ持たない）。
+ */
+export const sharedRegistryDeleteDefault = (r: { registryName: string | null; registryOrigin: RegistryOrigin; registryUsers: readonly string[] }): boolean =>
+  registryDeleteDefault({ registryName: r.registryName, origin: r.registryOrigin, otherUsers: r.registryUsers.length })
+
+/**
+ * 共用型の記録の残りを、利用者に何と呼ぶか（チェックの文・確認の題の名詞。0.6.24 A-2・A-8）。**この1つを、チェックの文と確認の題が使う**（名詞を2つ書かない）。
+ *  ・アプリがある → null（公開の回。名詞では言い換えない）
+ *  ・保存場所だけ → '保存場所' ／ 数えるレジストリだけ → 'コンテナレジストリ' ／ 両方 → '保存場所・コンテナレジストリ'
+ *  ・どれも無い → null（段を足さない回はここへ来ない。来ても、公開の言い方に戻るだけで、何かを消す文は作らない）
+ * `registryCounted` は sharedRegistryCounted の答え（数えないレジストリは、名前があっても無いものとして扱う）。
+ */
+export function sharedLeftoverNoun(r: Pick<SharedTeardownRecord, 'appNames' | 'placements'>, registryCounted: boolean): string | null {
+  if (r.appNames.length > 0) return null
+  const hasPlacements = r.placements.length > 0
+  if (hasPlacements && registryCounted) return '保存場所・コンテナレジストリ'
+  if (hasPlacements) return '保存場所'
+  return registryCounted ? 'コンテナレジストリ' : null
+}
+
 export const sharedTeardownSpec: TargetSpec<SharedTeardownRecord, { heldByMain: true }, SharedTeardownReply> = {
   target: 'sakura-apprun',
   handler: 'cloud:teardown',
@@ -100,6 +131,12 @@ export const sharedTeardownSpec: TargetSpec<SharedTeardownRecord, { heldByMain: 
   // 今の S1・S3 がどちらも無条件に言っている。範囲を広げも狭めもしない（原本に根拠は無い。ファイル冒頭）。
   irreversibleNote: 'always',
   readRecord: readSharedTeardownRecord,
+  // アプリが無く、保存場所・コンテナレジストリだけが残る回は、見出しも「公開を破棄します」と言わない（0.6.24 A-8）。名詞はチェックの文と同じ sharedLeftoverNoun の1つ
+  // （アプリがある回・名詞の無い回は null＝今の見出し）。【公開】の 🗑・📡・プロジェクトの削除の3つの入口すべてが、確認の作り手（confirm.ts）でこれを通る。
+  confirmTitleOf: r => {
+    const noun = sharedLeftoverNoun(r, sharedRegistryCounted(r))
+    return noun === null ? null : `${noun}を破棄します`
+  },
   // 記録に無い残骸（レジストリだけ・保存場所だけ）でも確認を出す（P11）。保存場所は env.json の同意済み + state にだけあるもの
   // （親の判断・2026-10-10: state にだけある保存場所も「言って消す」ので、数える）。
   hasWork: sharedTeardownHasWork,
@@ -119,7 +156,7 @@ export const sharedTeardownSpec: TargetSpec<SharedTeardownRecord, { heldByMain: 
       label: registryDeleteLabel(r.registryName),
       // 既定でオンにするのは、Koto がこのプロジェクトのために作ったと分かっていて（owned）、ほかのプロジェクトが使っていないものだけ。
       // 借りたもの・作ったか分からないもの・ほかのプロジェクトが使っているものは既定オフで、外した理由を note で言う。ほかのアプリのイメージが入っている。
-      defaultChecked: registryDeleteDefault({ registryName: r.registryName, origin: r.registryOrigin, otherUsers: r.registryUsers.length }),
+      defaultChecked: sharedRegistryDeleteDefault(r),
       ...(note ? { note } : {}),
       // 外したときの月額と「後で消す場合は削除して」は、このプロジェクトだけのレジストリにだけ言う（借り物・ほかが使うものには言わない。残す理由は上の note が言う）。
       help: {
@@ -151,6 +188,8 @@ export const sharedTeardownSpec: TargetSpec<SharedTeardownRecord, { heldByMain: 
       deleteRegistry: opts.choices?.deleteRegistry === true,
       // 確認を出した時点の記録の名前。main は記録の名前と一致するときだけ消す（確認のあとで記録が変わったときに別のレジストリを消さない）。
       registryName: record.registryName,
+      // 確認で見せた保存場所（名前と prefix の組）。main は、この組と一致するものだけを消す（0.6.24 F）。流れが作った値をそのまま渡す。
+      shownPlacements: opts.shownPlacements,
     }),
   failure: message => ({ ok: false, message }),
   toView: raw => toTeardownView('sakura-apprun', raw),

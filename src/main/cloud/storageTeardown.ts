@@ -23,8 +23,9 @@
 // バケットを消す道は、ここ（`teardownStorage`）の1か所だけ。共用型・HANAMII・専有型の3つの破棄（`teardownStorageForProject` 経由）と、
 // 公開の apply の削除は、すべてここを通る。
 
-import { teardownPlanFor, type StoragePlacement, type StorageTeardown } from '../../shared/objectStorage'
+import { teardownPlanFor, twinRiskOf, type StoragePlacement, type StorageTeardown } from '../../shared/objectStorage'
 import { bucketUsersFromRecords } from './bucketUsers'
+import { permissionHeldByOthersFs } from './permissionHolders'
 
 /**
  * 片づけに要るストレージ操作だけを切り出したもの（注入で受け取る＝electron 非依存を保つ）。
@@ -41,19 +42,71 @@ export type StorageTeardownClientLike = {
   deletePermission(permissionId: string): Promise<void>
 }
 
+/**
+ * この破棄で消す保存場所のうち、**1件でも**複製（または複製かもしれないもの）がいるか（0.6.24 R1-c）。いれば、記録の鍵にも、名前での鍵の一括の無効化にも触れてはいけない
+ * （複製は元の env.json の名前と記録の鍵 ID を写すので、触ると**元の現役の鍵が切れる**）。判断は `twinRiskOf` の1つ（ここで二重に定義しない）。
+ * 共用型・HANAMII・専有型の破棄（`teardownStorageForProject` が**ループの前に**これで確かめる。ループの途中で分かってからでは、先に回った1件で記録の鍵が切れている）と、
+ * 公開の apply の削除（`apply.ts`）が、同じこれを通る。
+ */
+export function placementsHaveTwinRisk(projectDir: string, placements: readonly StoragePlacement[]): boolean {
+  return placements.some(p => twinRiskOf(bucketUsersFromRecords(projectDir, p.bucket, p.prefix)) !== null)
+}
+
+/**
+ * 記録の鍵（`permissionId`）を、**無効にしてはいけない**か（0.6.24 R2-i）。同じ親フォルダの兄弟が同じ鍵の ID を記録に持つ（`true`）か、確かめられなかった（`'unknown'`。親フォルダの一覧・
+ * 兄弟の記録を読めない）とき true。複製が保存場所の設定を外して**記録の鍵の ID だけを写した**形は、保存場所の prefix で見る `placementsHaveTwinRisk` には見えないので、鍵の ID そのもので見る
+ * （無効にすると、元の現役の鍵が切れる）。鍵が無い（null・空）なら false（無効にするものが無い）。
+ * 記録の鍵を無効にする3か所——共用型・HANAMII・専有型の破棄（`teardownStorageForProject` の**ループの前**）・共用型の保存場所0件の鍵の無効化（`cloudTeardownStorage.ts` の `runStorageStage`）・
+ * 公開の apply の削除（`apply.ts`）——が、同じこれを通る。true のときは鍵を無効にせず、記録の ID も外さない（`permissionRevoked` が false のまま）。名前での鍵の一括の無効化（`sweepKeysFor`）も、
+ * 同じ名前の現役の鍵まで切るので、この回は行わない。
+ */
+export function recordedKeyAtRisk(projectDir: string, permissionId: string | null | undefined): boolean {
+  return recordedKeyRisk(projectDir, permissionId) !== null
+}
+
+/** 記録の鍵を無効にしなかった理由（0.6.24 R3-c）。`held` … 同じ鍵の ID をほかのフォルダの記録が持つ。`unknown` … ほかのフォルダの記録を確かめられなかった。 */
+export type KeyKeptReason = 'held' | 'unknown'
+
+/**
+ * `recordedKeyAtRisk` の理由つきの答え。無効にしてよいときは null（鍵が無い・持つ兄弟がいない）。**判断は `permissionHeldByOthersFs` の1つ**（`recordedKeyAtRisk` はこれの `!== null`）。
+ * 無効にしなかった回の警告（`keyKeptWarning`）を、結果のどこかに出すのに使う（R3-c。黙って残すと、元の現役の鍵を守ったことも、鍵が残っていることも利用者に見えない）。
+ */
+export function recordedKeyRisk(projectDir: string, permissionId: string | null | undefined): KeyKeptReason | null {
+  if (typeof permissionId !== 'string' || permissionId === '') return null
+  const held = permissionHeldByOthersFs(projectDir, permissionId)
+  if (held === false) return null
+  return held === true ? 'held' : 'unknown'
+}
+
+/** 記録の鍵を無効にしなかった回の警告の文（R3-c。文は仕様 9章のとおり）。 */
+export const KEY_KEPT_HELD_WARNING = '保存場所のアクセスキーは、ほかのフォルダの記録も同じものを使っているため、無効にしていません。'
+export const KEY_KEPT_UNKNOWN_WARNING = '保存場所のアクセスキーは、ほかのフォルダの記録を確かめられないため、無効にしていません。'
+const KEY_KEPT_WARNINGS: readonly string[] = [KEY_KEPT_HELD_WARNING, KEY_KEPT_UNKNOWN_WARNING]
+
+/**
+ * 記録の鍵を無効にしなかった回に、結果へ足す警告（`teardownStorageForProject` の `warnings`・保存場所0件の段・`apply.ts` の3か所。0.6.24 R3-c）。
+ * 表示の行にするのは `keyWarningLines`（各行を `⚠️ ` で始める）。
+ */
+export function keyKeptWarning(reason: KeyKeptReason): string {
+  return reason === 'held' ? KEY_KEPT_HELD_WARNING : KEY_KEPT_UNKNOWN_WARNING
+}
+
 /** 記録の鍵を無効にできなかったときの警告の文。呼び手（共用型の破棄）が「鍵の記録を残すか」を決めるのに使う。 */
 export const KEY_REVOKE_FAILED_WARNING = '保存場所のアクセスキーを無効にできませんでした'
 
 /**
  * 鍵の警告（`teardownStorageForProject` の `warnings` など）を、結果に出す行にする。各行を `⚠️ ` で始め、
  * **最後の1行にだけ** `guide`（`keyRevokeGuide`）を足す（同じ案内を何度も言わない）。空なら []。
+ * ただし、無効にしていない警告（`keyKeptWarning`。R3-c）は「最後の1行」に数えず、案内も足さない（下の注）。
  *
  * ここで案内を足すのは、**表示の行を作るとき**だけ。生の `warnings` と `KEY_REVOKE_FAILED_WARNING` の文は変えない
- * （共用型の `cloudTeardown.ts` が `warnings.includes(KEY_REVOKE_FAILED_WARNING)` で「記録の鍵を外すか」を決め、専有型も同じ文を使う）。
+ * （共用型の `ipc/cloudTeardownStorage.ts` の `revokeRecordedKey` が同じ文を使う）。記録から鍵の ID を外すかは、警告の有無ではなく `permissionRevoked`（実際に無効にできたか）だけで決める（0.6.24 R1-c）。
  * 案内の中の名前（`koto-<名前>`）は公開先とプロジェクトで決まり、定数は名前を知らないので、定数には足さない。
  */
 export function keyWarningLines(warnings: readonly string[], guide: string): string[] {
-  const last = warnings.length - 1
+  // 案内を足すのは「無効にできなかった」警告の最後の1行だけ。**無効にしていない警告（R3-c）には足さない**: 案内は「パーミッションを削除してください」で、
+  // ほかのフォルダが使っている現役の鍵（無効にしなかった理由そのもの）を、利用者に削除させてしまう。
+  const last = warnings.map(w => KEY_KEPT_WARNINGS.includes(w)).lastIndexOf(false)
   return warnings.map((w, i) => (i === last ? `⚠️ ${w}${w.endsWith('。') ? '' : '。'}${guide}` : `⚠️ ${w}`))
 }
 
@@ -86,6 +139,16 @@ export type StorageTeardownOutcome =
       note: string
       /** バケットごとは消さなかった理由（`teardownPlanFor` が返したもの。バケットごと消した回は無い）。結果の警告が、残した保存場所の言い分けに使う。 */
       keptReasons?: StorageTeardown['keptReasons']
+      /**
+       * このプロジェクトのデータにも手を付けなかった回だけ true（同じ prefix を記録に持つ複製がいる・`teardownPlanFor` の `keptData`）。
+       * 結果の行が「データを削除しました」ではなく「データは残しました」と言うのに使う（`storageTeardownDoneLine`）。
+       */
+      keptData?: true
+      /**
+       * このよびだしで、記録の鍵（`permissionId`）を**実際に無効にできた**ときだけ true。渡されていない・データを残した回（`keptData`。鍵には触れない）・無効にできなかった回は false。
+       * 呼び手が「記録から鍵の ID を外すか」を決めるのは、これだけ（警告の件数などで決めない。0.6.24 R1-c）。
+       */
+      permissionRevoked: boolean
       /** 片づけ切れなかったこと（失敗ではないが黙らない）。 */
       warnings: string[]
     }
@@ -100,12 +163,17 @@ export type StorageTeardownOutcome =
  *   5. **そのあとで**鍵を無効にする
  *
  * 2 の前に、ほかのプロジェクトの記録を読む（同じ親フォルダの兄弟の env.json・state.json。読めなければ「わからない」＝バケットは消さない）。
+ * このとき**このプロジェクトの prefix も渡す**: 兄弟が同じバケットの同じ prefix を記録に持つ（複製）なら、`teardownPlanFor` はデータにもバケットにも手を付けない
+ * （3・4 を飛ばす。`keptData` を返す）。複製から元のデータを消さない（0.6.24 I-1）。
  *
  * 5 が最後なのは、鍵を先に無効にすると 3・4 が 403 で失敗するため
  * （中身を消せないままバケットだけ残り、課金が続く）。
  *
  * `permissionId` が無い（古いプロジェクトで記録していない）ときは、
  * **鍵の無効化だけ飛ばして片づけは続ける**。
+ *
+ * **データを残した回（`decision.keptData`＝複製かもしれない）は、鍵も無効にしない**（0.6.24 R1-c）。複製は元の記録の鍵 ID を写すので、無効にすると元の現役の鍵が切れる。
+ * 複数の保存場所を順に回すときの「1件でも複製なら鍵に触らない」は、呼び手が `placementsHaveTwinRisk` で先に確かめて `permissionId` を渡さない形で守る。
  */
 export async function teardownStorage(opts: {
   storage: StorageTeardownClientLike
@@ -129,7 +197,7 @@ export async function teardownStorage(opts: {
   }
 
   // **ほかのプロジェクトの記録も見る**（一覧に出ない利用者がいる）。バケットごと消すかの判断だけに使う。
-  const recordUsers = bucketUsersFromRecords(opts.projectDir, bucket)
+  const recordUsers = bucketUsersFromRecords(opts.projectDir, bucket, opts.placement.prefix)
   const decision = teardownPlanFor(opts.placement, allKeys, recordUsers)
   try {
     if (decision.deletePrefix) {
@@ -141,15 +209,17 @@ export async function teardownStorage(opts: {
     return { ok: false, message: `保存場所『${bucket}』の削除に失敗しました: ${e?.message ?? e}` }
   }
 
-  // 鍵も無効にする。残すと、消したはずの保存場所へ届く鍵が生き続ける。
+  // 鍵も無効にする。残すと、消したはずの保存場所へ届く鍵が生き続ける。**データを残した回（複製かもしれない）は無効にしない**（元の現役の鍵が切れる）。
   const warnings: string[] = []
-  if (opts.permissionId) {
-    try { await opts.storage.deletePermission(opts.permissionId) }
+  let permissionRevoked = false
+  if (opts.permissionId && !decision.keptData) {
+    try { await opts.storage.deletePermission(opts.permissionId); permissionRevoked = true }
     catch { warnings.push(KEY_REVOKE_FAILED_WARNING) }
   }
 
   return {
-    ok: true, deletedBucket: decision.deleteBucket, note: decision.note, warnings,
+    ok: true, deletedBucket: decision.deleteBucket, note: decision.note, permissionRevoked, warnings,
     ...(!decision.deleteBucket && decision.keptReasons ? { keptReasons: decision.keptReasons } : {}),
+    ...(decision.keptData ? { keptData: true as const } : {}),
   }
 }

@@ -526,7 +526,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                                 />
                               </div>
                               <div className="flex items-center gap-2 justify-end">
-                                <button onClick={() => setEditingId(null)} disabled={savingEdit} className="text-xs text-ink-secondary px-2 py-1 rounded-md hover:bg-overlay disabled:opacity-40">やめる</button>
+                                <button onClick={() => setEditingId(null)} disabled={savingEdit} className="text-xs text-ink-secondary px-2 py-1 rounded-md hover:bg-overlay disabled:opacity-40">キャンセル</button>
                                 <button onClick={saveEdit} disabled={savingEdit || !editName.trim()} className="text-xs font-semibold text-white sakura-gradient rounded-md px-3 py-1 hover:opacity-90 disabled:opacity-40">
                                   {savingEdit ? '保存中…' : '保存'}
                                 </button>
@@ -616,7 +616,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                     「<span className="text-ink font-medium">{pendingDelete.name}</span>」をさくらのクラウドから削除します。元に戻せません。
                   </p>
                   <div className="flex justify-between items-center">
-                    <button onClick={() => setPendingDelete(null)} disabled={deleting} className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40">やめる</button>
+                    <button onClick={() => setPendingDelete(null)} disabled={deleting} className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40">キャンセル</button>
                     <button onClick={doDelete} disabled={deleting} className="bg-brand-red-fill text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40">
                       {deleting ? '削除中…' : '削除する'}
                     </button>

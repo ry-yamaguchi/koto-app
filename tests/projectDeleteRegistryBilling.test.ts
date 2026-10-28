@@ -19,6 +19,7 @@ vi.mock('../src/main/cloud/client', async (orig) => (await import('./sharedTeard
 import { registerCloudHandlers } from '../src/main/ipc/cloud'
 import { readProjectDeleteFacts } from '../src/renderer/teardown/projectDeleteFacts'
 import { planProjectDeleteTeardown, ownRegistryBillingNote, sharedLeftoverNote } from '../src/renderer/teardown/projectDeletePlan'
+import { keptStorageNoteOf } from '../src/renderer/teardown/projectDeleteWords'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 
 registerCloudHandlers({} as any)
@@ -126,14 +127,20 @@ describe('記録だけが残るプロジェクトの 💾 の行: 記録 → 材
   const COST = `コンテナレジストリ『${REG}』も残ります（消すまで月額220円・税込が続きます）。`
   const NO_COST = `コンテナレジストリ『${REG}』も残ります。`
 
-  /** アプリは無く、レジストリの名前（と印）だけが記録にある。公開の行も無い。 */
-  async function leftoverNote(meta: Record<string, unknown>): Promise<string> {
+  /**
+   * アプリは無く、レジストリの名前（と印）だけが記録にある。公開の行も無い。0.6.24 A-2 以降、借り手のいないレジストリは残りの段として破棄の対象に入る
+   * （チェックを外したときに出る文が、この文）。借り手のいるレジストリだけが残る回は、段を足さない（作者の決定 K2）。
+   */
+  async function leftoverNote(meta: Record<string, unknown>, borrowed = false): Promise<string> {
     setup(dir, { env: [], resources: [], meta: meta as any })
     const facts = await readProjectDeleteFacts(dir)
     expect(facts.targets, '公開先は空（行もアプリも無い）').toEqual([])
-    expect(planProjectDeleteTeardown(facts).teardown).toEqual([])
+    const plan = planProjectDeleteTeardown(facts)
+    expect(plan.teardown, borrowed ? '借り手がいるレジストリだけ → 段を足さない（K2）' : '借り手のいないレジストリ → 残りの段').toEqual(borrowed ? [] : ['sakura-apprun'])
+    expect(plan.leftover).toEqual(borrowed ? undefined : { noun: 'コンテナレジストリ' })
     expect(facts.sharedRegistry, '行が無い回は sharedRegistry ではなく sharedLeftover が言う').toBeNull()
-    return sharedLeftoverNote(facts.sharedLeftover!)
+    expect(keptStorageNoteOf(facts), 'チェックを外した回の 💾').toBe(sharedLeftoverNote(facts.sharedLeftover!))
+    return keptStorageNoteOf(facts)
   }
 
   it('★★★ このプロジェクトのために Koto が作った（owned）レジストリで、借り手がいない → 月額を言う', async () => {
@@ -142,7 +149,7 @@ describe('記録だけが残るプロジェクトの 💾 の行: 記録 → 材
 
   it('★★★ owned でも、ほかのプロジェクトが借りている → 残ることだけ。月額は言わない', async () => {
     borrower('reminder')
-    expect(await leftoverNote({ registryName: REG, registryAdopted: false })).toBe(NO_COST)
+    expect(await leftoverNote({ registryName: REG, registryAdopted: false }, true)).toBe(NO_COST)
   })
 
   it('★★★ 借りたもの（adopted）→ 残ることだけ', async () => {

@@ -72,15 +72,27 @@ describe('R pressProjectDelete: 押し直しで増えた注意は、移す前に
     expect(r.run.phase).toBe('trashed')
   })
 
-  it('★★★ 共用型の残り（レジストリ・保存場所）だけが新しく出てきた回も、移さずに見せる。移すのは見せたあと', async () => {
-    const fresh = facts({ sharedLeftover: { registryName: 'reg', registryOrigin: 'owned', registryUsers: [], placements: [PL] } })
+  const LEFT = { appNames: [], registryName: 'reg', registryOrigin: 'owned' as const, registryUsers: [], placements: [PL] }
+
+  it('★★★ チェックを外している回: 共用型の残り（レジストリ・保存場所）だけが新しく出てきた回も、移さずに見せる。移すのは見せたあと（0.6.24 A-6）', async () => {
+    const fresh = facts({ sharedLeftover: LEFT })
     const first = harness({ nextFacts: fresh })
-    const r = await pressProjectDelete(DIR, { plan: plan(['sakura-apprun']), run: stopped, seen: SEEN }, true, first.deps)
+    const r = await pressProjectDelete(DIR, { plan: plan(['sakura-apprun']), run: stopped, seen: SEEN }, false, first.deps)
     expect(r).toEqual({ run: stopped, facts: fresh })
     expect(first.h.calls).toEqual(['readFacts'])
     const second = harness({ nextFacts: fresh })
-    expect((await pressProjectDelete(DIR, { plan: planProjectDeleteTeardown(fresh), run: stopped, seen: fresh }, true, second.deps)).run.phase).toBe('trashed')
+    expect((await pressProjectDelete(DIR, { plan: planProjectDeleteTeardown(fresh), run: stopped, seen: fresh }, false, second.deps)).run.phase).toBe('trashed')
     expect(second.h.calls).toEqual(['readFacts', ...TRASH])
+  })
+
+  it('★★★ チェックがオンの回は、共用型の残りが増えても止めない。残りも破棄の段に入り、続く確認が名指しする（0.6.24 A-6）。アプリが残っていた回も同じ', async () => {
+    for (const fresh of [facts({ sharedLeftover: LEFT }), facts({ sharedLeftover: { ...LEFT, appNames: ['myapp-app'], placements: [] } })]) {
+      const { h, deps } = harness({ nextFacts: fresh })
+      const r = await pressProjectDelete(DIR, { plan: plan(['sakura-apprun']), run: stopped, seen: SEEN }, true, deps)
+      expect(h.teardownTargets, '残りの段（sakura-apprun）を破棄する').toEqual([['sakura-apprun']])
+      expect(h.calls).toEqual(['readFacts', 'teardown', ...TRASH])
+      expect(r.run.phase).toBe('trashed')
+    }
   })
 
   it('★★ blocked のあとの押し直しでも、増えた注意は先に見せる', async () => {

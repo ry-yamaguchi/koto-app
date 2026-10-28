@@ -162,7 +162,7 @@ export default function KnowledgePacksTab({ apiKey, onUploaded }: Props) {
                   ⚠️ 既存{state.confirmReplace.count}件（このパックで登録済みの資料）を削除して取り込み直します。元に戻せません。よろしいですか？
                 </p>
                 <div className="flex justify-between items-center">
-                  <button onClick={() => cancelReplace(pack.id)} className="text-xs text-ink-secondary px-2 py-1 rounded-md hover:bg-overlay">やめる</button>
+                  <button onClick={() => cancelReplace(pack.id)} className="text-xs text-ink-secondary px-2 py-1 rounded-md hover:bg-overlay">キャンセル</button>
                   <button onClick={() => confirmReplaceAndRun(pack)} className="text-xs font-semibold text-white bg-brand-red-fill rounded-md px-3 py-1.5 hover:opacity-90">
                     削除して取り込む
                   </button>

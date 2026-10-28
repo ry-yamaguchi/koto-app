@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 
 // ── なぜこのテストが要るか（2026-09-25 検分の指摘23・37）────────────────────
 //
-// 破棄は `teardownStorageForProject` を通って、**同意済みの保存場所を全件**片づける。
+// 破棄は `teardownStorageForProject` を通って、**確認で見せた保存場所だけ**を消す（見せるのは同意済みの保存場所の全件。0.6.24 F）。
 // `storage:placement` も全件（`placements`）を返すようになった。ところが**画面が
 // 先頭1件（`r.placement`）しか読んでいなかった**ので、⑥「すべて削除する」の確認には
 // 『A』しか出ないのに、名前が一度も出なかった『B』とその中のデータまで消えていた。

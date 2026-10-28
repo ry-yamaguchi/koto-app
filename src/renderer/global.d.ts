@@ -211,7 +211,20 @@ interface Window {
        * 'material' は「素材（公開しません）」へ入れる。
        */
       importFile(src: string, projectDir: string, purpose?: 'app' | 'material'): Promise<string>
+      /** ふつうのファイル・フォルダだけ移す。記録・プロジェクトのフォルダ・中にプロジェクトがあるフォルダは、理由の文で投げる（0.6.24 E）。 */
       trash(p: string): Promise<void>
+      /**
+       * `trash` が通るかを、動かさずに聞く。`kind` は断った理由（`'project'` はプロジェクトの根＝削除の画面へ振り分ける・
+       * `'denied'` はホームの深さの守り）。`message` はそのまま画面に出せる文。
+       */
+      trashCheck(p: string): Promise<{ ok: true } | { ok: false; kind: 'denied' | 'record' | 'project' | 'workspace' | 'unknown'; message: string }>
+      /**
+       * プロジェクトのフォルダをゴミ箱へ移す（プロジェクトの削除の最後の段）。`confirmed: true` が無い・処理が走っている・公開の記録（`.sakuraide.json`・`.sakura-cloud/state.json`）が読めない・専有型が残っている回は移さず `ok:false`。
+       * `skippedForTwins` は**必須**（画面の plan が、覆う複製があるために破棄を外した公開先。無ければ `[]`）。main は移す直前に、その公開先の覆う複製を読み直し、
+       * 1つでも無くなっていた・確かめられなかった回は移さず `reason: 'twins-gone'` で断る（文は言い分ける。画面は材料を読み直して plan を作り直す）。配列でない・知らない公開先の名前を含む回も断る。
+       */
+      trashProject(dir: string, opts: { confirmed: true; skippedForTwins: Array<'hanamii' | 'sakura-apprun' | 'sakura-apprun-dedicated' | 'sakura-rental' | 'vercel'> }): Promise<{ ok: true } | { ok: false; message: string; reason?: 'twins-gone' }>
+      /** 同じフォルダの中での名前の変更。記録・プロジェクトのフォルダは理由の文で投げる。 */
       rename(oldPath: string, newName: string): Promise<string>
       watchDir(dir: string, cb: () => void): () => void
       homeDir(): Promise<string>
@@ -385,9 +398,9 @@ interface Window {
       createBucket(name: string): Promise<{ ok: boolean; bucket?: string; message?: string }>
       /**
        * `placement` は先頭の1件（「用意済みか」の表示に使う）。
-       * **「何が消えるか」を見せる画面は `placements`（全件）を使うこと**——破棄は全件を
-       * 片づけるので、1件だけ名指しすると、名前が出なかった保存場所とデータまで消える
-       * （2026-09-25 検分の指摘23・掟10）。
+       * **「何が消えるか」を見せる画面は `placements`（全件）を使うこと**——破棄は確認で見せた保存場所だけを
+       * 消すので（0.6.24 F）、1件だけ名指しすると、名前が出なかった保存場所は消されずに残り、月額が続く
+       * （F の前は、全件を片づけていたので、名前が出ないまま消えていた。2026-09-25 検分の指摘23・掟10）。
        */
       placement(projectDir: string): Promise<{
         ok: boolean
@@ -493,9 +506,14 @@ interface Window {
         checks: { id: string; label: string; status: 'ok' | 'warn' | 'ng'; note: string; fix?: 'reset-registry' | 'ask-ai' | 'ai-fix'; fixPrompt?: string; unusedFiles?: string[] }[]
         message?: string
       }>
-      teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null }): Promise<{
+      /**
+       * `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。必須（付け忘れを型で止める）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
+       * 見せていない・形が違うものは消さない。`skippedBuckets` は、その理由で消さなかった保存場所（残れば月額が続く）。
+       */
+      teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{
         ok: boolean; appDeleted?: boolean; executed?: string[]; skipped?: string[]
         remainingBucket?: string; remainingBuckets?: string[]
+        skippedBuckets?: string[]
         keptBucketName?: string | null; keptBucketNames?: string[]; keptRegistryName?: string; keptRegistryUnnamed?: boolean
         /** 残した保存場所の理由（ほかのプロジェクトも使っている／Koto が作ったのではないファイルがある）。警告が「後で消す場合は削除して」と言ってよいかを決める。 */
         keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[]
@@ -506,6 +524,13 @@ interface Window {
       /** 破棄の確認に出す材料。読むだけ（外部へ要求を出さない）。env.json が無い・読めないときは ok:false。 */
       teardownRecord(projectDir: string): Promise<
         | { ok: true; record: { appNames: string[]; registryName: string | null; registryOrigin: 'owned' | 'adopted' | 'unknown'; registryUsers: string[]; placements: Array<{ bucket: string; prefix: string; shared: boolean }>; stateOnlyBuckets: string[] } }
+        | { ok: false; message: string }>
+      /**
+       * 同じ公開の記録（HANAMII の projectId・共用型の apprun-app の id・専有型のリソース ID）を持つ、同じ親フォルダの別のフォルダ（複製）の名前を、公開先ごとに返す。
+       * 読むだけ（外部へ要求を出さない・何も書かない）。複製の判断は、3つの破棄の main が破棄の前に確かめるものと同じ（0.6.24 I-3）。`projectDir` が不正なら ok:false。
+       */
+      recordTwins(projectDir: string): Promise<
+        | { ok: true; twins: { hanamii: string[]; 'sakura-apprun': string[]; 'sakura-apprun-dedicated': string[] } }
         | { ok: false; message: string }>
       /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
       registryName(projectDir: string): Promise<{ ok: boolean; name: string | null }>
@@ -668,9 +693,12 @@ interface Window {
        *   （利用者が自分で置いたファイルがある・ほかのプロジェクトが使っている）。**残れば月額も続く**
        * - `deletionAccepted` … HANAMII が削除を受け付けただけで、まだ終わっていない（原本は 202）。このとき
        *   `ok:false`・`appDeleted:false` で、保存場所にも記録にも触れていない。専有型の `inProgress`（Koto が待ち切れなかった）とは別の事実
+       * - `shownPlacements`（opts）… 確認で見せた保存場所（名前と prefix の組）。必須。main は、この組と一致する保存場所だけを消す（0.6.24 F）
+       * - `skippedBuckets` … 見せていない・形が違うために消さなかった保存場所（残れば月額が続く）
        */
-      teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string }): Promise<{
+      teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{
         ok: boolean; appDeleted?: boolean; executed?: string[]; remainingBucket?: string; remainingBuckets?: string[]
+        skippedBuckets?: string[]
         keptBucketName?: string; keptBucketNames?: string[]; message?: string
         keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[]
         deletionAccepted?: boolean
@@ -903,12 +931,15 @@ interface Window {
       // 以前は「LB→ASG→クラスタ」と書いていたが、実装はアプリの段が先頭にある）。
       // opts.confirmed は上と同じ意味。共通の骨（main の cloud/teardownShell.ts）に載っている（0.6.22 段階3B-1）。
       // opts は必須（`?` のままだと、確認の印を付け忘れた呼び出しが型で止まらない。HANAMII・共用型と同じ）。
+      // opts.shownPlacements は確認で見せた保存場所（名前と prefix の組）。必須。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
+      // skippedBuckets は、見せていない・形が違うために消さなかった保存場所（残れば月額が続く）。
       // #39: 各段は一覧から消えるまで待つ。待ち切れず(timeout)止まったときだけ inProgress が立つ
       // （「まだ残っています」＝失敗、とは区別する。画面は黄色い注意＋再開導線を出す）。
-      teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean }): Promise<{
+      teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{
         ok: boolean
         executed: string[]
         message: string
+        skippedBuckets?: string[]
         // 2026-09-24 検分の指摘5: storageBucket は**保存場所だけ**毛色が違う（IDではなくバケット名）。
         // 片づけに失敗した回、ここが空のままだと画面の「残っています＝課金が続きます」に1件も出ない。
         remaining: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string; storageBucket?: string }

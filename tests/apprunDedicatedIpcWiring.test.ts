@@ -162,7 +162,7 @@ describe('main: 破棄の入口は apprunDedicated:teardown の1つ（手順6も
     expect(spec).not.toContain('zoneOf: recordedZone')
     expect(spec).toContain('teardownFlow(auth, projectDir, { confirmed: true, progress, onStage })')
     // 破棄は保存場所の片づけまで通る（アプリだけで止まると、クラスタが消えずに課金が続く）
-    expect(spec).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage)')
+    expect(spec).toContain('teardownProjectStorage(auth, projectDir, res, progress, onStage, ctx.opts.shownPlacements)')
     // 公開記録（📡 一覧の行）を片づけるのは main の骨のここだけ（画面は消さない）
     expect(spec).toContain('shouldForgetRecord: s => shouldForgetPublishRecord(s),')
     expect(spec).toContain("forgetRecord: ctx => forgetPublishTargetFs(ctx.projectDir, 'sakura-apprun-dedicated'),")

@@ -10,6 +10,7 @@ import path from 'node:path'
 // **出た要求の一覧**（バケット削除が0件・このプロジェクトのキーだけ消す）で固定する（掟10。ソースの文字列は読まない）。
 // 専有型・HANAMII の破棄は tests/apprunDedicatedStorageTeardown.test.ts・tests/hanamiiStorageTeardown.test.ts に同じ形の試験がある。
 import { A, B, APP, OK_AUTH, PREFIX, CONSENTED_AT, bucketRef, h, resetHarness, newProjectDir, workspaceOf, setup, envBuckets, stateKinds, writePublishRecord, publishTargets } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
 vi.mock('../src/main/cloud/auth', async (orig) => (await import('./sharedTeardownHarness')).authMock(await orig()))
@@ -20,7 +21,8 @@ import { registerCloudHandlers } from '../src/main/ipc/cloud'
 import { teardownRemainingWarnings } from '../src/shared/cloudCost'
 
 registerCloudHandlers({} as any)
-const teardown = h.handlers.get('cloud:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
 const EVENT = {}
 const GO = { confirmed: true, deleteRegistry: false, registryName: null }
 const S = A // 共用の保存場所（実機の koto-rc-s1019）
@@ -90,7 +92,9 @@ describe('★★★ cloud:teardown: 実機の再現（S のキーには自分の
     const reply = await teardown(EVENT, dir, OK_AUTH, GO)
     expect(reply.ok).toBe(true)
     expect(sawDeleteBucket(S)).toBe(false)
-    expect(requestsOn(S)).toEqual([`listAllKeys ${S}`, `deleteKeys ${S}`])
+    // 0.6.24 R1-b: 読めない兄弟は複製かもしれない。バケットだけでなく、このプロジェクトのデータ（キー）にも手を付けない
+    expect(requestsOn(S)).toEqual([`listAllKeys ${S}`])
+    expect(reply.executed.find((l: string) => l.includes(S))).toBe(`保存場所『${S}』のデータは残しました — フォルダ『broken』の記録を読めないため、同じデータを使っているか確かめられませんでした。`)
     expect(reply.keptBucketName).toBe(S)
     expect(reply.keptBucketsUsedByOthers).toBeUndefined()
     const warning = teardownRemainingWarnings(reply).join('\n')
@@ -139,8 +143,10 @@ describe('★★★ cloud:teardown: 回帰 — 同じ S を使う A・B を順�
   const PA = 'projects/proj-a/'
   const PB = 'projects/proj-b/'
   /** 共用型で公開中のプロジェクト（S を同意済み・公開の記録＝sakura-apprun の行あり・アプリあり）。 */
-  function publishedProject(projectDir: string, prefix: string) {
-    setup(projectDir, { env: [S], resources: [bucketRef(S), APP], envExtra: () => ({ prefix }) })
+  // A と B は別のプロジェクト＝別のアプリ（同じ apprun-app の id なら、同じ親フォルダの複製として破棄が断られる。0.6.24 I-2）
+  const APP_B = { ...APP, id: 'app-b', key: 'apprun-app:proj-b' }
+  function publishedProject(projectDir: string, prefix: string, app = APP) {
+    setup(projectDir, { env: [S], resources: [bucketRef(S), app], envExtra: () => ({ prefix }) })
     writePublishRecord(projectDir, { 'sakura-apprun': { publishedAt: '2026-10-19T00:00:00.000Z', url: 'https://x.example/' } })
   }
 
@@ -148,7 +154,7 @@ describe('★★★ cloud:teardown: 回帰 — 同じ S を使う A・B を順�
     const dirB = path.join(workspaceOf(dir), 'proj-b')
     fs.mkdirSync(dirB)
     publishedProject(dir, PA)
-    publishedProject(dirB, PB)
+    publishedProject(dirB, PB, APP_B)
 
     // 1. A を破棄。S のキーは A の prefix だけ（B の prefix は目印ごと消えていた・実機と同じ）。B は公開中なので S は残る
     h.keysByBucket[S] = [`${PA}data.json`]

@@ -81,6 +81,7 @@ import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated
 import { registerProjectOpsHandlers } from '../src/main/ipc/projectOps'
 import { registerStageTimingHandlers } from '../src/main/ipc/stageTiming'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
+import { isolatedProjectDir } from './isolatedProject'
 import { initStageTimingStore, stageTimingFilePath, loadStageTimings } from '../src/main/stageTimingStore'
 import { writeApprunDedicatedRecordFs } from '../src/main/publishMetaFs'
 import { defaultSpec } from '../src/main/cloud/spec'
@@ -103,7 +104,7 @@ let sent: string[] = []
 const EVENT = { sender: { send: (_c: string, m: string) => { sent.push(m) } } }
 
 function newProject(): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-stagehandlers-'))
+  const d = isolatedProjectDir('koto-stagehandlers-') // 自分だけの親フォルダの中（複製の確かめが、ほかの試験の残りを兄弟として読まない。0.6.24 I-2）
   fs.mkdirSync(path.join(d, '.sakura-cloud'), { recursive: true })
   fs.writeFileSync(path.join(d, '.sakura-cloud', 'env.json'), JSON.stringify(defaultSpec({ name: 'myapp', hasDockerfile: false }), null, 2), 'utf-8')
   fs.writeFileSync(path.join(d, 'index.html'), '<html><body>hi</body></html>', 'utf-8')

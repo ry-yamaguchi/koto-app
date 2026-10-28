@@ -109,6 +109,66 @@ describe('moveFilesToFs: 保護パス拒否は移動元・移動先の両方（�
   })
 })
 
+describe('★★★ T-E5 moveFilesToFs: `..` を含む相対パスで、記録を守りから逃がさない（0.6.24 E-4・0.6.23 検分の (4)）', () => {
+  // 守り（isProtectedWritePath）は、段の数で「プロジェクト直下のメタ情報」を見分ける。`a/../.sakuraide.json` は、そのままでは段が3つで
+  // 直下とみなされず素通りし、confineToProject が正規化した先（プロジェクト直下の `.sakuraide.json`）を、素材置き場へ移せた。
+  // 正規化した相対パス（path.relative(projectDir, fromFull)）で当てる。
+
+  it('★★★ `a/../.sakuraide.json` → 断る（dest によらず）。記録は動かない・移動先も作られない', () => {
+    write('.sakuraide.json', '{"name":"p"}'); write('a/keep.txt', 'k')
+    for (const dest of ['materials', 'publish'] as const) {
+      const r = moveFilesToFs(dir, ['a/../.sakuraide.json'], dest)
+      expect(r.ok, dest).toBe(false)
+      expect(r.moved, dest).toEqual([])
+      expect(read('.sakuraide.json'), dest).toBe('{"name":"p"}')
+      expect(exists(`${MATERIALS_DIR}/.sakuraide.json`), dest).toBe(false)
+      expect(exists(`${PUBLISH_DIR}/.sakuraide.json`), dest).toBe(false)
+    }
+  })
+
+  it('★★★ 管理領域へ `..` で戻る形（`a/../.sakura-cloud/state.json`・`public/../.sakuraide-backup/x`・`./.sakuraide.json`・`.sakura-cloud/../.sakuraide.json`・`a/../.env`）も断る', () => {
+    write('.sakuraide.json', '{}'); write('.sakura-cloud/state.json', '{}'); write('.sakuraide-backup/x', 'x'); write('.env', 'K=1')
+    for (const rel of ['a/../.sakura-cloud/state.json', 'public/../.sakuraide-backup/x', './.sakuraide.json', '.sakura-cloud/../.sakuraide.json', 'a/../.env', 'a/b/../../.SAKURAIDE.JSON']) {
+      const r = moveFilesToFs(dir, [rel], 'materials')
+      expect(r.ok, rel).toBe(false)
+      expect(r.moved, rel).toEqual([])
+    }
+    expect(read('.sakuraide.json')).toBe('{}')
+    expect(read('.sakura-cloud/state.json')).toBe('{}')
+    expect(read('.sakuraide-backup/x')).toBe('x')
+    expect(read('.env')).toBe('K=1')
+    expect(exists(MATERIALS_DIR)).toBe(false) // 何も作られていない
+  })
+
+  it('★★ 一括の中に1件でも記録があれば、全体を中止する（ふつうのファイルも動かさない）', () => {
+    write('.sakuraide.json', '{}'); write('a.png', 'a')
+    const r = moveFilesToFs(dir, ['a.png', 'x/../.sakuraide.json'], 'materials')
+    expect(r.ok).toBe(false)
+    expect(exists('a.png')).toBe(true)
+    expect(exists(`${MATERIALS_DIR}/a.png`)).toBe(false)
+  })
+
+  it('★★ プロジェクトのフォルダそのもの（`.`・`a/..`）は自分の中へ移せないので断る', () => {
+    write('a.png', 'a')
+    for (const rel of ['.', 'a/..', './']) {
+      const r = moveFilesToFs(dir, [rel], 'materials')
+      expect(r.ok, rel).toBe(false)
+      expect(r.moved, rel).toEqual([])
+      expect(r.message, rel).toContain('プロジェクトのフォルダそのものは移動できません') // 自分の中へ移そうとして、途中で落ちる前に、検証で断る
+    }
+    expect(exists('a.png')).toBe(true)
+    expect(exists(MATERIALS_DIR)).toBe(false)
+  })
+
+  it('通す側: `..` を含んでいても、正規化した先がふつうのファイルなら移せる（止めすぎない）', () => {
+    write('public/a.png', 'a'); write('b/x.txt', 'x')
+    const r = moveFilesToFs(dir, ['b/../public/a.png'], 'materials')
+    expect(r.ok).toBe(true)
+    expect(exists(`${MATERIALS_DIR}/a.png`)).toBe(true)
+    expect(exists('public/a.png')).toBe(false)
+  })
+})
+
 describe('moveFilesToFs: 🕘 履歴（dest="publish" でも移動元・移動先の両方を同じスナップショットIDで退避する）', () => {
   it('⑤ 移動元（内容退避）・移動先（まだ無かった印）の両方が同じ snapshotId で記録される', () => {
     write(`${MATERIALS_DIR}/a.png`, '画像のふり')

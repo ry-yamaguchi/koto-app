@@ -21,9 +21,10 @@ const SIDEBAR = 'src/renderer/components/Sidebar.tsx'
 const sidebar = code(SIDEBAR)
 
 describe('Sidebar: ダイアログを開く口は 3 つのまま。開くだけで、状態は持たない', () => {
-  it('★★ setConfirmProjDelete( に渡すのは、パス 3 つ（一覧の行・開いているプロジェクト・未オープン画面の行）と、閉じる null の 1 つだけ', () => {
+  it('★★ setConfirmProjDelete( に渡すのは、パス 4 つ（一覧の行・開いているプロジェクト・未オープン画面の行・ファイル一覧でプロジェクトの根の行を削除した回〔0.6.24 E-4。deleteFileEntry の openProjectDelete〕）と、閉じる null の 1 つだけ', () => {
     const args = [...sidebar.matchAll(/setConfirmProjDelete\(([^)]*)\)/g)].map(m => m[1])
-    expect(args.sort()).toEqual(['null', 'currentDir', 'p', 'p'].sort())
+    expect(args.sort()).toEqual(['null', 'currentDir', 'p', 'p', 'dir'].sort())
+    expect(sidebar).toContain('openProjectDelete: dir => setConfirmProjDelete(dir),') // 4 つ目の口は、これ 1 か所
   })
 
   it('★★★ <ProjectDeleteDialog は 1 か所だけ。key・projectDir に同じパスを渡し、閉じる口は setConfirmProjDelete(null)、後始末は afterProjectDeleted', () => {
@@ -38,8 +39,9 @@ describe('Sidebar: ダイアログを開く口は 3 つのまま。開くだけ�
       'teardownPublished', 'readPublishTargetsChecked', 'blocksProjectDeleteFor', 'useConfirmChoices', 'choicesConfirmElement',
       'registryName(', 'storage.placement(', 'apprunDedicated.state(', 'projectDeleteRegistryNote', 'manualTeardownGuide', 'teardownDataNoteForAll',
     ]) expect(sidebar, w).not.toContain(w)
-    expect(sidebar.match(/fs\.trash\(/g), 'ファイルの削除の 1 か所だけ').toHaveLength(1)
-    expect(sidebar).toContain('fs.trash(entry.path)')
+    expect(sidebar.match(/fs\.trash\(/g), 'ファイルの削除の 1 か所だけ（deleteFileEntry に渡す口。先に fs.trashCheck で聞く）').toHaveLength(1)
+    expect(sidebar).toContain('trash: p => window.electronAPI.fs.trash(p),')
+    expect(sidebar).not.toContain('fs.trash(entry.path)')
   })
 
   it('★ Sidebar は 1,209 行から 300 行以上短くなった（約 330 行をダイアログへ移した。10.9.15 の 7）', () => {

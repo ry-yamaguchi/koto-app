@@ -7,6 +7,7 @@ import fs from 'node:fs'
 // 「共用型 8〜14」）。ここは**本物の main が返した値**で比べる——main の返し方（appDeleted・remainingBuckets・keptBucketNames・⚠️ の行）を
 // 変えると、ここが落ちる。偽の client・偽の保存場所の作りは tests/sharedTeardownHarness.ts（掟10: 要求の一覧で固定）。
 import { A, B, PREFIX, APP, OK_AUTH, REGISTRY_ROW, bucketRef, h, resetHarness, newProjectDir, setup } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 import type { EnvState, ResourceRef } from '../src/main/cloud/state'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
@@ -23,7 +24,8 @@ import {
 } from '../src/shared/teardownResult'
 
 registerCloudHandlers({} as any)
-const teardown = h.handlers.get('cloud:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
 const EVENT = {}
 const SHARED = 'sakura-apprun' as const
 // コンテナレジストリは「消す」を選んだ形にそろえる（記録に名前が無い・残した、の警告が混ざらない）。レジストリの警告は C-8・C-11・C-12 の持ち場

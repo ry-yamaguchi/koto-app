@@ -8,36 +8,36 @@ import { projectDeleteBlockOf, projectDeleteBlockNote, planProjectDeleteTeardown
 // D1=1 で、保存場所だけ残った回は 📡 の行が残るため）。
 
 const facts = (over: Partial<ProjectDeleteFacts>): ProjectDeleteFacts => ({
-  targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, ...over,
+  targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null, ...over,
 })
 
 describe('projectDeleteBlockOf: 保存場所の残りの全件（storageLeftoverBuckets）があればその全件、無ければ storageLeftoverBucket の1件（旧い記録）', () => {
   it('★★★ 全件があれば全件の名前で言う。全件が無い・空・読めない値だけなら、1件の印（旧い記録）', () => {
-    expect(projectDeleteBlockOf([], { storageLeftoverBucket: 'koto-a', storageLeftoverBuckets: ['koto-a', 'koto-b'] }))
+    expect(projectDeleteBlockOf([], { storageLeftoverBucket: 'koto-a', storageLeftoverBuckets: ['koto-a', 'koto-b'] }, false))
       .toEqual({ reason: 'dedicated-storage-leftover', buckets: ['koto-a', 'koto-b'] })
     for (const buckets of [null, undefined, [], ['', 5 as any]]) {
-      expect(projectDeleteBlockOf([], { storageLeftoverBucket: 'koto-a', storageLeftoverBuckets: buckets }), JSON.stringify(buckets))
+      expect(projectDeleteBlockOf([], { storageLeftoverBucket: 'koto-a', storageLeftoverBuckets: buckets }, false), JSON.stringify(buckets))
         .toEqual({ reason: 'dedicated-storage-leftover', buckets: ['koto-a'] })
     }
   })
 
   it('★★★ 行があっても、保存場所の残りだけなら全件の名前で言う（D3）。ID が1つでもあれば全件があっても dedicated', () => {
-    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { storageLeftoverBuckets: ['koto-a', 'koto-b'] }))
+    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { storageLeftoverBuckets: ['koto-a', 'koto-b'] }, false))
       .toEqual({ reason: 'dedicated-storage-leftover', buckets: ['koto-a', 'koto-b'] })
-    expect(projectDeleteBlockOf(['hanamii', 'sakura-apprun-dedicated'], { storageLeftoverBucket: 'koto-a' }))
+    expect(projectDeleteBlockOf(['hanamii', 'sakura-apprun-dedicated'], { storageLeftoverBucket: 'koto-a' }, false))
       .toEqual({ reason: 'dedicated-storage-leftover', buckets: ['koto-a'] })
-    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { clusterID: 'c-1', storageLeftoverBuckets: ['koto-a', 'koto-b'] })).toEqual({ reason: 'dedicated' })
-    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { clusterID: 'c-1', storageLeftoverBucket: 'koto-a' })).toEqual({ reason: 'dedicated' })
+    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { clusterID: 'c-1', storageLeftoverBuckets: ['koto-a', 'koto-b'] }, false)).toEqual({ reason: 'dedicated' })
+    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { clusterID: 'c-1', storageLeftoverBucket: 'koto-a' }, false)).toEqual({ reason: 'dedicated' })
     // 行だけがあり記録が空（幽霊の行）・形が読めない保存場所だけ → dedicated のまま（言い分けるのは「ID が無く、読める名前がある」ときだけ）
-    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], {})).toEqual({ reason: 'dedicated' })
-    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { storageLeftoverBucket: 5 as any })).toEqual({ reason: 'dedicated' })
-    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { storageLeftoverBucket: '' })).toEqual({ reason: 'dedicated' })
-    expect(projectDeleteBlockOf([], { clusterID: 'c-1', storageLeftoverBucket: 'koto-a', storageLeftoverBuckets: ['koto-a', 'koto-b'] })).toEqual({ reason: 'dedicated' })
+    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], {}, false)).toEqual({ reason: 'dedicated' })
+    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { storageLeftoverBucket: 5 as any }, false)).toEqual({ reason: 'dedicated' })
+    expect(projectDeleteBlockOf(['sakura-apprun-dedicated'], { storageLeftoverBucket: '' }, false)).toEqual({ reason: 'dedicated' })
+    expect(projectDeleteBlockOf([], { clusterID: 'c-1', storageLeftoverBucket: 'koto-a', storageLeftoverBuckets: ['koto-a', 'koto-b'] }, false)).toEqual({ reason: 'dedicated' })
   })
 
   it('全件が読めない値だけで1件の印も無い → 止めない。1件の印が読めない値（数）で全件が文字列 → 止める側（dedicated）に倒す', () => {
-    expect(projectDeleteBlockOf([], { storageLeftoverBuckets: ['', 5 as any] })).toBeNull()
-    expect(projectDeleteBlockOf([], { storageLeftoverBucket: 5 as any, storageLeftoverBuckets: 'koto-a' as any })).toEqual({ reason: 'dedicated' })
+    expect(projectDeleteBlockOf([], { storageLeftoverBuckets: ['', 5 as any] }, false)).toBeNull()
+    expect(projectDeleteBlockOf([], { storageLeftoverBucket: 5 as any, storageLeftoverBuckets: 'koto-a' as any }, false)).toEqual({ reason: 'dedicated' })
   })
 
   it('planProjectDeleteTeardown を通しても、全件の名前が block に出る（公開先の行が無くても。専有型の行があっても。teardown には専有型を入れない）', () => {

@@ -19,6 +19,8 @@ import { adoptedRegistryNote, registryDeleteDefault, registryDeleteHelp, registr
 const A = { bucket: 'koto-data-a', prefix: 'projects/myapp/', shared: true }
 const B = { bucket: 'koto-data-b', prefix: 'projects/myapp/', shared: true }
 const spec = sharedTeardownSpec
+/** A・B を確認で見せたときの、main へ運ぶ組（名前と prefix）。 */
+const SHOWN = [{ bucket: 'koto-data-a', prefix: 'projects/myapp/' }, { bucket: 'koto-data-b', prefix: 'projects/myapp/' }]
 
 const rec = (over: Partial<SharedTeardownRecord> = {}): SharedTeardownRecord => ({
   appNames: ['myapp'], registryName: 'myreg', registryOrigin: 'owned', registryUsers: [], placements: [A, B], stateOnlyBuckets: [], ...over,
@@ -115,10 +117,10 @@ describe('B 共用型の確認の文', () => {
     expect(body).toContain('設定から外した保存場所『koto-data-b』も削除します。')
   })
 
-  it('★★ 保存場所を問い合わせられなかった（call。placementsOf が投げた回）注意は、共通の文のまま出る。ほかの公開先の名前つき', () => {
+  it('★★ 保存場所を問い合わせられなかった（call。placementsOf が投げた回）注意は、共通の文のまま出る。名前を挙げられない保存場所は削除しない（ほかの公開先のデータが消える、とは言わない。0.6.24 F-6）', () => {
     const c = confirmOf(rec({ placements: [] }), { placementsUnreadable: true, placementsUnreadableCause: 'call', otherTargets: ['🌸 HANAMII'] }).body
-    expect(c).toContain('保存場所の設定を問い合わせられなかったため')
-    expect(c).toContain('🌸 HANAMII')
+    expect(c).toContain('保存場所の設定を問い合わせられなかったため、保存場所の名前を挙げられません。名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。')
+    expect(c).not.toContain('🌸 HANAMII')
   })
 })
 
@@ -254,12 +256,13 @@ describe('仕様書の単体', () => {
       [{ deleteRegistry: 'true' as unknown as boolean }, false], [{ deleteRegistry: 1 as unknown as boolean }, false],
     ] as const) {
       calls.length = 0
-      await spec.invoke('/proj', SHARED_TEARDOWN_AUTH, { confirmed: true, ...(choices ? { choices } : {}) }, r)
-      expect(calls).toEqual([['/proj', { heldByMain: true }, { confirmed: true, deleteRegistry: want, registryName: 'myreg' }]])
+      // shownPlacements（確認で見せた保存場所の組）は、流れが作った値をそのまま main へ渡す（仕様書は選ばない・変えない）
+      await spec.invoke('/proj', SHARED_TEARDOWN_AUTH, { confirmed: true, shownPlacements: SHOWN, ...(choices ? { choices } : {}) }, r)
+      expect(calls).toEqual([['/proj', { heldByMain: true }, { confirmed: true, deleteRegistry: want, registryName: 'myreg', shownPlacements: SHOWN }]])
     }
     calls.length = 0
-    await spec.invoke('/proj', SHARED_TEARDOWN_AUTH, { confirmed: true }, rec({ registryName: null }))
-    expect(calls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: null })
+    await spec.invoke('/proj', SHARED_TEARDOWN_AUTH, { confirmed: true, shownPlacements: [] }, rec({ registryName: null }))
+    expect(calls[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: null, shownPlacements: [] })
   })
 
   it('★★ readRecord: main の cloud:teardownRecord の記録を、押した時点で読む（コピーを返す）', async () => {
@@ -335,7 +338,8 @@ describe('本物の流れ（runTeardownFlow + electronFlowDeps）に共用型の
     const asked: ConfirmWithChoicesOptions[] = []
     const out = await runTeardownFlow('/proj', spec, electronFlowDeps('/proj', spec, entry(asked, { confirmed: true, choices: { deleteRegistry: false } })))
     expect(out).toEqual({ cancelled: false, result: { ok: true } })
-    expect(calls.teardown).toEqual([['/proj', { heldByMain: true }, { confirmed: true, deleteRegistry: false, registryName: 'myreg' }]])
+    // 確認で見せた保存場所（名前と prefix の組）は、記録の placements（確認の 💾 が名指しする全件）のまま届く（0.6.24 F）
+    expect(calls.teardown).toEqual([['/proj', { heldByMain: true }, { confirmed: true, deleteRegistry: false, registryName: 'myreg', shownPlacements: SHOWN }]])
     expect(calls.placement).toBe(0)
     expect(asked).toHaveLength(1)
     expect(asked[0].choices.map(c => c.id)).toEqual(['deleteRegistry'])
@@ -353,7 +357,7 @@ describe('本物の流れ（runTeardownFlow + electronFlowDeps）に共用型の
     }
   })
 
-  it('★★★ やめる → cloud.teardown は呼ばれない', async () => {
+  it('★★★ キャンセル → cloud.teardown は呼ばれない', async () => {
     const calls = installWindow(rec())
     const out = await runTeardownFlow('/proj', spec, electronFlowDeps('/proj', spec, entry([], { confirmed: false, choices: {} })))
     expect(out).toEqual({ cancelled: true })

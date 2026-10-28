@@ -19,7 +19,7 @@ export const B = { bucket: 'koto-data-bbb', prefix: 'projects/app/', shared: tru
 
 /** 確認（ConfirmModal）の「破棄する」。入口の「🗑 この公開を破棄する」にも「破棄する」が含まれるので、文字がちょうど一致するほうを取る。 */
 export const confirmButton = (m: Mounted) => m.buttons().find(b => b.text.trim() === '破棄する')
-export const cancelButton = (m: Mounted) => m.buttons().find(b => b.text.trim() === 'やめる')
+export const cancelButton = (m: Mounted) => m.buttons().find(b => b.text.trim() === 'キャンセル')
 
 export function createSectionHarness() {
   let world!: World

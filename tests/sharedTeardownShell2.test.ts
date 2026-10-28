@@ -7,6 +7,7 @@ import path from 'node:path'
 //   C-14 例外（投げ直さない・アプリを消した分の state は保存する）
 // 前半（断る回・アプリ・保存場所の失敗・レジストリ・公開の記録）は sharedTeardownShell.test.ts。
 import { A, B, APP, OK_AUTH, REGISTRY_ROW, bucketRef, h, resetHarness, newProjectDir, setup, envBuckets, stateKinds, stateMeta, writePublishRecord, publishTargets } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 
 /** applyPlan に渡されたプランの件数（空のプランでも呼ばれることを見る）。 */
 const applied = vi.hoisted(() => [] as number[])
@@ -25,7 +26,8 @@ import { summarizeResult, resetProjectOpsForTests } from '../src/main/projectOps
 import { toTeardownView } from '../src/shared/teardownResult'
 
 registerCloudHandlers({} as any)
-const teardown = h.handlers.get('cloud:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
 const teardownRecord = h.handlers.get('cloud:teardownRecord')!
 const EVENT = {}
 const GO = { confirmed: true, deleteRegistry: false, registryName: null }

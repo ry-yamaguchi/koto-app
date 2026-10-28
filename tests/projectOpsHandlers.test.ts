@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { shownTeardown } from './shownFromEnv'
 
 // ── なぜこのテストが要るか（2026-09-29・作者の決定 ①②）──────────────────────────
 // 公開・破棄・作成のダイアログを閉じて開き直したとき、進み具合と結果（警告を含む）が続きから見えるように、
@@ -191,7 +192,8 @@ afterEach(() => {
   for (const d of projectDirs) fs.rmSync(d, { recursive: true, force: true })
 })
 
-const handler = (channel: string) => h.handlers.get(channel)!
+// 共用型の破棄は、画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const handler = (channel: string) => channel === 'cloud:teardown' ? shownTeardown(h.handlers.get(channel)!) : h.handlers.get(channel)!
 /**
  * 記録（.sakuraide.json）が指す projectId と、画面が渡す projectId を一致させて、HANAMII の破棄を呼ぶ。
  * main は**渡された projectId が記録と一致するときだけ**動く（2026-09-30 検分・掟11。断る振る舞いは

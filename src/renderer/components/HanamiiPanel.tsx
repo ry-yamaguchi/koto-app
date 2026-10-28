@@ -201,7 +201,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   // ── データの保存を持っていく（2026-08-15）──────────────────────────
   // データはオブジェクトストレージにあり、**計算とは別の場所**にある。
   // 鍵を発行して環境変数で渡せば、AppRun で作ったデータをそのまま読める。
-  // 公開で持っていく保存場所（先頭の1件。`issueStorageEnvFor`）。破棄が片づける**全件**は、破棄の確認が押した時点に読み直す
+  // 公開で持っていく保存場所（先頭の1件。`issueStorageEnvFor`）。破棄が片づける保存場所（確認で名前を挙げたものだけ）は、破棄の確認が押した時点に読み直す
   // （画面の写しはいつでも古い。teardown/flow.ts → HanamiiTeardownSection）ので、ここでは持たない。
   const [placement, setPlacement] = useState<{ bucket: string; prefix: string } | null>(null)
   const [usesData, setUsesData] = useState(false)
@@ -797,7 +797,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
                       onClick={() => setConfirmRestart(false)}
                       disabled={restarting}
                       className="bg-overlay text-ink border border-line rounded-lg px-3 py-1.5 text-xs disabled:opacity-40"
-                    >やめる</button>
+                    >キャンセル</button>
                   </div>
                 </div>
               ) : (

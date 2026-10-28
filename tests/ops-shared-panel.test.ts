@@ -955,7 +955,7 @@ describe('この画面が動かした操作', () => {
     await v.click('🚀 公開する')
     await settle()
     expect(v.text(), '選ぶ画面が出ていない').toContain('Koto の設定で公開する')
-    await v.click('やめる')
+    await v.click('キャンセル')
     expect(v.text()).not.toContain('Koto の設定で公開する')
     expect(v.text(), '選ぶ画面で扱った記録を、前の結果として出し直している').not.toContain('止まりました')
     expect(v.text()).not.toContain('公開の結果')
@@ -976,7 +976,7 @@ describe('この画面が動かした操作', () => {
     expect(warnBox.length, '月額が続く警告が、黄色の知らせの枠に出ていない').toBe(1)
     expect(RT.textOf(warnBox[0])).toContain('課金は続きます')
     // IPC には、認証の印・確認の印・レジストリの選択（Koto が作ったので既定でオン）と確認した時点の名前が渡る
-    expect(log.teardownArgs).toEqual([[DIR, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'koto-reg' }]])
+    expect(log.teardownArgs).toEqual([[DIR, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'koto-reg', shownPlacements: [] }]])
   })
 })
 

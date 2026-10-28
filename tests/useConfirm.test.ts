@@ -15,7 +15,7 @@ describe('resolveConfirm: ConfirmModal の選択を boolean へ変換する（�
     expect(resolveConfirm('confirm')).toBe(true)
   })
 
-  it("'cancel'（やめる側のボタン）は false — 押さなくても true にならないことの固定", () => {
+  it("'cancel'（キャンセル側のボタン）は false — 押さなくても true にならないことの固定", () => {
     expect(resolveConfirm('cancel')).toBe(false)
   })
 

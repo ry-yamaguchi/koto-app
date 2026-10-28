@@ -48,6 +48,14 @@ export type EnvMeta = {
    */
   storagePermissionId?: string
   /**
+   * 共用型の破棄が、名前による鍵の一括の無効化（`sweepKeysFor: 'apprun'`）を果たさずに止まった印（0.6.24 R1-a）。
+   * 一括の無効化は「アプリがあった回」だけに渡す（アプリが無い回に渡すと、同じ名前の別プロジェクトの現役の鍵に当たる）。
+   * 1回目にアプリが消えたあと保存場所の段が止まると、押し直しの回は state にアプリが無く、一括の無効化が走らなくなる。
+   * その回の記録へこの印を立て、押し直しの回が読んで渡す。**最後まで済んだ回は `stateAfterTeardown` が meta を作り直すので、印は自然に消える**。
+   * 立てる・読む・渡す条件は `src/main/ipc/cloudTeardownStorage.ts` の1か所。
+   */
+  keySweepPending?: 'apprun'
+  /**
    * このプロジェクトが使っているコンテナレジストリ名（subdomainLabel）。
    *
    * ── なぜ state に持つのか（2026-08-06 の実害から） ──────────────────────

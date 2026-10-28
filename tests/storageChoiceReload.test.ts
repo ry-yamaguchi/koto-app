@@ -951,7 +951,7 @@ describe('StorageNotice の配線（呼び出しの形ごと一意に当てる�
   })
 
   it('★★★ 押せるかの判定は canPrepare だけ（disabled と、押した時点の確かめ）', () => {
-    // 「用意する（費用に同意）」のボタンだけを切り出す（隣の「やめる」の disabled に当たらない）
+    // 「用意する（費用に同意）」のボタンだけを切り出す（隣の「キャンセル」の disabled に当たらない）
     const button = between(component, 'onClick={prepare}', '用意する（費用に同意）\'}</button>')
     expect(button).toContain('disabled={!canPrepare(bucketList, busy)}')
     expect(button).toContain("{busy ? '用意しています…' : bucketList.loading ? '保存場所を確かめています…' : '用意する（費用に同意）'}")

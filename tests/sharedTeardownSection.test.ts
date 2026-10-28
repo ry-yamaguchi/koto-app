@@ -24,7 +24,7 @@ vi.mock('../src/main/cloud/storageAdapter', async (orig) => (await import('./sha
 vi.mock('../src/main/cloud/client', async (orig) => (await import('./sharedTeardownHarness')).clientMock(await orig()))
 
 import { RT } from './appRunPanelRt'
-import { A, APP, bucketRef, h, stateKinds } from './sharedTeardownHarness'
+import { A, APP, PREFIX, bucketRef, h, stateKinds } from './sharedTeardownHarness'
 import {
   createSectionHarness, settle, TEARDOWN_BUTTON, EXPIRED_BUTTON, CLOSE_WARNING_CALL, CLOSE_WARNING_CLEARED,
 } from './sharedSectionHarness'
@@ -42,6 +42,8 @@ const withRegistry = (over: { adopted?: boolean; unmarked?: boolean } = {}) =>
 const DELETE_APP = 'deleteApp app-1'
 const DELETE_REGISTRY = 'deleteContainerRegistry reg-1'
 const STORAGE_A = ['connect', `listAllKeys ${A}`, `deleteKeys ${A}`, `deleteBucket ${A}`]
+/** 確認で見せた保存場所（名前と prefix の組）。確認の 💾 が名指しした A を、記録の prefix のまま main へ運ぶ（0.6.24 F）。 */
+const SHOWN_A = [{ bucket: A, prefix: PREFIX }]
 const until = async (cond: () => boolean, what: string) => {
   for (let k = 0; k < 200 && !cond(); k++) await settle()
   expect(cond(), what).toBe(true)
@@ -55,7 +57,7 @@ afterEach(() => { H.cleanup() })
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('S1 手順6の 🗑 → 流れ → 本物の main: 確認', () => {
-  it('★★★ 押すと確認が出て、「やめる」では、さくらのクラウドへも保存場所へも要求0件。窓を閉じる警告も立たず、記録も増えず、ボタンは押せるまま、結果も出ない', async () => {
+  it('★★★ 押すと確認が出て、「キャンセル」では、さくらのクラウドへも保存場所へも要求0件。窓を閉じる警告も立たず、記録も増えず、ボタンは押せるまま、結果も出ない', async () => {
     const v = H.mount()
     await settle()
     const c = await H.pressAndWaitConfirm(v)
@@ -182,7 +184,7 @@ describe('S1 手順6の 🗑 → 流れ → 本物の main: 破棄 → 結果', 
     expect(h.calls).toEqual(expect.arrayContaining(STORAGE_A))
     expect(h.calls.indexOf(DELETE_APP)).toBeLessThan(h.calls.indexOf(`deleteBucket ${A}`))
     // IPC は新しい呼び形で1回（認証の印・確認の印・レジストリの選択・確認した時点の名前）
-    expect(H.win.teardownArgs).toEqual([[H.dir, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'myreg' }]])
+    expect(H.win.teardownArgs).toEqual([[H.dir, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'myreg', shownPlacements: SHOWN_A }]])
     expect(v.text()).toContain('✅ 破棄しました')
     expect(v.text()).not.toContain('破棄できませんでした')
     // 公開の記録（📡 の行）は main が消した。画面は publishMeta に1回も触れていない。
@@ -220,7 +222,7 @@ describe('S1 手順6の 🗑 → 流れ → 本物の main: 破棄 → 結果', 
     expect(h.calls).not.toContain(DELETE_REGISTRY)
     expect(h.calls).not.toContain('listContainerRegistries')
     expect(h.calls).toContain(DELETE_APP)
-    expect(H.win.teardownArgs[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg' })
+    expect(H.win.teardownArgs[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg', shownPlacements: SHOWN_A })
     const box = RT.findAll(v.tree(), (n: any) => n.type === 'div' && n.props['data-teardown-warnings'] !== undefined)
     expect(box.length, '月額が続く警告が、黄色の知らせの枠に出ていない').toBe(1)
     expect(RT.textOf(box[0])).toContain('myreg')
@@ -236,7 +238,7 @@ describe('S1 手順6の 🗑 → 流れ → 本物の main: 破棄 → 結果', 
     await until(() => v.text().includes('✅ 破棄しました'), '結果が届かない')
     expect(h.calls).not.toContain(DELETE_REGISTRY)
     expect(h.calls).not.toContain('listContainerRegistries')
-    expect(H.win.teardownArgs[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg' })
+    expect(H.win.teardownArgs[0][2]).toEqual({ confirmed: true, deleteRegistry: false, registryName: 'myreg', shownPlacements: SHOWN_A })
   })
 
   it('★★ S2 期限切れのバナーの 🗑 も、手順6の 🗑 と同じ流れ・同じ確認・同じ要求（入口が違っても同じ）', async () => {
@@ -260,7 +262,7 @@ describe('S1 手順6の 🗑 → 流れ → 本物の main: 破棄 → 結果', 
     c.props.onConfirm()
     await until(() => v.text().includes('✅ 破棄しました'), '結果が届かない')
     expect(h.calls.slice(0, 3)).toEqual([DELETE_APP, 'listContainerRegistries', DELETE_REGISTRY])
-    expect(H.win.teardownArgs).toEqual([[H.dir, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'myreg' }]])
+    expect(H.win.teardownArgs).toEqual([[H.dir, { heldByMain: true }, { confirmed: true, deleteRegistry: true, registryName: 'myreg', shownPlacements: SHOWN_A }]])
     expect(H.win.publishMetaCalls).toEqual([])
     expect(H.publishedTargets()).toEqual([])
   })

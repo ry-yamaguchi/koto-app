@@ -1385,7 +1385,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             onClick={() => setScaleAsk(null)}
             disabled={busy}
             className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-          >やめる</button>
+          >キャンセル</button>
         </div>
       </div>
     )
@@ -2593,7 +2593,7 @@ function PrereqChecklist({
   )
 }
 
-// ── 破壊操作の確認ダイアログ（やめる／実行 の2ボタン） ──
+// ── 破壊操作の確認ダイアログ（キャンセル／実行 の2ボタン） ──
 function ConfirmDialog({
   confirm, busy, onCancel, onApply, onRename, onCleanupImages, progress,
 }: {
@@ -2676,7 +2676,7 @@ function ConfirmDialog({
             onClick={onCancel}
             disabled={busy}
             className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-          >やめる</button>
+          >キャンセル</button>
           <button
             onClick={onApply}
             disabled={busy}
@@ -2746,7 +2746,7 @@ function ConfirmDialog({
             onClick={onCancel}
             disabled={busy}
             className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-          >やめる</button>
+          >キャンセル</button>
           <button
             onClick={onCleanupImages}
             disabled={busy}
@@ -2774,7 +2774,7 @@ function ConfirmDialog({
             onClick={onCancel}
             disabled={busy}
             className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-          >やめる</button>
+          >キャンセル</button>
           <button
             onClick={onRename}
             disabled={busy}

@@ -211,19 +211,20 @@ describe('プロジェクト削除の確認（ProjectDeleteDialog。段階3A・3
   it('★★★ 注意は「読めなかったとき」だけ出す（facts.unreadable &&）。注意の箱も、それだけのときに出る', () => {
     expect(dialog).toContain('{facts.unreadable && (')
     expect(dialog).toContain('⚠️ {PUBLISH_RECORD_UNREADABLE_NOTE}')
-    expect(dialog).toContain("(shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '') && (")
+    // 0.6.24 A-4: 先に破棄する段（shownTeardown）があれば、公開先の行が無くても箱を出す（残りの段だけの回のチェックを出す。出さないと行き止まりになる）
+    expect(dialog).toContain("(shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (")
     // ダイアログを閉じたとき・別のプロジェクトを開いたときに、前の注意を引きずらない: Sidebar が key で作り直す（状態を持ち越さない）
     expect(sidebar).toMatch(/<ProjectDeleteDialog\s+key=\{confirmProjDelete\}/)
   })
 
-  it('注意の文: 公開の記録の 2 つの場所（.sakuraide.json・.sakura-cloud/）を言い、公開が残っているか分からないこと・あとから Koto で破棄できなくなること・確かめる場所を言う', async () => {
+  it('★★★ 注意の文（R3-g）: 公開の記録の 2 つの場所（.sakuraide.json・.sakura-cloud/）を言い、main が断るとおり「削除できません」と言う。直し方（記録を直してから、もう一度削除）を言う', async () => {
     const { PUBLISH_RECORD_UNREADABLE_NOTE: note } = await import('../src/renderer/teardown/projectDeletePlan')
-    expect(note).toContain('公開の記録（.sakuraide.json・.sakura-cloud/）を読めないため、公開が残っているか分かりません')
-    expect(note).toContain('あとから Koto では破棄できなくなります')
-    expect(note).toContain('確かめてから削除してください')
-    // 記録が読めないときに答えを出せない場所（【公開】の画面）を、確かめる先に挙げない（検分2巡目）
-    expect(note).toContain('『調べる』を押すか')
-    expect(note).not.toContain('【公開】の画面や各サービスの管理画面で')
+    expect(note).toBe('公開の記録（.sakuraide.json・.sakura-cloud/）を読めないため、削除できません。記録を直してから、もう一度削除してください。')
+    // 断らない前提の旧い文（移すと…破棄できなくなります・確かめてから削除してください）は言わない
+    expect(note).not.toContain('あとから Koto では破棄できなくなります')
+    expect(note).not.toContain('公開が残っているか分かりません')
+    expect(note).not.toContain('確かめてから削除してください')
+    expect(note).not.toContain('移すと')
   })
 
   it('★★ 旧い読み口 readPublishTargetsChecked は src に無い（使い手が無くなったので消した）', async () => {

@@ -93,6 +93,7 @@ import { registerHanamiiHandlers } from '../src/main/ipc/hanamii'
 import { registerVercelHandlers } from '../src/main/ipc/vercel'
 import { registerPublishMetaHandlers } from '../src/main/ipc/publishMeta'
 import { projectBusyMessage } from '../src/main/projectLock'
+import { isolatedProjectDir } from './isolatedProject'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 
 registerCloudHandlers({} as any)
@@ -108,7 +109,7 @@ let realFetch: typeof globalThis.fetch
 
 /** 公開できるプロジェクト（保存場所は使わない）。 */
 function newProject(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-lock-'))
+  const dir = isolatedProjectDir('koto-lock-') // 自分だけの親フォルダの中（複製の確かめが、ほかの試験の残りを兄弟として読まない。0.6.24 I-2）
   projectDirs.push(dir)
   const spec: EnvSpec = defaultSpec({ name: 'myapp', hasDockerfile: false })
   fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })

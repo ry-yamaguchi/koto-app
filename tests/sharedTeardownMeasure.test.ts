@@ -46,7 +46,9 @@ const CONFIRMED = { confirmed: true, deleteRegistry: false, registryName: null }
 async function measure(opts: Record<string, unknown>) {
   const asked = await placement(EVENT, dir)
   const rec = await teardownRecord(EVENT, dir)
-  const reply = await teardown(EVENT, dir, OK_AUTH, opts)
+  // 画面は、確認の材料（teardownRecord の placements）が挙げた組をそのまま main へ運ぶ（0.6.24 F）。確認の印が無い回は何も足さない
+  const shownPlacements = rec.ok ? (rec.record.placements as Array<{ bucket: string; prefix: string }>).map(p => ({ bucket: p.bucket, prefix: p.prefix })) : []
+  const reply = await teardown(EVENT, dir, OK_AUTH, opts.confirmed === true ? { ...opts, shownPlacements } : opts)
   const calls = [...h.calls]
   const ops = getOps(dir)
   const verbs = ['listAllKeys ', 'deleteKeys ', 'deleteBucket ', 'deletePermission ']

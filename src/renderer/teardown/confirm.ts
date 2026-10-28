@@ -11,12 +11,15 @@
 //  3. 「課金は止まります」の一文は、claimsComputeBillingStops が true の公開先だけ言う（HANAMII は原本で確かめていない）。
 //  4. 「この操作は元に戻せません」は irreversibleNote で出し分ける（手本は無条件）。
 //  5. 保存場所だけが残った回は、先頭の段落を leftoverNote の文に差し替える。
-//  6. 保存場所の設定を問い合わせられなかった回（'call'）は、ほかの公開先の名前と、元に戻せないことを言う。
+//  6. 保存場所の設定を問い合わせられなかった回（'call'）は、保存場所の名前を挙げられないことと、挙げられない保存場所は削除しないことを言う
+//     （0.6.24 F-6。画面は確認で見せた保存場所の組だけを main へ運ぶ〔flow.ts の shownPlacementsOf〕。見せていないものは main が消さない）。
 //  7. 「ほかの公開先の記録を読めなかった」注意の例（HANAMII・Vercel・共用型など）は、この公開先自身を除いて作る（手本は専有型の文のまま）。
-//  8. 保存場所だけが残った回でも、保存場所の設定を読めない（'settings'）ときは、先頭の段落を「保存場所だけが残っています」の事実だけにする
+//  8. 保存場所だけが残った回でも、保存場所の設定を読めない（'settings'・'call'）ときは、先頭の段落を「保存場所だけが残っています」の事実だけにする
 //     （main は保存場所に触れないので、仕様書の「残っている保存場所を削除します」を出すと、下の注意と正反対のことを言う）。
 //  9. 仕様書が持つ任意の段落（notes。共用型の 🔗 公開URL・レジストリの記録なし・設定から外した保存場所）を、
 //     💾・ほかの公開先の段落のあと、時間の予告と最後の問いの前に足す（段階2・2b-1）。notes が無い・空のときの文は 1文字も変えない。
+// 10. 確認の見出しは、仕様書が confirmTitleOf を持つときだけ記録の中身で言い換える（共用型で、アプリが無く保存場所・コンテナレジストリだけの回は「保存場所を破棄します」。
+//     0.6.24 A-8）。null・持たない仕様書は words.confirmTitle のまま。3つの入口が同じこの関数で確認を作るので、これ1つで全部に効く。
 //
 // 本文を作る関数は buildTeardownConfirmBody の1つだけ（定義はこのファイル。呼ぶのは buildTeardownConfirm だけ。tests/dedicatedTeardownEntriesF.test.ts が固定する）。
 
@@ -140,20 +143,20 @@ export function buildTeardownConfirmBody(opts: {
 /**
  * 確認の材料を読めなかったときの注意（読めた材料だけで確認を出すと、利用者が事実と違う理解で実行を押すため）。
  *
- * ・ほかの公開先の記録を読めなかった: main は、確認で何が見えたかと無関係に、env.json の保存場所を全件・ほかの公開先が
- *   使っていても片づける。巻き添えになる公開先の名前を出せない。
+ * ・ほかの公開先の記録を読めなかった: main は、見せた保存場所を、ほかの公開先が使っていても片づける。巻き添えになる公開先の名前を出せない。
+ *   **ただし保存場所に触れない回（下の `'settings'`・`'call'`）は、この注意を出さない**（保存場所は消えないので、「そちらのデータも消えます」は事実と逆。0.6.24 R1-e）。
  * ・保存場所の設定を読めなかった（`'settings'`）: **逆に、main も保存場所に触れない**（保存場所の削除は行われず、残る）。
  *   「保存場所も消える」と言うと事実と逆になる。残る保存場所は月額が続くので、そう言う。
- * ・保存場所の設定を**問い合わせられなかった**（`'call'`・IPC の失敗）: main は env.json を読めて、保存場所を削除するかもしれない。
- *   「削除は行われません」とは言えない。名前を挙げられないこと・削除される場合があることを言う。
- *   このとき placements は空に倒れているので、確認の本文だけでは保存場所のデータ（'storage-only' の「元に戻せません」）も、
- *   保存場所を使うほかの公開先のアプリのデータも言い落とす。そこでこの注意が言う:
- *     1. 'storage-only' の公開先には「削除されたデータは元に戻せません。」を続ける（'always' は最後の一文が言うので足さない）。
- *     2. ほかの公開先の名前を読めているときは、その名前を挙げて「データも消えます」と言う。
- *   'settings'（main も保存場所に触れない）と、読めた回は変えない。
+ * ・保存場所の設定を**問い合わせられなかった**（`'call'`・IPC の失敗）: 確認で保存場所の名前を挙げられない。
+ *   画面は「見せた保存場所」を空にして main へ渡し（flow.ts の `shownPlacementsOf`）、main は見せていない保存場所を削除しない（0.6.24 F）。
+ *   なので「名前を挙げられない保存場所は削除しません」と言う。使っていれば残り、月額が続く（これが注意の要点）。
+ *   以前は「削除される場合があります」と言い、元に戻せないこと・ほかの公開先のデータも消えることを足していたが、消えなくなったので言わない
+ *   （消えない保存場所について「データが消えます」と言うのは事実と逆）。
+ *   'settings'（設定そのものを読めない）も、読めた回は変えない。
  *
  * `words` は受け取るだけで、文には使わない。ここで言う「削除」は保存場所のデータの削除で、公開先ごとの言い分け（破棄・削除）とは別の話
  * （手本と同じ文のまま。verb を入れると、保存場所のデータの話まで「破棄」になる）。
+ * `irreversibleNote` も、'call' の文が変わったので、いまは使わない（呼び手の形は変えない）。
  * `target` は、ほかの公開先の記録を読めなかったときの例（HANAMII・共用型・専有型）から、この公開先自身を除くために使う
  * （手本は専有型の文をそのまま書いていて、HANAMII の確認が自分を「ほかの公開先」に挙げてしまう）。
  */
@@ -170,17 +173,13 @@ export function unreadableCautions(
         + 'このプロジェクトが保存場所を使っていれば、その保存場所は残り、月額が続きます。'
         + '保存場所も削除したいときは、この確認を閉じて、設定を直してからやり直してください。')
     } else {
-      out.push('⚠️ 保存場所の設定を問い合わせられなかったため、ここに保存場所の名前を挙げられません。'
-        + 'このプロジェクトが保存場所を使っていれば、その中のこのプロジェクトのデータも削除される場合があります。'
-        + (irreversibleNote === 'storage-only' ? '削除されたデータは元に戻せません。' : ''))
-      const others = facts.otherTargets.filter(t => !!t)
-      if (others.length > 0) {
-        out.push(`⚠️ このプロジェクトが保存場所を使っていて、それをほかの公開先（${others.join('・')}）も使っていれば、`
-          + 'そちらで公開中のアプリのデータも消えます（アプリ自体は消えません）。')
-      }
+      out.push('⚠️ 保存場所の設定を問い合わせられなかったため、保存場所の名前を挙げられません。'
+        + '名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。')
     }
   }
-  if (facts.otherTargetsUnreadable) {
+  // 保存場所に触れない回（`placementsUnreadable`。'settings'・'call'）は、巻き添えになる公開先の話をしない。上の文が「保存場所は削除しない」と言っており、
+  // 「そちらのアプリのデータも消えます」を並べると、1つの確認の中で正反対のことを言う（0.6.24 R1-e）。
+  if (facts.otherTargetsUnreadable && !facts.placementsUnreadable) {
     out.push('⚠️ ほかの公開先の記録を読めなかったため、ここに挙げられません。'
       + `保存場所をほかの公開先（${otherStorageUsersOf(target)}など）が使っていれば、そちらのアプリのデータも消えます。`)
   }
@@ -196,14 +195,15 @@ export function unreadableCautions(
  * （公開先だけで決まる）。W-117: ConfirmModal は danger のとき自分で「⚠️ 」を title の前に付ける。ここでは付けない。
  */
 export function buildTeardownConfirm<R>(
-  spec: Pick<TargetSpec<R, unknown, unknown>, 'target' | 'words' | 'claimsComputeBillingStops' | 'irreversibleNote' | 'targets' | 'leftoverNote' | 'notes'>,
+  spec: Pick<TargetSpec<R, unknown, unknown>, 'target' | 'words' | 'claimsComputeBillingStops' | 'irreversibleNote' | 'targets' | 'leftoverNote' | 'notes' | 'confirmTitleOf'>,
   facts: TeardownFacts<R>,
 ): Required<Pick<ConfirmOptions, 'title' | 'body' | 'confirmLabel' | 'danger'>> {
-  // 保存場所だけが残った回でも、保存場所の設定を読めない（'settings'）ときは、main が保存場所に触れない（残る）。
+  // 保存場所だけが残った回でも、保存場所の設定を読めない（'settings'）・問い合わせられなかった（'call'）ときは、main が保存場所に触れない（残る。
+  // 画面が見せた保存場所の組は空で、main は見せていないものを消さない。0.6.24 F）。
   // 仕様書の leftoverNote は「残っている保存場所を削除します」と言う文なので、そのまま先頭に置くと、下の注意
-  // （保存場所の削除は行われません）と1つの確認の中で正反対のことを言う。この回は、事実だけを言う文に替える。
+  // （保存場所の名前を挙げられない・削除しない）と1つの確認の中で正反対のことを言う。この回は、事実だけを言う文に替える。
   const leftover = spec.leftoverNote?.(facts.record) ?? undefined
-  const storageUntouched = facts.placementsUnreadable && facts.placementsUnreadableCause === 'settings'
+  const storageUntouched = facts.placementsUnreadable
   const leftoverNote = leftover && storageUntouched ? `前回の${spec.words.verb}で、保存場所だけが残っています。` : leftover
   const body = buildTeardownConfirmBody({
     verb: spec.words.verb,
@@ -218,5 +218,7 @@ export function buildTeardownConfirm<R>(
     notes: spec.notes?.(facts.record),
   })
   const head = [`対象のプロジェクト: 『${facts.projectName}』`, ...unreadableCautions(facts, spec.words, spec.irreversibleNote, spec.target)].join('\n\n')
-  return { title: spec.words.confirmTitle, body: `${head}\n\n${body}`, confirmLabel: spec.words.confirmLabel, danger: true }
+  // 見出しは、仕様書が記録の中身で言い換えるとき（confirmTitleOf。共用型で、アプリが無く保存場所・コンテナレジストリだけの回。0.6.24 A-8）はそれを先に使う。
+  const title = spec.confirmTitleOf?.(facts.record) ?? spec.words.confirmTitle
+  return { title, body: `${head}\n\n${body}`, confirmLabel: spec.words.confirmLabel, danger: true }
 }

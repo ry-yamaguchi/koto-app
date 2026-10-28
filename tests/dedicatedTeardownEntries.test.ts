@@ -20,7 +20,7 @@ import path from 'node:path'
 // パネルの見張り watchDedicatedOps は手順5・6・8の3種類を読む＝tests/ops-dedicated-resume.test.ts）。
 //
 // ここは**ソースの文字列を読まない**（掟10「お金・破壊の歯止めは、振る舞いで固定する」。配線の形は tests/apprunDedicatedWiring.test.ts）。
-//   (A) 流れの歯止め: 偽の口に流し、「やめる」なら IPC は0回・「削除する」なら confirmed:true で1回だけ、を数える
+//   (A) 流れの歯止め: 偽の口に流し、「キャンセル」なら IPC は0回・「削除する」なら confirmed:true で1回だけ、を数える
 //   (B) 確認の文: 2つの入口で同じ入力なら同じ文。消えるもの・課金・ロードバランサの時間（目安の仕組みの出力）が入る
 //   (C) 本物の main のハンドラ＋偽の HTTP サーバ（偽 client）: 📡 の入口から アプリ → LB → ASG → クラスタ の順に要求が出る
 //   (D) 公開の記録: main が消す。画面（renderer）は消さない（偽の記録で、消えたこと・画面の口が呼ばれなかったことを見る）
@@ -112,6 +112,7 @@ import { shouldShowTeardownButton, shouldShowTeardownList } from '../src/rendere
 import { PUBLISH_CLOSE_WARNING } from '../src/renderer/activity'
 import { estimatesFor, emptyStore } from '../src/shared/stageEstimate'
 import { PUBLISH_TARGET_LABEL } from '../src/renderer/publishStatus'
+import { isolatedProjectDir } from './isolatedProject'
 
 registerApprunDedicatedHandlers({} as any)
 
@@ -168,7 +169,7 @@ describe('(A) runTeardownFlow（専有型の仕様書）: 確認が no なら IP
     const { deps, calls } = fakeDeps()
     const out = await runFlow('/p', deps)
     expect(out).toEqual({ cancelled: false, result: OK_RESULT })
-    expect(calls.teardown).toEqual([{ dir: '/p', auth: AUTH, opts: { confirmed: true } }])
+    expect(calls.teardown).toEqual([{ dir: '/p', auth: AUTH, opts: { confirmed: true, shownPlacements: [] } }]) // 確認で見せた保存場所（この材料は0件）
     expect(calls.started).toBe(1)
     expect(calls.begin).toEqual([{ label: '専有型クラスタの削除', opts: { closeWarning: PUBLISH_CLOSE_WARNING } }])
     expect(calls.ended).toBe(1)
@@ -185,7 +186,7 @@ describe('(A) runTeardownFlow（専有型の仕様書）: 確認が no なら IP
     expect(order).toEqual(['onStart', 'loadAuth', 'invoke'])
   })
 
-  it('★★ no（やめる）: IPC は0回。キーも読まず、活動レジストリにも載せず、画面を「削除しています…」にもしない', async () => {
+  it('★★ no（キャンセル）: IPC は0回。キーも読まず、活動レジストリにも載せず、画面を「削除しています…」にもしない', async () => {
     const { deps, calls } = fakeDeps({ answer: false })
     const out = await runFlow('/p', deps)
     expect(out).toEqual({ cancelled: true })
@@ -379,12 +380,13 @@ describe('(B2) 確認の中身: 対象のプロジェクト名・読めなかっ
     expect(body).not.toContain('ここに保存場所の名前を挙げられません')
     // 読み飛ばされにくい先頭（「次を削除します」より前）
     expect(body.indexOf('保存場所の設定を読めない')).toBeLessThan(body.indexOf('次を削除します'))
-    // 2026-10-08 検分: 問い合わせそのものが失敗した（IPC の reject）回は、「削除は行われません」とは言わない（main は env.json を読めて、
-    // 保存場所を削除するかもしれない）。名前を挙げられないことと、削除される場合があることを言う。原因が省略された回も同じ（言い切らない側）
+    // 問い合わせそのものが失敗した（IPC の reject）回は、保存場所の名前を挙げられない。画面は「見せた保存場所」を空にして main へ渡し、
+    // main は見せていない保存場所を削除しない（0.6.24 F-6。以前は「削除される場合があります」と言っていた）。原因が省略された回も同じ。
     for (const cause of ['call', undefined, null] as const) {
       const call = confirmOf({ ...FACTS, placementsUnreadable: true, placementsUnreadableCause: cause as 'call' | null }).body
-      expect(call, String(cause)).toContain('保存場所の設定を問い合わせられなかったため、ここに保存場所の名前を挙げられません')
-      expect(call, String(cause)).toContain('その中のこのプロジェクトのデータも削除される場合があります')
+      expect(call, String(cause)).toContain('保存場所の設定を問い合わせられなかったため、保存場所の名前を挙げられません。名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。')
+      expect(call, String(cause)).not.toContain('その中のこのプロジェクトのデータも削除される場合があります')
+      expect(call, String(cause)).not.toContain('ここに保存場所の名前を挙げられません')
       expect(call, String(cause)).not.toContain('保存場所の削除は行われません')
       expect(call, String(cause)).not.toContain('その保存場所は残り、月額が続きます')
     }
@@ -486,14 +488,15 @@ describe('(B2) electronTeardownFactsApi（本物の口）: storage:placement の
     expect(facts.placementsUnreadableCause).toBe('settings')
     expect(confirmOf(facts).body).toContain('保存場所の設定を読めないため、保存場所の削除は行われません')
     // 例外で読めなかったとき（IPC の失敗）も「読めなかった」事実は残る。ただし理由が違う——設定を読めなかったのではなく、問い合わせそのものが失敗した。
-    // main は env.json を読めて保存場所を削除するかもしれないので、「削除は行われません」とは言わない（2026-10-08 検分）
+    // 名前を挙げられない保存場所は削除しない、と言う（0.6.24 F-6。「削除は行われません」は設定を読めない回の文）
     ;(globalThis as any).window.electronAPI.storage.placement = async () => { throw new Error('IPC 失敗') }
     const facts2 = await loadTeardownFacts(dir, dedicatedTeardownSpec, electronTeardownFactsApi())
     expect(facts2.placementsUnreadable).toBe(true)
     expect(facts2.placementsUnreadableCause).toBe('call')
     const body2 = confirmOf(facts2).body
     expect(body2).toContain('保存場所の設定を問い合わせられなかったため')
-    expect(body2).toContain('削除される場合があります')
+    expect(body2).toContain('名前を挙げられない保存場所は削除しません')
+    expect(body2).not.toContain('削除される場合があります')
     expect(body2).not.toContain('保存場所の削除は行われません')
   })
 
@@ -685,7 +688,7 @@ const targetsOf = (d: string): string[] => {
 beforeEach(() => {
   resetProjectOpsForTests()
   h.gate = null
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-dedicated-entries-'))
+  dir = isolatedProjectDir('koto-dedicated-entries-') // 自分だけの親フォルダの中（同じ親の兄弟の複製の確かめが、ほかの試験の残りを兄弟として読まない。0.6.24 I-2）
   writeApprunDedicatedRecordFs(dir, { ...FULL_RECORD, activeVersion: 1 })
   // 📡 一覧が読む公開記録。専有型のほかに Vercel もある（消してよいのは専有型だけ）。
   writePublishRecordFs(dir, 'sakura-apprun-dedicated', { publishedAt: '2026-09-28T00:00:00.000Z', url: 'https://app.example.com/' })
@@ -721,13 +724,13 @@ describe('(C) 本物の main ＋ 偽 client: 手順6も 📡 の入口も、ア�
       'DELETE /clusters/c1/asg/a1',
       'DELETE /clusters/c1',
     ])
-    expect(win.ipcTeardown).toEqual([{ dir, auth: AUTH, opts: { confirmed: true } }])
+    expect(win.ipcTeardown).toEqual([{ dir, auth: AUTH, opts: { confirmed: true, shownPlacements: [] } }]) // 確認で見せた保存場所（この記録は0件）
     // 資源の記録は全部空になる（アプリだけで止まっていない）
     const rec = readApprunDedicatedFs(dir)
     expect([rec.applicationID, rec.loadBalancerID, rec.asgID, rec.clusterID].every(v => !v)).toBe(true)
   })
 
-  it('★★★ 確認 no（やめる）: さくらへの要求は1本も出ない。IPC も呼ばれない。記録は何も変わらない', async () => {
+  it('★★★ 確認 no（キャンセル）: さくらへの要求は1本も出ない。IPC も呼ばれない。記録は何も変わらない', async () => {
     const calls: string[] = []
     h.baseUrl = await startServer(allRoutes(), calls)
     const before = JSON.stringify(readApprunDedicatedFs(dir))
@@ -806,7 +809,7 @@ describe('(D) 公開の記録（📡 の行）: 消すのは main の1か所。�
     expect(win.forgetTarget).toEqual([])
   })
 
-  it('★★ 確認で「やめる」なら、公開記録はそのまま', async () => {
+  it('★★ 確認で「キャンセル」なら、公開記録はそのまま', async () => {
     h.baseUrl = await startServer(allRoutes(), [])
     const { deps } = entryDeps(false)
     await runFlow(dir, deps)
@@ -946,7 +949,7 @@ async function answer(m: ReturnType<typeof mountHook>, yes: boolean) {
 }
 
 describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→ 削除 → 結果', () => {
-  it('★★★ やめる: IPC は0回、さくらへの要求は0本、結果も出ず、窓を閉じる警告も立たない', async () => {
+  it('★★★ キャンセル: IPC は0回、さくらへの要求は0本、結果も出ず、窓を閉じる警告も立たない', async () => {
     const calls: string[] = []
     h.baseUrl = await startServer(allRoutes(), calls)
     const m = mountHook()
@@ -972,7 +975,7 @@ describe('(E) 📡 の行: 🗑 を押す → 確認（手順6と同じ文）→
     await answer(m, true)
     await started
 
-    expect(win.ipcTeardown).toEqual([{ dir, auth: AUTH, opts: { confirmed: true } }])
+    expect(win.ipcTeardown).toEqual([{ dir, auth: AUTH, opts: { confirmed: true, shownPlacements: [] } }]) // 確認で見せた保存場所（この記録は0件）
     expect(calls.filter(c => c.startsWith('DELETE '))).toEqual([
       'DELETE /applications/app1',
       'DELETE /clusters/c1/asg/a1/load_balancers/l1',

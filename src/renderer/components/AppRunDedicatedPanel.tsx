@@ -2537,7 +2537,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                             onClick={() => setTelemetryConfirmingKind(null)}
                             disabled={telemetryBusyKind === kind || panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
                             className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura disabled:opacity-40"
-                          >やめる</button>
+                          >キャンセル</button>
                         </div>
                       </div>
                     ) : (

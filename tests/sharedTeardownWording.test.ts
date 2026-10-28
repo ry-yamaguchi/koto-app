@@ -7,6 +7,7 @@ import fs from 'node:fs'
 // 「AppRunアプリ『…』を削除」だった）。行の言い方の唯一の定義は deleteDescription。破棄の実物の流れ（本物の main に偽の client を流す）で、
 // 返り値と処理の記録（開き直したときに読むもの）のどの行にも、種類名が出ないことを固定する。
 import { APP, OK_AUTH, bucketRef, h, resetHarness, newProjectDir, setup } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 import type { ResourceRef } from '../src/main/cloud/state'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
@@ -19,7 +20,8 @@ import { deleteDescription } from '../src/main/cloud/planner'
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 
 registerCloudHandlers({} as any)
-const teardown = h.handlers.get('cloud:teardown')!
+// 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
+const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
 const EVENT = {}
 const GO = { confirmed: true, deleteRegistry: false, registryName: null }
 const REGISTRY: ResourceRef = { kind: 'registry', id: 'reg-1', stateful: false, key: 'registry:myreg' }

@@ -227,7 +227,7 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
                 onClick={() => setPendingUpload(null)}
                 disabled={uploading}
                 className="bg-overlay text-ink border border-line rounded-lg px-4 py-2 text-sm font-medium hover:border-sakura disabled:opacity-40"
-              >やめる</button>
+              >キャンセル</button>
               <button
                 onClick={doUpload}
                 disabled={uploading}

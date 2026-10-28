@@ -58,7 +58,7 @@ const read = () => readProjectDeleteFacts(DIR)
 describe('材料: 何も無い新しいプロジェクト・読む口の一覧', () => {
   it('★★★ 何も無い: 空の材料。偽の注意（unreadable）を出さない。読む口だけが呼ばれ、書く口・registryName は呼ばれない', async () => {
     const log = install()
-    expect(await read()).toEqual({ targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null })
+    expect(await read()).toEqual({ targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
     expect(new Set(log)).toEqual(new Set(['fs.exists', 'apprunDedicated.state', 'storage.placement', 'publishMeta.runningOp', 'cloud.teardownRecord']))
     expect(log).not.toContain('cloud.registryName') // 10.9.18 の D: レジストリの名前は読まない
     expect(log).not.toContain('fs.readFile') // 記録のファイルが無いので読みにいかない
@@ -66,10 +66,10 @@ describe('材料: 何も無い新しいプロジェクト・読む口の一覧',
 
   it('★★ window が無い・口が全部投げる: 投げない。公開の記録は読めなかった扱い（unreadable）、ほかは空に倒す', async () => {
     delete (globalThis as any).window
-    expect(await read()).toEqual({ targets: [], unreadable: true, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null })
+    expect(await read()).toEqual({ targets: [], unreadable: true, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
     const boom = new Error('boom')
     install({ running: boom, dedicated: boom, placement: boom, record: boom })
-    expect(await read()).toEqual({ targets: [], unreadable: true, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null })
+    expect(await read()).toEqual({ targets: [], unreadable: true, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
   })
 })
 
@@ -147,16 +147,23 @@ describe('材料: 共用型の残りだけがあるプロジェクト（10.9.18 
     install({ record: { ok: true, record: rec({ placements: [PL], registryName: 'myreg' }) } })
     expect(await read()).toMatchObject({ targets: [], unreadable: false, sharedLeftover: { registryName: 'myreg', placements: [PL] } })
     install({ record: { ok: true, record: rec({ placements: [PL] }) } })
-    expect((await read()).sharedLeftover).toEqual({ registryName: null, registryOrigin: 'unknown', registryUsers: [], placements: [PL] })
+    expect((await read()).sharedLeftover).toEqual({ appNames: [], registryName: null, registryOrigin: 'unknown', registryUsers: [], placements: [PL] })
     install({ record: { ok: true, record: rec({ registryName: 'myreg' }) } })
-    expect((await read()).sharedLeftover).toEqual({ registryName: 'myreg', registryOrigin: 'unknown', registryUsers: [], placements: [] })
+    expect((await read()).sharedLeftover).toEqual({ appNames: [], registryName: 'myreg', registryOrigin: 'unknown', registryUsers: [], placements: [] })
   })
 
   it('★★★ レジストリの由来（owned・adopted・unknown）と、使っているほかのプロジェクトを、そのまま入れる（月額を言ってよいかの材料。書き換えない）', async () => {
     for (const origin of ['owned', 'adopted', 'unknown'] as const) {
       install({ record: { ok: true, record: rec({ registryName: 'myreg', registryOrigin: origin, registryUsers: ['reminder', 'landing'] }) } })
-      expect((await read()).sharedLeftover, origin).toEqual({ registryName: 'myreg', registryOrigin: origin, registryUsers: ['reminder', 'landing'], placements: [] })
+      expect((await read()).sharedLeftover, origin).toEqual({ appNames: [], registryName: 'myreg', registryOrigin: origin, registryUsers: ['reminder', 'landing'], placements: [] })
     }
+  })
+
+  it('★★★ アプリが記録に残る（行は外れた）回: appNames がそのまま入る（📡 の「一覧から削除」で行だけ外した回に、アプリが残っていると言う材料。0.6.24 A-1）。アプリだけでも残りになる', async () => {
+    install({ record: { ok: true, record: rec({ appNames: ['myapp-app', 'other-app'], placements: [PL] }) } })
+    expect((await read()).sharedLeftover).toEqual({ appNames: ['myapp-app', 'other-app'], registryName: null, registryOrigin: 'unknown', registryUsers: [], placements: [PL] })
+    install({ record: { ok: true, record: rec({ appNames: ['myapp-app'] }) } })
+    expect((await read()).sharedLeftover).toMatchObject({ appNames: ['myapp-app'], placements: [], registryName: null })
   })
 
   it('★★★ 共用型の行がある（publish.targets・state.json のどちらでも）: 残りの文の材料（sharedLeftover）は null。記録は 1 回だけ読む（レジストリの材料のため）', async () => {
@@ -220,7 +227,7 @@ describe('材料: 共用型の行があるときのコンテナレジストリ�
 describe('材料: 判断（planProjectDeleteTeardown）に通すと、旧い記録だけの公開先も先に破棄する対象になる', () => {
   it('★★★ HANAMII の projectId だけ・共用型の state.json だけ → teardown は HANAMII → 共用型。専有型の ID だけ → 止める', async () => {
     install({ files: { [META]: meta({ hanamii: { projectId: 'hnm-1' } }), [STATE]: JSON.stringify({ resources: [{ kind: 'apprun-app', id: 'app-1' }] }) } })
-    expect(planProjectDeleteTeardown(await read())).toEqual({ block: null, teardown: ['hanamii', 'sakura-apprun'] })
+    expect(planProjectDeleteTeardown(await read())).toEqual({ block: null, teardown: ['hanamii', 'sakura-apprun'], twinned: [] })
     install({ files: { [META]: meta({ apprunDedicated: { clusterID: 'c-1' } }) }, dedicated: { clusterID: 'c-1' } })
     expect(planProjectDeleteTeardown(await read())).toMatchObject({ block: { reason: 'dedicated' } })
     install({ running: { op: '公開', target: 'hanamii' } })

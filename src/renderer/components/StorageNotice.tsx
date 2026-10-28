@@ -799,7 +799,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
                 onClick={() => setConfirming(false)}
                 disabled={busy}
                 className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura disabled:opacity-40"
-              >やめる</button>
+              >キャンセル</button>
             </div>
           </div>
         ) : (

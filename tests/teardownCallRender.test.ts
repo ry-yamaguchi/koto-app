@@ -65,6 +65,7 @@ import { resumedTeardownView } from '../src/shared/teardownResult'
 import { PUBLISH_TARGET_LABEL } from '../src/renderer/publishStatus'
 import { stoppedNotice } from './stoppedNoticeHarness'
 import { deleteProjectReplyText } from './hanamiiTeardownFixtures'
+import { isolatedProjectDir } from './isolatedProject'
 
 registerHanamiiHandlers({} as any)
 const teardown = h.handlers.get('hanamii:teardown')!
@@ -81,7 +82,7 @@ let projectDir = ''
 beforeEach(() => {
   ops.resetProjectOpsForTests()
   h.status = 202
-  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-teardown-call-'))
+  projectDir = isolatedProjectDir('koto-teardown-call-') // 自分だけの親フォルダの中（複製の確かめが、ほかの試験の残りを兄弟として読まない。0.6.24 I-2）
   globalThis.fetch = (async () => {
     const status = h.status
     return { ok: status >= 200 && status < 300, status, async text() { return deleteProjectReplyText(status, PROJECT_ID) } }

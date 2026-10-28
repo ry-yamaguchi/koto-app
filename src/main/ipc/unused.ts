@@ -60,6 +60,7 @@ import type { LeftoverDataFile } from '../../shared/leftoverData'
 import { MATERIALS_DIR } from '../../shared/publishExclude'
 import { PUBLISH_DIR, PUBLISH_DIR_LABEL, backupRelPath } from '../../shared/publishRoot'
 import { isProtectedWritePath } from '../../shared/protectedPaths'
+import { moveRefusalFor } from './fsTrash'
 import { snapshotBeforeChange } from '../backup/store'
 import { BACKUP_DIRNAME, nextFreeSnapshotId } from '../backup/plan'
 
@@ -344,7 +345,14 @@ export function moveFilesToFs(
     const usedDest = new Set<string>()
     for (const rel of list) {
       const fromFull = confineToProject(projectDir, rel) // .. ・絶対パスの脱出を拒否
-      if (isProtectedWritePath(rel)) throw new Error(`Koto が管理する領域は移動できません: ${rel}`)
+      // **正規化した相対パスで守りを当てる**（`a/../.sakuraide.json` は、`rel` のままでは段が3つで「プロジェクト直下のメタ情報」に当たらず素通りした）。
+      // 空は、プロジェクトのフォルダそのもの（`.`・`a/..`）。自分の中へは移せない。
+      const relNorm = path.relative(projectDir, fromFull)
+      if (relNorm === '') throw new Error(`プロジェクトのフォルダそのものは移動できません: ${rel}`)
+      if (isProtectedWritePath(relNorm)) throw new Error(`Koto が管理する領域は移動できません: ${rel}`)
+      // 開いたフォルダが作業場所などの親フォルダのとき、子のプロジェクトの記録・フォルダそのものも移せてしまう（R2-a）。`fs:trash` と同じ判断で、'plain' 以外は断る。
+      const refusal = moveRefusalFor(fromFull, rel)
+      if (refusal) throw new Error(refusal)
 
       const base = path.basename(rel)
       const name = nextFreeMaterialName(base, (candidate) => (

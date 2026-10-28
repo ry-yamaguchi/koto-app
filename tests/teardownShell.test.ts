@@ -56,6 +56,7 @@ function harness(over: Partial<TeardownShellSpec<Auth, Res>> = {}) {
     },
     authMissingMessage: 'トークンが未登録です',
     secretsOf: a => [a.token],
+    twinsOf: () => [], // 複製なし（複製の断りは tests/teardownShellTwins.test.ts）
     run: async ctx => { log.push('run'); ctxs.push(ctx); return { ok: true, executed: ['✅ 消しました'] } },
     shouldForgetRecord: ({ result }) => { log.push('shouldForget'); return result.ok },
     forgetRecord: () => { log.push('forget'); return { ok: true } },

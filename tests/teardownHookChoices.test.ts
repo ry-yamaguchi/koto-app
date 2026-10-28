@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // ── 段階2（2b-1）: フック useTeardownFlow が、選択つきの確認（useConfirmChoices）を流れへ渡す ─────────────────────
 // 設計書 docs/teardown-unify-plan.md の 10.7.7 (2)。振る舞いで固定する（ソースの文字列は読まない）。
-//   ・選択（choices）を持つ仕様書: 確認に選択が出る（既定値つき）→ 動かした値が invoke の opts.choices に届く／やめるなら IPC 0
+//   ・選択（choices）を持つ仕様書: 確認に選択が出る（既定値つき）→ 動かした値が invoke の opts.choices に届く／キャンセルなら IPC 0
 //   ・選択を持たない仕様書（HANAMII）: 今までの確認。choices は空・opts は { confirmed:true } だけ
 //   ・nothingToDoIsOk の仕様書: 確認も IPC も出ず、結果欄に渡す outcome に nothingToDo:true が付く（付けない仕様書の outcome は今のまま）
 // React は DOM 環境を入れていないので、useState／useRef／useCallback／useEffect だけをこの試験用の小さな実装に差し替えてフックをそのまま呼ぶ
@@ -148,7 +148,7 @@ describe('E フック: 選択（choices）を持つ仕様書の確認', () => {
     m.props.onConfirm()
     await started
     expect(invokes).toHaveLength(1)
-    expect(invokes[0].opts).toEqual({ confirmed: true, choices: { deleteRegistry: true } })
+    expect(invokes[0].opts).toEqual({ confirmed: true, shownPlacements: [], choices: { deleteRegistry: true } })
     expect(m.outcomes).toHaveLength(1)
     expect(m.outcomes[0].view.ok).toBe(true)
   })
@@ -161,10 +161,10 @@ describe('E フック: 選択（choices）を持つ仕様書の確認', () => {
     expect(m.props.choiceValues).toEqual({ deleteRegistry: false })
     m.props.onConfirm()
     await started
-    expect(invokes[0].opts).toEqual({ confirmed: true, choices: { deleteRegistry: false } })
+    expect(invokes[0].opts).toEqual({ confirmed: true, shownPlacements: [], choices: { deleteRegistry: false } })
   })
 
-  it('★★★ チェックを動かしてもやめる → IPC は0回・結果も出ない', async () => {
+  it('★★★ チェックを動かしてもキャンセル → IPC は0回・結果も出ない', async () => {
     const m = mountHook(makeSpec({ choices: () => [REG] }))
     const started = m.latest.start()
     await waitOpen(m)
@@ -184,7 +184,7 @@ describe('E フック: 選択（choices）を持つ仕様書の確認', () => {
     expect(m.props.choiceValues).toEqual({ deleteRegistry: false })
     m.props.onConfirm()
     await started
-    expect(invokes[0].opts).toEqual({ confirmed: true, choices: { deleteRegistry: false } })
+    expect(invokes[0].opts).toEqual({ confirmed: true, shownPlacements: [], choices: { deleteRegistry: false } })
   })
 })
 
@@ -197,7 +197,7 @@ describe('E フック: 選択を持たない仕様書（HANAMII）の確認は�
     m.props.onConfirm()
     await started
     expect(invokes).toHaveLength(1)
-    expect(Object.keys(invokes[0].opts as object)).toEqual(['confirmed'])
+    expect(Object.keys(invokes[0].opts as object)).toEqual(['confirmed', 'shownPlacements']) // choices の鍵は付かない（確認で見せた保存場所の組は、選択の有る無しによらず付く）
   })
 
   it('★★ 選択が空の配列を返す仕様書も同じ（今までの確認）', async () => {
@@ -206,7 +206,7 @@ describe('E フック: 選択を持たない仕様書（HANAMII）の確認は�
     await waitOpen(m)
     m.props.onConfirm()
     await started
-    expect(invokes[0].opts).toEqual({ confirmed: true })
+    expect(invokes[0].opts).toEqual({ confirmed: true, shownPlacements: [] })
   })
 })
 

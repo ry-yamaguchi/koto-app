@@ -21,8 +21,8 @@ import { opWordFor } from '../shared/opWord'
 
 /** ダイアログの見出し。 */
 export const QUIT_GUARD_MESSAGE = '処理を実行中です'
-/** 0 番目のボタン（既定＝Return が付き、macOS では青く描かれる）。 */
-export const QUIT_GUARD_CANCEL_LABEL = '終了しない'
+/** 0 番目のボタン（既定＝Return が付き、macOS では青く描かれる）。取り消しのボタンは「キャンセル」に揃える（0.6.23。以前の名前は「終了しない」。名前だけを変え、並び・既定・cancelId の意味は同じ）。 */
+export const QUIT_GUARD_CANCEL_LABEL = 'キャンセル'
 /** 1 番目のボタン。押すと処理は途中で止まる。 */
 export const QUIT_GUARD_QUIT_LABEL = '終了する（処理は途中で止まります）'
 /** 「終了する」のボタンの番号（`showMessageBox` の response と比べる）。 */
@@ -41,8 +41,8 @@ function projectNameOf(projectDir: string): string {
  * いま終了してよいか（純関数）。走っている操作が無ければ止めない。あれば、ダイアログの文とボタンを返す。
  * 文は短く: 何が進行中か（プロジェクト名と公開/削除/作成）と、終了すると途中で止まることだけ。
  *
- * ── defaultId と cancelId（2026-10-12・0.6.21-rc.2 の実際の画面で「終了しない」が青くならなかった）──────────
- * defaultId=0（終了しない）と cancelId=0 を同じにすると、macOS では**どのボタンも青くならない**。
+ * ── defaultId と cancelId（2026-10-12・0.6.21-rc.2 の実際の画面で 0 番目のボタン〔当時の名前は「終了しない」〕が青くならなかった）──────────
+ * defaultId=0（キャンセル）と cancelId=0 を同じにすると、macOS では**どのボタンも青くならない**。
  *   Electron 33.4.11 の原本 shell/browser/ui/message_box_mac.mm 68〜85 行: defaultId のボタンに Return（`\r`）を付けたあと、
  *   cancelId のボタンに Escape（`\e`）を付ける。同じボタンだと Return が Escape に**上書き**され（setKeyEquivalent は
  *   1つしか持てない）、Return のボタンが無くなる＝青くならず、Return を押しても何も起きない。
@@ -50,9 +50,9 @@ function projectNameOf(projectDir: string): string {
  *   ＝**「終了する」に Escape が付く**（Esc で処理が止まったまま終了する）。省かない。
  * そこで cancelId を**ボタンの数以上の値**にする。message_box_mac.mm は範囲外の cancelId にはキーを付けない
  *   （`cancel_id < button_count` のときだけ）。dialog.ts は cancelId が null でなければそのまま渡す。
- *   結果: 「終了しない」に Return が付いて青くなり、Esc はどのボタンにも付かない（何も起きない）。
+ *   結果: 「キャンセル」に Return が付いて青くなり、Esc はどのボタンにも付かない（何も起きない）。
  *   「終了する」に Return も Esc も付かないので、キーだけでは終了できない。押されたのが 1（終了する）以外なら、
- *   0（終了しない）・範囲外の 2・ダイアログの失敗のどれでも終了しない（`QUIT_GUARD_QUIT_INDEX` と等しいときだけ終了する）。
+ *   0（キャンセル）・範囲外の 2・ダイアログの失敗のどれでも終了しない（`QUIT_GUARD_QUIT_INDEX` と等しいときだけ終了する）。
  * ※ 実機で未確認。青く描かれるかは、署名した版の実機でしか確かめられない。
  */
 export function quitGuardDecision(running: readonly (Pick<RunningOpInfo, 'projectDir' | 'op'> & Partial<Pick<RunningOpInfo, 'target'>>)[]): QuitGuardDecision {
@@ -112,7 +112,7 @@ export function createQuitAsk<P>(deps: {
  *
  * - `onBeforeQuit`: app.on('before-quit') から呼ぶ。走っている操作があれば `preventDefault()` して聞く。
  *   「終了する」が選ばれたら印を立てて `quit()` をやり直す（2 回目の before-quit では聞かない）。
- *   「終了しない」・ダイアログの失敗は、何も閉じない（安全側）。聞いている間の ⌘Q の連打では、ダイアログを重ねない。
+ *   「キャンセル」・ダイアログの失敗は、何も閉じない（安全側）。聞いている間の ⌘Q の連打では、ダイアログを重ねない。
  * - `isQuitConfirmed`: 「終了する」を選んだあとか。mainWindow の 'close' が、**処理中の警告（(1)）だけ**飛ばすのに使う。
  *   **未保存の確認（(2)）は飛ばさない**（`forceQuit` とは別の印にしてある理由）。
  * - `reset`: 終了が中断されたとき（未保存の確認が出た＝その時点で終了は取り消されている・ウィンドウが閉じただけで終了しなかった）に

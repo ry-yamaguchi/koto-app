@@ -327,8 +327,8 @@ export function remainingCostWarning(opts: {
   /** 破棄したのに保存場所が残ったか（残った場合のみ名前を渡す）。 */
   keptBucketName?: string | null
   /**
-   * 残った保存場所が**複数**あるとき、その全部の名前（HANAMII・専有型の破棄は、同意済みの保存場所を全件片づけるので
-   * 複数ありうる）。`keptBucketName` と重なる名前は1つと数える。**1件だけ名指しすると、名前が出なかった保存場所の
+   * 残った保存場所が**複数**あるとき、その全部の名前（HANAMII・専有型の破棄は、同意済みの保存場所を複数まとめて扱い、
+   * 確認で見せた分だけを片づける〔見せていない分は残る。0.6.24 F〕ので、残るものも複数ありうる）。`keptBucketName` と重なる名前は1つと数える。**1件だけ名指しすると、名前が出なかった保存場所の
    * 月額が黙って続く**（objectStorage の検分の指摘5と同じ形）。
    */
   keptBucketNames?: readonly string[] | null

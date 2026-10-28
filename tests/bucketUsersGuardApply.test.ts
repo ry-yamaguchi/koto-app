@@ -97,7 +97,8 @@ describe('★★★ 公開の apply の保存場所の削除（applyPlan）: 兄
 
     expect(r.ok).toBe(true)
     expect(calls.deletedBuckets).toEqual([])
-    expect(calls.deletedKeys).toEqual(MINE)
+    expect(calls.deletedKeys, '0.6.24 R1-b: 読めない兄弟は複製かもしれない。データ（キー）にも手を付けない').toEqual([])
+    expect(r.executed[0]).toBe(`保存場所『${BUCKET}』のデータは残しました — フォルダ『broken』の記録を読めないため、同じデータを使っているか確かめられませんでした。`)
     const text = r.executed.join('\n')
     expect(text).toContain('使っているプロジェクトが無いか確かめてください')
     expect(text).not.toContain('ほかのプロジェクトも使っています')
@@ -133,7 +134,8 @@ describe('★★★ 公開の apply の保存場所の削除（applyPlan）: 兄
       })
       expect(r.ok, String(projectDir)).toBe(true)
       expect(calls.deletedBuckets, String(projectDir)).toEqual([])
-      expect(calls.deletedKeys, String(projectDir)).toEqual(MINE)
+      expect(calls.deletedKeys, String(projectDir)).toEqual([]) // 確かめ自体ができなかった（0.6.24 R1-b）: データ（キー）にも手を付けない
+      expect(r.executed[0], String(projectDir)).toBe(`保存場所『${BUCKET}』のデータは残しました — ほかのフォルダの記録を読めないため、同じデータを使っているか確かめられませんでした。`)
     }
   })
 })

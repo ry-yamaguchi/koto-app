@@ -143,7 +143,7 @@ describe('オブジェクトのキー（プレフィックスの外へ出さな�
 })
 
 /** 記録を読んだ結果、ほかに使っているプロジェクトはいなかった（既存の試験は、キーの一覧だけで決まる判断を見る）。 */
-const NONE: BucketRecordUsers = { known: true, users: [] }
+const NONE: BucketRecordUsers = { known: true, users: [], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true }
 
 describe('破棄で何を消すか（★いちばん危ない判断）', () => {
   const shared: StoragePlacement = { bucket: 'koto-data-x', prefix: 'projects/myapp/', shared: true }
@@ -237,8 +237,8 @@ describe('破棄で何を消すか（★いちばん危ない判断）', () => {
   // ── ほかのプロジェクトの記録（2026-10-21 実機: 一覧に出ない利用者を、別のプロジェクトの削除がバケットごと消した）──────────
   describe('★★★ ほかのプロジェクトの記録から分かった利用者', () => {
     const NOTE = '保存場所は残します。'
-    const USED: BucketRecordUsers = { known: true, users: ['rc1-shared'] }
-    const UNKNOWN: BucketRecordUsers = { known: false }
+    const USED: BucketRecordUsers = { known: true, users: ['rc1-shared'], samePrefix: [], samePrefixUnread: [], samePrefixChecked: true }
+    const UNKNOWN: BucketRecordUsers = { known: false, samePrefix: [], samePrefixUnread: [], samePrefixChecked: true } // 確かめ自体はできた（.sakuraide.json だけ読めない兄弟など。複製はいない）
 
     it('★★★ 実機の再現: キーには自分の prefix しか無いが、記録に使っているプロジェクトがいれば、バケットを消さない（このプロジェクトの prefix だけ消す）', () => {
       for (const p of [shared, dedicated]) {

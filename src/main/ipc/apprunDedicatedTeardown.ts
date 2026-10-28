@@ -2,7 +2,7 @@
 // （設計書 docs/teardown-unify-plan.md 10.11.4。0.6.22 段階3B-1）。
 //
 // ── 呼び形 ───────────────────────────────────────────────────────────────────
-//   apprunDedicated:teardown (projectDir, { token, secret }, { confirmed })
+//   apprunDedicated:teardown (projectDir, { token, secret }, { confirmed, shownPlacements })
 // 順序は共通の骨（cloud/teardownShell.ts の runTeardownShell）が持つ: projectDir → 確認の印 → 認証の形 → 鍵（同時に1つだけ）→ run → 記録の片づけ。
 // 断った回（確認の印が無い・projectDir が無い・キーが空・別の操作が走っている）は、さくらへも保存場所へも1本も要求を出さず、処理の記録も作らない
 // （以前は鍵を取ってから teardownFlow の中で確認の印を断っていたので、印の無い呼び出しでも「削除」の記録が1件できた）。
@@ -10,7 +10,8 @@
 // ── ここが持つもの（run の中身）────────────────────────────────────────────────
 //   ・破棄の前の記録を先に読む（消すものが記録にあったか。保存場所に触れてよいかの材料）
 //   ・teardownFlow（アプリ → LB → ASG → クラスタ。本体は cloud/apprunDedicatedApply.ts のまま変えない）
-//   ・計算資源が消し切れたら、保存場所も片づける（teardownProjectStorage。手順と守りは cloud/storageTeardown.ts の1つ）
+//   ・計算資源が消し切れたら、保存場所も片づける（teardownProjectStorage。手順と守りは cloud/storageTeardown.ts の1つ）。消すのは、**確認で見せた保存場所（名前と prefix の組）だけ**
+//     （`shownPlacements`。絞るのは storageForTarget.ts の teardownStorageForProject の1か所で、ここでは選ばない・残りも数え直さない。0.6.24 F。値が無い・形が違えば1件も消さない）
 // 公開の記録（📡 の行）を消すかは規則 shouldForgetPublishRecord の1つ（保存場所まで片づいた回だけ。D1=1）で、消すのは骨の1か所。画面は消さない。
 //
 // 認証情報は renderer から引数で受け取るだけで、main には保存しない（掟4・方式B）。
@@ -20,6 +21,7 @@ import { teardownFlow, shouldForgetPublishRecord, type TeardownFlowResult } from
 import type { CloudCredentials } from '../cloud/auth'
 import { storagePlacementsOf, storageProjectNameOf, teardownStorageForProject, forgetDeletedBuckets, keptBucketReasonFields } from '../cloud/storageForTarget'
 import { keyWarningLines } from '../cloud/storageTeardown'
+import { recordTwinsFs } from '../cloud/recordTwins'
 import { runTeardownShell, type TeardownShellSpec } from '../cloud/teardownShell'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs, forgetPublishTargetFs } from '../publishMetaFs'
 import { STAGE, UNMEASURED, type StageMark } from '../../shared/stageTiming'
@@ -82,6 +84,7 @@ async function teardownProjectStorage(
   auth: CloudCredentials, projectDir: string, res: TeardownFlowResult,
   progress: (msg: string, extra?: { stage?: string }) => void,
   onStage: (stage: string, mark?: StageMark) => void,
+  shown: unknown,
 ): Promise<TeardownFlowResult> {
   // ここへ来た時点で計算資源は消し切れている（呼び出し側が res.ok のときだけ呼ぶ）。
   // 以降どう転んでも、**アプリは消えた**という事実は落とさない（検分の指摘4・9・13）。
@@ -126,7 +129,9 @@ async function teardownProjectStorage(
     // 鍵は記録の1件だけでなく、**この公開先の名前の鍵を全部**無効にする（検分の指摘6）。
     // 手順6の時点でこのプロジェクトの専有型は全部消えている＝現役の鍵は存在しないので、
     // storageKeys.ts の「現役が分からないときは消さない」規則とは矛盾しない。
-    st = await teardownStorageForProject({ creds: auth, projectDir, permissionId, sweepKeysFor: 'apprun-dedicated' })
+    // 消すのは、確認で見せた保存場所（名前と prefix の組）だけ。見せていないものは main が消さず、残りに数える（0.6.24 F）。
+    // キーごと渡す（画面が運ばなかった・形が違う値なら「見せていない」扱いで、1件も消さない）。
+    st = await teardownStorageForProject({ creds: auth, projectDir, permissionId, sweepKeysFor: 'apprun-dedicated', shown })
   } catch (e: any) {
     // 片づいたものが分からない（投げたので done を持たない）ので、全件が残っている側に倒す。名前の印も全件で書く
     // （書かないと、行を残しても押し直しの 🗑 が資源の ID も印も無い記録を読んで「記録にありません」で止まる）。
@@ -148,7 +153,7 @@ async function teardownProjectStorage(
     keptBuckets.length > 0 ? { keptBucketName: keptBuckets[0], keptBucketNames: keptBuckets, ...keptBucketReasonFields(st.done) } : {}
   const executed = [
     ...res.executed,
-    ...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note)),
+    ...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note, b.keptData)),
     // 鍵を無効にできなかった警告には、どこで何を削除すればよいかを添える（共用型・HANAMII と同じ。警告の文そのものは変えない）。
     ...keyWarningLines(st.warnings, keyGuide),
   ]
@@ -164,20 +169,25 @@ async function teardownProjectStorage(
     // 計算資源は消えている（＝そのぶんの課金は止まった）が、保存場所は残った。**黙らない。**
     // (1)残っているバケット名を一覧に出す（指摘5） (2)記録に印を残して手順6・📡 の 🗑 を押し直せるようにする（指摘1）。
     // **残りは全件名指しする**（0.6.22 段階3B-2）。止まった1件だけだと、後ろにある保存場所（丸ごと残っている）の月額が黙って続く。
-    // 先頭は止まった1件（st.remainingBucket）。接続できなかった回（done が空）も全件になる。
-    const remainingBuckets = Array.from(new Set([st.remainingBucket, ...placements.slice(st.done.length).map(p => p.bucket)]))
+    // 数え直さない（以前は placements.slice(st.done.length)。見せたものだけを回すので、片づいた件数では位置が合わない）:
+    // 止まった1件・後ろの未着手・確認で見せていなくて飛ばした分は、`teardownStorageForProject` が重ならない並びで返す（先頭は止まった1件＝st.remainingBucket）。
+    const remainingBuckets = st.remainingBuckets
     executed.push(...markStorageLeftover(projectDir, remainingBuckets))
+    // 止まるまでに記録の鍵を無効にできていれば、記録から外す（共用型と同じ。押し直しで同じ鍵へもう一度要求を出さない）。
+    // 外せなくても害は無い（押し直しの deletePermission は 404 を成功と読む）ので、ここでは言わない。
+    if (permissionId && st.permissionRevoked) writeApprunDedicatedRecordFs(projectDir, { storagePermissionId: null })
     return {
       ...done, ok: false, executed, ...kept,
       message: `${st.message}${leftoverLine(remainingBuckets)}`,
       remaining: { ...res.remaining, storageBucket: st.remainingBucket },
       remainingBuckets,
+      ...(st.skippedBuckets ? { skippedBuckets: st.skippedBuckets } : {}), // 確認で見せていなくて飛ばした分（共用型と同じ形。0.6.24 R1-d）
     }
   }
-  // 鍵を無効にできたときだけ、記録から外す。消せていないのに記録を消すと、
-  // **どこにも辿れない鍵**が保存場所へ届き続ける。
+  // 鍵を実際に無効にできた（`permissionRevoked`）ときだけ、記録から外す。消せていないのに記録を消すと、
+  // **どこにも辿れない鍵**が保存場所へ届き続ける。複製（かもしれない）回は無効にしていないので、記録に残る（0.6.24 R1-c）。
   const cleared = writeApprunDedicatedRecordFs(projectDir, {
-    ...(permissionId && st.warnings.length === 0 ? { storagePermissionId: null } : {}),
+    ...(permissionId && st.permissionRevoked ? { storagePermissionId: null } : {}),
     storageLeftoverBucket: null,
     storageLeftoverBuckets: null,
   })
@@ -205,6 +215,7 @@ export const DEDICATED_TEARDOWN_SHELL: TeardownShellSpec<CloudCredentials, Teard
   // **`zoneOf: recordedZone` と関数を値で渡さない**。main は CommonJS へ変換されるので、循環した require で undefined のまま
   // 受け取ると、ゾーンが黙って記録されなくなる（apprunDedicatedCommon.ts 冒頭。tests/dedicatedTeardownShell.test.ts の C-7 が振る舞いで固定する）。
   zoneOf: dir => recordedZone(dir),
+  twinsOf: dir => recordTwinsFs(dir, 'sakura-apprun-dedicated'), // 同じクラスタ・ASG・LB・アプリケーションの ID を持つ複製があれば断る（0.6.24 I-2。関数を値で渡さない理由は上の zoneOf と同じ）
   async run(ctx) {
     const { projectDir, auth, progress, onStage } = ctx
     // 破棄の前の記録を**先に**読む。アプリを消すと記録の applicationID も外れるため、あとからは「何があったか」が分からない。
@@ -217,7 +228,8 @@ export const DEDICATED_TEARDOWN_SHELL: TeardownShellSpec<CloudCredentials, Teard
     // **消すものが記録に無い（資源の記録が空・前回の保存場所の残りも無い＝幽霊の行）ときも触らない**（2026-10-08 検分）:
     // teardownFlow は「記録がありません」で ok:true を返すので、ここで止めないと、何を消すか名指しできないまま
     // プロジェクトの保存場所のデータ（ほかの公開先が使っているものを含む）が消える。行だけは骨が外す（旧 📡 と同じ救済）。
-    return res.ok && dedicatedTeardownHasWork(before) ? await teardownProjectStorage(auth, projectDir, res, progress, onStage) : res
+    // 確認で見せた保存場所の組は、画面が運んだものをそのまま渡す（形は信用しない。読むのは teardownStorageForProject の中）
+    return res.ok && dedicatedTeardownHasWork(before) ? await teardownProjectStorage(auth, projectDir, res, progress, onStage, ctx.opts.shownPlacements) : res
   },
   shouldForgetRecord: s => shouldForgetPublishRecord(s),
   // 消し損ねたら骨が ⚠️ の1行にする（破棄の結果は変えない）。

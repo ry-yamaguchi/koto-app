@@ -17,8 +17,10 @@ const IPC = path.join(__dirname, '..', 'src', 'main', 'ipc', 'cloud.ts')
 // 公開の applyPlan は 2026-10-21 から applyForProject.ts（プロジェクトのフォルダつき・一時キーの片づけつき）を通る。cloud.ts はそれを呼ぶ
 const APPLY_FOR_PROJECT = path.join(__dirname, '..', 'src', 'main', 'cloud', 'applyForProject.ts')
 // 破棄は 2026-10-10（段階2）に cloudTeardown.ts へ移した。破棄のアプリの削除は applyPlan に storage を渡さず、
-// 保存場所は teardownStorageForProject（env.json の同意済み全件 + state にだけあるもの）が最後に消す。
+// 保存場所は teardownStorageForProject が最後に消す（候補は env.json の同意済み全件 + state にだけあるもの。消すのは確認で見せたものだけ）。
 const TEARDOWN_IPC = path.join(__dirname, '..', 'src', 'main', 'ipc', 'cloudTeardown.ts')
+// 保存場所の段は 0.6.24 R1-a で cloudTeardownStorage.ts へ切り出した（teardownStorageForProject を呼ぶのはそこだけ。cloudTeardown.ts は段を1回呼ぶ）。
+const TEARDOWN_STORAGE_IPC = path.join(__dirname, '..', 'src', 'main', 'ipc', 'cloudTeardownStorage.ts')
 
 /** `name(` の呼び出しごとに、対応する閉じ括弧までの本文を切り出す。 */
 function callsOf(source: string, name: string): string[] {
@@ -45,6 +47,7 @@ const applyPlanCalls = (source: string): string[] => callsOf(source, 'applyPlan'
 describe('applyPlan の呼び出しに、保存場所の操作が渡っている', () => {
   const source = fs.readFileSync(IPC, 'utf-8')
   const teardownSource = fs.readFileSync(TEARDOWN_IPC, 'utf-8')
+  const storageStageSource = fs.readFileSync(TEARDOWN_STORAGE_IPC, 'utf-8')
 
   it('切り出しそのものが正しく動く（この検査の土台）', () => {
     expect(applyPlanCalls('applyPlan({ a: f(1), b: 2 })')).toEqual(['({ a: f(1), b: 2 })'])
@@ -72,8 +75,15 @@ describe('applyPlan の呼び出しに、保存場所の操作が渡っている
     for (const call of applyPlanCalls(teardownSource)) {
       expect(call).not.toContain('storage')
     }
-    expect(teardownSource).toContain('teardownStorageForProject({ creds, projectDir')
-    expect(teardownSource).toContain('placements })')
+    // teardownStorageForProject を呼ぶのは保存場所の段のファイルの1か所だけ。cloudTeardown.ts は直に呼ばず、段（runStorageStage）を1回呼ぶ
+    expect(callsOf(teardownSource, 'teardownStorageForProject')).toEqual([])
+    const stageCalls = callsOf(storageStageSource, 'teardownStorageForProject')
+    expect(stageCalls.length).toBe(1)
+    expect(stageCalls[0]).toContain('{ creds, projectDir, permissionId: recordedKey, sweepKeysFor: owed ? \'apprun\' : null, placements, shown: i.shown }')
+    // 確認で見せた保存場所（shownPlacements）を、キーごと段へ渡す（0.6.24 F）。渡し忘れると main は全件を消す側に戻る
+    const runStageCalls = callsOf(teardownSource, 'runStorageStage')
+    expect(runStageCalls.length).toBe(1)
+    expect(runStageCalls[0]).toContain('shown: ctx.opts.shownPlacements,')
   })
 
   it('渡したあとに片づけている（一時キーを残さない）。片づけは applyForProject の finally にあり、applyPlan の呼び出しはその try の中', () => {

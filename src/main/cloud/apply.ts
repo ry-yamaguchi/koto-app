@@ -15,9 +15,10 @@ import type { EnvState, ResourceRef } from './state'
 import type { Plan } from './planner'
 import { buildCreateBody, buildPatchBody, apiErrorMessage, type RegistryAuth } from './client'
 import { keepMarkerKey, storageEnvVars, containsSecretEnv, consentedBuckets, STORAGE_ENV } from '../../shared/objectStorage'
-import { teardownStorage, keyWarningLines, keptBucketReasonFields } from './storageTeardown'
+import { teardownStorage, placementsHaveTwinRisk, recordedKeyRisk, keyKeptWarning, keyWarningLines, keptBucketReasonFields } from './storageTeardown'
 import { permissionNameFor, keyRevokeGuide } from '../../shared/storageKeys'
 import { teardownRemainingWarnings } from '../../shared/cloudCost'
+import { storageTeardownDoneLine } from '../../shared/teardownSupport'
 import { readActualMinScale, judgeScale, type ScaleDecision } from '../../shared/scaleDecision'
 
 /**
@@ -432,25 +433,37 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
         // 判断（何を消してよいか）は、その先の shared/objectStorage.ts。ここでは書かない。
         const prefix = bucketPrefixOf(spec, a.name) || stateBucketPrefix(state, a.name)
         const placement = { bucket: a.name, prefix, shared: isSharedBucket(spec, a.name) }
-        // 鍵も無効にする。残すと、消したはずの保存場所へ届く鍵が生き続ける
+        // 鍵も無効にする。残すと、消したはずの保存場所へ届く鍵が生き続ける。**ただし、この削除で消す保存場所のうち1件でも複製（かもしれない）がいれば、鍵には触らない**
+        // （複製は元の記録の鍵 ID を写すので、無効にすると元の現役の鍵が切れる。0.6.24 R1-c。データを残した回は teardownStorage も鍵に触れない）
         const permId = state.meta?.storagePermissionId
-        const outcome = await teardownStorage({ storage, placement, permissionId: permId, projectDir: opts.projectDir })
+        const twinRisk = placementsHaveTwinRisk(opts.projectDir, plan.actions
+          .filter(x => x.kind === 'bucket' && x.type === 'delete')
+          .map(x => ({ bucket: x.name, prefix: bucketPrefixOf(spec, x.name) || stateBucketPrefix(state, x.name), shared: isSharedBucket(spec, x.name) })))
+        // 同じ鍵の ID を記録に持つ兄弟がいる（または確かめられない）回も、鍵に触れない（複製が記録の鍵の ID だけを写した形。保存場所の prefix では見えない。0.6.24 R2-i）
+        const keyRisk = recordedKeyRisk(opts.projectDir, permId)
+        const outcome = await teardownStorage({ storage, placement, permissionId: twinRisk || keyRisk !== null ? null : permId, projectDir: opts.projectDir })
         if (!outcome.ok) {
           return await stopped(outcome.message)
         }
         if (outcome.deletedBucket) {
           state.resources = state.resources.filter(r => !(r.kind === 'bucket' && r.id === a.name))
         }
-        // **無効にできたときだけ記録から外す**（2026-09-24 検分の指摘11。専有型
+        // **実際に無効にできた（`outcome.permissionRevoked`）ときだけ記録から外す**（2026-09-24 検分の指摘11。専有型
         // src/main/ipc/apprunDedicated.ts と同じ判断）。deletePermission が失敗すると
         // `outcome.warnings` に「保存場所の鍵を無効にできませんでした」が積まれる。その状態で
         // ID を消すと、**消したはずの保存場所へ読み書きできる鍵が、どこからも辿れないまま生き残る**
-        // （objectStorage.ts の冒頭が「実機で起きた」と書いている形そのもの）。
-        if (permId && outcome.warnings.length === 0) state.meta = { ...state.meta, storagePermissionId: undefined }
-        // 鍵を無効にできなかった警告には、どこで何を削除すればよいかを添える（破棄の入口〔cloudTeardown.ts〕と同じ。keyWarningLines は表示の行を作るだけで、
-        // 上の `outcome.warnings.length === 0` が見る生の warnings は変えない）。素の文のままだと、鍵が生き続けるのに名前も場所も言わない。
+        // （objectStorage.ts の冒頭が「実機で起きた」と書いている形そのもの）。複製（かもしれない）回は無効にしていないので、ID は記録に残る。
+        if (permId && outcome.permissionRevoked) state.meta = { ...state.meta, storagePermissionId: undefined }
+        // 鍵を無効にできなかった警告には、どこで何を削除すればよいかを添える（破棄の入口〔cloudTeardownStorage.ts〕と同じ。keyWarningLines は表示の行を作るだけで、
+        // 生の warnings は変えない。記録から ID を外すかは上の `permissionRevoked` だけで決める）。素の文のままだと、鍵が生き続けるのに名前も場所も言わない。
         skipped.push(...keyWarningLines(outcome.warnings, keyRevokeGuide(spec.name || null, 'apprun')))
-        executed.push(`${a.description} — ${outcome.note}`)
+        // 鍵の ID のために無効にしなかった回は、黙らずに言う（0.6.24 R3-c）。鍵は1本なので、保存場所が2件以上でも同じ行は1回だけ
+        if (keyRisk !== null) {
+          const kept = keyWarningLines([keyKeptWarning(keyRisk)], '')[0]
+          if (!skipped.includes(kept)) skipped.push(kept)
+        }
+        // データにも手を付けなかった回（同じ prefix を記録に持つ複製がいる・keptData）は、「…を削除」とは言わず、破棄の3つの入口と同じ行（データは残しました）にする
+        executed.push(outcome.keptData ? storageTeardownDoneLine(a.name, outcome.note, true) : `${a.description} — ${outcome.note}`)
         // 保存場所を残した回は、残した理由・月額・次の操作を、破棄の結果と同じ黄色の文（teardownRemainingWarnings）で言う。
         // 緑の行（note）は「保存場所は残します。」だけなので、ここで言わないと、月額が続くことが結果のどこにも出ない。
         if (!outcome.deletedBucket) {

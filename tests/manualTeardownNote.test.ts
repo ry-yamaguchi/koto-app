@@ -62,6 +62,21 @@ describe('M: ManualTeardownNote は、破棄できない公開先にだけ案内
     }
   })
 
+  it('★★ storageTornDown は案内の文に届く（0.6.24 A-9）。真のときだけ Vercel の最後の文が無い。無い・偽は今の文。レンタルサーバは変わらない', () => {
+    const elOf = (target: PublishTargetKind, storageTornDown?: boolean) =>
+      ManualTeardownNote({ target, storageTornDown }) as ReactElement<{ className: string; children: unknown }>
+    const plain = textOf(elOf('vercel'))
+    expect(plain).toBe(`ℹ️ ${manualTeardownGuide('vercel')}`)
+    expect(plain).toContain('残ります')
+    expect(textOf(elOf('vercel', false))).toBe(plain)
+    const short = textOf(elOf('vercel', true))
+    expect(short).toBe(`ℹ️ ${manualTeardownGuide('vercel', { storageTornDown: true })}`)
+    expect(short).not.toContain('残ります')
+    expect(short.length).toBeLessThan(plain.length)
+    expect(textOf(elOf('sakura-rental', true))).toBe(textOf(elOf('sakura-rental')))
+    expect(ManualTeardownNote({ target: 'hanamii', storageTornDown: true })).toBeNull()
+  })
+
   it('★ 「描く」かどうかは、公開先の全種類で teardownSupport と一致する（種類を足したら、ここで気づく）', () => {
     expect(ALL.filter(t => note(t) !== null)).toEqual(MANUAL)
   })
@@ -118,8 +133,9 @@ describe('配線: プロジェクトの削除のダイアログも ManualTeardow
     return out.sort()
   }
 
-  it('★ 公開先の一覧の行ごとに <ManualTeardownNote target={t} /> をちょうど1回描く。Sidebar には案内も部品も無い', () => {
-    expect(dialog.split('<ManualTeardownNote target={t} />').length - 1).toBe(1)
+  it('★ 公開先の一覧の行ごとに <ManualTeardownNote target={t} storageTornDown={vercelStorageGone} /> をちょうど1回描く（0.6.24 A-9）。Sidebar には案内も部品も無い', () => {
+    expect(dialog.split('<ManualTeardownNote target={t} storageTornDown={vercelStorageGone} />').length - 1).toBe(1)
+    expect(dialog.split('<ManualTeardownNote').length - 1, 'ダイアログが描く部品はこの1つだけ').toBe(1)
     expect(dialog).toContain("import ManualTeardownNote from './teardown/ManualTeardownNote'")
     const sidebar = code('src/renderer/components/Sidebar.tsx')
     expect(sidebar).not.toContain('manualTeardownGuide')

@@ -87,8 +87,13 @@ export function dedicatedStorageLeftoverNames(record: {
 /**
  * 破棄できない公開先について、どこで消せばよいかを伝える文。
  * 画面には素のテキストとして出るので、Markdown 記法は使わない（v0.2.98 の教訓）。
+ *
+ * `opts.storageTornDown`（0.6.24 A-9）: **真のときだけ**（`=== true`。渡し忘れ・形違いは偽＝今の文）、Vercel の最後の文
+ * 「保存場所（バケット）自体は…残ります。」を言わない。プロジェクトの削除で、保存場所も一緒に破棄する回
+ * （チェックがオンで、残りの段が保存場所を破棄する回）は、その文が事実と食い違うため。真かどうかの判断は画面側（projectDeleteWords.ts の
+ * vercelStorageTornDown）が持ち、ここは文を出し分けるだけ。📡（PublishedListModal）は渡さない＝今のまま。
  */
-export function manualTeardownGuide(target: PublishTargetKind): string {
+export function manualTeardownGuide(target: PublishTargetKind, opts?: { storageTornDown?: boolean }): string {
   switch (target) {
     case 'vercel':
       // **鍵のことを落とさない**（2026-09-24 検分の指摘13）。2026-09-24 から、Vercel への公開は
@@ -100,7 +105,7 @@ export function manualTeardownGuide(target: PublishTargetKind): string {
         + '(1) Vercel のダッシュボード（vercel.com）で、Vercel のプロジェクトを削除。'
         + '(2) さくらのクラウドのコントロールパネルで、オブジェクトストレージのパーミッション「koto-<プロジェクト名>_vercel」を削除'
         + '（アプリ用のアクセスキーも一緒に無効になります）。'
-        + '保存場所（バケット）自体は、ほかの公開先と共有していることがあるため残ります。'
+        + (opts?.storageTornDown === true ? '' : '保存場所（バケット）自体は、ほかの公開先と共有していることがあるため残ります。')
     case 'sakura-rental':
       return 'Koto からは削除できません。さくらのレンタルサーバのファイルマネージャか FTP で、'
         + 'アップロードしたファイルを削除してください。'
@@ -202,9 +207,15 @@ export const STORAGE_PANEL_DELETE_GUIDE = `さくらのクラウドのコント�
 /** 「コントロールパネルから直接削除することもできます」の隣に添える版（保存場所が残ったものの一覧があるとき）。 */
 export const STORAGE_LISTED_CHECK = `保存場所は、${STORAGE_CHECK_BEFORE_DELETE}`
 
-/** 保存場所1件の削除（またはデータだけの削除）が済んだことの1行。`note` は「保存場所は残します」などの続き。 */
-export function storageTeardownDoneLine(bucket: string, note: string): string {
-  return `保存場所『${bucket}』のデータを削除しました — ${note}`
+/**
+ * 保存場所1件の削除（またはデータだけの削除）が済んだことの1行。`note` は「保存場所は残します」などの続き。
+ * `keptData` が true のときは、**データにも手を付けなかった**（同じ prefix を記録に持つ複製がいる）ので、「削除しました」とは言わない。
+ * 共用型・HANAMII・専有型の破棄と、公開の apply の保存場所の削除が、同じこれを通る。
+ */
+export function storageTeardownDoneLine(bucket: string, note: string, keptData?: boolean): string {
+  return keptData === true
+    ? `保存場所『${bucket}』のデータは残しました — ${note}`
+    : `保存場所『${bucket}』のデータを削除しました — ${note}`
 }
 
 /**
@@ -229,12 +240,14 @@ export function teardownDataNoteFor(opts: {
  * （2026-09-25 検分の指摘5）。
  *
  * ── なぜ全件なのか ────────────────────────────────────────────────
- * 破棄は `teardownStorageForProject` が `for (const placement of placements)` で**全件**を
- * 片づける。ところが確認画面は `storage:placement` の `placement`（**先頭1件**）だけで
+ * 破棄が消すのは、**確認で見せた（名前を挙げた）保存場所だけ**。見せていないものは消さず、残して `ok:false` で返す
+ * （0.6.24 F。`teardownStorageForProject` の `shown`）。見せる側が名指しするのは、消してよい同意済みの保存場所の全件。
+ * F の前は、`teardownStorageForProject` が `for (const placement of placements)` で同意済みの**全件**を
+ * 片づけていた。ところが確認画面は `storage:placement` の `placement`（**先頭1件**）だけで
  * 文を組み立てていたので、env.json に保存場所が2件ある状態では
  * 「保存場所『A』…のデータも削除します」としか出ないまま、**名前が一度も出なかった『B』と
  * その中のデータまで消えた**。元に戻せない削除を、名指ししないまま実行させてはいけない
- * （掟10「お金・破壊の歯止め」）。**確認で見せるものと、実際に消すものを一致させる。**
+ * （掟10「お金・破壊の歯止め」）。**確認で見せるものと、実際に消すものを一致させる**（いまは main も、見せたものだけを消す）。
  *
  * 1件のときは `teardownDataNoteFor` とまったく同じ文を返す（文言を二重管理しない）。
  * 画面には素のテキストとして出るので、Markdown 記法は使わない（v0.2.98 の教訓）。

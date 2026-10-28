@@ -3,7 +3,7 @@ import type { ReactElement } from 'react'
 
 // ── 段階2（2b-1）: 選択（チェック）つきの確認 ──────────────────────────────────────────────────────────
 // 設計書 docs/teardown-unify-plan.md の 10.7.7 (1)・10.7.12「選択つきの確認」・10.7.14 の 1。
-//   ・resolveConfirmWithChoices … 押したボタンとチェックの状態から答えを作る純関数。やめるは { confirmed:false, choices:{} }。
+//   ・resolveConfirmWithChoices … 押したボタンとチェックの状態から答えを作る純関数。キャンセルは { confirmed:false, choices:{} }。
 //     値が無い（undefined）ときだけ defaultChecked、boolean ならそのまま、**ほかの値は false**（不明な値を「消す」に倒さない）
 //   ・useConfirmChoices        … 選択の無い確認（confirm）と選択つきの確認（confirmWithChoices）を1つの ConfirmModal で出す。
 //                                React の useState・useCallback だけをこの試験用の小さな実装に差し替えて、フックをそのまま呼ぶ
@@ -43,7 +43,7 @@ const REG_OFF: ConfirmChoice = { id: 'deleteRegistry', label: 'コンテナレ�
 const OTHER: ConfirmChoice = { id: 'other', label: 'もう1つ', defaultChecked: false }
 
 describe('resolveConfirmWithChoices: 押したボタンとチェックの状態から答えを作る（純関数）', () => {
-  it('★★★ やめる（cancel）は { confirmed:false, choices:{} }。チェックがどうなっていても true にならない', () => {
+  it('★★★ キャンセル（cancel）は { confirmed:false, choices:{} }。チェックがどうなっていても true にならない', () => {
     expect(resolveConfirmWithChoices('cancel', [REG_ON], {})).toEqual({ confirmed: false, choices: {} })
     expect(resolveConfirmWithChoices('cancel', [REG_ON], { deleteRegistry: true })).toEqual({ confirmed: false, choices: {} })
     expect(resolveConfirmWithChoices('cancel', [], {})).toEqual({ confirmed: false, choices: {} })
@@ -125,7 +125,7 @@ describe('ConfirmModal: 任意のチェック欄（choices）', () => {
     // 本文（select-text の段落）→ チェック欄 → ボタン の順
     const html = JSON.stringify(el, (_k, v) => (typeof v === 'function' ? undefined : v))
     expect(html.indexOf('select-text')).toBeLessThan(html.indexOf('checkbox'))
-    expect(html.indexOf('checkbox')).toBeLessThan(html.indexOf('やめる'))
+    expect(html.indexOf('checkbox')).toBeLessThan(html.indexOf('キャンセル'))
   })
 
   it('★★ チェックを動かすと onToggleChoice(id, 入れたか) が呼ばれる', () => {
@@ -178,13 +178,30 @@ function mount() {
   }
 }
 
+describe('ConfirmModal: 取り消しのボタンの名前は「キャンセル」（0.6.23。以前は「やめる」。確認ダイアログ全部の既定）', () => {
+  const buttonsOf = (el: ReactElement) => findAll(el, n => n.type === 'button')
+
+  it('★★★ 描くと、取り消し（先）と実行（後）の2ボタン。取り消しの名前は既定で「キャンセル」。cancelLabel を渡せばその名前', () => {
+    expect(buttonsOf(render()).map(b => textOf(b))).toEqual(['キャンセル', '実行する'])
+    expect(buttonsOf(render({ cancelLabel: '戻る', confirmLabel: '削除する' })).map(b => textOf(b))).toEqual(['戻る', '削除する'])
+  })
+
+  it('★★ 名前を変えても配線は同じ: 先のボタンは onCancel、後のボタンは onConfirm', () => {
+    const onCancel = () => {}
+    const onConfirm = () => {}
+    const [cancel, ok] = buttonsOf(render({ onCancel, onConfirm }))
+    expect(cancel.props.onClick).toBe(onCancel)
+    expect(ok.props.onClick).toBe(onConfirm)
+  })
+})
+
 describe('useConfirmChoices: 選択の無い確認と選択つきの確認を1つの ConfirmModal で出す', () => {
   it('★ 最初は閉じている', () => {
     const m = mount()
     expect(m.props.open).toBe(false)
   })
 
-  it('★★ confirm（選択なし）: 開く → 実行で true／やめるで false。チェック欄は出ない', async () => {
+  it('★★ confirm（選択なし）: 開く → 実行で true／キャンセルで false。チェック欄は出ない', async () => {
     const m = mount()
     const p = m.h.confirm({ title: '見出し', body: '本文', confirmLabel: '実行', danger: true })
     expect(m.props.open).toBe(true)
@@ -220,7 +237,7 @@ describe('useConfirmChoices: 選択の無い確認と選択つきの確認を1�
     expect(await p).toEqual({ confirmed: true, choices: { deleteRegistry: false, other: true } })
   })
 
-  it('★★★ チェックを動かしても、やめるは { confirmed:false, choices:{} }', async () => {
+  it('★★★ チェックを動かしても、キャンセルは { confirmed:false, choices:{} }', async () => {
     const m = mount()
     const p = m.h.confirmWithChoices({ title: 't', body: 'b', choices: [REG_OFF] })
     m.props.onToggleChoice('deleteRegistry', true)

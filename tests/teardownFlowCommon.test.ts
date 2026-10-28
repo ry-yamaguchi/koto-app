@@ -14,7 +14,7 @@ import { teardownDataNoteForAll } from '../src/shared/teardownSupport'
 // ここで専有型の仕様書から借りているのは、偽の仕様書に渡す**入力側**の小さな関数（消すものの名前・時間の予告・幽霊の行の案内）だけ。
 import { dedicatedTeardownTargets, lbWaitNote, DEDICATED_NOTHING_TO_DELETE_MESSAGE as NOTHING_TO_DELETE_MESSAGE } from '../src/renderer/teardown/targets/dedicated'
 import {
-  GOLDEN_CONFIRM_CASES, GOLDEN_FULL_RECORD, INTENDED_CONFIRM_DIFFERENCES, ADDED_SENTENCE, OLD_EXAMPLE, NEW_EXAMPLE, T161_NEW, readGolden,
+  GOLDEN_CONFIRM_CASES, GOLDEN_FULL_RECORD, INTENDED_CONFIRM_DIFFERENCES, ADDED_SENTENCE, CALL_CAUTION_F6, CALL_CAUTION_HEAD, OLD_EXAMPLE, NEW_EXAMPLE, T161_NEW, readGolden,
   type GoldenConfirmCase, type GoldenRecord,
 } from './dedicatedGoldenCases'
 
@@ -26,7 +26,7 @@ import {
 //   A 流れの歯止め … 確認が no なら IPC は0回。確認の答えが true 以外でも0回。キーなし・例外・材料が読めない・幽霊の行。
 //   B 確認の文   … 保存場所の全件・HANAMII で「残ります」と言わない・読めなかった材料の注意・元に戻せませんの出し分け・保存場所だけ残った回。
 //   手本の出力の写しとの比べ … 専有型の仕様書で流すと、0.6.21 の手本が返した文の写し（golden）と同じ文になる。
-//                               違ってよいのは「意図して違う文」の表（設計書 10.11.12 の V4〜V6）にあるものだけ（'call' の回の足し・「読めなかった」注意の例・T161）。
+//                               違ってよいのは「意図して違う文」の表（設計書 10.11.12 の V5・V6 と、0.6.24 F-6 の F6。以前の V4 は F6 に替わった）にあるものだけ（'call' の回の足し・「読めなかった」注意の例・T161）。
 
 type Rec = { projectId: string | null; name: string | null; leftover: string[] | null }
 type Auth = { token: string }
@@ -159,14 +159,14 @@ describe('A runTeardownFlow: 確認が no なら IPC は0回・yes なら confir
     expect(calls.order).toEqual(['loadFacts', 'confirm'])
   })
 
-  it('★★★ A-2 確認 yes: invoke が { confirmed: true } 付きで1回だけ。beginActivity は仕様書の名前と窓を閉じる警告つきで1回、終われば end も1回', async () => {
+  it('★★★ A-2 確認 yes: invoke が { confirmed: true, shownPlacements } 付きで1回だけ。beginActivity は仕様書の名前と窓を閉じる警告つきで1回、終われば end も1回', async () => {
     const { deps, calls } = fakeDeps()
     const out = await runTeardownFlow('/p', makeSpec(), deps)
     expect(out).toEqual({ cancelled: false, result: OK_REPLY })
     expect(calls.invoke).toHaveLength(1)
     expect(calls.invoke[0].dir).toBe('/p')
     expect(calls.invoke[0].auth).toBe(AUTH)
-    expect(calls.invoke[0].opts).toStrictEqual({ confirmed: true })
+    expect(calls.invoke[0].opts).toStrictEqual({ confirmed: true, shownPlacements: [] }) // 確認で見せた保存場所の組（この材料は0件。載せ方の表は tests/shownPlacementsFlow.test.ts）
     // 窓を閉じる警告: 名前は仕様書の words.activityLabel、警告は活動レジストリの共通の1つ（PUBLISH_CLOSE_WARNING。別の文を持たない）
     expect(calls.begin).toHaveLength(1)
     expect(calls.begin[0].label).toBe('HANAMII の破棄')
@@ -256,6 +256,20 @@ describe('A runTeardownFlow: 確認が no なら IPC は0回・yes なら confir
     expect(calls.begin).toEqual([])
     expect(calls.auth).toEqual([])
     expect(calls.started).toBe(0)
+  })
+
+  it('★★ A-7b 入口の門（deps.hasWork）が true 以外（false・undefined・真っぽい値）→ 確認 0回・IPC 0回。true のときだけ確認へ進む（0.6.24 R4-e。不明な値を消す側に倒さない）', async () => {
+    for (const v of [false, undefined, 'yes', 1, null] as unknown[]) {
+      const { deps, calls } = fakeDeps({ hasWork: () => v as boolean })
+      const out = await runTeardownFlow('/p', makeSpec(), deps)
+      expect(out, String(v)).toEqual({ cancelled: false, result: { ok: false, message: HANAMII_WORDS.nothingToDo } })
+      expect(calls.confirm, String(v)).toEqual([])
+      expect(calls.invoke, String(v)).toEqual([])
+    }
+    const { deps, calls } = fakeDeps({ hasWork: () => true })
+    await runTeardownFlow('/p', makeSpec(), deps)
+    expect(calls.confirm).toHaveLength(1)
+    expect(calls.invoke).toHaveLength(1)
   })
 
   it('★★ A-9 言葉は仕様書のものが流れに届く（HANAMII の言葉に固定しない）: 窓を閉じる警告の名前・材料が読めない失敗・消すものが無い失敗・確認の見出しとボタン', async () => {
@@ -359,7 +373,7 @@ describe('A electronFlowDeps（本物の口）', () => {
     expect(_activeCount()).toBe(0)
   })
 
-  it('★★ やめる（no）なら、活動レジストリには何も載らない（setBusy が1回も呼ばれない）・IPC もキーも0回', async () => {
+  it('★★ キャンセル（no）なら、活動レジストリには何も載らない（setBusy が1回も呼ばれない）・IPC もキーも0回', async () => {
     const { busy } = installWindow()
     const touched: string[] = []
     const spec = makeSpec({
@@ -386,7 +400,7 @@ describe('A electronFlowDeps（本物の口）', () => {
     expect(seen).toEqual([
       ['readRecord', '/proj'],
       ['loadAuth', record],
-      ['invoke', '/proj', { token: 'spec-token' }, { confirmed: true }, record],
+      ['invoke', '/proj', { token: 'spec-token' }, { confirmed: true, shownPlacements: [] }, record],
     ])
   })
 
@@ -511,53 +525,52 @@ describe('B 確認の文（buildTeardownConfirm）', () => {
     expect(c.body).not.toContain('元に戻せません')
   })
 
-  it('★★★ B-5 読めなかった材料の注意（call・storage-only）: 「削除される場合があります」と「元に戻せません」の両方が出る（本文は保存場所0件でも言い落とさない）', () => {
+  // 0.6.24 F-6: 保存場所を問い合わせられなかった（call）回は、保存場所の名前を挙げられない。画面は見せた保存場所を空にして渡し、main は見せていないものを消さない。
+  // なので「削除される場合があります」・「元に戻せません」・「ほかの公開先のデータも消えます」は言わない（消えないものを消えると言わない）。
+  const CALL_SENTENCE = '⚠️ 保存場所の設定を問い合わせられなかったため、保存場所の名前を挙げられません。名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。'
+
+  it('★★★ B-5 読めなかった材料の注意（call・storage-only）: 「名前を挙げられない保存場所は削除しません」を言う。「削除される場合があります」「元に戻せません」は言わない', () => {
     const c = confirmOf({}, { placementsUnreadable: true, placementsUnreadableCause: 'call' })
-    expect(c.body).toContain('保存場所の設定を問い合わせられなかったため')
-    expect(c.body).toContain('削除される場合があります')
-    expect(c.body).toContain('削除されたデータは元に戻せません。')
+    expect(c.body.split('\n\n')[1]).toBe(CALL_SENTENCE)
+    expect(c.body).not.toContain('削除される場合があります')
+    expect(c.body).not.toContain('削除されたデータは元に戻せません')
+    expect(c.body).not.toContain('元に戻せません') // 保存場所0件の 'storage-only' は、最後の問いも言わない
     expect(c.body).not.toContain('保存場所の削除は行われません')
   })
 
-  it('★★ B-5 call・always は手本どおり: 注意の文に「元に戻せません」は足さず、最後の一文が言う', () => {
+  it('★★ B-5 call・always: 注意の文は同じ。「元に戻せません」は最後の一文だけが言う（注意には足さない）', () => {
     const cautions = unreadableCautions({ placementsUnreadable: true, placementsUnreadableCause: 'call', otherTargetsUnreadable: false, otherTargets: [] }, HANAMII_WORDS, 'always', 'hanamii')
-    expect(cautions).toHaveLength(1)
-    expect(cautions[0]).toContain('削除される場合があります')
-    expect(cautions[0]).not.toContain('元に戻せません')
+    expect(cautions).toEqual([CALL_SENTENCE])
     const c = confirmOf({ irreversibleNote: 'always' }, { placementsUnreadable: true, placementsUnreadableCause: 'call' })
     expect(c.body.match(/元に戻せません/g)).toHaveLength(1)
     expect(c.body.endsWith('この操作は元に戻せません。よろしいですか？')).toBe(true)
   })
 
-  it('★★★ B-5 call で otherTargets が1件以上 → その名前が注意の文に出る（保存場所を使うほかの公開先のデータも消える）', () => {
+  it('★★★ B-5 call で otherTargets が1件以上でも、ほかの公開先の名前もデータが消える話も出さない（見せていない保存場所は消えない）', () => {
     const facts = { placementsUnreadable: true, placementsUnreadableCause: 'call' as const, otherTargetsUnreadable: false, otherTargets: ['Vercel', 'さくらのAppRun'] }
     for (const note of ['storage-only', 'always'] as const) {
-      const cautions = unreadableCautions(facts, HANAMII_WORDS, note, 'hanamii')
-      expect(cautions).toHaveLength(2)
-      expect(cautions[1]).toBe('⚠️ このプロジェクトが保存場所を使っていて、それをほかの公開先（Vercel・さくらのAppRun）も使っていれば、'
-        + 'そちらで公開中のアプリのデータも消えます（アプリ自体は消えません）。')
+      expect(unreadableCautions(facts, HANAMII_WORDS, note, 'hanamii'), note).toEqual([CALL_SENTENCE])
     }
     const c = confirmOf({}, { placementsUnreadable: true, placementsUnreadableCause: 'call', otherTargets: ['Vercel'] })
-    expect(c.body).toContain('ほかの公開先（Vercel）も使っていれば')
+    expect(c.body).not.toContain('ほかの公開先（Vercel）')
+    expect(c.body).not.toContain('Vercel')
   })
 
-  it('★★ B-5 call で otherTargets が0件 → ほかの公開先の文は出ない。読めなかった回（otherTargetsUnreadable）は既存の「挙げられません」の文のまま', () => {
+  it('★★ B-5 call で otherTargets が0件 → ほかの公開先の文は出ない。保存場所に触れない回は、ほかの公開先の記録を読めなくても、その注意を足さない（R1-e）', () => {
     const none = unreadableCautions({ placementsUnreadable: true, placementsUnreadableCause: 'call', otherTargetsUnreadable: false, otherTargets: [] }, HANAMII_WORDS, 'storage-only', 'hanamii')
     expect(none).toHaveLength(1)
     expect(none.join('')).not.toContain('ほかの公開先（')
+    // 保存場所に触れない回（call）は、ほかの公開先の記録を読めなくても「そちらのアプリのデータも消えます」を足さない。「削除しません」と正反対になる（0.6.24 R1-e。詳しくは tests/unreadableCautionsR1e.test.ts）
     const unreadable = unreadableCautions({ placementsUnreadable: true, placementsUnreadableCause: 'call', otherTargetsUnreadable: true, otherTargets: [] }, HANAMII_WORDS, 'storage-only', 'hanamii')
-    expect(unreadable).toHaveLength(2)
-    // HANAMII の確認なので、「ほか」は Vercel・共用型・専有型（自分自身の HANAMII を「ほかの公開先」に数えない。V5: Vercel も挙げる）
-    expect(unreadable[1]).toBe('⚠️ ほかの公開先の記録を読めなかったため、ここに挙げられません。'
-      + '保存場所をほかの公開先（Vercel・共用型・専有型など）が使っていれば、そちらのアプリのデータも消えます。')
-    expect(unreadable.join('')).not.toContain('公開中のアプリのデータも消えます')
+    expect(unreadable).toEqual(none)
+    expect(unreadable.join('')).not.toContain('データも消えます')
   })
 
   it('B-5 ほかの公開先の記録だけ読めなかった回（保存場所は読めた）: その注意だけが出る。読めた回は何も足さない', () => {
     const onlyOthers = unreadableCautions({ placementsUnreadable: false, placementsUnreadableCause: null, otherTargetsUnreadable: true, otherTargets: [] }, HANAMII_WORDS, 'storage-only', 'hanamii')
     expect(onlyOthers).toEqual(['⚠️ ほかの公開先の記録を読めなかったため、ここに挙げられません。'
       + '保存場所をほかの公開先（Vercel・共用型・専有型など）が使っていれば、そちらのアプリのデータも消えます。'])
-    // 読めた回は、otherTargets が何件あっても注意を足さない（'call' の足しは読めなかった回だけ）
+    // 読めた回は、otherTargets が何件あっても注意を足さない
     for (const note of ['storage-only', 'always'] as const) {
       expect(unreadableCautions({ placementsUnreadable: false, placementsUnreadableCause: null, otherTargetsUnreadable: false, otherTargets: ['Vercel'] }, HANAMII_WORDS, note, 'hanamii')).toEqual([])
     }
@@ -586,19 +599,15 @@ describe('B 確認の文（buildTeardownConfirm）', () => {
     const body = confirmOf({}, { placements: [A], otherTargets: ['', 'Vercel'] }).body
     expect(body).toContain('⚠️ この保存場所は Vercel でも使っているため、そちらで公開中のアプリのデータも消えます（アプリ自体は消えません）。')
     expect(confirmOf({}, { placements: [A], otherTargets: [''] }).body).not.toContain('でも使っているため') // 空だけなら段落ごと出ない
-    // 'call' の注意
+    // 'call' の注意はほかの公開先の名前を持たない（0.6.24 F-6。名前の有る無し・空文字の有る無しによらず1文だけ）
     const call = { placementsUnreadable: true, placementsUnreadableCause: 'call' as const, otherTargetsUnreadable: false }
-    const some = unreadableCautions({ ...call, otherTargets: ['', 'Vercel'] }, HANAMII_WORDS, 'always', 'hanamii')
-    expect(some).toHaveLength(2)
-    expect(some[1]).toContain('ほかの公開先（Vercel）も使っていれば')
+    expect(unreadableCautions({ ...call, otherTargets: ['', 'Vercel'] }, HANAMII_WORDS, 'always', 'hanamii')).toHaveLength(1)
     expect(unreadableCautions({ ...call, otherTargets: [''] }, HANAMII_WORDS, 'always', 'hanamii')).toHaveLength(1)
   })
 
   it('B-5 placementsUnreadable なのに理由が null の回は、手本と同じく call と同じ扱い', () => {
     const c = unreadableCautions({ placementsUnreadable: true, placementsUnreadableCause: null, otherTargetsUnreadable: false, otherTargets: ['Vercel'] }, HANAMII_WORDS, 'storage-only', 'hanamii')
-    expect(c[0]).toContain('保存場所の設定を問い合わせられなかったため')
-    expect(c[0]).toContain('削除されたデータは元に戻せません。')
-    expect(c[1]).toContain('ほかの公開先（Vercel）')
+    expect(c).toEqual(['⚠️ 保存場所の設定を問い合わせられなかったため、保存場所の名前を挙げられません。名前を挙げられない保存場所は削除しません（使っていれば残り、月額が続きます）。'])
   })
 
   it('★★ B-6 claimsComputeBillingStops: false → 「の課金は止まります」が出ない。true → 消す種類だけ並べて言う', () => {
@@ -714,29 +723,34 @@ describe('B 確認の文（buildTeardownConfirm）', () => {
       expect(normal).toContain('アプリ・ロードバランサの課金は止まります。')
     })
 
-    it('★★★ 保存場所だけが残った回で、保存場所の設定も読めない（settings）: 1つの確認の中で「削除は行われません」と「削除します」を両方言わない。事実だけの先頭の段落にする', () => {
-      for (const leftover of [['koto-a'], []]) {
-        const record: Rec = { projectId: 'p1', name: 'myapp', leftover }
-        const c = confirmOf({}, { record, placementsUnreadable: true, placementsUnreadableCause: 'settings' })
-        const paragraphs = c.body.split('\n\n')
-        expect(paragraphs[1], '注意（main は保存場所に触れない）が先頭の次').toContain('保存場所の設定を読めないため、保存場所の削除は行われません')
-        expect(paragraphs[2]).toBe('前回の破棄で、保存場所だけが残っています。')
-        expect(c.body).not.toContain('を削除します')
-        expect(c.body).not.toContain('残っている保存場所')
-        expect(c.body).not.toContain('すでに削除されています')
-        expect(paragraphs.some(p => p.startsWith('次を'))).toBe(false)
-        expect(paragraphs[paragraphs.length - 1]).toBe('よろしいですか？')
+    it('★★★ 保存場所だけが残った回で、保存場所の設定も読めない（settings）・問い合わせられなかった（call・理由 null。0.6.24 F-6）: 1つの確認の中で「削除しない」と「削除します」を両方言わない。事実だけの先頭の段落にする', () => {
+      const cases = [
+        ['settings', '保存場所の設定を読めないため、保存場所の削除は行われません'],
+        ['call', '名前を挙げられない保存場所は削除しません'],
+        [null, '名前を挙げられない保存場所は削除しません'],
+      ] as const
+      for (const [cause, caution] of cases) {
+        for (const leftover of [['koto-a'], []]) {
+          const record: Rec = { projectId: 'p1', name: 'myapp', leftover }
+          const c = confirmOf({}, { record, placementsUnreadable: true, placementsUnreadableCause: cause })
+          const paragraphs = c.body.split('\n\n')
+          expect(paragraphs[1], `${cause}: 注意（main は保存場所に触れない）が先頭の次`).toContain(caution)
+          expect(paragraphs[2], String(cause)).toBe('前回の破棄で、保存場所だけが残っています。')
+          expect(c.body, String(cause)).not.toContain('を削除します')
+          expect(c.body, String(cause)).not.toContain('残っている保存場所')
+          expect(c.body, String(cause)).not.toContain('すでに削除されています')
+          expect(paragraphs.some(p => p.startsWith('次を')), String(cause)).toBe(false)
+          expect(paragraphs[paragraphs.length - 1], String(cause)).toBe('よろしいですか？')
+        }
       }
       // 動詞は仕様書のもの
       const removal = confirmOf({ words: REMOVAL_WORDS }, { record: LEFTOVER, placementsUnreadable: true, placementsUnreadableCause: 'settings' })
       expect(removal.body).toContain('前回の削除で、保存場所だけが残っています。')
     })
 
-    it('settings 以外の読めなかった回・読めた回は、仕様書の leftoverNote のまま（call は main が保存場所を削除するかもしれない）。残りの印が無ければ settings でも通常の文', () => {
-      const call = confirmOf({}, { record: LEFTOVER, placementsUnreadable: true, placementsUnreadableCause: 'call' })
-      expect(call.body.split('\n\n')).toContain(leftoverSentence(['koto-a']))
-      const nullCause = confirmOf({}, { record: LEFTOVER, placementsUnreadable: true, placementsUnreadableCause: null })
-      expect(nullCause.body.split('\n\n')).toContain(leftoverSentence(['koto-a']))
+    it('読めた回は、仕様書の leftoverNote のまま（読めなかった回は上のとおり事実だけの文）。残りの印が無ければ settings でも通常の文', () => {
+      const readable = confirmOf({}, { record: LEFTOVER })
+      expect(readable.body.split('\n\n')).toContain(leftoverSentence(['koto-a']))
       // 残りの印が無い通常の回は、settings でも「次を破棄します」のまま（先頭を差し替えるのは leftoverNote があるときだけ）
       const normal = confirmOf({}, { placementsUnreadable: true, placementsUnreadableCause: 'settings' })
       expect(normal.body).toContain('次を破棄します: HANAMII のプロジェクト『myapp』')
@@ -864,25 +878,44 @@ describe('手本の出力の写しとの比べ: 専有型の仕様書（verb 削
     expect(differing.sort()).toEqual(listed.sort())
   })
 
-  it('★★ V4: 違うのは1点だけ。保存場所を問い合わせられなかった回（call・理由 null）でほかの公開先の名前を読めているとき、その名前を挙げる1段落が足される', () => {
-    for (const name of ['call＋ほかの公開先を読めている', '理由が null＋ほかの公開先を読めている（call と同じ扱い）']) {
+  it('★★ F6（0.6.24 F-6）: 違うのは1点だけ。保存場所を問い合わせられなかった回（call・理由 null）の注意が「名前を挙げられない保存場所は削除しません」の1段落に替わる。ほかの公開先の名前を読めていても、挙げる段落（以前の V4）は足さない', () => {
+    for (const name of ['設定を問い合わせられなかった（call・ほかの公開先なし）', '理由が null の読めなかった回（call と同じ）', 'call＋ほかの公開先を読めている', '理由が null＋ほかの公開先を読めている（call と同じ扱い）']) {
       const c = GOLDEN_CONFIRM_CASES.find(x => x.name === name)!
       const mine = buildTeardownConfirm(dedicatedSpec, commonFactsOf(c)).body
       const theirs = golden.confirm[name].body
+      const theirCall = theirs.split('\n\n').find(p => p.startsWith(CALL_CAUTION_HEAD))!
+      expect(theirCall, `${name}: 写しの 'call' の段落`).toContain('削除される場合があります')
       expect(mine, name).not.toBe(theirs)
-      expect(mine, name).toContain(ADDED_SENTENCE((c.otherTargets ?? []).join('・')))
-      expect(mine.replace(`\n\n${ADDED_SENTENCE((c.otherTargets ?? []).join('・'))}`, ''), name).toBe(theirs)
+      expect(mine.split('\n\n'), name).toContain(CALL_CAUTION_F6)
+      expect(mine, name).not.toContain('削除される場合があります')
+      if ((c.otherTargets ?? []).length > 0) expect(mine, name).not.toContain(ADDED_SENTENCE((c.otherTargets ?? []).join('・')))
+      // 置き換えを戻せば写しと同じ（違うのはこの1段落だけ）
+      expect(mine.replace(CALL_CAUTION_F6, theirCall), name).toBe(theirs)
     }
   })
 
-  it('★★ V5: 違うのは1点だけ。「読めなかった」注意の例に Vercel が入る（HANAMII・Vercel・共用型）', () => {
-    for (const name of ['ほかの公開先の記録を読めなかった', 'settings とほかの公開先の記録の両方', 'call とほかの公開先の記録の両方']) {
+  it('★★ V5: 違うのは1点だけ。「読めなかった」注意の例に Vercel が入る（HANAMII・Vercel・共用型）。保存場所に触れない回（settings・call）は、R1-e でこの注意ごと出さなくなった', () => {
+    for (const name of ['ほかの公開先の記録を読めなかった']) {
       const c = GOLDEN_CONFIRM_CASES.find(x => x.name === name)!
       const mine = buildTeardownConfirm(dedicatedSpec, commonFactsOf(c)).body
       const theirs = golden.confirm[name].body
       expect(theirs, name).toContain(OLD_EXAMPLE)
       expect(mine, name).toContain(NEW_EXAMPLE)
-      expect(mine.replace(NEW_EXAMPLE, OLD_EXAMPLE), name).toBe(theirs)
+      // call の回は F6 の違いも当たるので、写しにも F6 を当ててから比べる（V5 の違いだけを見る）
+      const f6 = INTENDED_DIFFERENCES.find(row => row.id === 'F6')!
+      expect(mine.replace(NEW_EXAMPLE, OLD_EXAMPLE), name).toBe(f6.apply(theirs, c))
+    }
+  })
+
+  it('★★★ R1e（0.6.24 R1-e）: 違うのは1点だけ。保存場所に触れない回（settings・call）は、ほかの公開先の記録を読めなかった注意の段落ごと出さない（写しは出していた）', () => {
+    for (const name of ['settings とほかの公開先の記録の両方', 'call とほかの公開先の記録の両方']) {
+      const c = GOLDEN_CONFIRM_CASES.find(x => x.name === name)!
+      const mine = buildTeardownConfirm(dedicatedSpec, commonFactsOf(c)).body
+      const theirs = golden.confirm[name].body
+      expect(theirs, `${name}: 写しにはこの段落がある（行が死んでいない）`).toContain('そちらのアプリのデータも消えます')
+      expect(mine, name).not.toContain('ほかの公開先の記録を読めなかった')
+      expect(mine, name).not.toContain('データも消えます')
+      expect(mine, name).toContain('保存場所の')        // 保存場所の注意（settings・call のどちらも「保存場所の設定を…」で始まる）は残る
     }
   })
 

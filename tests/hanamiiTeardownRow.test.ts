@@ -129,7 +129,7 @@ afterEach(H.cleanup)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('E 行 → 流れ → 本物の main: 押す → 確認 → 破棄 → 結果', () => {
-  it('★★★ E-1 やめる: HANAMII へも保存場所へも要求0件。結果も出ず、窓を閉じる警告も立たず、処理の記録も増えない', async () => {
+  it('★★★ E-1 キャンセル: HANAMII へも保存場所へも要求0件。結果も出ず、窓を閉じる警告も立たず、処理の記録も増えない', async () => {
     const m = H.mountRow()
     const props = await H.pressAndWaitConfirm(m)
     expect(props.title).toBe('HANAMII の公開を破棄します')

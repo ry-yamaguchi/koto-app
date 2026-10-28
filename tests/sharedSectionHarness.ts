@@ -22,6 +22,7 @@ import { registerCloudHandlers } from '../src/main/ipc/cloud'
 import { getOps, ackOps, setProjectOpsListener, resetProjectOpsForTests } from '../src/main/projectOps'
 import { PUBLISH_CLOSE_WARNING } from '../src/renderer/activity'
 import { h, resetHarness, newProjectDir, setup as setupProject, writePublishRecord, A, APP, bucketRef, REGISTRY_ROW } from './sharedTeardownHarness'
+import { shownTeardown } from './shownFromEnv'
 import type { EnvState, ResourceRef } from '../src/main/cloud/state'
 
 export const TEARDOWN_BUTTON = '破棄する（削除）'
@@ -241,7 +242,8 @@ export function createSectionHarness() {
     readMeta: (): any => JSON.parse(fs.readFileSync(metaFile(), 'utf-8')),
     /** 公開の記録（.sakuraide.json）の publish.targets の公開先の名前。 */
     publishedTargets: (): string[] => Object.keys(JSON.parse(fs.readFileSync(metaFile(), 'utf-8')).publish?.targets ?? {}),
-    mainTeardown: (opts: unknown) => mainTeardown({}, dir, { heldByMain: true }, opts),
+    // 直接呼ぶ回は、画面の代わりに、確認で見せた保存場所（記録から作る）を足す（0.6.24 F）
+    mainTeardown: (opts: unknown) => shownTeardown(mainTeardown)({}, dir, { heldByMain: true }, opts),
     mainOpsLast: () => getOps(dir).last,
   }
 }

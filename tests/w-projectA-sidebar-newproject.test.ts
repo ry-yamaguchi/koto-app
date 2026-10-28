@@ -275,7 +275,7 @@ describe('moveConfirmBody（W-23）: public/ を初めて作るときだけ、�
 // ─────────────────────────────────────────────────────────────────
 
 // 旧い薄い包みと同じ形で呼ぶ小さな関数（ケースは1件も減らさない）。第2引数を省略する呼び方（undefined）も、そのまま通す。
-const blocksDelete = (targets: readonly PublishTargetKind[], dedicated?: DedicatedResourceIds): boolean => projectDeleteBlockOf(targets, dedicated) !== null
+const blocksDelete = (targets: readonly PublishTargetKind[], dedicated?: DedicatedResourceIds): boolean => projectDeleteBlockOf(targets, dedicated, false) !== null
 
 describe('止めるか（W-69）: 専有型が残っている間はプロジェクト削除を止める', () => {
   it('専有型（sakura-apprun-dedicated）を含むときは true（チェックの有無は見ない＝引数に無い）', () => {
@@ -331,7 +331,7 @@ describe('ProjectDeleteDialog.tsx の配線（W-69・2026-09-27再検分）: 専
 
   it('専有型の記録は、開いたときに材料を読む関数（projectDeleteFacts.ts）が apprunDedicated.state を読んで facts.dedicated に入れ、ダイアログはその材料を 1 回だけ読む', () => {
     expect(factsSrc).toContain('window.electronAPI.apprunDedicated.state(dir)')
-    expect(factsSrc).toMatch(/return \{ targets, unreadable, dedicated, placements, running, sharedLeftover, sharedRegistry \}/)
+    expect(factsSrc).toMatch(/return \{ targets, unreadable, dedicated, placements, running, sharedLeftover, sharedRegistry, twins \}/)
     expect(dialogSrc).toContain('readProjectDeleteFacts(projectDir)')
     expect(dialogSrc.match(/readProjectDeleteFacts\(projectDir\)/g)).toHaveLength(1)
     expect(dialogSrc).toContain('.then(f => { if (!cancelled) setFacts(f) })')
@@ -360,7 +360,8 @@ describe('ProjectDeleteDialog.tsx の配線（W-69・2026-09-27再検分）: 専
 
   it('確認ダイアログの赤字ブロックは、公開先が空でも plan.block があれば出る（(b)のケースで見せる文が無いままにしない）', () => {
     // 2026-10-08 検分: 公開の記録を読めなかったときの注意（facts.unreadable）も、同じ箱の中に単独で出る。共用型の記録だけが残る回（leftoverNote）も。
-    expect(dialogSrc).toContain("(shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '') && (")
+    // 0.6.24 A-4: 先に破棄する段（shownTeardown）がある回も出す（行の無い保存場所・レジストリだけの回のチェック。出さないと行き止まりになる）
+    expect(dialogSrc).toContain("(shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (")
   })
 
   // 2026-10-08 検分: 資源の記録が空で公開記録だけが残っている行（幽霊の行）では、案内先の手順6の削除ボタンが出ない。

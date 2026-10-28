@@ -149,8 +149,9 @@ export default function DedicatedTeardownSection({
    * **確認ダイアログに名前を出すために要る。** 手順6の削除で保存場所の中身も消える。名指ししない確認は嘘になる（掟5）。
    * 読み方は共用型 AppRunPanel.tsx とまったく同じ（storage:placement・`sakura:storage-prepared`）。
    *
-   * 1件ではなく**全件**を持つ（2026-09-25 検分の指摘23・37）。手順6は `teardownStorageForProject` を通って**同意済みの保存場所を全件**
-   * 片づけるので、先頭1件（placements[0]）の別名は置かない（置くと、次に文面を書く人がまた1件だけで組み立てる）。
+   * 1件ではなく**全件**を持つ（2026-09-25 検分の指摘23・37）。手順6は `teardownStorageForProject` を通って、**確認で見せた（名前を挙げた）
+   * 保存場所だけ**を消す（見せていないものは残して ok:false。0.6.24 F）。見せるのは同意済みの保存場所の全件なので、
+   * 先頭1件（placements[0]）の別名は置かない（置くと、次に文面を書く人がまた1件だけで組み立て、名前が出なかった保存場所は消えずに残る）。
    */
   const [placements, setPlacements] = useState<{ bucket: string; prefix: string; shared: boolean }[]>([])
   useEffect(() => {

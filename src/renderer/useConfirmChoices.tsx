@@ -7,7 +7,7 @@
 // ── 歯止め（掟10）────────────────────────────────────────────────────────────
 // 「どのボタンが押されたか・チェックがどうなっているか → 答え」の判断は resolveConfirmWithChoices（純関数）に切り出し、
 // tests/confirmChoices.test.ts が固定する（このプロジェクトの vitest は DOM を持たず、押す操作を試せないため。useConfirm の resolveConfirm と同じ作り）。
-//   ・やめる（cancel）は { confirmed: false, choices: {} }。押さなくても true にならない
+//   ・キャンセル（cancel）は { confirmed: false, choices: {} }。押さなくても true にならない
 //   ・値が無い（undefined＝触っていない）ときだけ defaultChecked。boolean ならそのまま。**ほかの値（'yes'・1・null など）は false**
 //     （不明な値を defaultChecked に倒すと、Koto が作ったレジストリ〔defaultChecked が true〕を「消す」にしてしまう）
 // 使う React の機能は useState・useCallback だけ（tests/teardownCommonWiring.test.ts の決まり）。

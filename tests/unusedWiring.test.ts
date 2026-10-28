@@ -194,7 +194,9 @@ describe('moveFilesToFs: 守りの配線（isProtectedWritePath を移動元・�
     expect(src).toContain("import { isProtectedWritePath } from '../../shared/protectedPaths'")
     const count = (needle: string) => src.split(needle).length - 1
     expect(count('isProtectedWritePath(')).toBe(2)
-    expect(src).toContain('if (isProtectedWritePath(rel))')
+    // 移動元は**正規化した相対パス**（`a/../.sakuraide.json` を素通りさせない。0.6.24 E-4。振る舞いは tests/moveFiles.test.ts の T-E5）
+    expect(src).toContain('if (isProtectedWritePath(relNorm))')
+    expect(src).not.toContain('if (isProtectedWritePath(rel))')
     expect(src).toContain('if (isProtectedWritePath(destRel))')
   })
 

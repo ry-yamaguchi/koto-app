@@ -186,10 +186,10 @@ const run = async (targets: PublishTargetKind[], confirm: (o: ConfirmOptions) =>
 const warningsOf = (steps: ProjectDeleteStep[]) => steps.flatMap(s => (s.kind === 'done' && s.view.warnings.length > 0 ? [{ target: s.target, warnings: s.view.warnings }] : []))
 
 describe('H3 プロジェクト削除の HANAMII: 確認の答えが true のときだけ実行する', () => {
-  it('★★★ やめた: 「HANAMII: 破棄をやめました」が失敗に積まれ、HANAMII へも保存場所へも要求0件。記録はそのまま', async () => {
+  it('★★★ やめた: 「HANAMII: 破棄をキャンセルしました」が失敗に積まれ、HANAMII へも保存場所へも要求0件。記録はそのまま', async () => {
     const c = fakeConfirm(false)
     const failed = await run(['hanamii'], c.confirm)
-    expect(failed).toEqual([`${HANAMII}: 破棄をやめました`])
+    expect(failed).toEqual([`${HANAMII}: 破棄をキャンセルしました`])
     expect(c.opened).toHaveLength(1)
     expect(win.ipc).toEqual([]) // hanamii:teardown の IPC 自体を呼ばない
     expect(h.calls).toEqual([])
@@ -203,7 +203,7 @@ describe('H3 プロジェクト削除の HANAMII: 確認の答えが true のと
   it.each([undefined, null, 'yes', 1, {}])('★★★ 確認の答えが true でない値（%j）は、やめたと同じ。要求0件（不明値を肯定に戻さない）', async (answer) => {
     const c = fakeConfirm(answer)
     const failed = await run(['hanamii'], c.confirm)
-    expect(failed).toEqual([`${HANAMII}: 破棄をやめました`])
+    expect(failed).toEqual([`${HANAMII}: 破棄をキャンセルしました`])
     expect(win.ipc).toEqual([])
     expect(h.calls).toEqual([])
   })
@@ -229,7 +229,7 @@ describe('H3 プロジェクト削除の HANAMII: 確認の答えが true のと
     expect(failed).toEqual([])
     expect(h.calls).toEqual([DELETE_CALL, 'storage connect', `list ${BUCKET}`, `deleteKeys ${BUCKET}`, `deleteBucket ${BUCKET}`, 'deletePermission perm-hanamii'])
     expect(h.auths).toEqual(['Bearer tok-of-recorded']) // 公開したときのトークン（tokenId）。使用中のトークンではない
-    expect(win.ipc).toEqual([[dir, { token: 'tok-of-recorded' }, { confirmed: true, projectId: PROJECT_ID }]]) // 呼びは1回。projectDir を渡す
+    expect(win.ipc).toEqual([[dir, { token: 'tok-of-recorded' }, { confirmed: true, projectId: PROJECT_ID, shownPlacements: [{ bucket: BUCKET, prefix: 'projects/myapp/' }] }]]) // 呼びは1回。projectDir を渡す。確認で見せた保存場所（名前と prefix の組）も運ぶ
     expect(win.publishMetaCalls).toEqual([]) // 画面は公開の記録を消さない
     expect(win.writes).toEqual([])
     const after = readMeta()
@@ -326,11 +326,11 @@ describe('H3 公開先ごとに順に扱う（専有型の枝は、移しただ�
     expect(win.cloudCalls).toEqual([])
   })
 
-  it('★★★ 取り消したあとも破壊が続かない: HANAMII の確認で「やめる」と答えたら、共用型の破棄（同じ保存場所の同じ prefix のデータを消す）へ進まない。失敗は「やめた」の1件で、あとの公開先の名前を挙げる', async () => {
+  it('★★★ 取り消したあとも破壊が続かない: HANAMII の確認で「キャンセル」と答えたら、共用型の破棄（同じ保存場所の同じ prefix のデータを消す）へ進まない。失敗は「キャンセルした」の1件で、あとの公開先の名前を挙げる', async () => {
     // 並びは publishRecord.ts の TARGET_ORDER どおり（hanamii が sakura-apprun より前）。
     const c = fakeConfirm(false)
     const failed = await run(['hanamii', 'sakura-apprun', 'sakura-apprun-dedicated'], c.confirm)
-    expect(failed).toEqual([`${HANAMII}: 破棄をやめました。${PUBLISH_TARGET_LABEL['sakura-apprun']}・${PUBLISH_TARGET_LABEL['sakura-apprun-dedicated']}の破棄も始めていません`])
+    expect(failed).toEqual([`${HANAMII}: 破棄をキャンセルしました。${PUBLISH_TARGET_LABEL['sakura-apprun']}・${PUBLISH_TARGET_LABEL['sakura-apprun-dedicated']}の破棄も始めていません`])
     expect(win.cloudCalls, 'やめたのに、同じ保存場所のデータを消す共用型の破棄が走った').toEqual([])
     expect(h.calls).toEqual([])
     expect(win.ipc).toEqual([])
@@ -340,7 +340,7 @@ describe('H3 公開先ごとに順に扱う（専有型の枝は、移しただ�
 
   it('★★ やめた HANAMII のあとに続く公開先が無い（破棄の口が無いものだけ）なら、「始めていません」は付けない', async () => {
     const failed = await run(['hanamii', 'vercel', 'sakura-rental'], fakeConfirm(false).confirm)
-    expect(failed).toEqual([`${HANAMII}: 破棄をやめました`])
+    expect(failed).toEqual([`${HANAMII}: 破棄をキャンセルしました`])
   })
 })
 
@@ -377,14 +377,14 @@ describe('H3 プロジェクト削除の HANAMII: 済んだ回（ok:true）の�
     expect(collect(await runSteps(['hanamii'], fakeConfirm(true).confirm))).toEqual([])
     // 全部片づいた回は main が記録を消すので、次の回のために記録を書き直す
     writeRecord({ projectId: PROJECT_ID, name: 'myapp', tokenId: TOKEN_ID })
-    expect(collect(await runSteps(['hanamii'], fakeConfirm(false).confirm))).toEqual([`${HANAMII}: 破棄をやめました`])
+    expect(collect(await runSteps(['hanamii'], fakeConfirm(false).confirm))).toEqual([`${HANAMII}: 破棄をキャンセルしました`])
     h.status = 202
     expect(collect(await runSteps(['hanamii'], fakeConfirm(true).confirm))).toEqual([`${HANAMII}: ${HANAMII_DELETION_ACCEPTED_WARNING}`])
     expect(got).toEqual([])
   })
 
   it('★★★ step の形（返り値。移してよいかの判断 projectDeleteVerdict が読む）: やめた→cancelled・済んだ→done（words と view つき）・受付済み→failed（view つき）・専有型→failed（view・words なし）・破棄の口が無い公開先→step なし', async () => {
-    expect(await runSteps(['hanamii'], fakeConfirm(false).confirm)).toEqual([{ target: 'hanamii', kind: 'cancelled', line: `${HANAMII}: 破棄をやめました` }])
+    expect(await runSteps(['hanamii'], fakeConfirm(false).confirm)).toEqual([{ target: 'hanamii', kind: 'cancelled', line: `${HANAMII}: 破棄をキャンセルしました` }])
     const done = await runSteps(['hanamii'], fakeConfirm(true).confirm)
     expect(done).toHaveLength(1)
     expect(done[0]).toMatchObject({ target: 'hanamii', kind: 'done', words: hanamiiTeardownSpec.words, view: { ok: true, state: 'done' } })

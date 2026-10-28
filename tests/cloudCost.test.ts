@@ -191,7 +191,7 @@ describe('破棄しても止まらない費用', () => {
     expect(w).toContain(`月額${REGISTRY_MONTHLY_YEN + BUCKET_MONTHLY_YEN}円`)
   })
 
-  // HANAMII・専有型の破棄は、同意済みの保存場所を全件片づけるので、残る保存場所も複数ありうる（2026-09-30 検分）。
+  // HANAMII・専有型の破棄は、同意済みの保存場所を複数まとめて扱い、確認で見せた分だけを片づけるので、残る保存場所も複数ありうる（2026-09-30 検分）。
   // 1件だけ名指しすると、名前が出なかった保存場所の月額が黙って続く。
   it('★ 残った保存場所が複数なら、全部の名前と、その数ぶんの月額を言う', () => {
     const w = remainingCostWarning({ deleteRegistry: true, registryName: null, keptBucketNames: ['koto-data-x', 'koto-data-y'] })!

@@ -181,7 +181,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
               <button
                 onClick={() => setForgetting(null)}
                 className="text-[11px] text-ink-muted hover:text-ink whitespace-nowrap"
-              >やめる</button>
+              >キャンセル</button>
             </>
           ) : (
             <button

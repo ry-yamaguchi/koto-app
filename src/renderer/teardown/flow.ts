@@ -19,7 +19,7 @@ import { PUBLISH_CLOSE_WARNING, beginActivity } from '../activity'
 import { buildTeardownConfirm } from './confirm'
 import { opProgressText } from '../projectOpsView'
 import { electronTeardownFactsApi, loadTeardownFacts } from './facts'
-import type { TargetSpec, TeardownFacts, TeardownInvokeOpts, TeardownOutcome } from './types'
+import type { ShownPlacement, TargetSpec, TeardownFacts, TeardownInvokeOpts, TeardownOutcome } from './types'
 
 /** 実行に要る口（テストでは偽物を渡す）。 */
 export interface RunTeardownFlowDeps<R, A, Res> {
@@ -42,6 +42,24 @@ export interface RunTeardownFlowDeps<R, A, Res> {
   onStart?(): void
   /** キーが無いときに結果欄へ出す文（入口ごとに、キーを登録する場所の案内が違う）。 */
   keyMissingMessage: string
+  /**
+   * 入口が、記録に消すものがあっても「この回は消すものが無い」と決める口（任意）。**読み直した記録**に、入口が持つ門をかけ直すのに使う（0.6.24 R4-e）。
+   * `true` でなければ（偽・不明な値）、`spec.hasWork` が偽のときと同じに扱う（確認も IPC も出さず、`nothingToDo`）。渡さない回は `spec.hasWork` だけで決まる（今のまま）。
+   */
+  hasWork?(record: R): boolean
+}
+
+/**
+ * 確認で見せた保存場所（名前と prefix の組）。**IPC の opts に載せる値は、この1つの関数だけが作る**（0.6.24 F-1）。
+ * 確認の 💾 の段落は `facts.placements` の全件を名指しする（confirm.ts の buildTeardownConfirmBody）ので、「見せた」は `facts.placements` と一致する。
+ *   ・保存場所の設定を読めなかった（`placementsUnreadable`）回は `[]`。名前を挙げていないので、何も見せていないことにする（main は消さない）。
+ *   ・確認の段落が数えない要素（null・名前の無いもの）は、見せていないので入れない。prefix の無いものは `''`。
+ */
+export function shownPlacementsOf(facts: Pick<TeardownFacts<unknown>, 'placements' | 'placementsUnreadable'>): ShownPlacement[] {
+  if (facts.placementsUnreadable) return []
+  return (facts.placements ?? [])
+    .filter(p => !!p && typeof p.bucket === 'string' && p.bucket.length > 0)
+    .map(p => ({ bucket: p.bucket, prefix: typeof p.prefix === 'string' ? p.prefix : '' }))
 }
 
 /**
@@ -50,11 +68,13 @@ export interface RunTeardownFlowDeps<R, A, Res> {
  *
  * 1. 確認の材料が読めなければ、確認も活動レジストリもキーも IPC も出さずに失敗の結果を返す（消すものが分からないまま消させない）。
  * 2. 消すものが記録に無い（幽霊の行）なら、破壊の確認は出さず IPC も呼ばない。仕様書が `nothingToDoIsOk` のときだけ、結果に `nothingToDo: true` を付ける。
+ *    入口が門（`deps.hasWork`）を渡していれば、読み直した記録がその門を通らない回も同じ（プロジェクトの削除の残りの段。0.6.24 R4-e）。
  * 3. 確認の答えが **true でなければ**（no・不明な値）`cancelled`。IPC は1回も呼ばれず、活動レジストリにも載せない。
  *    仕様書が選択（`choices`）を1件以上持つときは `confirmWithChoices` で聞く。入口が渡していなければ、確認も IPC も出さずに失敗の結果にする。
  *    選択の値は `=== true` のものだけ true にして IPC へ渡す（知らない id は落ち、boolean でない値は false）。
  * 4. 窓を閉じるときの警告つきで活動レジストリに載せる。
- * 5. `onStart` → キーを読む → `{ confirmed: true }`（選択があれば `choices` も）を付けて IPC を1回だけ。成功・失敗を問わず必ず活動レジストリから外す。
+ * 5. `onStart` → キーを読む → `{ confirmed: true, shownPlacements }`（選択があれば `choices` も）を付けて IPC を1回だけ。成功・失敗を問わず必ず活動レジストリから外す。
+ *    `shownPlacements` は確認で見せた保存場所の組（`shownPlacementsOf`）。main はこの組だけを消す（0.6.24 F）。
  *    キーが無ければ IPC を呼ばず `keyMissingMessage` の失敗。IPC の例外は握らずに投げ直す（呼び出し側が受ける）。
  * 6. 公開の記録（📡 の行）は**ここでも画面でも消さない**。
  */
@@ -71,12 +91,15 @@ export async function runTeardownFlow<R, A, Res>(
   }
   // 消すものが記録に無い（幽霊の行）。「次を…します: 」と何も名前を出さないまま実行を押させない。IPC も呼ばない。
   // 共用型だけ、これを失敗でなく成功の知らせにする（`nothingToDo` の印。印の無い仕様書の結果の形は今のまま）。
-  if (!spec.hasWork(facts.record)) {
+  // 入口の門（deps.hasWork）も同じ側に倒す: true でなければ「消すものが無い」（不明な値を、消す側に倒さない）。
+  if (!spec.hasWork(facts.record) || (deps.hasWork !== undefined && deps.hasWork(facts.record) !== true)) {
     const result = spec.failure(spec.words.nothingToDo)
     return spec.nothingToDoIsOk === true ? { cancelled: false, result, nothingToDo: true } : { cancelled: false, result }
   }
   const list = spec.choices?.(facts.record) ?? []
-  let invokeOpts: TeardownInvokeOpts = { confirmed: true }
+  // 確認で見せた保存場所（名前と prefix の組）。選択の有る無しによらず、両方の opts に同じ値を載せる（1か所で作る）。
+  const shownPlacements = shownPlacementsOf(facts)
+  let invokeOpts: TeardownInvokeOpts = { confirmed: true, shownPlacements }
   if (list.length === 0) {
     const ok = await deps.confirm(buildTeardownConfirm(spec, facts))
     // true のときだけ進める（不明な値を肯定に戻さない。V15）。
@@ -90,7 +113,7 @@ export async function runTeardownFlow<R, A, Res>(
     if (answer?.confirmed !== true) return { cancelled: true }
     const chosen: Record<string, boolean> = {}
     for (const c of list) chosen[c.id] = answer.choices?.[c.id] === true
-    invokeOpts = { confirmed: true, choices: chosen }
+    invokeOpts = { confirmed: true, shownPlacements, choices: chosen }
   }
   const end = deps.beginActivity(spec.words.activityLabel, { closeWarning: PUBLISH_CLOSE_WARNING })
   try {
@@ -114,6 +137,8 @@ export function electronFlowDeps<R, A, Res>(projectDir: string, spec: TargetSpec
   confirmWithChoices?: (opts: ConfirmWithChoicesOptions) => Promise<ConfirmWithChoicesAnswer>
   keyMissingMessage: string
   onStart?: () => void
+  /** 入口の門（RunTeardownFlowDeps.hasWork）。プロジェクトの削除の残りの段だけが渡す（0.6.24 R4-e）。 */
+  hasWork?: (record: R) => boolean
 }): RunTeardownFlowDeps<R, A, Res> {
   return {
     loadFacts: () => loadTeardownFacts(projectDir, spec, electronTeardownFactsApi()),
@@ -124,6 +149,7 @@ export function electronFlowDeps<R, A, Res>(projectDir: string, spec: TargetSpec
     beginActivity,
     keyMissingMessage: entry.keyMissingMessage,
     ...(entry.onStart ? { onStart: entry.onStart } : {}),
+    ...(entry.hasWork ? { hasWork: entry.hasWork } : {}),
   }
 }
 

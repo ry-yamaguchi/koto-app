@@ -8,6 +8,7 @@ import { isSubmitEnter } from '../keyInput'
 import { subscribe, getSnapshot, loadingKeys, getTurn } from '../chatTurnRegistry'
 import { getWorkspaceDir } from '../workspace'
 import { useConfirm } from '../useConfirm'
+import { deleteFileEntry, submitFileNameDialog, announceFileDeleted } from '../fileEntryOps'
 
 interface FileEntry {
   name: string
@@ -460,19 +461,16 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     }
   }
 
-  const deleteEntry = async (entry: FileEntry) => {
-    const ok = await confirm({
-      title: 'ファイルをゴミ箱へ移します',
-      body: `「${entry.name}」をゴミ箱に移動します。よろしいですか？`,
-      confirmLabel: 'ゴミ箱へ移す',
-      danger: true,
-    })
-    if (!ok) return
-    try {
-      await window.electronAPI.fs.trash(entry.path)
-      window.dispatchEvent(new CustomEvent('sakura:file-deleted', { detail: entry.path }))
-    } catch (e: any) { window.alert(`削除できませんでした: ${e?.message ?? e}`) }
-  }
+  // ファイルの削除（0.6.24 E-4）: 先に main へ聞く（fs.trashCheck）。プロジェクトの根は削除の画面を開き、記録などは断りの文だけ、ふつうのものだけ確認 → 移す。
+  // 振り分け・順序は fileEntryOps.ts（deleteFileEntry）。
+  const deleteEntry = (entry: FileEntry) => deleteFileEntry(entry, {
+    trashCheck: p => window.electronAPI.fs.trashCheck(p),
+    trash: p => window.electronAPI.fs.trash(p),
+    confirm,
+    openProjectDelete: dir => setConfirmProjDelete(dir),
+    alert: m => window.alert(m),
+    announceDeleted: announceFileDeleted,
+  })
 
   /**
    * roadmap #9②「ファイルの移動手段が無い」: 手で公開する／しない側を切り替える。
@@ -526,6 +524,8 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       localStorage.removeItem(`sakura_tabs:${path}`)
       localStorage.removeItem(`sakura_chat:${path}`) // 移行前の旧形式が残っていた場合
     } catch { /* 掃除失敗は無視 */ }
+    // 親フォルダを開いてファイル一覧から消した回も、中のタブを閉じる（閉じないと、自動保存が消えたフォルダへ書き戻す）。
+    announceFileDeleted(path)
     setRecents(prev => {
       const next = prev.filter(p => p !== path)
       localStorage.setItem(RECENTS_KEY, JSON.stringify(next))
@@ -550,26 +550,18 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     }
   }
 
+  // 名前の変更・新規ファイルの決定（検証・断りの文の整え方は fileEntryOps.ts の submitFileNameDialog）。成功したときだけ閉じる。
   const submitNameDialog = async () => {
     if (!nameDialog) return
-    const name = nameInput.trim()
-    if (!name || name.includes('/') || name.includes('..')) {
-      window.alert('不正なファイル名です')
-      return
-    }
-    try {
-      if (nameDialog.mode === 'rename') {
-        const newPath = await window.electronAPI.fs.rename(nameDialog.targetPath, name)
-        window.dispatchEvent(new CustomEvent('sakura:file-renamed', { detail: { from: nameDialog.targetPath, to: newPath } }))
-      } else {
-        const full = `${nameDialog.targetPath}/${name}`
-        await window.electronAPI.fs.writeFile(full, '')
-        onOpenFile(full)
-      }
-      setNameDialog(null)
-    } catch (e: any) {
-      window.alert(e?.message ?? String(e))
-    }
+    const ok = await submitFileNameDialog(nameDialog, nameInput, {
+      rename: (p, n) => window.electronAPI.fs.rename(p, n),
+      exists: p => window.electronAPI.fs.exists(p),
+      writeFile: (p, c) => window.electronAPI.fs.writeFile(p, c),
+      openFile: onOpenFile,
+      announceRenamed: (from, to) => { window.dispatchEvent(new CustomEvent('sakura:file-renamed', { detail: { from, to } })) },
+      alert: m => window.alert(m),
+    })
+    if (ok) setNameDialog(null)
   }
 
   return (

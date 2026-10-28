@@ -22,11 +22,12 @@ import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated
 import { readApprunDedicatedFs } from '../src/main/publishMetaFs'
 import { summarizeResult } from '../src/main/projectOps'
 import { toTeardownView } from '../src/shared/teardownResult'
+import { shownTeardown } from './shownFromEnv'
 import { h } from './dedicatedTeardownShellMocks'
 import { AUTH, EVENT, PREFIX, setupEach, teardownEach, startServer, CLUSTER_GONE, project, targetsOf } from './dedicatedTeardownShellHarness'
 
 registerApprunDedicatedHandlers({} as any)
-const teardown = h.handlers.get('apprunDedicated:teardown')!
+const teardown = shownTeardown(h.handlers.get('apprunDedicated:teardown')!) // 画面の代わりに、確認で見せた保存場所（env.json の記録）を渡す（0.6.24 F。main は見せたものだけを消す）
 
 const A = 'koto-data-a'
 const B = 'koto-data-b'
