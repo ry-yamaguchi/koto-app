@@ -435,6 +435,480 @@ describe('登録案（新顔にそのまま貼れる行）', () => {
   })
 })
 
+// ── ページの形が変わった（2026-11）──────────────────────────────────────────
+// 1. 表の右端に「入出力形式」の列が増えた。各行の最後のセルが料金のセルと同じ <dl><dt>Input</dt>… の形で、
+//    値は媒体の語（テキスト・画像・動画・音声・ベクトル）か「-」。料金で読めた値がこのセルで null に上書きされると、
+//    全行が「料金を読めなかった行」になる（rowspan で引き継いだ料金も同じ）。
+// 2. パブリックプレビューのモデルが「通常モデル」の表の中に、名前のセルの先頭の札つきで並ぶ
+//    （以前は見出し「パブリックプレビューモデル」の別の表）。札を名前と読むと、モデル名がずれて区分も通常になる。
+// 3. カテゴリ列のセルに <small> が付いた。RAG の行（カテゴリ列だけ・料金のセルが無い）がモデル名と読まれていた。
+// 古い形は上のテストが固定している。ここは新しい形を、自分で書いた短い HTML で固定する。
+// モデル名は架空。料金の数と日付は、換算の確かめのため実際に出てくる桁・書き方を使っている（公開されている値）。
+
+// 入出力形式のセル（値は媒体の語か「-」）
+const fmt = (i: string, o: string) => `<dl class="f-in"><dt>Input</dt><dd>${i}</dd></dl><dl class="f-out"><dt>Output</dt><dd>${o}</dd></dl>`
+const TXT = fmt('テキスト', 'テキスト')
+const MEDIA = fmt('テキスト、画像、動画', 'テキスト')
+// 名前のセル（先頭に札・提供開始日つき）
+const tagged = (name: string, since: string) =>
+  `<th><span class="t__tag">パブリックプレビューモデル</span><br/>${name}<br/><small>${since}</small></th>`
+
+const NEW_HEAD = `<thead>
+<tr><th rowSpan="2">カテゴリー</th><th rowSpan="2">提供モデル</th><th rowSpan="2">無償プラン</th><th colSpan="2">従量課金</th><th rowSpan="2" class="t__format">入出力形式</th></tr>
+<tr><th><span>無償枠</span></th><th><span>超過分</span></th></tr></thead>`
+const newTable = (rows: string[], heading = '通常モデル') =>
+  `<h3 class="headline">${heading}</h3>\n<table class="t">${NEW_HEAD}<tbody>\n${rows.join('\n')}\n</tbody></table>`
+
+const NEW_ROWS = {
+  large: `<tr><th rowSpan="7"><b>Chat completions</b><small>（文章の生成）</small></th><th>nova-large</th><td rowSpan="4">月 100 回まで</td><td rowSpan="4">月 100 回まで</td><td>${price('0.15', '0.75')}</td><td>${TXT}</td></tr>`,
+  mid: `<tr><th>nova-mid-ja</th><td>${price('0.57', '0.07')}</td><td>${TXT}</td></tr>`,
+  small: `<tr>${tagged('pre-small-cpu', '(2026年2月3日〜)')}<td>${price('0.01', '0.03')}</td><td>${TXT}</td></tr>`,
+  vl: `<tr>${tagged('pre-vl-30b', ' (2026年4月5日〜)')}<td>${price('0.1', '0.3')}</td><td>${MEDIA}</td></tr>`,
+  code: `<tr>${tagged('pre-code-32b', '(2026年7月28日〜)')}<td>対象外</td><td>対象外</td><td>${price('0.52', '5.04')}</td><td>${MEDIA}</td></tr>`,
+  // 料金のセルと入出力形式のセルが、どちらも rowspan で下の行へ及ぶ
+  twinA: `<tr><th>nova-twin-a</th><td rowSpan="2">月 1 回</td><td rowSpan="2">月 1 回</td><td rowSpan="2">${price('0.2', '0.4')}</td><td rowSpan="2">${TXT}</td></tr>`,
+  twinB: `<tr><th>nova-twin-b</th></tr>`,
+  audio: `<tr><th><b>Audio transcription</b><small>（音声の書き起こし）</small></th><th>whisper-tiny</th><td>月 5 回</td><td>月 5 回</td><td><p>0.5円 <span>/ 60秒</span></p></td><td>${fmt('音声', 'テキスト')}</td></tr>`,
+  embed: `<tr><th><b>Embeddings</b><small>（ベクトル化）</small></th><th>mini-e5-base</th><td>月 10 回</td><td>月 10 回</td><td>${price('2', '無料')}</td><td>${fmt('テキスト', 'ベクトル')}</td></tr>`,
+  tts: `<tr><th rowSpan="2"><b>Text-to-Speech</b><small>（音声の合成）</small></th><th>VOICEVOX:架空A</th><td rowSpan="2">月 5 回</td><td rowSpan="2">月 5 回</td><td rowSpan="2"><p>3円 <span>/ 10,000モーラ</span></p></td><td rowSpan="2">${fmt('テキスト', '音声')}</td></tr>`,
+  ttsB: `<tr><th>VOICEVOX:架空B</th></tr>`,
+  rag: `<tr><th colSpan="2"><b>RAG</b><small>（文書の管理と検索）</small></th><td><p>対象外</p></td><td><p>対象外</p></td><td><p>3円<span>/ 100チャンク</span></p></td><td>${fmt('-', '-')}</td></tr>`,
+}
+const NEW_STANDARD = newTable(Object.values(NEW_ROWS))
+// クローズドの表は入出力形式の列を持たない。カテゴリ列に <small> が付いた
+const NEW_CLOSED = CLOSED.replace('<b>Chat Completions</b>', '<b>Chat Completions</b><small>（文章の生成）</small>')
+const NEW_HTML = page(NEW_STANDARD + NEW_CLOSED)
+const NEW_NAMES = ['nova-large', 'nova-mid-ja', 'pre-small-cpu', 'pre-vl-30b', 'pre-code-32b', 'nova-twin-a', 'nova-twin-b']
+
+// 架空の Koto の PRICING のうち、NEW_HTML のチャット用の行と全部一致するもの
+const NEW_KOTO_ALL = {
+  'nova-large': { in: 15, out: 75 }, 'nova-mid-ja': { in: 57, out: 7 },
+  'preview/pre-small-cpu': { in: 1, out: 3 }, 'preview/pre-vl-30b': { in: 10, out: 30 },
+  'preview/pre-code-32b': { in: 52, out: 504 },
+  'nova-twin-a': { in: 20, out: 40 }, 'nova-twin-b': { in: 20, out: 40 },
+}
+const NEW_IDS = Object.keys(NEW_KOTO_ALL)
+
+describe('★★★ 新しい形（2026-11）— 入出力形式のセルを料金と読まない', () => {
+  const rows = () => parsePricingPage(NEW_HTML)
+  const byName = byNameIn(NEW_HTML)
+
+  it('モデル名のある行を、ページの順に読む（カテゴリ列・RAG の行・script の複写は数えない）', () => {
+    expect(rows().map((r: any) => r.name)).toEqual([
+      ...NEW_NAMES, 'whisper-tiny', 'mini-e5-base', 'VOICEVOX:架空A', 'VOICEVOX:架空B', 'Secret One', 'Secret Two',
+    ])
+  })
+
+  it('★★ 料金のセルの値が読める（同じ行の後ろにある入出力形式のセルで null に上書きされない）', () => {
+    expect(byName('nova-large')).toMatchObject({ section: 'standard', in: 15, out: 75 })
+    expect(byName('nova-mid-ja')).toMatchObject({ section: 'standard', in: 57, out: 7 })
+    expect(byName('pre-small-cpu')).toMatchObject({ in: 1, out: 3 })
+    expect(byName('pre-vl-30b')).toMatchObject({ in: 10, out: 30 }) // 入出力形式は「テキスト、画像、動画」
+  })
+
+  it('★★ rowspan で引き継いだ料金も、入出力形式のセル（これも rowspan）で上書きされない', () => {
+    expect(byName('nova-twin-a')).toMatchObject({ in: 20, out: 40 })
+    expect(byName('nova-twin-b')).toMatchObject({ in: 20, out: 40 })
+  })
+
+  it('料金が Input/Output の形でない行は、入出力形式があっても null のまま。Embeddings の「無料」は 0', () => {
+    expect(byName('whisper-tiny')).toMatchObject({ in: null, out: null })
+    expect(byName('VOICEVOX:架空A')).toMatchObject({ in: null, out: null })
+    expect(byName('VOICEVOX:架空B')).toMatchObject({ in: null, out: null })
+    expect(byName('mini-e5-base')).toMatchObject({ in: 200, out: 0 }) // 入出力形式の「ベクトル」で 0 を消さない
+  })
+
+  it('対象外の行 → 無償枠なし。入出力形式の列が増えても引き継ぎがずれない', () => {
+    expect(byName('pre-code-32b').noFreeTier).toBe(true)
+    expect(byName('nova-large').noFreeTier).toBe(false)
+    expect(byName('pre-small-cpu').noFreeTier).toBe(false)
+  })
+
+  // 媒体の語を並べたもの・ダッシュだけのものは入出力形式。位置（同じ行の前後・rowspan）にかかわらず料金を上書きしない
+  const formats: [string, string][] = [
+    ['テキスト', 'テキスト'], ['テキスト、画像、動画', 'テキスト'], ['テキスト, 画像', 'テキスト'],
+    ['音声', 'テキスト'], ['テキスト', 'ベクトル'], ['-', '-'], ['－', '－'], ['—', '—'],
+  ]
+  for (const [i, o] of formats) {
+    it(`入出力形式「${i} / ${o}」は料金を上書きしない（料金のセルの前でも後でも・rowspan でも）`, () => {
+      const p = price('0.2', '0.4')
+      const html = page(preview([
+        `<tr><th>kappa-after</th><td>${p}</td><td>${fmt(i, o)}</td></tr>`,
+        `<tr><th>kappa-before</th><td>${fmt(i, o)}</td><td>${p}</td></tr>`,
+        `<tr><th>kappa-span-a</th><td rowSpan="2">${p}</td><td rowSpan="2">${fmt(i, o)}</td></tr>`,
+        `<tr><th>kappa-span-b</th></tr>`,
+      ]))
+      expect(parsePricingPage(html).map((r: any) => [r.name, r.in, r.out])).toEqual([
+        ['kappa-after', 20, 40], ['kappa-before', 20, 40], ['kappa-span-a', 20, 40], ['kappa-span-b', 20, 40],
+      ])
+    })
+  }
+
+  it('★ 入出力形式でないセル（円・無料・「お問い合わせください」・媒体の語でない語）は、料金のセルのまま扱う', () => {
+    const cells: [string, string][] = [
+      ['お問い合わせください', 'お問い合わせください'],
+      ['-', 'お問い合わせください'], // 片方がダッシュでも、もう片方が媒体の語でなければ形式と見なさない
+      ['テキスト', '3D'],            // 知らない媒体の語は形式と見なさない（読めないとして残る側へ倒す）
+    ]
+    for (const [i, o] of cells) {
+      const html = page(preview([`<tr><th>kappa-x</th><td>${fmt(i, o)}</td><td>${TXT}</td></tr>`]))
+      expect(parsePricingPage(html)).toMatchObject([{ name: 'kappa-x', in: null, out: null }])
+    }
+    // 円・無料は料金（Input が円・Output が無料）
+    const priced = page(preview([`<tr><th>kappa-y</th><td>${price('2', '無料')}</td><td>${TXT}</td></tr>`]))
+    expect(parsePricingPage(priced)).toMatchObject([{ name: 'kappa-y', in: 200, out: 0 }])
+  })
+
+  // 「お問い合わせください」の <dl> を、円・無料を含まないからと形式扱いで捨てると、次の2つの行が黙って消える
+  const contact = '<dl><dt>Input</dt><dd>お問い合わせください</dd></dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>'
+
+  it('★ 区分不明の表では、料金のセル（Input/Output）を持つ行だけを読む。入出力形式のセルだけの行は読まない', () => {
+    const html = page(newTable([
+      `<tr><th>unk-contact</th><td>${contact}</td><td>${TXT}</td></tr>`,          // 料金のセルはある（読めない）→ 残す
+      `<tr><th>unk-priced</th><td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`,
+      `<tr><th>unk-format-only</th><td>${TXT}</td></tr>`,                         // 入出力形式のセルだけ → 料金のセルが無い
+    ], 'その他のモデル'))
+    expect(parsePricingPage(html).map((r: any) => [r.name, r.section, r.in, r.out])).toEqual([
+      ['unk-contact', 'unknown', null, null],
+      ['unk-priced', 'unknown', 10, 20],
+    ])
+  })
+
+  it('★ カテゴリ列だけの行でも、料金のセルが「お問い合わせください」の <dl> なら落とさない（料金を読めなかった行として残す）', () => {
+    const row = `<tr><th colSpan="2"><b>omega-chat</b><small>（文章の生成）</small></th><td colSpan="2">月 1 回</td><td>${contact}</td><td>${TXT}</td></tr>`
+    const rows = parsePricingPage(page(newTable([row])))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ section: 'standard', in: null, out: null })
+    expect(rows[0].name).toBe('omega-chat') // カテゴリ列の <small>（文章の生成）を名前に混ぜない
+  })
+})
+
+describe('★★★ 新しい形（2026-11）— 通常の表の中の札つきプレビュー', () => {
+  const byName = byNameIn(NEW_HTML)
+
+  it('★ 札つきの行は preview の区分・札を含まない名前・提供開始日つきで読む', () => {
+    expect(byName('pre-small-cpu')).toMatchObject({ name: 'pre-small-cpu', section: 'preview', since: '2026-02-03', in: 1, out: 3 })
+    expect(byName('pre-vl-30b')).toMatchObject({ section: 'preview', since: '2026-04-05' }) // 日付の前の空白を許す
+    expect(byName('pre-code-32b')).toMatchObject({ section: 'preview', since: '2026-07-28', in: 52, out: 504 })
+    // 札を名前にしない（札の文字が名前・since に混ざらない）
+    const rows = parsePricingPage(NEW_HTML)
+    expect(rows.filter((r: any) => /プレビュー/.test(r.name))).toEqual([])
+    expect(rows.filter((r: any) => r.section === 'preview').map((r: any) => r.name)).toEqual(['pre-small-cpu', 'pre-vl-30b', 'pre-code-32b'])
+    // 札の無い行は通常のまま
+    expect(byName('nova-large').section).toBe('standard')
+  })
+
+  it('★ API 名の候補は preview/＋名前。Koto の preview/<名前> と一致する', () => {
+    expect(apiIdCandidate(byName('pre-small-cpu'))).toBe('preview/pre-small-cpu')
+    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL)
+    expect(r.matched.map((m: any) => [m.id, m.section])).toContainEqual(['preview/pre-small-cpu', 'preview'])
+    expect(r.matched.map((m: any) => m.id)).toContain('preview/pre-vl-30b')
+  })
+
+  it('★ Koto に無ければ新顔。報告には「パブリックプレビュー」と API 名の候補 preview/＋名前を出す', () => {
+    const { 'preview/pre-small-cpu': _dropped, ...without } = NEW_KOTO_ALL
+    const r = comparePricing(parsePricingPage(NEW_HTML), without)
+    expect(r.newcomers).toHaveLength(1)
+    expect(r.newcomers[0]).toMatchObject({ id: 'preview/pre-small-cpu', name: 'pre-small-cpu', section: 'preview', since: '2026-02-03', in: 1, out: 3 })
+    const report = formatReport(r, { today: '2026-11-02' }).join('\n')
+    expect(report).toContain('pre-small-cpu（パブリックプレビュー・2026-02-03 提供開始）→ API 名の候補: preview/pre-small-cpu')
+    expect(report).not.toContain('パブリックプレビューモデル') // 札の文字を名前に出さない
+  })
+
+  it('★★ 古い形（別の表・札なし）と新しい形（通常の表の中・札つき）で、同じモデルは同じ値で読む', () => {
+    const old = parsePricingPage(page(preview([PREVIEW_ROWS.gamma, PREVIEW_ROWS.delta])))
+    const html = page(newTable([
+      `<tr>${tagged('gamma-7b', '(2026年1月2日〜)')}<td rowSpan="3">月 100 回まで</td><td rowSpan="3">月 100 回まで</td><td>${price('0.1', '0.3')}</td><td>${TXT}</td></tr>`,
+      `<tr>${tagged('delta-9b', '(2026年3月4日〜)')}<td>${price('0.01', '0.03')}</td><td>${TXT}</td></tr>`,
+    ]))
+    expect(parsePricingPage(html)).toEqual(old)
+  })
+
+  it('札の文字だけで class の無いもの（<th>パブリックプレビューモデル<br/>名前）も札として読む', () => {
+    const html = page(newTable([`<tr><th>パブリックプレビューモデル<br/>tau-text-8b<br/><small>(2026年8月9日〜)</small></th><td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`]))
+    expect(parsePricingPage(html)).toMatchObject([{ name: 'tau-text-8b', section: 'preview', since: '2026-08-09', in: 10, out: 20 }])
+  })
+
+  it('プレビューでない札（新着 など）は名前に含めないが、区分は変えない', () => {
+    const html = page(newTable([`<tr><th><span class="t__tag">新着</span><br/>sigma-new-8b</th><td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`]))
+    expect(parsePricingPage(html)).toMatchObject([{ name: 'sigma-new-8b', section: 'standard' }])
+  })
+
+  it('class に tag を含んでも別の語（stage など）は札にしない（名前を落とさない）', () => {
+    const html = page(newTable([`<tr><th><span class="t__stage">upsilon-8b</span></th><td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`]))
+    expect(parsePricingPage(html)).toMatchObject([{ name: 'upsilon-8b', section: 'standard' }])
+  })
+
+  it('★ プレビューの表（見出し「パブリックプレビューモデル」）の中の札つきの行も preview。札は名前に含めない', () => {
+    const html = page(newTable([`<tr>${tagged('chi-8b', '(2026年5月6日〜)')}<td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`], 'パブリックプレビューモデル'))
+    expect(parsePricingPage(html)).toMatchObject([{ name: 'chi-8b', section: 'preview', since: '2026-05-06' }])
+  })
+
+  it('★ クローズドの表の中に札があっても、区分は closed のまま（preview/ を名乗って照合しない）。名前と提供元は札を除いて読む', () => {
+    const closedTagged = CLOSED.replace('<th>提供モデル：Secret One<br/>', '<th><span class="t__tag">パブリックプレビューモデル</span><br/>提供モデル：Secret One<br/>')
+    expect(closedTagged).not.toBe(CLOSED)
+    const rows = parsePricingPage(page(NEW_STANDARD + closedTagged))
+    const one = rows.find((r: any) => r.name === 'Secret One')
+    expect(one).toMatchObject({ section: 'closed', provider: 'Example社', in: null, out: null })
+    expect(apiIdCandidate(one)).toBeNull()
+    const r = comparePricing(rows, NEW_KOTO_ALL)
+    expect(r.closed.map((c: any) => c.name)).toEqual(['Secret One', 'Secret Two'])
+    expect(r.newcomers).toEqual([])
+    expect(exitCodeFor(r)).toBe(0)
+  })
+
+  it('★ 通常の表の中の札つきの行が、プレビューの表にも載っていたら（二重に数えている）例外', () => {
+    const twice = page(NEW_STANDARD + NEW_CLOSED + preview([PREVIEW_ROWS.gamma]).replace(/gamma-7b/g, 'pre-small-cpu'))
+    expect(() => comparePricing(parsePricingPage(twice), NEW_KOTO_ALL)).toThrow(/2回/)
+  })
+})
+
+describe('★★★ 新しい形（2026-11）— カテゴリ列の <small>・RAG の行', () => {
+  const byName = byNameIn(NEW_HTML)
+
+  it('★ <b>…</b><small>…</small> のカテゴリ列はモデル名ではない（rowspan の先頭行でも名前の列から読む）', () => {
+    expect(byName('nova-large')).toMatchObject({ section: 'standard', in: 15, out: 75 })
+    for (const n of ['Chat completions', 'Chat completions（文章の生成）', 'Audio transcription', 'Text-to-Speech']) {
+      expect(byName(n)).toBeUndefined()
+    }
+    const names = parsePricingPage(NEW_HTML).map((r: any) => r.name)
+    expect(names.filter((n: string) => /[（）]|生成|書き起こし|合成|ベクトル化|管理/.test(n))).toEqual([])
+  })
+
+  it('★★ RAG の行（カテゴリ列だけ・料金のセルが無い・入出力形式は「-」）をモデルの行として読まない', () => {
+    const names = parsePricingPage(NEW_HTML).map((r: any) => r.name)
+    expect(names.filter((n: string) => /RAG|ドキュメント/.test(n))).toEqual([])
+    // 料金を読めなかった行にも出ない
+    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL)
+    expect(r.unreadable).toEqual([])
+    expect(formatReport(r, { today: '2026-11-02' }).join('\n')).not.toContain('RAG')
+  })
+
+  it('<b>…</b> と <small> の間に空白・改行があっても同じ', () => {
+    const spaced = NEW_HTML.replace('<b>RAG</b><small>', '<b>RAG</b>\n   <small>')
+    expect(spaced).not.toBe(NEW_HTML)
+    expect(parsePricingPage(spaced).map((r: any) => r.name)).toEqual(parsePricingPage(NEW_HTML).map((r: any) => r.name))
+  })
+
+  it('カテゴリ列だけの行でも、料金（Input/Output）を読めるなら落とさない（<small> つきでも外しすぎない）', () => {
+    const omega = `<tr><th colSpan="2"><b>omega-chat</b><small>（文章の生成）</small></th><td colSpan="2">月 1 回</td><td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`
+    const html = page(newTable([...Object.values(NEW_ROWS), omega]) + NEW_CLOSED)
+    const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL)
+    expect(r.newcomers.map((n: any) => n.id)).toEqual(['omega-chat'])
+    expect(r.newcomers[0]).toMatchObject({ in: 20, out: 40 })
+  })
+})
+
+describe('★★★ 新しい形（2026-11）— ページ全体の照合と、読めないページで「一致」と言わない', () => {
+  it('★★ 全部一致 → 食い違い・新顔・読めなかった行・Koto にだけある が 0 件・終了コード 0', () => {
+    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL)
+    expect(r.matched.map((m: any) => m.id)).toEqual(NEW_IDS)
+    expect(r.mismatched).toEqual([])
+    expect(r.newcomers).toEqual([])
+    expect(r.unreadable).toEqual([])
+    expect(r.kotoOnly).toEqual([])
+    expect(r.closed.map((c: any) => c.name)).toEqual(['Secret One', 'Secret Two'])
+    expect(r.excluded).toEqual(['whisper-tiny', 'mini-e5-base', 'VOICEVOX:架空A', 'VOICEVOX:架空B'])
+    expect(exitCodeFor(r)).toBe(0)
+    expect(formatReport(r, { today: '2026-11-02' }).join('\n')).toContain('差分なし')
+  })
+
+  it('★★ 1か所でも料金が違えば食い違い・終了コード 1（通常の行も、札つきの行も）', () => {
+    const plain = comparePricing(parsePricingPage(NEW_HTML.replace(price('0.57', '0.07'), price('0.58', '0.07'))), NEW_KOTO_ALL)
+    expect(plain.mismatched).toEqual([
+      { id: 'nova-mid-ja', name: 'nova-mid-ja', section: 'standard', official: { in: 58, out: 7 }, koto: { in: 57, out: 7 } },
+    ])
+    expect(exitCodeFor(plain)).toBe(1)
+    const koto = comparePricing(parsePricingPage(NEW_HTML), { ...NEW_KOTO_ALL, 'preview/pre-vl-30b': { in: 10, out: 31 } })
+    expect(koto.mismatched.map((m: any) => m.id)).toEqual(['preview/pre-vl-30b'])
+    expect(koto.matched).toHaveLength(NEW_IDS.length - 1)
+    expect(exitCodeFor(koto)).toBe(1)
+  })
+
+  // 料金のセルの書き方が変わった行は、入出力形式のセルがあっても「料金を読めなかった行」
+  const iota = (priceCell: string) => `<tr>${tagged('iota-new-8b', '(2026年11月3日〜)')}<td>${priceCell}</td><td>${TXT}</td></tr>`
+  const withRow = (row: string) => page(newTable([...Object.values(NEW_ROWS), row]) + NEW_CLOSED)
+  const shapes: [string, string][] = [
+    ['「お問い合わせください」の <dl>', '<dl><dt>Input</dt><dd>お問い合わせください</dd></dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>'],
+    ['<p> で書かれた料金', '<p>0.5円 <span>/ 10,000トークン</span></p>'],
+    ['見出しが日本語（<dt>入力</dt>）', '<dl><dt>入力</dt><dd>0.5円 <span>/ 10,000トークン</span></dd></dl><dl><dt>出力</dt><dd>1円 <span>/ 10,000トークン</span></dd></dl>'],
+    ['ダッシュと「お問い合わせください」の <dl>', '<dl><dt>Input</dt><dd>-</dd></dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>'],
+  ]
+  for (const [label, cell] of shapes) {
+    it(`★★ 札つきの新しい行の料金が${label} → 料金を読めなかった行・終了コード 1`, () => {
+      const r = comparePricing(parsePricingPage(withRow(iota(cell))), NEW_KOTO_ALL)
+      expect(r.matched).toHaveLength(NEW_IDS.length)
+      expect(r.unreadable).toEqual([
+        { id: 'preview/iota-new-8b', name: 'iota-new-8b', section: 'preview', since: '2026-11-03', in: null, out: null, koto: null, sameNameInKoto: null },
+      ])
+      expect(r.newcomers).toEqual([])
+      expect(exitCodeFor(r)).toBe(1)
+      const report = formatReport(r, { today: '2026-11-02' }).join('\n')
+      expect(report).toContain('料金を読めなかった行 1件')
+      expect(report).toContain('iota-new-8b（パブリックプレビュー・2026-11-03 提供開始）→ API 名の候補: preview/iota-new-8b')
+      expect(report).not.toContain('差分なし')
+    })
+  }
+
+  it('★ 片方（出力）だけ読めない行は、読めた入力を残したまま料金を読めなかった行（入出力形式で消さない）', () => {
+    const cell = `<dl><dt>Input</dt>${tok('0.5')}</dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>`
+    const r = comparePricing(parsePricingPage(withRow(iota(cell))), NEW_KOTO_ALL)
+    expect(r.unreadable).toHaveLength(1)
+    expect(r.unreadable[0]).toMatchObject({ id: 'preview/iota-new-8b', in: 50, out: null })
+    expect(exitCodeFor(r)).toBe(1)
+  })
+
+  it('★ 通常の札なしの行（Chat completions の表）でも同じ', () => {
+    const lambda = `<tr><th>lambda-std</th><td>月 1 回</td><td>月 1 回</td><td><dl><dt>Input</dt><dd>お問い合わせください</dd></dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl></td><td>${TXT}</td></tr>`
+    const r = comparePricing(parsePricingPage(withRow(lambda)), NEW_KOTO_ALL)
+    expect(r.unreadable.map((u: any) => [u.id, u.section])).toEqual([['lambda-std', 'standard']])
+    expect(exitCodeFor(r)).toBe(1)
+  })
+
+  it('★ Koto に載っているモデルの料金の書き方が変わった → 料金を読めなかった行（一致にも「Koto にだけある」にもしない）', () => {
+    const changed = NEW_HTML.replace(price('0.15', '0.75'), '<dl><dt>Input</dt><dd>お問い合わせください</dd></dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>')
+    expect(changed).not.toBe(NEW_HTML)
+    const r = comparePricing(parsePricingPage(changed), NEW_KOTO_ALL)
+    expect(r.unreadable.map((u: any) => [u.id, u.koto])).toEqual([['nova-large', { in: 15, out: 75 }]])
+    expect(r.matched.map((m: any) => m.id)).not.toContain('nova-large')
+    expect(r.kotoOnly).toEqual([])
+    expect(exitCodeFor(r)).toBe(1)
+  })
+
+  it(`★★ 料金を読めたチャット用の行が ${MIN_PRICED_ROWS}件未満なら例外（${MIN_PRICED_ROWS}件ならちょうど通る）`, () => {
+    const make = (n: number) => {
+      const rows = Array.from({ length: n }, (_, k) => `<tr><th>mu-${k}</th><td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`)
+      const koto = Object.fromEntries(Array.from({ length: n }, (_, k) => [`mu-${k}`, { in: 10, out: 20 }]))
+      return { html: page(newTable(rows)), koto }
+    }
+    // 門が無いと、読めた分だけ Koto と一致して「全部一致（終了コード 0）」と言ってしまう
+    const few = make(MIN_PRICED_ROWS - 1)
+    expect(() => comparePricing(parsePricingPage(few.html), few.koto)).toThrow(PricingPageError)
+    // ちょうど MIN 件なら通る（入出力形式のセルで料金を null にしていれば、ここで例外になる）
+    const enough = make(MIN_PRICED_ROWS)
+    const r = comparePricing(parsePricingPage(enough.html), enough.koto)
+    expect(r.matched).toHaveLength(MIN_PRICED_ROWS)
+    expect(exitCodeFor(r)).toBe(0)
+  })
+
+  it('料金のセルが全部読めない書き方に変わったら（入出力形式のセルだけが Input/Output の形）→ 例外', () => {
+    const asP = NEW_HTML.replace(/<td>(?:<dl class="p-in">[\s\S]*?<\/dl><dl class="p-out">[\s\S]*?<\/dl>)<\/td>/g, '<td><p>1円</p></td>')
+    expect(asP).not.toBe(NEW_HTML)
+    expect(() => comparePricing(parsePricingPage(asP), NEW_KOTO_ALL)).toThrow(/ページの形が変わった/)
+    const jp = NEW_HTML.replace(/<dt>Input<\/dt><dd>\d/g, '<dt>入力</dt><dd>0').replace(/<dt>Output<\/dt><dd>\d/g, '<dt>出力</dt><dd>0')
+    expect(() => comparePricing(parsePricingPage(jp), NEW_KOTO_ALL)).toThrow(/ページの形が変わった/)
+  })
+
+  it('見出し（区分）が読めない → 例外（札つきの行も、区分の分からないまま数えない）', () => {
+    const noHeadings = NEW_HTML.replace(/<h3\b[^>]*>[\s\S]*?<\/h3>/g, '')
+    expect(() => comparePricing(parsePricingPage(noHeadings), NEW_KOTO_ALL)).toThrow(PricingPageError)
+  })
+})
+
+// ── 行が黙って消える道を塞ぐ（2026-11-02 の検分）──────────────────────────────
+// 札・入出力形式・カテゴリ列を見分ける読み方は、見分けを誤ると行を捨てる側へ倒れやすい。
+// 通常・プレビューの表は、料金を読めない行も残る（照合で「料金を読めなかった行」になる）ので差が出にくい。
+// 取りこぼしが出るのは、区分不明の表の行・名前が空になる行・片方だけ読めた料金。そこを個別に固定する。
+describe('★★★ 新しい形（2026-11）— 行が黙って消えない', () => {
+  const withRow = (row: string) => page(newTable([...Object.values(NEW_ROWS), row]) + NEW_CLOSED)
+  const unk = (row: string) => page(newTable([row], 'その他のモデル'))
+  const cellOf = (i: string, o: string) => `<dl><dt>Input</dt><dd>${i}</dd></dl><dl><dt>Output</dt><dd>${o}</dd></dl>`
+  const yenIn = `0.5円 <span>/ 10,000トークン</span>`
+
+  // 名前のセルに札しか無い（名前の行が無い）行。札を外すと名前が空になるが、料金を読めた行を黙って捨てない
+  const tagOnly = (inner: string) => `<th><span class="t__tag">パブリックプレビューモデル</span>${inner}</th>`
+  const tagOnlyThs: [string, string][] = [
+    ['札だけ', tagOnly('')],
+    ['札と提供開始日だけ', tagOnly('<br/><small>(2026年11月3日〜)</small>')],
+    ['class の無い札と提供開始日だけ', '<th>パブリックプレビューモデル<br/><small>(2026年11月3日〜)</small></th>'],
+  ]
+  for (const [label, th] of tagOnlyThs) {
+    it(`★★ 名前のセルが${label} → 札の文字を名前に戻して残す（新顔として終了コード 1。黙って捨てない）`, () => {
+      const html = withRow(`<tr>${th}<td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`)
+      expect(byNameIn(html)('パブリックプレビューモデル')).toMatchObject({ section: 'standard', in: 20, out: 40 })
+      const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL)
+      expect(r.newcomers.map((n: any) => n.name)).toEqual(['パブリックプレビューモデル'])
+      expect(exitCodeFor(r)).toBe(1)
+    })
+  }
+
+  it('★ 札だけのセルで料金も読めない行は、料金を読めなかった行（終了コード 1）', () => {
+    const r = comparePricing(parsePricingPage(withRow(`<tr>${tagOnly('')}<td><p>お問い合わせください</p></td><td>${TXT}</td></tr>`)), NEW_KOTO_ALL)
+    expect(r.unreadable.map((u: any) => u.name)).toEqual(['パブリックプレビューモデル'])
+    expect(exitCodeFor(r)).toBe(1)
+  })
+
+  it('★★ 札が独立した最後の <th> にあっても、名前は札の前の <th> から読み、区分は preview', () => {
+    const html = withRow(`<tr><th>rho-8b<br/><small>(2026年11月3日〜)</small></th>${tagOnly('')}<td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`)
+    expect(byNameIn(html)('rho-8b')).toMatchObject({ section: 'preview', since: '2026-11-03', in: 20, out: 40 })
+    expect(parsePricingPage(html).filter((r: any) => /プレビュー/.test(r.name))).toEqual([])
+    const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL)
+    expect(r.newcomers.map((n: any) => n.id)).toEqual(['preview/rho-8b'])
+  })
+
+  it('★ 名前がどうしても読めない行（<th>※</th>）に料金がある → 通常・プレビューの表なら例外。区分不明の表は読み飛ばす', () => {
+    const row = `<tr><th>※</th><td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`
+    expect(() => parsePricingPage(withRow(row))).toThrow(PricingPageError)
+    expect(parsePricingPage(unk(row))).toEqual([])
+  })
+
+  // 入出力形式の見分け: dd が1つでも円なら料金のセル。「1つでも形式に見えたら捨てる」にしない
+  it('★★ 入力が円・出力が「-」の料金のセルは、入出力形式と見なして捨てない（読めた入力を残す）', () => {
+    const rows = parsePricingPage(page(newTable([`<tr><th>kappa-half</th><td>${cellOf(yenIn, '-')}</td><td>${TXT}</td></tr>`])))
+    expect(rows).toMatchObject([{ name: 'kappa-half', section: 'standard', in: 50, out: null }])
+  })
+
+  it('★★ 区分不明の表で、料金のセルが「-」と「お問い合わせください」の行を捨てない（料金のセルの片方が「-」でも）', () => {
+    const rows = parsePricingPage(unk(`<tr><th>unk-dash</th><td>${cellOf('-', 'お問い合わせください')}</td><td>${TXT}</td></tr>`))
+    expect(rows).toMatchObject([{ name: 'unk-dash', section: 'unknown', in: null, out: null }])
+  })
+
+  it('★★ 区分不明の表で、料金のセルの dd が空の行を捨てない（空は入出力形式ではない）', () => {
+    const rows = parsePricingPage(unk(`<tr><th>unk-empty</th><td>${cellOf('', '')}</td><td>${TXT}</td></tr>`))
+    expect(rows).toMatchObject([{ name: 'unk-empty', section: 'unknown', in: null, out: null }])
+  })
+
+  // 札は、通常の表の中でだけ区分を変える。区分不明の表（見出しが読めない）では変えない
+  it('★★ 区分不明の表の中の札つきの行は、区分を preview にしない（API 名の候補を作らない）', () => {
+    const rows = parsePricingPage(unk(`<tr>${tagged('unk-tagged-8b', '(2026年1月1日〜)')}<td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`))
+    expect(rows).toMatchObject([{ name: 'unk-tagged-8b', section: 'unknown', in: 10, out: 20 }])
+    expect(apiIdCandidate(rows[0])).toBeNull()
+  })
+
+  it(`★★ 見出しが読めないページは、札つきの行が ${MIN_PRICED_ROWS}件あっても、札で preview に数えず門で止まる`, () => {
+    const many = Array.from({ length: MIN_PRICED_ROWS }, (_, k) => `<tr>${tagged(`mu-${k}`, '(2026年1月1日〜)')}<td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`)
+    const koto = Object.fromEntries(Array.from({ length: MIN_PRICED_ROWS }, (_, k) => [`preview/mu-${k}`, { in: 10, out: 20 }]))
+    const noHeadings = page(newTable(many)).replace(/<h3\b[^>]*>[\s\S]*?<\/h3>/g, '')
+    expect(() => comparePricing(parsePricingPage(noHeadings), koto)).toThrow(PricingPageError)
+    // 見出しがあれば同じ行が preview として通る（上の例外は見出しが無いことが理由）
+    expect(comparePricing(parsePricingPage(page(newTable(many))), koto).matched).toHaveLength(MIN_PRICED_ROWS)
+  })
+
+  // カテゴリ列は <b>…</b> のあとに <small> だけが続く形。名前が <b> で始まるだけのセルはカテゴリ列ではない
+  it('名前が <b> で始まり <br/><small> が続くセルは、カテゴリ列ではなくモデル名', () => {
+    const rows = parsePricingPage(page(newTable([`<tr><th><b>bold-8b</b><br/><small>(2026年1月1日〜)</small></th><td><p>お問い合わせください</p></td><td>${TXT}</td></tr>`])))
+    expect(rows).toMatchObject([{ name: 'bold-8b', section: 'standard', since: '2026-01-01', in: null, out: null }])
+  })
+
+  // 英数字を含む行は札ではない（モデル名に「プレビュー」が入っていても、名前の1行目を札として外さない）。
+  // 2行目があるものは、1行目を札と取り違えると名前が2行目になる（1行だけのものは、札の文字を名前に戻すので差が出ない）
+  it('名前に「プレビュー」と英数字が入るモデルは、札として外さない', () => {
+    const rows = parsePricingPage(page(newTable([
+      `<tr><th>Foo-7B プレビュー版</th><td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`,
+      `<tr><th>Bar-3B プレビュー版<br/>(試験提供)</th><td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`,
+    ])))
+    expect(rows).toMatchObject([
+      { name: 'Foo-7B プレビュー版', section: 'standard', in: 10, out: 20 },
+      { name: 'Bar-3B プレビュー版', section: 'standard', in: 10, out: 20 },
+    ])
+  })
+
+  it('カテゴリ列だけの行で料金がある場合、名前にカテゴリ列の <small>（説明）を混ぜない', () => {
+    const omega = `<tr><th colSpan="2"><b>omega-chat</b><small>（文章の生成）</small></th><td colSpan="2">月 1 回</td><td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`
+    expect(parsePricingPage(page(newTable([omega])))).toMatchObject([{ name: 'omega-chat', section: 'standard', in: 20, out: 40 }])
+  })
+})
+
 describe('appConfig — Koto の固定設定を読む（check-models.mjs と共用）', () => {
   const MI = [
     'export const MODELS: { id: string; label: string }[] = [',
