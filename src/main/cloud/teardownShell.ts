@@ -30,7 +30,7 @@ import { withProjectLock, projectBusyMessage } from '../projectLock'
 import { progressReporter, stageReporter } from '../projectOps'
 import { hasPublishRecordFs } from '../publishMetaFs'
 import type { PublishTargetKind } from '../../shared/publishMeta'
-import { folderNamesText } from '../../shared/objectStorage'
+import { twinsRefusedMessage, TWINS_UNKNOWN_MESSAGE } from '../../shared/twinsRefusal'
 import type { StageMark, StageTimings } from '../../shared/stageTiming'
 
 /** run と forgetRecord が受け取るもの。 */
@@ -86,16 +86,9 @@ export function isConfirmed(opts: unknown): boolean {
   return !!opts && typeof opts === 'object' && (opts as any).confirmed === true
 }
 
-/**
- * 複製があるために破棄しなかったときの文（0.6.24 I-2）。フォルダ名の並べ方は `objectStorage.ts` の同じフォルダを言う文（『A』・『B』）と同じ。
- * 次の一手（要らないほうを削除する）を言う。
- */
-export function twinsRefusedMessage(twins: readonly string[]): string {
-  return `${folderNamesText(twins)}にも同じ公開の記録があるため、何も破棄していません。要らないほうのフォルダを削除すると、残ったほうから破棄できます。`
-}
-
-/** 複製があるか確かめられなかったとき（`twinsOf` が `'unknown'`〔親フォルダの一覧を読めない〕を返した・投げた〔投げない約束。偽の仕様書など〕）の断り。確かめられないまま破棄しない（安全側）。 */
-export const TWINS_UNKNOWN_MESSAGE = '同じ公開の記録を持つフォルダがあるか確かめられなかったため、何も破棄していません。'
+// 複製があるために断るときの文（0.6.24 I-2）は shared/twinsRefusal.ts の1つ。画面（teardown/flow.ts）が確認の前に返す結果の文も同じもの。
+// 既存の import（tests/v0624Docs.test.ts など）を壊さないよう、ここからも再エクスポートする。
+export { twinsRefusedMessage, TWINS_UNKNOWN_MESSAGE }
 
 /** 公開の記録を消せなかったときの、結果の起きたことへ足す1行（hanamii.ts:799-807 の文と同じ）。 */
 function forgetFailedLine(message: string): string {

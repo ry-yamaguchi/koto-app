@@ -16,7 +16,9 @@
 
 import type { TargetSpec, TeardownWords } from '../types'
 import { toTeardownView } from '../../../shared/teardownResult'
+import { readKeptOnly } from '../../../shared/keptOnly'
 import { bucketNamesText } from '../../../shared/teardownSupport'
+import { bucketsNotKept, storageOnlyLeftoverNote } from '../../../shared/keptDataNote'
 import { metaPath } from '../../publishRecord'
 import { getHanamiiToken, getHanamiiTokenById } from '../../components/CredentialsModal'
 
@@ -83,6 +85,7 @@ export const HANAMII_TEARDOWN_WORDS: TeardownWords = {
   rowButton: '🗑 破棄',
   running: '破棄しています…',
   doneHeadline: '✅ 破棄しました',
+  keptHeadline: '⚠️ 破棄していません',
   inProgressHeadline: '⏳ 破棄の途中です',
   failedHeadline: '⚠️ 破棄できませんでした',
   factsUnreadable: '破棄するものの記録を読めませんでした',
@@ -104,11 +107,15 @@ export const hanamiiTeardownSpec: TargetSpec<HanamiiTeardownRecord, { token: str
   targets: record => (record.storageLeftoverBuckets === null
     ? [`HANAMII のプロジェクト『${record.name ?? record.projectId}』`]
     : []),
-  leftoverNote: record => {
+  leftoverNote: (record, placements) => {
     const left = record.storageLeftoverBuckets
     if (left === null) return null
+    // 残す保存場所（keep）は消さないので、「削除します」の名前に入れない。残っている保存場所が全部 keep なら、事実だけを言う（確認の本文と同じ文）。
+    // 名前が分からない（空の一覧）回は、今までどおり名前なしで言う。
+    const removing = bucketsNotKept(left, placements)
+    if (left.length > 0 && removing.length === 0) return storageOnlyLeftoverNote(HANAMII_TEARDOWN_WORDS.verb)
     // 印は 404 でも書かれる（原本の 404 は「存在しない、または参照できない」）。「すでに削除されています」とは言い切らない。
-    return `前回の破棄で、HANAMII のプロジェクトは削除済みか見つからない状態でした。残っている保存場所${bucketNamesText(left)}を削除します。`
+    return `前回の破棄で、HANAMII のプロジェクトは削除済みか見つからない状態でした。残っている保存場所${bucketNamesText(removing)}を削除します。`
   },
   loadAuth: async record => {
     // 公開したときのトークンだけで呼ぶ。見つからなければ null（流れが、呼ばずに止めて案内を出す）。使用中・先頭の登録へは倒さない。
@@ -119,5 +126,12 @@ export const hanamiiTeardownSpec: TargetSpec<HanamiiTeardownRecord, { token: str
     // shownPlacements は確認で見せた保存場所の組（0.6.24 F）。流れが作った値をそのまま渡す。
     window.electronAPI.hanamii.teardown(projectDir, auth, { confirmed: opts.confirmed, projectId: record.projectId ?? '', shownPlacements: opts.shownPlacements }),
   failure: message => ({ ok: false, message }),
-  toView: raw => toTeardownView('hanamii', raw),
+  // 何も消さない回（teardown/keptNothing.ts の門）の結果。行と警告は main が同じ入力で返すものと同じ文の作り手から組む。
+  keptNothingResult: reply => reply,
+  toView: raw => {
+    const view = toTeardownView('hanamii', raw)
+    // main は HANAMII に keptOnly を付けない（プロジェクトを消した回の見出しが唯一の知らせのため）ので、toTeardownView も読まない。
+    // 付くのは、何も消さないと分かっていて画面が組んだ結果（keptNothingResult）だけ。その回は「破棄していません」と言う。
+    return view.ok && readKeptOnly(raw) ? { ...view, keptOnly: true as const } : view
+  },
 }

@@ -105,11 +105,13 @@ export default function HanamiiTeardownSection({ projectDir, locked, ops, onStar
       }))
       if (outcome.cancelled || stale()) return
       const r = outcome.result
+      // 何も消さないと分かっていた回（確認も main も出ていない）は、消えた状態にしない（記録も projectId も残っている）。結果は、記録が作られないので、その場の結果として出す。
+      const keptNothing = outcome.keptNothing === true
       // 消せたら、画面の表示を消えた状態にする。設定の projectId と公開の記録の片づけは main が済ませている。
       // 保存場所だけ残った回（appDeleted で ok が false）は、記録も projectId も残る——残さないと 🗑 が消えて、もう一度押す場所が無くなる。
-      if (r.ok) await onTornDown()
+      if (r.ok && !keptNothing) await onTornDown()
       if (began) await ops.sync()
-      if (!r.ok) showIfUnrecorded(hanamiiTeardownSpec.toView(r))
+      if (!r.ok || keptNothing) showIfUnrecorded(hanamiiTeardownSpec.toView(r))
     } catch (e: any) {
       if (stale()) return
       if (began) await ops.sync()

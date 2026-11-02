@@ -28,8 +28,8 @@ function blockFrom(text: string, start: string): string {
 
 describe('★★ hanamii:teardown の3点セット（main・preload・global.d.ts）が同じ形', () => {
   // 0.6.24 F: opts に、確認で見せた保存場所（名前と prefix の組）を必須で足した
-  const PRELOAD_CALL = "teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>\n      ipcRenderer.invoke('hanamii:teardown', projectDir, auth, opts),"
-  const DTS_HEAD = 'teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{'
+  const PRELOAD_CALL = "teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }) =>\n      ipcRenderer.invoke('hanamii:teardown', projectDir, auth, opts),"
+  const DTS_HEAD = 'teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }): Promise<{'
 
   it('★★ preload: (projectDir, 認証, { confirmed, projectId }) をそのまま invoke に渡す。直す前の形（projectId・token・任意の projectDir）が無い', () => {
     const src = code('src/main/preload.ts')

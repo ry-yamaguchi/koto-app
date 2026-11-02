@@ -8,6 +8,7 @@ import path from 'node:path'
 // planProjectDeleteTeardown、走らせるのは本物の runProjectDelete・pressProjectDelete・teardownPublished。口は偽（確認の答え・HANAMII の IPC・さくらの client・保存場所）。
 // フォルダを移す口だけは、R4-a では本物の trashProjectFs（main の fs:trashProject の本体。shell.trashItem の代役を呼ばれた一覧で見る）。
 //   R4-a … 公開の記録を読めない回は、残りの段を足さない。足すと、main が断る削除の途中で、元に戻せないデータとバケットだけが消える
+//          （いまは plan が record-unreadable で止める。破棄も移す操作も呼ばない。最後の砦として、本物の trashProjectFs が断ることも見る）
 //   R4-b … 残りの段の step の印（leftover）と呼び名（label）: nothingToDo・catch の枝・名詞が null の回
 //   R4-e … 走らせる直前に、読み直した記録へ同じ門をかけ直す（HANAMII が保存場所を消し切って、借り手のいるレジストリだけが残った回に、何も消さない確認を出さない）
 
@@ -135,7 +136,7 @@ const readAll = (d: string) => ['.sakuraide.json', '.sakura-cloud/env.json', '.s
 describe('R4-a 公開の記録を読めない回は、残りの段を足さない（main が断る削除の途中で、元に戻せないデータとバケットを消さない）', () => {
   const BROKEN = [['壊れた JSON', '{"publish": {'], ['空のファイル', ''], ['JSON でない文字', 'これは記録ではない']] as const
 
-  it.each(BROKEN)('★★★ %s と、保存場所の残り: 材料は読めない＋残りあり。plan に leftover が無く teardown は []。押すと確認0・cloud:teardown 0・要求0件で、本物の trashProjectFs が断る（フォルダも記録も動かない）', async (_label, content) => {
+  it.each(BROKEN)('★★★ %s と、保存場所の残り: 材料は読めない＋残りあり。plan は record-unreadable で止め、leftover が無く teardown は []。押すと確認0・cloud:teardown 0・要求0件・移す操作0回（フォルダも記録も動かない）。最後の砦の本物の trashProjectFs も断る', async (_label, content) => {
     setupProject(dir, { env: [A], resources: [bucketRef(A)] })
     fs.writeFileSync(metaFile(dir), content, 'utf-8')
     const before = readAll(dir)
@@ -143,7 +144,7 @@ describe('R4-a 公開の記録を読めない回は、残りの段を足さな�
     expect(facts.unreadable).toBe(true)
     expect(facts.sharedLeftover?.placements.map(p => p.bucket)).toEqual([A]) // 残りは読めている（門が見るのは unreadable）
     const plan = planProjectDeleteTeardown(facts)
-    expect(plan).toEqual({ block: null, teardown: [], twinned: [] })
+    expect(plan).toEqual({ block: { reason: 'record-unreadable' }, teardown: [], twinned: [] })
     expect('leftover' in plan).toBe(false)
 
     const ask = fakeAsk(true)
@@ -153,12 +154,16 @@ describe('R4-a 公開の記録を読めない回は、残りの段を足さな�
       if (!r.ok) throw new Error(r.message)
     })
     const r = await runProjectDelete(dir, plan, true, deps)
-    expect(r.phase).toBe('trashFailed')
-    expect(r).toMatchObject({ message: expect.stringContaining(FS_TRASH_MESSAGES.metaUnreadable) })
+    expect(r).toEqual({ phase: 'blocked', block: { reason: 'record-unreadable' }, steps: [] })
     expect(ask.titles).toEqual([])
     expect(win.teardownCalls).toEqual([])
     expect(win.hanamiiCalls).toEqual([])
     expect(h.calls).toEqual([]) // deleteKeys・deleteBucket・connect を含め、保存場所・client への要求は0件
+    expect(trashItem.mock.calls).toEqual([])
+    expect(readAll(dir)).toEqual(before)
+    // 最後の砦: 画面が止めなくても、本物の main の口は同じ記録を断る（移す操作は0回）
+    const refused = await trashProjectFs(dir, { confirmed: true, skippedForTwins: [] }, { home: os.tmpdir(), trashItem })
+    expect(refused).toMatchObject({ ok: false, message: FS_TRASH_MESSAGES.metaUnreadable })
     expect(trashItem.mock.calls).toEqual([])
     expect(readAll(dir)).toEqual(before)
   })
@@ -171,28 +176,31 @@ describe('R4-a 公開の記録を読めない回は、残りの段を足さな�
     expect(planProjectDeleteTeardown(facts)).toMatchObject({ block: null, teardown: ['sakura-apprun'], leftover: { noun: '保存場所' } })
   })
 
-  it('★★★ 押し直しの道も同じ: 開いたときから読めない記録のまま止まった回（走っている操作）を押し直しても、材料の読み直しで段を足さない（確認0・要求0件。本物の trashProjectFs が断る）', async () => {
+  it('★★★ 押し直しの道も同じ: 止まった回（記録を読めない）を押し直しても、材料の読み直しで段を足さない・破棄しない・移さない（確認0・要求0件・移す操作0回）', async () => {
     setupProject(dir, { env: [A], resources: [bucketRef(A)] })
     fs.writeFileSync(metaFile(dir), '{broken', 'utf-8')
     const first = await readProjectDeleteFacts(dir)
     const plan = planProjectDeleteTeardown(first)
-    expect(plan.teardown).toEqual([])
+    expect(plan).toEqual({ block: { reason: 'record-unreadable' }, teardown: [], twinned: [] })
     const ask = fakeAsk(true)
     const trashItem = vi.fn(async (_p: string) => {})
-    const running = [{ op: '公開', target: 'hanamii' }, null] as const // 1回目に聞いたときだけ走っている（移す直前の聞き直し）
+    let reads = 0
     let asked = 0
     const deps: ProjectDeleteRunDeps = {
       ...makeDeps(ask, async (p, skipped) => {
         const r = await trashProjectFs(p, { confirmed: true, skippedForTwins: skipped }, { home: os.tmpdir(), trashItem })
         if (!r.ok) throw new Error(r.message)
       }),
-      runningOp: async () => (running[Math.min(asked++, 1)] as { op: '作成' | '削除' | '公開'; target: 'hanamii' } | null),
+      readFacts: async d => { reads++; return readProjectDeleteFacts(d) },
+      runningOp: async () => { asked++; return null },
     }
     const blocked = await pressProjectDelete(dir, { plan, run: null, seen: first }, true, deps)
-    expect(blocked.run.phase).toBe('blocked')
+    expect(blocked.run).toEqual({ phase: 'blocked', block: { reason: 'record-unreadable' }, steps: [] })
+    expect(reads, '最初の押しは読み直さない').toBe(0)
     const again = await pressProjectDelete(dir, { plan, run: blocked.run, seen: blocked.facts ?? first }, true, deps) // 読み直した材料は、見せた材料と同じ（増えた注意は無い）
-    expect(again.run.phase).toBe('trashFailed')
-    expect(again.run).toMatchObject({ message: expect.stringContaining(FS_TRASH_MESSAGES.metaUnreadable) })
+    expect(again.run).toEqual({ phase: 'blocked', block: { reason: 'record-unreadable' }, steps: [] })
+    expect(reads, '押し直しは材料を読み直す').toBe(1)
+    expect(asked, '止めたので、走っている操作の聞き直しにも進まない').toBe(0)
     expect(ask.titles).toEqual([])
     expect(win.teardownCalls).toEqual([])
     expect(h.calls).toEqual([])

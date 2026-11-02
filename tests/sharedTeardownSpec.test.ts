@@ -23,7 +23,7 @@ const spec = sharedTeardownSpec
 const SHOWN = [{ bucket: 'koto-data-a', prefix: 'projects/myapp/' }, { bucket: 'koto-data-b', prefix: 'projects/myapp/' }]
 
 const rec = (over: Partial<SharedTeardownRecord> = {}): SharedTeardownRecord => ({
-  appNames: ['myapp'], registryName: 'myreg', registryOrigin: 'owned', registryUsers: [], placements: [A, B], stateOnlyBuckets: [], ...over,
+  appNames: ['myapp'], registryName: 'myreg', registryOrigin: 'owned', registryUsers: [], placements: [A, B], stateOnlyBuckets: [], keyRecorded: false, ...over,
 })
 const facts = (record: SharedTeardownRecord, over: Partial<TeardownFacts<SharedTeardownRecord>> = {}): TeardownFacts<SharedTeardownRecord> => ({
   projectName: 'myapp', record, placements: spec.placementsOf!(record), placementsUnreadable: false, placementsUnreadableCause: null,

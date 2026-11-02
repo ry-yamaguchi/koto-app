@@ -159,9 +159,10 @@ export default function App() {
   const changeTarget = useCallback(async (newTarget: string) => {
     if (!currentDir) return
     await mergeProjectMeta(currentDir, { target: newTarget })
-    // メタ再読込 → 公開先変更をAIへ促す通知
+    // メタ再読込 → 公開先を変えた知らせ。dir は変えたプロジェクト（待つ間に切り替わっても、
+    // 別のプロジェクトの会話に吹き出しを入れないための印）
     window.dispatchEvent(new Event('sakura-meta-changed'))
-    window.dispatchEvent(new CustomEvent('sakura-target-changed', { detail: { target: newTarget } }))
+    window.dispatchEvent(new CustomEvent('sakura-target-changed', { detail: { target: newTarget, dir: currentDir } }))
   }, [currentDir])
 
   // ワークフローバー「作る」→ AIチャットへフォーカス

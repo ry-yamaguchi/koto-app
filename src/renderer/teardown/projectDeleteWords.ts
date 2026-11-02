@@ -5,11 +5,13 @@
 //   ・チェック「…も一緒に破棄する」の文（projectDeleteCheckWords）。**公開していない回**は、公開と言わず残りの呼び名（保存場所・コンテナレジストリ）で言う
 //   ・チェックがオンのときの 💾 の行のうち、公開先の行のもの（rowStorageNotesOf。残りの段は除く）と、残りの段のもの（leftoverStorageNoteLine）
 //   ・チェックがオフのときの 💾 の行（keptStorageNoteOf。state にだけある保存場所とレジストリも落とさない）
+//   ・段を足さなかった残りの赤い箱の注意（unsteppedLeftoverNote。保存場所が全部「消さずに残す」回など）
 //   ・破棄が済まなかった回の結果の尻（projectDeleteStoppedTail。0.6.24 A-7・U11。結果の欄は plan を持たないので、steps から決める）
 //   ・Vercel の案内の最後の文（保存場所は残ります）を言わない回か（vercelStorageTornDown。0.6.24 A-9・U12）
 
 import type { PublishTargetKind } from '../publishStatus'
 import { teardownDataNoteForAll, teardownRemovesStorage } from '../../shared/teardownSupport'
+import { isKeptPlacement } from '../../shared/keptDataNote'
 import { sharedRegistryCounted, sharedRegistryDeleteDefault } from './targets/shared'
 import {
   remainingPlacementsNote, sharedLeftoverNote, PROJECT_DELETE_STOPPED_TAIL, projectDeleteStoppedTailLeftover,
@@ -18,6 +20,9 @@ import {
 
 /** チェックの横の文と、オン・オフの説明と、実行中のボタンの文。 */
 export type ProjectDeleteCheckWords = { label: string; on: string; off: string; running: string }
+
+/** 保存場所を、名前と prefix の組で見分ける鍵（同じバケットの別の prefix は別の保存場所）。 */
+const placementPairKey = (p: { bucket: string; prefix: string }): string => `${p.bucket}|${p.prefix}`
 
 /**
  * **公開していない回**か。plan.teardown が共用型の段1つだけで、その段が記録の残りのための段（plan.leftover の noun が文字列）のとき。
@@ -58,7 +63,8 @@ export function projectDeleteCheckWords(plan: Pick<ProjectDeletePlan, 'teardown'
 /**
  * チェックがオンのときの 💾 の行のうち、**公開先の行のもの**（0.6.24 A-4。ダイアログが公開先ごとに1行出す）。
  * 保存場所を消す公開先（teardownRemovesStorage）の段ごとに、`{ target, note }` を、段の並びで返す。note が空の公開先は返さない。
- *  ・文は facts.placements（env.json の同意済み。全件）で作る（HANAMII と、行のある共用型。今のまま）
+ *  ・文は facts.placements（env.json の同意済み。全件）で作る（HANAMII と、行のある共用型。今のまま）。`keep` の付いた保存場所（消さずに残す）は、
+ *    teardownDataNoteForAll が「残ります（消すまで月額が続きます）」と言う（確認と同じ作り手。消す保存場所のある回の文は変わらない）
  *  ・**残りの段（plan.leftover の 'sakura-apprun'）は返さない**。残りの段の行は leftoverStorageNoteLine が、記録の残り（facts.sharedLeftover.placements）で作る
  *    （両方で出すと「📦 さくらのAppRun:」を前に付けた行が env の保存場所で出てしまう）
  * `shownTeardown` は、いま画面が箱に出している段（既定は plan.teardown。破棄が済んだ段は外れている）。
@@ -78,8 +84,9 @@ export function rowStorageNotesOf(
  * 真になるのは次の**すべて**を満たすとき。それ以外（📡・チェックが外れている回・残りの段が無い回）は偽＝今の文のまま。
  *  ・チェックがオン（`=== true`。渡し忘れ・形違いは偽）
  *  ・残りの段（plan.leftover）があり、いま箱に出ている（shownTeardown に 'sakura-apprun' がある）
- *  ・その残りの段が**保存場所を破棄する**（記録の残りに保存場所が1件以上ある）。仕様の文面は「チェックがオンかつ残りの段がある回」だが、残りがコンテナレジストリだけ・
+ *  ・その残りの段が**保存場所を破棄する**（記録の残りに、消す保存場所が1件以上ある）。仕様の文面は「チェックがオンかつ残りの段がある回」だが、残りがコンテナレジストリだけ・
  *    アプリだけの回は保存場所に触れず、保存場所は実際に残る。そこで「残ります」を消すと、月額が続くのに「残る」と言わなくなるので、安全側（言う側）に倒した。
+ *    `keep` のある保存場所（同じデータを使うフォルダがいる・確かめられない）は消さずに残すので、消す保存場所に数えない（全部 `keep` なら「残ります」を言う）。
  */
 export function vercelStorageTornDown(
   plan: Pick<ProjectDeletePlan, 'teardown' | 'leftover'>, facts: Pick<ProjectDeleteFacts, 'sharedLeftover'>, teardownOnDelete: boolean,
@@ -87,13 +94,14 @@ export function vercelStorageTornDown(
 ): boolean {
   if (teardownOnDelete !== true || !plan.leftover || !shownTeardown.includes('sakura-apprun') || !teardownRemovesStorage('sakura-apprun')) return false
   const placements: unknown = facts.sharedLeftover?.placements
-  return Array.isArray(placements) && placements.length > 0
+  return Array.isArray(placements) && placements.some(p => !isKeptPlacement(p))
 }
 
 /**
  * チェックがオンのときの 💾 の行のうち、**残りの段（plan.leftover）のもの**（0.6.24 A-4）。残りの段が無い回・出す保存場所が無い回は空。
  *  ・公開先の名前は前に付けない（共用型の行は無い。呼び手が付けない）
- *  ・前の行（HANAMII。teardown に HANAMII の段があり、facts.placements が名指しした保存場所）と同じ保存場所は除く（同じ保存場所を2回言わない）
+ *  ・前の行（HANAMII。teardown に HANAMII の段があり、facts.placements が名指しした保存場所）と同じ保存場所は除く（同じ保存場所を2回言わない）。
+ *    同じかは、keep の無い保存場所はバケット名で、keep のある保存場所は名前と prefix の組で比べる
  *  ・文は teardownDataNoteForAll({ target: 'sakura-apprun', placements: 残り }) で作る（確認の文と同じ作り手）
  * `shownTeardown` は、いま画面が箱に出している段（既定は plan.teardown）。HANAMII の破棄が済んで箱から外れた後は、HANAMII の行が無いので除かない。
  * 行のある共用型と HANAMII が並ぶ回（plan.leftover が無い）の2行は、今のまま（呼び手が facts.placements で作る）。
@@ -106,9 +114,14 @@ export function leftoverStorageNoteLine(
   const left = facts.sharedLeftover
   if (!left) return ''
   const hanamiiLineShown = shownTeardown.includes('hanamii') && teardownRemovesStorage('hanamii')
-  const named = new Set(hanamiiLineShown ? facts.placements.map(p => p.bucket) : [])
-  // 文は保存場所の名前（バケット）で言うので、同じバケットを別の prefix で持つ分は1つにまとめる（『A』『A』と並べない）
-  const rest = left.placements.filter((p, i, all) => !named.has(p.bucket) && all.findIndex(q => q.bucket === p.bucket) === i)
+  const namedBuckets = new Set(hanamiiLineShown ? facts.placements.map(p => p.bucket) : [])
+  const namedPairs = new Set(hanamiiLineShown ? facts.placements.map(placementPairKey) : [])
+  // 文は保存場所の名前（バケット）で言うので、同じバケットを別の prefix で持つ分は1つにまとめる（『A』『A』と並べない）。
+  // 「消す」と「残す」（keep）は別の文になるので、同じバケットでも、消す側と残す側は別々に数える。
+  // 名指しされたかは、消す側はバケット名で比べる（今のまま）。keep のある保存場所は名前と prefix の組で比べる
+  // （同じバケットの別の prefix が keep のとき、HANAMII の行が言ったのは別の保存場所なので、「残ります」を落とさない）
+  const unnamed = left.placements.filter(p => !(isKeptPlacement(p) ? namedPairs.has(placementPairKey(p)) : namedBuckets.has(p.bucket)))
+  const rest = unnamed.filter((p, i, all) => all.findIndex(q => q.bucket === p.bucket && isKeptPlacement(q) === isKeptPlacement(p)) === i)
   return teardownDataNoteForAll({ target: 'sakura-apprun', placements: rest })
 }
 
@@ -121,12 +134,25 @@ export function leftoverStorageNoteLine(
 export function keptStorageNoteOf(facts: Pick<ProjectDeleteFacts, 'sharedLeftover' | 'placements'>): string {
   const left = facts.sharedLeftover
   if (left) {
-    const key = (p: { bucket: string; prefix: string }) => `${p.bucket}|${p.prefix}`
-    const have = new Set(left.placements.map(key))
-    const extra = facts.placements.filter(p => !have.has(key(p)))
+    const have = new Set(left.placements.map(placementPairKey))
+    const extra = facts.placements.filter(p => !have.has(placementPairKey(p)))
     return sharedLeftoverNote({ ...left, placements: [...left.placements, ...extra] })
   }
   return facts.placements.length > 0 ? remainingPlacementsNote(facts.placements) : ''
+}
+
+/**
+ * 段を足さなかった残り（共用型の記録に残りがあるのに plan.leftover が無い回。保存場所が全部「消さずに残す」〔`keep`〕回・借り手のいるレジストリだけの回・
+ * 覆う複製がある回）の、赤い箱の注意（leftoverNote）。文は sharedLeftoverNote の1つ（保存場所の `keep` は、理由つきで言う）。
+ * `rowNoteShown` は、公開先の行の 💾（rowStorageNotesOf）が、いま箱に出ているか（チェックがオンで、1行以上ある）。出ているとき、その行が名指しした保存場所
+ * （facts.placements）のうち `keep` のあるものは、ここで言い直さない（同じ保存場所を2回言わない。HANAMII の行がある回）。`keep` の無い保存場所・レジストリ・アプリの文は今のまま。
+ * 名指しされたかは**名前と prefix の組**で比べる（同じバケットの別の prefix の保存場所が `keep` のとき、行が言ったのは別の prefix の保存場所なので、「残ります」を消さない）。
+ */
+export function unsteppedLeftoverNote(facts: Pick<ProjectDeleteFacts, 'sharedLeftover' | 'placements'>, rowNoteShown: boolean): string {
+  const left = facts.sharedLeftover
+  if (!left) return ''
+  const named = new Set(rowNoteShown ? facts.placements.map(placementPairKey) : [])
+  return sharedLeftoverNote({ ...left, placements: left.placements.filter(p => !(isKeptPlacement(p) && named.has(placementPairKey(p)))) }, { withKeep: true })
 }
 
 /**

@@ -63,6 +63,29 @@ export function hasPublishRecordInMeta(meta: unknown, target: PublishTargetKind)
   return !!m?.publish?.targets?.[target]
 }
 
+/** 公開先の並び（定義順）。 */
+export const TARGET_ORDER: readonly PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental']
+
+/**
+ * 公開記録（`.sakuraide.json` を JSON.parse した値）から、記録のある公開先を定義順で返す（純関数）。**形が読めなければ `null`**（空配列とは別の意味）。
+ *
+ *   ・`[]`   … 読めた結果、公開先の記録が1つも無かった（`publish` や `publish.targets` が無い場合を含む）
+ *   ・`null` … 読めなかった（中身がオブジェクトでない・`publish`／`targets` が別の型だった）
+ *
+ * 記録を読めたかの判断は、この1つだけ。画面（`renderer/publishRecord.ts`）と main（`ipc/fsTrash.ts` の `trashProjectFs`）が同じこれを通る。
+ * 形が違う記録を「公開先なし」と読んで、フォルダを移す側に倒さない。
+ */
+export function parsePublishTargets(meta: unknown): PublishTargetKind[] | null {
+  if (!isPlainObject(meta)) return null
+  const publish = meta.publish
+  if (publish === undefined || publish === null) return []
+  if (!isPlainObject(publish)) return null
+  const targets = publish.targets
+  if (targets === undefined || targets === null) return []
+  if (!isPlainObject(targets)) return null
+  return TARGET_ORDER.filter(t => !!targets[t])
+}
+
 /**
  * `publish.pending`（公開開始マーカー）を書く。公開処理の開始時、実際の公開API呼び出しの
  * 直前に呼ぶこと。他の `publish.*` のキー（targets 等）は保つ。
@@ -226,16 +249,23 @@ export function withApprunDedicatedRecord(meta: unknown, patch: Partial<ApprunDe
  * HANAMII は初回公開で projectId が発行され、これを保存しないまま次回公開すると
  * 新規プロジェクトとして二重作成されうる。`publish.hanamii` の他のキー
  * （workspaceId・envs・healthCheck・name 等）は保つ。
+ *
+ * 記録にある projectId と**違う**空でない projectId を書くとき（再公開で新しいプロジェクトができた回）は、
+ * 「保存場所だけが残った」印（`storageLeftoverBuckets`）を null にする。その印は、消えた前のプロジェクトについてのもの。
+ * 残すと、生きた新しいプロジェクトの破棄が「前回の破棄で消えた」と読まれる。
+ * 同じ ID の書き直し・null（空）の書き込みは、印を保つ。印が無い記録には、印のキーを足さない。
  */
 export function withHanamiiProjectId(meta: unknown, projectId: string | null): Record<string, unknown> {
   const m = asRecord(meta)
   const publish = asRecord(m.publish)
   const hanamii = asRecord(publish.hanamii)
+  const replaced = typeof projectId === 'string' && projectId !== '' && projectId !== hanamii.projectId
+  const staleMark = replaced && hanamii.storageLeftoverBuckets != null
   return {
     ...m,
     publish: {
       ...publish,
-      hanamii: { ...hanamii, projectId },
+      hanamii: { ...hanamii, projectId, ...(staleMark ? { storageLeftoverBuckets: null } : {}) },
     },
   }
 }

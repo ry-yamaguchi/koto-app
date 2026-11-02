@@ -10,12 +10,14 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { canTrash, fileOpVerdict, isRecordName, type FileOpProbe, type FileOpVerdict } from '../../shared/trashGuard'
-import { dedicatedTeardownHasWork } from '../../shared/teardownSupport'
+import { dedicatedTeardownHasWork, dedicatedLeftoverAllKept } from '../../shared/teardownSupport'
+import { consentedPlacementsOf } from '../../shared/objectStorage'
 import { isConfirmed, NOT_CONFIRMED_MESSAGE } from '../cloud/teardownShell'
 import { recordCoverFs, TWIN_TARGETS } from '../cloud/recordTwins'
-import type { PublishTargetKind } from '../../shared/publishMeta'
+import { parsePublishTargets, type PublishTargetKind } from '../../shared/publishMeta'
 import { isSameDirFs, readRecord } from '../cloud/bucketUsers'
-import { CLOUD_DIR, CLOUD_STATE_FILE } from '../cloud/specStore'
+import { CLOUD_DIR, CLOUD_STATE_FILE, loadCloudSpec } from '../cloud/specStore'
+import { readTwinFacts } from '../cloud/twinFacts'
 import { readApprunDedicatedFs, readMetaFs } from '../publishMetaFs'
 import { runningOpEntryAt } from '../projectLock'
 
@@ -45,7 +47,7 @@ export const FS_TRASH_MESSAGES = {
 
 /** `fs:trashCheck` の答え。`kind` は断った理由（`'denied'` はホームの深さの守り〔canTrash〕）。画面はこれで振り分ける（U8）。 */
 export type TrashCheckResult = { ok: true } | { ok: false; kind: 'denied' | Exclude<FileOpVerdict, 'plain'>; message: string }
-/** `reason: 'twins-gone'` は、覆う複製が見つからなくなった断り、または確かめられなかった断り（R2-e・R3-e。文は言い分ける）。画面はこれで材料を読み直す。 */
+/** `reason: 'twins-gone'` は、覆う複製が見つからなくなった断り、または確かめられなかった断り（R2-e・R3-e。文は言い分ける）と、専有型の印だけが残る回の断り（開いたときの「全部残す」が古くなった）。画面はこれで材料を読み直す。 */
 export type TrashProjectResult = { ok: true } | { ok: false; message: string; reason?: 'twins-gone' }
 type TrashDeps = { home: string; trashItem: (absPath: string) => Promise<void> }
 
@@ -166,14 +168,36 @@ function skippedForTwinsOf(opts: unknown): PublishTargetKind[] | null {
 }
 
 /**
+ * 専有型の記録が言う「残っている保存場所」が全部「消さずに残す」側かを、実フォルダの記録から調べる（`dedicatedLeftoverAllKept` の材料を読む口。画面と同じ1つの判断を通す）。
+ * 投げない・外へ要求を出さない・何も書かない。
+ *  ・保存場所は `storage:placement` と同じ読み方（`loadCloudSpec` ＋ `consentedPlacementsOf`。`storagePlacementsOf` と同じ。そちらは鍵の読み出しなど重い依存を引くので import しない）
+ *  ・残す判断は `cloud:twinFacts` の本体（`readTwinFacts`。`keep` が付くのは、同じ保存場所の同じ prefix を複製のフォルダが持つ・複製かどうか確かめられない保存場所）
+ * 読めない（env.json が壊れている・投げる・`ok:false`・形違い）なら、保存場所は空として判断に渡す＝止める側。
+ */
+function dedicatedLeftoverAllKeptAt(abs: string, record: ReturnType<typeof readApprunDedicatedFs>): boolean {
+  try {
+    const spec = loadCloudSpec(abs)
+    const list = consentedPlacementsOf(spec?.persistence?.objectStorage).map(p => ({ bucket: p.bucket, prefix: p.prefix }))
+    const facts = list.length === 0 ? null : readTwinFacts(abs, { target: 'sakura-apprun-dedicated', placements: list })
+    return dedicatedLeftoverAllKept(record, facts !== null && facts.ok === true && Array.isArray(facts.placements) ? facts.placements : [])
+  } catch {
+    return false
+  }
+}
+
+/**
  * `fs:trashProject`（プロジェクトの削除が、最後にフォルダを移す口）。順に確かめ、全部通った回だけ移す。
  *  1. 確認を通った（`confirmed: true`）  2. ホームの深さ  3. 記録・中にプロジェクトがある・調べられない、でない（プロジェクトの根・ふつうのフォルダは通す）
  *  4. このプロジェクトで処理（公開・破棄・作成）が走っていない
- *  5. 公開の記録（`.sakuraide.json`・`.sakura-cloud/state.json`）が読めないのでない（R2-h・R3-d）。専有型の残りが分からないまま移すと、読めない記録ごと移り、月額が止まらない。ENOENT（記録が無い）は通す
+ *  5. 公開の記録（`.sakuraide.json`・`.sakura-cloud/state.json`）が読めない・形が違う（`.sakuraide.json` だけ）のでない（R2-h・R3-d）。専有型の残りが分からないまま移すと、読めない記録ごと移り、月額が止まらない。ENOENT（記録が無い）は通す
  *  6. `skippedForTwins`（**必須**。画面の plan が、覆う複製があるために破棄を外した公開先）が正しい形。移す直前に、その公開先それぞれで覆う複製（`recordCoverFs`）を**読み直し**、
  *     1つでも覆う兄弟が無くなっていれば（確かめられない `'unknown'` を含む）移さずに断る（`reason: 'twins-gone'`。開いたあとに複製を消すと、画面の判断は古い。R2-e）。
  *     文は言い分ける（R3-e）: 1つでも確かめられなかった（`'unknown'`）なら「確かめられないため」（言い切れない側の文）、すべて確かめられて無かったなら「見つからなくなった」
- *  7. 専有型のリソースが残っていない（月額が止まらない）。**ただし、`skippedForTwins` に専有型があり、かつ覆う複製がいまもあるときだけ通す**（複製からは破棄を断るので、複製を消せる道を残す・I-3・R2-d・R2-e）
+ *  7. 専有型のリソースが残っていない（月額が止まらない）。**ただし、次のどちらかなら通す**。
+ *     ・`skippedForTwins` に専有型があり、かつ覆う複製がいまもあるとき（複製からは破棄を断るので、複製を消せる道を残す・I-3・R2-d・R2-e）
+ *     ・資源の ID が無く、残っている保存場所（印）が全部「消さずに残す」とき（`dedicatedLeftoverAllKept`。画面の `projectDeleteBlockOf` と同じ関数。残す判断を付けた保存場所は実フォルダの記録から読み直す。
+ *       env.json を読めない・`readTwinFacts` が答えられない・印の名前が材料に無い回は、通さない側（資源の ID が無い回の断りには `reason: 'twins-gone'` を付け、画面に材料を読み直させる）。複製の記録を読めない保存場所（`keep.risk` が `unread`）は残す側に数えるので通す）。
+ *       複製と共有している保存場所は、複製のフォルダのプロジェクトの削除から辿れる（実際の画面では確かめていない）。複製の記録を読めない保存場所は、辿れる複製があるとは限らない
  * 保存場所などの残りでは止めない（チェックを外すのは利用者の選び）。
  */
 export async function trashProjectFs(dir: unknown, opts: unknown, deps: TrashDeps): Promise<TrashProjectResult> {
@@ -182,8 +206,9 @@ export async function trashProjectFs(dir: unknown, opts: unknown, deps: TrashDep
   if (!r.ok) return { ok: false, message: r.message }
   // 走っている操作は、文字列でなく実体で比べる（大文字小文字だけ違うパス・リンク経由のパスでも、同じフォルダなら走っているとする。R2-b）
   if (runningOpEntryAt(r.abs, isSameDirFs)) return { ok: false, message: FS_TRASH_MESSAGES.running }
-  // 読めない・壊れている `.sakuraide.json` を「専有型の残りなし」と読まない（R2-h。K3 と同じ向き）。無い（ENOENT）は通す。
-  if (readMetaFs(r.abs).kind === 'unreadable') return { ok: false, message: FS_TRASH_MESSAGES.metaUnreadable }
+  // 読めない・壊れている・形が違う `.sakuraide.json` を「専有型の残りなし」と読まない（R2-h。K3 と同じ向き）。形の判断は画面と同じ `parsePublishTargets`。無い（ENOENT）は通す。
+  const meta = readMetaFs(r.abs)
+  if (meta.kind === 'unreadable' || (meta.kind === 'ok' && parsePublishTargets(meta.value) === null)) return { ok: false, message: FS_TRASH_MESSAGES.metaUnreadable }
   // `.sakura-cloud/state.json`（共用型の記録）も同じ（R3-d。双子）。ENOENT（記録が無い）は通す。読み口は兄弟の記録を読むのと同じ `readRecord`（ENOENT を見分ける1つ）。
   if (readRecord(path.join(r.abs, CLOUD_DIR, CLOUD_STATE_FILE)).kind === 'unreadable') return { ok: false, message: FS_TRASH_MESSAGES.stateUnreadable }
   const skipped = skippedForTwinsOf(opts)
@@ -195,8 +220,12 @@ export async function trashProjectFs(dir: unknown, opts: unknown, deps: TrashDep
   if (!reads.every(c => c.length > 0)) return { ok: false, message: FS_TRASH_MESSAGES.twinsGone, reason: 'twins-gone' }
   // 専有型の止めを外すのは、画面が外したと言い（skippedForTwins に専有型がある）、かつ覆う複製がいまもあるときだけ（両方そろったときだけ）。
   // 後ろの条件は、すぐ上の読み直しが skippedForTwins のすべてについて確かめ済み（専有型があれば、覆う複製がいまもある）。
-  if (dedicatedTeardownHasWork(readApprunDedicatedFs(r.abs)) && !skipped.includes('sakura-apprun-dedicated')) {
-    return { ok: false, message: FS_TRASH_MESSAGES.dedicated }
+  const dedicated = readApprunDedicatedFs(r.abs)
+  if (dedicatedTeardownHasWork(dedicated) && !skipped.includes('sakura-apprun-dedicated') && !dedicatedLeftoverAllKeptAt(r.abs, dedicated)) {
+    // 資源の ID が無く印だけの回は、画面が開いたときに「全部残す」と読んで止めを外していたかもしれない（そのあと複製が消えた・記録が直った）。
+    // `twins-gone` を付けて材料を読み直させる（読み直した plan が止める文を出し、ボタンを押せなくする）。ID がある回は、画面も元から止めているので付けない。
+    const idsOnly = dedicatedTeardownHasWork({ ...dedicated, storageLeftoverBucket: null })
+    return idsOnly ? { ok: false, message: FS_TRASH_MESSAGES.dedicated } : { ok: false, message: FS_TRASH_MESSAGES.dedicated, reason: 'twins-gone' }
   }
   try {
     await deps.trashItem(r.abs)

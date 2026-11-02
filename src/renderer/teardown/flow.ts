@@ -16,7 +16,11 @@
 import type { ConfirmOptions } from '../useConfirm'
 import type { ConfirmWithChoicesAnswer, ConfirmWithChoicesOptions } from '../useConfirmChoices'
 import { PUBLISH_CLOSE_WARNING, beginActivity } from '../activity'
+import { twinsRefusalMessage } from '../../shared/twinsRefusal'
+import { isKeptPlacement } from '../../shared/keptDataNote'
+import { keptNothingReplyOf } from '../../shared/keptNothingReply'
 import { buildTeardownConfirm } from './confirm'
+import { keptNothingPlacements } from './keptNothing'
 import { opProgressText } from '../projectOpsView'
 import { electronTeardownFactsApi, loadTeardownFacts } from './facts'
 import type { ShownPlacement, TargetSpec, TeardownFacts, TeardownInvokeOpts, TeardownOutcome } from './types'
@@ -47,6 +51,11 @@ export interface RunTeardownFlowDeps<R, A, Res> {
    * `true` でなければ（偽・不明な値）、`spec.hasWork` が偽のときと同じに扱う（確認も IPC も出さず、`nothingToDo`）。渡さない回は `spec.hasWork` だけで決まる（今のまま）。
    */
   hasWork?(record: R): boolean
+  /**
+   * `true` のとき、IPC まで進んだ回の結果に、確認で見せた保存場所の組（`shownPlacements`）を付けて返す（任意。渡さない入口の結果の形は今のまま）。
+   * プロジェクトの削除が、HANAMII の段が済ませた保存場所を、あとの段へ引き継ぐのに使う。
+   */
+  reportShown?: boolean
 }
 
 /**
@@ -54,12 +63,14 @@ export interface RunTeardownFlowDeps<R, A, Res> {
  * 確認の 💾 の段落は `facts.placements` の全件を名指しする（confirm.ts の buildTeardownConfirmBody）ので、「見せた」は `facts.placements` と一致する。
  *   ・保存場所の設定を読めなかった（`placementsUnreadable`）回は `[]`。名前を挙げていないので、何も見せていないことにする（main は消さない）。
  *   ・確認の段落が数えない要素（null・名前の無いもの）は、見せていないので入れない。prefix の無いものは `''`。
+ *   ・確認が「消しません」と言った保存場所（`keep` のあるもの。判断は `isKeptPlacement` の1つ）にだけ `keepData: true` を付ける（付けるのは `true` のときだけ。付かないものにはキーも作らない）。
+ *     main は、これが付いた保存場所を、確認のあとで複製の記録が消えても消さない（storageSelection.ts の `mustKeepDataOf`）。画面が決めるのは「消さない」だけで、消す側には働かない。
  */
 export function shownPlacementsOf(facts: Pick<TeardownFacts<unknown>, 'placements' | 'placementsUnreadable'>): ShownPlacement[] {
   if (facts.placementsUnreadable) return []
   return (facts.placements ?? [])
     .filter(p => !!p && typeof p.bucket === 'string' && p.bucket.length > 0)
-    .map(p => ({ bucket: p.bucket, prefix: typeof p.prefix === 'string' ? p.prefix : '' }))
+    .map(p => ({ bucket: p.bucket, prefix: typeof p.prefix === 'string' ? p.prefix : '', ...(isKeptPlacement(p) ? { keepData: true as const } : {}) }))
 }
 
 /**
@@ -69,14 +80,19 @@ export function shownPlacementsOf(facts: Pick<TeardownFacts<unknown>, 'placement
  * 1. 確認の材料が読めなければ、確認も活動レジストリもキーも IPC も出さずに失敗の結果を返す（消すものが分からないまま消させない）。
  * 2. 消すものが記録に無い（幽霊の行）なら、破壊の確認は出さず IPC も呼ばない。仕様書が `nothingToDoIsOk` のときだけ、結果に `nothingToDo: true` を付ける。
  *    入口が門（`deps.hasWork`）を渡していれば、読み直した記録がその門を通らない回も同じ（プロジェクトの削除の残りの段。0.6.24 R4-e）。
- * 3. 確認の答えが **true でなければ**（no・不明な値）`cancelled`。IPC は1回も呼ばれず、活動レジストリにも載せない。
+ * 3. 公開先の拒否（`facts.refusal`。同じ公開の記録を持つフォルダがある・あるか確かめられない）なら、確認も IPC も活動レジストリもキーの読み出しも出さず、
+ *    main の断りと同じ文の失敗の結果を返す（2 が先。読めなかった回は確認へ進む）。
+ *    何も消さないと分かっている回（保存場所が全部「消さずに残す」で、消す資源も無く、記録に保存場所の鍵も残らない。`keptNothingPlacements` の門。3つの仕様書が同じ門を通る）も、確認も IPC も活動レジストリもキーの読み出しも出さず、
+ *    仕様書が組んだ結果（`keptNothingResult`。ok:true・keptOnly・残した行と月額の警告）を返す（結果に `keptNothing: true`）。3 が先。不明（`cloud:twinFacts` を読めなかった）は確認へ進む。
+ * 4. 確認の答えが **true でなければ**（no・不明な値）`cancelled`。IPC は1回も呼ばれず、活動レジストリにも載せない。
  *    仕様書が選択（`choices`）を1件以上持つときは `confirmWithChoices` で聞く。入口が渡していなければ、確認も IPC も出さずに失敗の結果にする。
  *    選択の値は `=== true` のものだけ true にして IPC へ渡す（知らない id は落ち、boolean でない値は false）。
- * 4. 窓を閉じるときの警告つきで活動レジストリに載せる。
- * 5. `onStart` → キーを読む → `{ confirmed: true, shownPlacements }`（選択があれば `choices` も）を付けて IPC を1回だけ。成功・失敗を問わず必ず活動レジストリから外す。
+ * 5. 窓を閉じるときの警告つきで活動レジストリに載せる。
+ * 6. `onStart` → キーを読む → `{ confirmed: true, shownPlacements }`（選択があれば `choices` も）を付けて IPC を1回だけ。成功・失敗を問わず必ず活動レジストリから外す。
  *    `shownPlacements` は確認で見せた保存場所の組（`shownPlacementsOf`）。main はこの組だけを消す（0.6.24 F）。
  *    キーが無ければ IPC を呼ばず `keyMissingMessage` の失敗。IPC の例外は握らずに投げ直す（呼び出し側が受ける）。
- * 6. 公開の記録（📡 の行）は**ここでも画面でも消さない**。
+ *    入口が `reportShown` を渡していれば、IPC を呼んだ回の結果に `shownPlacements`（見せた組）も付ける（キーが無い失敗・やめた回・消すものが無い回には付けない。何も消さない回〔3〕は付ける）。
+ * 7. 公開の記録（📡 の行）は**ここでも画面でも消さない**。
  */
 export async function runTeardownFlow<R, A, Res>(
   projectDir: string,
@@ -95,6 +111,17 @@ export async function runTeardownFlow<R, A, Res>(
   if (!spec.hasWork(facts.record) || (deps.hasWork !== undefined && deps.hasWork(facts.record) !== true)) {
     const result = spec.failure(spec.words.nothingToDo)
     return spec.nothingToDoIsOk === true ? { cancelled: false, result, nothingToDo: true } : { cancelled: false, result }
+  }
+  // 公開先の拒否（同じ公開の記録を持つフォルダがある・あるか確かめられない）。main は、この回、確認のあとでも何も破棄せずに断る（teardownShell の `twinsOf`）。
+  // 断ると分かっている確認を出さず、IPC も活動レジストリもキーの読み出しも呼ばずに、main の断りと同じ文の結果を返す。確認より前（確認のあとで読まない）。
+  // 上の「消すものが無い」が先（両方なら「消すものが無い」）。読めなかった回（`refusal` が付かない）は、ここでは何もしない（確認へ進み、main が同じ判断を下す）。
+  if (facts.refusal) return { cancelled: false, result: spec.failure(twinsRefusalMessage(facts.refusal)) }
+  // 何も消さないと分かっている回。確認を出さず、IPC・活動レジストリ・キーの読み出しも呼ばない（確認より前。main の骨も走らないので、公開の記録〔📡 の行〕は消えない）。
+  // 3つの仕様書が同じ門（keptNothingPlacements）を通る。結果の形だけ仕様書が持つ（keptNothingResult）。持たない仕様書は門を通らず、確認へ進む（安全側）。
+  const keptNothing = spec.keptNothingResult ? keptNothingPlacements(spec, facts) : null
+  if (keptNothing !== null && spec.keptNothingResult) {
+    const result = spec.keptNothingResult(keptNothingReplyOf(keptNothing))
+    return { cancelled: false, result, keptNothing: true, ...(deps.reportShown === true ? { shownPlacements: shownPlacementsOf(facts) } : {}) }
   }
   const list = spec.choices?.(facts.record) ?? []
   // 確認で見せた保存場所（名前と prefix の組）。選択の有る無しによらず、両方の opts に同じ値を載せる（1か所で作る）。
@@ -120,7 +147,8 @@ export async function runTeardownFlow<R, A, Res>(
     deps.onStart?.()
     const auth = await deps.loadAuth(facts.record)
     if (!auth) return { cancelled: false, result: spec.failure(deps.keyMissingMessage) }
-    return { cancelled: false, result: await deps.invoke(projectDir, auth, invokeOpts, facts.record) }
+    const result = await deps.invoke(projectDir, auth, invokeOpts, facts.record)
+    return deps.reportShown === true ? { cancelled: false, result, shownPlacements } : { cancelled: false, result }
   } finally {
     end()
   }
@@ -139,6 +167,8 @@ export function electronFlowDeps<R, A, Res>(projectDir: string, spec: TargetSpec
   onStart?: () => void
   /** 入口の門（RunTeardownFlowDeps.hasWork）。プロジェクトの削除の残りの段だけが渡す（0.6.24 R4-e）。 */
   hasWork?: (record: R) => boolean
+  /** 結果に、確認で見せた保存場所の組も付ける（RunTeardownFlowDeps.reportShown）。プロジェクトの削除の HANAMII の段だけが渡す。 */
+  reportShown?: boolean
 }): RunTeardownFlowDeps<R, A, Res> {
   return {
     loadFacts: () => loadTeardownFacts(projectDir, spec, electronTeardownFactsApi()),
@@ -150,6 +180,7 @@ export function electronFlowDeps<R, A, Res>(projectDir: string, spec: TargetSpec
     keyMissingMessage: entry.keyMissingMessage,
     ...(entry.onStart ? { onStart: entry.onStart } : {}),
     ...(entry.hasWork ? { hasWork: entry.hasWork } : {}),
+    ...(entry.reportShown === true ? { reportShown: true } : {}),
   }
 }
 

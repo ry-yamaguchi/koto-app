@@ -126,10 +126,10 @@ describe('F-1 専有型の削除の呼び口は1つずつ', () => {
 
   it('★★ 3点セット（main・preload・global.d.ts）が同じ形: opts は必須の { confirmed: boolean; shownPlacements }、結果に remainingBuckets・skippedBuckets を持つ', () => {
     const d = code(GLOBAL_DTS)
-    expect(d).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{')
+    expect(d).toContain('teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }): Promise<{')
     expect(d).toContain('remainingBuckets?: string[]')
     expect(d).toContain('skippedBuckets?: string[]')
-    expect(code(PRELOAD)).toContain('teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>')
+    expect(code(PRELOAD)).toContain('teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }) =>')
     expect(code(PRELOAD)).toContain("ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts)")
     // opts が任意（`?`）の旧い形は、削除の口に残っていない（作成の `opts?: { confirmed?: boolean }` は別の口）
     expect(d).not.toMatch(/teardown\(projectDir: string, auth: \{[^)]*\}, opts\?:/)

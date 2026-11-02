@@ -343,9 +343,9 @@ describe('10. ChatPanel: 旧 chatStorage の読み書きがもう無い・デバ
     expect(src).not.toContain('saveProjectChat(')
   })
 
-  it('新しい chatConvClient.ts（loadConversationView / makeConvClient）を使っている', () => {
+  it('新しい chatConvClient.ts（loadConversationChecked / makeConvClient）を使っている', () => {
     expect(src).toContain("from '../chatConvClient'")
-    expect(src).toContain('loadConversationView(projectDir)')
+    expect(src).toContain('loadConversationChecked(projectDir)')
     // B-1a: makeConvClient はもう画面へのローカル反映を受け取らない（applyOpLocally を渡さない）
     expect(src).toContain('makeConvClient(projectDir)')
     expect(src).not.toContain('makeConvClient(projectDir, applyOpLocally)')

@@ -1530,7 +1530,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       if (stale) return
       setTeardownView(view)
       // 公開記録（publish.targets）は**画面では消さない**（2026-10-08）。main の apprunDedicated:teardown が、
-      // 保存場所まで片づいた回に1回だけ消している（📡 の 🗑 から押しても同じ1か所）。
+      // 保存場所まで片づいた回に1回だけ消している（何も消さなかった回は消さない。📡 の 🗑 から押しても同じ1か所）。
       // 画面がするのは、開いている画面への知らせと、記録の取り直しだけ。通知はこの画面の購読（onMetaChanged）も
       // 受けて同じ2つを走らせる。取り直しは下の await 側に寄せるので、その間は購読を黙らせる（指摘6-3）。
       selfMetaRefreshRef.current = true

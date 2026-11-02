@@ -327,7 +327,7 @@ describe('H3 公開先ごとに順に扱う（専有型の枝は、移しただ�
   })
 
   it('★★★ 取り消したあとも破壊が続かない: HANAMII の確認で「キャンセル」と答えたら、共用型の破棄（同じ保存場所の同じ prefix のデータを消す）へ進まない。失敗は「キャンセルした」の1件で、あとの公開先の名前を挙げる', async () => {
-    // 並びは publishRecord.ts の TARGET_ORDER どおり（hanamii が sakura-apprun より前）。
+    // 並びは shared/publishMeta.ts の TARGET_ORDER どおり（hanamii が sakura-apprun より前）。
     const c = fakeConfirm(false)
     const failed = await run(['hanamii', 'sakura-apprun', 'sakura-apprun-dedicated'], c.confirm)
     expect(failed).toEqual([`${HANAMII}: 破棄をキャンセルしました。${PUBLISH_TARGET_LABEL['sakura-apprun']}・${PUBLISH_TARGET_LABEL['sakura-apprun-dedicated']}の破棄も始めていません`])

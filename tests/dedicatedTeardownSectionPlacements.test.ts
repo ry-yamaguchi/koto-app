@@ -95,4 +95,31 @@ describe('手順6の節: 保存場所の読み込み（💾 の行）', () => {
     expect(b.text()).not.toContain('💾')
     expect(b.text()).toContain('すべて削除する')
   })
+
+  it.each([
+    ['ok:false', async () => ({ ok: false })],
+    ['例外', async () => { throw new Error('読めない') }],
+  ] as Array<[string, () => Promise<unknown>]>)('★★★ A から B へ切り替えて、B の保存場所を読めなかった回（%s）は、A の保存場所の 💾 の行を B に出し続けない', async (_name, failB) => {
+    placementImpl = async (dir: string) => dir === '/tmp/proj-a'
+      ? { ok: true, placements: [{ bucket: 'koto-data-of-a', prefix: 'projects/x/', shared: true }] }
+      : failB()
+    const v = mount('/tmp/proj-a')
+    await until(() => v.text().includes('💾 保存場所『koto-data-of-a』'), 'A の保存場所が出ない')
+    v.setProjectDir('/tmp/proj-b')
+    await settle(); await settle()
+    expect(v.text(), 'A の保存場所が B の画面に出続けた（消えるものを取り違える）').not.toContain('koto-data-of-a')
+    expect(v.text()).not.toContain('💾')
+    expect(v.text()).toContain('すべて削除する')
+  })
+
+  it('★★ 同じプロジェクトで保存場所を用意した直後の読み直しが読めなかった回は、いまの一覧を消さない（捨てるのはプロジェクトが変わったときだけ）', async () => {
+    let n = 0
+    placementImpl = async () => (++n === 1 ? { ok: true, placements: [{ bucket: 'koto-data-of-a', prefix: 'projects/x/', shared: true }] } : { ok: false })
+    const v = mount('/tmp/proj-a')
+    await until(() => v.text().includes('💾 保存場所『koto-data-of-a』'), 'A の保存場所が出ない')
+    ;(globalThis as any).window.dispatchEvent(new Event('sakura:storage-prepared'))
+    await until(() => n === 2, '読み直さない')
+    await settle(); await settle()
+    expect(v.text()).toContain('💾 保存場所『koto-data-of-a』')
+  })
 })

@@ -57,6 +57,8 @@ export type StorageStageOut = {
   keptWhy: ReturnType<typeof keptBucketReasonFields>
   /** このプロジェクトのデータを実際に消した保存場所が1件でもあるか（複製が同じ prefix を持つため残した回〔keptData〕は数えない）。 */
   dataDeleted: boolean
+  /** 片づけた保存場所ごとの結果（`keptOnlyOf` の材料。保存場所が無い回は空）。 */
+  done: ReadonlyArray<{ keptData?: true }>
   /** 記録に残す鍵の ID（無効にできて外した回は null）。 */
   keyKept: string | null
   failure: StorageStageFailure | null
@@ -76,6 +78,15 @@ async function revokeRecordedKey(creds: CloudCredentials, permissionId: string):
 /** 名前による鍵の一括の無効化を果たす責任がある回か（アプリがあった回、または前の回が果たさずに止まった印がある回）。 */
 const sweepOwedBy = (hadApp: boolean, state: EnvState): boolean => hadApp || state.meta?.keySweepPending === 'apprun'
 
+/**
+ * 記録の鍵が残っているか（純関数）。`state.meta.storagePermissionId`（発行した鍵の ID）か、`keySweepPending`（前の回が名前での鍵の一括の無効化を果たさずに止まった印）のどちらかがあれば true。
+ * 読めない形の値も true に倒す（「鍵は無い」と言い切れるのは、どちらも空のときだけ）。
+ */
+export function keyRecordedOf(state: Pick<EnvState, 'meta'> | null | undefined): boolean {
+  const meta = state?.meta
+  return !!meta?.storagePermissionId || !!meta?.keySweepPending
+}
+
 /** 3. 保存場所。候補は env.json の同意済み全件 + state にだけあるもの。そのうち確認で見せたものを、最後に消す。 */
 export async function runStorageStage(i: StorageStageIn): Promise<StorageStageOut> {
   const { creds, projectDir, placements, hadApp, recordedKey, keyGuide } = i
@@ -86,6 +97,7 @@ export async function runStorageStage(i: StorageStageIn): Promise<StorageStageOu
   let kept: string[] = []
   let keptWhy: ReturnType<typeof keptBucketReasonFields> = {}
   let dataDeleted = false
+  let done: ReadonlyArray<{ keptData?: true }> = []
   let keyKept: string | null = recordedKey
   let failure: StorageStageFailure | null = null
   if (placements.length > 0) {
@@ -95,6 +107,7 @@ export async function runStorageStage(i: StorageStageIn): Promise<StorageStageOu
       const st = await teardownStorageForProject({ creds, projectDir, permissionId: recordedKey, sweepKeysFor: owed ? 'apprun' : null, placements, shown: i.shown })
       if (st.reason !== 'none') {
         dataDeleted = st.done.some(b => !b.keptData)
+        done = st.done
         lines.push(...st.done.map(b => storageTeardownDoneLine(b.bucket, b.note, b.keptData)), ...keyWarningLines(st.warnings, keyGuide))
         kept = st.done.filter(b => !b.deletedBucket).map(b => b.bucket)
         keptWhy = keptBucketReasonFields(st.done)
@@ -129,7 +142,7 @@ export async function runStorageStage(i: StorageStageIn): Promise<StorageStageOu
   }
   // 一括の無効化を果たす責任がある回が、果たさずに止まった（見せていない分・途中の失敗・例外）。押し直しで果たせるよう、印を立てる（アプリが無く印も無い回には立てない）
   if (failure && owed) cur = { ...cur, meta: { ...cur.meta, keySweepPending: 'apprun' } }
-  return { cur, lines, kept, keptWhy, dataDeleted, keyKept, failure }
+  return { cur, lines, kept, keptWhy, dataDeleted, done, keyKept, failure }
 }
 
 /**

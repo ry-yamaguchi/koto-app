@@ -15,8 +15,12 @@
 
 import { bucketNamesText } from '../../shared/teardownSupport'
 
-/** 画面が確認で見せた保存場所1件（名前と prefix の組）。prefix が無いものは画面が `''` にして運ぶ。 */
-export type ShownPlacement = { bucket: string; prefix: string }
+/**
+ * 画面が確認で見せた保存場所1件（名前と prefix の組）。prefix が無いものは画面が `''` にして運ぶ。
+ * `keepData: true` は、確認が「消しません」と言った保存場所（同じデータを使うフォルダがいる・確かめられなかった）にだけ付く。付いていれば、main は記録がいま何と言っていても
+ * データにもバケットにも鍵にも触れずに残す（`mustKeepDataOf`）。付かない保存場所は今までどおり、`teardownPlanFor` が決める。
+ */
+export type ShownPlacement = { bucket: string; prefix: string; keepData?: true }
 
 /** 消さなかった理由。`changed` … 見せた一覧はあるが、いまの記録の保存場所がその中に無い（確認のあとで記録が変わった）。`unnamed` … 見せた一覧が空（名前を挙げられなかった）。 */
 export type SkipReason = 'changed' | 'unnamed'
@@ -24,7 +28,9 @@ export type SkipReason = 'changed' | 'unnamed'
 /**
  * renderer から渡された値（IPC の引数。形は信用しない）を、見せた保存場所の一覧に読む。
  * 配列で、どの要素も `bucket` と `prefix` が文字列のときだけ通す。**それ以外は `null`**（「1件も見せていない」と扱う）。
- * 空の配列は `[]`（見せたものが無い）。要素は `{ bucket, prefix }` だけに作り直す（余計な項目は運ばない）。
+ * 空の配列は `[]`（見せたものが無い）。要素は `{ bucket, prefix }` に作り直す（余計な項目は運ばない）。
+ * 運ぶ項目は `keepData` だけで、**`=== true` のときだけ** `keepData: true` を付ける（`false`・無いものは付けない＝キーも作らない）。
+ * `keepData` が真偽値でも無くもない値（`1`・`'true'`・オブジェクトなど）は壊れた値として、全体を `null` にする（消さない側。読めない印を「消してよい」に倒さない）。
  */
 export function parseShownPlacements(x: unknown): ShownPlacement[] | null {
   if (!Array.isArray(x)) return null
@@ -33,11 +39,21 @@ export function parseShownPlacements(x: unknown): ShownPlacement[] | null {
   for (let i = 0; i < x.length; i++) {
     const e: unknown = x[i]
     if (!e || typeof e !== 'object') return null
-    const { bucket, prefix } = e as { bucket?: unknown; prefix?: unknown }
+    const { bucket, prefix, keepData } = e as { bucket?: unknown; prefix?: unknown; keepData?: unknown }
     if (typeof bucket !== 'string' || typeof prefix !== 'string') return null
-    out.push({ bucket, prefix })
+    if (keepData !== undefined && typeof keepData !== 'boolean') return null
+    out.push(keepData === true ? { bucket, prefix, keepData: true } : { bucket, prefix })
   }
   return out
+}
+
+/**
+ * この保存場所は、確認が「消しません」と言ったものか（見せた組の中に、名前と prefix の**両方**が一致して `keepData: true` のものが1件でもある）。
+ * 同じ組が2回あり片方だけ `keepData` のときも、残す側に倒す。`shown` が `null`（形が違う）なら false（そもそも見せていないので、消す前に `selectShown` が飛ばす）。
+ * 消す側には働かない: false は「画面は何も言っていない」であり、消してよいことを言わない（消すかは今までどおり `teardownPlanFor` が決める）。
+ */
+export function mustKeepDataOf(shown: readonly ShownPlacement[] | null, p: { bucket: string; prefix: string }): boolean {
+  return (shown ?? []).some(s => s.keepData === true && s.bucket === p.bucket && s.prefix === p.prefix)
 }
 
 /**

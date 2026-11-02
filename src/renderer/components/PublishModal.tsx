@@ -23,6 +23,7 @@ import { readStageTimings } from '../../shared/stageTiming'
 import { warningLine, warningsNotRepeatedIn } from '../../shared/opsText'
 import { stoppedNoticeHeadline } from '../../shared/inFlightOps'
 import { resultCallOf } from '../../shared/teardownResult'
+import { keptOnlyCardHeadline } from '../../shared/teardownCall'
 import { opWordFor } from '../../shared/opWord'
 
 // 「🚀 公開」モーダル：
@@ -591,7 +592,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
               >
                 <p className="text-sm font-semibold text-ink">🌸 HANAMII（国産のクラウドサービス）</p>
-                <p className="text-xs text-ink-muted mt-0.5">サーバーで動き続けるアプリ（Node.js など）も公開できます。データは100%国内です。</p>
+                <p className="text-xs text-ink-muted mt-0.5">サーバーで動き続けるアプリ（Node.js など）も公開できます。データは国内です。</p>
               </button>
               <button
                 onClick={() => setTarget('vercel')}
@@ -786,9 +787,11 @@ export function OpFinishedCard({ rec }: { rec: ProjectOpRecordShape }) {
         ? `⏳ ${what}は途中です`
         : call === 'failed'
           ? `⚠️ ${what}に失敗しました`
-          : call === 'doneWithWarnings'
-            ? `⚠️ ${what}は終わりましたが、確認が必要なことがあります`
-            : `✅ ${what}が終わりました`
+          : call === 'doneKeptOnly'
+            ? keptOnlyCardHeadline(what)
+            : call === 'doneWithWarnings'
+              ? `⚠️ ${what}は終わりましたが、確認が必要なことがあります`
+              : `✅ ${what}が終わりました`
   const when = call !== 'stoppedByQuit' && rec.finishedAt ? formatPublishedAt(new Date(rec.finishedAt).toISOString()) : null
   const needsAttention = call !== 'done'
   return (

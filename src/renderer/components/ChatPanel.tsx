@@ -15,18 +15,20 @@ import { useModels } from '../hooks/useModels'
 import { useClaudeModels } from '../hooks/useClaudeModels'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { IDE_CONTEXT, buildProjectContext, ragStatusContext } from '../aiContext'
-import { getTargetProfile, shouldAutoCheckTarget } from '../targetProfiles'
+import { onTargetChanged, type TargetChangedDetail } from '../targetCheck'
+import { useTargetCheck } from '../hooks/useTargetCheck'
+import TargetCheckButton from './TargetCheckButton'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
-import { formatChatError } from '../aiTools'
+import { decideGreeting, runGreeting } from '../greeting'
+import { isGreetOnOpenEnabled } from '../greetSetting'
 import { parseRagSettings, autoRagBlock, type RagSettings } from '../ragContext'
-import { buildPublishStatusRows, parseApprunLegacy, formatPublishedAt, isStale } from '../publishStatus'
 import ModelSelect from './ModelSelect'
 import BrainToggle from './BrainToggle'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeModel, claudeModelShortLabel, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
-import { loadConversationView, makeConvClient, type Op } from '../chatConvClient'
+import { loadConversationView, loadConversationChecked, makeConvClient, type Op } from '../chatConvClient'
 import { applyToMessages, viewSyncDecision } from '../../shared/chatEvents'
-import { takeNewProjectRequest } from '../newProjectRequest'
+import { takeNewProjectRequest, hasNewProjectRequest } from '../newProjectRequest'
 import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, mediaTypeOf, type AssetPurpose } from '../../shared/assetImport'
 import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
 import { CHAT_TEXT_WRAP } from '../textWrap'
@@ -98,6 +100,9 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // あいさつ（greet）専用のローディング／中断。送信パイプラインの状態は useAiChat が持つ。
   const [greetLoading, setGreetLoading] = useState(false)
   const greetAbortRef = useRef<(() => void) | null>(null)
+  // 会話の読み込みが済んで、読めたプロジェクト。読み込み前の messages は前のプロジェクトのもの（または空）なので、
+  // これが projectDir と同じになるまで、あいさつは会話を空と読まない。
+  const [convLoadedDir, setConvLoadedDir] = useState<string | null>(null)
   const [model, setModel] = useState(getDefaultModel('ide'))
   // どのプロジェクトの文脈かを dir 付きで保持する。
   // （dir を持たないと、プロジェクト切替直後に「前のプロジェクトの文脈」であいさつしてしまう）
@@ -273,6 +278,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const greetedRef = useRef<string>('')
+  // いま開いているプロジェクト。あいさつの返事を待つ間に切り替わったかを、呼ぶたびに読むための置き場
+  // （effect の中の projectDir は、始めた時点の値のまま古くなる）。
+  const projectDirRef = useRef(projectDir)
+  projectDirRef.current = projectDir
   // 新規プロジェクト作成の依頼（sakura-new-project-request）: イベントが projectDir の切替より
   // 先に届くことがあるため、いったんここに保留してから dir が一致した時点で送る。
   const pendingNewProjectRef = useRef<{ dir: string; prompt: string } | null>(null)
@@ -351,7 +360,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
 
 
   // projectCtx は state（再描画・greet発火用）と ref（送信時の即時参照用）の両方で持つ。
-  // setState は非同期のため、「文脈を読み直した直後に send する」流れ（公開先切替の自動診断）では
+  // setState は非同期のため、「文脈を読み直した直後に send する」流れ（公開先の確認ボタン・新規作成の依頼）では
   // ref を同期更新しておかないと旧公開先のプロファイルでシステムプロンプトが組まれてしまう。
   const projectCtxRef = useRef<{ dir: string; ctx: string } | null>(null)
   const applyProjectCtx = useCallback((v: { dir: string; ctx: string } | null) => {
@@ -587,11 +596,15 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     // ツール作業のため切り替えた割り振り先を、会話中は維持する」という routedModel 本来の
     // 意味に反する）。切替先の routedModel は、切替先の登録鍵からそのまま正しく読み出される。
     clientRef.current = null // 切替では前の client の完了を待たず、ここで捨てる（main 側は projectDir ごとに独立）
+    setConvLoadedDir(null)
     if (!projectDir) { setMessages([]); return }
-    loadConversationView(projectDir).then(msgs => {
+    loadConversationChecked(projectDir).then(({ messages: msgs, readable }) => {
       if (cancelled) return
       setMessages(msgs) // ストアから来たものを映すだけ（ops は送らない）
       clientRef.current = makeConvClient(projectDir)
+      // 読み込み済みの印は、あいさつの判断が使う。client を付けたあとに立てる（その前は書き換えが main へ届かない）。
+      // 読めなかった回は立てない（保存済みの会話があるかが分からないので、あいさつを出さない側へ倒す）。
+      if (readable) setConvLoadedDir(projectDir)
     })
     return () => { cancelled = true }
   }, [projectDir, applyOpLocally])
@@ -638,8 +651,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   }, [projectDir])
 
   // 新規プロジェクト作成（NewProjectModal.tsx）からの依頼をチャットへ流し込む。
-  // sakura-target-changed ハンドラ（下）と同じ作法: buildProjectContext を読み直してから
-  // chat.send() で送ることで、自動送信でもユーザーが打ったのと同じ扱いでチャット欄に見えるようにする
+  // buildProjectContext を読み直してから chat.send() で送ることで、自動送信でも
+  // ユーザーが打ったのと同じ扱いでチャット欄に見えるようにする
   // （透明性。設計意図はモーダルで待たない・失敗しても「やり直して」と言える・出力上限で切れない・
   // ツール非対応モデルの自動切替が効く・雛形生成の経路が1本になる、の5点。詳細は newProjectRequest.ts）。
   //
@@ -651,10 +664,9 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // が条件のため）イベントの受け手が存在しない＝取りこぼす。newProjectRequest.ts のモジュール退避
   // （takeNewProjectRequest）でこのケースも拾い直す（下の consume 内）。
   //
-  // greet() との衝突防止: この effect は greet を発火させる effect（すぐ下）より前で定義しているため、
-  // 同一コミット内では常にこちらが先に実行される（Reactはコンポーネント内のeffectを宣言順に実行する）。
-  // 依頼を送ると決めた時点で greetedRef.current を同期的に埋めるので、直後に評価される greet 側の
-  // 効果は「あいさつ済み」とみなして何もしない＝あいさつと依頼が二重に走ることはない。
+  // あいさつとの衝突防止: 依頼が保留中の間は、あいさつの判断（decideGreeting。すぐ下の effect）が
+  // newProjectPending で止める。依頼を送ると決めた時点では greetedRef.current も同期的に埋めるので、
+  // 保留が解けたあとも、あいさつと依頼が二重に走ることはない。
   useEffect(() => {
     const consume = () => {
       if (!projectDir || sentNewProjectDirRef.current === projectDir) return
@@ -682,7 +694,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       if (!isChatUsable(!!apiKey, claudeActive)) { pendingNewProjectRef.current = { dir: projectDir, prompt }; return }
       sentNewProjectDirRef.current = projectDir
       pendingNewProjectRef.current = null
-      greetedRef.current = projectDir // greet() を抑止（この依頼だけを送る。上のコメント参照）
+      greetedRef.current = projectDir // あいさつを抑止（この依頼だけを送る。上のコメント参照）
       void (async () => {
         const ctx = await buildProjectContext(projectDir)
         applyProjectCtx({ dir: projectDir, ctx }) // ref も同期更新→直後の send が最新の文脈で組まれる
@@ -701,17 +713,42 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey, claudeActive, projectDir, chat, aiRoot])
 
-  // プロジェクトを開いたら、AI側から最初のあいさつ（要約＋次にやることの質問）を返す
-  // ※ projectCtx.dir の一致を必ず確認する（古いプロジェクトの文脈であいさつしないため）
-  // apiKeyが無くても claudeActive（モードB）なら固定のあいさつ文だけ出す（greet()内で分岐、APIは呼ばない）。
+  // プロジェクトを開いたら、AI側から最初のあいさつ（要約＋次にやることの質問）を返す。
+  // 出すかどうかの判断は decideGreeting の1か所だけ（greeting.ts）。プロジェクトを開く入口は
+  // いくつもあるが、どれも projectDir を変えてこの effect に届くので、入口ごとには止めない。
+  // apiKeyが無くても claudeActive（モードB）なら固定のあいさつ文だけ出す（APIは呼ばない）。
   useEffect(() => {
-    if (!isChatUsable(!!apiKey, claudeActive) || !projectDir || !projectCtx || projectCtx.dir !== projectDir) return
-    if (messages.length > 0 || isLoading) return
-    if (greetedRef.current === projectDir) return
-    greetedRef.current = projectDir
-    void greet()
+    const decision = decideGreeting({
+      chatUsable: isChatUsable(!!apiKey, claudeActive),
+      hasApiKey: !!apiKey,
+      projectDir,
+      ctxDir: projectCtx?.dir ?? null,
+      messagesLength: messages.length,
+      conversationLoaded: convLoadedDir === projectDir,
+      isLoading,
+      greetedDir: greetedRef.current,
+      enabled: isGreetOnOpenEnabled(),
+      newProjectPending: !!projectDir && (pendingNewProjectRef.current?.dir === projectDir || hasNewProjectRequest(projectDir)),
+    })
+    if (decision.markGreeted && projectDir) greetedRef.current = projectDir
+    if (decision.action === 'none') return
+    if (!projectDir) return
+    void runGreeting(
+      { apiKey, model, projectContext: ctxFor(projectDir), dir: projectDir },
+      {
+        checkBeforeRequest,
+        chatStream: (req, onDelta, onAbort) => window.electronAPI.sakura.chatStream(req, onDelta, onAbort),
+        recordUsage,
+        estimateTokens,
+        applyOp,
+        setLoading: setGreetLoading,
+        setAbort: (abort) => { greetAbortRef.current = abort },
+        warn: (detail) => console.warn('greet failed:', detail),
+        currentDir: () => projectDirRef.current,
+      },
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, claudeActive, projectDir, projectCtx, messages.length])
+  }, [apiKey, claudeActive, projectDir, projectCtx, messages.length, convLoadedDir])
 
   useEffect(() => {
     // scrollIntoView は祖先（文書全体）まで横スクロールさせることがあり、コンテンツが窓幅を超えていると
@@ -762,155 +799,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     return () => window.removeEventListener('sakura:fix-with-ai', h)
   }, [chat])
 
-  // 公開先が変更された直後に自動診断した target（重複発火・多重送信の防止用）
-  const lastCheckedTargetRef = useRef<string | null>(null)
-
-  // 公開先が変更されたら、条件を満たす場合はAIへ「この公開先でそのまま動くか」の診断を自動依頼する
-  // （ユーザーが打ったのと同じ扱いでチャット欄に見える＝透明性を保つ）。
-  // 条件を満たさない場合（local/other・APIキー未登録・プロジェクト未選択・実行中・同一targetの重複発火）は、
-  // 従来どおりの軽い案内バブルのみを出す。
+  // 公開先を変えたあとの確認（targetCheck.ts）。変えただけでは AI へ送らず、吹き出しを出す。
+  // AI へ送るのは、吹き出しのボタンを押したとき（targetCheck.press）だけ。
+  const targetCheck = useTargetCheck({
+    projectDir, apiKey, claudeActive, isBusy: isLoading, applyOp, applyProjectCtx, send: chat.send,
+  })
   useEffect(() => {
-    const h = async (e: Event) => {
-      const target = (e as CustomEvent).detail?.target as string | undefined
-      const label = getTargetProfile(target).label
-      const autoCheck = shouldAutoCheckTarget({
-        target,
-        apiKey,
-        projectDir,
-        isLoading,
-        lastCheckedTarget: lastCheckedTargetRef.current,
-      })
-      if (!autoCheck) {
-        applyOp({
-          kind: 'append',
-          msg: {
-            role: 'assistant',
-            content: `ℹ️ 公開先を「${label}」に変えました。いまの作りのまま動くか心配なときは、「この公開先で動くか確認して」と送ってください（公開先によっては作り直しが要ることがあります）。`,
-          },
-        })
-        return
-      }
-      lastCheckedTargetRef.current = target as string
-      // buildProjectContext（公開先プロファイル注入済み）を読み直してから送る。
-      // ※ projectDir 依存の effect による projectCtx 更新を待たず、ここで直接読み直すことで
-      //   診断メッセージの時点で確実に新しい公開先の前提がシステムプロンプトに入るようにする。
-      if (projectDir) {
-        const ctx = await buildProjectContext(projectDir)
-        applyProjectCtx({ dir: projectDir, ctx }) // ref も同期更新→直後の send が新プロファイルで組まれる
-      }
-      // 切替先に公開実績があるなら答えは既に分かっている（現に動いている）ので、AIに聞かず決定的に案内する。
-      // ここでAIに「動くか」を質問すると、事実と矛盾する ⚠️ を出す余地が残るため（LLMの保守的判断）、
-      // AI診断は「実績が無い＝本当に答えが未知」の公開先に切り替えたときだけ行う。
-      // AppRun は publish.targets 導入前の構築でも .sakura-cloud/state.json から実績を救済する。
-      if (projectDir) {
-        let meta: any = null
-        try { meta = JSON.parse(await window.electronAPI.fs.readFile(`${projectDir}/.sakuraide.json`)) } catch { /* メタ無し */ }
-        let apprunLegacy: { createdAt: string | null } | null = null
-        try {
-          apprunLegacy = parseApprunLegacy(JSON.parse(await window.electronAPI.fs.readFile(`${projectDir}/.sakura-cloud/state.json`)))
-        } catch { /* state 無し＝AppRun未構築 */ }
-        const row = buildPublishStatusRows(meta?.publish, { apprunLegacy }).find(r => r.target === target)
-        if (row) {
-          const when = row.dateUnknown ? '' : (formatPublishedAt(row.publishedAt) ?? '')
-          // 公開後にコードが変わっていれば一言添える（判定は latestChangeAt との比較）
-          let staleNote = ''
-          try {
-            const r = await window.electronAPI.fs.latestChangeAt(projectDir)
-            if (r.ok && !row.dateUnknown && isStale(row.publishedAt, r.latest)) {
-              staleNote = '\n※ 公開後にコードが変更されています。心配な場合は「この公開先で動くか確認して」と聞いてください。'
-            }
-          } catch { /* 判定不能なら注記なし */ }
-          applyOp({
-            kind: 'append',
-            msg: {
-              role: 'assistant',
-              content: `✅ 公開先を「${label}」に変更しました。この公開先には${when ? `${when} に` : ''}公開した実績があります。今のコードのまま【公開】から再公開できます。${staleNote}`,
-            },
-          })
-          return
-        }
-      }
-      // W-49: 自分の発言として並ぶ吹き出しなので、list_files/read_file のような内部名や
-      // 「公開先プロファイルの推奨事項」のような専門語を出さず、短い言葉で同じ依頼を伝える
-      // （決定: 案2＝隠さず短く書き直す。全文表示という作者の透明性方針は変えない）。
-      const prompt =
-        `公開先を「${label}」に変更しました。今のコードがこの公開先でそのまま動くか確認してください。` +
-        '結論を先に一言で述べてください: ' +
-        '「✅ そのまま動きます」／「✅ そのまま動きます（任意の改善あり）」／「⚠️ このままでは動きません」。' +
-        '⚠️ は動かない確実な根拠（必須ファイルの欠落・この環境が対応しない言語など）がある場合だけにし、' +
-        '動くけれど理想形でない点は「任意の改善」として1〜2行で簡潔に添えるだけにしてください。' +
-        '公開先の設定で吸収できる事柄は「動かない根拠」にしないでください。' +
-        '対応が必要な場合は、既存ファイルの書き換えではなく不足ファイルの追加を優先した最小の提案をし、私の承認を待ってから実行してください。'
-      void chat.send(prompt, [])
-    }
+    const h = (e: Event) => { void onTargetChanged((e as CustomEvent<TargetChangedDetail>).detail, targetCheck.ports) }
     window.addEventListener('sakura-target-changed', h)
     return () => window.removeEventListener('sakura-target-changed', h)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, projectDir, isLoading, chat, applyOp])
-
-  // AIからの最初のあいさつ
-  const greet = async () => {
-    // AI Engineキーが無い（モードB＝Claudeのみ）場合は、greetのためだけにAPIを呼ばず固定文を出す。
-    // Claude自身へのあいさつ生成委譲はしない（greetはAI Engineクライアント専用の従来経路のため）。
-    if (!apiKey) {
-      applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: 'こんにちは！つくりたいものを日本語で教えてください。' }] })
-      return
-    }
-    const budget = checkBeforeRequest(apiKey)
-    if (!budget.allowed) return // 上限超過時はあいさつをスキップ
-    // W-21（2026-09-27決定・別案）: allowed:true のまま warning が付くことがある（上限は超えたが
-    // 「止める」設定がオフ）。あいさつの間は下の replaceAll が吹き出しを丸ごと差し替えるため、
-    // ここでは控えておき、すべて出し終えた finally で末尾に付け足す（止めない・知らせるだけ）。
-    const budgetWarning = budget.warning
-    setGreetLoading(true)
-    const kickoff =
-      'これからこのプロジェクトの開発を始めます。まず、把握した内容（プロジェクトの目的と構成）を1〜2文で要約し、' +
-      '続けて「次に何をしたいか」を私に1つ質問してください。この最初の返答ではコードは出力せず、まず会話で確認してください。'
-    const ctx = ctxFor(projectDir)
-    const sys = IDE_CONTEXT + (ctx ? '\n\n' + ctx : '')
-    try {
-      let text = ''
-      // ⚠️ ここは kind:'replaceLast' ではなく 'replaceAll' を使う。replaceLast は
-      // applyToMessages が stamp() を通す（at が無ければ現在時刻を付ける）ため、この吹き出しに
-      // 今まで無かった時刻表示（吹き出し下のホバー時刻・日付区切り）が新しく出てしまう
-      // （元の実装は素の setMessages で at を一切付けていなかった。「振る舞いを変えない」を
-      //  優先し、stamp を経由しない replaceAll で同じ中身をそのまま送る＝仕様書で迷った点）。
-      applyOp({ kind: 'replaceAll', messages: [{ role: 'user', content: kickoff, hidden: true }, { role: 'assistant', content: '' }] })
-      // timedOut も受け取る（2026-09-23 検分の指摘5・15）。runSakuraStream は時間切れのとき
-      // **throw せず** `{ usage: null, timedOut }` を return するので、下の catch には入らない。
-      // 受け取らないと、AI Engine が黙ったときに**空の吹き出しのまま何も書かれずに**終わる
-      // （直す前は最悪30分固まったのち catch で説明が出ていたので、説明が消えるのは後退）。
-      const { usage, timedOut } = await window.electronAPI.sakura.chatStream(
-        {
-          apiKey,
-          model,
-          messages: [{ role: 'system', content: sys }, { role: 'user', content: kickoff }],
-          maxTokens: 700,
-        },
-        (delta) => {
-          text += delta
-          applyOp({ kind: 'replaceAll', messages: [{ role: 'user', content: kickoff, hidden: true }, { role: 'assistant', content: text }] })
-        },
-        (abort) => { greetAbortRef.current = abort },
-      )
-      if (timedOut) {
-        // 黙って終わらせない。W-103: 時間切れの定型文（streamTimeoutMessage）は「もう一度お試し
-        // ください」で終わり、その直後に続けていた「つくりたいものを教えてください」と並ぶと
-        // 「もう一度」に対応する操作が無いあいさつでは何を試せばいいか迷う。あいさつ用の短い1文だけにする。
-        applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: '⏱ AIからの返事が届かなかったので、あいさつは省きました。つくりたいものを、そのまま送ってください。' }] })
-      }
-      recordUsage(apiKey, model, usage?.prompt_tokens ?? estimateTokens(sys + kickoff), usage?.completion_tokens ?? estimateTokens(text))
-    } catch (e: any) {
-      // 所見22: あいさつ失敗は致命的でないため、生エラーは出さず穏当な固定文言にフォールバックする。
-      // 原因把握のためログにだけ整形済みエラー（formatChatError）を残す。
-      console.warn('greet failed:', formatChatError(e?.message ?? String(e)))
-      applyOp({ kind: 'replaceAll', messages: [{ role: 'assistant', content: '（あいさつを準備できませんでした。つくりたいものを教えてください。）' }] })
-    } finally {
-      greetAbortRef.current = null
-      setGreetLoading(false)
-      if (budgetWarning) applyOp({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: budgetWarning } })
-    }
-  }
+  }, [targetCheck.ports])
 
   /**
    * 送信。**印が付いていれば、ここで画像をプロジェクトへ入れる**（2026-08-19）。
@@ -1164,6 +1062,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
                         className="mt-2 sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
                       >▶ 続ける</button>
                     )}
+                    {/* 公開先を変えたあとの案内に付くボタン。押したときだけ AI へ送る（応答中は押せない）。 */}
+                    <TargetCheckButton offered={msg.offerTargetCheck} dir={projectDir} spent={targetCheck.spent} at={msg.at} isLoading={chat.isLoading} onPress={() => void targetCheck.press()} />
                   </div>
                   {/* 触れたら吹き出しの下に時刻。OS のツールチップ（title）は
                       出るまでに間があり、少し動かすと消えるのでやめた（2026-08-26 実機）。 */}

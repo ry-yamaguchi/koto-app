@@ -28,7 +28,7 @@ export type Fake = {
 }
 
 export const DIR = '/tmp/ws/proj-a'
-export const emptyFacts = (): ProjectDeleteFacts => ({ targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
+export const emptyFacts = (): ProjectDeleteFacts => ({ targets: [], unreadable: false, unconfirmed: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
 
 export function createDialogHarness(hooks: Hooks, fake: Fake) {
   /** 画面が呼んだ順（runningOp・exists・trash・close・deleted）と、その中身。'trash' はプロジェクトのフォルダを移す口 fs.trashProject の呼び出し（0.6.24 E-4）。汎用の fs.trash は 'fs.trash' と残す（ここへ来たら失敗）。 */

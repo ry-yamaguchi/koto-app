@@ -859,8 +859,8 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           // 受け手不在で失われるので、モジュールスコープにも退避しておき、ChatPanel が後から
           // マウントされたタイミングで拾い直せるようにする（newProjectRequest.ts 参照）。
           stashNewProjectRequest(result.root, prompt)
-          // ChatPanel.tsx の sakura-target-changed ハンドラと同じ作法（自動送信でもユーザーが打ったのと
-          // 同じ扱いでチャット欄に見える＝透明性）。projectDir の切替がまだ追いついていない場合は
+          // ChatPanel の新規作成の依頼の受け口（sakura-new-project-request）は、送った依頼を利用者が
+          // 打ったのと同じ扱いでチャット欄に見せる。projectDir の切替がまだ追いついていない場合は
           // ChatPanel 側で dir が一致するまで保留してから送る。
           window.dispatchEvent(new CustomEvent('sakura-new-project-request', { detail: { dir: result.root, prompt } }))
         }

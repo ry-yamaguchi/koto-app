@@ -12,6 +12,7 @@
 
 import { parseApprunLegacy, type PublishTargetKind } from './publishStatus'
 import { forgetPublishTargetRecord } from './projectMeta'
+import { parsePublishTargets, TARGET_ORDER } from '../shared/publishMeta'
 
 /** プロジェクトの公開記録の置き場。 */
 export function metaPath(projectDir: string): string {
@@ -34,29 +35,7 @@ export async function clearPublishRecord(projectDir: string, target: PublishTarg
   window.dispatchEvent(new Event('sakura-meta-changed'))
 }
 
-/** 公開先の並び（定義順）。 */
-const TARGET_ORDER: PublishTargetKind[] = ['hanamii', 'vercel', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-rental']
-
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
-
-/**
- * 公開記録の中身（JSON.parse 済み）から、記録のある公開先を定義順で返す。**形が読めなければ `null`**（空配列とは別の意味）。
- *
- *   ・`[]`   … 読めた結果、公開先の記録が1つも無かった（`publish` や `publish.targets` が無い場合を含む）
- *   ・`null` … 読めなかった（ファイルの中身がオブジェクトでない・`publish`／`targets` が別の型だった）
- *
- * 2つの読み口（readPublishTargets＝読めなければ空・readPublishTargetsOrThrow＝読めなければ投げる）が、同じこの判断を使う（掟10）。
- */
-function parsePublishTargets(meta: unknown): PublishTargetKind[] | null {
-  if (!isPlainObject(meta)) return null
-  const publish = meta.publish
-  if (publish === undefined || publish === null) return []
-  if (!isPlainObject(publish)) return null
-  const targets = publish.targets
-  if (targets === undefined || targets === null) return []
-  if (!isPlainObject(targets)) return null
-  return TARGET_ORDER.filter(t => !!targets[t])
-}
 
 /**
  * そのプロジェクトに残っている公開記録の公開先を返す（新しい順ではなく定義順）。
@@ -189,7 +168,7 @@ export async function readPublishTargetsWithLegacyOrThrow(projectDir: string): P
  * ・どちらのファイルも無い → `{ targets: [], unreadable: false }`（偽の警告を出さない）。
  * ・`.sakuraide.json` が読めない・JSON でない・形が違う → `{ targets: [], unreadable: true }`（state.json は読まない）。
  * ・state.json だけが読めない → **読めた分は数える**（`publish.targets`・HANAMII の projectId・専有型の ID）。落ちるのは旧い共用型だけで、
- *   `unreadable: true`。読めた分は破棄する、という約束を守る。
+ *   `unreadable: true`。プロジェクトの削除は、`unreadable` の回を止める（main も断る）ので、数えた公開先は破棄せず、箱に見せるだけ。
  */
 export async function readPublishTargetsWithLegacyChecked(projectDir: string): Promise<{ targets: PublishTargetKind[]; unreadable: boolean }> {
   // 投げない: readPublishRecordParts は読みの失敗を全部 ok:false か stateUnreadable で返し、publishTargetsWithLegacy は形が違う値にも投げない。

@@ -94,8 +94,8 @@ describe('F-1 共用型の破棄の呼び口は1つずつ', () => {
 
   it('★★ 3点セット（main・preload・global.d.ts）が同じ形: cloud の teardown は { heldByMain: true } と { confirmed, deleteRegistry, registryName }、teardownRecord が並ぶ', () => {
     const d = code('src/renderer/global.d.ts')
-    expect(d).toContain('teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> })')
-    expect(code(PRELOAD)).toContain('opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>')
+    expect(d).toContain('teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> })')
+    expect(code(PRELOAD)).toContain('opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }) =>')
     expect(d).toContain('teardownRecord(projectDir: string)')
     expect(code(PRELOAD)).toContain("ipcRenderer.invoke('cloud:teardown', projectDir, auth, opts)")
     expect(code(PRELOAD)).toContain("teardownRecord: (projectDir: string) => ipcRenderer.invoke('cloud:teardownRecord', projectDir)")

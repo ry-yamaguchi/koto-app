@@ -331,7 +331,7 @@ describe('ProjectDeleteDialog.tsx の配線（W-69・2026-09-27再検分）: 専
 
   it('専有型の記録は、開いたときに材料を読む関数（projectDeleteFacts.ts）が apprunDedicated.state を読んで facts.dedicated に入れ、ダイアログはその材料を 1 回だけ読む', () => {
     expect(factsSrc).toContain('window.electronAPI.apprunDedicated.state(dir)')
-    expect(factsSrc).toMatch(/return \{ targets, unreadable, dedicated, placements, running, sharedLeftover, sharedRegistry, twins \}/)
+    expect(factsSrc).toMatch(/return \{ targets, unreadable, unconfirmed, dedicated, placements, running, sharedLeftover, sharedRegistry, twins \}/)
     expect(dialogSrc).toContain('readProjectDeleteFacts(projectDir)')
     expect(dialogSrc.match(/readProjectDeleteFacts\(projectDir\)/g)).toHaveLength(1)
     expect(dialogSrc).toContain('.then(f => { if (!cancelled) setFacts(f) })')
@@ -359,9 +359,11 @@ describe('ProjectDeleteDialog.tsx の配線（W-69・2026-09-27再検分）: 専
   })
 
   it('確認ダイアログの赤字ブロックは、公開先が空でも plan.block があれば出る（(b)のケースで見せる文が無いままにしない）', () => {
-    // 2026-10-08 検分: 公開の記録を読めなかったときの注意（facts.unreadable）も、同じ箱の中に単独で出る。共用型の記録だけが残る回（leftoverNote）も。
+    // 公開の記録を読めない回は plan.block（record-unreadable）が止める文を出す。共用型の記録の問い合わせだけが失敗した回の弱い注意（unconfirmedShown）は、同じ箱の中に単独で出る。共用型の記録だけが残る回（leftoverNote）も。
     // 0.6.24 A-4: 先に破棄する段（shownTeardown）がある回も出す（行の無い保存場所・レジストリだけの回のチェック。出さないと行き止まりになる）
-    expect(dialogSrc).toContain("(shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (")
+    // 専有型の保存場所が全部「残ります」で止めなかった回の 💾 の行（dedicatedKeptNote）も、単独で箱を出す（専有型の行が無い回・ほかの行が名指ししない回）
+    expect(dialogSrc).toContain("(shownTargets.length > 0 || unconfirmedShown || plan.block !== null || leftoverNote !== '' || dedicatedKeptNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (")
+    expect(dialogSrc).not.toContain('facts.unreadable ||')
   })
 
   // 2026-10-08 検分: 資源の記録が空で公開記録だけが残っている行（幽霊の行）では、案内先の手順6の削除ボタンが出ない。

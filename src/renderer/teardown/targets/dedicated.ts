@@ -49,6 +49,8 @@ export const DEDICATED_TEARDOWN_WORDS: TeardownWords = {
   rowButton: '🗑 削除',
   running: '削除しています…',
   doneHeadline: '✅ すべて削除しました',
+  keptHeadline: '⚠️ 削除していません',
+  doneKeptStorageHeadline: '✅ 削除しました',
   inProgressHeadline: '⏳ 削除中です',
   failedHeadline: '⚠️ 削除できませんでした',
   factsUnreadable: '削除するものの記録を読めませんでした',
@@ -128,6 +130,10 @@ export const dedicatedTeardownSpec: TargetSpec<DedicatedTeardownRecord, { token:
   invoke: (projectDir, auth, opts) =>
     window.electronAPI.apprunDedicated.teardown(projectDir, auth, { confirmed: opts.confirmed, shownPlacements: opts.shownPlacements }),
   failure: message => ({ ok: false, executed: [], message, remaining: {} }),
+  // 記録の鍵（`storagePermissionId`）が残るか。無い（未設定・null・空の文字列）と言い切れるときだけ false。ほかの値（読めない形を含む）は残る側に倒す。
+  keyRecorded: record => !(record?.storagePermissionId === undefined || record.storagePermissionId === null || record.storagePermissionId === ''),
+  // 何も消さない回（teardown/keptNothing.ts の門）の結果。資源は何も消していないので message は空・remaining は無し（main が資源の記録の無い回に返す形）。
+  keptNothingResult: reply => ({ ...reply, message: '', remaining: {} }),
   toView: raw => toTeardownView('sakura-apprun-dedicated', raw),
   subscribeProgress: cb => window.electronAPI.apprunDedicated.onTeardownProgress(cb),
 }

@@ -23,6 +23,7 @@ import {
 } from './apprunDedicated'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import type { ApprunDedicatedRecord } from '../../shared/publishMeta'
+import { readKeptOnly } from '../../shared/keptOnly'
 import {
   readLimits, readClusters, readClusterId, readAsgId, readLoadBalancerId,
   readClusterRows, readClusterIDs, readAsgRows, readAsgIDs, readAsgIdRows, readLoadBalancerRows, readLoadBalancerIDs, readLoadBalancerIdRows,
@@ -525,8 +526,8 @@ export type TeardownFlowResult = {
    *
    * `ok` は保存場所の片づけまで含めた総合判定なので、「アプリは消えたが保存場所だけ失敗」で
    * false になる。そのとき、アプリが消えたことは `appDeleted` が言う（結果欄の管理画面への導線などが使う）。
-   * **公開記録（📡 の行）を消すかには使わない**（D1=1・0.6.22 段階3B-1。消すのは保存場所まで片づいた `ok` の回だけ。
-   * 保存場所だけ残った回は行を残し、📡 から押し直せる）。
+   * **公開記録（📡 の行）を消すかには使わない**（D1=1・0.6.22 段階3B-1。消すのは保存場所まで片づいた `ok` の回のうち、
+   * 何かを消した回だけ。保存場所だけ残った回と、何も消さなかった回〔`keptOnly`〕は行を残し、📡 から押し直せる）。
    * 立てるのは保存場所の片づけ（teardownFlow 自身は `ok` と同じ意味なので触らない）。
    */
   appDeleted?: boolean
@@ -557,12 +558,16 @@ export type TeardownFlowResult = {
   remainingBuckets?: string[]
   /** 確認で見せていない・形が違うために消さなかった保存場所（`remainingBuckets` にも入る。0.6.24 F・R1-d。共用型 `cloud:teardown` の `skippedBuckets` と同じ事実。立てるのは `ipc/apprunDedicatedTeardown.ts` の保存場所の片づけ）。 */
   skippedBuckets?: string[]
+  /** 成功した回のうち、計算資源を消さず、保存場所をデータごと全部残した回だけ true（判断は `shared/keptOnly.ts`。立てるのは `ipc/apprunDedicatedTeardown.ts` の保存場所の片づけ）。結果の見出しが「削除していません」と言い分ける。 */
+  keptOnly?: true
 }
 
 /**
  * 手順6の破棄のあと、公開記録（publish.targets['sakura-apprun-dedicated']＝📡 の行）を片づけるか（純関数）。
  *
- * **判断の基準は「保存場所まで片づいたか」**（`ok`。D1=1・0.6.22 段階3B-1）。アプリが消えても保存場所だけ残った回
+ * **判断の基準は「保存場所まで片づいたか」**（`ok`。D1=1・0.6.22 段階3B-1）。ただし、保存場所まで片づいた回でも、
+ * **何も消さなかった回（`keptOnly`）は行を残す**（見出しが「削除していません」と言うのに行が一覧から消えると、押し直す口が無くなる。
+ * 残った行は「一覧から削除」で消せる）。アプリが消えても保存場所だけ残った回
  * （`ok:false`・`appDeleted:true`）は、**行を残す**＝📡 の行の「🗑 削除」を押し直すと、残った保存場所だけを削除する
  * （HANAMII・共用型と同じ）。以前は `appDeleted ?? ok` で、保存場所だけ残っても行が消え、プロジェクトを開いて
  * 手順6から消すしかなかった。
@@ -582,11 +587,12 @@ export type TeardownFlowResult = {
  */
 export function shouldForgetPublishRecord(s: {
   hadPublishRecord: boolean
-  result: { ok: boolean; appDeleted?: boolean } | null | undefined
+  result: { ok: boolean; appDeleted?: boolean; keptOnly?: unknown } | null | undefined
 }): boolean {
   if (!s.hadPublishRecord || !s.result) return false
   // `appDeleted` は見ない（D1=1）。`ok === true` だけ: 計算資源も保存場所も片づいた回。
-  return s.result.ok === true
+  // ただし何も消さなかった回（`keptOnly`。真偽値の true だけを読む）は行を残す。見出しが「削除していません」と言うのに行が消えると、押し直す口が無くなる。
+  return s.result.ok === true && !readKeptOnly(s.result)
 }
 
 export type TeardownFlowOpts = {

@@ -13,7 +13,7 @@
 // tests/dedicatedTeardownSection.test.ts が、確認を飛ばせないことと、この節の呼び形を固定する）。
 //
 // 公開の記録（📡 の行・publish.targets）は、**ここでも画面でも消さない**。消すのは main の apprunDedicated:teardown の1か所だけ
-// （main の骨 teardownShell が、保存場所まで片づいた回だけ消す）。
+// （main の骨 teardownShell が、保存場所まで片づいた回のうち、何かを消した回だけ消す。何も消さなかった keptOnly の回は残す）。
 //
 // この節が import してよい専有型の部品は apprunDedicatedActions.ts の純関数だけ。**パネル本体（AppRunDedicatedPanel.tsx）は import しない**
 // （パネル → 節 → パネルの循環になる）。「いまの構成と月額目安」の行（buildTeardownSummary）はパネルが持つ関数を呼ぶので、
@@ -25,11 +25,14 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useConfirmChoices } from '../useConfirmChoices'
 import { runTeardownFlow, electronFlowDeps, teardownProgressText } from '../teardown/flow'
+import { electronTeardownFactsApi, placementsWithKeep } from '../teardown/facts'
+import type { TeardownPlacement } from '../teardown/types'
 import { dedicatedTeardownSpec, DEDICATED_TEARDOWN_WORDS, DEDICATED_PANEL_KEY_MISSING_MESSAGE } from '../teardown/targets/dedicated'
 import type { TeardownResumedNote } from '../teardown/watch'
 import { shouldShowTeardownList, storageLeftoverNote } from '../apprunDedicatedActions'
 import { PUBLISH_TARGET_CONSOLE } from '../publishStatus'
 import { teardownDataNoteFor, dedicatedStorageLeftoverNames } from '../../shared/teardownSupport'
+import { bucketsNotKept } from '../../shared/keptDataNote'
 import type { TeardownView } from '../../shared/teardownResult'
 import TeardownProgress from './teardown/TeardownProgress'
 import TeardownResultView from './teardown/TeardownResultView'
@@ -152,15 +155,29 @@ export default function DedicatedTeardownSection({
    * 1件ではなく**全件**を持つ（2026-09-25 検分の指摘23・37）。手順6は `teardownStorageForProject` を通って、**確認で見せた（名前を挙げた）
    * 保存場所だけ**を消す（見せていないものは残して ok:false。0.6.24 F）。見せるのは同意済みの保存場所の全件なので、
    * 先頭1件（placements[0]）の別名は置かない（置くと、次に文面を書く人がまた1件だけで組み立て、名前が出なかった保存場所は消えずに残る）。
+   * `keep` を持つ保存場所（同じデータを使うフォルダがいて、削除が消さずに残す）は、下の 💾 の行が「残ります」と言う（文は確認と同じ作り手 teardownDataNoteFor）。
+   * `keep` は `storage:placement` が返さないので、一覧を読んだあとに `cloud:twinFacts` を1回読んで付ける（確認の材料と同じ読み方 placementsWithKeep）。
+   * 読めなかった・口が無い回は付けず、今までどおり「データも削除します」と言う。一覧は先に出し、`keep` の答えは遅れて届いたとき1回だけ足す。
    */
-  const [placements, setPlacements] = useState<{ bucket: string; prefix: string; shared: boolean }[]>([])
+  const [placements, setPlacements] = useState<TeardownPlacement[]>([])
   useEffect(() => {
     let alive = true
+    // 読みの通し番号。新しい読みが始まったら、古い読みの一覧と `keep` の答えは捨てる（用意した直後の読み直しを、古い一覧で上書きしない）。
+    let latest = 0
+    // プロジェクトが変わったら、前のプロジェクトの一覧は捨てる（新しい一覧を読めなかった回も、古い一覧を新しいプロジェクトの 💾 の行に出さない）。
+    setPlacements(prev => (prev.length === 0 ? prev : []))
     const load = async () => {
+      const mine = ++latest
       try {
         const r = await window.electronAPI.storage.placement(projectDir)
+        // 一覧の答えも、`keep` の答えと同じく通し番号で確かめる（遅れて届いた古い一覧が、読み直した新しい一覧を上書きしない）。
+        if (!alive || mine !== latest || !r.ok) return
         // placements は main が必ず返す。古い形しか返らなかったときのために placement 1件へ落ちる道も残す——**黙って0件にしない**（消えるものが隠れる）。
-        if (alive && r.ok) setPlacements(r.placements ?? (r.placement ? [r.placement] : []))
+        const list: TeardownPlacement[] = r.placements ?? (r.placement ? [r.placement] : [])
+        setPlacements(list)
+        const kept = await placementsWithKeep(electronTeardownFactsApi(), projectDir, dedicatedTeardownSpec.target, list)
+        // 待っている間にプロジェクトが切り替わった（alive）・新しい読みが始まった（mine）回の答えは、いまの表示へ入れない（掟11）。
+        if (alive && mine === latest && kept !== list) setPlacements(kept)
       } catch { /* 読めなくても公開・削除そのものはできる */ }
     }
     void load()
@@ -170,7 +187,9 @@ export default function DedicatedTeardownSection({
     return () => { alive = false; window.removeEventListener('sakura:storage-prepared', onPrepared) }
   }, [projectDir])
 
-  const leftoverNote = storageLeftoverNote(dedicatedStorageLeftoverNames(apprunState))
+  // 🗄️ の「もう一度押すと削除します」は、消す保存場所（keep の無いもの）の名前だけで言う。残す保存場所は、下の 💾 の行が「残ります」と言う
+  // （同じ保存場所に、削除すると残るの両方を言わない）。全部 keep なら、🗄️ の行は出さない。
+  const leftoverNote = storageLeftoverNote(bucketsNotKept(dedicatedStorageLeftoverNames(apprunState), placements))
 
   return (
     <section className="rounded-xl border border-brand-red/70 bg-surface p-4 space-y-3">

@@ -201,19 +201,14 @@ describe('プロジェクト削除の確認（ProjectDeleteDialog。段階3A・3
     expect(dialog).not.toMatch(/from '..\/publishRecord'/)
     expect(facts).toContain('const read = await readPublishTargetsWithLegacyChecked(dir)')
     expect(facts).toContain('const targets = read.targets')
-    expect(facts).toContain('let unreadable = read.unreadable')
+    expect(facts).toContain('const unreadable = read.unreadable')
     expect(facts).not.toMatch(/\breadPublishTargets\(/)
     // 読みは Sidebar ではなくダイアログがする（Sidebar は公開の記録を読まない）
     expect(sidebar).not.toContain('readPublishTargetsWithLegacyChecked')
     expect(sidebar).not.toContain('readProjectDeleteFacts')
   })
 
-  it('★★★ 注意は「読めなかったとき」だけ出す（facts.unreadable &&）。注意の箱も、それだけのときに出る', () => {
-    expect(dialog).toContain('{facts.unreadable && (')
-    expect(dialog).toContain('⚠️ {PUBLISH_RECORD_UNREADABLE_NOTE}')
-    // 0.6.24 A-4: 先に破棄する段（shownTeardown）があれば、公開先の行が無くても箱を出す（残りの段だけの回のチェックを出す。出さないと行き止まりになる）
-    expect(dialog).toContain("(shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (")
-    // ダイアログを閉じたとき・別のプロジェクトを開いたときに、前の注意を引きずらない: Sidebar が key で作り直す（状態を持ち越さない）
+  it('★★★ ダイアログを閉じたとき・別のプロジェクトを開いたときに、前の注意を引きずらない: Sidebar が key で作り直す（状態を持ち越さない）。注意・止める文の出し分けは、ソースの文字列でなく振る舞いで固定している（tests/projectDeleteRecordDialog.test.ts）', () => {
     expect(sidebar).toMatch(/<ProjectDeleteDialog\s+key=\{confirmProjDelete\}/)
   })
 

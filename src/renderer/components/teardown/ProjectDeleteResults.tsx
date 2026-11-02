@@ -20,6 +20,7 @@ import {
   type ProjectDeleteStep,
 } from '../../teardown/projectDeletePlan'
 import { projectDeleteStoppedTail } from '../../teardown/projectDeleteWords'
+import { everyDoneStepKeptOnly } from '../../teardown/headline'
 import { CONTROL_PANEL_URL } from '../ServicePrincipalSection'
 import TeardownResultView from './TeardownResultView'
 
@@ -65,7 +66,10 @@ function MessageBlock({ msg }: { msg: string }) {
 
 export default function ProjectDeleteResults({ run, showBlockNote }: { run: ProjectDeletePhase; showBlockNote: boolean }) {
   if (run.phase === 'trashed') return null
-  const head = run.phase === 'stopped' ? PROJECT_DELETE_STOPPED_HEAD : run.phase === 'review' ? PROJECT_DELETE_REVIEW_HEAD : null
+  // 総括「破棄は済みましたが、残ったものがあります。」は、済んだ段がすべて何も消していない回には出さない（段の見出しが言う。混在は出す）。
+  const head = run.phase === 'stopped' ? PROJECT_DELETE_STOPPED_HEAD
+    : run.phase === 'review' && !everyDoneStepKeptOnly(run.steps) ? PROJECT_DELETE_REVIEW_HEAD
+    : null
   const tail = run.phase === 'stopped' ? projectDeleteStoppedTail(run.steps) : run.phase === 'review' ? PROJECT_DELETE_REVIEW_TAIL : null
   return (
     <div className="space-y-2 text-ink-secondary" data-project-delete-result={run.phase}>

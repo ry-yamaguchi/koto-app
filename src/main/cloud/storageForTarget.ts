@@ -19,8 +19,8 @@ import path from 'path'
 import type { CloudCredentials } from './auth'
 import { loadCredentials } from './auth'
 import { createStorageAdapter } from './storageAdapter'
-import { teardownStorage, placementsHaveTwinRisk, recordedKeyRisk, keyKeptWarning } from './storageTeardown'
-import { parseShownPlacements, selectShown, skippedBucketsMessage, uniqueBuckets } from './storageSelection'
+import { teardownStorage, placementsHaveTwinRisk, recordedKeyRisk, keyKeptWarning, KEY_KEPT_CONFIRMED_WARNING, type StorageTeardownClientLike } from './storageTeardown'
+import { mustKeepDataOf, parseShownPlacements, selectShown, skippedBucketsMessage, uniqueBuckets } from './storageSelection'
 import { validateSpec } from './spec'
 import { CLOUD_STATE_FILE, cloudFilePath, loadCloudSpec } from './specStore'
 import { consentedBuckets, consentedPlacementsOf, keepMarkerKey, storageEnvVars, containsSecretEnv, STORAGE_ENV, type StoragePlacement } from '../../shared/objectStorage'
@@ -329,6 +329,17 @@ function forgetDeletedBucketsInState(projectDir: string, gone: ReadonlySet<strin
 }
 
 /**
+ * 保存場所へ何も出さない回（見せたものが全部「消しません」）に、`teardownStorage` へ渡す口。どの操作も投げる。
+ * `mustKeepData` が守られていれば呼ばれない。守りが破られても、削除に進まず（一覧の段で）止まる。
+ */
+const NO_STORAGE: StorageTeardownClientLike = {
+  async listAllKeys() { throw new Error('保存場所へ要求しない回に、一覧が呼ばれました') },
+  async deleteKeys() { throw new Error('保存場所へ要求しない回に、データの削除が呼ばれました') },
+  async deleteBucket() { throw new Error('保存場所へ要求しない回に、バケットの削除が呼ばれました') },
+  async deletePermission() { throw new Error('保存場所へ要求しない回に、鍵の無効化が呼ばれました') },
+}
+
+/**
  * このプロジェクトの保存場所を片づける（破棄の一部）。
  *
  * 手順と守り（一覧できなければ中止する／判断は `teardownPlanFor` に任せる／鍵はバケットの
@@ -360,6 +371,8 @@ export async function teardownStorageForProject(opts: {
   placements?: readonly StoragePlacement[]
   /**
    * **確認で見せた保存場所**（画面が運んだ値。形は信用しない＝`parseShownPlacements` が読む。0.6.24 F）。名前と prefix の組が一致する保存場所だけを消す。
+   * 組に `keepData: true` が付いた保存場所は、確認が「消しません」と言ったもの。記録がいま何と言っていても、データにもバケットにも鍵にも触れず、外へ要求を出さずに残す
+   * （`mustKeepData`。1件でもあれば、記録の鍵・名前での鍵の一括の無効化にも触れない）。消す側には働かない（付かないものは今までどおり `teardownPlanFor` が決める）。
    * **必須**（共用型・HANAMII・専有型の3つの呼び手がすべて渡す）。見せていないもの（確認のあとで記録が変わった・名前を挙げられなかった・値の形が違う）は、
    * **外へ1本も要求を出さずに** `ok: false` で残す（押し直しの道に乗る）。値が `undefined` でも「見せたものが無い」扱い（全件を飛ばす）。
    * 渡さない形（従来どおり全件を消す道）は無い。JS から呼ぶ側が渡し忘れても、黙って全件を消さずに止まる。
@@ -372,8 +385,11 @@ export async function teardownStorageForProject(opts: {
   const all = opts.placements ? [...opts.placements] : storagePlacementsOf(opts.projectDir)
   if (all.length === 0) return { ok: true, reason: 'none' }
   // 見せたものだけに絞る（F-4。絞るのはここ1か所）。渡されていない・形が違う値は「1件も見せていない」＝全件を飛ばす（不明を肯定にしない）
-  const picked = selectShown(all, parseShownPlacements(opts.shown))
+  const shownList = parseShownPlacements(opts.shown)
+  const picked = selectShown(all, shownList)
   const placements = picked.tear
+  /** 確認が「消しません」と言った保存場所か（運ばれた `keepData`。判断は `mustKeepDataOf` の1つ）。 */
+  const mustKeep = (p: StoragePlacement): boolean => mustKeepDataOf(shownList, p)
   const skippedBuckets = uniqueBuckets(picked.skipped)
   const skippedNote = picked.why ? skippedBucketsMessage(picked.skipped, picked.why) : ''
   /** 失敗の返り値。残りは、`stopped` から先（止まった1件・その後ろの未着手）と、飛ばした分を重ならないように並べる。 */
@@ -386,12 +402,15 @@ export async function teardownStorageForProject(opts: {
   }
   // 見せたものが1件も無い: **アダプタを作る前に**止める（外への要求は0件）
   if (placements.length === 0) return failed([], skippedNote, [], [])
-  let storage: Awaited<ReturnType<typeof createStorageAdapter>>
-  try {
-    storage = await createStorageAdapter(opts.creds)
-  } catch (e: any) {
-    // **中身を確かめられないなら消さない**（共用型 `cloud:teardown` と同じ言い方）。
-    return failed(placements, [`保存場所『${placements[0].bucket}』に接続できないため、削除を中止しました: ${e?.message ?? e}`, skippedNote].filter(Boolean).join('\n'), [], [])
+  // 消す側の保存場所が1件も無い（見せたものが全部「消しません」）回は、アダプタも作らない（外への要求は0件）
+  let storage: Awaited<ReturnType<typeof createStorageAdapter>> | null = null
+  if (placements.some(p => !mustKeep(p))) {
+    try {
+      storage = await createStorageAdapter(opts.creds)
+    } catch (e: any) {
+      // **中身を確かめられないなら消さない**（共用型 `cloud:teardown` と同じ言い方）。
+      return failed(placements, [`保存場所『${placements[0].bucket}』に接続できないため、削除を中止しました: ${e?.message ?? e}`, skippedNote].filter(Boolean).join('\n'), [], [])
+    }
   }
   try {
     const done: TorndownBucket[] = []
@@ -400,13 +419,18 @@ export async function teardownStorageForProject(opts: {
     const twinRisk = placementsHaveTwinRisk(opts.projectDir, placements)
     // 同じ鍵の ID を記録に持つ兄弟がいる（または確かめられない）回も、鍵に触れない（複製が記録の鍵の ID だけを写した形。保存場所の prefix では見えない。R2-i）。ループの前に確かめる。
     const keyRisk = recordedKeyRisk(opts.projectDir, opts.permissionId)
-    const keepKeys = twinRisk || keyRisk !== null
+    // 確認が「消しません」と言った保存場所が1件でもあれば、同じく鍵に触れない（データを残すのに、そのデータへ届く鍵を切らない）
+    const keepAny = placements.some(mustKeep)
+    const keepKeys = twinRisk || keyRisk !== null || keepAny
     // 鍵を無効にしない理由が、鍵の ID（持つ兄弟がいる・確かめられない）のときは、結果に警告を出す（黙って残さない。R3-c。表示の行は呼び手の keyWarningLines）
     if (keyRisk !== null) warnings.push(keyKeptWarning(keyRisk))
+    // 理由が確認で「消しません」と言ったことだけの回（複製もいない）は、無効にするはずだった鍵があったときだけ、その理由を警告で言う（複製がいる回は、残したデータの説明が言う）
+    else if (keepAny && !twinRisk && (!!opts.permissionId || (!!opts.sweepKeysFor && !!projectName))) warnings.push(KEY_KEPT_CONFIRMED_WARNING)
     // 記録の鍵は1本しか無いので、実際に片づけた最初の1件でだけ渡す（2件目に渡すと「もう無い」で警告が二重に出る。見せていない分には渡さない）。
     let permissionId = keepKeys ? null : (opts.permissionId ?? null)
     for (const [i, placement] of placements.entries()) {
-      const outcome = await teardownStorage({ storage, placement, permissionId, projectDir: opts.projectDir })
+      // 「消しません」と言ったものは `storage` を使わずに残る（アダプタを作っていない回の `NO_STORAGE` は、呼ばれたら投げる＝破られても消さずに止まる）
+      const outcome = await teardownStorage({ storage: storage ?? NO_STORAGE, placement, permissionId, projectDir: opts.projectDir, mustKeepData: mustKeep(placement) })
       if (!outcome.ok) {
         // **途中で止まっても、片づいた分は捨てない**（掟10）。残っているバケット名（止まった1件・後ろの未着手・飛ばした分）も返す。
         return failed(placements.slice(i), [outcome.message, skippedNote].filter(Boolean).join('\n'), done, warnings)
@@ -422,13 +446,13 @@ export async function teardownStorageForProject(opts: {
     }
     // 見せていない分が残っている: 回し終えたあとに ok:false（片づいた分は done に残す）。**名前での鍵の一括の無効化はしない**（現役の鍵が残る。押し直しで行う）。
     if (picked.skipped.length > 0) return failed([], skippedNote, done, warnings)
-    if (opts.sweepKeysFor && projectName && !keepKeys) {
+    if (storage && opts.sweepKeysFor && projectName && !keepKeys) {
       warnings.push(...await sweepKeys(storage, { projectName, target: opts.sweepKeysFor }))
     }
     return { ok: true, reason: 'done', done, warnings, permissionRevoked }
   } finally {
-    // アダプタが自分用に発行した一時キーを必ず片づける（残すと鍵だけが生き続ける）。
-    await storage.dispose()
+    // アダプタが自分用に発行した一時キーを必ず片づける（残すと鍵だけが生き続ける）。作らなかった回は無い。
+    await storage?.dispose()
   }
 }
 

@@ -727,24 +727,32 @@ describe('runEngineTurn: 時間切れ', () => {
   })
 
   it('★ あいさつの経路も時間切れを受け取る（空の吹き出しのまま黙らせない・検分の指摘5・15）', () => {
-    // greet は runEngineTurn を通らず window.electronAPI.sakura.chatStream を直に呼ぶ。
+    // あいさつの実行（greeting.ts の runGreeting）は runEngineTurn を通らず、ports.chatStream
+    // （ChatPanel が window.electronAPI.sakura.chatStream へつなぐ）を呼ぶ。
     // runSakuraStream は時間切れのとき throw せず return するので、catch のフォールバックは
     // 効かない。DOM を持たない試験環境なので、ここは呼び出しの形で固定する
     // （当て先が他の行に出ないよう、受け取りの形ごと・直す前の形の禁止つきで書く・掟10）。
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf8')
-    expect(src).toContain('const { usage, timedOut } = await window.electronAPI.sakura.chatStream(')
-    expect(src).not.toContain('const { usage } = await window.electronAPI.sakura.chatStream(') // 直す前の形
+    // 振る舞いそのもの（時間切れで短い1文に差し替わる）は tests/greeting.test.ts が偽の ports で固定している。
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/greeting.ts'), 'utf8')
+    expect(src).toContain('const { usage, timedOut } = await ports.chatStream(')
+    expect(src).not.toContain('const { usage } = await ports.chatStream(') // 直す前の形
     // W-103（2026-09-27 決定）: streamTimeoutMessage（「もう一度お試しください」の定型文）は
     // 「つくりたいものを教えてください」と並ぶと迷わせるため使わず、あいさつ専用の短い1文にする。
     const timedOutAt = src.indexOf('if (timedOut) {')
     expect(timedOutAt).toBeGreaterThan(0)
-    const applyOpAt = src.indexOf('applyOp(', timedOutAt)
+    // 会話への書き換えは emit（始めたプロジェクトが開いているときだけ ports.applyOp へ渡す）を通る
+    const applyOpAt = src.indexOf('emit(', timedOutAt)
     expect(applyOpAt).toBeGreaterThan(timedOutAt)
     const timedOutBlock = src.slice(timedOutAt, src.indexOf('}', applyOpAt) + 1)
-    expect(timedOutBlock).toContain('⏱ AIからの返事が届かなかったので、あいさつは省きました。つくりたいものを、そのまま送ってください。')
+    expect(timedOutBlock).toContain('content: GREETING_TIMED_OUT_TEXT')
     expect(timedOutBlock).not.toContain('streamTimeoutMessage(timedOut)') // 直す前の形
+    expect(src).toContain("export const GREETING_TIMED_OUT_TEXT =\n  '⏱ AIからの返事が届かなかったので、あいさつは省きました。つくりたいものを、そのまま送ってください。'")
+    // ChatPanel は直に呼ばず、ports へつなぐだけ（ここへ戻していない）
+    const panel = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf8')
+    expect(panel).not.toContain('const { usage, timedOut } = await window.electronAPI.sakura.chatStream(')
     // 秒数・文言をこの画面に書き写していない（一元定義・掟10）
     expect(src).not.toContain('120秒')
+    expect(panel).not.toContain('120秒')
   })
 
   it('保存する前に「保存しました」と読める表示を出さない（実行前の見出しは進行形）', () => {

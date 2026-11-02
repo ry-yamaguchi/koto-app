@@ -19,31 +19,50 @@ const LEGACY_PROJECT_PREFIX = 'sakura_chat:'
 /** 会話への書き換え1件。main の convStore.ts の Op と同じ形（IPCでそのまま運ぶ）。 */
 export type Op = ChatEvent<ChatMessage> | { kind: 'replaceAll'; messages: ChatMessage[] }
 
+/** 読み込みの結果。`readable` は、main の会話ストアに問い合わせて答えが返ったか。 */
+export interface ConversationLoad {
+  messages: ChatMessage[]
+  /**
+   * 問い合わせに失敗した（IPC の失敗・ok:false）回は false。そのとき messages は旧 localStorage か空で、
+   * 保存済みの会話が無いことの証拠にならない。
+   */
+  readable: boolean
+}
+
 /**
- * 読み込み（ファイル→無ければ旧localStorage移行→空）。
+ * 読み込み（ファイル→無ければ旧localStorage移行→空）。読めたかどうかも返す。
  * 移行時は replaceAll を送って main のストアへ載せ、旧キーを消す
  * （今までの loadProjectChat と同じ手順・resolveChatSource を使う）。
  */
-export async function loadConversationView(projectDir: string): Promise<ChatMessage[]> {
+export async function loadConversationChecked(projectDir: string): Promise<ConversationLoad> {
   let fileData: ChatMessage[] | null = null
+  let readable = false
   try {
     const res = await window.electronAPI.chat.load(projectDir)
-    if (res.ok) fileData = res.messages as ChatMessage[] | null
-  } catch { /* IPC失敗はlocalStorageへフォールバック */ }
+    if (res.ok) {
+      fileData = res.messages as ChatMessage[] | null
+      readable = true
+    }
+  } catch { /* IPC失敗はlocalStorageへフォールバック（読めた扱いにはしない） */ }
 
   const legacyKey = LEGACY_PROJECT_PREFIX + projectDir
   const legacyData = parseJsonArray(localStorage.getItem(legacyKey)) as ChatMessage[] | null
   const resolved = resolveChatSource<ChatMessage>(fileData, legacyData)
 
-  if (resolved.kind === 'file') return resolved.data
+  if (resolved.kind === 'file') return { messages: resolved.data, readable }
   if (resolved.kind === 'migrate') {
     // 即 main のストアへ載せる（replaceAll）。以前の loadProjectChat と同じく await はしない
     // （旧キーの削除を待たせない。IPC失敗時は次回この関数を呼んだときにまた移行を試みる）。
     void window.electronAPI.chat.ops(projectDir, [{ kind: 'replaceAll', messages: resolved.data }])
     localStorage.removeItem(legacyKey)
-    return resolved.data
+    return { messages: resolved.data, readable }
   }
-  return []
+  return { messages: [], readable }
+}
+
+/** 読み込み。読めたかどうかを使わない呼び手向け（loadConversationChecked の messages だけ）。 */
+export async function loadConversationView(projectDir: string): Promise<ChatMessage[]> {
+  return (await loadConversationChecked(projectDir)).messages
 }
 
 /**

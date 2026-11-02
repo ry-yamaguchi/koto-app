@@ -8,8 +8,8 @@ import path from 'node:path'
 // 掟10: 確認の答えが true でなければ、client へも保存場所へも要求は0件。ゴミ箱は呼ばれた回数で見る（ソースの文字列は読まない）。
 //   T-A2 … 行の無い保存場所だけのプロジェクト（はい／キャンセル／オフ）
 //   T-A3 … HANAMII が受け付けただけ（202）・例外のあとは、共用型の段を始めない（行あり・行なしの両方）
-//   T-A4 … HANAMII が済んで共用型が失敗 → 押し直しで、HANAMII は聞かず共用型だけ聞く
-//   T-A8 … 二重の確認（HANAMII が残した保存場所を、共用型の確認がもう一度名指しする）
+//   T-A4 … HANAMII が済んで共用型が失敗 → 押し直しで、HANAMII は聞かず共用型だけ聞く（共用型の段が走る理由＝記録の鍵が残っている回）
+//   T-A8 … HANAMII が残した保存場所は、同じ押しの残りの段がもう一度名指ししない（確認は HANAMII の1回・cloud:teardown 0。本物の2つを通す試験は tests/sharedLeftoverHandled.test.ts）
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
 vi.mock('../src/main/cloud/auth', async (orig) => (await import('./sharedTeardownHarness')).authMock(await orig()))
@@ -57,9 +57,12 @@ function writeMeta(d: string, o: { hanamii?: boolean; sharedRow?: boolean }) {
     },
   }, null, 2), 'utf-8')
 }
-/** 行の無い保存場所だけのプロジェクト（A だけが env.json と state にある。アプリ・レジストリは無い）。 */
-function putLeftover(o: { hanamii?: boolean } = {}) {
-  setupProject(dir, { env: [A], resources: [bucketRef(A)] })
+/**
+ * 行の無い保存場所だけのプロジェクト（A だけが env.json と state にある。アプリ・レジストリは無い）。
+ * `keyRecorded` を渡すと、記録の鍵（state.json の storagePermissionId）を置く。HANAMII が保存場所を済ませたあとも、共用型の段が走る理由になる（鍵の無効化は共用型の段にしかできない）。
+ */
+function putLeftover(o: { hanamii?: boolean; keyRecorded?: boolean } = {}) {
+  setupProject(dir, { env: [A], resources: [bucketRef(A)], ...(o.keyRecorded ? { meta: { storagePermissionId: 'perm-recorded' } } : {}) })
   writeMeta(dir, o)
 }
 /** 共用型の行もあるプロジェクト（アプリあり）。 */
@@ -266,7 +269,7 @@ describe('T-A3 HANAMII が済んでいなければ（受け付けただけ・例
 
 describe('T-A4 HANAMII は済み・共用型は失敗: 押し直しで、HANAMII は聞かず共用型だけ聞く', () => {
   it('★★★ 1回目 stopped → 材料を読み直した結果で押し直す: HANAMII の確認は増えず（0）、共用型の確認は2回目の1回。HANAMII の done は carried で結果に残り、最後はゴミ箱1回', async () => {
-    putLeftover({ hanamii: true })
+    putLeftover({ hanamii: true, keyRecorded: true }) // 記録の鍵が残っているので、HANAMII が保存場所を済ませても、共用型の段は走る（鍵を無効にできるのは共用型の段だけ）
     win.hanamiiReply = { ok: true }
     h.fail['listAllKeys koto-data-a'] = 'throw'
     const { facts, plan } = await openPlan()
@@ -293,23 +296,27 @@ describe('T-A4 HANAMII は済み・共用型は失敗: 押し直しで、HANAMII
   })
 })
 
-describe('T-A8 二重の確認: HANAMII が残した保存場所を、共用型の確認がもう一度名指しする。兄弟が使うバケットは消えず、見せてから移す', () => {
-  it('★★★ HANAMII は ok（保存場所は env.json に残る）→ 共用型の確認1回が A を名指し → 自分の prefix だけ消してバケットは残す（deleteBucket 0）→ review。ゴミ箱は押し直すまで0', async () => {
+describe('T-A8 HANAMII が残した保存場所は、同じ押しの残りの段が、もう一度名指ししない', () => {
+  /** HANAMII が ok で、兄弟が使う保存場所 A のデータだけ消して残した回の返り値（保存場所は env.json に残る。警告が出る）。 */
+  const KEPT_REPLY = { ok: true, executed: ['✅ 保存場所『koto-data-a』のデータを削除しました — 保存場所は残します。'], keptBucketName: A, keptBucketNames: [A], keptBucketsUsedByOthers: [A] }
+
+  it('★★★ HANAMII は ok（保存場所は env.json に残る・兄弟が使う）→ 残りの段は走らせない: 確認は HANAMII の1回・cloud:teardown 0・外への要求0件 → review（HANAMII の警告で止まる）。ゴミ箱は押し直すまで0', async () => {
     putLeftover({ hanamii: true })
     putSibling()
-    win.hanamiiReply = { ok: true }
-    h.keysByBucket[A] = [`${PREFIX}data.json`] // 兄弟の記録だけが、A を使っている印（キーの一覧には兄弟のものは無い）
+    win.hanamiiReply = KEPT_REPLY
     const { facts, plan } = await openPlan()
+    expect(plan.teardown).toEqual(['hanamii', 'sakura-apprun']) // 開いたときの plan は変わらない（残りの段も足す）
     const ask = fakeAsk(true)
     const { deps, trashed } = makeDeps(ask)
     const r = await pressProjectDelete(dir, { plan, run: null, seen: facts }, true, deps)
-    expect(ask.titles).toEqual([HANAMII_TEARDOWN_WORDS.confirmTitle, LEFTOVER_TITLE])
-    expect(ask.bodies[1]).toContain('保存場所『koto-data-a』')
-    expect(h.calls.some(c => c.startsWith('deleteBucket'))).toBe(false)
-    expect(h.calls.filter(c => c.startsWith('deleteKeys'))).toEqual(['deleteKeys koto-data-a']) // 自分の prefix だけ（兄弟の分は消さない）
+    expect(ask.titles).toEqual([HANAMII_TEARDOWN_WORDS.confirmTitle]) // 「保存場所を破棄します」は出ない
+    expect(win.hanamiiCalls).toHaveLength(1)
+    expect(win.teardownCalls).toEqual([])
+    expect(h.calls).toEqual([])
     expect(r.run.phase).toBe('review')
-    expect(r.run.steps.map(s => `${s.target}:${s.kind}`)).toEqual(['hanamii:done', 'sakura-apprun:done'])
-    expect(keptLinesOf(r.run.steps).some(l => l.startsWith('保存場所: ') && l.includes('koto-data-a'))).toBe(true) // 残した保存場所の知らせは、名詞（label）で言う
+    expect(r.run.steps.map(s => `${s.target}:${s.kind}`)).toEqual(['hanamii:done', 'sakura-apprun:nothingToDo'])
+    expect(r.run.steps[1]).toMatchObject({ leftover: true, label: '保存場所' }) // 残りの段の印つき（結果の欄は、この nothingToDo を描かない）
+    expect(keptLinesOf(r.run.steps).filter(l => l.includes('koto-data-a'))).toHaveLength(1) // 残した保存場所の知らせは HANAMII の1回だけ
     expect(trashed).toEqual([])
   })
 })

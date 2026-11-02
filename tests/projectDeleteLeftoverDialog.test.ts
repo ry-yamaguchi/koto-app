@@ -55,7 +55,8 @@ afterAll(() => { process.off('unhandledRejection', onUnhandled) })
 
 import ManualTeardownNote from '../src/renderer/components/teardown/ManualTeardownNote'
 import { PUBLISH_TARGET_LABEL } from '../src/renderer/publishStatus'
-import { PUBLISH_RECORD_UNREADABLE_NOTE } from '../src/renderer/teardown/projectDeletePlan'
+import { PUBLISH_RECORD_UNREADABLE_NOTE, PUBLISH_RECORD_UNREADABLE_FIX_NOTE, projectDeleteBlockNote } from '../src/renderer/teardown/projectDeletePlan'
+import { BUCKET_MONTHLY_YEN } from '../src/shared/cloudCost'
 import { createDialogHarness } from './projectDeleteDialogHarness'
 
 const { t, reset, settle, rerender, open, els, textOf, paragraphs, mainButton, checkbox, press, done, failed, results, withFacts } = createDialogHarness(hooks, fake)
@@ -254,7 +255,8 @@ describe('R4-a 公開の記録を読めない回: 残りの段のチェックを
     withFacts({ targets: [], unreadable: true, sharedLeftover: left({ placements: [A] }) }); await open()
     expect(els('input')).toHaveLength(0)
     expect(spans().some(sp => sp.endsWith('一緒に破棄する'))).toBe(false)
-    expect(paragraphs()).toContain(`⚠️ ${PUBLISH_RECORD_UNREADABLE_NOTE}`)
+    expect(paragraphs()).toContain(`⚠️ ${PUBLISH_RECORD_UNREADABLE_NOTE}${PUBLISH_RECORD_UNREADABLE_FIX_NOTE}`)
+    expect(mainButton().props.disabled).toBe(true)
     await press()
     expect(fake.teardownCalls).toEqual([])
   })
@@ -326,5 +328,54 @@ describe('R4-d 段を足さなかった残り（借り手のいるレジスト�
   it('★★ 残りの段を足した回は、この注意を出さない（段を足した残りは、確認が名指しする）', async () => {
     withFacts({ targets: ['hanamii'], sharedLeftover: left({ placements: [A], registryName: 'R', registryOrigin: 'adopted', registryUsers: ['other'] }) }); await open()
     expect(kept().filter(p => p === KEPT)).toEqual([])
+  })
+})
+
+describe('U1 削除を断る回は「💾 …は残ります」を出さない（止める文または注意だけを、ちょうど1つ言う）', () => {
+  const k2 = left({ registryName: 'R', registryOrigin: 'adopted', registryUsers: ['other'] }) // 段を足さない残り（借り手のいるレジストリだけ）
+  const withPlacements = left({ placements: [A] })
+  const hearts = () => paragraphs().filter(p => p.startsWith('💾 '))
+  const warnings = () => paragraphs().filter(p => p.startsWith('⚠️ '))
+
+  // 止める理由4つ（走っている操作・専有型の ID・専有型の保存場所だけ・公開の記録を読めない）。どれも、残りの材料（sharedLeftover・placements）を入れて開く。
+  const refusals: Array<{ name: string; facts: Record<string, unknown>; says: string; buttonDisabled: boolean }> = [
+    { name: '走っている操作（running）', facts: { running: { op: '削除', target: 'sakura-apprun' } }, says: `⚠️ ${projectDeleteBlockNote({ reason: 'running', op: '削除', target: 'sakura-apprun' })}`, buttonDisabled: true },
+    { name: '専有型の ID が残る（dedicated）', facts: { dedicated: { clusterID: 'c1' } }, says: `⚠️ ${projectDeleteBlockNote({ reason: 'dedicated' })}`, buttonDisabled: true },
+    { name: '専有型の保存場所だけが残る（dedicated-storage-leftover）', facts: { dedicated: { storageLeftoverBucket: 'koto-a' } }, says: `⚠️ ${projectDeleteBlockNote({ reason: 'dedicated-storage-leftover', buckets: ['koto-a'] })}`, buttonDisabled: true },
+    { name: '公開の記録を読めない（record-unreadable）', facts: { unreadable: true }, says: `⚠️ ${projectDeleteBlockNote({ reason: 'record-unreadable' })}`, buttonDisabled: true },
+  ]
+
+  for (const r of refusals) {
+    for (const [what, sharedLeftover] of [['保存場所の残り', withPlacements], ['借り手のいるレジストリだけの残り', k2]] as const) {
+      it(`★★★ ${r.name} × ${what}: 💾 で始まる段落が0・止める文または注意がちょうど1つ・チェックは出ない`, async () => {
+        withFacts({ ...r.facts, placements: [A], sharedLeftover }); await open()
+        expect(hearts()).toEqual([])
+        expect(warnings()).toEqual([r.says])
+        expect(els('input')).toHaveLength(0)
+        expect(mainButton().props.disabled).toBe(r.buttonDisabled)
+      })
+    }
+  }
+
+  it('★★ 公開の記録を読めない回は、ボタンを押せない。押しても破棄も移す操作も呼ばない（画面が止める。main も断る）', async () => {
+    withFacts({ unreadable: true, placements: [A], sharedLeftover: withPlacements }); await open()
+    expect(mainButton().props.disabled).toBe(true)
+    await press()
+    expect(fake.teardownCalls).toEqual([])
+    expect(t.trashed).toEqual([])
+  })
+
+  it('★★★ 月額は止める文の1回だけ: 専有型の保存場所だけが残る回で、同じ保存場所の「月額495円」を 💾 で言い直さない', async () => {
+    withFacts({ dedicated: { storageLeftoverBucket: 'koto-a' }, placements: [A], sharedLeftover: left({ placements: [{ bucket: 'koto-a', prefix: 'p', shared: false }] }) }); await open()
+    expect(paragraphs().filter(p => p.includes('月額'))).toHaveLength(1)
+    expect(paragraphs().some(p => p.includes(`${BUCKET_MONTHLY_YEN}円`))).toBe(false)
+    expect(paragraphs().filter(p => p.includes('koto-a'))).toHaveLength(1)
+  })
+
+  it('★★★ 対照: 止めない・読める回は今までどおり 💾 を1つ言う（借り手のいるレジストリだけの残り。段を足さない）', async () => {
+    withFacts({ placements: [A], sharedLeftover: k2 }); await open()
+    expect(hearts()).toEqual(['💾 コンテナレジストリ『R』も残ります。'])
+    expect(warnings()).toEqual([])
+    expect(mainButton().props.disabled).toBe(false)
   })
 })

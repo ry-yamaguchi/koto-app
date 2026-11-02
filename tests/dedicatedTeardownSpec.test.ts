@@ -38,6 +38,8 @@ describe('言葉と項目: 手本の文を1文字も変えずに移した', () =
       rowButton: '🗑 削除',
       running: '削除しています…',
       doneHeadline: '✅ すべて削除しました',
+      keptHeadline: '⚠️ 削除していません',
+      doneKeptStorageHeadline: '✅ 削除しました',
       inProgressHeadline: '⏳ 削除中です',
       failedHeadline: '⚠️ 削除できませんでした',
       factsUnreadable: '削除するものの記録を読めませんでした',

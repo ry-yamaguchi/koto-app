@@ -13,6 +13,7 @@ import { ipcMain } from 'electron'
 import type { IpcDeps } from './types'
 import { sakuraClient, isContextLimitError, safeMaxTokens, runSakuraChat, runSakuraStream } from '../sakura/engine'
 import { MODELS_TIMEOUT_MS, MODELS_MAX_RETRIES } from '../../shared/chatTimeouts'
+import { isConnectionFailure } from '../../shared/connectionFailure'
 
 export { sakuraClient, isContextLimitError, safeMaxTokens }
 
@@ -32,7 +33,7 @@ type ChatMsg = {
 // src/main/github/client.ts の describeCreateRepoError、src/main/claude/client.ts の describeClaudeError と
 // 同じ考え方（既知の原因のみ日本語化し、未知はメッセージの先頭を短く見せる）。
 export function describeSakuraError(e: unknown): string {
-  const err = (e ?? {}) as { status?: number; message?: string; code?: string; cause?: { code?: string } }
+  const err = (e ?? {}) as { status?: number; message?: string }
   const status = typeof err.status === 'number' ? err.status : undefined
   const message = typeof err.message === 'string' ? err.message : String(e ?? '')
   if (status === 401 || status === 403) {
@@ -41,11 +42,8 @@ export function describeSakuraError(e: unknown): string {
   if (status === 429) {
     return 'アクセスが集中しています。しばらく待ってからもう一度お試しください'
   }
-  const causeCode = err.cause?.code ?? err.code
-  if (
-    causeCode === 'ENOTFOUND' || causeCode === 'ECONNREFUSED' || causeCode === 'ETIMEDOUT' || causeCode === 'EAI_AGAIN' ||
-    /enotfound|econnrefused|etimedout|fetch failed|network/i.test(message)
-  ) {
+  // 回線断の判定はチャットの失敗文と同じもの（shared/connectionFailure.ts）。
+  if (isConnectionFailure(e)) {
     return 'インターネット接続を確認してください'
   }
   return `接続テストに失敗しました: ${message.slice(0, 120)}`

@@ -635,7 +635,7 @@ const EXTRA_KEYS = [
   'stage', 'hint', 'pending', 'logUrl', 'askAi',
   'needsScaleDecision', 'adoptedScaleMin', 'staleImages', 'skipped',
   'keptBucketName', 'keptBucketNames', 'keptBucketsUsedByOthers', 'keptBucketsWithOwnFiles',
-  'keptRegistryName', 'keptRegistryOrigin', 'keptRegistryUsers', 'keptRegistryUnnamed',
+  'keptRegistryName', 'keptRegistryOrigin', 'keptRegistryUsers', 'keptRegistryUnnamed', 'keptOnly',
   'remaining', 'inProgress', 'appDeleted', 'remainingBucket', 'remainingBuckets', 'deletionAccepted',
   'projectId', 'deploymentId', 'deployState', 'readyState', 'errorCode',
   'applicationID', 'version', 'lbAddresses', 'verify', 'containerStates',

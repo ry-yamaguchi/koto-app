@@ -214,7 +214,7 @@ describe('F-2 3点セット: preload と global.d.ts の3本の teardown が、o
   const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
   const preload = read('src/main/preload.ts')
   const dts = read('src/renderer/global.d.ts')
-  const SHOWN = 'shownPlacements: Array<{ bucket: string; prefix: string }>'
+  const SHOWN = 'shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }>'
   const DOORS = [
     { name: '共用型 cloud:teardown', preload: `teardown: (projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; ${SHOWN} }) =>`,
       dts: `teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; ${SHOWN} }): Promise<{` },

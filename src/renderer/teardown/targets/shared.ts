@@ -16,8 +16,10 @@
 // 公開URL（`public_url` の例は `https://<ランダムな文字列>.apprun.sakura.ne.jp`）が何から決まるかも、原本には書いていない。
 // 根拠が原本に無いので、**範囲を広げも狭めもせず**、今の画面の言い方のまま残す（原本で確かめた事実ではない）。親の判断待ち。
 
-import type { TargetSpec, TeardownWords } from '../types'
+import type { TargetSpec, TeardownPlacement, TeardownWords } from '../types'
 import type { ConfirmChoice } from '../../useConfirmChoices'
+import type { PlacementKeep } from '../../../shared/twinFactsTypes'
+import { bucketsNotKept, isKeptPlacement } from '../../../shared/keptDataNote'
 import { toTeardownView } from '../../../shared/teardownResult'
 import { bucketNamesText } from '../../../shared/teardownSupport'
 import { isRegistryOrigin, registryChoiceNote, registryDeleteDefault, registryDeleteHelp, registryDeleteLabel, registryIsOnlyThisProjects, registryUnknownNotice, urlChangesOnTeardownNotice, type RegistryOrigin } from '../../../shared/cloudCost'
@@ -34,6 +36,11 @@ export type SharedTeardownRecord = {
   placements: Array<{ bucket: string; prefix: string; shared: boolean }>
   /** placements のうち、env.json に無く state にだけあるもの（利用者が設定から外した保存場所。確認が言い分ける）。 */
   stateOnlyBuckets: string[]
+  /**
+   * 記録の鍵が残っているか。**false と言い切れるのは、main が false を返したときだけ**（欠け・真偽値でない値は true に読む）。
+   * 鍵の無効化は共用型の段にしかできないので、true の回は、HANAMII の段が保存場所を済ませたあとも段を飛ばさない。
+   */
+  keyRecorded: boolean
 }
 
 export type SharedTeardownReply = Awaited<ReturnType<Window['electronAPI']['cloud']['teardown']>>
@@ -52,6 +59,7 @@ export const SHARED_TEARDOWN_WORDS: TeardownWords = {
   rowButton: '🗑 破棄',
   running: '破棄しています…',
   doneHeadline: '✅ 破棄しました',
+  keptHeadline: '⚠️ 破棄していません',
   inProgressHeadline: '⏳ 破棄の途中です',
   failedHeadline: '⚠️ 破棄できませんでした',
   factsUnreadable: '破棄するものの記録を読めませんでした',
@@ -82,6 +90,8 @@ export async function readSharedTeardownRecord(projectDir: string): Promise<Shar
     registryUsers: [...rec.registryUsers],
     placements: rec.placements.map(p => ({ bucket: String(p.bucket), prefix: String(p.prefix), shared: p.shared === true })),
     stateOnlyBuckets: [...rec.stateOnlyBuckets],
+    // 欠け・真偽値でない値は、鍵が残っている側（段を走らせる側）に読む。形が違う記録のように投げない（古い main が返さない回も、消す側の段は動かす）
+    keyRecorded: rec.keyRecorded !== false,
   }
 }
 
@@ -108,15 +118,36 @@ export const sharedRegistryDeleteDefault = (r: { registryName: string | null; re
   registryDeleteDefault({ registryName: r.registryName, origin: r.registryOrigin, otherUsers: r.registryUsers.length })
 
 /**
+ * 記録の保存場所に、確認の材料（`facts.placements`）の `keep`（消さずに残す）を、**名前と prefix の組**で載せる。
+ * `keep` が付いた保存場所の組と一致するものにだけ `keep` を付ける（付かないものは記録のオブジェクトのまま）。材料が無い・`keep` が無い回は、記録のまま。
+ * 共用型の `targets`・`confirmTitleOf`・`notes` と、残りの呼び名（`sharedLeftoverNoun`）が、消す保存場所（`keep` の無いもの）だけを数えるための材料。
+ */
+export function placementsWithKeep<P extends { bucket: string; prefix: string }>(
+  recordPlacements: readonly P[],
+  placements: ReadonlyArray<TeardownPlacement | null | undefined> | null | undefined,
+): Array<P & { keep?: PlacementKeep }> {
+  const kept = new Map<string, PlacementKeep>()
+  for (const f of placements ?? []) {
+    if (f && isKeptPlacement(f) && typeof f.bucket === 'string') kept.set(`${f.bucket}\u0000${f.prefix ?? ''}`, f.keep as PlacementKeep)
+  }
+  return recordPlacements.map(p => {
+    const keep = kept.get(`${p.bucket}\u0000${p.prefix}`)
+    return keep ? { ...p, keep } : p
+  })
+}
+
+/**
  * 共用型の記録の残りを、利用者に何と呼ぶか（チェックの文・確認の題の名詞。0.6.24 A-2・A-8）。**この1つを、チェックの文と確認の題が使う**（名詞を2つ書かない）。
  *  ・アプリがある → null（公開の回。名詞では言い換えない）
  *  ・保存場所だけ → '保存場所' ／ 数えるレジストリだけ → 'コンテナレジストリ' ／ 両方 → '保存場所・コンテナレジストリ'
  *  ・どれも無い → null（段を足さない回はここへ来ない。来ても、公開の言い方に戻るだけで、何かを消す文は作らない）
  * `registryCounted` は sharedRegistryCounted の答え（数えないレジストリは、名前があっても無いものとして扱う）。
+ * **保存場所は、消すもの（`keep` の無いもの）だけを数える**。`placements` の要素が `keep` を持てば残す側（消さないので、呼び名に入れない）。
+ * 呼び手は、確認では `placementsWithKeep` で載せた保存場所を、プロジェクトの削除の門（sharedLeftoverGate.ts）は記録の残り（SharedLeftover）をそのまま渡す。
  */
-export function sharedLeftoverNoun(r: Pick<SharedTeardownRecord, 'appNames' | 'placements'>, registryCounted: boolean): string | null {
+export function sharedLeftoverNoun(r: { appNames: readonly string[]; placements: ReadonlyArray<{ bucket: string }> }, registryCounted: boolean): string | null {
   if (r.appNames.length > 0) return null
-  const hasPlacements = r.placements.length > 0
+  const hasPlacements = r.placements.some(p => !isKeptPlacement(p))
   if (hasPlacements && registryCounted) return '保存場所・コンテナレジストリ'
   if (hasPlacements) return '保存場所'
   return registryCounted ? 'コンテナレジストリ' : null
@@ -133,16 +164,23 @@ export const sharedTeardownSpec: TargetSpec<SharedTeardownRecord, { heldByMain: 
   readRecord: readSharedTeardownRecord,
   // アプリが無く、保存場所・コンテナレジストリだけが残る回は、見出しも「公開を破棄します」と言わない（0.6.24 A-8）。名詞はチェックの文と同じ sharedLeftoverNoun の1つ
   // （アプリがある回・名詞の無い回は null＝今の見出し）。【公開】の 🗑・📡・プロジェクトの削除の3つの入口すべてが、確認の作り手（confirm.ts）でこれを通る。
-  confirmTitleOf: r => {
-    const noun = sharedLeftoverNoun(r, sharedRegistryCounted(r))
-    return noun === null ? null : `${noun}を破棄します`
+  confirmTitleOf: (r, placements) => {
+    const withKeep = placementsWithKeep(r.placements, placements)
+    const noun = sharedLeftoverNoun({ appNames: r.appNames, placements: withKeep }, sharedRegistryCounted(r))
+    if (noun !== null) return `${noun}を破棄します`
+    // アプリが無く、保存場所は全部「残す」（keep）で、借り手のいるレジストリだけが選べる回（名詞は null）。一覧と選択が言うのはレジストリだけなので、公開の破棄とは言わない
+    // （keep の無い回は今のまま）。
+    if (r.appNames.length === 0 && r.registryName && withKeep.some(p => isKeptPlacement(p))) return 'コンテナレジストリを破棄します'
+    return null
   },
   // 記録に無い残骸（レジストリだけ・保存場所だけ）でも確認を出す（P11）。保存場所は env.json の同意済み + state にだけあるもの
   // （親の判断・2026-10-10: state にだけある保存場所も「言って消す」ので、数える）。
   hasWork: sharedTeardownHasWork,
-  targets: r => {
-    // アプリが無く保存場所も無い回（レジストリだけ）は、一覧の先頭が空にならないよう、選択の欄が言うものをここでも1件挙げる。
-    if (r.appNames.length === 0 && r.placements.length === 0 && r.registryName) {
+  targets: (r, placements) => {
+    // アプリが無く消す保存場所も無い回（レジストリだけ。保存場所が全部「残す」の回も）は、一覧の先頭が空にならないよう、選択の欄が言うものをここでも1件挙げる。
+    // 消す保存場所は keep の無いものだけ数える（残す保存場所は、確認の 💾 が「残ります」と言う）。
+    const removing = placementsWithKeep(r.placements, placements).filter(p => !isKeptPlacement(p))
+    if (r.appNames.length === 0 && removing.length === 0 && r.registryName) {
       return [`コンテナレジストリ『${r.registryName}』（下のチェックで選んだとき）`]
     }
     return r.appNames.map(n => `AppRun アプリ『${n}』`)
@@ -165,14 +203,16 @@ export const sharedTeardownSpec: TargetSpec<SharedTeardownRecord, { heldByMain: 
       },
     }]
   },
-  notes: r => {
+  notes: (r, placements) => {
     const out: string[] = []
     if (r.appNames.length > 0) out.push(`🔗 ${urlChangesOnTeardownNotice()}`)
     // 記録が無いと言うのは、アプリがあるときだけ。押し直しの回（レジストリを消し終えて保存場所で止まった回）は記録にレジストリ名が無いが、
     // 公開した形跡の無い記録に「月額がかかり続けます」は言わない。
     if (!r.registryName && r.appNames.length > 0) out.push(`⚠️ ${registryUnknownNotice()}`)
     // 利用者が設定から外した保存場所。Koto が作ったもので、残すと月額が黙って続くので、確認で言って消す。
-    if (r.stateOnlyBuckets.length > 0) out.push(`⚠️ 設定から外した保存場所${bucketNamesText(r.stateOnlyBuckets)}も削除します。`)
+    // ただし、その保存場所の記録が全部「残す」（keep）のものは、削除しますと言わない（確認の 💾 が「残ります」と言う）。
+    const stateOnly = bucketsNotKept(r.stateOnlyBuckets, placementsWithKeep(r.placements, placements))
+    if (stateOnly.length > 0) out.push(`⚠️ 設定から外した保存場所${bucketNamesText(stateOnly)}も削除します。`)
     return out
   },
   // main が返した、消す保存場所の全件を使う（共通の読み口の env.json だけの読みを上書きする。確認が言うものと main が消すものを同じ関数で決める）。
@@ -192,5 +232,9 @@ export const sharedTeardownSpec: TargetSpec<SharedTeardownRecord, { heldByMain: 
       shownPlacements: opts.shownPlacements,
     }),
   failure: message => ({ ok: false, message }),
+  // 記録の鍵が残るか。`false` のときだけ門を通す（欠け・真偽値でない値は残る側。`readSharedTeardownRecord` と同じ向き）。
+  keyRecorded: record => record.keyRecorded !== false,
+  // 何も消さない回（teardown/keptNothing.ts の門）の結果。main が同じ入力で返す形（残した保存場所の事実と keptOnly）のまま。
+  keptNothingResult: reply => reply,
   toView: raw => toTeardownView('sakura-apprun', raw),
 }
