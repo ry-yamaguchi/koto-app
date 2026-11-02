@@ -83,6 +83,10 @@ type ProjectOpsSnapshotShape = import('../main/projectOps').ProjectOpsSnapshot
 /** どの公開先の操作か（記録の target と同じ。公開先の種類、または 'unknown'）。`publishMeta.runningOp` の戻りの公開先。 */
 type RunningOpTargetShape = import('../main/projectOps').OpTarget
 
+// ── cloud.twinFacts の引数と返り値（src/shared/twinFactsTypes.ts。main の cloud/twinFacts.ts と同じ形を使う）──────────
+type TwinFactsArgsShape = import('../shared/twinFactsTypes').TwinFactsArgs
+type TwinFactsResultShape = import('../shared/twinFactsTypes').TwinFactsResult
+
 /** 引き取りの候補（shared/publishImport.ts の ImportCandidate と同じ形）。 */
 type ImportCandidate = {
   target: 'vercel' | 'sakura-apprun'
@@ -220,8 +224,9 @@ interface Window {
       trashCheck(p: string): Promise<{ ok: true } | { ok: false; kind: 'denied' | 'record' | 'project' | 'workspace' | 'unknown'; message: string }>
       /**
        * プロジェクトのフォルダをゴミ箱へ移す（プロジェクトの削除の最後の段）。`confirmed: true` が無い・処理が走っている・公開の記録（`.sakuraide.json`・`.sakura-cloud/state.json`）が読めない・専有型が残っている回は移さず `ok:false`。
+       * 専有型が残っていても、資源の ID（アプリ・クラスタ・ASG・LB）が無く、残っている保存場所（印）の全部が「消さずに残す」（`keep` がある）なら通す（`dedicatedLeftoverAllKept`）。
        * `skippedForTwins` は**必須**（画面の plan が、覆う複製があるために破棄を外した公開先。無ければ `[]`）。main は移す直前に、その公開先の覆う複製を読み直し、
-       * 1つでも無くなっていた・確かめられなかった回は移さず `reason: 'twins-gone'` で断る（文は言い分ける。画面は材料を読み直して plan を作り直す）。配列でない・知らない公開先の名前を含む回も断る。
+       * 1つでも無くなっていた・確かめられなかった回は移さず `reason: 'twins-gone'` で断る（文は言い分ける。画面は材料を読み直して plan を作り直す）。専有型の印だけが残り、全部を残す理由が無くなった回の断りにも付く。配列でない・知らない公開先の名前を含む回も断る。
        */
       trashProject(dir: string, opts: { confirmed: true; skippedForTwins: Array<'hanamii' | 'sakura-apprun' | 'sakura-apprun-dedicated' | 'sakura-rental' | 'vercel'> }): Promise<{ ok: true } | { ok: false; message: string; reason?: 'twins-gone' }>
       /** 同じフォルダの中での名前の変更。記録・プロジェクトのフォルダは理由の文で投げる。 */
@@ -507,10 +512,10 @@ interface Window {
         message?: string
       }>
       /**
-       * `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。必須（付け忘れを型で止める）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
+       * `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。必須（付け忘れを型で止める）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
        * 見せていない・形が違うものは消さない。`skippedBuckets` は、その理由で消さなかった保存場所（残れば月額が続く）。
        */
-      teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{
+      teardown(projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }): Promise<{
         ok: boolean; appDeleted?: boolean; executed?: string[]; skipped?: string[]
         remainingBucket?: string; remainingBuckets?: string[]
         skippedBuckets?: string[]
@@ -519,11 +524,13 @@ interface Window {
         keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[]
         /** 残したコンテナレジストリの由来と、使っているほかのプロジェクト（調べられなかった回は keptRegistryUsers が無い）。警告は、このプロジェクトだけのものにだけ月額と「後で消す場合は」を言う。 */
         keptRegistryOrigin?: 'owned' | 'adopted' | 'unknown'; keptRegistryUsers?: string[]
+        /** 成功した回のうち、アプリもレジストリも消さず、保存場所もデータごと残した回だけ true。結果の見出しが「破棄していません」と言い分ける。 */
+        keptOnly?: true
         message?: string
       }>
       /** 破棄の確認に出す材料。読むだけ（外部へ要求を出さない）。env.json が無い・読めないときは ok:false。 */
       teardownRecord(projectDir: string): Promise<
-        | { ok: true; record: { appNames: string[]; registryName: string | null; registryOrigin: 'owned' | 'adopted' | 'unknown'; registryUsers: string[]; placements: Array<{ bucket: string; prefix: string; shared: boolean }>; stateOnlyBuckets: string[] } }
+        | { ok: true; record: { appNames: string[]; registryName: string | null; registryOrigin: 'owned' | 'adopted' | 'unknown'; registryUsers: string[]; placements: Array<{ bucket: string; prefix: string; shared: boolean }>; stateOnlyBuckets: string[]; keyRecorded: boolean } }
         | { ok: false; message: string }>
       /**
        * 同じ公開の記録（HANAMII の projectId・共用型の apprun-app の id・専有型のリソース ID）を持つ、同じ親フォルダの別のフォルダ（複製）の名前を、公開先ごとに返す。
@@ -532,6 +539,12 @@ interface Window {
       recordTwins(projectDir: string): Promise<
         | { ok: true; twins: { hanamii: string[]; 'sakura-apprun': string[]; 'sakura-apprun-dedicated': string[] } }
         | { ok: false; message: string }>
+      /**
+       * 破棄を押す前に読む。同じ公開の記録を持つ別のフォルダがあるか（`refusal`。破棄の骨が断る判断と同じ）と、渡した保存場所ごとに、破棄が消さずに残すか
+       * （`keep`。同じ保存場所の同じ prefix を使うフォルダがいる `twin`・複製かどうか確かめられない `unread`。保存場所の破棄と同じ判断）を返す。
+       * 読むだけ（外部へ要求を出さない・何も書かない）。引数が正しくなければ `{ ok: false }`。
+       */
+      twinFacts(projectDir: string, args: TwinFactsArgsShape): Promise<TwinFactsResultShape>
       /** 破棄画面に出すレジストリ名（保存済み資格情報の名前のみ。パスワードは返らない）。 */
       registryName(projectDir: string): Promise<{ ok: boolean; name: string | null }>
       checkExpiry(projectDir: string): Promise<{ ok: boolean; expired?: boolean; createdAt?: string | null; ttlHours?: number | null; message?: string }>
@@ -693,10 +706,10 @@ interface Window {
        *   （利用者が自分で置いたファイルがある・ほかのプロジェクトが使っている）。**残れば月額も続く**
        * - `deletionAccepted` … HANAMII が削除を受け付けただけで、まだ終わっていない（原本は 202）。このとき
        *   `ok:false`・`appDeleted:false` で、保存場所にも記録にも触れていない。専有型の `inProgress`（Koto が待ち切れなかった）とは別の事実
-       * - `shownPlacements`（opts）… 確認で見せた保存場所（名前と prefix の組）。必須。main は、この組と一致する保存場所だけを消す（0.6.24 F）
+       * - `shownPlacements`（opts）… 確認で見せた保存場所（名前と prefix の組）。必須。main は、この組と一致する保存場所だけを消す（0.6.24 F）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
        * - `skippedBuckets` … 見せていない・形が違うために消さなかった保存場所（残れば月額が続く）
        */
-      teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{
+      teardown(projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }): Promise<{
         ok: boolean; appDeleted?: boolean; executed?: string[]; remainingBucket?: string; remainingBuckets?: string[]
         skippedBuckets?: string[]
         keptBucketName?: string; keptBucketNames?: string[]; message?: string
@@ -931,11 +944,11 @@ interface Window {
       // 以前は「LB→ASG→クラスタ」と書いていたが、実装はアプリの段が先頭にある）。
       // opts.confirmed は上と同じ意味。共通の骨（main の cloud/teardownShell.ts）に載っている（0.6.22 段階3B-1）。
       // opts は必須（`?` のままだと、確認の印を付け忘れた呼び出しが型で止まらない。HANAMII・共用型と同じ）。
-      // opts.shownPlacements は確認で見せた保存場所（名前と prefix の組）。必須。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
+      // opts.shownPlacements は確認で見せた保存場所（名前と prefix の組）。必須。main は、この組と一致する保存場所だけを消す（0.6.24 F）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
       // skippedBuckets は、見せていない・形が違うために消さなかった保存場所（残れば月額が続く）。
       // #39: 各段は一覧から消えるまで待つ。待ち切れず(timeout)止まったときだけ inProgress が立つ
       // （「まだ残っています」＝失敗、とは区別する。画面は黄色い注意＋再開導線を出す）。
-      teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }): Promise<{
+      teardown(projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }): Promise<{
         ok: boolean
         executed: string[]
         message: string
@@ -946,8 +959,8 @@ interface Window {
         inProgress?: { applicationID?: string; loadBalancerID?: string; asgID?: string; clusterID?: string }
         // 2026-09-24 検分の指摘4・9・13: 計算資源（アプリ・LB・ASG・クラスタ）は消し切れたか。
         // 保存場所だけが失敗すると ok は false だが、アプリは消えている（結果欄の管理画面への導線などが使う）。
-        // 公開記録（📡 の行）を消すかには使わない: 消すのは保存場所まで片づいた ok の回だけ（main の shouldForgetPublishRecord。
-        // D1=1・0.6.22 段階3B-1。保存場所だけ残った回は行を残し、📡 から押し直せる。画面は消さない）。
+        // 公開記録（📡 の行）を消すかには使わない: 消すのは保存場所まで片づいた ok の回のうち、何かを消した回だけ（main の shouldForgetPublishRecord。
+        // D1=1・0.6.22 段階3B-1。保存場所だけ残った回と、何も消さなかった keptOnly の回は行を残し、📡 から押し直せる。画面は消さない）。
         appDeleted?: boolean
         // 保存場所が2件以上で途中で止まった回の、残りの全件（HANAMII の remainingBuckets と同じ。先頭は止まった1件で remaining.storageBucket と同じ。0.6.22 段階3B-2）。
         remainingBuckets?: string[]
@@ -957,6 +970,8 @@ interface Window {
         // 残した理由（共用型・HANAMII と同じ。ほかのプロジェクトも使っている／Koto が作ったのではないファイルがある）。
         keptBucketsUsedByOthers?: string[]
         keptBucketsWithOwnFiles?: string[]
+        // 成功した回のうち、計算資源を消さず、保存場所をデータごと全部残した回だけ true。結果の見出しが「削除していません」と言い分ける。
+        keptOnly?: true
         // 段ごとの所要時間と合計（2026-10-07・create と同じ）。
         stageTimings?: import('../shared/stageTiming').StageTimings
       }>

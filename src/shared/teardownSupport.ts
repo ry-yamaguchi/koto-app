@@ -9,6 +9,8 @@
 // 「できません」だけでは、月額課金が続くものを放置させることになる。
 
 import type { PublishTargetKind } from '../renderer/publishStatus'
+import type { PlacementKeep } from './twinFactsTypes'
+import { bucketsNotKept, isKeptPlacement, keptDataGroups, keptDataLine } from './keptDataNote'
 
 /** Koto から破棄できるか。'manual' はサービス側で消してもらう。 */
 export type TeardownSupport = 'supported' | 'manual'
@@ -82,6 +84,58 @@ export function dedicatedStorageLeftoverNames(record: {
   if (many.length > 0) return Array.from(new Set(many))
   const one: unknown = record?.storageLeftoverBucket
   return typeof one === 'string' && one !== '' ? [one] : []
+}
+
+/**
+ * 専有型の記録が言う「残っている保存場所」が、**全部「消さずに残す」側か**（純関数）。プロジェクトの削除が止めるかを決める**唯一の判断**——
+ * 画面（renderer/teardown/projectDeletePlan.ts の `projectDeleteBlockOf`）と main（ipc/fsTrash.ts の `trashProjectFs` の手順7）が、同じこれを通る。
+ *
+ * 真になるのは、次の**すべて**を満たすときだけ。
+ *  ・記録に資源の ID（アプリ・クラスタ・オートスケーリンググループ・ロードバランサ）が1つも無い（1つでもあれば偽。月額が止まらない資源が残る）
+ *  ・`dedicatedStorageLeftoverNames(record)` が1件以上（残っている保存場所の印がある）
+ *  ・`bucketsNotKept(names, placements)` が空（印の名前それぞれについて、同じ名前の保存場所が `placements` に1件以上あり、その全部が `keep` を持つ）
+ * 材料に無い名前・`keep` の無い保存場所が1件でもあれば偽。`placements` が配列でない・null・undefined は空として扱う（偽に倒れる）。
+ * 形の読めない記録・読めない印も偽（止める側に倒す。名前は `dedicatedLeftoverMarkNames` の読み方で、複数形と単数の両方を数える）。
+ * 残す保存場所のうち、複製のフォルダが同じ保存場所を使っているもの（`keep.risk` が `twin`）は、複製のフォルダの削除の画面から辿れる（実際の画面では確かめていない）。
+ * 複製のフォルダの記録を読めないもの（`unread`）は、辿れる複製のフォルダがあるとは限らない。
+ */
+export function dedicatedLeftoverAllKept(
+  record: {
+    applicationID?: string | null
+    loadBalancerID?: string | null
+    asgID?: string | null
+    clusterID?: string | null
+    storageLeftoverBucket?: string | null
+    storageLeftoverBuckets?: readonly string[] | null
+  } | null | undefined,
+  placements: ReadonlyArray<{ bucket?: unknown; keep?: unknown } | null | undefined> | null | undefined,
+): boolean {
+  if (record?.applicationID || record?.loadBalancerID || record?.asgID || record?.clusterID) return false
+  const names = dedicatedLeftoverMarkNames(record)
+  if (names === null || names.length === 0) return false
+  return bucketsNotKept(names, Array.isArray(placements) ? placements : []).length === 0
+}
+
+/**
+ * 専有型の記録の「残っている保存場所」の印を、複数形（`storageLeftoverBuckets`）と単数（`storageLeftoverBucket`）の**両方**から読んだ名前の全件（同じ名前は1つ）。
+ * `dedicatedLeftoverAllKept` と、画面が「どの保存場所が残るか」を言う側（projectDeleteDedicatedKept.ts）が同じこれを通る。
+ * ほかの2つは読み方が違う（`dedicatedTeardownHasWork` は単数だけ・`dedicatedStorageLeftoverNames` は複数形があれば複数形だけ）ので、
+ * 2つが食い違う記録（手で直した・壊れた）では、片方にしか無い名前を見落とす。ここは両方を数える。
+ * 形の読めない値（配列でない複数形・文字列でない要素・空の文字列の要素・文字列でない単数）が1つでもあれば null（呼び手は偽＝止める側に倒す）。
+ * 値が無い（undefined・null）・空の文字列の単数は「無い」。
+ */
+export function dedicatedLeftoverMarkNames(record: {
+  storageLeftoverBucket?: string | null
+  storageLeftoverBuckets?: readonly string[] | null
+} | null | undefined): string[] | null {
+  const listed: unknown = record?.storageLeftoverBuckets
+  const one: unknown = record?.storageLeftoverBucket
+  if (listed !== undefined && listed !== null) {
+    if (!Array.isArray(listed) || listed.some(b => typeof b !== 'string' || b === '')) return null
+  }
+  if (one !== undefined && one !== null && typeof one !== 'string') return null
+  const all: string[] = [...(Array.isArray(listed) ? (listed as string[]) : []), ...(typeof one === 'string' && one !== '' ? [one] : [])]
+  return Array.from(new Set(all))
 }
 
 /**
@@ -218,20 +272,51 @@ export function storageTeardownDoneLine(bucket: string, note: string, keptData?:
     : `保存場所『${bucket}』のデータを削除しました — ${note}`
 }
 
+/** 💾 の文の材料になる保存場所1件。`keep` があれば、消さずに残す保存場所（確認・削除の画面・手順6の行が、同じ「残ります」の文で言う）。 */
+export type DataNotePlacement = { bucket: string; prefix?: string; shared?: boolean; keep?: PlacementKeep | null }
+
+/**
+ * 消さずに残す保存場所（`keep` のあるもの）の「残ります」の文。**確認・削除の画面の赤い箱・手順6の行が同じこれを通る**（文は keptDataNote.ts の1つ）。
+ * `monthly` が真なら括弧で月額が続くことを言う。確認は費用の行が1回だけ言うので偽にする。
+ * 後ろに「コントロールパネルで削除する案内」は続けない（その案内は「消すと、そのプロジェクトのデータも消えます」と言い、
+ * 別のフォルダが同じデータを使っているという理由の文と並ぶと食い違う）。
+ */
+function keptPlacementsNote(kept: readonly DataNotePlacement[], monthly: boolean): string {
+  return keptDataGroups(kept).map(g => keptDataLine(bucketNamesText(g.buckets), g.reason, monthly)).join('')
+}
+
 /**
  * 破棄の確認画面に出す「保存場所はどうなるか」の一言（`teardownDataNote` の出し分け）。
  *
  * 片づけない破棄では、**残ることと、どこから消せるかを言う**。「言わない」では足りない——
  * 利用者は手順6の確認で見た文面を覚えていて、📡 からでも同じことが起きたと受け取る。
+ *
+ * `placement.keep` がある保存場所は、公開先によらず**「残ります」と言う**（消さない。理由は keptDataNote.ts の文）。
+ * `keptMonthlyNote` は、その文に括弧の月額を付けるか（既定は付ける。確認は費用の行が言うので偽を渡す）。`keep` の無い保存場所の文は変わらない。
  */
 export function teardownDataNoteFor(opts: {
   target: PublishTargetKind
-  placement: { bucket: string; prefix?: string; shared?: boolean } | null | undefined
+  placement: DataNotePlacement | null | undefined
+  keptMonthlyNote?: boolean
 }): string {
   const p = opts.placement
   if (!p || typeof p.bucket !== 'string' || p.bucket.length === 0) return ''
+  if (isKeptPlacement(p)) return keptPlacementsNote([p], opts.keptMonthlyNote !== false)
   if (teardownRemovesStorage(opts.target)) return teardownDataNote(p)
-  return `保存場所『${p.bucket}』とその中のデータは残ります（消すまで月額が続きます）。`
+  return keptDataLine(bucketNamesText([p.bucket]), '', true)
+    + STORAGE_LEFTOVER_GUIDE
+}
+
+/** 消す側（`keep` の無い保存場所だけ）の文。1件なら `teardownDataNoteFor` と同じ文、2件以上なら全件を名指しする1つの文。`list` は1件以上。 */
+function removalNoteForAll(target: PublishTargetKind, list: readonly DataNotePlacement[]): string {
+  if (list.length === 1) return teardownDataNoteFor({ target, placement: list[0] })
+  const names = bucketNamesText(list.map(p => p.bucket))
+  if (teardownRemovesStorage(target)) {
+    return `保存場所${names}にある、このプロジェクトのデータも削除します。`
+      + 'ほかのプロジェクトのデータや、あなたが自分で置いたファイルは残します。'
+      + 'それぞれの保存場所を使っているプロジェクトがほかに無ければ、保存場所そのものも削除して月額を止めます。'
+  }
+  return keptDataLine(names, '', true)
     + STORAGE_LEFTOVER_GUIDE
 }
 
@@ -250,23 +335,21 @@ export function teardownDataNoteFor(opts: {
  * （掟10「お金・破壊の歯止め」）。**確認で見せるものと、実際に消すものを一致させる**（いまは main も、見せたものだけを消す）。
  *
  * 1件のときは `teardownDataNoteFor` とまったく同じ文を返す（文言を二重管理しない）。
+ * `keep` のある保存場所は消す側の文に入れず、「残ります」の文を続ける（消すものと残すものが混ざる回は、消す側の文のあとに残す側の文）。
+ * `keep` の無い保存場所だけの回の文は、1文字も変わらない。`keptMonthlyNote` は `teardownDataNoteFor` と同じ。
  * 画面には素のテキストとして出るので、Markdown 記法は使わない（v0.2.98 の教訓）。
  */
 export function teardownDataNoteForAll(opts: {
   target: PublishTargetKind
-  placements: Array<{ bucket: string; prefix?: string; shared?: boolean }> | null | undefined
+  placements: DataNotePlacement[] | null | undefined
+  keptMonthlyNote?: boolean
 }): string {
   const list = (opts.placements ?? []).filter(p => p && typeof p.bucket === 'string' && p.bucket.length > 0)
   if (list.length === 0) return ''
-  if (list.length === 1) return teardownDataNoteFor({ target: opts.target, placement: list[0] })
-  const names = bucketNamesText(list.map(p => p.bucket))
-  if (teardownRemovesStorage(opts.target)) {
-    return `保存場所${names}にある、このプロジェクトのデータも削除します。`
-      + 'ほかのプロジェクトのデータや、あなたが自分で置いたファイルは残します。'
-      + 'それぞれの保存場所を使っているプロジェクトがほかに無ければ、保存場所そのものも削除して月額を止めます。'
-  }
-  return `保存場所${names}とその中のデータは残ります（消すまで月額が続きます）。`
-    + STORAGE_LEFTOVER_GUIDE
+  const kept = list.filter(p => isKeptPlacement(p))
+  if (kept.length === 0) return removalNoteForAll(opts.target, list)
+  const rest = list.filter(p => !isKeptPlacement(p))
+  return (rest.length > 0 ? removalNoteForAll(opts.target, rest) : '') + keptPlacementsNote(kept, opts.keptMonthlyNote !== false)
 }
 
 /**

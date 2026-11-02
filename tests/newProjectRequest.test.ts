@@ -3,6 +3,7 @@ import {
   buildNewProjectRequest,
   stashNewProjectRequest,
   takeNewProjectRequest,
+  hasNewProjectRequest,
   SITE_TYPES,
   type NewProjectRequestArgs,
 } from '../src/renderer/newProjectRequest'
@@ -155,6 +156,21 @@ describe('stashNewProjectRequest / takeNewProjectRequest — ChatPanel未マウ�
 
   it('何もstashされていなければ null', () => {
     expect(takeNewProjectRequest('/tmp/never-stashed')).toBeNull()
+  })
+
+  it('hasNewProjectRequest: 同じdirの退避があれば true。見るだけで取り出さない（あとで take できる）', () => {
+    stashNewProjectRequest('/tmp/proj-e', '依頼E')
+    expect(hasNewProjectRequest('/tmp/proj-e')).toBe(true)
+    expect(hasNewProjectRequest('/tmp/proj-e')).toBe(true) // 見ても消えない
+    expect(takeNewProjectRequest('/tmp/proj-e')).toBe('依頼E')
+    expect(hasNewProjectRequest('/tmp/proj-e')).toBe(false) // 取り出したあとは無い
+  })
+
+  it('hasNewProjectRequest: dirが違えば false。何も無ければ false', () => {
+    stashNewProjectRequest('/tmp/proj-f', '依頼F')
+    expect(hasNewProjectRequest('/tmp/other-dir')).toBe(false)
+    expect(takeNewProjectRequest('/tmp/proj-f')).toBe('依頼F')
+    expect(hasNewProjectRequest('/tmp/never-stashed')).toBe(false)
   })
 
   it('後からのstashは前の内容を上書きする', () => {

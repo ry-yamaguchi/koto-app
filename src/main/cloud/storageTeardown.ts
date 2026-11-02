@@ -81,7 +81,12 @@ export function recordedKeyRisk(projectDir: string, permissionId: string | null 
 /** 記録の鍵を無効にしなかった回の警告の文（R3-c。文は仕様 9章のとおり）。 */
 export const KEY_KEPT_HELD_WARNING = '保存場所のアクセスキーは、ほかのフォルダの記録も同じものを使っているため、無効にしていません。'
 export const KEY_KEPT_UNKNOWN_WARNING = '保存場所のアクセスキーは、ほかのフォルダの記録を確かめられないため、無効にしていません。'
-const KEY_KEPT_WARNINGS: readonly string[] = [KEY_KEPT_HELD_WARNING, KEY_KEPT_UNKNOWN_WARNING]
+/**
+ * 記録の鍵を無効にしなかった理由が、確認で「消しません」と言った保存場所があるからだけの回（複製もいない・鍵の ID を持つ兄弟もいない）に、結果へ足す警告。
+ * 形は上の2つ（`KEY_KEPT_*`）と同じ。`keyWarningLines` は、これにも案内を足さない。
+ */
+export const KEY_KEPT_CONFIRMED_WARNING = '保存場所のアクセスキーは、確認で消さないとお伝えした保存場所があるため、無効にしていません。'
+const KEY_KEPT_WARNINGS: readonly string[] = [KEY_KEPT_HELD_WARNING, KEY_KEPT_UNKNOWN_WARNING, KEY_KEPT_CONFIRMED_WARNING]
 
 /**
  * 記録の鍵を無効にしなかった回に、結果へ足す警告（`teardownStorageForProject` の `warnings`・保存場所0件の段・`apply.ts` の3か所。0.6.24 R3-c）。
@@ -90,6 +95,12 @@ const KEY_KEPT_WARNINGS: readonly string[] = [KEY_KEPT_HELD_WARNING, KEY_KEPT_UN
 export function keyKeptWarning(reason: KeyKeptReason): string {
   return reason === 'held' ? KEY_KEPT_HELD_WARNING : KEY_KEPT_UNKNOWN_WARNING
 }
+
+/**
+ * 確認が「消しません」と言った保存場所（`mustKeepData`）を、確認のあとで記録が変わった（複製の記録が消えた）ために消さずに残した回の、結果の説明。
+ * 複製がいる・確かめられない回は `teardownPlanFor` のいつもの理由の文のまま残すので、これは「いまの記録は消してよいと言うが、確認で消さないと言ったので残す」回だけ。
+ */
+export const KEPT_AFTER_CONFIRM_NOTE = '確認のあとで記録が変わったため、消していません。'
 
 /** 記録の鍵を無効にできなかったときの警告の文。呼び手（共用型の破棄）が「鍵の記録を残すか」を決めるのに使う。 */
 export const KEY_REVOKE_FAILED_WARNING = '保存場所のアクセスキーを無効にできませんでした'
@@ -166,6 +177,8 @@ export type StorageTeardownOutcome =
  * このとき**このプロジェクトの prefix も渡す**: 兄弟が同じバケットの同じ prefix を記録に持つ（複製）なら、`teardownPlanFor` はデータにもバケットにも手を付けない
  * （3・4 を飛ばす。`keptData` を返す）。複製から元のデータを消さない（0.6.24 I-1）。
  *
+ * **1 の前に**、`mustKeepData`（確認が「消しません」と言った保存場所）なら、何も要求せずに `keptData` で残して返す（下の引数の説明）。
+ *
  * 5 が最後なのは、鍵を先に無効にすると 3・4 が 403 で失敗するため
  * （中身を消せないままバケットだけ残り、課金が続く）。
  *
@@ -184,8 +197,26 @@ export async function teardownStorage(opts: {
    * 渡し忘れ・絶対パスでない値は「わからない」と読まれ、バケットは消されない（消さない側に倒れる）。
    */
   projectDir: string
+  /**
+   * 確認が「消しません」と言った保存場所（画面が運んだ `keepData`。判断は `storageSelection.ts` の `mustKeepDataOf`）。`true` のときは、この保存場所に**一切手を付けない**:
+   * 一覧も、データの削除も、バケットの削除も、鍵の無効化も、外へ要求を出さずに `keptData` で残す（`storage` は呼ばない）。
+   * `teardownPlanFor` がいま「消す」と言っても同じ（確認のあとで、同じデータを使うフォルダの記録が消えた回）。理由の文は、複製がいる・確かめられない回はその文（記録だけで決まる）、
+   * そうでなければ `KEPT_AFTER_CONFIRM_NOTE`。理由は「どちらでもない」。**消す側には働かない**（`true` でなければ今までどおり判断に任せる）。
+   */
+  mustKeepData?: boolean
 }): Promise<StorageTeardownOutcome> {
   const bucket = opts.placement.bucket
+
+  // 確認で「消しません」と言った保存場所: ここで返す（一覧も要求も出さない）。複製かどうかの理由は記録だけで決まる（`twinRiskOf` はキーの中身に依らない）ので、一覧は要らない
+  if (opts.mustKeepData === true) {
+    const plan = teardownPlanFor(opts.placement, [], bucketUsersFromRecords(opts.projectDir, bucket, opts.placement.prefix))
+    const kept = plan.keptData === true ? plan : null
+    return {
+      ok: true, deletedBucket: false, note: kept?.note ?? KEPT_AFTER_CONFIRM_NOTE, permissionRevoked: false, warnings: [],
+      keptReasons: kept?.keptReasons ?? { ownFiles: false, usedByOthers: false },
+      keptData: true as const,
+    }
+  }
 
   // **消す前に必ず一覧して確かめる。**
   let allKeys: string[]

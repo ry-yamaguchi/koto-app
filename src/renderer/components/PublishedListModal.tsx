@@ -11,6 +11,7 @@ import { teardownSupport } from '../../shared/teardownSupport'
 import TeardownRow from './teardown/TeardownRow'
 import TeardownResultView from './teardown/TeardownResultView'
 import ManualTeardownNote from './teardown/ManualTeardownNote'
+import KeptNothingHint, { LIST_ROW_FORGET_HINT } from './teardown/KeptNothingHint'
 import PublishedInventoryCard from './PublishedInventoryCard'
 import { CONTROL_PANEL_URL } from './ServicePrincipalSection'
 import { hanamiiTeardownSpec, HANAMII_KEY_MISSING_MESSAGE } from '../teardown/targets/hanamii'
@@ -37,9 +38,6 @@ const LIST_STORAGE_RETRY_HINT = `保存場所だけが残りました。この�
  * 一覧が作られなくなる。そのとき押し直せる場所（共用型の節の 🗑）を教える。
  */
 const LIST_SHARED_STORAGE_RETRY_HINT = '保存場所だけが残った場合、この行が一覧から消えることがあります。もう一度削除するには、下の「このプロジェクトを開く」から 📦 さくらのAppRun の「🗑 破棄する（削除）」を押してください（残った保存場所だけを削除します）。'
-
-/** 消すものが記録に無かった（`nothingToDo`）とき、結果に添える次の操作。この破棄では行は消えないので、記録だけを片づける口を教える。 */
-const LIST_NOTHING_TO_DO_HINT = 'この行は「一覧から削除」で消せます。'
 
 /** 「一覧から削除」のツールチップが言う、先に消す操作＝その行の 🗑 のボタン名（専有型は「🗑 削除」・HANAMII と共用型は「🗑 破棄」）。ボタンの無い公開先（レンタルサーバ・Vercel）は上の案内に従う。 */
 const ROW_BUTTON: Partial<Record<PublishTargetKind, string>> = {
@@ -238,6 +236,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 storageRetryHint={LIST_STORAGE_RETRY_HINT}
                 storageRetryAction={{ label: 'このプロジェクトを開く', onClick: () => openProject(dedicatedOutcome.entry.dir) }}
               />
+              <KeptNothingHint outcome={dedicatedOutcome.outcome} />
             </div>
           )}
 
@@ -250,6 +249,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                 retryHint="この一覧の 🗑 破棄"
                 serviceConsoleUrl={PUBLISH_TARGET_CONSOLE.hanamii} storageConsoleUrl={CONTROL_PANEL_URL}
               />
+              <KeptNothingHint outcome={hanamiiOutcome.outcome} />
             </div>
           )}
 
@@ -261,7 +261,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
               <p className="font-semibold text-ink">{sharedOutcome.entry.projectName}（{sharedOutcome.entry.label}）</p>
               {sharedOutcome.outcome.nothingToDo === true ? (
                 <p className="text-ink-secondary select-text" data-shared-nothing-to-do>
-                  {sharedOutcome.outcome.view.message} {LIST_NOTHING_TO_DO_HINT}
+                  {sharedOutcome.outcome.view.message} {LIST_ROW_FORGET_HINT}
                 </p>
               ) : (
                 <TeardownResultView
@@ -272,6 +272,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
                   storageRetryAction={{ label: 'このプロジェクトを開く', onClick: () => openProject(sharedOutcome.entry.dir) }}
                 />
               )}
+              <KeptNothingHint outcome={sharedOutcome.outcome} />
             </div>
           )}
 

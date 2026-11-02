@@ -266,7 +266,7 @@ describe('配線: 複製の扱いは projectDeleteTwins.ts の1か所。plan・f
   it('★★ planProjectDeleteTeardown は splitByTwins で分け、projectDeleteBlockOf に dedicatedTwinned を渡す。呼び手は plan の1つだけ', () => {
     const plan = code('src/renderer/teardown/projectDeletePlan.ts')
     expect(plan).toContain('const { teardown, twinned } = splitByTwins([...ordered, ...rest], facts.twins)')
-    expect(plan).toContain('projectDeleteBlockOf(facts.targets, facts.dedicated, dedicatedTwinned, facts.running)')
+    expect(plan).toContain('projectDeleteBlockOf(facts.targets, facts.dedicated, dedicatedTwinned, facts.running, facts.unreadable === true, dedicatedLeftoverAllKept(facts.dedicated, facts.placements))')
     for (const rel of ['src/renderer/components/ProjectDeleteDialog.tsx', 'src/renderer/teardown/projectDelete.ts', 'src/renderer/teardown/projectDeleteFacts.ts', 'src/renderer/components/Sidebar.tsx']) {
       expect(code(rel), rel).not.toContain('projectDeleteBlockOf(')
     }

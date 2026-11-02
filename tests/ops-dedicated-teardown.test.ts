@@ -265,6 +265,23 @@ describe('公開記録を片づける規則は main の shouldForgetPublishRecor
     }
   })
 
+  // 何も消さなかった回（keptOnly）は、ok でも行を残す（見出しが「削除していません」と言うのに行が消えると、押し直す口が無くなる）。keptOnly は真偽値の true だけを読む。
+  const KEPT_TABLE: Array<[boolean, { ok: boolean; appDeleted?: boolean; keptOnly?: unknown } | null | undefined, boolean]> = [
+    [true, { ok: true, keptOnly: true }, false],
+    [true, { ok: true, appDeleted: true, keptOnly: true }, false],
+    [true, { ok: true, appDeleted: false, keptOnly: true }, false],
+    [true, { ok: false, keptOnly: true }, false],
+    [true, { ok: true, keptOnly: undefined }, true], [true, { ok: true, keptOnly: false }, true],
+    [true, { ok: true, keptOnly: 'true' }, true], [true, { ok: true, keptOnly: 1 }, true], [true, { ok: true, keptOnly: {} }, true],
+    [false, { ok: true, keptOnly: true }, false], [false, { ok: true, keptOnly: false }, false],
+  ]
+  it('keptOnly の行を書き下して固定する（11通り）。行が無かった回は keptOnly でも何もしない', () => {
+    expect(KEPT_TABLE).toHaveLength(11)
+    for (const [hadPublishRecord, result, expected] of KEPT_TABLE) {
+      expect(shouldForgetPublishRecord({ hadPublishRecord, result }), JSON.stringify({ hadPublishRecord, result })).toBe(expected)
+    }
+  })
+
   it('画面側の同じ規則（shouldClearPublishRecord）は無い', async () => {
     const actions = await import('../src/renderer/apprunDedicatedActions')
     expect((actions as Record<string, unknown>).shouldClearPublishRecord).toBeUndefined()

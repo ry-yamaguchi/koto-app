@@ -16,6 +16,7 @@ import { warningLine, warningsNotRepeatedIn } from '../../../shared/opsText'
 import { TEARDOWN_REMAINING_WARNING_HEAD, TEARDOWN_IN_PROGRESS_WARNING_HEAD, teardownRemainingHeadFor, type TeardownView } from '../../../shared/teardownResult'
 import { teardownCallLine } from '../../../shared/teardownCall'
 import { STORAGE_CHECK_BEFORE_DELETE, STORAGE_LISTED_CHECK } from '../../../shared/teardownSupport'
+import { teardownHeadlineOf, type TeardownHeadlineTone } from '../../teardown/headline'
 import type { TeardownWords } from '../../teardown/types'
 import type { TeardownResumedNote } from '../../teardown/watch'
 import StageTimingDetails from '../StageTimingDetails'
@@ -30,6 +31,9 @@ import StageTimingDetails from '../StageTimingDetails'
 export function teardownFailureHasLeftover(view: Pick<TeardownView, 'executed' | 'remaining'>): boolean {
   return (view.executed?.length ?? 0) > 0 || (view.remaining?.length ?? 0) > 0
 }
+
+/** 見出しの色（teardown/headline.ts の tone）。 */
+const HEADLINE_TONE_CLASS: Record<TeardownHeadlineTone, string> = { green: 'text-brand-green', yellow: 'text-brand-yellow', red: 'text-brand-red' }
 
 /** 結果の一言の色（shared の teardownCallLine の tone）。 */
 const NOTE_TONE_CLASS = { ok: 'text-brand-green', wait: 'text-brand-yellow', fail: 'text-brand-red', plain: 'text-ink-secondary' } as const
@@ -128,16 +132,15 @@ export default function TeardownResultView({ view, notes, words, retryHint, serv
     return true
   }))
 
-  const headlineClass = view.state === 'done' ? 'text-xs font-semibold text-brand-green'
-    : view.state === 'inProgress' ? 'text-xs font-semibold text-brand-yellow'
-    : 'text-xs font-semibold text-brand-red'
-  const headline = view.state === 'done' ? words.doneHeadline : view.state === 'inProgress' ? words.inProgressHeadline : words.failedHeadline
+  // 見出しの文と色は、入口によらずこの1つの選び（teardown/headline.ts）が決める。
+  const headline = teardownHeadlineOf(view, words)
+  const headlineClass = `text-xs font-semibold ${HEADLINE_TONE_CLASS[headline.tone]}`
 
   return (
     <>
       <ResumedNotesView notes={notes} shownInResult={warnings.map(warningLine)} />
       <div className="space-y-1" data-teardown-result>
-        <p className={headlineClass}>{headline}</p>
+        <p className={headlineClass}>{headline.text}</p>
         {view.executed.map((e, i) => (
           <p key={i} className="text-xs text-brand-green leading-relaxed">✅ {e}</p>
         ))}

@@ -37,6 +37,12 @@ describe('teardownCallOf: 全分岐', () => {
     expect(teardownCallOf({ ...base, ok: true, warnings: 3 })).toBe('doneWithWarnings')
   })
 
+  it('★★★ 何も消さなかった成功（keptOnly:true）は doneKeptOnly（警告があっても別の呼び名）。ok が先で、失敗の回は keptOnly を読まない', () => {
+    expect(teardownCallOf({ ...base, ok: true, keptOnly: true })).toBe('doneKeptOnly')
+    expect(teardownCallOf({ ...base, ok: true, keptOnly: true, warnings: 2 })).toBe('doneKeptOnly')
+    expect(teardownCallOf({ ...base, keptOnly: true })).toBe('failed')
+  })
+
   it('★★★ 失敗は、途中の印が何も無い ok:false だけ（警告の数は関係しない）', () => {
     expect(teardownCallOf({ ...base })).toBe('failed')
     expect(teardownCallOf({ ...base, warnings: 2 })).toBe('failed')
@@ -50,7 +56,7 @@ describe('teardownCallOf: 全分岐', () => {
 
 describe('teardownStateOf: 結果欄の見出しの3つへの畳み方', () => {
   it('★★ 済んだ（警告つきを含む）は done、途中の2つは inProgress、失敗は failed', () => {
-    const table: Record<TeardownCall, string> = { done: 'done', doneWithWarnings: 'done', inProgress: 'inProgress', stoppedByQuit: 'inProgress', failed: 'failed' }
+    const table: Record<TeardownCall, string> = { done: 'done', doneKeptOnly: 'done', doneWithWarnings: 'done', inProgress: 'inProgress', stoppedByQuit: 'inProgress', failed: 'failed' }
     for (const [call, state] of Object.entries(table)) expect(teardownStateOf(call as TeardownCall), call).toBe(state)
   })
 })

@@ -519,11 +519,12 @@ describe('専有型の確認ダイアログ: 画面は文を組み立てず、�
     // 2026-10-08 から、手順6も 📡 の 🗑 も保存場所まで片づける（0.6.22 段階3B-3 で入口の範囲 scope をやめた。公開先だけで決まる）。
     // 2026-09-25 検分の指摘15: 保存場所は**全件**片づけるので、確認の本文も全件（placements）。
     // **呼び出しの形ごと**見る（'placements,' だけを探すと、ほかの行にも当たって素通りする）。
+    // （0.6.25: 消さずに残す保存場所〔keep〕を見分けるため、targets に placements を渡し、確認の 💾 は、消す保存場所と混じる回だけ括弧の月額を付ける形〔keptMonthlyNote: keptAlongsideRemoved(...)〕で作る）
     expect(confirm).toContain(`const body = buildTeardownConfirmBody({
     verb: spec.words.verb,
-    targets: spec.targets(facts.record),
+    targets: spec.targets(facts.record, facts.placements),
     placements: facts.placements,
-    dataNote: teardownDataNoteForAll({ target: spec.target, placements: facts.placements }),
+    dataNote: teardownDataNoteForAll({ target: spec.target, placements: facts.placements, keptMonthlyNote: keptAlongsideRemoved(facts.placements) }),
     otherTargets: facts.otherTargets,`)
     // 先頭1件だけを渡す形へ戻っていないこと（この行が戻ると『B』が名指しされないまま消える）
     expect(confirm).not.toContain('teardownDataNoteFor({ target')

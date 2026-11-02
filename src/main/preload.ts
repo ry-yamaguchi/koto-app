@@ -3,6 +3,7 @@ import type { TurnStartPayload, TurnAsk, TurnEvent, TurnAnswer } from '../shared
 import type { ApprunDedicatedClusterSpec } from './cloud/apprunDedicatedApply'
 import type { AppPublishInput } from './ipc/apprunDedicated'
 import type { ProjectOpsSnapshot } from './projectOps'
+import type { TwinFactsArgs } from '../shared/twinFactsTypes'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   fs: {
@@ -261,13 +262,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     apply: (projectDir: string, opts?: { confirmed?: boolean; scaleDecision?: 'koto' | 'sakura' }) => ipcRenderer.invoke('cloud:apply', projectDir, opts),
     // 3つとも必須（HANAMII hanamii:teardown・専有型 apprunDedicated:teardown と同じ形）。auth は秘密を含まない印だけ（鍵は main が持つ）。
     // `confirmed` が true でなければ main は何もしない。`deleteRegistry` は true のときだけ消し、`registryName` は確認のときに見せた名前（記録と一致しなければ消さない）。
-    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F。HANAMII・専有型も同じ）。
-    teardown: (projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>
+    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F。HANAMII・専有型も同じ）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
+    teardown: (projectDir: string, auth: { heldByMain: true }, opts: { confirmed: boolean; deleteRegistry: boolean; registryName: string | null; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }) =>
       ipcRenderer.invoke('cloud:teardown', projectDir, auth, opts),
     // 破棄の確認に出す材料（アプリ・レジストリ・消す保存場所）。読むだけ。main の破棄と同じ純関数から作る。
     teardownRecord: (projectDir: string) => ipcRenderer.invoke('cloud:teardownRecord', projectDir),
     // 同じ公開の記録を持つ、同じ親フォルダの別のフォルダ（複製）を、公開先ごとに返す。読むだけ。プロジェクトの削除の画面が、複製のある公開先を破棄から外すのに使う（0.6.24 I-3）。
     recordTwins: (projectDir: string) => ipcRenderer.invoke('cloud:recordTwins', projectDir),
+    // 破棄を押す前に、公開先の断り（同じ公開の記録を持つフォルダがあるか）と、保存場所ごとの「消さずに残す」（複製・確かめられない）を返す。読むだけ。判断は破棄の本体と同じ関数。
+    twinFacts: (projectDir: string, args: TwinFactsArgs) => ipcRenderer.invoke('cloud:twinFacts', projectDir, args),
     // 破棄画面に出すレジストリ名（パスワードは返らない）
     registryName: (projectDir: string) => ipcRenderer.invoke('cloud:registryName', projectDir),
     checkExpiry: (projectDir: string) => ipcRenderer.invoke('cloud:checkExpiry', projectDir),
@@ -329,8 +332,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 3つとも必須（共用型 cloud:teardown・専有型 apprunDedicated:teardown と同じ形）。`confirmed` が true でなければ、main は
     // HANAMII へも保存場所へも1本も要求を出さずに断る（掟10。画面の確認だけに頼らない）。projectDir は保存場所
     // （`.sakura-cloud/env.json`）と同時実行の鍵の相手、projectId は記録が指すものと一致するときだけ消すための照合。
-    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
-    teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>
+    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
+    teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }) =>
       ipcRenderer.invoke('hanamii:teardown', projectDir, auth, opts),
     detectEnvKeys: (projectDir: string) => ipcRenderer.invoke('hanamii:detectEnvKeys', projectDir),
     logs: (token: string, projectId: string, opts?: { limit?: number; since?: string }) =>
@@ -468,8 +471,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('apprunDedicated:create', projectDir, auth, spec, opts),
     // 段階4: 記録にある ID だけを LB→ASG→クラスタ の順で削除する。opts.confirmed は上と同じ意味。
     // 共通の骨（cloud/teardownShell.ts）に載っている（0.6.22 段階3B-1）。opts は必須（確認の印を付け忘れた呼び出しを型で止める。HANAMII・共用型と同じ）。
-    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。
-    teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string }> }) =>
+    // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
+    teardown: (projectDir: string, auth: { token: string; secret: string }, opts: { confirmed: boolean; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }) =>
       ipcRenderer.invoke('apprunDedicated:teardown', projectDir, auth, opts),
     // #39: 破棄の進捗メッセージ購読（各段が一覧から消えるまで待つ間、30秒ごとに1行）。
     // cloud.onApplyProgress と同じ形。戻り値の関数を呼ぶと購読解除。

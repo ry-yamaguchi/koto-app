@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 // ── 段階3A の検分: 押し直しの経路（pressProjectDelete）の2つの約束 ─────────────────────────────────────────────
 //   1. 破棄が済まなかった直後（stopped）は、材料を読み直して返す。済んだ公開先の記録は main が外すので、開いたときの材料のままだと、
 //      画面の赤い箱とチェックが、済んだ破棄を「これから消す」と言い続ける（それ以外の phase では読み直さない）
-//   2. stopped・blocked の押し直しで読み直した材料に、利用者がまだ見ていない注意（記録が読めなくなった・共用型の残りが出てきた）が増えていたら、
+//   2. stopped・blocked の押し直しで読み直した材料に、利用者がまだ見ていない注意（記録が読めなくなった・共用型の記録を確かめられなくなった・共用型の残りが出てきた）が増えていたら、
 //      破棄も移すこともせずに、新しい材料だけを返す（画面が赤い箱を描き直し、見てからもう一度押させる）。見せたあとの押し（seen）では増えていない
 // 偽の deps は tests/projectDeleteRunHarness.ts（呼ばれた順 calls で見る）。流れの場合分けは tests/projectDeleteRun.test.ts。
 
@@ -64,12 +64,26 @@ describe('R pressProjectDelete: 押し直しで増えた注意は、移す前に
     expect(h.trashed).toEqual([])
   })
 
-  it('★★★ 見せたあとの押し（seen が、見せた材料）は先へ進む。破棄する公開先が無いので移す（行き止まりにならない）', async () => {
+  it('★★★ 見せたあとの押し（seen が、見せた材料）でも、読めない公開の記録は止める。破棄も移すこともしない（main が断る回。画面は押せない状態で、止める文が理由を言う）', async () => {
     const fresh = facts({ unreadable: true })
     const { h, deps } = harness({ nextFacts: fresh })
     const r = await pressProjectDelete(DIR, { plan: planProjectDeleteTeardown(fresh), run: stopped, seen: fresh }, true, deps)
-    expect(h.calls).toEqual(['readFacts', ...TRASH])
-    expect(r.run.phase).toBe('trashed')
+    expect(h.calls).toEqual(['readFacts'])
+    expect(r.run).toEqual({ phase: 'blocked', block: { reason: 'record-unreadable' }, steps: [] })
+    expect(h.trashed).toEqual([])
+  })
+
+  it('★★★ 共用型の記録を確かめられなくなった（unconfirmed が新しく立った）回も、移さずに見せる。見せたあとの押しは先へ進む（止めない弱い注意。行き止まりにしない）', async () => {
+    const fresh = facts({ unconfirmed: true })
+    const first = harness({ nextFacts: fresh })
+    expect(await pressProjectDelete(DIR, { plan: plan([]), run: stopped, seen: facts() }, true, first.deps)).toEqual({ run: stopped, facts: fresh })
+    expect(first.h.calls).toEqual(['readFacts'])
+    for (const teardownOnDelete of [true, false]) {
+      const again = harness({ nextFacts: fresh })
+      const r = await pressProjectDelete(DIR, { plan: planProjectDeleteTeardown(fresh), run: stopped, seen: fresh }, teardownOnDelete, again.deps)
+      expect(again.h.calls, `teardownOnDelete=${teardownOnDelete}`).toEqual(['readFacts', ...TRASH])
+      expect(r.run.phase).toBe('trashed')
+    }
   })
 
   const LEFT = { appNames: [], registryName: 'reg', registryOrigin: 'owned' as const, registryUsers: [], placements: [PL] }
@@ -104,12 +118,13 @@ describe('R pressProjectDelete: 押し直しで増えた注意は、移す前に
     expect(h.calls).toEqual(['readFacts'])
   })
 
-  it('★★★ 見せた材料と同じ注意（読めない記録を、すでに見せていた）は止めない。読めた分の公開先は、いつもどおり破棄する', async () => {
+  it('★★★ 見せた材料と同じ注意（読めない記録を、すでに見せていた）でも、読めた分の公開先は破棄しない（main が断る回に先に破棄すると、公開先だけ消えてフォルダが残る）。止める', async () => {
     const fresh = facts({ targets: ['sakura-apprun'], unreadable: true })
     const { h, deps } = harness({ nextFacts: fresh })
     const r = await pressProjectDelete(DIR, { plan: plan(['sakura-apprun']), run: stopped, seen: facts({ targets: ['sakura-apprun'], unreadable: true }) }, true, deps)
-    expect(h.calls).toEqual(['readFacts', 'teardown', ...TRASH])
-    expect(r.run.phase).toBe('trashed')
+    expect(h.calls).toEqual(['readFacts'])
+    expect(h.teardownTargets).toEqual([])
+    expect(r.run).toEqual({ phase: 'blocked', block: { reason: 'record-unreadable' }, steps: [] })
   })
 
   it('★★ 増えたのが公開先だけなら止めない（破棄の確認が、消すものを名指しで見せる）', async () => {

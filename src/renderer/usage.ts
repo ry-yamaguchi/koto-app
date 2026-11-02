@@ -176,8 +176,10 @@ export function budgetStatusForKey(apiKey: string): BudgetStatus {
  *  （main のターン側は usageStore.ts の checkBeforeRequest を直接呼ぶ・こちらは IPC を経由しない）。
  *  W-21（2026-09-27決定）: `allowed:true` でも、上限に達していて「止める」がオフのときは
  *  `warning` が付く（作業中にも知らせる）。
- *  ⚠️ この関数（renderer/usage.ts）を呼ぶのは ChatPanel.tsx:858 の「最初のあいさつ」専用と、
- *  useAiChat.ts:640 の Claude モードからの委譲チェックだけ（検分で確認済み）。**通常の
+ *  ⚠️ この関数（renderer/usage.ts）を呼ぶ所は4つ: 最初のあいさつ（greeting.ts の runGreeting。
+ *  ChatPanel が ports として渡す）・useAiChat の Claude モードからの委譲チェック・useAiChat の
+ *  buildPorts の usage.check（renderer 側で動く 🗂 まとめ〔runCompact〕が使う）・
+ *  securityCheck の 🛡 簡易セキュリティチェック。**通常の
  *  AI Engine チャットのターンはこの関数を経由しない**（main/chat/turnRunner.ts が
  *  main/usageStore.ts の同名関数を直接呼ぶ。そちらには現時点で `warning` が無い。handoff 参照）。
  *  `warning` をチャットに表示する配線は、まず main 側（usageStore.ts・chatTurn.ts）を直す。 */

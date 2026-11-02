@@ -386,7 +386,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
             type="button"
             onClick={() => setShowTargetMenu(v => !v)}
             className="flex flex-col items-end leading-tight px-2 py-1 rounded-lg hover:bg-overlay transition-colors"
-            title="公開先（この環境向けにAIが構成を合わせます）を変更します"
+            title="公開先を変更します"
           >
             <span className="text-[10px] text-ink-muted">公開先 ▾</span>
             <span className="text-[10px] text-ink-secondary whitespace-nowrap">{targetLabel}</span>
@@ -409,7 +409,7 @@ export default function WorkflowBar({ projectDir, refreshKey = 0, meta, onFocusC
               >
                 {selected ? '✓ ' : ''}{TARGET_PROFILES[id].label}
                 <span className="text-[10px] text-ink-muted ml-1">
-                  {TARGET_PROFILES[id].autoPublish ? '（ここから公開できます）' : '（「公開」からは公開できません・AIが構成を合わせるだけ）'}
+                  {TARGET_PROFILES[id].autoPublish ? '（ここから公開できます）' : '（「公開」からは公開できません）'}
                 </span>
               </button>
             )

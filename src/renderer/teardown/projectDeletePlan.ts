@@ -9,10 +9,13 @@ import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
 import type { RunningOpEntry } from '../projectMeta'
 import { opWordFor } from '../../shared/opWord'
 import type { TeardownView } from '../../shared/teardownResult'
-import { dedicatedTeardownHasWork, dedicatedStorageLeftoverNames, bucketNamesText, teardownSupport } from '../../shared/teardownSupport'
+import type { PlacementKeep } from '../../shared/twinFactsTypes'
+import { isKeptPlacement } from '../../shared/keptDataNote'
+import { dedicatedTeardownHasWork, dedicatedStorageLeftoverNames, dedicatedLeftoverAllKept, bucketNamesText, teardownDataNoteForAll, teardownSupport } from '../../shared/teardownSupport'
 import { BUCKET_MONTHLY_YEN, REGISTRY_MONTHLY_YEN, registryIsOnlyThisProjects, type RegistryOrigin } from '../../shared/cloudCost'
 import { splitByTwins, twinFoldersOf, type RecordTwinsFacts, type TwinnedTarget } from './projectDeleteTwins'
-import { sharedLeftoverNoun, sharedRegistryCounted } from './targets/shared'
+import { sharedLeftoverGateOf } from './sharedLeftoverGate'
+import { dedicatedKeptOf, type DedicatedKeptPlacement } from './projectDeleteDedicatedKept'
 import type { TeardownWords } from './types'
 
 /** apprunDedicated.state の記録のうち、止める判断に使う項目（shared/publishMeta.ts の ApprunDedicatedRecord の一部）。 */
@@ -33,18 +36,22 @@ export type RunningOpName = RunningOpEntry['op']
 export type ProjectDeleteBlock =
   | null
   | { reason: 'running'; op: RunningOpName; target: RunningOpEntry['target'] }   // このプロジェクトの公開・破棄・作成が進んでいる。op は記録の語（文にするときは opWordFor を通す）
+  | { reason: 'record-unreadable' }                            // 公開の記録（.sakuraide.json・state.json）を読めない。main もフォルダを移さずに断る
   | { reason: 'dedicated' }                                    // 専有型の公開の記録か、リソースの ID がある
   | { reason: 'dedicated-storage-leftover'; buckets: readonly string[] }   // 専有型の削除で、保存場所だけが残った（残っている全件の名前）
 
 /**
  * プロジェクトの削除を止める理由（規則は上から。最初に当たったものを返す）。
  *  0. 公開・破棄・作成が進んでいる → running（最優先。進んでいる間に「先に手順6で」と言わない）
+ *  0.2. 公開の記録を読めない（recordUnreadable。`.sakuraide.json`・`state.json` の読み失敗・壊れ・形違い）→ record-unreadable。main の `fs:trashProject` も同じ順で断る
+ *     （走っている操作 → 公開の記録 → 覆う複製の免除 → 専有型）。覆う複製の免除より前に置く＝免除があっても、記録が読めなければ止める
  *  0.5. 専有型の覆う複製がある（dedicatedTwinned。同じ親フォルダの別のフォルダが、自分の専有型の記録をすべて持つ。一部だけを持つ複製は数えない。R2-d）→ 止めない（1〜3 を見ない）。
  *     記録は覆う複製の側にも残り、そちらから削除できるので、このフォルダを移しても月額を止められなくなることはない（0.6.24 I-3。main の `fs:trashProject` も同じ「覆う」の判断。複製が見つからない行き止まりの H4 を解く）。
  *     覆う複製を調べられなかった回は、画面が false を渡す（外さない側）
  *  1. 専有型の ID（アプリ・クラスタ・ASG・LB）が残っている → dedicated（専有型の行があるかは問わない）
  *  2. 保存場所だけが残っている（storageLeftoverBuckets の全件。無ければ storageLeftoverBucket の1件）→ dedicated-storage-leftover
- *     （専有型の行があっても言い分ける。D1=1 で、保存場所だけ残った回は 📡 の行が残るため。段階3B-7・設計書 10.11.9 の D3）
+ *     （専有型の行があっても言い分ける。D1=1 で、保存場所だけ残った回は 📡 の行が残るため。段階3B-7・設計書 10.11.9 の D3）。
+ *     ただし、その全部が「消さずに残す」保存場所（leftoverAllKept。shared/teardownSupport.ts の dedicatedLeftoverAllKept。複製と共有している・確かめられない）なら止めない。複製と共有している保存場所は、複製のフォルダのプロジェクトの削除から辿れる（実際の画面では確かめていない）。確かめられない保存場所は、辿れる複製があるとは限らない。main の `fs:trashProject` も同じ関数で通す
  *  3. publish.targets に専有型の行だけがあり、記録が空（幽霊の行）→ dedicated
  *  4. どれでもない → null
  * 専有型は、クラスタ・LB の記録がフォルダ（.sakura-cloud・.sakuraide.json）の中にしかなく、フォルダを移すと月額を Koto から止められなくなる。
@@ -53,17 +60,19 @@ export type ProjectDeleteBlock =
  * ここは理由の言い分けだけをする（判断を2つ持たない）。専有型の行だけがあり記録が空の回（幽霊の行）も止める。
  */
 export function projectDeleteBlockOf(
-  targets: readonly PublishTargetKind[], dedicated: DedicatedResourceIds, dedicatedTwinned: boolean, running?: RunningOpEntry | null,
+  targets: readonly PublishTargetKind[], dedicated: DedicatedResourceIds, dedicatedTwinned: boolean, running?: RunningOpEntry | null, recordUnreadable?: boolean, leftoverAllKept?: boolean,
 ): ProjectDeleteBlock {
   if (running) return { reason: 'running', op: running.op, target: running.target }
+  if (recordUnreadable === true) return { reason: 'record-unreadable' }
   if (dedicatedTwinned === true) return null // 覆う複製が記録を持つ（上の 0.5）。`=== true` なので、渡し忘れ・形違いは外さない
   const hasRow = targets.includes('sakura-apprun-dedicated')
   // 専有型の行も残りも無ければ止めない。行だけがあり記録が空の回（幽霊の行）は、下で dedicated になる。
   if (!hasRow && !dedicatedTeardownHasWork(dedicated)) return null
   const hasId = !!(dedicated?.applicationID || dedicated?.clusterID || dedicated?.asgID || dedicated?.loadBalancerID)
   const buckets = dedicatedStorageLeftoverNames(dedicated)
-  // 保存場所だけが残った回だけ、言い分ける（行があっても）。形が読めない値（文字列でない）は、安全側（dedicated）に倒す。
-  return !hasId && buckets.length > 0 ? { reason: 'dedicated-storage-leftover', buckets } : { reason: 'dedicated' }
+  // 保存場所だけが残った回だけ、言い分ける（行があっても）。形が読めない値（文字列でない）は、安全側（dedicated）に倒す。全部が残す保存場所の回は止めない（`=== true` だけ。渡し忘れ・形違いは外さない）。
+  if (!hasId && buckets.length > 0) return leftoverAllKept === true ? null : { reason: 'dedicated-storage-leftover', buckets }
+  return { reason: 'dedicated' }
 }
 
 /** 止めたときの赤い文（先頭の「⚠️ 」は描く側が付ける）。 */
@@ -72,6 +81,8 @@ export function projectDeleteBlockNote(block: Exclude<ProjectDeleteBlock, null>)
     case 'running':
       // 記録の op は共用型・HANAMII の破棄も専有型の削除も '削除'。画面の言葉は公開先で決める（破棄の流れの「破棄」と揃える。D3）
       return `いまこのプロジェクトの${opWordFor(block.op, block.target)}が進んでいます。終わってから、もう一度このプロジェクトを削除してください。`
+    case 'record-unreadable':
+      return `${PUBLISH_RECORD_UNREADABLE_NOTE}${PUBLISH_RECORD_UNREADABLE_FIX_NOTE}`
     case 'dedicated':
       return 'さくらのAppRun 専有型のリソースが残っているため、この画面からは削除できません。'
         + '先に「📦 さくらのAppRun」の専有型タブ「手順6 作ったものを削除する」で、クラスタ・ロードバランサを含めて削除してから、もう一度このプロジェクトを削除してください。'
@@ -91,15 +102,38 @@ export function projectDeleteBlockNote(block: Exclude<ProjectDeleteBlock, null>)
 export const PUBLISH_RECORD_UNREADABLE_NOTE =
   '公開の記録（.sakuraide.json・.sakura-cloud/）を読めないため、削除できません。記録を直してから、もう一度削除してください。'
 
+/** 止める文（PUBLISH_RECORD_UNREADABLE_NOTE）のすぐ後ろに続ける、直し方。ダイアログと結果欄の赤い文は、どちらも projectDeleteBlockNote でこの2つを続ける。記録は名前が「.」で始まるので、Finder では見えない（Koto のファイル一覧の 👁 で出せる）。 */
+export const PUBLISH_RECORD_UNREADABLE_FIX_NOTE = 'Koto でこのプロジェクトを開き、ファイル一覧の 👁 で隠しファイルを表示すると、そのファイルを開いて直せます。直したら、この画面を開き直してください。'
+
+/**
+ * 共用型の記録（.sakura-cloud/）の問い合わせだけが失敗した回（facts.unconfirmed。行が無い回）の、弱い注意。止めない（利用者が直せない原因で止めると行き止まりになる）。
+ * 「削除できません」とは言わない（main はこの回を断らない）。お金（月額が続きうる）と戻し方（ゴミ箱から戻せる）は削らない（掟5）。
+ */
+export const PUBLISH_RECORD_UNCONFIRMED_NOTE =
+  '共用型の記録（.sakura-cloud/）を確かめられませんでした。残っているものがあると、削除したあとは Koto から破棄できず、月額が続くことがあります（フォルダはゴミ箱から戻せます）。'
+
 /**
  * プロジェクト削除で「公開も一緒に破棄する」を外したとき、保存場所が残ることを伝える文（W-22）。
  * 同じ保存場所を別のプレフィックスで2件持つと同じバケット名が2回並ぶので、名前は重複を除いて出す。
  * 金額は保存場所が2つ以上あるときだけ「1つにつき」と明記する（月額は**バケット単位**。合算すると同じ保存場所を2重に数えかねない）。
+ * 保存場所の `keep`（消さずに残す理由）は見ない（チェックを外した回は、全部の保存場所が残る。理由の文は remainingPlacementsNoteWithKeep）。
  */
 export function remainingPlacementsNote(placements: Array<{ bucket: string }>): string {
   const names = Array.from(new Set(placements.map(p => p.bucket)))
   const amount = names.length > 1 ? `1つにつき月額${BUCKET_MONTHLY_YEN}円・税込` : `月額${BUCKET_MONTHLY_YEN}円・税込`
   return `保存場所「${names.join('・')}」とその中のデータは残ります（消すまで${amount}が続きます）。`
+}
+
+/**
+ * 段を足さない回（保存場所が全部「消さずに残す」など）に、保存場所が残ることを言う文。`keep` のある保存場所（同じデータを使うフォルダがいる・確かめられない）は、
+ * 理由つきの文（確認・赤い箱の 💾・手順6の行と同じ作り手 teardownDataNoteForAll）で言い、`keep` の無い保存場所は remainingPlacementsNote と同じ文。
+ * `keep` の無い入力の文は remainingPlacementsNote と1文字も変わらない。消す保存場所と残す保存場所が混ざるときは、消す側の文のあとに残す側の文を続ける。
+ */
+export function remainingPlacementsNoteWithKeep(placements: ReadonlyArray<{ bucket: string; keep?: PlacementKeep | null }>): string {
+  const kept = placements.filter(p => isKeptPlacement(p))
+  if (kept.length === 0) return remainingPlacementsNote([...placements])
+  const rest = placements.filter(p => !isKeptPlacement(p))
+  return (rest.length > 0 ? remainingPlacementsNote(rest) : '') + teardownDataNoteForAll({ target: 'sakura-apprun', placements: [...kept] })
 }
 
 /** プロジェクト削除で先に破棄する公開先の並び（共用型の破棄は HANAMII のデータも消すので、HANAMII が先）。専有型は入らない（止める側）。 */
@@ -117,7 +151,8 @@ export type SharedLeftover = {
   registryOrigin: RegistryOrigin
   /** 同じレジストリを使っている、ほかのプロジェクトの名前。 */
   registryUsers: readonly string[]
-  placements: Array<{ bucket: string; prefix: string; shared: boolean }>
+  /** `keep` があるものは、破棄がデータにも保存場所にも手を付けずに残す（`cloud:twinFacts` が読めた回だけ付く。読めなかった回は付けない）。 */
+  placements: Array<{ bucket: string; prefix: string; shared: boolean; keep?: PlacementKeep }>
 }
 
 /**
@@ -128,9 +163,11 @@ export type SharedRegistry = { registryName: string; origin: RegistryOrigin; use
 
 export type ProjectDeleteFacts = {
   targets: PublishTargetKind[]    // 旧い記録の公開先も含む。読めなければ、読めた分
-  unreadable: boolean             // 公開の記録のどこかが読めなかった（PUBLISH_RECORD_UNREADABLE_NOTE を出す）
+  unreadable: boolean             // main が削除を断る原因で、公開の記録が読めなかった（.sakuraide.json・state.json の読み失敗・壊れ・形違い）。plan が record-unreadable で止める
+  unconfirmed: boolean            // 公開の記録は読めたが、行が無い回に共用型の記録の問い合わせが失敗した（main は断らない）。止めず、PUBLISH_RECORD_UNCONFIRMED_NOTE だけを出す。unreadable とは同時に立たない
   dedicated: DedicatedResourceIds // apprunDedicated.state。読めなければ null
-  placements: Array<{ bucket: string; prefix: string; shared: boolean }>
+  /** 保存場所の全件。`keep` は SharedLeftover.placements と同じ（読めた回だけ付く）。 */
+  placements: Array<{ bucket: string; prefix: string; shared: boolean; keep?: PlacementKeep }>
   running: RunningOpEntry | null  // いま main が走らせている操作と公開先（聞けなければ null）
   sharedLeftover: SharedLeftover | null // targets に 'sakura-apprun' が無いのに、共用型の記録に消すものがある
   /** targets に 'sakura-apprun' があるときの、共用型の記録のコンテナレジストリ。記録にレジストリが無い・記録を読めなかった・行が無い回は null。 */
@@ -152,6 +189,8 @@ export type ProjectDeletePlan = {
    * noun は残りの呼び名（sharedLeftoverNoun）。null は、アプリが残っている回（公開の回。チェックの文は公開の言い方のまま）。
    */
   leftover?: { noun: string | null }
+  /** 専有型の保存場所が全部「消さずに残す」ため止めなかった回だけ付く（外さなかった回はキーごと無い）。残す保存場所（印の名前に当たる facts.placements の要素。`keep` 付き）。 */
+  dedicatedKept?: DedicatedKeptPlacement[]
 }
 
 /**
@@ -168,7 +207,9 @@ export function planProjectDeleteTeardown(facts: ProjectDeleteFacts): ProjectDel
   // 専有型は、覆う複製があれば止めを外す。破棄はしない（この画面は元々専有型を破棄しない）ので、止めを外した回だけ「破棄しません」を言う。
   const dedicatedFolders = twinFoldersOf(facts.twins, 'sakura-apprun-dedicated')
   const dedicatedTwinned = dedicatedFolders.length > 0
-  const block = projectDeleteBlockOf(facts.targets, facts.dedicated, dedicatedTwinned, facts.running)
+  const block = projectDeleteBlockOf(facts.targets, facts.dedicated, dedicatedTwinned, facts.running, facts.unreadable === true, dedicatedLeftoverAllKept(facts.dedicated, facts.placements))
+  // 公開の記録を読めない回は、破棄する公開先も、複製の免除も持たない（main が断る回に、読めた分の公開先を先に破棄すると、公開先だけ消えてフォルダが残る）
+  if (block !== null && block.reason === 'record-unreadable') return { block, teardown: [], twinned: [] }
   // 門: 残りの段を足すか（止める理由が無いときだけ。足す回の並びは、HANAMII の後ろ＝PROJECT_DELETE_TEARDOWN_ORDER の位置）
   const leftover = block === null ? sharedLeftoverStepOf(facts) : null
   const candidates: PublishTargetKind[] = leftover ? [...eligible, 'sakura-apprun'] : eligible
@@ -179,25 +220,13 @@ export function planProjectDeleteTeardown(facts: ProjectDeleteFacts): ProjectDel
   if (dedicatedTwinned && (facts.targets.includes('sakura-apprun-dedicated') || dedicatedTeardownHasWork(facts.dedicated))) {
     twinned.push({ target: 'sakura-apprun-dedicated', folders: dedicatedFolders })
   }
-  return { block, teardown, twinned, ...(leftover ? { leftover } : {}) }
+  const dedicatedKept = dedicatedKeptOf(facts, dedicatedTwinned, block)
+  return { block, teardown, twinned, ...(leftover ? { leftover } : {}), ...(dedicatedKept ? { dedicatedKept } : {}) }
 }
 
-/**
- * 門（0.6.24 A-2）の、**記録（共用型の記録の残り）だけで決まる部分**: 残りの段を足すなら、残りの呼び名を返す。足さない回は null。
- * 足すのは、次の**すべて**を満たすとき。
- *  ・appNames・placements が配列（形が読めない値は足す側に倒さない）
- *  ・残りに、アプリ・保存場所・**数えるレジストリ**（sharedRegistryCounted。作者の決定 K2: 借り手のいるレジストリだけが残る回は足さない）のどれかがある
- * **同じこの1つを、2か所が使う**（掟10。二重に書かない）: plan が段を足すか（sharedLeftoverStepOf）と、残りの段を走らせる直前に、読み直した記録へかけ直す門
- * （projectDelete.ts の teardownPublished → flow の hasWork。0.6.24 R4-e。HANAMII が保存場所を消し切ったあと、K2 のレジストリだけが残った回に、何も消さない確認を出さない）。
- */
-export function sharedLeftoverGateOf(
-  left: Pick<SharedLeftover, 'appNames' | 'placements' | 'registryName' | 'registryUsers'>,
-): { noun: string | null } | null {
-  if (!Array.isArray(left.appNames) || !Array.isArray(left.placements)) return null
-  const counted = sharedRegistryCounted(left)
-  if (left.appNames.length === 0 && left.placements.length === 0 && !counted) return null
-  return { noun: sharedLeftoverNoun(left, counted) }
-}
+// 門のうち、記録と同じ押しで済んだ段で決まる部分（sharedLeftoverGateOf）は sharedLeftoverGate.ts の1つ。開いたときの plan（下の sharedLeftoverStepOf）と、走らせる直前の
+// かけ直し（projectDelete.ts の teardownPublished）が同じ関数を通る（掟10）。
+export { sharedLeftoverGateOf, type SharedLeftoverGateOptions } from './sharedLeftoverGate'
 
 /**
  * 門（0.6.24 A-2）: 共用型の公開先の行が無いのに、共用型の記録の残りを破棄する段（'sakura-apprun'）を足すか。足すなら残りの呼び名を返す。足さない回は null。
@@ -224,15 +253,18 @@ function sharedLeftoverStepOf(facts: ProjectDeleteFacts): { noun: string | null 
  * レジストリの月額まで言うのは、そのレジストリが「このプロジェクトのために Koto が作った（owned）もので、ほかのプロジェクトが使っていない」ときだけ
  * （ownRegistryBillingNote と同じ判断。registryIsOnlyThisProjects）。借りたもの・作ったか分からないもの・ほかが使っているものは、
  * 残ることだけを言う（その月額は、このプロジェクトの話ではない、または分からない）。
+ * `withKeep` が真のとき、保存場所の `keep`（消さずに残す理由）を言う（remainingPlacementsNoteWithKeep。段を足さない回の赤い箱の注意）。既定は keep を見ない
+ * （チェックを外した回の1行〔keptStorageNoteOf〕は、全部の保存場所が残るので、今の文のまま）。
  */
-export function sharedLeftoverNote(leftover: SharedLeftover): string {
+export function sharedLeftoverNote(leftover: SharedLeftover, opts?: { withKeep?: boolean }): string {
   const registry = leftover.registryName
     ? `コンテナレジストリ『${leftover.registryName}』も残ります`
       + (registryIsOnlyThisProjects({ registryName: leftover.registryName, origin: leftover.registryOrigin, otherUsers: leftover.registryUsers.length })
         ? `（消すまで月額${REGISTRY_MONTHLY_YEN}円・税込が続きます）。`
         : '。')
     : ''
-  return (leftover.placements.length > 0 ? remainingPlacementsNote(leftover.placements) : '') + registry
+  const storage = leftover.placements.length === 0 ? '' : opts?.withKeep === true ? remainingPlacementsNoteWithKeep(leftover.placements) : remainingPlacementsNote(leftover.placements)
+  return storage + registry
 }
 
 /**
@@ -322,7 +354,7 @@ export function withoutDoneTargets<T extends PublishTargetKind>(targets: readonl
 
 /**
  * 読み直した材料に、利用者がまだ見ていない注意（seen に無かったもの）が増えたか。増えたら、移す前に見せる（押し直しの経路が使う）。
- * 見るのは2つ。公開の記録が読めなくなったこと（unreadable）と、共用型の残り（sharedLeftover）の新しいアプリ・保存場所・レジストリ。
+ * 見るのは3つ。公開の記録が読めなくなったこと（unreadable）・共用型の記録を確かめられなくなったこと（unconfirmed）と、共用型の残り（sharedLeftover）の新しいアプリ・保存場所・レジストリ。
  * 同じ注意を見せたあとの押しでは、増えていない（seen が読み直した材料になる）ので、行き止まりにならない。
  * 公開先が増えた回は数えない（破棄の確認が、消すものを名指しで見せる）。
  * **共用型の残りの増えは、チェックが外れているときだけ数える**（0.6.24 A-6）。オンの回は、残りも破棄の段に入り、続く確認が名指しで見せる。
@@ -331,6 +363,7 @@ export function withoutDoneTargets<T extends PublishTargetKind>(targets: readonl
  */
 export function noticesAddedSince(seen: ProjectDeleteFacts, fresh: ProjectDeleteFacts, teardownOnDelete: boolean): boolean {
   if (fresh.unreadable && !seen.unreadable) return true
+  if (fresh.unconfirmed === true && seen.unconfirmed !== true) return true
   if (teardownOnDelete === true) return false
   const now = fresh.sharedLeftover
   if (now === null) return false

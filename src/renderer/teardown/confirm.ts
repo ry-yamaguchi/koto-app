@@ -21,11 +21,20 @@
 // 10. 確認の見出しは、仕様書が confirmTitleOf を持つときだけ記録の中身で言い換える（共用型で、アプリが無く保存場所・コンテナレジストリだけの回は「保存場所を破棄します」。
 //     0.6.24 A-8）。null・持たない仕様書は words.confirmTitle のまま。3つの入口が同じこの関数で確認を作るので、これ1つで全部に効く。
 //
+// 11. 保存場所に keep が付いている（同じデータを使うフォルダがいる・いるか確かめられない。cloud:twinFacts の答え）ものは、破棄が消さずに残すので、消す側の文
+//     （一覧・⚠️「でも使っているため」・費用の「止まります」・「元に戻せません」・ほかの公開先の記録を読めなかった注意）に数えず、💾 の段落が「残ります」と言う。
+//     keep の無い入力の文は 1文字も変えない。消すものが何も無い回（保存場所が全部 keep で、アプリもレジストリも無い）は、「元に戻せません」を言わない。
+//     消さない側の月額は、全部消さない回は費用の行が1回だけ言い、消す保存場所と混じる回は費用の行が消す側だけを言うので、消さない側の 💾 の括弧が言う（keptAlongsideRemoved）。
+//
+// 12. 消すものが何も無い回（confirmDestroysNothing。保存場所が全部 keep で、名前を挙げて消す公開先のものも無い）は、見出しとボタンも事実（保存場所は残る）を言う。
+//     公開先ごとの見出し・ボタン（「専有型クラスタを削除します」「削除する」など）のままだと、何も消さない確認が消すと言う。本文の「元に戻せません」を言わない判断と同じこの1つを通る。
+//
 // 本文を作る関数は buildTeardownConfirmBody の1つだけ（定義はこのファイル。呼ぶのは buildTeardownConfirm だけ。tests/dedicatedTeardownEntriesF.test.ts が固定する）。
 
 import type { ConfirmOptions } from '../useConfirm'
 import type { PublishTargetKind } from '../../shared/publishMeta'
 import { teardownDataNoteForAll, bucketNamesText } from '../../shared/teardownSupport'
+import { isKeptPlacement, storageOnlyLeftoverNote } from '../../shared/keptDataNote'
 import { PUBLISH_TARGET_LABEL } from '../publishStatus'
 import { PUBLISH_TARGETS_USING_STORAGE } from '../publishRecord'
 import type { TargetSpec, TeardownFacts, TeardownPlacement, TeardownWords } from './types'
@@ -74,12 +83,49 @@ export function teardownKindsOf(targets: readonly string[]): string[] {
   return kinds
 }
 
+/** 名前の無いもの（null・空の bucket）を数えない、確認が名指しする保存場所。何も消さない回の門（keptNothing.ts）も、同じこれで残す保存場所を決める。 */
+export function namedPlacementsOf(placements: ReadonlyArray<TeardownPlacement | null | undefined> | null | undefined): TeardownPlacement[] {
+  return (placements ?? []).filter((p): p is TeardownPlacement => !!p && typeof p.bucket === 'string' && p.bucket.length > 0)
+}
+
+/**
+ * 確認が「何も消さない」と言う回か（純関数）。消す保存場所（keep の無いもの）が無く、残す保存場所（keep のあるもの）があり、
+ * 名前を挙げて消す公開先のものも無い（`leftoverNote` を渡す回は、先頭の段落が言う保存場所を消さないので、公開先のものは無い扱い）。
+ * 本文の「この操作は元に戻せません」・見出し・ボタンが、同じこの1つを通る（消す保存場所が混じる回は偽。データを消すので「元に戻せません」を言う）。
+ */
+export function confirmDestroysNothing(opts: {
+  placements: ReadonlyArray<TeardownPlacement | null | undefined> | null | undefined
+  targets: readonly string[]
+  leftoverNote?: string
+}): boolean {
+  const named = namedPlacementsOf(opts.placements)
+  const removing = named.filter(p => !isKeptPlacement(p)).length
+  return removing === 0 && named.length > 0 && (opts.leftoverNote ? true : opts.targets.length === 0)
+}
+
+/**
+ * 消す保存場所（keep の無いもの）と消さない保存場所（keep のあるもの）が**混じる**回か（純関数）。名前の無いものは数えない。
+ * 費用の行は、消す保存場所があるとき消す側だけを言う（「ほかに使っているプロジェクトが無いときだけ止まります」）ので、消さない側の月額が続くことは、
+ * 消さない側の 💾 の括弧が言う。全部消さない回は費用の行が「月額は続きます」と言うので、💾 に括弧を付けない（同じ事実を2回言わない）。
+ */
+export function keptAlongsideRemoved(placements: ReadonlyArray<TeardownPlacement | null | undefined> | null | undefined): boolean {
+  const named = namedPlacementsOf(placements)
+  const kept = named.filter(p => isKeptPlacement(p)).length
+  return kept > 0 && kept < named.length
+}
+
+/** 何も消さない確認（confirmDestroysNothing）の見出しとボタン。何も消さないので「破棄する」「削除する」とは言わない。 */
+const NOTHING_DESTROYED_TITLE = '保存場所は残ります'
+const NOTHING_DESTROYED_LABEL = '続ける'
+
 /**
  * 確認ダイアログの本文（純関数）。
  *
  * - `targets` は消すものの名前。`placements` があるときだけ、一覧に**保存場所の名前（全件）**を足し、`dataNote`
  *   （shared/teardownSupport.ts の teardownDataNoteForAll）を挟む。「ほか◯件」で省かない（名前が出ていないものは、利用者にとって存在しないのと同じ）。
  * - 要素の null・空の bucket は数えない（手本と同じ。`teardownDataNoteForAll` の選び方と揃える）。
+ * - `keep` の付いた保存場所（消さずに残す）は、一覧・⚠️・費用の「止まります」・「元に戻せません」の対象に数えない。`dataNote` が「残ります」と言う
+ *   （呼び手が `teardownDataNoteForAll` に同じ placements を渡して作る）。消す保存場所が無く `keep` の保存場所だけの回は、費用の行が「保存場所は残るため、月額は続きます。」と言う。
  * - 最後の一言は**止まる側**の説明にする（押したら何が止まるのかを言う）。
  * - `leftoverNote` を渡したときは、先頭の段落（「次を{verb}します: …」）だけをその文に差し替える。
  *   公開先のものはもう無いので、`targets` は使わない（一覧にも、課金の一文の種類にも入れない。呼び手が [] を渡す約束に頼らない。
@@ -101,19 +147,23 @@ export function buildTeardownConfirmBody(opts: {
 }): string {
   const { verb } = opts
   // 名前の無いもの（null・空の bucket）は数えない。
-  const buckets = (opts.placements ?? [])
-    .filter((p): p is TeardownPlacement => !!p && typeof p.bucket === 'string' && p.bucket.length > 0)
-    .map(p => p.bucket)
+  const named = namedPlacementsOf(opts.placements)
+  // 消す保存場所（keep の無いもの）だけを、一覧・⚠️・費用・元に戻せませんの対象にする。keep のあるもの（残す）は 💾 の段落だけが言う。
+  const buckets = named.filter(p => !isKeptPlacement(p)).map(p => p.bucket)
+  const keptCount = named.length - buckets.length
   // 1件なら『A』、2件以上なら『A』『B』。「ほか◯件」で省かない。
   const names = bucketNamesText(buckets)
   const list = buckets.length > 0 ? [...opts.targets, `保存場所${names}にある、このプロジェクトのデータ`] : [...opts.targets]
   // 一覧が空なら、空のまま「次を…します: 」と出さない（何も名前を出していないのに実行を押させない）。
   // leftoverNote のときは targets を使わない（公開先のものはもう無い）。上の list も、下の課金の一文の種類も、その前提で作る。
+  // 一覧が空で、保存場所が全部「残す」の回は、先頭の段落を出さない（名前を挙げるものが無いのに「次を破棄します」と言わず、💾 が「残ります」と言う）。
   const head = opts.leftoverNote
     ? opts.leftoverNote
-    : `次を${verb}します: ${list.length > 0 ? list.join('・') : '（記録に名前を挙げられるものがありません）'}`
-  const paragraphs = [head]
-  if (buckets.length > 0 && opts.dataNote) paragraphs.push(`💾 ${opts.dataNote}`)
+    : list.length > 0
+      ? `次を${verb}します: ${list.join('・')}`
+      : keptCount > 0 ? null : `次を${verb}します: （記録に名前を挙げられるものがありません）`
+  const paragraphs: string[] = head === null ? [] : [head]
+  if (named.length > 0 && opts.dataNote) paragraphs.push(`💾 ${opts.dataNote}`)
   const others = (opts.otherTargets ?? []).filter(t => !!t)
   if (buckets.length > 0 && others.length > 0) {
     // 2件以上あるときだけ「これらの」にする（0.6.22 段階3B-3 の T161 で、公開先の名前を2回並べずに「そちら」にまとめた）。
@@ -126,13 +176,18 @@ export function buildTeardownConfirmBody(opts: {
   // 言ってよいのは claimsComputeBillingStops が true の公開先だけ。保存場所の一文は Koto 自身の判断（teardownPlanFor）なので残す。
   const kinds = teardownKindsOf(opts.leftoverNote ? [] : opts.targets)
   const computeCost = opts.claimsComputeBillingStops && kinds.length > 0 ? `${kinds.join('・')}の課金は止まります。` : ''
-  const storageCost = buckets.length > 0 ? '保存場所は、ほかに使っているプロジェクトが無いときだけ止まります。' : ''
+  // 消す保存場所があるときは今のまま。残す保存場所だけの回は、消さないので月額が続くことを言う（確認では、月額はこの1回だけ言う）。
+  const storageCost = buckets.length > 0
+    ? '保存場所は、ほかに使っているプロジェクトが無いときだけ止まります。'
+    : keptCount > 0 ? '保存場所は残るため、月額は続きます。' : ''
   const costLine = [computeCost, storageCost].filter(Boolean).join('')
   // 時間のかかる段の予告は、最後の問いの直前に置く（押す前に読む位置）。
   if (opts.waitNote) paragraphs.push(opts.waitNote)
   const question = costLine ? `${verb}すると、${costLine}よろしいですか？` : 'よろしいですか？'
+  // 'always': 消すものが何も無い回（残す保存場所だけで、消す保存場所も、名前を挙げる公開先のものも、先頭の段落が言う保存場所も無い）は言わない。
+  const destroysNothing = confirmDestroysNothing({ placements: opts.placements, targets: opts.targets, leftoverNote: opts.leftoverNote })
   if (opts.irreversibleNote === 'always') {
-    paragraphs.push(`この操作は元に戻せません。${question}`)
+    paragraphs.push(destroysNothing ? question : `この操作は元に戻せません。${question}`)
   } else {
     // 'storage-only': 根拠にできるのは、Koto が消す保存場所のデータが戻せないことだけ。保存場所が無い回は言わない。
     paragraphs.push(buckets.length > 0 ? `保存場所にあるデータの削除は元に戻せません。${question}` : question)
@@ -147,6 +202,8 @@ export function buildTeardownConfirmBody(opts: {
  *   **ただし保存場所に触れない回（下の `'settings'`・`'call'`）は、この注意を出さない**（保存場所は消えないので、「そちらのデータも消えます」は事実と逆。0.6.24 R1-e）。
  * ・保存場所の設定を読めなかった（`'settings'`）: **逆に、main も保存場所に触れない**（保存場所の削除は行われず、残る）。
  *   「保存場所も消える」と言うと事実と逆になる。残る保存場所は月額が続くので、そう言う。
+ * ・同じデータを使うフォルダがあるかを**読めなかった**（`twinFactsUnreadable`）: 確認は今までどおり「消す」側の文を言うが、main は実行時に同じ判断を下し、
+ *   複製がいれば消さずに残す。それを1行で伝える（読めたときは、`keep` が一覧・💾 の文に反映される）。
  * ・保存場所の設定を**問い合わせられなかった**（`'call'`・IPC の失敗）: 確認で保存場所の名前を挙げられない。
  *   画面は「見せた保存場所」を空にして main へ渡し（flow.ts の `shownPlacementsOf`）、main は見せていない保存場所を削除しない（0.6.24 F）。
  *   なので「名前を挙げられない保存場所は削除しません」と言う。使っていれば残り、月額が続く（これが注意の要点）。
@@ -161,7 +218,8 @@ export function buildTeardownConfirmBody(opts: {
  * （手本は専有型の文をそのまま書いていて、HANAMII の確認が自分を「ほかの公開先」に挙げてしまう）。
  */
 export function unreadableCautions(
-  facts: Pick<TeardownFacts<unknown>, 'placementsUnreadable' | 'placementsUnreadableCause' | 'otherTargetsUnreadable' | 'otherTargets'>,
+  facts: Pick<TeardownFacts<unknown>, 'placementsUnreadable' | 'placementsUnreadableCause' | 'otherTargetsUnreadable' | 'otherTargets' | 'twinFactsUnreadable'>
+    & { placements?: ReadonlyArray<TeardownPlacement | null | undefined> },
   words: TeardownWords,
   irreversibleNote: 'always' | 'storage-only',
   target: PublishTargetKind,
@@ -179,9 +237,17 @@ export function unreadableCautions(
   }
   // 保存場所に触れない回（`placementsUnreadable`。'settings'・'call'）は、巻き添えになる公開先の話をしない。上の文が「保存場所は削除しない」と言っており、
   // 「そちらのアプリのデータも消えます」を並べると、1つの確認の中で正反対のことを言う（0.6.24 R1-e）。
-  if (facts.otherTargetsUnreadable && !facts.placementsUnreadable) {
+  // 保存場所が全部「残す」（keep）の回も同じ。消す保存場所が無いので、「そちらのデータも消えます」は事実と逆。
+  const named = (facts.placements ?? []).filter((p): p is TeardownPlacement => !!p && typeof p.bucket === 'string' && p.bucket.length > 0)
+  const nothingRemoved = named.length > 0 && named.every(p => isKeptPlacement(p))
+  if (facts.otherTargetsUnreadable && !facts.placementsUnreadable && !nothingRemoved) {
     out.push('⚠️ ほかの公開先の記録を読めなかったため、ここに挙げられません。'
       + `保存場所をほかの公開先（${otherStorageUsersOf(target)}など）が使っていれば、そちらのアプリのデータも消えます。`)
+  }
+  // 同じデータを使うフォルダがあるか確かめられなかった回（cloud:twinFacts を読めなかった）。名前を挙げた保存場所があるときだけ言う
+  // （保存場所に触れない回・保存場所が無い回は、データの話が無い）。main は実行時に同じ判断を下し、使っていれば消さずに残す。
+  if (facts.twinFactsUnreadable === true && !facts.placementsUnreadable && named.length > 0) {
+    out.push('⚠️ 同じデータを使うフォルダがあるか確かめられませんでした。使っていれば、データは消さずに残します（月額が続きます）。')
   }
   return out
 }
@@ -202,23 +268,30 @@ export function buildTeardownConfirm<R>(
   // 画面が見せた保存場所の組は空で、main は見せていないものを消さない。0.6.24 F）。
   // 仕様書の leftoverNote は「残っている保存場所を削除します」と言う文なので、そのまま先頭に置くと、下の注意
   // （保存場所の名前を挙げられない・削除しない）と1つの確認の中で正反対のことを言う。この回は、事実だけを言う文に替える。
-  const leftover = spec.leftoverNote?.(facts.record) ?? undefined
-  const storageUntouched = facts.placementsUnreadable
-  const leftoverNote = leftover && storageUntouched ? `前回の${spec.words.verb}で、保存場所だけが残っています。` : leftover
+  // 一部だけ「残す」（keep）の回は、仕様書が消す保存場所の名前だけで言う（placements を渡す。残す保存場所を「削除します」と言わない）。
+  const leftover = spec.leftoverNote?.(facts.record, facts.placements) ?? undefined
+  // 保存場所が全部「残す」（keep）の回も、main は保存場所に触れない。同じく事実だけを言う（「残っている保存場所を削除します」と言わない）。
+  const named = namedPlacementsOf(facts.placements)
+  const storageUntouched = facts.placementsUnreadable || (named.length > 0 && named.every(p => isKeptPlacement(p)))
+  const leftoverNote = leftover && storageUntouched ? storageOnlyLeftoverNote(spec.words.verb) : leftover
   const body = buildTeardownConfirmBody({
     verb: spec.words.verb,
-    targets: spec.targets(facts.record),
+    targets: spec.targets(facts.record, facts.placements),
     placements: facts.placements,
-    dataNote: teardownDataNoteForAll({ target: spec.target, placements: facts.placements }),
+    dataNote: teardownDataNoteForAll({ target: spec.target, placements: facts.placements, keptMonthlyNote: keptAlongsideRemoved(facts.placements) }),
     otherTargets: facts.otherTargets,
     waitNote: facts.waitNote ?? undefined,
     claimsComputeBillingStops: spec.claimsComputeBillingStops,
     irreversibleNote: spec.irreversibleNote,
     leftoverNote,
-    notes: spec.notes?.(facts.record),
+    notes: spec.notes?.(facts.record, facts.placements),
   })
   const head = [`対象のプロジェクト: 『${facts.projectName}』`, ...unreadableCautions(facts, spec.words, spec.irreversibleNote, spec.target)].join('\n\n')
+  // 何も消さない回（confirmDestroysNothing）は、公開先ごとの見出し・ボタンに替えて、保存場所は残ることを言う（本文の「元に戻せません」を言わない判断と同じこの1つ）。
+  if (confirmDestroysNothing({ placements: facts.placements, targets: spec.targets(facts.record, facts.placements), leftoverNote })) {
+    return { title: NOTHING_DESTROYED_TITLE, body: `${head}\n\n${body}`, confirmLabel: NOTHING_DESTROYED_LABEL, danger: true }
+  }
   // 見出しは、仕様書が記録の中身で言い換えるとき（confirmTitleOf。共用型で、アプリが無く保存場所・コンテナレジストリだけの回。0.6.24 A-8）はそれを先に使う。
-  const title = spec.confirmTitleOf?.(facts.record) ?? spec.words.confirmTitle
+  const title = spec.confirmTitleOf?.(facts.record, facts.placements) ?? spec.words.confirmTitle
   return { title, body: `${head}\n\n${body}`, confirmLabel: spec.words.confirmLabel, danger: true }
 }

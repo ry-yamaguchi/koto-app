@@ -1,10 +1,11 @@
-// cloudTeardown.ts — 共用型 AppRun の破棄（cloud:teardown）と、確認の材料の口（cloud:teardownRecord）、複製の有無を読む口（cloud:recordTwins）。
+// cloudTeardown.ts — 共用型 AppRun の破棄（cloud:teardown）と、確認の材料の口（cloud:teardownRecord）、複製の有無を読む口（cloud:recordTwins・cloud:twinFacts）。
 // cloud.ts から切り出した（設計書 docs/teardown-unify-plan.md 10.7.4）。
 //
 // ── 呼び形 ───────────────────────────────────────────────────────────────────
 //   cloud:teardown       (projectDir, { heldByMain: true }, { confirmed, deleteRegistry, registryName, shownPlacements })
 //   cloud:teardownRecord (projectDir)   … 読むだけ。外部へ要求を出さない。同じフォルダの兄弟プロジェクトの記録も読む（同じレジストリを使うプロジェクトを数える。cloud/registryUsers.ts）
 //   cloud:recordTwins   (projectDir)   … 読むだけ。外部へ要求を出さない。自分の公開の記録（破棄で消すものの事実）をすべて持つ、同じ親フォルダの別のフォルダ（覆う複製）を、3つの公開先ごとに返す（cloud/recordTwins.ts の recordCoverFs。0.6.24 I-3・R2-d）
+//   cloud:twinFacts     (projectDir, { target, placements }) … 読むだけ。外部へ要求を出さない。公開先の断り（同じ公開の記録を持つフォルダがあるか。破棄の骨の twinsOf と同じ recordTwinsFs）と、保存場所ごとの「消さずに残す」（複製・確かめられない。保存場所の破棄と同じ twinRiskOf）を返す（cloud/twinFacts.ts）
 // 順序は共通の骨（cloud/teardownShell.ts）が持つ: projectDir → 確認の印 → 認証の形 → 鍵（同時に1つだけ）→ run → 公開の記録の削除。
 // 断った回（確認の印が無い・認証の形が違う・別の操作が走っている）は、さくらのクラウドへも保存場所へも1本も要求を出さず、処理の記録も作らない。
 //
@@ -29,13 +30,17 @@ import { registryDeletionTarget, stateToSave, type EnvState } from '../cloud/sta
 import type { EnvSpec } from '../cloud/spec'
 import { deleteDescription, type Plan } from '../cloud/planner'
 import { recordTwinsFs, readRecordTwins } from '../cloud/recordTwins'
+import { readTwinFacts } from '../cloud/twinFacts'
 import { runTeardownShell, BAD_PROJECT_DIR_MESSAGE, type TeardownShellCtx, type TeardownShellSpec } from '../cloud/teardownShell'
 import { forgetPublishTargetFs } from '../publishMetaFs'
 import { consentedPlacementsOf, type StoragePlacement } from '../../shared/objectStorage'
 import { keyRevokeGuide } from '../../shared/storageKeys'
+import { keptOnlyField, readKeptOnly } from '../../shared/keptOnly'
 import { registryOriginOf, type RegistryOrigin } from '../../shared/cloudCost'
 import { otherProjectsUsingRegistry, keptRegistryFacts } from '../cloud/registryUsers'
-import { runStorageStage, storageFailureFields, SAVE_FAILED_NOTE } from './cloudTeardownStorage'
+import { runStorageStage, storageFailureFields, SAVE_FAILED_NOTE, keyRecordedOf } from './cloudTeardownStorage'
+
+export { keyRecordedOf }
 
 /** 記録（env.json・state.json）だけから決まる、このプロジェクトの破棄の材料。run も同じものを使う。 */
 export type SharedTeardownBase = {
@@ -58,6 +63,11 @@ export type SharedTeardownBase = {
 export type SharedTeardownRecord = SharedTeardownBase & {
   /** このレジストリを使っている、ほかのプロジェクトの名前（フォルダ名・名前順）。1件でもあれば、作った側でも既定でレジストリを消さない。 */
   registryUsers: string[]
+  /**
+   * 記録の鍵が残っているか（`keyRecordedOf`）。鍵の無効化と、名前での鍵の一括の無効化は、この段（共用型）にしかできない仕事。
+   * プロジェクトの削除が、HANAMII の段が済ませた保存場所だけの残りの段を飛ばしてよいかの材料（偽のときだけ飛ばせる）。
+   */
+  keyRecorded: boolean
 }
 
 export type SharedTeardownResult = {
@@ -77,6 +87,8 @@ export type SharedTeardownResult = {
   /** 残したレジストリの由来と、使っているほかのプロジェクト（調べられなかった回は後者が無い＝「分からない」）。`cloud/registryUsers.ts` の `keptRegistryFacts`。 */
   keptRegistryOrigin?: RegistryOrigin; keptRegistryUsers?: string[]
   keptRegistryUnnamed?: boolean
+  /** 成功した回のうち、アプリもレジストリも消さず、保存場所もデータごと残した回だけ true（判断は `shared/keptOnly.ts`）。結果の見出しが「破棄していません」と言い分ける。 */
+  keptOnly?: true
   message?: string
 }
 
@@ -134,13 +146,14 @@ export function readSharedTeardownRecord(projectDir: unknown): { ok: true; recor
     const spec = loadCloudSpec(projectDir)
     if (!spec) {
       return nothingRecordedWithoutSpec(projectDir)
-        ? { ok: true, record: { appNames: [], registryName: null, registryOrigin: 'unknown', placements: [], stateOnlyBuckets: [], registryUsers: [] } }
+        ? { ok: true, record: { appNames: [], registryName: null, registryOrigin: 'unknown', placements: [], stateOnlyBuckets: [], registryUsers: [], keyRecorded: false } }
         : { ok: false, message: 'env.json がありません' }
     }
-    const base = sharedTeardownRecordOf(spec, loadCloudState(projectDir, spec))
+    const state = loadCloudState(projectDir, spec)
+    const base = sharedTeardownRecordOf(spec, state)
     // ほかのプロジェクトが同じレジストリを使っているか。親フォルダの一覧を読めなければ投げる（空に倒すと「使い手なし」と読んで既定オンになる）
     const registryUsers = base.registryName ? otherProjectsUsingRegistry(projectDir, base.registryName) : []
-    return { ok: true, record: { ...base, registryUsers } }
+    return { ok: true, record: { ...base, registryUsers, keyRecorded: keyRecordedOf(state) } }
   } catch (e) {
     return { ok: false, message: msgOf(e) }
   }
@@ -157,20 +170,27 @@ export function readContainerRegistryList(data: unknown): Array<{ id: string; su
   return pickContainerRegistries(data)
 }
 
+/** teardownRegistry の返り値。`deleteUnknown` は、削除の要求を出したのに結果が分からない回（要求が投げた）だけに付く（true のときだけ。偽のときはキーごと無い）。 */
+export type TeardownRegistryOutcome = { registryDeleted: boolean; note: string | null; deleteUnknown?: true }
+
 /**
  * 破棄でレジストリを削除する（2026-09-16 の検分 B）。一覧の取得が失敗しても・例外が起きても黙らず、必ず1行返す。
  * 破棄の成否（result.ok）は変えない: ここが失敗しても「アプリは削除済み」という判断は正しいが、黙ってよい理由にはならない。
+ * `registryDeleted` は「消えたと確かめられた」ときだけ true（記録からレジストリの名前を落とす判断に使う）。削除の要求を出したあとで投げた回
+ * （打ち切りなど。さくら側で消えたかもしれない）は、`registryDeleted` は false のまま `deleteUnknown` を付ける。HTTP の失敗応答と、一覧の取得の失敗
+ * （削除の要求を出していない）は、消えていないと分かるので付けない。
  */
 export async function teardownRegistry(
   client: Pick<SakuraCloudClient, 'listContainerRegistries' | 'deleteContainerRegistry'>,
   region: string,
   name: string,
-): Promise<{ registryDeleted: boolean; note: string | null }> {
-  const cannotConfirm = (reason: string): { registryDeleted: boolean; note: string | null } => ({
+): Promise<TeardownRegistryOutcome> {
+  const cannotConfirm = (reason: string): TeardownRegistryOutcome => ({
     registryDeleted: false,
     note: `※ レジストリ『${name}』を削除できたか確認できませんでした（${reason}）。`
       + 'さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額220円がかかり続けます）。',
   })
+  let deleteIssued = false
   try {
     const listed = await client.listContainerRegistries(region)
     if (listed.dryRun !== false) return { registryDeleted: false, note: null } // dry-run は従来どおり何もしない
@@ -179,12 +199,13 @@ export async function teardownRegistry(
     if (rows === null) return cannotConfirm('一覧の応答を読み取れませんでした')
     const found = rows.find(r => r.subdomainLabel === name)
     if (!found) return { registryDeleted: true, note: null } // 一覧に無い＝既に削除済み（読めたうえでの判断）
+    deleteIssued = true
     const del = await client.deleteContainerRegistry(region, found.id)
     if (del.dryRun === false && del.ok) return { registryDeleted: true, note: `コンテナレジストリ『${name}』を削除（ユーザー・イメージごと）` }
     if (del.dryRun === false) return { registryDeleted: false, note: `※ レジストリ『${name}』の削除に失敗（HTTP ${del.status}）。コンパネで削除してください` }
     return { registryDeleted: false, note: null }
   } catch (e: any) {
-    return cannotConfirm(`一覧の取得または削除でエラーが発生・${e?.message ?? String(e)}`)
+    return { ...cannotConfirm(`一覧の取得または削除でエラーが発生・${e?.message ?? String(e)}`), ...(deleteIssued ? { deleteUnknown: true as const } : {}) }
   }
 }
 
@@ -275,6 +296,7 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
 
   // 2. コンテナレジストリ。選んだときだけ。確認のときの名前が記録と食い違えば消さない
   let registryDeleted = false
+  let registryUnknown = false // 削除の要求を出したが、消えたか分からない（記録には名前を残す。「何も消さなかった」とは言わない）
   if (wantDelete) {
     try {
       const target = registryDeletionTarget(state, true)
@@ -287,6 +309,7 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
         progress('🗑 コンテナレジストリを削除しています…')
         const outcome = await teardownRegistry(new SakuraCloudClient({ credentials: creds, dryRun: false }), spec.region || 'is1a', target.name)
         registryDeleted = outcome.registryDeleted
+        registryUnknown = outcome.deleteUnknown === true
         if (outcome.note) executed.push(outcome.note)
         // 共通の資格情報は、いま消した（＝既に無いと確かめた）レジストリを指しているときだけクリアする（別プロジェクトのものを消さない）
         if (registryDeleted && loadRegistryCredentials()?.name === target.name) clearRegistryCredentials()
@@ -302,7 +325,7 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
   })
   cur = stage.cur
   executed.push(...stage.lines)
-  const { kept, keptWhy, dataDeleted, keyKept, failure } = stage
+  const { kept, keptWhy, dataDeleted, done, keyKept, failure } = stage
 
   // 4. 記録を保存して返す
   progress('📝 記録を更新しています…')
@@ -315,10 +338,21 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
     return { ok: false, ...base, ...storageFailureFields(failure, { registryRemains: !!cur.meta?.registryName, saveFailed: !!saveError }) }
   }
   if (saveError) return { ok: false, ...base, message: SAVE_FAILED_NOTE }
-  return { ok: true, ...base, ...(dataDeleted ? { message: '保存場所にあった、このプロジェクトのデータを削除しました。' } : {}) }
+  return {
+    ok: true, ...base, ...(dataDeleted ? { message: '保存場所にあった、このプロジェクトのデータを削除しました。' } : {}),
+    ...keptOnlyField({ ok: true, removedApp: hadApp, removedRegistry: registryDeleted || registryUnknown, storage: done }),
+  }
 }
 
-/** 共用型の破棄を骨に載せる定義。公開の記録を消すのは、保存場所まで済んだ（ok）回だけ。 */
+/**
+ * 公開の記録（📡 の行）を消してよいか。保存場所まで済んだ（ok）回のうち、何も消さなかった回（`keptOnly`）は消さない
+ * （見出しが「破棄していません」と言うのに行が一覧から消えると、押し直す口が無くなる。残った行は「一覧から削除」で消せる）。
+ */
+export function shouldForgetSharedRecord(s: { result: SharedTeardownResult }): boolean {
+  return s.result.ok === true && !readKeptOnly(s.result)
+}
+
+/** 共用型の破棄を骨に載せる定義。公開の記録を消すのは、保存場所まで済んだ（ok）回のうち、何かを消した回だけ。 */
 export const SHARED_TEARDOWN_SHELL: TeardownShellSpec<{ heldByMain: true }, SharedTeardownResult> = {
   target: 'sakura-apprun',
   handler: 'cloud:teardown',
@@ -332,16 +366,18 @@ export const SHARED_TEARDOWN_SHELL: TeardownShellSpec<{ heldByMain: true }, Shar
   secretsOf: () => [],
   twinsOf: dir => recordTwinsFs(dir, 'sakura-apprun'), // 同じ apprun-app の id を持つ兄弟（重なる）があれば断る（0.6.24 I-2。断るのは何も消さない側なので、覆うより広い recordTwinsFs）
   run: runSharedTeardown,
-  shouldForgetRecord: ({ result }) => result.ok === true,
+  shouldForgetRecord: s => shouldForgetSharedRecord(s),
   forgetRecord: ctx => forgetPublishTargetFs(ctx.projectDir, 'sakura-apprun'),
   refused: message => ({ ok: false, message }),
 }
 
-/** cloud:teardown・cloud:teardownRecord・cloud:recordTwins を登録する（registerCloudHandlers から呼ぶ）。 */
+/** cloud:teardown・cloud:teardownRecord・cloud:recordTwins・cloud:twinFacts を登録する（registerCloudHandlers から呼ぶ）。 */
 export function registerCloudTeardownHandlers(): void {
   ipcMain.handle('cloud:teardown', (_event, projectDir: unknown, auth: unknown, opts: unknown) =>
     runTeardownShell(SHARED_TEARDOWN_SHELL, { projectDir, auth, opts }))
   ipcMain.handle('cloud:teardownRecord', (_event, projectDir: unknown) => readSharedTeardownRecord(projectDir))
   // プロジェクトの削除の画面が、覆う複製のある公開先を破棄から外すために読む（読むだけ。「覆う」の判断は recordCoverFs。破棄の骨の twinsOf は、より広い「重なる」の recordTwinsFs。0.6.24 I-3・R2-d）
   ipcMain.handle('cloud:recordTwins', (_event, projectDir: unknown) => readRecordTwins(projectDir))
+  // 破棄を押す前に、公開先の断りと、保存場所ごとの「消さずに残す」を読む（読むだけ。判断は破棄の本体と同じ関数。cloud/twinFacts.ts）
+  ipcMain.handle('cloud:twinFacts', (_event, projectDir: unknown, args: unknown) => readTwinFacts(projectDir, args))
 }

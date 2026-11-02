@@ -1,61 +1,85 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoCheckTarget, TARGET_PROFILES, type ShouldAutoCheckTargetArgs } from '../src/renderer/targetProfiles'
+import { hasTargetConstraint, shouldOfferTargetCheck, TARGET_PROFILES, type ShouldOfferTargetCheckArgs } from '../src/renderer/targetProfiles'
 
-function makeArgs(overrides: Partial<ShouldAutoCheckTargetArgs> = {}): ShouldAutoCheckTargetArgs {
+function makeArgs(overrides: Partial<ShouldOfferTargetCheckArgs> = {}): ShouldOfferTargetCheckArgs {
   return {
     target: 'sakura-apprun',
-    apiKey: 'sk-test',
     projectDir: '/Users/tester/my-app',
-    isLoading: false,
-    lastCheckedTarget: null,
+    apiKey: 'sk-test',
+    claudeActive: false,
     ...overrides,
   }
 }
 
-describe('shouldAutoCheckTarget', () => {
-  it('returns true for a normal target switch with all conditions met', () => {
-    expect(shouldAutoCheckTarget(makeArgs())).toBe(true)
+describe('hasTargetConstraint（環境制約がある公開先か）', () => {
+  it('local・other・未指定・空文字は制約なし', () => {
+    for (const t of ['local', 'other', undefined, null, '']) expect(hasTargetConstraint(t), String(t)).toBe(false)
   })
 
-  it('returns false when target is undefined', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ target: undefined }))).toBe(false)
+  it('それ以外の既知の公開先は制約あり（既知の項目は9つ。local・other 以外の7つ）', () => {
+    expect(Object.keys(TARGET_PROFILES).sort()).toEqual(
+      ['hanamii', 'local', 'other', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-cloud', 'sakura-rental', 'sakura-vps', 'vercel'],
+    )
+    for (const t of ['sakura-rental', 'sakura-apprun', 'sakura-apprun-dedicated', 'sakura-vps', 'sakura-cloud', 'hanamii', 'vercel']) {
+      expect(hasTargetConstraint(t), t).toBe(true)
+    }
   })
 
-  it('returns false for "local" (no environment constraints)', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ target: 'local' }))).toBe(false)
+  it('プロファイルに無い値（手で書いた・別の版が書いた公開先・Object の組み込みの名前）は制約なし', () => {
+    for (const t of ['cloudflare', 'netlify', 'Local', 'constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+      expect(hasTargetConstraint(t), t).toBe(false)
+    }
+  })
+})
+
+describe('shouldOfferTargetCheck（吹き出しにボタンを付けてよいか）', () => {
+  it('制約のある公開先・プロジェクトあり・AI Engine のキーあり → true', () => {
+    expect(shouldOfferTargetCheck(makeArgs())).toBe(true)
   })
 
-  it('returns false for "other" (no environment constraints)', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ target: 'other' }))).toBe(false)
+  it('target が無いときは false', () => {
+    expect(shouldOfferTargetCheck(makeArgs({ target: undefined }))).toBe(false)
   })
 
-  it('returns false when apiKey is missing', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ apiKey: '' }))).toBe(false)
-    expect(shouldAutoCheckTarget(makeArgs({ apiKey: null }))).toBe(false)
-    expect(shouldAutoCheckTarget(makeArgs({ apiKey: undefined }))).toBe(false)
+  it('local（制約なし）は false', () => {
+    expect(shouldOfferTargetCheck(makeArgs({ target: 'local' }))).toBe(false)
   })
 
-  it('returns false when projectDir is missing', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ projectDir: null }))).toBe(false)
-    expect(shouldAutoCheckTarget(makeArgs({ projectDir: undefined }))).toBe(false)
-    expect(shouldAutoCheckTarget(makeArgs({ projectDir: '' }))).toBe(false)
+  it('other（制約なし）は false', () => {
+    expect(shouldOfferTargetCheck(makeArgs({ target: 'other' }))).toBe(false)
   })
 
-  it('returns false when a request is already in progress (isLoading)', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ isLoading: true }))).toBe(false)
+  it('どちらのキーも無ければ false', () => {
+    expect(shouldOfferTargetCheck(makeArgs({ apiKey: '', claudeActive: false }))).toBe(false)
+    expect(shouldOfferTargetCheck(makeArgs({ apiKey: null, claudeActive: false }))).toBe(false)
+    expect(shouldOfferTargetCheck(makeArgs({ apiKey: undefined, claudeActive: false }))).toBe(false)
   })
 
-  it('returns false when the target is the same as the last checked one (duplicate event guard)', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ target: 'sakura-apprun', lastCheckedTarget: 'sakura-apprun' }))).toBe(false)
+  it('Claude のキーだけ（AI Engine のキーが空で claudeActive）でも true', () => {
+    expect(shouldOfferTargetCheck(makeArgs({ apiKey: '', claudeActive: true }))).toBe(true)
+    expect(shouldOfferTargetCheck(makeArgs({ apiKey: null, claudeActive: true }))).toBe(true)
+    expect(shouldOfferTargetCheck(makeArgs({ apiKey: undefined, claudeActive: true }))).toBe(true)
   })
 
-  it('returns true when the target differs from the last checked one', () => {
-    expect(shouldAutoCheckTarget(makeArgs({ target: 'sakura-apprun', lastCheckedTarget: 'sakura-rental' }))).toBe(true)
+  it('両方のキーがあっても true', () => {
+    expect(shouldOfferTargetCheck(makeArgs({ apiKey: 'sk-test', claudeActive: true }))).toBe(true)
   })
 
-  it('returns true for other constrained targets (sakura-rental, sakura-vps, sakura-cloud, hanamii, vercel)', () => {
+  it('projectDir が無ければ false', () => {
+    expect(shouldOfferTargetCheck(makeArgs({ projectDir: null }))).toBe(false)
+    expect(shouldOfferTargetCheck(makeArgs({ projectDir: undefined }))).toBe(false)
+    expect(shouldOfferTargetCheck(makeArgs({ projectDir: '' }))).toBe(false)
+  })
+
+  it('プロファイルに無い公開先は、キー・プロジェクトがそろっていても false（ボタンを付けない）', () => {
+    for (const target of ['cloudflare', 'constructor', '__proto__']) {
+      expect(shouldOfferTargetCheck(makeArgs({ target })), target).toBe(false)
+    }
+  })
+
+  it('制約のあるほかの公開先（sakura-rental, sakura-vps, sakura-cloud, hanamii, vercel）も true', () => {
     for (const target of ['sakura-rental', 'sakura-vps', 'sakura-cloud', 'hanamii', 'vercel']) {
-      expect(shouldAutoCheckTarget(makeArgs({ target }))).toBe(true)
+      expect(shouldOfferTargetCheck(makeArgs({ target })), target).toBe(true)
     }
   })
 })

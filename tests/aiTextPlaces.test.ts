@@ -296,7 +296,7 @@ describe('★ AI を呼ぶ画面側の入口が増えたら気づく', () => {
   it('入口の一覧（出力の行き先つき）', () => {
     const found = walk('src/renderer').filter(f => CALLER.test(code(f))).sort()
     expect(found).toEqual([
-      'src/renderer/components/ChatPanel.tsx', // あいさつ → 吹き出し（AiMessage）
+      'src/renderer/components/ChatPanel.tsx', // あいさつ → 吹き出し（AiMessage）。実行は greeting.ts で、ChatPanel が ports へつないで呼ぶ
       'src/renderer/components/KnowledgeModal.tsx', // 資料に聞く → AiText
       'src/renderer/hooks/useAiChat.ts', // チャット・まとめ・思考 → AiMessage・CompactNote・ThinkingBlock
       'src/renderer/securityCheck.ts', // 公開前セキュリティチェック → SecurityCheckSection の AiText

@@ -133,6 +133,42 @@ describe('withHanamiiProjectId: HANAMII の projectId を保つ/更新する', (
   })
 })
 
+describe('withHanamiiProjectId: 「保存場所だけが残った」印は、消えたプロジェクトについてのもの（違う ID を書くときだけ消す）', () => {
+  const marked = (projectId: string | null, buckets: string[] | null = ['koto-a']) =>
+    ({ name: 'proj', target: 'hanamii', publish: { targets: { hanamii: { publishedAt: 't', url: null } }, hanamii: { projectId, workspaceId: 'ws-1', storageLeftoverBuckets: buckets } } })
+  const hanamiiOf = (meta: Record<string, unknown>) => (meta.publish as any).hanamii
+
+  it('★★★ 記録にある ID と違う ID を書く（再公開で新しいプロジェクトができた）→ 印が null になる', () => {
+    expect(hanamiiOf(withHanamiiProjectId(marked('old-id'), 'new-id')).storageLeftoverBuckets).toBeNull()
+    expect(hanamiiOf(withHanamiiProjectId(marked('old-id', []), 'new-id')).storageLeftoverBuckets, '名前が分からない印（空配列）も消える').toBeNull()
+    expect(hanamiiOf(withHanamiiProjectId(marked(null), 'new-id')).storageLeftoverBuckets, '記録に ID が無い印も、消えた前のプロジェクトのもの').toBeNull()
+  })
+
+  it('★★★ 同じ ID の書き直し → 印を保つ', () => {
+    expect(hanamiiOf(withHanamiiProjectId(marked('same-id'), 'same-id')).storageLeftoverBuckets).toEqual(['koto-a'])
+    expect(hanamiiOf(withHanamiiProjectId(marked('same-id', []), 'same-id')).storageLeftoverBuckets).toEqual([])
+  })
+
+  it('★★★ null（空）の書き込み → 印を保つ', () => {
+    expect(hanamiiOf(withHanamiiProjectId(marked('old-id'), null)).storageLeftoverBuckets).toEqual(['koto-a'])
+    expect(hanamiiOf(withHanamiiProjectId(marked('old-id'), '')).storageLeftoverBuckets).toEqual(['koto-a'])
+  })
+
+  it('★★ ほかの項目（workspaceId・公開の記録・target・name）は保つ。projectId は書いた値になる', () => {
+    const next = withHanamiiProjectId(marked('old-id'), 'new-id')
+    expect(hanamiiOf(next)).toEqual({ projectId: 'new-id', workspaceId: 'ws-1', storageLeftoverBuckets: null })
+    expect((next.publish as any).targets).toEqual({ hanamii: { publishedAt: 't', url: null } })
+    expect(next.target).toBe('hanamii')
+    expect(next.name).toBe('proj')
+  })
+
+  it('★★ 印が無い記録には、印のキーを足さない（違う ID でも・初回でも）', () => {
+    expect('storageLeftoverBuckets' in hanamiiOf(withHanamiiProjectId({ publish: { hanamii: { projectId: 'old-id' } } }, 'new-id'))).toBe(false)
+    expect('storageLeftoverBuckets' in hanamiiOf(withHanamiiProjectId({}, 'proj-1'))).toBe(false)
+    expect(hanamiiOf(withHanamiiProjectId({ publish: { hanamii: { projectId: 'old-id', storageLeftoverBuckets: null } } }, 'new-id')).storageLeftoverBuckets).toBeNull()
+  })
+})
+
 describe('withApprunDedicatedRecord: publish.apprunDedicated にだけ差し込み、他は保つ（roadmap #23 段階②）', () => {
   it('★★ 既存の servicePrincipalId・consentedAt・他の publish.* キーを消さない', () => {
     const meta = {

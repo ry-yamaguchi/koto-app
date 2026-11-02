@@ -360,6 +360,7 @@ export function registerFsHandlers(deps: IpcDeps) {
   // 削除を始める前に、移してよいか聞く（読むだけ。プロジェクトの根なら kind:'project' で、画面は削除の画面へ振り分ける）
   ipcMain.handle('fs:trashCheck', (_, p: string) => trashCheckFs(p, { home: os.homedir() }))
   // プロジェクトの削除が、公開の破棄のあとで最後にフォルダを移す口（確認 → 深さ → 記録でない → 処理が走っていない → 記録が読める → skippedForTwins の覆う複製を読み直す → 専有型が残っていない）。
+  // 専有型が残っていても、資源の ID が無く、残っている保存場所（印）の全部が「消さずに残す」なら通す（`dedicatedLeftoverAllKept`）。
   // skippedForTwins は必須（画面の plan が、覆う複製があるために破棄を外した公開先。0.6.24 R2-e）
   ipcMain.handle('fs:trashProject', (_, dir: string, opts: { confirmed: true; skippedForTwins: string[] }) =>
     trashProjectFs(dir, opts, { home: os.homedir(), trashItem: abs => shell.trashItem(abs) }))

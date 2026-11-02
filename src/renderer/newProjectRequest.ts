@@ -155,7 +155,7 @@ export function buildNewProjectRequest(args: NewProjectRequestArgs): string | nu
 
 // ── 依頼の受け渡し（モジュールスコープの一時退避） ──────────────────────────────
 // NewProjectModal.tsx は作成直後に window.dispatchEvent(new CustomEvent('sakura-new-project-request', ...))
-// で ChatPanel.tsx へ依頼を渡す（sakura-target-changed と同じ作法）。しかし「初めてのプロジェクト作成」では
+// で ChatPanel.tsx へ依頼を渡す。しかし「初めてのプロジェクト作成」では
 // ChatPanel がまだマウントされておらず（IDEモード表示は mode==='ide' && currentDir が条件のため、
 // 最初のプロジェクトが作られるまで ChatPanel 自体が存在しない）、その瞬間に発火した CustomEvent は
 // 受け手不在のまま失われてしまう。ここへも同じ内容を退避しておき、ChatPanel が後からマウントされた
@@ -166,6 +166,11 @@ let pendingNewProjectRequest: { dir: string; prompt: string } | null = null
 /** 依頼を退避する（NewProjectModal.tsx が作成直後・dispatchEvent と同じタイミングで呼ぶ）。 */
 export function stashNewProjectRequest(dir: string, prompt: string): void {
   pendingNewProjectRequest = { dir, prompt }
+}
+
+/** dir が一致する退避中の依頼があるか。取り出さずに見るだけ（あいさつの判断が「依頼が先」と知るために使う）。 */
+export function hasNewProjectRequest(dir: string): boolean {
+  return pendingNewProjectRequest !== null && pendingNewProjectRequest.dir === dir
 }
 
 /**

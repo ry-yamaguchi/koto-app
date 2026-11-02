@@ -33,6 +33,12 @@
 // （main の hanamiiTeardown も、済むまで保存場所に触らない）。共用型の step は積まない（判断が「step が無い」として、フォルダを移さない）。
 // 失敗の行の末尾に「…の破棄も始めていません」を足す（キャンセルと同じ形）。以前（親の判断 2026-10-10）は、HANAMII が失敗しても共用型へ進んでいた。
 //
+// ── 同じ押しで HANAMII が済ませた保存場所だけの残りは、残りの段を走らせない ────────────────────────────────────────────
+// HANAMII の段が ok:true で終わると、自分の prefix のデータを消し、バケットはほかが使うなら残す。バケットを残す回は env.json に保存場所の記録が残るので、
+// 残りの段が同じ保存場所をもう一度「残り」と数え、同じ確認と同じ月額の注意をもう一度出していた。残りの段の門（sharedLeftoverGateOf）に、HANAMII が済ませた組（名前と prefix）を渡し、
+// ほかに仕事が無いとき（アプリ・数えるレジストリ・記録の鍵・設定から外した保存場所が無い）だけ飛ばす。HANAMII が202・失敗・キャンセル・例外の回は、組を渡さない（そもそも残りの段へ進まない）。
+// 共用型の行がある回（段がアプリを消す）は飛ばさない。
+
 // ── 警告は、その場で見せる（2026-10-09 検分）────────────────────────────────────────────────────
 // HANAMII の破棄が ok:true でも、バケットごとは消さずに残した保存場所（月額が続く）や、鍵を無効にできなかった ⚠️ の行を持つことがある。
 // 直後にフォルダがゴミ箱へ移ると、保存場所と鍵の唯一の記録（.sakura-cloud/env.json）も消え、処理の記録はメモリ上にしか無いので、
@@ -48,6 +54,7 @@ import { teardownSupport } from '../../shared/teardownSupport'
 import type { ConfirmOptions } from '../useConfirm'
 import type { ConfirmWithChoicesAnswer, ConfirmWithChoicesOptions } from '../useConfirmChoices'
 import { runTeardownFlow, electronFlowDeps } from './flow'
+import type { ShownPlacement } from './types'
 import { hanamiiTeardownSpec, HANAMII_KEY_MISSING_MESSAGE } from './targets/hanamii'
 import { sharedTeardownSpec, SHARED_KEY_MISSING_MESSAGE, type SharedTeardownRecord } from './targets/shared'
 import {
@@ -95,6 +102,8 @@ export async function teardownPublished(dir: string, targets: PublishTargetKind[
     const rest = targets.slice(i + 1).filter(x => teardownSupport(x) === 'supported')
     return rest.length > 0 ? `${rest.map(nameOf).join('・')}の破棄も始めていません` : ''
   }
+  // 同じ押しで HANAMII が ok:true で済ませた保存場所（確認で見せた名前と prefix の組）。残りの段の門へ渡す。HANAMII が済んでいない回は空のまま。
+  let handled: ShownPlacement[] = []
   for (let i = 0; i < targets.length; i++) {
     const t = targets[i]
     if (teardownSupport(t) !== 'supported') continue
@@ -108,7 +117,11 @@ export async function teardownPublished(dir: string, targets: PublishTargetKind[
           keyMissingMessage: SHARED_KEY_MISSING_MESSAGE,
           // 残りの段だけ、流れが読み直した記録に、plan と同じ門（sharedLeftoverGateOf）をかけ直す（0.6.24 R4-e）。HANAMII が保存場所を消し切ったあと、借り手のいる
           // コンテナレジストリだけが残った回は、門を通らない＝確認を出さず nothingToDo（何も消さない確認を、公開の見出しで出さない）。
-          ...(isLeftoverStage(t) ? { hasWork: (record: SharedTeardownRecord) => sharedLeftoverGateOf(record) !== null } : {}),
+          // 同じ押しで HANAMII が済ませた保存場所だけが残りの回も、同じく通らない（handled と、読み直した記録の鍵・設定から外した保存場所を門へ渡す）。
+          ...(isLeftoverStage(t) ? {
+            hasWork: (record: SharedTeardownRecord) =>
+              sharedLeftoverGateOf(record, { handled, keyRecorded: record.keyRecorded, stateOnlyBuckets: record.stateOnlyBuckets }) !== null,
+          } : {}),
         }))
         if (outcome.cancelled) {
           // やめたのに、フォルダだけ移すことはしない（cancelled の step があれば移さない）。残りの公開先の破棄も始めない（上の注）。
@@ -155,6 +168,7 @@ export async function teardownPublished(dir: string, targets: PublishTargetKind[
         const outcome = await runTeardownFlow(dir, hanamiiTeardownSpec, electronFlowDeps(dir, hanamiiTeardownSpec, {
           confirm: ctx.confirm,
           keyMissingMessage: HANAMII_KEY_MISSING_MESSAGE,
+          reportShown: true, // 確認で見せた保存場所の組を結果に付けてもらう（済んだ回に、残りの段の門へ渡す）
         }))
         if (outcome.cancelled) {
           // やめたのに、フォルダだけ移すことはしない（cancelled の step があれば移さない）。残りの公開先の破棄も始めない（上の注）。
@@ -180,6 +194,9 @@ export async function teardownPublished(dir: string, targets: PublishTargetKind[
           break
         }
         // 済んだが知らせがある回（残した保存場所・鍵の ⚠️）は view.warnings に入る。呼び手が移す前に見せる。
+        // ok:true は、確認で見せた保存場所の全部を処理したことを言う（見せていないものが残れば main は ok:false）。その組を、残りの段の門へ渡す。
+        // 渡すのは ok が厳密に true の回だけ（"yes"・1 など、真に読めるだけの値は渡さない＝残りの段は走る側）。
+        handled = outcome.result.ok === true ? (outcome.shownPlacements ?? []) : []
         steps.push({ target: t, kind: 'done', view: hanamiiTeardownSpec.toView(outcome.result), words: hanamiiTeardownSpec.words })
       } else {
         // teardownSupport が 'supported' と言うのに、ここに破棄の枝が無い種類。

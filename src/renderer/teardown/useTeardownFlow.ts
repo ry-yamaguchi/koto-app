@@ -34,6 +34,11 @@ export type TeardownFlowOutcome = {
   notes: TeardownResumedNote[]
   /** 消すものが記録に無かった（`nothingToDoIsOk` の仕様書だけ）。失敗の枠でなく中立の知らせで出す。付くのは true のときだけ。 */
   nothingToDo?: true
+  /**
+   * 何も消さないと分かっていたので、確認も IPC も出さず、画面が結果を組んだ回（`keptOnly` の結果。teardown/keptNothing.ts の門）。付くのは true のときだけ。
+   * main は走っていないので、公開の記録（📡 の行）は消えていない。一覧は、行の消し方を添える。
+   */
+  keptNothing?: true
 }
 
 export function useTeardownFlow<R, A, Res>(projectDir: string, spec: TargetSpec<R, A, Res>, opts: {
@@ -126,6 +131,7 @@ export function useTeardownFlow<R, A, Res>(projectDir: string, spec: TargetSpec<
     startedRef.current = true
     let view: TeardownView | null = null
     let nothingToDo = false
+    let keptNothing = false
     try {
       const out = await runTeardownFlow(projectDir, spec, electronFlowDeps(projectDir, spec, {
         confirm,
@@ -137,7 +143,7 @@ export function useTeardownFlow<R, A, Res>(projectDir: string, spec: TargetSpec<
           watchRef.current?.beginLocal()
         },
       }))
-      if (!out.cancelled) { view = spec.toView(out.result); nothingToDo = out.nothingToDo === true }
+      if (!out.cancelled) { view = spec.toView(out.result); nothingToDo = out.nothingToDo === true; keptNothing = out.keptNothing === true }
     } catch (e: any) {
       view = spec.toView(spec.failure(e?.message ?? String(e)))
     } finally {
@@ -145,7 +151,7 @@ export function useTeardownFlow<R, A, Res>(projectDir: string, spec: TargetSpec<
       startedRef.current = false
     }
     if (!view) return
-    cb.current.onOutcome(nothingToDo ? { view, notes: [], nothingToDo: true } : { view, notes: [] })
+    cb.current.onOutcome(nothingToDo ? { view, notes: [], nothingToDo: true } : keptNothing ? { view, notes: [], keptNothing: true } : { view, notes: [] })
     // 結果を出し終えた。この画面が始めた記録を「見た」として伝える（行が消える前に。警告つきの記録は伝わらず、残る）。
     watchRef.current?.endLocal()
     notifyTeardownFinished()

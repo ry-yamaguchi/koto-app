@@ -551,7 +551,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
       <div className="rounded-xl border border-line bg-surface p-4 space-y-1">
         <p className="text-sm font-semibold text-ink">🌸 HANAMII（国産のクラウドサービス）で公開</p>
         <p className="text-xs text-ink-muted leading-relaxed">
-          サーバーで動き続けるアプリ（Node.js など）も公開できます。コンテナは不要で、Koto がまとめてアップロードします。データは100%国内。
+          サーバーで動き続けるアプリ（Node.js など）も公開できます。コンテナは不要で、Koto がまとめてアップロードします。データは国内。
         </p>
         {getTargetProfile('hanamii').serviceUrl && (
           <p className="text-[11px] text-ink-muted">

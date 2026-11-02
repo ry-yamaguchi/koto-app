@@ -76,6 +76,22 @@ describe('writeHanamiiProjectIdFs: HANAMII projectId の読み書き往復', () 
   })
 })
 
+describe('writeHanamiiProjectIdFs: 保存場所だけが残った印は、違う ID を書いたときだけ消える（実ファイルの往復）', () => {
+  const write = (hanamii: Record<string, unknown>) => fs.writeFileSync(metaPath(), JSON.stringify({ publish: { hanamii } }, null, 2))
+
+  it('★★★ 前のプロジェクトの印がある記録へ、新しい projectId を書く → 印が消え、ほかの項目は残る', () => {
+    write({ projectId: 'old-id', workspaceId: 'ws-1', storageLeftoverBuckets: ['koto-a'] })
+    writeHanamiiProjectIdFs(projectDir, 'new-id')
+    expect(readMeta().publish.hanamii).toEqual({ projectId: 'new-id', workspaceId: 'ws-1', storageLeftoverBuckets: null })
+  })
+
+  it('★★ 同じ projectId の書き直しは印を残す', () => {
+    write({ projectId: 'same-id', storageLeftoverBuckets: ['koto-a'] })
+    writeHanamiiProjectIdFs(projectDir, 'same-id')
+    expect(readMeta().publish.hanamii.storageLeftoverBuckets).toEqual(['koto-a'])
+  })
+})
+
 describe('壊れている/読めない .sakuraide.json でも例外を投げない（記録の失敗で公開を落とさない）', () => {
   it('壊れたJSON（パース不能）の状態から mark/clear/record すべて例外を投げず、空メタ扱いで書き直す', () => {
     fs.writeFileSync(metaPath(), '{ this is not valid json')

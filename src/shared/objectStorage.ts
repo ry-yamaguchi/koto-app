@@ -14,6 +14,8 @@
 // 既定は共有だが、**プロジェクト専用のバケットも選べる**。分離できる代わりに
 // そのプロジェクト分の月額が増えるので、選ぶときは費用を必ず示すこと。
 
+import { keptDataReasonNote } from './keptDataNote'
+
 /** バケットの持ち方。 */
 export type BucketMode = 'shared' | 'dedicated'
 
@@ -76,13 +78,8 @@ export type BucketRecordUsers =
   | { known: true; users: readonly string[]; samePrefix: readonly string[]; samePrefixUnread: readonly string[]; samePrefixChecked: boolean }
   | { known: false; samePrefix: readonly string[]; samePrefixUnread: readonly string[]; samePrefixChecked: boolean }
 
-/**
- * 同じ公開の記録・同じデータを持つ、ほかのフォルダの名前を文に並べる（`フォルダ『A』・『B』`）。複製の断りの文・データを残した文・
- * プロジェクトの削除の赤い箱の文が、同じこれを通る（`『』` で囲む整形を、複製の話で3つ書かない）。
- */
-export function folderNamesText(names: readonly string[]): string {
-  return `フォルダ${names.map(n => `『${n}』`).join('・')}`
-}
+// 同じ公開の記録・同じデータを持つ、ほかのフォルダの名前を文に並べる関数と、データを残す理由の文は keptDataNote.ts の1つ（ここは再エクスポートだけ）。
+export { folderNamesText } from './keptDataNote'
 
 /**
  * 複製（または複製かもしれないもの）がいるか（純関数。**判断はここの1か所**。teardownPlanFor も、鍵に触るかの判断〔storageForTarget.ts・storageTeardown.ts〕もこれを見る）。
@@ -376,7 +373,7 @@ export function teardownPlanFor(placement: StoragePlacement, allKeys: string[], 
     return {
       deleteBucket: false,
       deletePrefix: null,
-      note: `${folderNamesText(twins)}も同じデータを使っています。`,
+      note: keptDataReasonNote({ risk: 'twin', folders: twins }),
       keptReasons: { ownFiles: false, usedByOthers: true },
       keptData: true,
     }
@@ -387,9 +384,7 @@ export function teardownPlanFor(placement: StoragePlacement, allKeys: string[], 
     return {
       deleteBucket: false,
       deletePrefix: null,
-      note: names.length > 0
-        ? `${folderNamesText(names)}の記録を読めないため、同じデータを使っているか確かめられませんでした。`
-        : 'ほかのフォルダの記録を読めないため、同じデータを使っているか確かめられませんでした。',
+      note: keptDataReasonNote({ risk: 'unread', folders: names }),
       keptReasons: { ownFiles: false, usedByOthers: false },
       keptData: true,
     }

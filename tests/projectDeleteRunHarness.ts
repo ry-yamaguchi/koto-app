@@ -16,7 +16,7 @@ export const nothing = (target: PublishTargetKind): ProjectDeleteStep => ({ targ
 export const failed = (target: PublishTargetKind): ProjectDeleteStep => ({ target, kind: 'failed', line: `${target}: 失敗（テスト）`, view: null, words: null })
 export const cancelled = (target: PublishTargetKind): ProjectDeleteStep => ({ target, kind: 'cancelled', line: `${target}: 破棄をキャンセルしました` })
 export const facts = (over: Partial<ProjectDeleteFacts> = {}): ProjectDeleteFacts =>
-  ({ targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null, ...over })
+  ({ targets: [], unreadable: false, unconfirmed: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null, ...over })
 export const plan = (teardown: PublishTargetKind[], block: ProjectDeletePlan['block'] = null, twinned: ProjectDeletePlan['twinned'] = []): ProjectDeletePlan => ({ block, teardown, twinned })
 export const kinds = (steps: readonly ProjectDeleteStep[]) => steps.map(s => `${s.target}:${s.kind}`)
 

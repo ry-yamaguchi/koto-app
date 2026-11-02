@@ -308,7 +308,9 @@ describe('★★★ T-E3 fs:trashProject: 確認の印が無ければ移さな�
       it(`${f} が残っていて複製が無い → 移さない（trashItem 0・ディスクは変わらない）`, async () => {
         const dir = project('SAKURAIDE/p', dedicated({ [f]: 'x-1' }))
         const before = tree()
-        expect(await trashProjectFs(dir, { confirmed: true, skippedForTwins: [] }, deps())).toEqual({ ok: false, message: DEDICATED_MESSAGE })
+        // 印だけ（storageLeftoverBucket）の断りは、画面に材料を読み直させる印（twins-gone）を付ける（開いたときの「全部残す」が古くなった回のため）
+        const want = f === 'storageLeftoverBucket' ? { ok: false, message: DEDICATED_MESSAGE, reason: 'twins-gone' } : { ok: false, message: DEDICATED_MESSAGE }
+        expect(await trashProjectFs(dir, { confirmed: true, skippedForTwins: [] }, deps())).toEqual(want)
         expect(trashed).toEqual([])
         expect(tree()).toEqual(before)
       })
@@ -334,7 +336,7 @@ describe('★★★ T-E3 fs:trashProject: 確認の印が無ければ移さな�
     it('★★ 保存場所だけが残った記録（ID が無い）は、複製の識別子が無いので、兄弟がいても移さない', async () => {
       const dir = project('SAKURAIDE/p', dedicated({ storageLeftoverBucket: 'b1' }))
       project('SAKURAIDE/p copy', dedicated({ storageLeftoverBucket: 'b1' }))
-      expect(await trashProjectFs(dir, { confirmed: true, skippedForTwins: [] }, deps())).toEqual({ ok: false, message: DEDICATED_MESSAGE })
+      expect(await trashProjectFs(dir, { confirmed: true, skippedForTwins: [] }, deps())).toEqual({ ok: false, message: DEDICATED_MESSAGE, reason: 'twins-gone' })
       expect(trashed).toEqual([])
     })
 

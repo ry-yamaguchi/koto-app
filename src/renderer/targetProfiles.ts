@@ -3,6 +3,8 @@
 // 公開先に合わない作りを避けるよう促す。
 // ※ .sakuraide.json のスキーマは変更しない。既存の `target` フィールドを読むだけ。
 
+import { isChatUsable } from './claudeMode'
+
 export type TargetId = 'local' | 'sakura-rental' | 'sakura-apprun' | 'sakura-apprun-dedicated' | 'sakura-vps' | 'sakura-cloud' | 'hanamii' | 'vercel' | 'other'
 
 export interface TargetProfile {
@@ -136,7 +138,7 @@ export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
     // （2026-09-27 再検分の指摘4: ここだけ直し漏れていた）。
     label: 'HANAMII（国産のクラウドサービス）',
     summary:
-      'さくらのクラウド基盤上で動く国産のクラウドサービス。ビルド済みファイルをアップロードするだけで数十秒で公開でき、データは100%国内。AppRunと同様にコンテナで動くため、静的サイトも Node.js の常駐サーバも公開できる。状態は持たない前提。',
+      'さくらのクラウド基盤上で動く国産のクラウドサービス。ビルド済みファイルをアップロードするだけで数十秒で公開でき、データは国内。AppRunと同様にコンテナで動くため、静的サイトも Node.js の常駐サーバも公開できる。状態は持たない前提。',
     recommended: [
       '静的サイト・Node.js/一般的なWebアプリを置ける',
       '待ち受けポートは環境変数で受け取る（ハードコードしない）',
@@ -222,34 +224,38 @@ export function profileToContext(p: TargetProfile): string {
   )
 }
 
-/** 公開先の環境制約が実質無い target（診断しても意味がない）。 */
+/** 公開先の環境制約が実質無い target（案内もボタンも出さない）。 */
 const NO_CONSTRAINT_TARGETS = new Set<string>(['local', 'other'])
 
-export interface ShouldAutoCheckTargetArgs {
-  /** 変更後の公開先（sakura-target-changed の detail.target） */
+/**
+ * その公開先に、作りを合わせる必要のある環境制約があるか。
+ * `local`・`other`・未指定は無い。プロファイルに無い値（手で書いた・別の版が書いた公開先）も、
+ * 合わせるべき前提を持たないので無い側に数える。
+ */
+export function hasTargetConstraint(target: string | null | undefined): boolean {
+  if (!target || !Object.prototype.hasOwnProperty.call(TARGET_PROFILES, target)) return false
+  return !NO_CONSTRAINT_TARGETS.has(target)
+}
+
+export interface ShouldOfferTargetCheckArgs {
+  /** 変更後の公開先 */
   target: string | undefined
-  /** さくらのAI Engine の APIキー */
-  apiKey: string | null | undefined
   /** 現在開いているプロジェクトのディレクトリ */
   projectDir: string | null | undefined
-  /** 送信パイプラインが実行中か（あいさつ含む） */
-  isLoading: boolean
-  /** 直前に自動診断を行った target（重複発火・多重送信の防止） */
-  lastCheckedTarget: string | null | undefined
+  /** さくらのAI Engine の APIキー */
+  apiKey: string | null | undefined
+  /** Claude が使える状態か */
+  claudeActive: boolean
 }
 
 /**
- * 公開先切替時に「AIへ自動で適合チェックを依頼してよいか」を判定する純粋関数。
- * true を返す場合のみ、チャット欄から診断依頼メッセージを自動送信する。
- * false の場合は、呼び出し側が従来どおりの軽い案内バブル（or 何もしない）にフォールバックする。
+ * 公開先を変えたあとの吹き出しに「この公開先で動くか AI に確かめる」ボタンを付けてよいかを判定する純粋関数。
+ * 判定は表示するかどうかだけで、AI へは何も送らない（送るのはボタンを押したとき）。
+ * キーは AI Engine と Claude のどちらかがあればよい（送り先は送信側が決める）。
  */
-export function shouldAutoCheckTarget(args: ShouldAutoCheckTargetArgs): boolean {
-  const { target, apiKey, projectDir, isLoading, lastCheckedTarget } = args
-  if (!target) return false
-  if (NO_CONSTRAINT_TARGETS.has(target)) return false // 環境制約が無いので診断不要
-  if (!apiKey) return false
+export function shouldOfferTargetCheck(args: ShouldOfferTargetCheckArgs): boolean {
+  const { target, projectDir, apiKey, claudeActive } = args
+  if (!hasTargetConstraint(target)) return false
   if (!projectDir) return false
-  if (isLoading) return false // 実行中の会話を邪魔しない
-  if (target === lastCheckedTarget) return false // 同一targetへの重複発火を防ぐ
-  return true
+  return isChatUsable(!!apiKey, claudeActive)
 }

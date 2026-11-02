@@ -28,6 +28,7 @@ import { isRegistryOrigin, teardownRemainingWarnings } from './cloudCost'
 import { hasWarnMark } from './opsText'
 import { STORAGE_LISTED_CHECK } from './teardownSupport'
 import { isStoppedByQuit } from './inFlightOps'
+import { readKeptOnly, readKeptStorage } from './keptOnly'
 import { teardownCallOf, teardownStateOf, type TeardownCall } from './teardownCall'
 
 /**
@@ -93,6 +94,14 @@ export type TeardownView = {
    * 見出しは「に終わりました」と言わない。その場の返り値（toTeardownView）には付かない（知らせを作れるのは main の起動の読み戻しだけ）。
    */
   stoppedByQuit?: true
+  /**
+   * 何も消さなかった回（保存場所だけが残った。返り値・記録の `keptOnly` が真）。**true のときだけ付ける**。state は 'done' のまま（移してよい。ok も変えない）。
+   * 見出しの言い分けはこの印で行う。ここ（toTeardownView）が付けるのは共用型・専有型の成功した回だけ。HANAMII は、画面が確認なしで組んだ結果
+   * （keptNothingResult）に限って、HANAMII の toView（teardown/targets/hanamii.ts）が足す。
+   */
+  keptOnly?: true
+  /** 保存場所を残した成功の回（返り値・記録に残した保存場所の名前がある。`keptOnly` の回も付く）。**true のときだけ付ける**。専有型の見出しが「すべて」と言わないために使う。 */
+  keptStorage?: true
 }
 
 /** 記録（main/projectOps.ts の OpResult と同じ形）。renderer の型に依らないよう、ここで最小の形を持つ。 */
@@ -295,10 +304,22 @@ function pendingMarks(target: string, x: Record<string, unknown>): { stopped: Re
   }
 }
 
+/**
+ * 「何も消さなかった」の印（`keptOnly`）を読む。**成功した共用型・専有型の回だけ**（失敗の回は読まない。HANAMII は付いていても、ここでは読まない。
+ * 画面が確認なしで組んだ結果だけは、HANAMII の toView が足す）。
+ * 値は真偽値の `true` だけ（`readKeptOnly`）。`callOfFacts`（呼び名）と `buildView`（見出しの印）の両方がこれを通る。
+ */
+function keptOnlyMark(target: string, ok: boolean, x: Record<string, unknown>): boolean {
+  return ok && (target === 'sakura-apprun' || target === 'sakura-apprun-dedicated') && readKeptOnly(x)
+}
+
 /** 呼び名を、読み直した事実から決める。**見出し（buildView）も、記録を直接読む入口（resultCallOf）も、これを通る**。 */
 function callOfFacts(target: string, f: Facts): TeardownCall {
   const { stopped, accepted } = pendingMarks(target, f.fields)
-  return teardownCallOf({ ok: f.ok, accepted, stopped: stopped !== null, stoppedByQuit: f.stoppedByQuit === true, warnings: f.warnings.length })
+  return teardownCallOf({
+    ok: f.ok, accepted, stopped: stopped !== null, stoppedByQuit: f.stoppedByQuit === true, warnings: f.warnings.length,
+    keptOnly: keptOnlyMark(target, f.ok, f.fields),
+  })
 }
 
 function buildView(target: PublishTargetKind, f: Facts): TeardownView {
@@ -326,6 +347,8 @@ function buildView(target: PublishTargetKind, f: Facts): TeardownView {
     stageTimings: readStageTimings(x.stageTimings),
     // true のときだけキーごと付ける（false を書くと、型を丸ごと書いた既存の期待が割れる）。
     ...(f.stoppedByQuit ? { stoppedByQuit: true as const } : {}),
+    ...(keptOnlyMark(target, f.ok, x) ? { keptOnly: true as const } : {}),
+    ...(f.ok && readKeptStorage(x) ? { keptStorage: true as const } : {}),
   }
 }
 

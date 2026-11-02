@@ -91,27 +91,35 @@ describe('W-53: useAiChat.ts の Claude結果ハンドラが、目安額超過�
   })
 })
 
-describe('W-21: ChatPanel.tsx の最初のあいさつ（greet）が、warning を吹き出しで出す（配線）', () => {
-  const src = readCode('src/renderer/components/ChatPanel.tsx')
+// あいさつの実行は ChatPanel から greeting.ts（runGreeting）へ移した。ここは移した先の形を読む。
+// 振る舞いそのもの（warning が最後に付く・途中の差し替えに消されない）は tests/greeting.test.ts が偽の ports で固定している。
+describe('W-21: greeting.ts の最初のあいさつ（runGreeting）が、warning を吹き出しで出す（配線）', () => {
+  const src = readCode('src/renderer/greeting.ts')
 
   it('budget.warning を控えておき、finally で末尾に付け足す（途中の replaceAll に消されない位置）', () => {
     expect(src).toContain('const budgetWarning = budget.warning')
-    expect(src).toContain("if (budgetWarning) applyOp({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: budgetWarning } })")
+    expect(src).toContain("if (budgetWarning) emit({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: budgetWarning } })")
   })
 
-  it('★ warning の付け足しは finally ブロックの中（setGreetLoading(false) の後）に置かれている', () => {
-    const finallyIdx = src.indexOf('greetAbortRef.current = null')
-    const setLoadingFalseIdx = src.indexOf('setGreetLoading(false)')
-    const appendIdx = src.indexOf("if (budgetWarning) applyOp({ kind: 'append'")
+  it('★ warning の付け足しは finally ブロックの中（setLoading(false) の後）に置かれている', () => {
+    const finallyIdx = src.indexOf('ports.setAbort(null)')
+    const setLoadingFalseIdx = src.indexOf('ports.setLoading(false)')
+    const appendIdx = src.indexOf("if (budgetWarning) emit({ kind: 'append'")
     expect(finallyIdx).toBeGreaterThan(-1)
     expect(setLoadingFalseIdx).toBeGreaterThan(finallyIdx)
-    expect(appendIdx).toBeGreaterThan(setLoadingFalseIdx) // finally の中・setGreetLoading(false) より後
+    expect(appendIdx).toBeGreaterThan(setLoadingFalseIdx) // finally の中・setLoading(false) より後
   })
 
   it('budgetWarning を控える行は、あいさつ本体を差し替える最初の replaceAll より前にある', () => {
     const captureIdx = src.indexOf('const budgetWarning = budget.warning')
-    const firstReplaceAllIdx = src.indexOf("applyOp({ kind: 'replaceAll', messages: [{ role: 'user', content: kickoff")
+    const firstReplaceAllIdx = src.indexOf("emit({ kind: 'replaceAll', messages: [{ role: 'user', content: kickoff")
     expect(captureIdx).toBeGreaterThan(-1)
     expect(firstReplaceAllIdx).toBeGreaterThan(captureIdx)
+  })
+
+  it('ChatPanel には、この付け足しを戻していない（判断と実行は greeting.ts の1か所）', () => {
+    const panel = readCode('src/renderer/components/ChatPanel.tsx')
+    expect(panel).not.toContain('const budgetWarning = budget.warning')
+    expect(panel).not.toContain("if (budgetWarning) applyOp({ kind: 'append'")
   })
 })

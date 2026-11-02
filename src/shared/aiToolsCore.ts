@@ -11,6 +11,7 @@
 // renderer（aiTools.ts が re-export・互換維持）の両方から同じ実装を呼べるようにする。
 import { isDangerousCommand, leavesWorkingDir, writesOutsideWorkingDir, type WritesOutsideOptions } from './commandGuard'
 import { PUBLISH_DIR_LABEL } from './publishRoot'
+import { isConnectionFailureMessage } from './connectionFailure'
 // W-47: 「別のモデル（Kimi K2.7 Code など）に切り替えて」は、既定モデルと同じ名前なので
 // 既にそれを使っている人には「もう選んでいるのに」と読める。既定モデルのIDと一元定義から比べる。
 import { DEFAULT_MODEL } from './modelInfo'
@@ -269,7 +270,7 @@ export function isToolUnsupportedError(message?: string): boolean {
 }
 
 /** チャットのエラーを、原因に応じた分かりやすい日本語の案内文にする。
- *  認証エラー（401 等）はキーの再発行・確認へ誘導する。
+ *  認証エラー（401 等）はキーの再発行・確認へ誘導する。回線断・403・404・500 番台・Claude が正常に動かなかったときも、原因ごとの文にする。
  *  engine で頭脳を指定（'sakura'=さくらのAI Engine / 'claude'=Claude）し、認証エラー時の
  *  誘導先（どちらのキーを確認するか）を出し分ける（所見9: Claude経路のエラーに
  *  「さくらのAI Engineのキーを確認」と誤案内していた問題の修正）。 */
@@ -307,6 +308,29 @@ export function formatChatError(message: string, engine: 'sakura' | 'claude' = '
   // コンテキスト（会話）が長くなりすぎた場合。両経路共通。
   if (/context (length|window)|maximum context|too long|token limit|context_length|exceeds? .*token/.test(m)) {
     return '会話が長くなりすぎました。チャット上部の 🗑（クリア）で会話をリセットしてから、続きを依頼してください。'
+  }
+  // ここから下は原因ごとの文。どれも engine によらず同じ文（キーの案内は 401 と 403 だけ）。英語の原文・パス・製品名は画面に出さない。
+  // 回線断を状態番号より先に見る（アドレス・ホスト名の数字〔例 'connect ETIMEDOUT 203.0.113.5:500'〕を状態番号と取り違えないため）。
+  // 状態番号で始まる失敗は、本文に network などを含んでも回線断の判定が数えない（connectionFailure.ts）。
+  if (isConnectionFailureMessage(message || '')) {
+    return 'インターネットに接続できませんでした。接続を確かめてから、もう一度送信してください。'
+  }
+  // 403（キーにその操作の権限が無い。403 はモデルに限らない）。
+  if (/\b403\b|forbidden|permission_error/.test(m)) {
+    return 'APIキーに、この操作の権限がありませんでした（403）。認証情報（🔑）でキーを確かめるか、別のモデルを選んでください。'
+  }
+  // 404（選んでいるモデルが無い）。
+  if (/\b404\b|model_not_found|not_found_error/.test(m)) {
+    return '選んでいるモデルが見つかりませんでした（404）。モデルを選び直してから、もう一度送信してください。'
+  }
+  // 500 番台（サービス側の一時的な問題）。
+  if (/\b(500|502|503|504)\b|internal server error|bad gateway|service unavailable|gateway timeout/.test(m)) {
+    return 'AI のサービス側で一時的な問題が起きています。しばらく待ってから、もう一度送信してください。'
+  }
+  // Claude が正常に動かなかった（Agent SDK の例外文）。実行ファイルが無い・起動できないときだけでなく、動いたあとで終わったとき
+  // （process exited with code N のあとに stderr の末尾が付く）にも出るので、末尾の原因を上で先に見て、どれでもなければこの文にする。
+  if (/claude code (native binary|executable|process)/.test(m)) {
+    return 'Claude が正常に動きませんでした。Koto を再起動してから、もう一度送信してください。'
   }
   const keyHint = engine === 'claude' ? 'Claude のAPIキー' : 'APIキーと利用上限'
   return `エラー: ${message}\n\n💡 うまくいかないときは: もう一度送信するか、認証情報（🔑）で${keyHint}を確認してください。`

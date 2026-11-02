@@ -15,7 +15,11 @@
 //     閉じると答えを返せない確認が宙に浮き、破棄が進まなくなる。
 //   ・赤い箱は開いたときの材料で描く。破棄が済んだ公開先（run の done）は、箱の一覧にもチェックの説明にも出さない（済んだ破棄を「これから消す」と言わない。
 //     結果の欄が済んだと言う）。破棄が済まなかった回（stopped）は、pressProjectDelete が材料を読み直して返し、残った公開先だけの箱に更新する。
-//   ・押し直しで、読み直した材料に見ていない注意（記録が読めなくなった・共用型の残り）が増えたら、移さずに箱を描き直す。見てからもう一度押す（seen）。
+//   ・押し直しで、読み直した材料に見ていない注意（記録が読めなくなった・共用型の記録を確かめられなくなった・共用型の残り）が増えたら、移さずに箱を描き直す。見てからもう一度押す（seen）。
+//   ・公開の記録（.sakuraide.json・state.json）を読めない回は、plan が record-unreadable で止める（ボタン不可・チェックと 💾 なし・止める文1つ）。共用型の記録の問い合わせだけが失敗した回
+//     （facts.unconfirmed）は止めず、箱の先頭に弱い注意を1つ出す。
+//   ・専有型の保存場所が全部「消さずに残す」ため plan が止めなかった回（plan.dedicatedKept）は、赤い箱に 💾 の1行（dedicatedKeptNoteOf）を足す。ボタンは押せる。
+//     ほかの 💾 の行がすでに名指しした保存場所は出さない（共用型の記録を読めた回は、そちらが同じ保存場所を言う）。
 // コンテナレジストリの注記（これまで開いたときに読んだ写しで「残します」と言っていた）は無い。消すかどうかは、続く確認で選ぶ。
 // ただし、チェックを外したときの「コンテナレジストリの月額が続きます」は、このプロジェクトのために Koto が作った・ほかが借りていないレジストリがあるときだけ
 // 言う（判断は ownRegistryBillingNote。材料は開いたときに読む facts.sharedRegistry）。共用型の行があるだけでは言わない（0.6.22-rc.1 の実機）。
@@ -44,11 +48,12 @@ import { readRunningOp } from '../projectMeta'
 import { teardownPublished, pressProjectDelete, TwinsGoneError, type ProjectDeletePhase, type ProjectDeleteRunDeps } from '../teardown/projectDelete'
 import { readProjectDeleteFacts } from '../teardown/projectDeleteFacts'
 import { twinnedNote } from '../teardown/projectDeleteTwins'
+import { dedicatedKeptNoteOf } from '../teardown/projectDeleteDedicatedKept'
 import {
-  planProjectDeleteTeardown, projectDeleteBlockNote, sharedLeftoverNote, ownRegistryBillingNote, PUBLISH_RECORD_UNREADABLE_NOTE, withoutDoneTargets,
+  planProjectDeleteTeardown, projectDeleteBlockNote, ownRegistryBillingNote, PUBLISH_RECORD_UNCONFIRMED_NOTE, withoutDoneTargets,
   type ProjectDeleteFacts,
 } from '../teardown/projectDeletePlan'
-import { projectDeleteCheckWords, rowStorageNotesOf, leftoverStorageNoteLine, keptStorageNoteOf, vercelStorageTornDown } from '../teardown/projectDeleteWords'
+import { projectDeleteCheckWords, rowStorageNotesOf, leftoverStorageNoteLine, keptStorageNoteOf, unsteppedLeftoverNote, vercelStorageTornDown } from '../teardown/projectDeleteWords'
 import { useConfirmChoices } from '../useConfirmChoices'
 import ManualTeardownNote from './teardown/ManualTeardownNote'
 import ProjectDeleteResults from './teardown/ProjectDeleteResults'
@@ -76,7 +81,7 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
 
   useEffect(() => {
     let cancelled = false
-    // 読めなかった材料は、読む関数が安全な空の値に倒す（公開の記録が読めなかったことは facts.unreadable）。閉じたあとに届いた答えは捨てる。
+    // 読めなかった材料は、読む関数が安全な空の値に倒す（公開の記録が読めなかったことは facts.unreadable、共用型の記録を確かめられなかったことは facts.unconfirmed）。閉じたあとに届いた答えは捨てる。
     readProjectDeleteFacts(projectDir)
       .then(f => { if (!cancelled) setFacts(f) })
       .catch(() => { /* 読む関数は投げない作り。万一投げても、読み込みの前のまま（押せない側に倒れる） */ })
@@ -139,7 +144,21 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
   // 破棄する段があっても、チェックがオンのときに出す（0.6.24 R4-d。以前は teardown が空の回だけで、K2 のレジストリが「残ります」と言われなかった）。
   // チェックを外した回は、外したときの 💾（keptNote。同じ残りを含む）が言うので、重ねない。
   const keptNoteShown = plan !== null && plan.block === null && shownTeardown.length > 0 && !teardownOnDelete && keptNote !== ''
-  const leftoverNote = facts && plan && facts.sharedLeftover !== null && !plan.leftover && !keptNoteShown ? sharedLeftoverNote(facts.sharedLeftover) : ''
+  // 削除を断る回（止める理由があるとき・公開の記録を読めないとき）は出さない。まだ何も消しておらず、止める文か注意が理由を言うので、残る話は要らない
+  // （専有型の保存場所だけが残る回は、止める文が月額を言う。手順6が片づける保存場所に「残ります」と言うと食い違う）。
+  // 保存場所が全部「消さずに残す」回（同じデータを使うフォルダがいる・確かめられない）は、plan が段を足さないので、チェックも確認も出ず、この文が「残ります」と理由を言う。
+  const leftoverNote = facts && plan && plan.block === null && !facts.unreadable && facts.sharedLeftover !== null && !plan.leftover && !keptNoteShown ? unsteppedLeftoverNote(facts, teardownOnDelete && rowNotes.length > 0) : ''
+  // 共用型の記録の問い合わせだけが失敗した回の弱い注意（止めない）。止める回（公開の記録を読めない・走っている操作など）は、止める文が1つだけ言う
+  const unconfirmedShown = facts !== null && plan !== null && plan.block === null && facts.unconfirmed === true
+  // 専有型の保存場所が全部「消さずに残す」ため、plan が止めなかった回（plan.dedicatedKept）の 💾 の1行。ほかの 💾 の行がすでに名指しした保存場所は除き、残りが無ければ出さない
+  // （共用型の記録を読めた回は、leftoverNote が同じ保存場所を理由つきで言う）。判断と文は純関数。ここは、どの行が出ているかを渡すだけ。
+  const stepRegion = plan !== null && plan.block === null && shownTeardown.length > 0
+  const dedicatedKeptNote = facts && plan && plan.block === null ? dedicatedKeptNoteOf(plan, facts, {
+    rowNotes: stepRegion && teardownOnDelete && rowNotes.length > 0,
+    leftoverLine: stepRegion && teardownOnDelete && leftoverLine !== '',
+    keptNote: keptNoteShown,
+    leftoverNote: leftoverNote !== '',
+  }) : ''
   // Vercel の案内の最後の文を言わない回（保存場所も一緒に破棄する回だけ。0.6.24 A-9）
   const vercelStorageGone = facts && plan ? vercelStorageTornDown(plan, facts, teardownOnDelete, shownTeardown) : false
 
@@ -165,10 +184,10 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
                 フォルダを消すと .sakura-cloud/state.json（どのレジストリを使っているかの
                 唯一の記録）も一緒に消える。消えた後は Koto から後片付けできず、
                 月220円が黙って続く。だから削除の前にここで止められるようにする。 */}
-            {facts && plan && (shownTargets.length > 0 || facts.unreadable || plan.block !== null || leftoverNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (
+            {facts && plan && (shownTargets.length > 0 || unconfirmedShown || plan.block !== null || leftoverNote !== '' || dedicatedKeptNote !== '' || plan.twinned.length > 0 || shownTeardown.length > 0) && (
               <div className="rounded-lg border border-brand-red/50 bg-surface p-2.5 space-y-1.5">
-                {facts.unreadable && (
-                  <p className="text-brand-red font-medium select-text">⚠️ {PUBLISH_RECORD_UNREADABLE_NOTE}</p>
+                {unconfirmedShown && (
+                  <p className="text-brand-yellow select-text">⚠️ {PUBLISH_RECORD_UNCONFIRMED_NOTE}</p>
                 )}
                 {shownTargets.length > 0 && (
                   <>
@@ -244,6 +263,10 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
                     破棄はしない・止めない（利用者が決められる。フォルダはゴミ箱から戻せる）が、フォルダと一緒に記録が移り、月額が Koto から辿れなくなる。 */}
                 {leftoverNote !== '' && (
                   <p className="text-brand-red select-text">💾 {leftoverNote}</p>
+                )}
+                {/* 専有型の保存場所が全部「消さずに残す」回（止めずにフォルダを移す）の 💾。ほかの行が同じ保存場所を言わない回だけ出る。 */}
+                {dedicatedKeptNote !== '' && (
+                  <p className="text-brand-red select-text">💾 {dedicatedKeptNote}</p>
                 )}
               </div>
             )}

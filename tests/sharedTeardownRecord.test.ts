@@ -13,7 +13,7 @@ vi.mock('../src/main/cloud/storageAdapter', async (orig) => (await import('./sha
 vi.mock('../src/main/cloud/client', async (orig) => (await import('./sharedTeardownHarness')).clientMock(await orig()))
 
 import { registerCloudHandlers } from '../src/main/ipc/cloud'
-import { sharedTeardownRecordOf, readSharedTeardownRecord } from '../src/main/ipc/cloudTeardown'
+import { sharedTeardownRecordOf, readSharedTeardownRecord, keyRecordedOf } from '../src/main/ipc/cloudTeardown'
 import { loadCloudSpec, loadCloudState } from '../src/main/cloud/specStore'
 import { BAD_PROJECT_DIR_MESSAGE } from '../src/main/cloud/teardownShell'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
@@ -38,6 +38,7 @@ describe('cloud:teardownRecord: 確認の材料', () => {
         registryUsers: [],
         placements: [{ bucket: A, prefix: PREFIX, shared: true }, { bucket: B, prefix: PREFIX, shared: true }],
         stateOnlyBuckets: [B],
+        keyRecorded: false,
       },
     })
   })
@@ -117,9 +118,43 @@ describe('cloud:teardownRecord: 確認の材料', () => {
     const spec = loadCloudSpec(dir)!
     const viaHandler = (await record(EVENT, dir)).record
     // 記録から決まる部分は run と同じ関数の答え。口が足すのは、同じレジストリを使うほかのプロジェクト（ここは兄弟がいないので空。tests/sharedTeardownUsers.test.ts）
-    expect(viaHandler).toEqual({ ...sharedTeardownRecordOf(spec, loadCloudState(dir, spec)), registryUsers: [] })
+    expect(viaHandler).toEqual({ ...sharedTeardownRecordOf(spec, loadCloudState(dir, spec)), registryUsers: [], keyRecorded: false })
     expect(viaHandler).toEqual((readSharedTeardownRecord(dir) as any).record)
     expect(viaHandler.placements.map((p: any) => p.bucket)).toEqual([A, B, 'koto-data-c'])
     expect(viaHandler.stateOnlyBuckets).toEqual(['koto-data-c'])
+  })
+})
+
+// ── T-3g keyRecorded: 記録の鍵が残っているか。偽の state.json で固定する ───────────────────────────────────────────
+// 鍵の無効化と、名前での鍵の一括の無効化は共用型の段にしかできない仕事。プロジェクトの削除が、HANAMII の済ませた保存場所だけの残りの段を飛ばしてよいかが、これを見る（偽のときだけ飛ばせる）。
+describe('T-3g cloud:teardownRecord の keyRecorded', () => {
+  it.each([
+    ['storagePermissionId がある', { storagePermissionId: 'perm-1' }, true],
+    ["keySweepPending がある（前の回が一括の無効化を果たさずに止まった印）", { keySweepPending: 'apprun' }, true],
+    ['両方ある', { storagePermissionId: 'perm-1', keySweepPending: 'apprun' }, true],
+    ['どちらも無い', {}, false],
+    ['storagePermissionId が空文字', { storagePermissionId: '' }, false],
+    ['知らない値の keySweepPending も、鍵が残っている側（走らせる側）に読む', { keySweepPending: 'other' }, true],
+  ])('%s → keyRecorded は %s', async (_label, meta, expected) => {
+    setup(dir, { env: [A], resources: [bucketRef(A)], meta: meta as any })
+    expect((await record(EVENT, dir)).record.keyRecorded).toBe(expected)
+  })
+
+  it('env.json も state.json も無い（何も記録していない）プロジェクトは、空の記録で keyRecorded は false', async () => {
+    fs.mkdirSync(path.join(dir, '.sakura-cloud'), { recursive: true })
+    expect(await record(EVENT, dir)).toEqual({
+      ok: true,
+      record: { appNames: [], registryName: null, registryOrigin: 'unknown', placements: [], stateOnlyBuckets: [], registryUsers: [], keyRecorded: false },
+    })
+  })
+
+  it('keyRecordedOf: state が無い・meta が無いは false、鍵の印が1つでもあれば true（読めない形の値は true に倒す）', () => {
+    expect(keyRecordedOf(null)).toBe(false)
+    expect(keyRecordedOf(undefined)).toBe(false)
+    expect(keyRecordedOf({ meta: undefined })).toBe(false)
+    expect(keyRecordedOf({ meta: {} })).toBe(false)
+    expect(keyRecordedOf({ meta: { storagePermissionId: 'p' } })).toBe(true)
+    expect(keyRecordedOf({ meta: { keySweepPending: 'apprun' } })).toBe(true)
+    expect(keyRecordedOf({ meta: { storagePermissionId: 123 as any } })).toBe(true)
   })
 })

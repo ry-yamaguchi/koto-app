@@ -4,7 +4,7 @@ import path from 'node:path'
 
 // ── 段階3A（3A-4b）材料: プロジェクトの削除を開いたときに1回読む材料（projectDeleteFacts.ts の readProjectDeleteFacts）──────────────
 // 設計書: docs/teardown-unify-plan.md の 10.9.4 の(2)・10.9.13 の「材料」。**読むだけで、何も書かない・外へ要求を出さない・投げない**。
-//   targets・unreadable … 公開の読み口（4a。旧い記録の公開先も数える）／ dedicated … 専有型の記録／ placements … 保存場所の全件
+//   targets・unreadable … 公開の読み口（4a。旧い記録の公開先も数える）／ unconfirmed … 共用型の記録の問い合わせの失敗（止めない弱い注意）／ dedicated … 専有型の記録／ placements … 保存場所の全件
 //   running … 走っている操作／ sharedLeftover … 共用型の行が無いのに、共用型の記録に消すものがある（10.9.18 の E）
 //   sharedRegistry … 共用型の行があるときの、記録のコンテナレジストリ（名前・由来・使っているほかのプロジェクト。2026-10-19、0.6.22-rc.1 の実機）
 // 偽の window は、呼ばれた口の名前を log に残す（読む口だけが呼ばれ、registryName は呼ばれないことを見る）。
@@ -58,18 +58,18 @@ const read = () => readProjectDeleteFacts(DIR)
 describe('材料: 何も無い新しいプロジェクト・読む口の一覧', () => {
   it('★★★ 何も無い: 空の材料。偽の注意（unreadable）を出さない。読む口だけが呼ばれ、書く口・registryName は呼ばれない', async () => {
     const log = install()
-    expect(await read()).toEqual({ targets: [], unreadable: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
+    expect(await read()).toEqual({ targets: [], unreadable: false, unconfirmed: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
     expect(new Set(log)).toEqual(new Set(['fs.exists', 'apprunDedicated.state', 'storage.placement', 'publishMeta.runningOp', 'cloud.teardownRecord']))
     expect(log).not.toContain('cloud.registryName') // 10.9.18 の D: レジストリの名前は読まない
     expect(log).not.toContain('fs.readFile') // 記録のファイルが無いので読みにいかない
   })
 
-  it('★★ window が無い・口が全部投げる: 投げない。公開の記録は読めなかった扱い（unreadable）、ほかは空に倒す', async () => {
+  it('★★ window が無い・口が全部投げる: 投げない。window が無ければ公開の記録は読めなかった扱い（unreadable。止める文が言うので unconfirmed は立てない）、口が投げるだけなら共用型の記録を確かめられなかった扱い（unconfirmed）。ほかは空に倒す', async () => {
     delete (globalThis as any).window
-    expect(await read()).toEqual({ targets: [], unreadable: true, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
+    expect(await read()).toEqual({ targets: [], unreadable: true, unconfirmed: false, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
     const boom = new Error('boom')
     install({ running: boom, dedicated: boom, placement: boom, record: boom })
-    expect(await read()).toEqual({ targets: [], unreadable: true, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
+    expect(await read()).toEqual({ targets: [], unreadable: false, unconfirmed: true, dedicated: null, placements: [], running: null, sharedLeftover: null, sharedRegistry: null, twins: null })
   })
 })
 
@@ -181,16 +181,25 @@ describe('材料: 共用型の残りだけがあるプロジェクト（10.9.18 
     expect(await read()).toMatchObject({ sharedLeftover: null, unreadable: false })
   })
 
-  it('★★★ 記録を読めない（ok:false・投げた・形が違う）: sharedLeftover は null、unreadable を立てる（読めなかったことを黙らない）', async () => {
+  it('★★★ 記録を読めない（ok:false・投げた・形が違う）: sharedLeftover は null、unconfirmed を立てる（読めなかったことを黙らない）。main は断らない回なので unreadable は立てない（画面は止めない）', async () => {
     for (const record of [{ ok: false, message: 'env.json がありません' }, new Error('IPC が落ちた'), { ok: true, record: { appNames: 'x' } }, undefined]) {
       install(record === undefined ? { record: { ok: false } } : { record })
-      expect(await read(), JSON.stringify(record)).toMatchObject({ sharedLeftover: null, unreadable: true })
+      const f = await read()
+      expect(f, JSON.stringify(record)).toMatchObject({ sharedLeftover: null, unconfirmed: true, unreadable: false })
+      expect(planProjectDeleteTeardown(f).block, '止めない（利用者が直せない原因で止めると行き止まりになる）').toBeNull()
     }
   })
 
-  it('★★ 公開の記録が読めなかった回でも、読めた分（unreadable）を保ったまま共用型の残りを見る', async () => {
+  it('★★★ state.json だけが壊れ、HANAMII の行は読めた回: unreadable（止める）・読めた公開先は数える・unconfirmed は立てない', async () => {
+    install({ files: { [META]: meta({ hanamii: { projectId: 'hnm-1' }, targets: { hanamii: { publishedAt: '2026-10-01T00:00:00.000Z' } } }), [STATE]: '{ 壊れた' } })
+    const f = await read()
+    expect(f).toMatchObject({ targets: ['hanamii'], unreadable: true, unconfirmed: false })
+    expect(planProjectDeleteTeardown(f)).toEqual({ block: { reason: 'record-unreadable' }, teardown: [], twinned: [] })
+  })
+
+  it('★★ 公開の記録が読めなかった回でも、読めた分（unreadable）を保ったまま共用型の残りを見る。止める文が言うので unconfirmed は立てない', async () => {
     install({ files: { [META]: '{ 壊れた' }, record: { ok: true, record: rec({ placements: [PL] }) } })
-    expect(await read()).toMatchObject({ targets: [], unreadable: true, sharedLeftover: { registryName: null, registryOrigin: 'unknown', registryUsers: [], placements: [PL] } })
+    expect(await read()).toMatchObject({ targets: [], unreadable: true, unconfirmed: false, sharedLeftover: { registryName: null, registryOrigin: 'unknown', registryUsers: [], placements: [PL] } })
   })
 })
 
@@ -214,7 +223,7 @@ describe('材料: 共用型の行があるときのコンテナレジストリ�
   it('★★★ 記録を読めない（ok:false・投げた・形が違う）: null（月額を言わない側）。行は読めているので unreadable は立てない', async () => {
     for (const record of [{ ok: false, message: 'env.json がありません' }, new Error('IPC が落ちた'), { ok: true, record: { appNames: 'x' } }, { ok: true, record: rec({ registryOrigin: 'まちがい', registryName: 'myreg' }) }]) {
       install({ ...ROW, record })
-      expect(await read(), JSON.stringify(record)).toMatchObject({ targets: ['sakura-apprun'], sharedRegistry: null, unreadable: false })
+      expect(await read(), JSON.stringify(record)).toMatchObject({ targets: ['sakura-apprun'], sharedRegistry: null, unreadable: false, unconfirmed: false })
     }
   })
 
@@ -249,7 +258,8 @@ describe('材料 配線: 読むだけのファイル。手本・仕様書・IPC 
     expect(code).toContain('await readSharedTeardownRecord(dir)')
     expect(code).toContain('sharedTeardownHasWork(rec)')
     expect(code).toContain("const hasSharedRow = targets.includes('sakura-apprun')")
-    expect(code).toContain('if (!hasSharedRow) unreadable = true')
+    expect(code).toContain('if (!hasSharedRow && !unreadable) unconfirmed = true')
+    expect(code).not.toContain('unreadable = true')
   })
 
   it('★★ 共用型の仕様書の hasWork は sharedTeardownHasWork を指す（材料と仕様書が同じ判断を使う。2つ書かない）', () => {

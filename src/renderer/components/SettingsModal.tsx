@@ -11,6 +11,7 @@ import {
 import { useModels } from '../hooks/useModels'
 import { getAnthropicToken } from './CredentialsModal'
 import { SHOW_THINKING_KEY, isThinkingAlwaysOpen } from './ThinkingBlock'
+import { GREET_ON_OPEN_LABEL, isGreetOnOpenEnabled, setGreetOnOpen } from '../greetSetting'
 import { updateStatusText, shouldHighlight, type UpdateState } from '../../shared/updatePolicy'
 // 料金の表示は shared の1か所から（料金表に無いモデルに、実在しない料金を出さない・2026-09-25）
 import { priceLabel, usageCostNote, unknownPriceRuleText } from '../../shared/usageBudget'
@@ -93,6 +94,8 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
   const [claudeModeOn, setClaudeModeOn] = useState<boolean>(isClaudeModeEnabled())
   // AIの思考を常に開いたままにするか（ThinkingBlock が同じキーを読む）
   const [thinkingAlwaysOpen, setThinkingAlwaysOpen] = useState<boolean>(isThinkingAlwaysOpen())
+  // 最初のあいさつの設定（保存と読み出しは greetSetting.ts）
+  const [greetOnOpen, setGreetOnOpenState] = useState<boolean>(isGreetOnOpenEnabled())
   useEffect(() => {
     let alive = true
     const refreshClaude = async () => {
@@ -274,7 +277,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               {/* 所見8（任意）: 警告のみのしきい値。送信はブロックしない目安表示。
                   W-53（2026-09-27決定・案2）: 超えたときはチャット欄にも知らせる（送信は止めない）。
                   判定・文面は shared/usageBudget.ts の isClaudeCostOverWarnUsd／claudeChatWarningText
-                  に置いた（チャット側での表示は useAiChat.ts／ChatPanel.tsx の担当。handoff 参照）。 */}
+                  に置いた（チャット欄へは useAiChat.ts が、Claude のターンの終わりに出す）。 */}
               <div className="mt-3 pt-3 border-t border-line">
                 <label className="text-[11px] font-semibold text-ink-secondary">警告の目安額（ドル・任意）</label>
                 <div className="mt-1.5 flex items-center gap-2">
@@ -361,6 +364,25 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               思考を出さないモデルでは表示されません。
               <strong className="font-medium text-ink-secondary">思考は英語で書かれることがあります</strong>
               （回答は日本語です）。
+            </p>
+          </div>
+
+          {/* 最初のあいさつ。保存できなかったときは、画面を実際の設定の値に戻す（オフにしたつもりで AI を呼ばない）。 */}
+          <div className="bg-surface border border-line rounded-xl p-4">
+            <div className="text-xs font-semibold text-ink-secondary mb-2">最初のあいさつ</div>
+            <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
+              <input
+                type="checkbox"
+                checked={greetOnOpen}
+                onChange={e => {
+                  setGreetOnOpen(e.target.checked)
+                  setGreetOnOpenState(isGreetOnOpenEnabled())
+                }}
+              />
+              {GREET_ON_OPEN_LABEL}
+            </label>
+            <p className="mt-1.5 text-[11px] text-ink-muted leading-relaxed">
+              会話が空のプロジェクトを開くと、さくらのAI Engine が要約と質問を返し、その利用量を使います。Claude だけを使っているときは、決まった一言だけです。
             </p>
           </div>
 
@@ -472,11 +494,10 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
           {/* Enforce toggle
               W-21（2026-09-27決定・別案）: オフでも「止めない」だけで、作業中の知らせは出す
               （判定・文面は shared/usageBudget.ts の checkBeforeRequestOf の warning）。
-              ⚠️ 呼び出し（実際にチャットへ表示する配線）は useAiChat.ts／ChatPanel.tsx ではない
-              （検分で確認済み: 通常の AI Engine チャットのターンは main/chat/turnRunner.ts →
-              main/usageStore.ts を通り、renderer/usage.ts の checkBeforeRequest を経由しない）。
-              main/usageStore.ts の戻り値型に warning を足し、shared/chatTurn.ts の runEngineTurn で
-              表示する対応が要る（担当外のため handoff 参照）。ここはスイッチの名前・説明のみ直す。 */}
+              知らせを出す所: 通常の AI Engine のターン（main/chat/turnRunner.ts → main/usageStore.ts の
+              checkBeforeRequest → shared/chatTurn.ts の runEngineTurn。同じ会話では1度だけ）、
+              Claude で進めるターン（useAiChat.ts。AI Engine のキーがあるとき）、
+              プロジェクトを開いたときのあいさつ（greeting.ts）。 */}
           <label className="flex items-center justify-between cursor-pointer">
             <div>
               <div className="text-xs font-semibold text-ink">上限に達したら さくらのAI Engine を止める</div>

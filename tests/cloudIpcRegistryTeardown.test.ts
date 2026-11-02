@@ -125,4 +125,33 @@ describe('cloud.ts: teardownRegistry（B・偽 client で振る舞いを固定�
     expect(r.registryDeleted).toBe(false)
     expect(r.note).toBeNull()
   })
+
+  it('★★★ 削除の要求が投げた（打ち切りなど。消えたか分からない）→ registryDeleted は false のまま、deleteUnknown:true を付ける。確認できなかった旨の行も返る', async () => {
+    const client = {
+      listContainerRegistries: async () => ({
+        dryRun: false as const, ok: true, status: 200, data: commonServiceItems([{ id: '999', subdomainLabel: NAME }]),
+      }),
+      deleteContainerRegistry: async () => { throw new Error('The operation was aborted due to timeout') },
+    }
+    const r = await teardownRegistry(client, REGION, NAME)
+    expect(r.registryDeleted).toBe(false)
+    expect(r.deleteUnknown).toBe(true)
+    expect(r.note).toContain('削除できたか確認できませんでした')
+  })
+
+  it('★★★ 削除の要求を出していない回（一覧が投げた・HTTP の失敗・読めない応答）と、削除が HTTP の失敗で返った回は、deleteUnknown を付けない（キーごと無い）', async () => {
+    const del = async () => ({ dryRun: false as const, ok: true, status: 204, data: null })
+    const found = { dryRun: false as const, ok: true, status: 200, data: commonServiceItems([{ id: '999', subdomainLabel: NAME }]) }
+    const clients = {
+      '一覧が投げた': { listContainerRegistries: async () => { throw new Error('ECONNRESET') }, deleteContainerRegistry: del },
+      '一覧が HTTP 500': { listContainerRegistries: async () => ({ dryRun: false as const, ok: false, status: 500, data: null }), deleteContainerRegistry: del },
+      '一覧の形が読めない': { listContainerRegistries: async () => ({ dryRun: false as const, ok: true, status: 200, data: 'x' }), deleteContainerRegistry: del },
+      '削除が HTTP 409': { listContainerRegistries: async () => found, deleteContainerRegistry: async () => ({ dryRun: false as const, ok: false, status: 409, data: null }) },
+      '削除に成功': { listContainerRegistries: async () => found, deleteContainerRegistry: del },
+    }
+    for (const [name, client] of Object.entries(clients)) {
+      const r = await teardownRegistry(client, REGION, NAME)
+      expect('deleteUnknown' in r, name).toBe(false)
+    }
+  })
 })
