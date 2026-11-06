@@ -45,6 +45,7 @@ import {
   type ApprunDedicatedAppSpec,
 } from '../../shared/apprunDedicatedApp'
 import { DEFAULT_KEEP } from '../../shared/imageRetention'
+import { failureText } from '../../shared/failureText'
 // 段の内部名（どこにどれくらい時間がかかったかを記録するための名前。定義は shared/stageTiming.ts の1か所・2026-10-07）。
 import { STAGE, type StageMark, UNMEASURED } from '../../shared/stageTiming'
 import {
@@ -506,7 +507,7 @@ export async function publishAppFlow(
   // 10. cleanup: 古いバージョンを掃除する。**失敗しても続行**（公開そのものは成功している）。
   stage(STAGE.publishCleanup)
   progress('古いバージョンを削除しています…')
-  const versionsRes = await listApplicationVersions(auth, appID, undefined, baseUrl)
+  const versionsRes = await listApplicationVersions(auth, appID, undefined, baseUrl, { readOnly: true })
   let cleanupFailed = false
   if (!versionsRes.ok) {
     cleanupFailed = true
@@ -554,7 +555,7 @@ export async function publishAppFlow(
     }
   }
   for (;;) {
-    const lbNodesRes = await listLoadBalancerNodes(auth, clusterID, asgID, loadBalancerID, undefined, baseUrl)
+    const lbNodesRes = await listLoadBalancerNodes(auth, clusterID, asgID, loadBalancerID, undefined, baseUrl, { readOnly: true })
     if (!lbNodesRes.ok) {
       warnings.push(`ロードバランサノードのアドレスを取得できませんでした: ${lbNodesRes.message}`)
       stage(STAGE.publishLbAddress, UNMEASURED) // 取得に失敗した（IP が付くまでの時間は測れていない）
@@ -644,7 +645,7 @@ export async function publishAppFlow(
       verify = reachedOutcome ?? 'unreachable'
     } catch (e: any) {
       verify = 'unreachable'
-      warnings.push(`応答の確認中にエラーが発生しました（公開自体は完了しています）: ${e?.message ?? String(e)}`)
+      warnings.push(`応答の確認中にエラーが発生しました（公開自体は完了しています）: ${failureText(e, { readOnly: true })}`)
     }
     // 応答を確かめられなかったとき（503・404・502・つながらない…）は、再試行の待ちを全部使った時間になる。
     // 「アプリが応答するまでの時間」の測定ではない＝保存しない（結果の「かかった時間を見る」には出る）。
@@ -680,7 +681,7 @@ export async function publishAppFlow(
     stage(STAGE.publishContainers, UNMEASURED)
     progress('コンテナの状態を確認しています…')
     try {
-      const containersRes = await listApplicationContainers(auth, appID, baseUrl)
+      const containersRes = await listApplicationContainers(auth, appID, baseUrl, { readOnly: true })
       if (containersRes.ok) {
         // **200 でも「読めた」とは限らない。** 応答が原本の形でなければ readContainerStates は
         // null を返す。そこを空配列（＝0件）に倒すと、画面が「1つも動いていない」と**断定**する
@@ -698,7 +699,7 @@ export async function publishAppFlow(
         warnings.push(`コンテナの状態を取得できませんでした: ${containersRes.message}`)
       }
     } catch (e: any) {
-      warnings.push(`コンテナの状態を取得できませんでした: ${e?.message ?? String(e)}`)
+      warnings.push(`コンテナの状態を取得できませんでした: ${failureText(e, { readOnly: true })}`)
     }
   }
 
@@ -743,7 +744,7 @@ export async function refreshLbAddresses(
   if (!clusterID || !asgID || !loadBalancerID) {
     return { ok: false, message: '手順5でクラスタを作ってから、IP を再取得してください。' }
   }
-  const lbNodesRes = await listLoadBalancerNodes(auth, clusterID, asgID, loadBalancerID, undefined, baseUrl)
+  const lbNodesRes = await listLoadBalancerNodes(auth, clusterID, asgID, loadBalancerID, undefined, baseUrl, { readOnly: true })
   if (!lbNodesRes.ok) {
     return { ok: false, message: `ロードバランサノードのアドレスを取得できませんでした: ${lbNodesRes.message}` }
   }

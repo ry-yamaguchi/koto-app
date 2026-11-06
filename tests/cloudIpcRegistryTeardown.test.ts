@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { teardownRegistry, readContainerRegistryList } from '../src/main/ipc/cloud'
+import { registryCheckInPanelNote, REGISTRY_MONTHLY_YEN } from '../src/shared/cloudCost'
+import { splitFailureDetail } from '../src/shared/failureDetail'
 
 // ── B（2026-09-16 の検分）: 破棄でレジストリ一覧の取得に失敗すると、黙って「完了」になる ──
 // 一覧の取得が失敗（HTTP 4xx/5xx）しても、例外（通信断・時間切れ）が起きても、直す前は
@@ -153,5 +155,25 @@ describe('cloud.ts: teardownRegistry（B・偽 client で振る舞いを固定�
       const r = await teardownRegistry(client, REGION, NAME)
       expect('deleteUnknown' in r, name).toBe(false)
     }
+  })
+})
+
+// 確かめられなかった回の結び（月額が続くこと）は、定数から取る作り手 registryCheckInPanelNote を通る（数字を main に直書きしない）。
+describe('cloud.ts: teardownRegistry（確認できなかった回の結びは、金額を定数から取る）', () => {
+  const del = async () => ({ dryRun: false as const, ok: true, status: 204, data: null })
+  const found = { dryRun: false as const, ok: true, status: 200, data: commonServiceItems([{ id: '999', subdomainLabel: NAME }]) }
+  const clients = {
+    '一覧が HTTP 500': { listContainerRegistries: async () => ({ dryRun: false as const, ok: false, status: 500, data: null }), deleteContainerRegistry: del },
+    '一覧の形が読めない': { listContainerRegistries: async () => ({ dryRun: false as const, ok: true, status: 200, data: 'x' }), deleteContainerRegistry: del },
+    '一覧が投げた': { listContainerRegistries: async () => { throw new Error('ECONNRESET') }, deleteContainerRegistry: del },
+    '削除が投げた': { listContainerRegistries: async () => found, deleteContainerRegistry: async () => { throw new Error('timeout') } },
+  }
+
+  it.each(Object.entries(clients))('★ %s → 「確認できませんでした」の行は、作り手の結びで終わる', async (_name, client) => {
+    const r = await teardownRegistry(client, REGION, NAME)
+    expect(r.note).toContain('削除できたか確認できませんでした')
+    // 失敗の原文（詳細の行）が付く回は、詳細がいつも最後の行。結びはその前の文の末尾
+    expect(splitFailureDetail(r.note!).text.endsWith(registryCheckInPanelNote())).toBe(true)
+    expect(r.note).toContain(`月額${REGISTRY_MONTHLY_YEN}円がかかり続けます`)
   })
 })

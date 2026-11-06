@@ -1,3 +1,4 @@
+import { failureText } from '../../shared/failureText'
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import SakuraLogo from './SakuraLogo'
 import { getDefaultModel, setDefaultModel, DEFAULT_MODEL } from '../usage'
@@ -6,6 +7,8 @@ import { beginActivity } from '../activity'
 import { useModels } from '../hooks/useModels'
 import { useClaudeModels } from '../hooks/useClaudeModels'
 import ModelSelect from './ModelSelect'
+import Modal from '../ui/Modal'
+import { shouldCloseNewProject } from '../newProjectClose'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeMode, setClaudeModel } from '../claudeMode'
 import { defaultCreationBrain, pickSavedModel, type CreationBrain } from '../newProjectAgent'
@@ -18,6 +21,7 @@ import ImportFromPublishedPanel from './ImportFromPublishedPanel'
 // 既定の置き場所の決定規則（W-121・2026-09-27）は workspace.ts に一本化する（掟10。
 // ここで別の既定を組み立てると、Sidebar・ChatApp 側の getWorkspaceDir() とずれる）。
 import { getWorkspaceDir, WORKSPACE_KEY } from '../workspace'
+import ErrorBand from './ErrorBand'
 
 // 「このあとチャットで作業するAI」の選択（作成実行時に一度だけ、実際のチャットの頭脳・モデルへ反映する。
 // 詳しくは runCreate 内のコメント参照）。選んだ内容は次回の初期値として localStorage に覚えておく。
@@ -866,7 +870,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
         }
       }
     } catch (e: any) {
-      setError(e?.message ?? String(e))
+      setError(failureText(e))
       setBusy(false)
     } finally {
       endActivity()
@@ -882,27 +886,26 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={busy || importBusy ? undefined : onClose}
+    <Modal
+      labelledBy="new-project-title"
+      describedBy="new-project-note"
+      backdropClassName="bg-black/50 backdrop-blur-sm"
+      panelClassName="w-[480px] bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
+      onRequestClose={reason => { if (shouldCloseNewProject(reason, busy, importBusy)) onClose() }}
     >
-      <div
-        className="w-[480px] max-h-[90vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
-        onClick={e => e.stopPropagation()}
-      >
         {/* Header */}
         <div className="flex items-center gap-2.5 px-6 pt-6 pb-4">
           <SakuraLogo size={26} />
           <div>
-            <h2 className="text-lg font-bold text-ink">新規プロジェクト</h2>
-            <p className="text-xs text-ink-secondary">
+            <h2 id="new-project-title" className="text-lg font-bold text-ink">新規プロジェクト</h2>
+            <p id="new-project-note" className="text-xs text-ink-secondary">
               {mode === 'import'
                 ? '公開されているものをインポートし、編集できるようにします'
                 : newProjectHeaderNote(kind, !!(apiKey || claudeKey))}
             </p>
           </div>
           {!busy && !importBusy && (
-            <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
+            <button onClick={onClose} aria-label="閉じる" className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
           )}
         </div>
 
@@ -1265,7 +1268,7 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           )}
 
           {error && (
-            <div className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2">{error}</div>
+            <ErrorBand text={error} className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2" />
           )}
           {busy && status && (
             <div className="flex items-center gap-2 text-xs text-ink-secondary">
@@ -1294,7 +1297,6 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
 
           </>)}
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

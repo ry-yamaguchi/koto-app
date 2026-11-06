@@ -11,6 +11,7 @@
 // 実物での検証から外れる。
 import * as path from 'path'
 import * as fs from 'fs'
+import { failureText } from '../../shared/failureText'
 import {
   BACKUP_DIRNAME, MANIFEST_FILENAME, MAX_SNAPSHOTS,
   isoToSnapshotId, looksLikeSnapshotId, isValidManifest, sortSnapshotsDesc, rotationTargets,
@@ -198,7 +199,7 @@ export function snapshotCurrentFiles(
     rotate(projectDir)
     return { ok: true, snapshotId: id, count: kept.length }
   } catch (e: any) {
-    return { ok: false, count: 0, message: e?.message ?? String(e) }
+    return { ok: false, count: 0, message: failureText(e, { checkAt: '🕘 履歴' }) }
   }
 }
 
@@ -220,7 +221,7 @@ export function listSnapshotSummaries(projectDir: string): { ok: boolean; snapsh
     })
     return { ok: true, snapshots: sortSnapshotsDesc(summaries) }
   } catch (e: any) {
-    return { ok: false, snapshots: [], message: e?.message ?? String(e) }
+    return { ok: false, snapshots: [], message: failureText(e, { readOnly: true }) }
   }
 }
 
@@ -254,6 +255,8 @@ export type RestoreResult = {
   deleted?: string[]
   /** 退避ファイルが見つからない等で戻せなかったもの（1件の失敗で全体を止めないため報告する）。 */
   failed?: string[]
+  /** 戻せなかった最初のファイルの理由（日本語の文＋詳細）。failed があるときだけ。 */
+  failedReason?: string
   preRestoreSnapshotId?: string
   message?: string
 }
@@ -302,6 +305,7 @@ export function restoreToSnapshot(projectDir: string, snapshotId: string): Resto
     const restored: string[] = []
     const deleted: string[] = []
     const failed: string[] = []
+    let failedReason: string | undefined
     for (const step of plan) {
       try {
         const full = confineToProject(projectDir, step.path)
@@ -314,14 +318,16 @@ export function restoreToSnapshot(projectDir: string, snapshotId: string): Resto
           try { fs.unlinkSync(full) } catch { /* 既に無ければ何もしない */ }
           deleted.push(step.path)
         }
-      } catch {
+      } catch (e: unknown) {
         failed.push(step.path)
+        // 理由は捨てない（権限・空き・退避ファイルが無い、で言うことが違う）。最初の1件を代表にする
+        failedReason ??= failureText(e, { checkAt: '🕘 履歴' })
       }
     }
 
     rotate(projectDir)
-    return { ok: true, restored, deleted, failed, preRestoreSnapshotId: preRestoreId }
+    return { ok: true, restored, deleted, failed, ...(failedReason ? { failedReason } : {}), preRestoreSnapshotId: preRestoreId }
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? String(e) }
+    return { ok: false, message: failureText(e, { checkAt: '🕘 履歴' }) }
   }
 }

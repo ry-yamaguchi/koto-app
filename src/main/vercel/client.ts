@@ -56,6 +56,7 @@ export function vercelProjectEnvPath(idOrName: string): string {
 // dist/build 等のビルド成果物は除外しない（Vercel が自身でビルドするため。
 // 静的サイトを事前ビルドしてコミットしている構成でも取りこぼさないようにする）。
 import { publishExcludedDirNames, servedExcludedFileNames, isSecretFile } from '../../shared/publishExclude'
+import { failureText } from '../../shared/failureText'
 
 const EXCLUDE_DIRS = publishExcludedDirNames()
 // .sakuraide.json は Koto 自身のメタ情報（公開設定等）で公開物ではないため、HANAMII と同様に除外する。
@@ -415,7 +416,8 @@ export class VercelClient {
 
       return { ok: true, status: r.status, username, projects, dropTeamId }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      // 回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。見分けられない失敗は原文のまま。
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   }
 }

@@ -74,6 +74,154 @@ describe('チェックにかけるファイルの選び方', () => {
   })
 })
 
+const readSrc = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8')
+
+// ── 名前だけで秘密と分かるものを、中身を送らずに扱う（名前の定義は looksSecretByName の1か所）──
+// サービスアカウントの鍵（service-account.json など）は、以前は名前の判定に当たらず、
+// 中身を読んで AI Engine へ送っていた。ロックファイルは読んでも指摘が出ず、枠を食うだけなので送らない。
+describe('名前だけで秘密と分かるもの・ロックファイルの扱い', () => {
+  it('★ サービスアカウントの鍵は、中身を送らず名前だけを指摘に回す', () => {
+    const files = ['index.html', 'service-account.json', 'serviceAccountKey.json', 'firebase/firebase-service-account.json', 'service_account_prod.json']
+    const { targets, secretFiles } = pickCheckTargets(files)
+    expect(targets).toEqual(['index.html'])
+    expect(secretFiles).toEqual(['service-account.json', 'serviceAccountKey.json', 'firebase/firebase-service-account.json', 'service_account_prod.json'])
+  })
+
+  it('★ 入口ファイルの名前が秘密らしくても、対象に戻さない（入口は先頭に置くだけで、名前の判定は先）', () => {
+    const { targets, secretFiles } = pickCheckTargets(['index.html', 'credentials.js', 'service-account.json'], 'credentials.js')
+    expect(targets).toEqual(['index.html'])
+    expect(secretFiles).toEqual(['credentials.js', 'service-account.json'])
+  })
+
+  it('通す例: サービスアカウントの話をしているだけの文書・普通の設定は、中身を見る', () => {
+    const { targets, secretFiles } = pickCheckTargets(['docs/service-accounts.md', 'accounts.json', 'service.json', 'config.json'])
+    expect(targets).toEqual(['docs/service-accounts.md', 'accounts.json', 'service.json', 'config.json'])
+    expect(secretFiles).toEqual([])
+  })
+
+  it('★ 依存の一覧（ロックファイル）は対象から外す。入口の指定があっても対象に戻らない', () => {
+    const files = ['index.html', 'package.json', 'package-lock.json', 'sub/package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock', 'server.js']
+    const { targets, secretFiles } = pickCheckTargets(files, 'server.js')
+    expect(targets).toEqual(['server.js', 'index.html', 'package.json'])
+    // 秘密ではないので、名前だけの指摘にも回さない
+    expect(secretFiles).toEqual([])
+  })
+
+  it('通す例: 名前がロックファイルに似ているだけのものは、対象から外さない', () => {
+    const { targets } = pickCheckTargets(['package.json', 'my-package-lock.json', 'lock.json', 'locks.yaml', 'package-lock.json.md'])
+    expect(targets).toEqual(['package.json', 'my-package-lock.json', 'lock.json', 'locks.yaml', 'package-lock.json.md'])
+  })
+
+  it('ロックファイルは、対象から外れても存在は others の名前に残る（黙って落とさない）', () => {
+    const files = ['index.html', 'package-lock.json', 'pnpm-lock.yaml']
+    const { targets, secretFiles } = pickCheckTargets(files)
+    expect(classifyUnchecked(files, targets, secretFiles).others).toEqual(['package-lock.json', 'pnpm-lock.yaml'])
+  })
+
+  it('名前の判定は publishExclude.ts の looksSecretByName を呼ぶ（手元に正規表現を持たない）', () => {
+    const s = readSrc('src/renderer/securityCheck.ts')
+    expect(s).toContain("import { looksSecretByName, looksSecretButPublished, BUILD_CONFIG_FILES } from '../shared/publishExclude'")
+    expect(s).toContain("const secretFiles = files.filter(f => looksSecretByName(f) && f !== '.sakuraide.json')")
+    expect(s).toContain('let targets = files.filter(f => TARGET_RE.test(f) && !looksSecretByName(f) && !LOCKFILE_RE.test(f) && !isKotoBuildConfig(f))')
+    expect(s).toContain('if (entry && files.includes(entry) && !looksSecretByName(entry)) {')
+    // 直す前の形（手元の定義）に戻っていない
+    expect(s).not.toContain('SECRET_HINT_RE')
+    expect(s).not.toContain('function looksSecret(')
+    expect(s).not.toContain('looksSecret(f)')
+    expect(s).not.toContain('isSecretFile')
+  })
+})
+
+// ── 外へ送る前の伏せ字（かたまりを作る splitIntoPieces が唯一の関所）───────────
+// 送る本文の振る舞い（偽の sakura.chat に流す）は tests/securityCheckMask.test.ts。
+// ここは、純関数の単位と、配線の形を固定する。
+describe('かたまりを作る前に、秘密に見える値を伏せる', () => {
+  const TOKEN = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+  const PEM_HEAD = '-----BEGIN RSA ' + 'PRIVATE KEY-----'
+  const PEM_TAIL = '-----END RSA ' + 'PRIVATE KEY-----'
+
+  it('★ かたまりの本文に、秘密の値は残らない（行数は保つ）', () => {
+    const content = ['const a = 1', `const t = "${TOKEN}"`, 'const DB_PASSWORD = "Zk3p9Qw7Xv5Nm2"', 'const b = 2'].join('\n')
+    const [piece] = splitIntoPieces('server.js', content)
+    expect(piece.text).not.toContain(TOKEN)
+    expect(piece.text).not.toContain('Zk3p9Qw7Xv5Nm2')
+    expect(piece.text).toContain('const DB_PASSWORD = "***"')
+    expect(piece.text.split('\n')).toHaveLength(4)
+    expect(piece.text).toContain('const b = 2')
+  })
+
+  it('★ 分けるより前に伏せる: かたまりの境目をまたぐ秘密鍵も、本体が残らない', () => {
+    const body = Array.from({ length: 6 }, (_, i) => `Qw${i}Zk9Xv7Lm3Kp5Wr${i}Yu2Tn8Bc4`).join('\n')
+    const content = ['x'.repeat(40), PEM_HEAD, body, PEM_TAIL, 'y'.repeat(40)].join('\n')
+    // 小さな上限で分ける。伏せる前の本文では、BEGIN と END が別々のかたまりに入る長さにする
+    const chunk = 100
+    expect(content.indexOf(PEM_HEAD)).toBeLessThan(chunk)
+    expect(content.indexOf(PEM_TAIL)).toBeGreaterThan(chunk)
+    const text = splitIntoPieces('k.js', content, chunk).map(p => p.text).join('')
+    for (const line of body.split('\n')) expect(text, line).not.toContain(line)
+    expect(text).not.toContain(PEM_HEAD)
+    expect(text).toContain('y'.repeat(40))
+  })
+
+  it('通す例: 秘密に見えない普通のコードは、1文字も変わらない', () => {
+    const content = ['const express = require("express")', 'const port = process.env.PORT || 3000', 'const password = process.env.DB_PASSWORD', 'const name = "太郎"'].join('\n')
+    expect(splitIntoPieces('a.js', content).map(p => p.text).join('')).toBe(content)
+  })
+
+  it('配線: 伏せる呼びが splitIntoPieces にあり、素の本文のまま分ける形に戻っていない', () => {
+    const s = readSrc('src/renderer/securityCheck.ts')
+    expect(s).toContain("import { maskSecretShapes } from '../shared/secretShapes'")
+    expect(s).toContain('let rest = maskSecretShapes(content)')
+    expect(s).not.toContain('let rest = content')
+    // 本番の呼び出しは、読んだ中身をそのまま splitIntoPieces へ渡す（かたまりを作る道はこの1つ）
+    expect(s).toContain('pieces.push(...splitIntoPieces(f, await window.electronAPI.fs.readFile(`${projectDir}/${f}`)))')
+    expect((s.match(/splitIntoPieces\(/g) ?? []).length).toBe(2) // 定義1・呼び出し1
+  })
+})
+
+describe('伏せ字を AI に伝える一文', () => {
+  const base = { mode: 'node' as const, entry: 'server.js', secretFiles: [] as string[] }
+
+  it('本文があるとき、*** の意味を伝える。本物の秘密とは限らないことも添える', () => {
+    const p = buildCheckPrompt({ ...base, parts: ['--- server.js ---\nconst k = "***"'] })
+    expect(p).toContain('*** に置き換えてお渡ししています')
+    expect(p).toContain('*** の所に本物の秘密が書かれていたとは限りません')
+    expect(p).toContain('本物の秘密の直書きに見えるものだけを指摘してください')
+    // 直す前の言い方（*** の右側は全部、固定の秘密の値）に戻っていない
+    expect(p).not.toContain('固定の値が書かれていました')
+    expect(p).not.toContain('秘密の直書きとして指摘してください')
+  })
+
+  it('本文が無い（名前だけを渡す）ときは、言わない', () => {
+    const p = buildCheckPrompt({ ...base, secretFiles: ['.env'], parts: [] })
+    expect(p).not.toContain('*** に置き換えて')
+  })
+})
+
+describe('依頼文に載せる秘密らしい名前の数（毎回の要求に入るので上限がある）', () => {
+  const base = { mode: 'static' as const, secretFiles: [] as string[], parts: [] as string[] }
+  const names = (n: number) => Array.from({ length: n }, (_, i) => `secrets/s${i}.txt`)
+
+  it('★ 20件までは全部載せる。21件目以降は「ほかN件」にまとめる（件数は残る）', () => {
+    const exact = buildCheckPrompt({ ...base, secretFiles: names(20) })
+    expect(exact).toContain('secrets/s19.txt')
+    expect(exact).not.toContain('ほか')
+    const many = buildCheckPrompt({ ...base, secretFiles: names(2000) })
+    const line = many.split('\n').find(l => l.startsWith('※ 次のファイルは名前からして公開NGの可能性が高い'))!
+    expect(line).toContain('secrets/s0.txt')
+    expect(line).toContain('secrets/s19.txt')
+    expect(line).toContain('ほか1980件')
+    expect(line).not.toContain('secrets/s20.txt')
+    expect(many.length).toBeLessThan(2000)
+  })
+
+  it('対照: 少なければそのまま（「ほか0件」のような注記は付けない）', () => {
+    const p = buildCheckPrompt({ ...base, secretFiles: ['credentials.json', 'service-account.json'] })
+    expect(p).toContain('名前からして公開NGの可能性が高い: credentials.json, service-account.json\n')
+    expect(p).not.toContain('ほか')
+  })
+})
+
 // ── 対象外ファイルの「素通り」をふさぐ（roadmap #17・2026-09-03 Ryosuke 発見・案2）───
 // pickCheckTargets の対象外（txt/csv/sql/db/bak/log/zip/py 等）は、公開されるのに検査もされず
 // 「確認していない」ことすら報告されていなかった（実測: customers.csv・dump.sql・app.db・
@@ -358,9 +506,11 @@ describe('セキュリティチェックの配線', () => {
     expect(s).toContain('await runSecurityCheck(projectDir, apiKey, setProgress, (abort) => { abortRef.current = abort })')
     // 直す前の3引数の形（＝中断の受け口を渡していない形）が戻ってきたら落ちる
     expect(s).not.toContain('await runSecurityCheck(projectDir, apiKey, setProgress)')
-    expect(s).toContain("new CustomEvent('sakura:fix-with-ai'")
-    // 依頼文は「実際に修正しろ」と明言する（rc.1 は指示が弱く、AIが翻訳・再レビューだけで終わった）
-    expect(s).toContain('実際に修正して解消してください')
+    // 送る文は buildFixPrompt の1か所で組む（報告を境界で囲む）。呼び出しの形ごと一意に指し、
+    // 報告をそのまま差し込む直す前の形が戻ってきたら落ちる
+    expect(s).toContain("window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: buildFixPrompt(result.report) } }))")
+    expect(s).not.toContain('${result.report}')
+    expect(s).not.toContain('実際に修正して解消してください')
     // 実体を持たない（独自のプロンプトや判定を書かない）
     expect(s).not.toContain('sakura.chat')
   })
@@ -533,11 +683,16 @@ describe('セキュリティチェックの配線', () => {
     expect(call).toContain('assets,')
     expect(call).toContain('others,')
     expect(call).toContain('truncated,')
+    // 名前だけで見つけた秘密らしいファイルと、読めなかったファイルも合成へ渡る（渡し忘れると警告にも報告にも出ない）
+    expect(call).toContain('secretFiles,')
+    expect(call).toContain('unreadable,')
   })
 
-  it('others は buildCheckPrompt へ渡り、中身（parts）とは別立てで名前だけ送られる', () => {
+  it('others は buildCheckPrompt へ渡り、中身（parts）とは別立てで名前だけ送られる（毎回。1回目だけの形には戻さない）', () => {
     const s = read('src/renderer/securityCheck.ts')
-    expect(s).toContain('others: i === 0 ? others : [],')
+    expect(s).toMatch(/buildCheckPrompt\(\{\s*mode, entry, split,\s*secretFiles,\s*others,\s*parts: batches\[i\]\.map\(/)
+    expect(s).not.toContain('others: i === 0 ? others : [],')
+    expect(s).not.toContain('secretFiles: i === 0 ? secretFiles : [],')
   })
 
   it('secretFiles・others の名前しか無いプロジェクトでも、最低1回はAIに渡す（黙って落とさない）', () => {
@@ -724,12 +879,20 @@ describe('複数回の結果をまとめる', () => {
     expect(m.verdict).toBe('warn')
   })
 
-  it('1回でも実施できていれば、失敗した回に引きずられない（skip は判定を左右しない）', () => {
+  // 以前は「1回でも実施できていれば、失敗した回に引きずられない」と固定していた（skip を無視して ok）。
+  // 読めなかった回のファイルは確認できていないので、ほかの回が ok でも「✅ 問題なし」にしない。
+  it('★ 読めなかった回（skip）が混ざるなら、ほかの回が ok でも「要確認」（迷ったら警告）', () => {
     const m = mergeCheckResults([
       { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題なし' },
       { verdict: 'skip', report: 'チェックに失敗しました（timeout）。' },
     ], info)
-    expect(m.verdict).toBe('ok')
+    expect(m.verdict).toBe('warn')
+    expect(m.report.split('\n')[0]).toBe('判定: 要確認')
+    expect(m.report).toContain('※ AIが確認できなかった回があります（2回中1回）。もう一度お試しください')
+    // 全部のファイルを確認したような件数は書かない
+    expect(m.report).not.toContain('個のファイルを')
+    // 失敗の理由（外部の応答の文が入りうる）は、混ぜた結果には出さない
+    expect(m.report).not.toContain('timeout')
   })
 
   it('全部問題なしなら、確認した件数と回数を添えて「問題なし」', () => {

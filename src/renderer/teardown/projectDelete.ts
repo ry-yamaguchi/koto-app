@@ -49,6 +49,9 @@
 // runProjectDelete・moveProjectToTrash・pressProjectDelete は React を持たない。口（材料・破棄・走っている操作・フォルダの有無・ゴミ箱）は deps で渡す。
 // どの経路を通るかは pressProjectDelete の1つ（前回の phase で決まる）。画面に分岐を書かない。
 
+import { classifyFailure, failureText, withFailureDetail } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
+import { teardownFailureText } from './failureNote'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
 import { teardownSupport } from '../../shared/teardownSupport'
 import type { ConfirmOptions } from '../useConfirm'
@@ -184,10 +187,14 @@ export async function teardownPublished(dir: string, targets: PublishTargetKind[
           // **HANAMII が済んでいないので、あとの公開先（共用型・残りの段）は始めない**（0.6.24 A-5。上の注）。step を積まないので、判断が「step が無い」として移さない。
           // 結果の部品（view）で出す回は line を描かないので、同じ文を notStarted にも持つ（結果の欄が別に出す）。
           const note = notStartedNote(i)
-          const base = `${PUBLISH_TARGET_LABEL[t]}: ${outcome.result.message ?? '原因不明'}`
+          // 文に詳細（原文）が付いてきた回は、詳細を「…。<済んでいない旨>」のあとの最後の行へ移す（文の途中に挟まない）。
+          const line = wrapFailureText(outcome.result.message ?? '原因不明', msg => {
+            const base = `${PUBLISH_TARGET_LABEL[t]}: ${msg}`
+            return note ? `${base.replace(/。$/, '')}。${note}` : base
+          })
           steps.push({
             target: t, kind: 'failed',
-            line: note ? `${base.replace(/。$/, '')}。${note}` : base,
+            line,
             view: hanamiiTeardownSpec.toView(outcome.result), words: hanamiiTeardownSpec.words,
             ...(note ? { notStarted: note } : {}),
           })
@@ -208,10 +215,14 @@ export async function teardownPublished(dir: string, targets: PublishTargetKind[
     } catch (e: any) {
       // HANAMII の破棄が投げたときも、済んでいない。あとの公開先は始めない（上の注）。ほかの公開先は、今までどおり次へ進む。
       const note = t === 'hanamii' ? notStartedNote(i) : ''
-      const base = `${nameOf(t)}: ${e?.message ?? String(e)}`
+      // 詳細（原文）は文の途中に挟まず、「…。<済んでいない旨>」のあとの最後の行へ移す（wrapFailureText）。
+      const line = wrapFailureText(teardownFailureText(e), msg => {
+        const base = `${nameOf(t)}: ${msg}`
+        return note ? `${base.replace(/。$/, '')}。${note}` : base
+      })
       steps.push({
         target: t, kind: 'failed',
-        line: note ? `${base.replace(/。$/, '')}。${note}` : base,
+        line,
         view: null, words: null,
         ...markOf(t),
         ...(note ? { notStarted: note } : {}),
@@ -256,6 +267,17 @@ export type ProjectDeleteRunDeps = {
 /** plan が、覆う複製があるために破棄を外した公開先（main の `fs:trashProject` の `skippedForTwins`。main が移す直前に覆う複製を読み直す。R2-e）。 */
 export const skippedForTwinsOf = (plan: ProjectDeletePlan): PublishTargetKind[] => plan.twinned.map(x => x.target)
 
+/** 「Finder のゴミ箱」: 移す途中で切れたとき、移したかを確かめる場所。 */
+export const TRASH_CHECK_AT = 'Finder のゴミ箱'
+
+/** ゴミ箱へ移す失敗の文。権限の失敗は、選び直す場所が無いので Finder で権限を確かめる旨だけにする（0.6.26）。
+ *  切れた場合は、フォルダを移したかを確かめる先を Finder のゴミ箱にする。 */
+export function trashFailureText(e: unknown): string {
+  // 自前の固定文に置き換えるので、捨てる原文を詳細として添える。
+  if (classifyFailure(e).kind === 'fs-denied') return withFailureDetail('フォルダをゴミ箱へ移せません。Finder で権限を確かめてください。', e)
+  return failureText(e, { checkAt: TRASH_CHECK_AT })
+}
+
 /**
  * フォルダをゴミ箱へ移す。`skippedForTwins` は plan が覆う複製のために破棄を外した公開先（main が移す直前に覆う複製を読み直し、無くなっていれば断る。R2-e）。**まず走っている操作を聞き直す**（公開や破棄の最中にフォルダを移すと、走っている処理がそのあと古いパスへ記録を書き、
  * 作ったものが記録なしで課金され続けうる。開いたときの材料の running は古くなる）。聞けなければ（投げたら）走っていない扱い。
@@ -272,7 +294,7 @@ export async function moveProjectToTrash(
   } catch (e: any) {
     // 覆う複製が見つからなくなった断り: 材料を読み直して plan を作り直す道へ（走っている操作の聞き直しと同じ形。pressProjectDelete が読み直す）
     if (e instanceof TwinsGoneError) return { phase: 'twinsGone', steps, message: e.message }
-    return { phase: 'trashFailed', steps, message: `プロジェクトを削除できませんでした: ${e?.message ?? e}` }
+    return { phase: 'trashFailed', steps, message: `プロジェクトを削除できませんでした: ${trashFailureText(e)}` }
   }
   return { phase: 'trashed', steps }
 }

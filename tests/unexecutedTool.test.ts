@@ -59,22 +59,25 @@ describe('画像ターンでも、ツールを使えるモデルへ切り替え�
   // そのため「画像をそのまま渡しているターン」に当たり、切り替えが効かないまま
   // 「差し替えました」とだけ答えていた。**先に文章にしてから**差し替える。
   it('★★ そのまま渡している画像は、文章にしてから切り替える', () => {
-    const at = chat.indexOf('const desc = await readImagesAsText()')
+    const at = chat.indexOf('const desc = await readImagesAsText(!r.content.trim())')
     expect(at).toBeGreaterThan(0)
     const block = chat.slice(at, at + 400)
     expect(block).toContain('# 添付画像の内容（AIによる読み取り）')
     expect(block).toContain('apiMessages[apiMessages.length - 1]')
     expect(block).toContain('imageIsText = true')
+    // 時間切れの文を出した回は、このあとの書き換えで上書きさせずに終える（chatFailure.test.ts が畳んだ結果を見る）
+    expect(block).toContain('} else if (imageReadTimedOut) {')
   })
 
   it('★ 読み取れなければ切り替えない（画像を落とさない）', () => {
     // readImagesAsText は失敗・中断で null を返し、そのときは imageIsText のまま
     const at = chat.indexOf('const readImagesAsText')
-    expect(chat.slice(at, at + 1600)).toContain('if (aborted || !acc.trim()) return null')
+    expect(chat.slice(at, at + 2400)).toContain('if (aborted || !acc.trim()) return null')
   })
 
   it('★ 読み取りは1か所に集める（二段構えと同じ道を通す）', () => {
-    expect(chat).toContain('const readImagesAsText = async ()')
+    expect(chat).toContain('const readImagesAsText = async (attemptIsEmpty = false)')
+    expect(chat.split('readImagesAsText(')).toHaveLength(2) // 呼ぶのはここ1か所
   })
 
   it('★★ 実行したかどうかを、ターン全体で見ている', () => {

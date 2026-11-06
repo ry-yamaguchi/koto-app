@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import ConnectionChecklist, { type ConnectionCheckItem } from './ConnectionChecklist'
+import ErrorBand from './ErrorBand'
 
 // AccessKeySection.tsx — 公開先パネル4つ（AppRun 共用型・専有型・HANAMII・Vercel）の
 // 手順1「キー」節を1つの見た目に揃える（委譲仕様 UX-E・判断8）。
@@ -130,9 +131,7 @@ export default function AccessKeySection({
           （例: main の cloud:testConnection は未登録時に checks と message の両方を返す）ため、
           checks の有無では出し分けない——各項目の詳細は上のチェックリストで、全体の要点はここで。 */}
       {test && test.state === 'ng' && test.message && (
-        <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">
-          {test.message}
-        </p>
+        <ErrorBand text={test.message} />
       )}
     </section>
   )

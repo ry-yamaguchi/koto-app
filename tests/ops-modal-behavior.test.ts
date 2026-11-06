@@ -38,6 +38,7 @@ import {
   setProjectOpsListener, resetProjectOpsForTests,
   type ProjectOp, type OpTarget,
 } from '../src/main/projectOps'
+import { appRunSharedCardNote, otherTargetPriceNote, REGISTRY_MONTHLY_YEN } from '../src/shared/cloudCost'
 
 // ═════════════════════════════════════════════════════════════════════════════
 // 小さな描画器（フック対応・DOM なし）
@@ -153,6 +154,8 @@ class MiniRoot {
     const seg = `${path}/${key ?? ''}`
     if (typeof type === 'string') {
       const host: HostNode = { type, props, children: [], parent }
+      // ref は、窓の枠（Modal）が manager へ登録するために要る。取れる要素の代わりに偽の枠を入れる。
+      if (node.ref && typeof node.ref === 'object') node.ref.current = { querySelectorAll: () => [], focus() {}, isConnected: true }
       host.children = this.build(props.children, `${seg}<${type}>`, host)
       return [host]
     }
@@ -210,9 +213,9 @@ class MiniRoot {
   /** クリックする。onClick を持つ最も近い祖先へ泡のように上がり、stopPropagation で止まる。 */
   click(target: HostNode) {
     let stopped = false
-    const e = { target, stopPropagation() { stopped = true }, preventDefault() {} }
+    const e: any = { target, currentTarget: target, stopPropagation() { stopped = true }, preventDefault() {} }
     for (let n: HostNode | null = target; n && !stopped; n = n.parent) {
-      if (typeof n.props.onClick === 'function') n.props.onClick(e)
+      if (typeof n.props.onClick === 'function') { e.currentTarget = n; n.props.onClick(e) }
     }
   }
 }
@@ -338,6 +341,22 @@ afterEach(() => {
 
 const NOTE = '閉じても処理は最後まで進みます'
 
+// Esc は ui/Modal の manager が document で受ける。DOM が無いので、keydown を受けて配るだけの偽の document を1つ持つ。
+// manager は最初に使われた時点の document を覚えるので、描画の前（このファイルの読み込み時）に置く。
+class FakeDoc {
+  activeElement: unknown = null
+  body = { focus() {} }
+  listeners: Array<(e: any) => void> = []
+  addEventListener(_t: string, l: (e: any) => void) { this.listeners.push(l) }
+  removeEventListener(_t: string, l: (e: any) => void) { this.listeners = this.listeners.filter(x => x !== l) }
+  press(key: string) {
+    const e: any = { key, defaultPrevented: false, preventDefault() { e.defaultPrevented = true } }
+    for (const l of [...this.listeners]) l(e)
+  }
+}
+const fakeDoc = new FakeDoc()
+;(globalThis as any).document = fakeDoc
+
 describe('★★ ① 走っている間は、画面の外のクリックでは閉じない', () => {
   it('★ 何も走っていないとき: 外側をクリックすると閉じる。✗ の近くの一言は出ない', async () => {
     const { root, onClose } = open()
@@ -354,6 +373,42 @@ describe('★★ ① 走っている間は、画面の外のクリックでは�
     root.click(root.backdrop)
     expect(onClose).not.toHaveBeenCalled()
     await op.finish()
+  })
+
+  it('★★ Esc は ✗ と同じ: 何も走っていなければ閉じる', async () => {
+    const { onClose } = open()
+    await settle()
+    fakeDoc.press('Escape')
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('★★ Esc は ✗ と同じ: 走っていても閉じる（処理は続く。背景クリックだけが閉じない）', async () => {
+    const op = startOp(DIR, '削除', TEARDOWN)
+    const { root, onClose } = open()
+    await settle()
+    root.click(root.backdrop)
+    expect(onClose).not.toHaveBeenCalled()
+    fakeDoc.press('Escape')
+    expect(onClose).toHaveBeenCalledTimes(1)
+    await op.finish()
+  })
+
+  it('★★ 窓の中の部品が Esc を受け止めた（defaultPrevented）ときは、窓は閉じない', async () => {
+    const { onClose } = open()
+    await settle()
+    const e: any = { key: 'Escape', defaultPrevented: true, preventDefault() {} }
+    for (const l of [...fakeDoc.listeners]) l(e)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('★★ 窓は読み上げの印を持つ（role・aria-modal・見出しの id）', async () => {
+    const { root } = open()
+    await settle()
+    const frame = root.backdrop.children.find((c): c is HostNode => typeof c !== 'string')!
+    expect(frame.props.role).toBe('dialog')
+    expect(frame.props['aria-modal']).toBe('true')
+    const title = root.findAll(n => n.type === 'h2' && n.props.id === frame.props['aria-labelledby'])
+    expect(title.length).toBe(1)
   })
 
   it('★★ ✗ は押せば閉じる（走っていても）', async () => {
@@ -1262,6 +1317,61 @@ describe('★★★ 二重表示の解消: 目の前の公開先の画面が出�
     await settle()
     expect(api.projectOps.ack).toHaveBeenCalledWith(DIR, foreignStartedAt)
     expect(root.text()).not.toContain('bk-1234567')
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 公開先を選ぶ画面の3つのカード: 費用の文は作り手（shared/cloudCost.ts）から来る
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('公開先を選ぶ画面のカードの費用の文（本物の PublishModal を描く）', () => {
+  /** 選択画面を開く（公開先が未設定のプロジェクト）。 */
+  const openSelect = async () => {
+    const { root } = open()
+    await settle()
+    return root
+  }
+  /** カード（ボタン）を、見出しの文字から探す。 */
+  const card = (root: MiniRoot, heading: string): HostNode => {
+    const found = root.findAll(n => n.type === 'button' && root.nodeText(n).includes(heading))
+    expect(found, heading).toHaveLength(1)
+    return found[0]
+  }
+  /** カードの中の段落（<p>）の文字。 */
+  const paragraphs = (root: MiniRoot, c: HostNode): string[] =>
+    root.findAll(n => n.type === 'p' && n.parent !== null && (n === c || isInside(n, c))).map(n => root.nodeText(n))
+  const isInside = (n: HostNode, ancestor: HostNode): boolean => {
+    for (let p: HostNode | null = n.parent; p; p = p.parent) if (p === ancestor) return true
+    return false
+  }
+
+  it('★★ AppRun のカードは、作り手 appRunSharedCardNote の文をそのまま出す（レジストリの月額は定数から）', async () => {
+    const root = await openSelect()
+    const lines = paragraphs(root, card(root, '📦 さくらのAppRun'))
+    expect(lines).toContain(appRunSharedCardNote())
+    expect(appRunSharedCardNote()).toContain(`月額${REGISTRY_MONTHLY_YEN}円（税込）`)
+    // 直す前の言い方（使った分だけの課金とだけ言って、固定の月額に触れない）は残っていない
+    expect(root.text()).not.toContain('使った分だけ課金の「共用型」と')
+    expect(root.text()).not.toContain('専有型（上級者向け・常時課金）')
+  })
+
+  it('★★ HANAMII のカードと Vercel のカードは、作り手 otherTargetPriceNote の文を出し、金額は言わない', async () => {
+    const root = await openSelect()
+    for (const [heading, target] of [['🌸 HANAMII', 'hanamii'], ['▲ Vercel', 'vercel']] as const) {
+      const c = card(root, heading)
+      expect(paragraphs(root, c), heading).toContain(otherTargetPriceNote(target))
+      expect(root.nodeText(c), heading).not.toMatch(/円|月額|[0-9０-９]/)
+    }
+  })
+
+  it('★ 3つのカードはボタンなので、中にリンク（a）を置かない。事実の説明（国外・国内）は消えていない', async () => {
+    const root = await openSelect()
+    for (const heading of ['📦 さくらのAppRun', '🌸 HANAMII', '▲ Vercel']) {
+      const c = card(root, heading)
+      expect(root.findAll(n => n.type === 'a' && isInside(n, c)), heading).toHaveLength(0)
+    }
+    expect(root.nodeText(card(root, '▲ Vercel'))).toContain('アプリが動くのは国外です。データの保存を使う場合、そのデータはさくらのオブジェクトストレージ（日本国内）に置かれます。')
+    expect(root.nodeText(card(root, '🌸 HANAMII'))).toContain('データは国内です。')
   })
 })
 

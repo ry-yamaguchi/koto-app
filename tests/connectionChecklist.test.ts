@@ -27,7 +27,7 @@ describe('ConnectionChecklist.tsx: ✓/✗ と項目名・失敗理由・注記�
   // 失敗理由の行（c.message を出す span）そのものに select-text が付いていることを、
   // その行の className ごと見る（別の行の select-text に当たらないよう一意に指す）。
   it('失敗理由（c.message）の行に select-text が付いている', () => {
-    expect(checklist).toContain('<span className="ml-2 text-[11px] text-ink-muted select-text">{c.message}</span>')
+    expect(checklist).toContain('<span className="ml-2 text-[11px] text-ink-muted select-text"><FailureLines text={c.message} /></span>')
   })
 })
 

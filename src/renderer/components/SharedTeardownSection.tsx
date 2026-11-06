@@ -19,6 +19,7 @@
 // 結果は2つの出どころから、同じ結果欄の部品（SharedTeardownResultView）で描く:
 //   ・この画面が始めた破棄の返り値 … onDone へ渡す（AppRunPanel が opResult に入れる）
 //   ・閉じて開き直したときの main の処理の記録 … AppRunPanel の opResultFromRecord が resumedTeardownView で同じ形にする
+import { teardownFailureText } from '../teardown/failureNote'
 import { useRef, type ReactElement } from 'react'
 import { useConfirmChoices } from '../useConfirmChoices'
 import { runTeardownFlow, electronFlowDeps } from '../teardown/flow'
@@ -90,7 +91,7 @@ export function useSharedTeardown(projectDir: string, panel: SharedTeardownPanel
           nothingToDo = outcome.nothingToDo === true
         }
       } catch (e: any) {
-        view = sharedTeardownSpec.toView(sharedTeardownSpec.failure(`破棄処理でエラーが発生しました: ${e?.message ?? String(e)}`))
+        view = sharedTeardownSpec.toView(sharedTeardownSpec.failure(`破棄処理でエラーが発生しました: ${teardownFailureText(e)}`))
       }
       // やめた回は何も起きない（画面は動いていない）。
       if (view) await panelRef.current.onDone(view, began, nothingToDo, stale())

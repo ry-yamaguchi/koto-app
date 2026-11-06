@@ -5,6 +5,8 @@
 // （巨大ファイルの外へ出した）。見た目と文は移す前のまま。
 import type { DedicatedResumedNote } from '../apprunDedicatedActions'
 import { teardownCallLine } from '../../shared/teardownCall'
+import FailureLines from './FailureLines'
+import { failureCopyNow } from '../failureCopy'
 
 /** 結果の一言の色（shared の teardownCallLine の tone）。 */
 const NOTE_TONE_CLASS = { ok: 'text-brand-green', wait: 'text-brand-yellow', fail: 'text-brand-red', plain: 'text-ink-secondary' } as const
@@ -24,10 +26,10 @@ export function ResumedNotesView({ notes, withMessage = false }: { notes: Dedica
           <div key={n.startedAt} className="rounded-lg border border-brand-yellow/70 bg-overlay p-3 space-y-1">
             <p className="text-xs font-semibold text-ink leading-relaxed">{n.headline}</p>
             {line && (
-              <p className={`text-xs leading-relaxed select-text ${NOTE_TONE_CLASS[line.tone]}`}>{line.text}</p>
+              <p className={`text-xs leading-relaxed select-text ${NOTE_TONE_CLASS[line.tone]}`}><FailureLines text={line.text} /></p>
             )}
             {n.warnings.map((w, j) => (
-              <p key={j} className="text-xs text-brand-yellow leading-relaxed select-text whitespace-pre-wrap">{w}</p>
+              <p key={j} className="text-xs text-brand-yellow leading-relaxed select-text whitespace-pre-wrap"><FailureLines text={w} /></p>
             ))}
           </div>
         )
@@ -41,9 +43,9 @@ export function ErrorBlock({ msg }: { msg: string }) {
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-1">
       <div className="flex items-start gap-2">
-        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">{msg}</p>
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text"><FailureLines text={msg} /></p>
         <button
-          onClick={() => { navigator.clipboard.writeText(msg).catch(() => {}) }}
+          onClick={() => { failureCopyNow(msg).then(t => navigator.clipboard.writeText(t)).catch(() => {}) }}
           className="flex-none text-[11px] text-sakura hover:underline"
           title="メッセージをコピー"
         >コピー</button>

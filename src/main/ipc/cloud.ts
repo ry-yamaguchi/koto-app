@@ -14,9 +14,12 @@ import {
   loadRegistryCredentials,
   registryServer,
 } from '../cloud/registry-auth'
-import { SakuraCloudClient, pickContainerRegistries, extractAppUrl, extractLatestBill, extractAccountId, apiErrorMessage } from '../cloud/client'
-import { provisionRegistryWithMeta } from '../cloud/registryProvision'
+import { SakuraCloudClient, pickContainerRegistries, readContainerRegistryList, extractAppUrl, extractLatestBill, extractAccountId, apiErrorMessage } from '../cloud/client'
+import { provisionRegistryWithMeta, lookupExistingRegistry } from '../cloud/registryProvision'
+import { registryPreflightRow } from '../cloud/registryPreflight'
 import { checkBilling } from '../cloud/connectionCheck'
+import { failureText, withFailureDetail } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import { applyForProject } from '../cloud/applyForProject'
 import { performRollback } from '../cloud/rollback'
 import { createStorageAdapter, type StorageAdapter } from '../cloud/storageAdapter'
@@ -316,7 +319,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         registry = { ok: false, message: 'GETがドライラン扱いになりました（想定外）' }
       }
     } catch (e: any) {
-      registry = { ok: false, message: e?.message ?? String(e) }
+      registry = { ok: false, message: failureText(e, { readOnly: true }) }
     }
 
     // (3) 請求（コスト）参照。auth-status → accountId → bill の順に GET。
@@ -337,7 +340,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (!result.ok) return { ok: false, errors: result.errors }
       return { ok: true, spec: result.spec }
     } catch (e: any) {
-      return { ok: false, errors: [e?.message ?? String(e)] }
+      return { ok: false, errors: [failureText(e, { readOnly: true })] }
     }
   })
 
@@ -346,7 +349,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     try {
       return writeValidatedSpec(projectDir, spec)
     } catch (e: any) {
-      return { ok: false, errors: [e?.message ?? String(e)] }
+      return { ok: false, errors: [failureText(e)] }
     }
   })
 
@@ -365,7 +368,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       fs.writeFileSync(file, JSON.stringify(result.spec, null, 2) + '\n', 'utf-8')
       return { ok: true, spec: result.spec }
     } catch (e: any) {
-      return { ok: false, errors: [e?.message ?? String(e)] }
+      return { ok: false, errors: [failureText(e)] }
     }
   })
 
@@ -412,19 +415,12 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           return sp ? loadCloudState(projectDir, sp) : null
         } catch { return null }
       })()
-      const listed = await client.listContainerRegistries(region)
-      if (listed.dryRun === false && listed.ok) {
-        const all = pickContainerRegistries(listed.data)
-        for (const candidate of registryLookupNames(recordedState ?? {}, label)) {
-          const existing = all.find(r => r.subdomainLabel === candidate)
-          if (existing) {
-            registryId = existing.id
-            label = candidate // 以後の保存・push先も、実際に見つかった名前に揃える
-            break
-          }
-        }
-      } else if (listed.dryRun === false && (listed.status === 401 || listed.status === 403)) {
-        return { ok: false, message: '認証に失敗しました（クラウドのアクセストークン/シークレットを確認してください）' }
+      // **一覧を読めなかった回は作らない**（lookupExistingRegistry）。「無い」と読んで作ると、記録の名前のレジストリが残ったまま別のものが増える。
+      const found = await lookupExistingRegistry(client, region, registryLookupNames(recordedState ?? {}, label))
+      if (found.kind === 'stop') return { ok: false, message: found.message }
+      if (found.kind === 'found') {
+        registryId = found.id
+        label = found.label // 以後の保存・push先も、実際に見つかった名前に揃える
       }
 
       // 分類（Description/Tags）が実際に反映されたか（roadmap #36）。作成しなかった
@@ -491,7 +487,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
 
       return { ok: true, server: registryServer(label), created }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e) }
     }
   })
 
@@ -511,7 +507,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       fs.writeFileSync(file, JSON.stringify(result.spec, null, 2) + '\n', 'utf-8')
       return { ok: true }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e) }
     }
   })
 
@@ -551,7 +547,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
       return { ok: false, message: r.dryRun === false ? `コスト取得に失敗しました（HTTP ${r.status}）${apiErrorMessage(r.data) ? ' — ' + apiErrorMessage(r.data) : ''}` : '予期しない応答' }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -574,7 +570,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
       return { ok: false, message: r.dryRun === false ? `URLの取得に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -620,7 +616,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         askAi: askAiAboutFailure({ note: health.note, ...(health.detail ? { detail: health.detail } : {}) }),
       }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -648,7 +644,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
       return { ok: false, message: r.dryRun === false ? `バージョン一覧の取得に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -673,7 +669,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       }
       return { ok: false, message: r.dryRun === false ? `いま見えているものを取得できませんでした（HTTP ${r.status}）` : '予期しない応答' }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -702,7 +698,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
       return await performRollback({ appId: app.id, versionName, confirmed: opts?.confirmed === true, client })
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e) }
     }
   })
 
@@ -733,7 +729,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const mon = new MonitoringClient({ credentials: creds, dryRun: false })
       return await fetchTelemetryStatus(mon, kind, resourceId)
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -772,7 +768,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const mon = new MonitoringClient({ credentials: creds, dryRun: false })
       return await enableTelemetry(mon, kind, resourceId, { consented: opts?.consented === true })
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e) }
     }
   })
 
@@ -800,7 +796,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (r.dryRun === false && r.status === 404) return { ok: true, deployed: true, isEnabled: false, ips: [] }
       if (r.dryRun === false && (r.status === 401 || r.status === 403)) return { ok: false, message: '認証に失敗しました（クラウドのAPIキーを確認してください）' }
       return { ok: false, message: r.dryRun === false ? `取得に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
-    } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, message: failureText(e, { readOnly: true }) } }
   })
 
   ipcMain.handle('cloud:setAccessLimit', async (_, projectDir: string, payload: { isEnabled: boolean; ips: Array<{ ip: string; prefix: number }> }) => {
@@ -819,7 +815,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (r.dryRun === false && r.ok) return { ok: true }
       if (r.dryRun === false && (r.status === 401 || r.status === 403)) return { ok: false, message: '認証に失敗しました（クラウドのAPIキーを確認してください）' }
       return { ok: false, message: r.dryRun === false ? `保存に失敗しました（HTTP ${r.status}）` : '予期しない応答' }
-    } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, message: failureText(e) } }
   })
 
   ipcMain.handle('cloud:myIp', async () => {
@@ -829,7 +825,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const data: any = await res.json()
       const ip = typeof data?.ip === 'string' ? data.ip : null
       return ip ? { ok: true, ip } : { ok: false, message: 'IPを取得できませんでした' }
-    } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, message: failureText(e, { readOnly: true }) } }
   })
 
   // 差分プラン算出（ドライラン・API呼び出し無し）。env.json と state.json を読んで computePlan する。
@@ -860,7 +856,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const plan = computePlan(spec, state)
       return { ok: true, plan }
     } catch (e: any) {
-      return { ok: false, errors: [e?.message ?? String(e)] }
+      return { ok: false, errors: [failureText(e, { readOnly: true })] }
     }
   })
 
@@ -901,7 +897,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       if (!dataLayerLine) return r
       return r.ok
         ? { ...r, executed: [...(r.executed ?? []), dataLayerLine] }
-        : { ...r, message: [r.message, dataLayerLine].filter(Boolean).join('\n') }
+        // 失敗の文の最後の行は「詳細: …」。注意書きはその前に入れ、詳細をいつも最後に残す
+        : { ...r, message: wrapFailureText(r.message ?? '', t => [t, dataLayerLine].filter(Boolean).join('\n')) }
     }
     try {
       // **公開物を組み立てる前に、koto-data を置く**（2026-09-23 検分）。
@@ -983,7 +980,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         } catch (e: any) {
           // 保存場所を使うと決めたアプリなので、**黙って進めない**。
           // ここで進めると、データの消えるアプリが公開される
-          return withDataLayerNote({ ok: false, message: `保存場所に接続できませんでした: ${e?.message ?? e}` })
+          return withDataLayerNote({ ok: false, message: `保存場所に接続できませんでした: ${failureText(e, { readOnly: true })}` })
         }
       }
 
@@ -1154,7 +1151,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       })
     } catch (e: any) {
       progress('⚠️ 失敗しました')
-      return withDataLayerNote({ ok: false, message: e?.message ?? String(e) })
+      return withDataLayerNote({ ok: false, message: failureText(e) })
     } finally {
       clearPendingFs(projectDir)
     }
@@ -1200,7 +1197,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       markElevated: (on: boolean) => void
     },
     run: () => Promise<T>,
-  ): Promise<{ raised: boolean; restored: boolean; message?: string; result?: T }> {
+  ): Promise<{ raised: boolean; restored: boolean; message?: string; result?: T; failure?: { error: unknown } }> {
     if (!creds) return { raised: false, restored: true, message: 'APIキーが未登録です' }
     const client = new SakuraCloudClient({ credentials: creds, dryRun: false })
     const listed = await client.listContainerRegistries(opts.region)
@@ -1232,18 +1229,26 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     // 以前は外側の変数に書いていたが、複数の片づけが重なると混ざるうえ、
     // 早く返る道（権限を上げられなかった場合）では前回の値が残ってしまう。
     let restored = true
-    // try の中で必ず代入され、例外はそのまま外へ投げる（finally で戻したうえで）
-    let result!: T
+    let result: T | undefined
+    let failure: { error: unknown } | undefined
     try {
       result = await run()
+    } catch (e) {
+      // 本体の失敗は、戻す処理のあとで呼び出し側へ渡す（戻す処理の結果と一緒に伝えるため）
+      failure = { error: e }
     } finally {
       // **必ず戻す。** 失敗しても戻す（上がったままにしない）
       opts.progress('🗑 古いイメージの削除の後処理をしています…')
-      const down = await setPermission('readwrite')
-      restored = !(down.dryRun === false && !down.ok)
+      try {
+        const down = await setPermission('readwrite')
+        restored = !(down.dryRun === false && !down.ok)
+      } catch {
+        // 戻す呼び出し自体が通信で失敗しても、本体の結果と「戻せませんでした」の注意を失わない
+        restored = false
+      }
       if (restored) opts.markElevated(false) // 戻せたときだけ印を消す
     }
-    return { raised: true, restored, result }
+    return failure ? { raised: true, restored, failure } : { raised: true, restored, result }
   }
 
   ipcMain.handle('cloud:cleanupImages', async (event, projectDir: string, opts?: { confirmed?: boolean; keep?: number }) => {
@@ -1316,7 +1321,8 @@ export function registerCloudHandlers(_deps: IpcDeps) {
           message: listed.permission
             ? 'レジストリのイメージ一覧を見る権限がありませんでした。'
               + 'さくらのコントロールパネルで、このレジストリの利用者権限を「All」に変更してください。'
-            : listed.message,
+            // crane の英語の最後の行。回線断・時間切れなどなら日本語の文＋詳細にする（見分けられなければ原文のまま）
+            : failureText(listed.message, { readOnly: true }),
           detail: listed.detail,
         }
       }
@@ -1391,6 +1397,20 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         // 閉じた関数の中では型の絞り込みが効かないので、名前を控えてから渡す
         () => deleteDigests({ auth, image: imageName, digests, onProgress: progress }),
       )
+      if (guarded.raised && guarded.failure) {
+        // 消している途中で切れた。どこまで済んだかは分からないので、一覧を開き直して確かめてもらう
+        const restoreNote = guarded.restored
+          ? ''
+          : '\n⚠️ レジストリの権限を元（Push & Pull）に戻せませんでした。'
+            + 'さくらのコントロールパネルで戻してください。'
+        return {
+          ok: false, dryRun: false, plan, currentTag, keep, sharedWithKept,
+          message: wrapFailureText(
+            failureText(guarded.failure.error, { checkAt: '「🧹 古いイメージを削除する」の一覧' }),
+            t => t + restoreNote,
+          ),
+        }
+      }
       if (!guarded.raised || !guarded.result) {
         return {
           ok: false, dryRun: false, plan, currentTag, keep, sharedWithKept,
@@ -1422,7 +1442,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         ...(r.failed.length > 0 ? { detail: r.failed.map(f => `${f.digest}: ${f.detail}`).join('\n') } : {}),
       }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { checkAt: '「🧹 古いイメージを削除する」の一覧' }) }
     }
   })
 
@@ -1457,7 +1477,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       // 標準: 内蔵ビルダー（同梱 crane・常時可）＋ レジストリ認証。Docker/Dockerfile 不要。
       return { sourceType: 'dockerfile' as const, builderMode, builder: builderAvailable(), registry }
     } catch (e: any) {
-      return { sourceType: null, builderMode: 'builtin' as const, builder: builderAvailable(), registry: false, message: e?.message ?? String(e) }
+      return { sourceType: null, builderMode: 'builtin' as const, builder: builderAvailable(), registry: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -1510,7 +1530,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         ttlHours: state.meta?.ttlHours ?? null,
       }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -1526,7 +1546,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       const published = resources.some((r: any) => r?.kind === 'apprun-app')
       return { ok: true, published }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
   /**
@@ -1549,7 +1569,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         truncated: scan.truncated,
       }
     } catch (e: any) {
-      return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], keepsInMemory: [], truncated: true, message: e?.message ?? String(e) }
+      return { ok: false, usesDataLayer: false, usedBy: [], writesFiles: [], keepsInMemory: [], truncated: true, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -1564,7 +1584,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
     try {
       return leftoverDataFilesFs(String(projectDir || ''))
     } catch (e: any) {
-      return { ok: false, files: [], message: e?.message ?? String(e) }
+      return { ok: false, files: [], message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -1583,7 +1603,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       // （2026-09-24。公開中のアプリには直しが1つも届いていなかった）
       return { ok: true, placed: r.placed, ready: r.ready, file: r.file, moduleKind: r.moduleKind, replaced: r.replaced, needsUpdate: r.needsUpdate }
     } catch (e: any) {
-      return { ok: false, placed: false, ready: false, file: null, message: e?.message ?? String(e) }
+      return { ok: false, placed: false, ready: false, file: null, message: failureText(e) }
     }
   })
 
@@ -1626,7 +1646,10 @@ export function registerCloudHandlers(_deps: IpcDeps) {
       // 引いたところ、どのゾーンでも同一の一覧（レジストリ2件）が返った（roadmap #34）。
       const r = await client.listContainerRegistries('is1a')
       if (r.dryRun === false && r.ok) {
-        for (const g of pickContainerRegistries(r.data)) {
+        // 形が読めない応答は「0件」ではなく「確認できなかった」（棚卸しが残りを見落とさない）
+        const regs = readContainerRegistryList(r.data)
+        if (regs === null) failed.push('コンテナレジストリ')
+        else for (const g of regs) {
           if (g.subdomainLabel) actual.push({ kind: 'registry', id: g.subdomainLabel, name: g.subdomainLabel })
         }
       } else failed.push('コンテナレジストリ')
@@ -1698,7 +1721,7 @@ export function registerCloudHandlers(_deps: IpcDeps) {
         suggested: sharedBucketName(creds.token),
       }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e), siteReady: false, buckets: [] }
+      return { ok: false, message: failureText(e, { readOnly: true }), siteReady: false, buckets: [] }
     }
   })
 
@@ -1808,7 +1831,7 @@ function findSiteIssues(root: string): SiteIssue[] {
 
       let spec: EnvSpec | null = null
       try { spec = loadCloudSpec(projectDir) } catch (e: any) {
-        add('spec', '公開の設定', 'ng', `公開の設定（env.json）を読み取れません: ${e?.message ?? e}`)
+        add('spec', '公開の設定', 'ng', `公開の設定（env.json）を読み取れません: ${failureText(e, { readOnly: true })}`)
       }
       if (!spec) {
         if (checks.every(c => c.id !== 'spec')) {
@@ -1870,19 +1893,10 @@ function findSiteIssues(root: string): SiteIssue[] {
       const state = loadCloudState(projectDir, spec)
 
       // イメージの置き場が**実在するか**（手元の認証情報だけを信じない）
-      try {
-        const listed = await client.listContainerRegistries(spec.region)
-        if (listed.dryRun === false && listed.ok) {
-          const names = pickContainerRegistries(listed.data).map(r => r.subdomainLabel)
-          const recorded = state.meta?.registryName
-          if (!recorded) add('registry', 'コンテナレジストリ', 'ok', '公開のときに用意します。')
-          else if (names.includes(recorded)) add('registry', 'コンテナレジストリ', 'ok', `『${recorded}』が使えます。`)
-          // **直し方が分かっているなら、その場で押せるようにする**（2026-08-14 Ryosuke 指摘）
-          else add('registry', 'コンテナレジストリ', 'ng', `『${recorded}』が見つかりません（削除された可能性があります）。下のボタンで作り直せます。`, 'reset-registry')
-        } else {
-          add('registry', 'コンテナレジストリ', 'warn', '確認できませんでした（公開はできます）。')
-        }
-      } catch { add('registry', 'コンテナレジストリ', 'warn', '確認できませんでした（公開はできます）。') }
+      {
+        const r = await registryPreflightRow(client, spec.region, state.meta?.registryName)
+        add(r.id, r.label, r.status, r.note, r.fix)
+      }
 
       // 公開名が空いているか（**自分のアプリなら衝突ではない**）
       try {
@@ -1897,7 +1911,7 @@ function findSiteIssues(root: string): SiteIssue[] {
         } else {
           add('name', '公開名', 'warn', '確認できませんでした（公開はできます）。')
         }
-      } catch { add('name', '公開名', 'warn', '確認できませんでした（公開はできます）。') }
+      } catch (e) { add('name', '公開名', 'warn', withFailureDetail('確認できませんでした（公開はできます）。', e)) }
 
       // 「起動のしかた（min_scale）」が、さくら側と Koto の設定で食い違っていないか
       // （Ryosuke さん決定・案2・2026-09-10）。**未公開（mine 無し）なら項目を出さない**
@@ -1934,12 +1948,12 @@ function findSiteIssues(root: string): SiteIssue[] {
             if (names.includes(bucket.bucket)) add('storage', 'データの保存場所', 'ok', `『${bucket.bucket}』が使えます。`)
             else add('storage', 'データの保存場所', 'ng', `『${bucket.bucket}』が見つかりません。【公開】の案内から選び直してください。`)
           }
-        } catch { add('storage', 'データの保存場所', 'warn', '確認できませんでした（公開はできます）。') }
+        } catch (e) { add('storage', 'データの保存場所', 'warn', withFailureDetail('確認できませんでした（公開はできます）。', e)) }
       }
 
       return { ok: true, ...summarizePreflight(sortChecks(checks)) }
     } catch (e: any) {
-      return { ok: false, canPublish: true, summary: '確認できませんでした', checks, message: e?.message ?? String(e) }
+      return { ok: false, canPublish: true, summary: '確認できませんでした', checks, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -1956,7 +1970,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       const all = consentedPlacements(String(projectDir || ''))
       return { ok: true, placement: all[0] ?? null, placements: all }
     } catch (e: any) {
-      return { ok: false, placement: null, placements: [], message: e?.message ?? String(e) }
+      return { ok: false, placement: null, placements: [], message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -2057,9 +2071,9 @@ function findSiteIssues(root: string): SiteIssue[] {
         try { await marker.putMarker(placement.bucket, keepMarkerKey(placement.prefix ?? '')) }
         finally { await marker.dispose() }
       } catch (e: any) {
-        markerNote = `保存場所は用意できましたが、使用中であることを示すファイル（.koto-keep）を作成できませんでした（${e?.message ?? e}）。`
+        markerNote = wrapFailureText(failureText(e), t => `保存場所は用意できましたが、使用中であることを示すファイル（.koto-keep）を作成できませんでした（${t.replace(/。$/, '')}）。`
           + 'このままでも保存は使えますが、同じ保存場所を共有するほかのプロジェクトを破棄したときに、'
-          + 'この保存場所ごと削除されることがあります。一度データを保存すれば解消します。'
+          + 'この保存場所ごと削除されることがあります。一度データを保存すれば解消します。')
       }
 
       // 5. env.json に記録する。**consentedAt がここで付く**（これが無いと
@@ -2092,7 +2106,7 @@ function findSiteIssues(root: string): SiteIssue[] {
         ...(markerNote ? { markerNote } : {}),
       }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { checkAt: '「どこに保存しますか」の一覧' }) }
     }
   })
 
@@ -2123,7 +2137,7 @@ function findSiteIssues(root: string): SiteIssue[] {
       }
       return { ok: true, bucket }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { checkAt: '設定の「データの保存」' }) }
     }
   })
 

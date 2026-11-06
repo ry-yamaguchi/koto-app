@@ -49,7 +49,7 @@ describe('ファイル一覧の削除は deleteFileEntry の 1 か所。先に f
       + 'trash: p => window.electronAPI.fs.trash(p), '
       + 'confirm, '
       + 'openProjectDelete: dir => setConfirmProjDelete(dir), '
-      + 'alert: m => window.alert(m), '
+      + 'notify, '
       + 'announceDeleted: announceFileDeleted, '
       + '})',
     )
@@ -77,8 +77,9 @@ describe('ファイル一覧の削除は deleteFileEntry の 1 か所。先に f
     expect(count(code(SIDEBAR), 'fs.trashCheck(')).toBe(1)
   })
 
-  it('★★ Sidebar の window.alert( は、ファイル操作の 5 か所だけ（移動 3・削除の口 1・新規ファイル／名前の変更の口 1）', () => {
-    expect(count(code(SIDEBAR), 'window.alert(')).toBe(5)
+  it('★★ Sidebar の window.alert( は 0 件（削除・移動・新規ファイル・名前の変更の4つの口は、すべて notify を渡す）', () => {
+    expect(count(code(SIDEBAR), 'window.alert(')).toBe(0)
+    expect(code(SIDEBAR).split('\n').filter(l => l.trim() === 'notify,').length).toBe(3)
   })
 })
 
@@ -93,7 +94,7 @@ describe('プロジェクトのフォルダを移す口 fs.trashProject は、�
 })
 
 describe('新規ファイル・名前の変更は submitFileNameDialog を通る（同名があれば作らない・断りは英語の頭を取って出す）', () => {
-  it('★★★ Sidebar の submitNameDialog は submitFileNameDialog(nameDialog, nameInput, { rename, exists, writeFile, openFile, announceRenamed, alert }) の 1 本だけ。writeFile を直に呼ばない', () => {
+  it('★★★ Sidebar の submitNameDialog は submitFileNameDialog(nameDialog, nameInput, { rename, exists, writeFile, openFile, announceRenamed, notify }) の 1 本だけ。writeFile を直に呼ばない', () => {
     const s = flat(SIDEBAR)
     expect(count(s, 'submitFileNameDialog(')).toBe(1)
     expect(s).toContain(
@@ -103,23 +104,25 @@ describe('新規ファイル・名前の変更は submitFileNameDialog を通る
       + 'writeFile: (p, c) => window.electronAPI.fs.writeFile(p, c), '
       + 'openFile: onOpenFile, '
       + "announceRenamed: (from, to) => { window.dispatchEvent(new CustomEvent('sakura:file-renamed', { detail: { from, to } })) }, "
-      + 'alert: m => window.alert(m), '
+      + 'notify, '
       + '}) if (ok) setNameDialog(null)',
     )
     expect(count(s, 'createNewFile(')).toBe(0) // 作るのは fileEntryOps.ts の中（下）
     expect(count(s, 'fs.writeFile(')).toBe(1)
     expect(s).not.toContain("fs.writeFile(full, '')")
-    // 旧い形（断りを `e?.message` のまま出す catch）は無い。英語の頭を取るのは fileEntryOps.ts の cleanRemoteError（振る舞いは tests/fileEntryOps.test.ts）
+    // 旧い形（断りを `e?.message` のまま出す catch）は無い。英語の頭を取って日本語の文にするのは fileEntryOps.ts の failureText（振る舞いは tests/fileEntryOps.test.ts）
     expect(s).not.toContain('window.alert(e?.message ?? String(e))')
   })
 
-  it('★★★ fileEntryOps.ts の断りは、3か所（削除の聞く・削除の移す・名前の決定）すべて cleanRemoteError(e) を通す。`e?.message` のまま出す形は無い', () => {
+  it('★★★ fileEntryOps.ts の断りは、3か所（削除の聞く・削除の移す・名前の決定）すべて failureText(e, …) を通す。`e?.message` のまま出す形は無い', () => {
     const ops = code(OPS)
-    expect(ops).toContain("import { cleanRemoteError } from './remoteError'")
-    expect(count(ops, 'cleanRemoteError(e)')).toBe(3)
-    expect(ops).toContain('deps.alert(`削除できませんでした: ${cleanRemoteError(e)}`)')
-    expect(ops).toContain('catch (e: unknown) { deps.alert(`削除できませんでした: ${cleanRemoteError(e)}`) }')
-    expect(flat(OPS)).toContain('} catch (e: unknown) { deps.alert(cleanRemoteError(e)) return false }')
+    expect(ops).toContain("import { failureText } from '../shared/failureText'")
+    expect(ops).not.toContain('cleanRemoteError')
+    expect(ops).toContain('deps.notify({ title: DELETE_FAILED_TITLE, body: failureText(e, { readOnly: true }) })')
+    expect(ops).toContain("catch (e: unknown) { deps.notify({ title: DELETE_FAILED_TITLE, body: failureText(e, { checkAt: 'ファイル一覧' }) }) }")
+    expect(flat(OPS)).toContain("} catch (e: unknown) { deps.notify({ title: nameFailedTitle(dialog.mode), body: failureText(e, { checkAt: 'ファイル一覧' }) }) return false }")
+    expect(ops).not.toContain('deps.alert(')
+    expect(ops).not.toContain('alert:')
     expect(ops).not.toContain('e?.message')
   })
 

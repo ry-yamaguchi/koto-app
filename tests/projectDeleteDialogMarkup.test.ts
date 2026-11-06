@@ -27,7 +27,16 @@ describe('ProjectDeleteDialog を本物の React で描く（読み込みの前�
   it('★ 背景の div の中に、ダイアログの箱が1つ。パスの最後の1段をプロジェクト名にする。読み込みの前は「🗑 ゴミ箱に移動」を押せない（disabled）', () => {
     const h = html('/Users/x/koto-workspace/my-site')
     expect(h).toContain('プロジェクト「my-site」を削除しますか？')
-    expect(h.match(/fixed inset-0 z-50/g)).toHaveLength(1) // 確認の要素（閉じている）は、背景の div を重ねて描かない
+    // 確認の要素（閉じている）は、背景の div を重ねて描かない。確認の窓は ui/Modal で、z-index を class でなく style に持つので、z-50 の有無によらず数える
+    expect(h.match(/fixed inset-0/g)).toHaveLength(1)
+    expect(h.match(/fixed inset-0 z-50/g)).toBeNull() // 数えた1つは、このダイアログ自身の背景（Modal。重なりは style の z-index）
+    // 読み上げの印: 見出しと説明の id が本文の要素と対応する
+    expect(h).toContain('role="dialog"')
+    expect(h).toContain('aria-modal="true"')
+    expect(h).toContain('aria-labelledby="project-delete-title"')
+    expect(h).toContain('aria-describedby="project-delete-note"')
+    expect(h).toContain('id="project-delete-title"')
+    expect(h).toContain('id="project-delete-note"')
     // 材料を読み終わる前に押すと、公開が無いものとして扱い、破棄も専有型の停止もせずにフォルダが移りうる（3A-5b で押せなくした）
     expect(h).toMatch(/<button[^>]*disabled=""[^>]*>🗑 ゴミ箱に移動<\/button>/)
     expect(h).not.toContain('title=')

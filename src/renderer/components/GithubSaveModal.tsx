@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import SakuraLogo from './SakuraLogo'
+import Modal from '../ui/Modal'
 import { getGithubToken } from './CredentialsModal'
 import CopyButton from './CopyButton'
 import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
 import { mergeProjectMeta } from '../projectMeta'
+import FailureLines from './FailureLines'
+import { splitFailureDetail } from '../../shared/failureDetail'
 
 // 💾 GitHubに保存（バックアップ・共有・P3-⑬ G1）。
 // 用語は GitHub の画面の標準に揃える（リポジトリ・コミット。2026-10-01 作者決定: 「保管場所」「保存の記録」はやめた）。
@@ -38,6 +41,15 @@ function formatDate(iso: string | null): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
   return d.toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+/** 保存の結果の1行。失敗の文は、最後の行の「詳細: 原文」を分けて小さく出す。 */
+export function SaveResultLine({ ok, text }: { ok: boolean; text: string }) {
+  return (
+    <p className={`text-xs rounded-lg px-3 py-2 leading-relaxed select-text break-all ${ok ? 'text-white bg-brand-green/90' : 'text-white bg-brand-red-fill'}`}>
+      {ok ? '✅ ' : '❌ '}<FailureLines text={text} />
+    </p>
+  )
 }
 
 export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials }: Props) {
@@ -119,7 +131,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
   // HTTPステータスは渡ってこないため（github:createRepo ハンドラが describeCreateRepoError で文字列化する）、
   // 判定根拠は message の文言のみ（describeCreateRepoError の名前衝突メッセージは「既に」を含み
   // isNameConflictError の CONFLICT_PATTERN にマッチする）。作成前（!repoFullName）のみ対象。
-  const conflictCardShown = !repoFullName && !creating && !!result && !result.ok && isNameConflictError(result.text)
+  const conflictCardShown = !repoFullName && !creating && !!result && !result.ok && isNameConflictError(splitFailureDetail(result.text).text)
 
   const doSave = async (targetRepo?: string) => {
     const repo = targetRepo ?? repoFullName
@@ -142,15 +154,18 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-[480px] max-h-[88vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in" onClick={e => e.stopPropagation()}>
+    // 枠は ui/Modal（0.6.26）。Esc・背景クリックも ✕ と同じ onClose を通る。
+    <Modal
+      onRequestClose={onClose} labelledBy="github-save-title" backdropClassName="bg-black/50 backdrop-blur-sm"
+      panelClassName="w-[480px] bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
+    >
         <div className="flex items-center gap-2.5 px-6 pt-6 pb-4 sticky top-0 bg-elevated z-10">
           <SakuraLogo size={24} />
           <div>
-            <h2 className="text-lg font-bold text-ink">💾 GitHubに保存</h2>
+            <h2 id="github-save-title" className="text-lg font-bold text-ink">💾 GitHubに保存</h2>
             <p className="text-xs text-ink-secondary">バックアップ・エンジニアへの共有に使えます</p>
           </div>
-          <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
+          <button onClick={onClose} aria-label="閉じる" className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
 
         <div className="px-6 pb-6 space-y-4">
@@ -224,11 +239,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
             </div>
           )}
 
-          {result && (
-            <p className={`text-xs rounded-lg px-3 py-2 leading-relaxed select-text break-all ${result.ok ? 'text-white bg-brand-green/90' : 'text-white bg-brand-red-fill'}`}>
-              {result.ok ? '✅ ' : '❌ '}{result.text}
-            </p>
-          )}
+          {result && <SaveResultLine ok={result.ok} text={result.text} />}
 
           {excluded.length > 0 && (
             <div className="rounded-xl border border-brand-yellow/70 bg-surface p-3 space-y-1.5">
@@ -249,8 +260,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
             <button onClick={onClose} className="bg-overlay text-ink border border-line rounded-xl px-4 py-2 text-sm font-medium hover:border-sakura">閉じる</button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 

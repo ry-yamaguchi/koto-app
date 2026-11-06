@@ -11,6 +11,8 @@ import type { IpcDeps } from './types'
 import { destinationDir, uniqueName, isImageFileName, type AssetPurpose } from '../../shared/assetImport'
 import { trashFs, trashCheckFs, trashProjectFs, renameFs } from './fsTrash'
 import { createProjectOnDisk } from '../projectCreateFs'
+import { writeFileIfUnchangedFs, readCheckFs } from '../writeIfUnchangedFs'
+import { failureText } from '../../shared/failureText'
 import { publishExcludedDirNames, excludedFileNames } from '../../shared/publishExclude'
 
 function confineToProject(projectDir: string, rel: string): string {
@@ -232,7 +234,7 @@ export function publishedRecordsFs(workspaceDir: string): {
     }
     return { ok: true, projects }
   } catch (e: any) {
-    return { ok: false, projects: [], message: e?.message ?? String(e) }
+    return { ok: false, projects: [], message: failureText(e, { readOnly: true }) }
   }
 }
 
@@ -246,6 +248,13 @@ export function registerFsHandlers(deps: IpcDeps) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true }) // 親フォルダが無ければ作成
     fs.writeFileSync(filePath, content, 'utf-8')
   })
+
+  // エディタの保存用。開いたとき読んだ中身（expected）とディスクが同じときだけ書く（null は「無いときだけ作る」）。判断は writeIfUnchangedFs.ts
+  ipcMain.handle('fs:writeFileIfUnchanged', (_, filePath: string, content: string, expected: string | null) =>
+    writeFileIfUnchangedFs(filePath, content, expected))
+
+  // 読めるかを聞く（読むだけ）。読み直しに失敗したタブが、消えたのか読めないのかを、保存の口と同じ分類で言い分ける。判断は writeIfUnchangedFs.ts
+  ipcMain.handle('fs:readCheck', (_, filePath: string) => readCheckFs(filePath))
 
   ipcMain.handle('fs:readFileInProject', (_, projectDir: string, rel: string) => readFileInProjectFs(projectDir, rel))
 
@@ -347,7 +356,7 @@ export function registerFsHandlers(deps: IpcDeps) {
       } catch { /* 権限を変えられなくても複製自体は成立している */ }
       return { ok: true, rel: path.relative(args.projectDir, dest) }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { checkAt: 'ファイル一覧' }) }
     }
   })
 

@@ -24,6 +24,8 @@
 // そこで、読み直しの状態と規則を **ここ1つ**にまとめ、偽の status で振る舞いを固定する。
 // 画面（StorageNotice.tsx）は、この controller を通してだけ一覧を読み、選び、押せるかを決める。
 
+import { failureText } from '../shared/failureText'
+
 /** 「新しく作る」を表す選択肢。既存の名前と区別する。 */
 export const NEW_BUCKET = '\u0000new'
 
@@ -192,7 +194,8 @@ export function createBucketListController(o: {
       try {
         reading = readBucketList(await o.status())
       } catch (e) {
-        reading = { error: reasonFrom((e as { message?: unknown } | null | undefined)?.message) }
+        // IPC の頭と英語の原文は、日本語の文＋詳細にする（見分けられなければ原文のまま）
+        reading = { error: reasonFrom(e == null ? undefined : failureText(e, { readOnly: true })) }
       }
       if (disposed) return
       if (mine !== seq) {

@@ -6,6 +6,7 @@ import {
 } from '../src/renderer/fileEntryOps'
 
 // ── 0.6.24 T-E4: ファイル一覧の削除の振り分け・新規ファイルの同名・消したあとの知らせ（Sidebar から切り出した fileEntryOps.ts）──
+// 断りは notify（題＋本文）。題は log.titles に残る。
 // 偽の口（deps）に流し、**呼ばれた順の一覧**を見る（掟10: 確認の答え・聞いた答えを無視すると、移す要求が飛ぶ）。
 //   ・根（プロジェクトのフォルダ）→ 削除の画面を開く。確認も fs.trash も 0 回
 //   ・記録・中にプロジェクトがある・調べられない・ホームの深さ → 断りの文だけ。確認も fs.trash も 0 回
@@ -16,13 +17,13 @@ import {
 type Call = string
 function setup(answer: unknown | Error, opts: { confirm?: boolean; trashThrows?: Error } = {}) {
   const calls: Call[] = []
-  const log = { alerts: [] as string[], opened: [] as string[], trashed: [] as string[], announced: [] as string[], asked: [] as string[], confirms: [] as unknown[] }
+  const log = { alerts: [] as string[], titles: [] as string[], opened: [] as string[], trashed: [] as string[], announced: [] as string[], asked: [] as string[], confirms: [] as unknown[] }
   const deps: FileEntryDeleteDeps = {
     trashCheck: async p => { calls.push('trashCheck'); log.asked.push(p); if (answer instanceof Error) throw answer; return answer },
     trash: async p => { calls.push('trash'); log.trashed.push(p); if (opts.trashThrows) throw opts.trashThrows },
     confirm: async o => { calls.push('confirm'); log.confirms.push(o); return opts.confirm ?? true },
     openProjectDelete: d => { calls.push('openProjectDelete'); log.opened.push(d) },
-    alert: m => { calls.push('alert'); log.alerts.push(m) },
+    notify: o => { calls.push('notify'); log.alerts.push(o.body); log.titles.push(o.title) },
     announceDeleted: p => { calls.push('announce'); log.announced.push(p) },
   }
   return { calls, log, deps }
@@ -85,7 +86,7 @@ describe('deleteFileEntry: 先に聞く → 振り分け → ふつうのもの�
   ] as const)('★★★ %s: main の文だけを出す。確認も fs.trash も 0 回', async (kind, message) => {
     const { calls, log, deps } = setup({ ok: false, kind, message })
     await deleteFileEntry(ENTRY, deps)
-    expect(calls).toEqual(['trashCheck', 'alert'])
+    expect(calls).toEqual(['trashCheck', 'notify'])
     expect(log.alerts).toEqual([message])
     expect(log.trashed).toEqual([])
     expect(log.confirms).toEqual([])
@@ -95,8 +96,9 @@ describe('deleteFileEntry: 先に聞く → 振り分け → ふつうのもの�
   it('★★★ 聞けなかった（trashCheck が投げた）→ 理由を出して終わり。確認も fs.trash も 0 回（不明を「移してよい」にしない）', async () => {
     const { calls, log, deps } = setup(new Error('IPC 失敗'))
     await deleteFileEntry(ENTRY, deps)
-    expect(calls).toEqual(['trashCheck', 'alert'])
-    expect(log.alerts).toEqual(['削除できませんでした: IPC 失敗'])
+    expect(calls).toEqual(['trashCheck', 'notify'])
+    expect(log.alerts).toEqual(['IPC 失敗'])
+    expect(log.titles).toEqual(['削除できませんでした'])
     expect(log.trashed).toEqual([])
     expect(log.confirms).toEqual([])
   })
@@ -105,7 +107,7 @@ describe('deleteFileEntry: 先に聞く → 振り分け → ふつうのもの�
     for (const odd of [undefined, null, {}, { ok: 'true' }]) {
       const { calls, log, deps } = setup(odd)
       await deleteFileEntry(ENTRY, deps)
-      expect(calls, JSON.stringify(odd)).toEqual(['trashCheck', 'alert'])
+      expect(calls, JSON.stringify(odd)).toEqual(['trashCheck', 'notify'])
       expect(log.alerts, JSON.stringify(odd)).toEqual([TRASH_CHECK_UNREADABLE_MESSAGE])
       expect(log.trashed, JSON.stringify(odd)).toEqual([])
     }
@@ -114,8 +116,9 @@ describe('deleteFileEntry: 先に聞く → 振り分け → ふつうのもの�
   it('★★ 確認のあとで移せなかった（main が断った・OS の失敗）→ 理由を出す。タブへは知らせない', async () => {
     const { calls, log, deps } = setup({ ok: true }, { trashThrows: new Error('権限がありません') })
     await deleteFileEntry(ENTRY, deps)
-    expect(calls).toEqual(['trashCheck', 'confirm', 'trash', 'alert'])
-    expect(log.alerts).toEqual(['削除できませんでした: 権限がありません'])
+    expect(calls).toEqual(['trashCheck', 'confirm', 'trash', 'notify'])
+    expect(log.alerts).toEqual(['権限がありません'])
+    expect(log.titles).toEqual(['削除できませんでした'])
     expect(log.announced).toEqual([])
   })
 })
@@ -182,15 +185,15 @@ describe('★★★ R2-g 削除の断り: 頭つきの reject でも、文だけ
   it('★★★ 聞く口（fs:trashCheck）が頭つきで投げた → 「削除できませんでした: 文」。頭は出ない', async () => {
     const { calls, log, deps } = setup(headed('fs:trashCheck', '通信に失敗しました'))
     await deleteFileEntry(ENTRY, deps)
-    expect(calls).toEqual(['trashCheck', 'alert'])
-    expect(log.alerts).toEqual(['削除できませんでした: 通信に失敗しました'])
+    expect(calls).toEqual(['trashCheck', 'notify'])
+    expect(log.alerts).toEqual(['通信に失敗しました'])
   })
 
   it('★★★ 移す口（fs:trash）が頭つきで投げた → 「削除できませんでした: 文」。タブへは知らせない', async () => {
     const { calls, log, deps } = setup({ ok: true }, { trashThrows: headed('fs:trash', '中にプロジェクトがあるフォルダは、まとめて削除できません。プロジェクトごとに削除してください。') })
     await deleteFileEntry(ENTRY, deps)
-    expect(calls).toEqual(['trashCheck', 'confirm', 'trash', 'alert'])
-    expect(log.alerts).toEqual(['削除できませんでした: 中にプロジェクトがあるフォルダは、まとめて削除できません。プロジェクトごとに削除してください。'])
+    expect(calls).toEqual(['trashCheck', 'confirm', 'trash', 'notify'])
+    expect(log.alerts).toEqual(['中にプロジェクトがあるフォルダは、まとめて削除できません。プロジェクトごとに削除してください。'])
     expect(log.announced).toEqual([])
   })
 })
@@ -198,16 +201,17 @@ describe('★★★ R2-g 削除の断り: 頭つきの reject でも、文だけ
 function nameDialogSetup(over: Partial<NameDialogDeps> = {}) {
   const calls: string[] = []
   const alerts: string[] = []
+  const titles: string[] = []
   const deps: NameDialogDeps = {
     rename: async (p, n) => { calls.push(`rename ${p} ${n}`); return `/d/${n}` },
     exists: async p => { calls.push(`exists ${p}`); return false },
     writeFile: async (p, c) => { calls.push(`writeFile ${p} ${JSON.stringify(c)}`) },
     openFile: p => { calls.push(`open ${p}`) },
     announceRenamed: (from, to) => { calls.push(`renamed ${from} ${to}`) },
-    alert: m => { calls.push('alert'); alerts.push(m) },
+    notify: o => { calls.push('notify'); alerts.push(o.body); titles.push(o.title) },
     ...over,
   }
-  return { calls, alerts, deps }
+  return { calls, alerts, titles, deps }
 }
 
 describe('★★★ R2-g submitFileNameDialog（名前の変更・新規ファイル）: 頭つきの reject でも、文だけを出す。ダイアログは閉じない', () => {
@@ -216,7 +220,8 @@ describe('★★★ R2-g submitFileNameDialog（名前の変更・新規ファ�
     const ok = await submitFileNameDialog({ mode: 'rename', targetPath: '/d/proj' }, 'newname', f.deps)
     expect(ok).toBe(false)
     expect(f.alerts).toEqual(['プロジェクトのフォルダの名前は変えられません。'])
-    expect(f.calls).toEqual(['rename /d/proj newname', 'alert'])
+    expect(f.titles).toEqual(['名前を変えられませんでした'])
+    expect(f.calls).toEqual(['rename /d/proj newname', 'notify'])
   })
 
   it('★★★ 新規ファイル: あるか確かめる口が頭つきで投げた → 文だけ。writeFile 0 回。同名なら今までの文（頭なし）', async () => {
@@ -227,6 +232,7 @@ describe('★★★ R2-g submitFileNameDialog（名前の変更・新規ファ�
     const dup = nameDialogSetup({ exists: async () => true })
     expect(await submitFileNameDialog({ mode: 'new', targetPath: '/d' }, 'a.txt', dup.deps)).toBe(false)
     expect(dup.alerts).toEqual([NEW_FILE_EXISTS_MESSAGE])
+    expect(dup.titles).toEqual(['ファイルを作れませんでした'])
     expect(dup.calls.some(c => c.startsWith('writeFile'))).toBe(false)
   })
 
@@ -245,7 +251,7 @@ describe('★★★ R2-g submitFileNameDialog（名前の変更・新規ファ�
       expect(await submitFileNameDialog({ mode: 'rename', targetPath: '/d/a' }, bad, f.deps), JSON.stringify(bad)).toBe(false)
       expect(await submitFileNameDialog({ mode: 'new', targetPath: '/d' }, bad, f.deps), JSON.stringify(bad)).toBe(false)
       expect(f.alerts, JSON.stringify(bad)).toEqual(['不正なファイル名です', '不正なファイル名です'])
-      expect(f.calls.filter(c => c !== 'alert'), JSON.stringify(bad)).toEqual([])
+      expect(f.calls.filter(c => c !== 'notify'), JSON.stringify(bad)).toEqual([])
     }
   })
 

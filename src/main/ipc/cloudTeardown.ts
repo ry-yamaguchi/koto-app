@@ -19,11 +19,13 @@
 // ・保存した記録（state.json）は、失敗した回も `stateToSave` を通して残す（2026-08-14: 消えたアプリが記録に残り、次の公開が 404 になった）
 // ・レジストリを消すのは `deleteRegistry === true` で、確認のときの名前が記録と一致するときだけ（P7・掟11）
 // ・保存場所の判断は cloud/storageTeardown.ts → shared/objectStorage.ts の1つ。ここに条件を書かない（掟10）
+import { failureText, withFailureDetail } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import * as fs from 'fs'
 import { ipcMain } from 'electron'
 import { applyPlan } from '../cloud/apply'
 import { loadCredentials } from '../cloud/auth'
-import { SakuraCloudClient, pickContainerRegistries } from '../cloud/client'
+import { SakuraCloudClient, readContainerRegistryList } from '../cloud/client'
 import { loadRegistryCredentials, clearRegistryCredentials } from '../cloud/registry-auth'
 import { CLOUD_STATE_FILE, cloudFilePath, loadCloudSpec, loadCloudState, saveCloudState } from '../cloud/specStore'
 import { registryDeletionTarget, stateToSave, type EnvState } from '../cloud/state'
@@ -36,11 +38,13 @@ import { forgetPublishTargetFs } from '../publishMetaFs'
 import { consentedPlacementsOf, type StoragePlacement } from '../../shared/objectStorage'
 import { keyRevokeGuide } from '../../shared/storageKeys'
 import { keptOnlyField, readKeptOnly } from '../../shared/keptOnly'
-import { registryOriginOf, type RegistryOrigin } from '../../shared/cloudCost'
+import { registryOriginOf, registryCheckInPanelNote, type RegistryOrigin } from '../../shared/cloudCost'
 import { otherProjectsUsingRegistry, keptRegistryFacts } from '../cloud/registryUsers'
 import { runStorageStage, storageFailureFields, SAVE_FAILED_NOTE, keyRecordedOf } from './cloudTeardownStorage'
 
 export { keyRecordedOf }
+// 一覧の読み取りの本体は cloud/client.ts（作る前の探し直しと同じ判定を通すため）。tests/cloudIpcRegistryTeardown.test.ts が cloud.ts 経由で import している
+export { readContainerRegistryList }
 
 /** 記録（env.json・state.json）だけから決まる、このプロジェクトの破棄の材料。run も同じものを使う。 */
 export type SharedTeardownBase = {
@@ -155,19 +159,8 @@ export function readSharedTeardownRecord(projectDir: unknown): { ok: true; recor
     const registryUsers = base.registryName ? otherProjectsUsingRegistry(projectDir, base.registryName) : []
     return { ok: true, record: { ...base, registryUsers, keyRecorded: keyRecordedOf(state) } }
   } catch (e) {
-    return { ok: false, message: msgOf(e) }
+    return { ok: false, message: failureText(e, { readOnly: true }) }
   }
-}
-
-/**
- * コンテナレジストリの一覧を読む（読めなかったときは `null`）。
- * `pickContainerRegistries` は形が読めない応答でも `[]` を返す＝「読めなかった」と「0件」を区別できない。
- * 破棄でこれを「一覧に無い＝削除済み」と読むと、読めていないのに記録から名前を落として二度と見つけられなくなる（2026-09-16 の検分 B-2）。
- */
-export function readContainerRegistryList(data: unknown): Array<{ id: string; subdomainLabel: string }> | null {
-  const items = (data as any)?.CommonServiceItems ?? (data as any)?.commonserviceitems
-  if (!Array.isArray(items)) return null
-  return pickContainerRegistries(data)
 }
 
 /** teardownRegistry の返り値。`deleteUnknown` は、削除の要求を出したのに結果が分からない回（要求が投げた）だけに付く（true のときだけ。偽のときはキーごと無い）。 */
@@ -185,10 +178,10 @@ export async function teardownRegistry(
   region: string,
   name: string,
 ): Promise<TeardownRegistryOutcome> {
+  // reason は詳細つきの文でもよい。原文（詳細）は括弧の外・最後の行に移す
   const cannotConfirm = (reason: string): TeardownRegistryOutcome => ({
     registryDeleted: false,
-    note: `※ レジストリ『${name}』を削除できたか確認できませんでした（${reason}）。`
-      + 'さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額220円がかかり続けます）。',
+    note: wrapFailureText(reason, t => `※ レジストリ『${name}』を削除できたか確認できませんでした（${t.replace(/。$/, '')}）。` + registryCheckInPanelNote()),
   })
   let deleteIssued = false
   try {
@@ -205,15 +198,14 @@ export async function teardownRegistry(
     if (del.dryRun === false) return { registryDeleted: false, note: `※ レジストリ『${name}』の削除に失敗（HTTP ${del.status}）。コンパネで削除してください` }
     return { registryDeleted: false, note: null }
   } catch (e: any) {
-    return { ...cannotConfirm(`一覧の取得または削除でエラーが発生・${e?.message ?? String(e)}`), ...(deleteIssued ? { deleteUnknown: true as const } : {}) }
+    return { ...cannotConfirm(withFailureDetail('一覧の取得または削除でエラーが発生', e)), ...(deleteIssued ? { deleteUnknown: true as const } : {}) }
   }
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────
 
 const NO_KEY_MESSAGE = 'APIキー未登録（先にアクセストークン/シークレットを登録してください）'
-const REGISTRY_UNKNOWN_NOTE = '※ このプロジェクトがどのコンテナレジストリを使っていたかの記録がないため、レジストリは削除していません。'
-  + 'さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額220円がかかり続けます）。'
+const REGISTRY_UNKNOWN_NOTE = '※ このプロジェクトがどのコンテナレジストリを使っていたかの記録がないため、レジストリは削除していません。' + registryCheckInPanelNote()
 const REGISTRY_CHANGED_NOTE = '※ 確認のあとで、記録にあるコンテナレジストリが変わったため、レジストリは削除していません。もう一度破棄を押して確かめてください。'
 
 /** state の apprun-app など、バケット以外を削除するプラン。保存場所は applyPlan に渡さず、あとで teardownStorageForProject が消す。実行内容の言い方は planner の deleteDescription（種類名を画面に出さない）。 */
@@ -245,7 +237,7 @@ async function runSharedTeardown(ctx: TeardownShellCtx<{ heldByMain: true }>): P
   try {
     return await runStages(ctx)
   } catch (e) {
-    return { ok: false, message: msgOf(e) } // 最後の防波堤。投げ直さない
+    return { ok: false, message: failureText(e, { checkAt: '📡 公開したもの一覧' }) } // 最後の防波堤。投げ直さない
   }
 }
 
@@ -263,7 +255,7 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
     if (!spec) return { ok: false, message: 'env.json がありません' }
     state = loadCloudState(projectDir, spec)
   } catch (e) {
-    return { ok: false, message: msgOf(e) }
+    return { ok: false, message: failureText(e, { readOnly: true }) }
   }
   const record = sharedTeardownRecordOf(spec, state)
   const hadApp = record.appNames.length > 0
@@ -282,14 +274,14 @@ async function runStages(ctx: TeardownShellCtx<{ heldByMain: true }>): Promise<S
   try {
     result = await applyPlan({ plan: deletePlanWithoutBuckets(state), spec, state, client: new SakuraCloudClient({ credentials: creds, dryRun: false }), confirmed: true, projectDir })
   } catch (e) {
-    return { ok: false, message: `公開したものを削除できませんでした: ${msgOf(e)}` } // 記録は読んだまま。消せていれば押し直しの 404 を「無い」として進む
+    return { ok: false, message: `公開したものを削除できませんでした: ${failureText(e, { checkAt: '📡 公開したもの一覧' })}` } // 記録は読んだまま。消せていれば押し直しの 404 を「無い」として進む
   }
   let cur = result.state
   if (!result.ok) {
     const failed = persist(projectDir, cur, { ok: false, registryDeleted: false, keyKept: null })
     return {
       ok: false, appDeleted: false, executed: result.executed, skipped: result.skipped, ...keptRegistry(),
-      message: [result.message, failed && SAVE_FAILED_NOTE].filter(Boolean).join('\n') || undefined,
+      message: wrapFailureText(result.message ?? '', t => [t, failed && SAVE_FAILED_NOTE].filter(Boolean).join('\n')) || undefined,
     }
   }
   const executed: string[] = [...result.executed]

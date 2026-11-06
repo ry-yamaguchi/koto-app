@@ -10,13 +10,20 @@
 // **ここは配布物（koto-app）と同じ、公開されている側でなければならない。**
 const FEEDBACK_REPO_URL = 'https://github.com/ry-yamaguchi/koto-app'
 
-/** Issue本文。冒頭の案内文＋区切り線の下に環境情報（バージョン・OS）を自動挿入する。 */
-export function buildFeedbackBody(version: string, osRelease: string, arch: string): string {
-  const envInfo = `Koto v${version} / macOS ${osRelease} (${arch})`
-  return `（お気づきの点・不具合・要望をご記入ください）\n\n---\n${envInfo}\n`
+// 宛先が公開リポジトリなので、投稿は誰でも読める。書く前に目に入るよう、冒頭の案内文の次の段落に置く。
+// 英語の key・token・secret・password は本文に入れない（秘密の形に見える語を雛形に出さない）。
+const FEEDBACK_PUBLIC_NOTICE = '※ この投稿は誰でも読めます。パスワード・APIキー・お客様の情報は書かないでください。'
+
+/**
+ * Issue本文。冒頭の案内文・公開される旨の注意の下に、区切り線を挟んで環境情報（バージョン・OS）を自動挿入する。
+ * `osVersion` は macOS の版（Electron の `process.getSystemVersion()`）。`os.release()` は Darwin のカーネルの版なので渡さない。
+ */
+export function buildFeedbackBody(version: string, osVersion: string, arch: string): string {
+  const envInfo = `Koto v${version} / macOS ${osVersion} (${arch})`
+  return `（お気づきの点・不具合・要望をご記入ください）\n\n${FEEDBACK_PUBLIC_NOTICE}\n\n---\n${envInfo}\n`
 }
 
 /** GitHub Issues の新規作成URL（body は URLエンコード済み・既定ブラウザで開く想定）。 */
-export function buildFeedbackUrl(version: string, osRelease: string, arch: string): string {
-  return `${FEEDBACK_REPO_URL}/issues/new?body=${encodeURIComponent(buildFeedbackBody(version, osRelease, arch))}`
+export function buildFeedbackUrl(version: string, osVersion: string, arch: string): string {
+  return `${FEEDBACK_REPO_URL}/issues/new?body=${encodeURIComponent(buildFeedbackBody(version, osVersion, arch))}`
 }

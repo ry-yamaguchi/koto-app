@@ -879,8 +879,8 @@ describe('StorageNotice の配線（呼び出しの形ごと一意に当てる�
     const closed = afterFailed.indexOf('setConfirming(false)')
     expect(remember).toBeGreaterThan(reload)
     expect(closed).toBeGreaterThan(reload)
-    // prepare の中の reload は、失敗の枝と成功の枝の2つだけ
-    expect(count(prepare, 'bucketListRef.current?.reload()')).toBe(2)
+    // prepare の中の reload は、失敗の枝・呼び出しが投げた枝（作られたかもしれない）・成功の枝の3つだけ
+    expect(count(prepare, 'bucketListRef.current?.reload()')).toBe(3)
   })
 
   it('★★★ 入口5・6: 設定の知らせと、破棄の知らせ（聞く・外すが、同じ関数で、2つとも）', () => {
@@ -927,7 +927,8 @@ describe('StorageNotice の配線（呼び出しの形ごと一意に当てる�
     expect(failure).toContain('⚠️ 保存場所の一覧を確かめられませんでした。')
     // 理由は捨てない（APIキー未登録なら、それが直し方になる）。選んでコピーできる
     expect(failure).toContain('{bucketList.listError && (')
-    expect(failure).toContain('select-text">{bucketList.listError}</p>')
+    // 失敗の文の下の「詳細: 原文」の行を分けて出す（<FailureLines>）
+    expect(failure).toContain('select-text"><FailureLines text={bucketList.listError} /></p>')
     expect(failure).toContain('onClick={() => { void bucketListRef.current?.reload() }}')
     expect(failure).toContain('disabled={bucketList.loading}')
     // 画面の文を足したのは、listError の表示と「確かめています…」だけ（掟5）。同じ文を2回出さない

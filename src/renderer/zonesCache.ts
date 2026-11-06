@@ -21,6 +21,7 @@
 // credentials-changed は世代を1つ進めるので、「古い鍵で取得中だった結果」が、鍵が
 // 変わった後に紛れ込んでキャッシュを上書きすることはない。
 
+import { failureText } from '../shared/failureText'
 import { readZones, isZonesShape, type ZoneRow } from '../shared/apprunDedicatedShapes'
 
 export type LoadZonesResult = { ok: boolean; rows: ZoneRow[]; message?: string }
@@ -55,7 +56,7 @@ async function fetchZones(): Promise<LoadZonesResult> {
     }
     return { ok: false, rows: [], message: r.message }
   } catch (e: any) {
-    return { ok: false, rows: [], message: e?.message ?? String(e) }
+    return { ok: false, rows: [], message: failureText(e, { readOnly: true }) }
   }
 }
 

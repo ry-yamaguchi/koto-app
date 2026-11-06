@@ -9,12 +9,17 @@ import CopyButton from './CopyButton'
 import { mergeProjectMeta } from '../projectMeta'
 import { useProjectOpsView } from '../hooks/useProjectOpsView'
 import { isHanamiiOp } from '../projectOpsView'
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
+import { failureCopyNow, maskForCopy } from '../failureCopy'
 import { clockText, opWarningText } from '../../shared/opsText'
 import { opWordFor } from '../../shared/opWord'
+import { otherTargetPriceNote } from '../../shared/cloudCost'
 import { askAiAboutFailure, type AskAiFailureKind } from '../../shared/askAi'
 import { publishButtonLabel } from '../../shared/publishLabels'
 import AccessKeySection from './AccessKeySection'
 import HanamiiTeardownSection, { HanamiiTeardownResult } from './HanamiiTeardownSection'
+import { looksSecretName } from '../../shared/secretShapes'
 
 // HANAMII の公開名の文字数上限。HANAMII 側の公開APIリファレンス（hanamii.jp/docs/api）には
 // 名前の上限が明記されていないが、HANAMII は AppRun 基盤上で動く（コンテナをビルドし EXPOSE から
@@ -94,7 +99,6 @@ function safeName(s: string): string {
 export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: Props) {
   const projName = projectDir.split('/').pop() ?? 'app'
   const metaPath = `${projectDir}/.sakuraide.json`
-  const guessSecret = (k: string) => /KEY|SECRET|TOKEN|PASS|PWD|CREDENTIAL|PRIVATE|APIKEY/i.test(k)
 
   const [token, setToken] = useState<string | null>(null)
   const [tokenLoaded, setTokenLoaded] = useState(false)
@@ -445,7 +449,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
           { projectId: pid, workspaceId, envs: persistEnvs, tokenId, healthCheck: { enabled: healthCheck.enabled, path: healthCheck.path }, name },
         ).catch((e: any) => {
           // 設定の保存に失敗しても、公開の結果は記録が伝える。ここで黙ると、次に開いたとき設定が消えている理由が分からない。
-          setMsg(`公開の依頼は受け付けられましたが、設定（環境変数・ヘルスチェックなど）を保存できませんでした: ${e?.message ?? String(e)}`)
+          setMsg(`公開の依頼は受け付けられましたが、設定（環境変数・ヘルスチェックなど）を保存できませんでした: ${failureText(e)}`)
         })
       }
       // 結果を読み直す（押し出しが先に届いていれば、何も足さない）。
@@ -454,7 +458,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
       // main の本体が例外で終わったときも記録は残る（予期しない失敗として）。残っていなければ、ここで伝える。
       if (stale()) return
       await ops.sync()
-      if (!ops.didFinishSince('hanamii:publish', askedAt)) setMsg(`公開処理でエラーが発生しました: ${e?.message ?? String(e)}`)
+      if (!ops.didFinishSince('hanamii:publish', askedAt)) setMsg(`公開処理でエラーが発生しました: ${failureText(e, { checkAt: '📡 公開したもの一覧' })}`)
     } finally {
       // 切り替わったあとは、いまの画面（別のプロジェクト）の「公開中」の印を、前の公開の終わりで下ろさない。
       if (!stale()) setPublishing(false)
@@ -553,6 +557,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         <p className="text-xs text-ink-muted leading-relaxed">
           サーバーで動き続けるアプリ（Node.js など）も公開できます。コンテナは不要で、Koto がまとめてアップロードします。データは国内。
         </p>
+        <p className="text-xs text-ink-muted leading-relaxed">{otherTargetPriceNote('hanamii')}</p>
         {getTargetProfile('hanamii').serviceUrl && (
           <p className="text-[11px] text-ink-muted">
             <a href={getTargetProfile('hanamii').serviceUrl} className="hover:underline">🌐 公式サイトを見る ↗</a>
@@ -626,10 +631,10 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
                 {detectedKeys.filter(k => !envs.some(e => e.key.trim() === k)).map(k => (
                   <button
                     key={k}
-                    onClick={() => setEnvs(prev => [...prev, { key: k, value: '', secret: guessSecret(k) }])}
+                    onClick={() => setEnvs(prev => [...prev, { key: k, value: '', secret: looksSecretName(k) }])}
                     className="text-[11px] font-mono px-2 py-1 rounded-md border border-line bg-overlay text-ink-secondary hover:border-sakura hover:text-ink"
                     title="この環境変数を追加"
-                  >＋ {k}{guessSecret(k) ? ' 🔒' : ''}</button>
+                  >＋ {k}{looksSecretName(k) ? ' 🔒' : ''}</button>
                 ))}
               </div>
             </div>
@@ -891,7 +896,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
                     <p className="text-xs text-ink-muted">取得中…</p>
                   ) : logsError ? (
                     <div className="rounded-lg border border-brand-red/60 bg-brand-red/10 p-2">
-                      <p className="text-xs text-brand-red select-text">{logsError}</p>
+                      <p className="text-xs text-brand-red select-text"><FailureLines text={logsError} /></p>
                     </div>
                   ) : logs && logs.length === 0 ? (
                     <p className="text-xs text-ink-muted">ログはまだありません</p>
@@ -938,7 +943,8 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
 //   生JSONを文言に混ぜない。ただし過去に原因究明で役立った実績があるため、折りたたみで残す）。
 // - demoted=true（名前衝突カード等の親切カードが主役のケース・所見17）ではメッセージ本体ごと折りたたみに降格する。
 function ErrorMessageBlock({ msg, detail, demoted, kind, target, ok = false }: { msg: string; detail: string; demoted: boolean; kind: AskAiFailureKind; target: string; ok?: boolean }) {
-  const copyText = detail ? `${msg}\n${detail}` : msg
+  // 失敗のときは、文・原文・Koto の版・日時を先頭に入れる（成功の知らせはそのまま）。API の応答（detail）はその後ろ。
+  const getCopyText = async () => { const head = ok ? msg : await failureCopyNow(msg); return maskForCopy(detail ? `${head}\n${detail}` : head) }
   // 判断2: 「🤖 AIに相談する」を既存の内容の下に添える。成功時（ok=true）には出さない——
   // このブロックは主に失敗専用（msg）だが、HANAMIIの「🔄 再起動」だけは成功メッセージも
   // 同じ欄（restartMsg）に流すため、ok を明示的に受け取る（既定 false=失敗）。
@@ -946,9 +952,9 @@ function ErrorMessageBlock({ msg, detail, demoted, kind, target, ok = false }: {
   const body = (
     <>
       <div className="flex items-start gap-2">
-        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">{msg}</p>
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text"><FailureLines text={msg} /></p>
         <button
-          onClick={() => { navigator.clipboard.writeText(copyText).catch(() => {}) }}
+          onClick={() => { void getCopyText().then(t => navigator.clipboard.writeText(t)).catch(() => {}) }}
           className="flex-none text-[11px] text-sakura hover:underline"
           title="メッセージをコピー"
         >コピー</button>
@@ -1056,8 +1062,8 @@ export function OpWarnings({ warnings }: { warnings: string[] }) {
     <div className="space-y-1.5">
       {warnings.map((w, i) => (
         <div key={i} className="rounded-lg border border-brand-yellow/70 bg-elevated p-2.5 flex items-start gap-2">
-          <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">⚠️ {opWarningText(w)}</p>
-          <CopyButton text={opWarningText(w)} title="知らせをコピー" />
+          <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">⚠️ <FailureLines text={opWarningText(w)} /></p>
+          <CopyButton text={opWarningText(w)} getText={() => failureCopyNow(opWarningText(w))} title="知らせをコピー" />
         </div>
       ))}
     </div>

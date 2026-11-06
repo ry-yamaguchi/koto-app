@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB,
-  registryCostNotice, ongoingCostNotice, registryDeleteLabel, registryDeleteHelp,
+  registryCheckInPanelNote, registryDeleteLabel, registryDeleteHelp,
   registryUnknownNotice, urlChangesOnTeardownNotice,
   remainingCostWarning, teardownRemainingWarnings, keptSharedRegistryNote, BUCKET_MONTHLY_YEN,
   costSummaryLines,
@@ -21,18 +21,23 @@ describe('料金の定義', () => {
   })
 })
 
-describe('公開直後の案内', () => {
-  it('金額と、アプリを消すだけでは止まらないことを必ず伝える', () => {
-    const msg = registryCostNotice('myapp')
-    expect(msg).toContain('220')
-    expect(msg).toContain('myapp')
-    expect(msg).toContain('AppRunアプリを消すだけでは止まりません')
+// 破棄でレジストリを消さなかった・消せたか確かめられなかった回の結びの一文。main の2か所（cloudTeardown.ts）が数字を直書きせず、この作り手を通る。
+describe('registryCheckInPanelNote（破棄の結果の結び）', () => {
+  it('既定の金額は REGISTRY_MONTHLY_YEN で、コントロールパネルでの確認と、月額が続くことを言う', () => {
+    expect(registryCheckInPanelNote()).toBe(
+      `さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額${REGISTRY_MONTHLY_YEN}円がかかり続けます）。`,
+    )
   })
 
-  it('レジストリ名が不明でも文言が壊れない', () => {
-    const msg = registryCostNotice(null)
-    expect(msg).toContain('220')
-    expect(msg).not.toContain('『』')
+  it('★ 金額を引数で上書きすると、その金額が出る（定数を直書きに戻すと落ちる）', () => {
+    const n = registryCheckInPanelNote({ registryYen: 999 })
+    expect(n).toContain('月額999円')
+    expect(n).not.toContain(`${REGISTRY_MONTHLY_YEN}円`)
+  })
+
+  it('記法・料金の言い換え・ブランドの禁句を混ぜない', () => {
+    expect(registryCheckInPanelNote()).not.toMatch(/\*\*|__|`|\[[^\]]+\]\([^)]+\)/)
+    expect(registryCheckInPanelNote()).not.toMatch(/無償|無料/)
   })
 })
 
@@ -62,8 +67,7 @@ describe('破棄時のレジストリ削除の選択', () => {
 // Markdown として解釈されることはない。強調は呼び出し側の CSS で行う決まりを、ここで固定する。
 describe('画面文言に Markdown 記法を混ぜない', () => {
   const texts: string[] = [
-    registryCostNotice('myapp'),
-    registryCostNotice(null),
+    registryCheckInPanelNote(),
     registryDeleteLabel('myapp'),
     registryDeleteLabel(null),
     registryDeleteHelp(true, true),
@@ -117,58 +121,6 @@ describe('破棄後に残る費用の警告', () => {
 
   it('全部消したなら警告しない（不要な不安を与えない）', () => {
     expect(remainingCostWarning({ deleteRegistry: true, registryName: 'myapp' })).toBeNull()
-  })
-})
-
-// ── 費用が見えること（2026-08-14 Ryosuke「費用は見える必要がある」）─────────
-// 保存場所を数えていなかったため、**合計を実際より495円少なく見せていた**。
-// 足し忘れは、書いていないのと同じくらい悪い。
-describe('止まらない費用の見せ方', () => {
-  it('保存場所が無ければ、レジストリの分だけ', () => {
-    const msg = ongoingCostNotice({ registryName: 'myapp', bucket: null })
-    expect(msg).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
-    expect(msg).not.toContain(`${BUCKET_MONTHLY_YEN}円`)
-  })
-
-  // ★ Ryosuke 指摘（2026-08-14）。3つのプロジェクトが1つの保存場所を共有していると、
-  //   それぞれで＋495円と出せば合計1,485円に見える。実際は495円。**足すと嘘になる。**
-  it('共有の保存場所は、合計に足さない（割れないため）', () => {
-    const msg = ongoingCostNotice({ registryName: 'myapp', bucket: { name: 'koto-data-x', shared: true } })
-    expect(msg).toContain(`月額${REGISTRY_MONTHLY_YEN}円`)
-    expect(msg).not.toContain(`月額${REGISTRY_MONTHLY_YEN + BUCKET_MONTHLY_YEN}円`)
-  })
-
-  it('共有でも、存在と単価は必ず伝える（黙ると消し忘れる）', () => {
-    const msg = ongoingCostNotice({ registryName: 'myapp', bucket: { name: 'koto-data-x', shared: true } })
-    expect(msg).toContain('koto-data-x')
-    expect(msg).toContain('共有')
-    expect(msg).toContain(`${BUCKET_MONTHLY_YEN}円`)
-  })
-
-  it('専用の保存場所は、このプロジェクトのものなので合計に足す', () => {
-    const msg = ongoingCostNotice({ registryName: 'myapp', bucket: { name: 'koto-myapp', shared: false } })
-    expect(msg).toContain(`月額${REGISTRY_MONTHLY_YEN + BUCKET_MONTHLY_YEN}円`)
-    expect(msg).toContain('koto-myapp')
-    expect(msg).not.toContain('共有')
-  })
-
-  // 495円に含まれるのは 100GiB・10万リクエスト・転送10GiB まで。超えれば増える
-  it('実額はコントロールパネルで確かめてもらう（月額は固定ではない）', () => {
-    for (const bucket of [null, { name: 'b', shared: true }, { name: 'b', shared: false }]) {
-      expect(ongoingCostNotice({ registryName: 'a', bucket })).toContain('コントロールパネル')
-    }
-  })
-
-  it('金額を文頭に置く（小さな文字なので読み飛ばされる）', () => {
-    expect(ongoingCostNotice({ registryName: 'a', bucket: { name: 'b', shared: true } }).startsWith('月額')).toBe(true)
-  })
-
-  it('止め方を必ず添える（放置すると課金が続く）', () => {
-    expect(ongoingCostNotice({ registryName: 'a', bucket: null })).toContain('破棄する')
-  })
-
-  it('画面文言に Markdown 記法を混ぜない', () => {
-    expect(ongoingCostNotice({ registryName: 'a', bucket: { name: 'b', shared: true } })).not.toMatch(/\*\*|`/)
   })
 })
 

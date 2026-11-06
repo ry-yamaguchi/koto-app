@@ -13,6 +13,7 @@
 
 import { PUBLISH_DIR, PUBLISH_DIR_LABEL, shouldMove } from './publishRoot'
 import { DATA_LAYER_LOCAL_DIR } from './objectStorage'
+import { wrapFailureText } from './failureDetail'
 
 /**
  * **公開はしないが、アプリと同じ根に付いていくもの**（実行時データ）。
@@ -156,8 +157,11 @@ export function migrateDone(plan: MigratePlan): string {
 
 /** 失敗したときに伝える文面。**途中で止めて戻したことを必ず言う**。 */
 export function migrateFailed(reason: string, restored: boolean): string {
-  const head = `⚠️ フォルダの整理に失敗しました（${reason}）。`
-  return restored
-    ? head + '\n途中まで移したものは元へ戻しました。プロジェクトはそのまま使えます。'
-    : head + '\n**元へ戻せませんでした。** 🕘 履歴から、この直前の状態に戻してください。'
+  // reason は日本語の文＋詳細（原文）のことがある。詳細は文の途中に挟まず、全体の最後の行に残す
+  return wrapFailureText(reason, t => {
+    const head = `⚠️ フォルダの整理に失敗しました（${t.replace(/。$/, '')}）。`
+    return restored
+      ? head + '\n途中まで移したものは元へ戻しました。プロジェクトはそのまま使えます。'
+      : head + '\n**元へ戻せませんでした。** 🕘 履歴から、この直前の状態に戻してください。'
+  })
 }

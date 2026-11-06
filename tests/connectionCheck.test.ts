@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { checkBilling, type BillingClient } from '../src/main/cloud/connectionCheck'
 import type { RequestResult } from '../src/main/cloud/client'
+import { splitFailureDetail } from '../src/shared/failureDetail'
 
 // roadmap #35: 接続テストの見せ方を、共用型と専有型で揃える。
 // 「請求（コスト）参照」チェックは共用型 cloud:testConnection と専有型 apprunDedicated:testConnection の
@@ -82,14 +83,50 @@ describe('checkBilling（純ロジック・偽クライアント）', () => {
     expect(r.message).toContain('請求情報を取得できません')
   })
 
-  it('例外が飛んでも ok:false で返す（呼び出し元を巻き込まない）', async () => {
+  it('例外が飛んでも ok:false で返す（呼び出し元を巻き込まない）。見分けられない失敗は原文のまま', async () => {
     const client: BillingClient = {
       getAuthStatus: async () => { throw new Error('network down') },
       getBillByContract: async () => ok({}),
     }
     const r = await checkBilling(client, 'is1a')
-    expect(r.ok).toBe(false)
-    expect(r.message).toContain('network down')
+    expect(r).toEqual({ ok: false, message: 'network down' })
+  })
+
+  // 通信そのものの失敗は、本物の fetch の例外の形で投げ、読み取りの日本語の文（完全一致）で返す。
+  it('★ 名前が引けない・時間切れ・途中で切れた・証明書は、日本語の1文で返す（auth-status の段でも bill の段でも）', async () => {
+    const offline = new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } })
+    const signal = AbortSignal.timeout(5)
+    await new Promise<void>(resolve => setTimeout(resolve, 40))
+    const timeout = signal.reason
+    const reset = new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } })
+    const tls = new TypeError('fetch failed', { cause: { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' } })
+    const T_OFFLINE = 'インターネットに接続できませんでした。接続を確かめてから、もう一度お試しください。'
+    const T_TIMEOUT = '時間内に返事がありませんでした。混み合っているかもしれません。少し待ってから、もう一度お試しください。'
+    const T_TLS = '安全な接続を確認できませんでした。社内ネットワークやセキュリティソフトの設定を確かめてください。'
+    // 文は詳細の行を除いて完全一致で比べ、詳細（原文）は別に固める
+    const sentenceOnly = (r: { ok: boolean; message?: string }) => ({ ...r, message: splitFailureDetail(r.message ?? '').text })
+    const details: string[] = []
+    for (const [thrown, expected] of [[offline, T_OFFLINE], [timeout, T_TIMEOUT], [reset, T_TIMEOUT], [tls, T_TLS]] as const) {
+      const atAuth: BillingClient = {
+        getAuthStatus: async () => { throw thrown },
+        getBillByContract: async () => ok({}),
+      }
+      const rAuth = await checkBilling(atAuth, 'is1a')
+      expect(sentenceOnly(rAuth)).toEqual({ ok: false, message: expected })
+      details.push(splitFailureDetail(rAuth.message ?? '').detail)
+      const atBill: BillingClient = {
+        getAuthStatus: async () => ok({ Account: { ID: 'acc-1' } }),
+        getBillByContract: async () => { throw thrown },
+      }
+      const rBill = await checkBilling(atBill, 'is1a')
+      expect(sentenceOnly(rBill)).toEqual({ ok: false, message: expected })
+      details.push(splitFailureDetail(rBill.message ?? '').detail)
+    }
+    // 4つの失敗 × 2つの段、すべてに原文の詳細が付く（認証の段でも請求の段でも）
+    expect(details).toHaveLength(8)
+    for (const d of details) expect(d).not.toBe('')
+    expect(details[0]).toBe('fetch failed / ENOTFOUND')
+    expect(details[6]).toContain('UNABLE_TO_VERIFY_LEAF_SIGNATURE')
   })
 })
 
@@ -119,7 +156,9 @@ describe('共用型・専有型とも checkBilling を呼んでいる（掟10: �
     const end = dedicatedIpc.indexOf('\n  })', at)
     const block = dedicatedIpc.slice(at, end)
     expect(block).toContain('new SakuraCloudClient({ credentials: auth, dryRun: true })')
-    expect(block).toContain('getLimits(auth)')
+    // 専有型API参照の失敗の文は、接続テストの口だけが日本語にする（作る・消す流れの中の getLimits は原文のまま）
+    expect(block).toContain('const limits = await getLimits(auth, undefined, { connectionTest: true })')
+    expect(block).not.toContain('getLimits(auth)')
     expect(block).toContain('ok: api.ok && registry.ok && billing.ok')
   })
 

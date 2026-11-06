@@ -51,8 +51,9 @@ process.on('unhandledRejection', onUnhandled)
 afterAll(() => { process.off('unhandledRejection', onUnhandled) })
 
 import { createDialogHarness, DIR } from './projectDeleteDialogHarness'
+import FailureLines from '../src/renderer/components/FailureLines'
 
-const { t, api, props, reset, clearCalls, settle, rerender, mount, open, els, textOf, paragraphs, mainButton, cancelButton, checkbox, backdrop, results, press, done, failed, cancelled, nothingToDo, withFacts, withTargets } = createDialogHarness(hooks, fake)
+const { t, api, props, reset, clearCalls, settle, rerender, mount, open, els, textOf, paragraphs, mainButton, cancelButton, checkbox, modal, requestClose, results, press, done, failed, cancelled, nothingToDo, withFacts, withTargets } = createDialogHarness(hooks, fake)
 beforeEach(reset)
 afterEach(() => {
   expect(api.alerts, 'プロジェクト削除の window.alert・window.confirm は 0 件').toEqual([])
@@ -339,15 +340,19 @@ describe('押す: 押している間（busy）と、思いがけない失敗', (
     expect(mainButton().props.disabled).toBe(true)
     expect(cancelButton().props.disabled).toBe(true)
     expect(checkbox().props.disabled).toBe(true)
-    backdrop().props.onClick()
-    expect(t.calls, '破棄の実行中は、背景を押しても閉じない（確認の答えを返せなくなる）').toEqual([])
+    requestClose('backdrop')
+    requestClose('escape')
+    expect(t.calls, '破棄の実行中は、背景を押しても Esc を押しても閉じない（確認の答えを返せなくなる）').toEqual([])
     release([failed('hanamii', 'HANAMII: 失敗')])
     await pressing; await settle(); rerender()
     expect(textOf(mainButton().props)).toBe('🗑 ゴミ箱に移動')
     expect(checkbox().props.disabled).toBe(false)
     clearCalls()
-    backdrop().props.onClick()
+    requestClose('backdrop')
     expect(t.calls).toEqual(['close'])
+    clearCalls()
+    requestClose('escape')
+    expect(t.calls, '終わったら Esc でも閉じられる').toEqual(['close'])
   })
 
   it('★★★ 押している間にもう一度押されても、二重に走らない（破棄は 1 回）', async () => {
@@ -369,23 +374,26 @@ describe('押す: 押している間（busy）と、思いがけない失敗', (
     fake.teardownResult = async () => { throw new Error('想定外') }
     await open(); await press()
     expect(t.calls).toEqual([])
-    expect(paragraphs()).toContain('⚠️ プロジェクトの削除の途中でエラーが発生しました: 想定外')
+    // 失敗の文は FailureLines が描く（文と、そのすぐ下の小さな詳細の行）。段落には ⚠️ だけが残る
+    expect(els(FailureLines).map(el => el.props.text)).toContain('プロジェクトの削除の途中でエラーが発生しました: 想定外')
     expect(mainButton().props.disabled).toBe(false)
     expect(textOf(mainButton().props)).toBe('🗑 ゴミ箱に移動')
-    const warn = els('p').find(el => textOf(el.props).includes('想定外'))!
+    const warn = els('p').find(el => textOf(el.props) === '⚠️ ')!
     expect(String(warn.props.className)).toContain('select-text')
     fake.teardownResult = async () => [done('hanamii')]
     await press()
     expect(t.calls).toEqual(MOVE)
     expect(paragraphs().some(p => p.includes('想定外'))).toBe(false)
+    expect(els(FailureLines)).toEqual([])
   })
 
-  it('★ キャンセルのボタンは onClose。ダイアログの中を押しても背景の onClick（閉じる）に届かない', async () => {
+  it('★ キャンセルのボタンは onClose。窓（Modal）の読み上げの印の id は本文の要素と対応し、背景・伝播止めは Modal に任せる', async () => {
     await open()
     expect(cancelButton().props.onClick).toBe(props.onClose)
-    const inner = hooks.rendered.find(el => el.type === 'div' && String(el.props.className).includes('bg-elevated'))!
-    let stopped = 0
-    inner.props.onClick({ stopPropagation: () => { stopped++ } })
-    expect(stopped).toBe(1)
+    expect(modal().props.labelledBy).toBe('project-delete-title')
+    expect(modal().props.describedBy).toBe('project-delete-note')
+    expect(hooks.rendered.some(el => el.type === 'div' && el.props.id === 'project-delete-title')).toBe(true)
+    expect(hooks.rendered.some(el => el.type === 'p' && el.props.id === 'project-delete-note')).toBe(true)
+    expect(hooks.rendered.some(el => el.type === 'div' && String(el.props.className).includes('fixed inset-0'))).toBe(false)
   })
 })

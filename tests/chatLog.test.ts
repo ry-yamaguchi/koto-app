@@ -14,6 +14,7 @@ import * as path from 'path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   foldChatLog,
+  foldChatLogDetailed,
   rewriteChatLog,
   appendChatLog,
   shouldRewrite,
@@ -127,6 +128,67 @@ describe('foldChatLog', () => {
 
   it('v2: ヘッダだけ → { messages: [], lines: [] }（null ではない）', () => {
     expect(foldChatLog('{"v":2}\n')).toEqual({ messages: [], lines: [] })
+  })
+})
+
+// 捨てた行の数と、書きかけで切れた末尾（読み込みが「読めた」と見なしてよいかの材料）
+describe('foldChatLogDetailed: 捨てた行を数える', () => {
+  const rec = (i: number, c: string) => `{"i":${i},"m":{"role":"user","content":"${c}"}}`
+
+  it('foldChatLog は messages と lines だけを返す（捨てた行の情報を足さない）', () => {
+    const text = '{"v":2}\n' + rec(0, 'a') + '\n{壊れた\n'
+    expect(foldChatLog(text)).toEqual({ messages: [{ role: 'user', content: 'a' }], lines: [JSON.stringify({ role: 'user', content: 'a' })] })
+  })
+
+  it('捨てた行が無ければ dropped 0・tornTail false（知らない種類のレコードとバージョン印の行は数えない）', () => {
+    const text = '{"v":2}\n' + rec(0, 'a') + '\n{"future":1}\n{"v":3}\n' + rec(1, 'b') + '\n'
+    const r = foldChatLogDetailed(text)
+    expect(r?.messages.length).toBe(2)
+    expect(r?.dropped).toBe(0)
+    expect(r?.tornTail).toBe(false)
+  })
+
+  it.each<[string, string, number]>([
+    ['JSON として読めない行', '{"v":2}\n' + rec(0, 'a') + '\n{壊れた\n' + rec(1, 'b') + '\n', 1],
+    ['オブジェクトでない行', '{"v":2}\n' + rec(0, 'a') + '\n[1]\n', 1],
+    ['穴を開ける番号の行', '{"v":2}\n' + rec(0, 'a') + '\n' + rec(5, 'x') + '\n', 1],
+    ['整数でない番号の行', '{"v":2}\n' + rec(0, 'a') + '\n{"i":1.5,"m":{}}\n', 1],
+    ['負の番号の行', '{"v":2}\n' + rec(0, 'a') + '\n{"i":-1,"m":{}}\n', 1],
+    ['不正な n の行', '{"v":2}\n' + rec(0, 'a') + '\n{"n":"3"}\n', 1],
+    ['壊れた行のあとの、穴で捨てられる行も数える', '{"v":2}\n{壊れた\n' + rec(1, 'b') + '\n' + rec(2, 'c') + '\n', 3],
+  ])('%s は dropped に数える', (_label, text, expected) => {
+    expect(foldChatLogDetailed(text)?.dropped).toBe(expected)
+  })
+
+  it('最後の行が切れていて、本文が改行で終わっていない → tornTail（捨てたのはその1行だけ）', () => {
+    const r = foldChatLogDetailed('{"v":2}\n' + rec(0, 'a') + '\n{"i":1,"m":{"role":"user","con')
+    expect(r?.dropped).toBe(1)
+    expect(r?.tornTail).toBe(true)
+  })
+
+  it('捨てた最後の行が改行で終わっている → tornTail ではない（書きかけではなく、壊れた行）', () => {
+    const r = foldChatLogDetailed('{"v":2}\n' + rec(0, 'a') + '\n{"i":1,"m":{"role":"user","con\n')
+    expect(r?.dropped).toBe(1)
+    expect(r?.tornTail).toBe(false)
+  })
+
+  it('切れた行が最後でない（その後ろに行がある）→ tornTail ではない', () => {
+    const r = foldChatLogDetailed('{"v":2}\n{"i":0,"m":{"role":"user","con\n' + rec(1, 'b') + '\n' + rec(2, 'c'))
+    expect(r?.dropped).toBe(3) // 壊れた行と、穴で捨てられる2行
+    expect(r?.tornTail).toBe(false)
+  })
+
+  it('最後の行が JSON として読めても捨てた（穴を開ける番号）→ 書きかけではないので tornTail ではない', () => {
+    const r = foldChatLogDetailed('{"v":2}\n' + rec(0, 'a') + '\n' + rec(5, 'far')) // 改行で終わっていない
+    expect(r?.dropped).toBe(1)
+    expect(r?.tornTail).toBe(false)
+  })
+
+  it('v1 は捨てる行が無い（dropped 0・tornTail false）。読めなければ null', () => {
+    const r = foldChatLogDetailed('[{"role":"user","content":"a"}]')
+    expect(r?.dropped).toBe(0)
+    expect(r?.tornTail).toBe(false)
+    expect(foldChatLogDetailed('[{oops')).toBeNull()
   })
 })
 

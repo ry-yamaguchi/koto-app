@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { listCloudKeys, getActiveCloudKeyId, activateCloudKey, CloudKeyInfo } from './CredentialsModal'
 import CopyButton from './CopyButton'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import type { ApprunDedicatedRecord } from '../../shared/publishMeta'
 import { mergeProjectMeta } from '../projectMeta'
 import { readLimits, readWorkerClasses, readLbClasses, readClusters, readNextCursor, type ApprunDedicatedPlanRow, type ZoneRow } from '../../shared/apprunDedicatedShapes'
@@ -22,6 +24,8 @@ import DedicatedTeardownSection from './DedicatedTeardownSection'
 import { notifyTeardownFinished } from '../teardown/flow'
 import { resumedTeardownView, type TeardownView } from '../../shared/teardownResult'
 import { ErrorBlock, ResumedNotesView } from './DedicatedOpsParts'
+// 置き換えた失敗の文の下に、原文（詳細）を小さく出す部品。
+import FailureLines from './FailureLines'
 // 2026-09-29（作者の決定 (1)(2)）: 公開のダイアログを閉じて開き直したとき、手順5・6・8の進み具合と結果（警告を含む）を
 // 続きから出す。記録は main が持つ（window.electronAPI.projectOps）。読み方・出し方の判断は純関数と
 // watchDedicatedOps（apprunDedicatedActions.ts）に集め、見張りの付け外しは useDedicatedOpsWatch（0.6.22 段階3B-6a。巨大ファイルの決まり）が持つ。
@@ -1039,7 +1043,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
     } catch (e: any) {
       if (genRef.current !== myGen) return
       setConn('ng'); setConnChecks(null)
-      setConnMsg(e?.message ?? String(e))
+      setConnMsg(failureText(e, { readOnly: true }))
     }
   }
 
@@ -1218,7 +1222,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       }
     } catch (e: any) {
       if (genRef.current !== myGen) return
-      const msg = e?.message ?? String(e)
+      const msg = failureText(e, { readOnly: true })
       setCheckError(msg)
       setFetchFailed(true)
       setConn('ng'); setConnMsg(msg)
@@ -1323,7 +1327,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       if (r.ok) { setAppStatus(r); setAppStatusError('') } else { setAppStatus(null); setAppStatusError(r.message) }
     } catch (e: any) {
       if (genRef.current !== myGen) return
-      setAppStatus(null); setAppStatusError(e?.message ?? String(e))
+      setAppStatus(null); setAppStatusError(failureText(e, { readOnly: true }))
     }
   }, [projectDir])
   const appRecord = appStatus?.record ?? null
@@ -1502,7 +1506,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       await refreshApprunState()
       await refreshAppStatus() // 手順8の表示条件（クラスタが揃ったか）と Let's Encrypt メールの有無を取り直す
     } catch (e: any) {
-      setCreateResult({ ok: false, stage: 'consent', message: e?.message ?? String(e) } as any)
+      setCreateResult({ ok: false, stage: 'consent', message: failureText(e, { checkAt: '📡 公開したもの一覧' }) } as any)
     } finally {
       setCreating(false)
       // 結果を出し終えた。この画面が始めた記録を「見た」として main へ伝える（出し終える前に閉じたら伝わらない
@@ -1615,7 +1619,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       if (r.ok) await refreshAppStatus()
       else setScaffoldError(r.errors.join(' / '))
     } catch (e: any) {
-      setScaffoldError(e?.message ?? String(e))
+      setScaffoldError(failureText(e))
     } finally { setScaffolding(false) }
   }
 
@@ -1641,7 +1645,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       '公開のあと、DNS の A レコードをロードバランサの IP に向ける必要があります',
     ].join('\n')
     try {
-      const ok = await confirm({ title: '専有型にアプリを公開します', body: confirmMessage, confirmLabel: '公開する', danger: false })
+      const ok = await confirm({ title: '専有型にアプリを公開します', body: confirmMessage, confirmLabel: '公開する', danger: false, initialFocus: 'cancel' })
       const outcome = await runPublishApp(
         { confirmMessage, input },
         {
@@ -1667,7 +1671,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       await refreshApprunState()
       await refreshAppStatus()
     } catch (e: any) {
-      setPublishResult({ ok: false, stage: 'consent', message: e?.message ?? String(e) } as any)
+      setPublishResult({ ok: false, stage: 'consent', message: failureText(e, { checkAt: '📡 公開したもの一覧' }) } as any)
     } finally {
       setPublishing(false)
       opsWatchRef.current?.endLocal('publish')
@@ -1695,7 +1699,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       setPublishResult(prev => (prev && prev.ok ? { ...prev, lbAddresses: r.lbAddresses } : prev))
       await refreshAppStatus()
     } catch (e: any) {
-      setLbRefreshError(e?.message ?? String(e))
+      setLbRefreshError(failureText(e, { readOnly: true }))
     } finally { setLbRefreshing(false) }
   }
   // 同じボタンを「公開中: …」の下と、公開結果の「IP を取得できませんでした」の下の2か所に出す（1つの定義を使い回す）。
@@ -1706,7 +1710,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
         disabled={panelBusy({ creating, tearingDown, publishing, lbRefreshing })}
         className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
       >{lbRefreshing ? 'IP を再取得しています…' : '🔄 IP を再取得'}</button>
-      {lbRefreshError && <span className="text-xs text-brand-yellow leading-relaxed select-text">{lbRefreshError}</span>}
+      {lbRefreshError && <span className="text-xs text-brand-yellow leading-relaxed select-text"><FailureLines text={lbRefreshError} /></span>}
     </div>
   )
 
@@ -1729,7 +1733,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       // 行の組み立ては純関数（siteCheckLines）が済ませている。画面は並べるだけ（掟10）。
       setSiteCheckResult(r.lines)
     } catch (e: any) {
-      setSiteCheckError(e?.message ?? String(e))
+      setSiteCheckError(failureText(e, { readOnly: true }))
     } finally { setSiteChecking(false) }
   }
   const siteCheckBlock = (
@@ -1742,7 +1746,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
         >{siteChecking ? '確かめています…' : '🔎 公開先と https を確かめる'}</button>
         <span className="text-[11px] text-ink-muted leading-relaxed">DNS を設定したあとに押してください。</span>
       </div>
-      {siteCheckError && <p className="text-xs text-brand-yellow leading-relaxed select-text">{siteCheckError}</p>}
+      {siteCheckError && <p className="text-xs text-brand-yellow leading-relaxed select-text"><FailureLines text={siteCheckError} /></p>}
       {siteCheckResult && (
         <ul className="space-y-0.5">
           {siteCheckResult.map((line, i) => (
@@ -1784,12 +1788,12 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       if (genRef.current !== myGen) return
       if (r.ok) { setTelemetryVariants(r.variants); setTelemetryActions(r.actions) } else {
         setTelemetryVariants(null); setTelemetryActions(null)
-        setTelemetryError(r.message ? `${r.message}${r.detail ? `（${r.detail}）` : ''}` : '状態を確認できませんでした')
+        setTelemetryError(r.message ? wrapFailureText(r.message, t => `${t}${r.detail ? `（${r.detail}）` : ''}`) : '状態を確認できませんでした')
       }
     } catch (e: any) {
       if (genRef.current !== myGen) return
       setTelemetryVariants(null); setTelemetryActions(null)
-      setTelemetryError(e?.message ?? String(e))
+      setTelemetryError(failureText(e, { readOnly: true }))
     } finally {
       setTelemetryLoading(false)
     }
@@ -1815,7 +1819,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
           await refreshTelemetry()
           return
         }
-        setTelemetryError(r.message ? `${r.message}${r.detail ? `（${r.detail}）` : ''}` : '設定できませんでした')
+        setTelemetryError(r.message ? wrapFailureText(r.message, t => `${t}${r.detail ? `（${r.detail}）` : ''}`) : '設定できませんでした')
         return
       }
       setTelemetryConfirmingKind(null)
@@ -2037,7 +2041,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
         <p className="text-[11px] text-ink-muted leading-relaxed">APIキーを登録すると、制限・プラン・既存クラスタの件数を自動で取得します（何も作らず、何も変更しません）。</p>
 
         {checkError && (
-          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all select-text">{checkError}</p>
+          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all select-text"><FailureLines text={checkError} /></p>
         )}
 
         {(limits || limitsError) && (
@@ -2828,7 +2832,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
                   })()}
                   {publishResult.warnings && publishResult.warnings.length > 0 && (
                     <ul className="text-xs text-brand-yellow leading-relaxed list-disc pl-5">
-                      {publishResult.warnings.map((w, i) => <li key={i} className="select-text">{w}</li>)}
+                      {publishResult.warnings.map((w, i) => <li key={i} className="select-text"><FailureLines text={w} /></li>)}
                     </ul>
                   )}
                 </>

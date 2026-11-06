@@ -14,6 +14,8 @@
 //   (4) POST /repos/{o}/{r}/git/commits               … commit作成（{message, tree, parents:[親]}）
 //   (5) PATCH /repos/{o}/{r}/git/refs/heads/main       … refをcommitへ更新
 
+import { failureText } from '../../shared/failureText'
+
 /** GitHub API のベースURL。 */
 export const GITHUB_API_BASE = 'https://api.github.com'
 
@@ -137,7 +139,8 @@ export class GithubClient {
       }
       return { ok: false, status: r.status, message: `接続に失敗しました（HTTP ${r.status}）` }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      // 回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。見分けられない失敗は原文のまま。
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   }
 
@@ -204,7 +207,7 @@ export class GithubClient {
 
       return { ok: true, commitSha }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { checkAt: 'GitHub のリポジトリ' }) }
     }
   }
 

@@ -76,7 +76,7 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
 
   it('PUBLISH_DIR を含むかどうかで、いま居る側を判定している（手で並べ直さず一元定義を使う）', () => {
     const s = sidebarSrc()
-    expect(s).toContain("import { PUBLISH_DIR, PUBLISH_DIR_LABEL } from '../../shared/publishRoot'")
+    expect(s).toContain("import { PUBLISH_DIR } from '../../shared/publishRoot'")
     expect(s).toContain('function isInPublishDir(')
     expect(s).toContain('return rel === PUBLISH_DIR || rel.startsWith(`${PUBLISH_DIR}/`)')
   })
@@ -89,9 +89,10 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
   // W-23（2026-09-27 決定・別案）: dest はメニューを開いた瞬間に isMoveTargetPublished が
   // 決めた向き（published）の逆で決まる。isInPublishDir 単体では「public/ が無いプロジェクト」の
   // 直下ファイルを判定し損ねるため、moveEntry 内で isInPublishDir を再計算する形はやめた。
-  it('moveEntry の dest はいま居る側（isMoveTargetPublished が決めた published）から決まる（固定値にしていない）', () => {
-    const s = sidebarSrc()
-    expect(s).toContain("const dest: 'materials' | 'publish' = published ? 'materials' : 'publish'")
+  it('moveEntry の dest はいま居る側（isMoveTargetPublished が決めた published）から決まる（固定値にしていない）。決めるのは fileEntryOps.ts の moveFileEntry', () => {
+    const ops = stripped('src/renderer/fileEntryOps.ts')
+    expect(ops).toContain("const dest: 'materials' | 'publish' = published ? 'materials' : 'publish'")
+    expect(sidebarSrc()).not.toContain("const dest: 'materials' | 'publish'")
   })
 
   it('ディレクトリには移動項目を出さない（show: !entry.isDir）', () => {
@@ -101,46 +102,42 @@ describe('Sidebar.tsx: ファイルの移動（roadmap #9②）の右クリッ�
     expect(s.slice(at, at + 120)).toContain('show: !entry.isDir,')
   })
 
-  // 2026-09-11（判断9）: window.confirm → ConfirmModal（useConfirm）。CLAUDE.md 掟5改定。
-  it('moveEntry は ConfirmModal（useConfirm の confirm）で確認してから electronAPI.fs.moveFiles を呼ぶ', () => {
+  // 2026-09-11（判断9）: window.confirm → ConfirmModal（useConfirm）。確認の中身は fileEntryOps.ts の moveFileEntry（0.6.26）。
+  it('moveEntry は moveFileEntry へ confirm を口として渡す。moveFileEntry は聞く → ConfirmModal の確認 → electronAPI.fs.moveFiles の順', () => {
     const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
+    const at = s.indexOf('const moveEntry = (entry: FileEntry, published: boolean) => moveFileEntry(entry, published, {')
     expect(at).toBeGreaterThan(-1)
-    const body = s.slice(at, at + 1200)
-    expect(body).toContain('const ok = await confirm({')
+    expect(s.slice(at, s.indexOf('\n  })\n', at))).toContain('\n    confirm,\n')
+    const ops = stripped('src/renderer/fileEntryOps.ts')
+    const body = ops.slice(ops.indexOf('export async function moveFileEntry('))
+    expect(body).toContain('const ok = await deps.confirm({')
     expect(body).toContain("title: 'ファイルを移動します',")
     expect(body).toContain('if (!ok) return')
-    expect(body).toContain('window.electronAPI.fs.moveFiles(currentDir, [rel], dest)')
-    // confirm より後で実行している（確認を素通りしていない）
-    expect(body.indexOf('const ok = await confirm({')).toBeLessThan(body.indexOf('window.electronAPI.fs.moveFiles('))
+    expect(body.indexOf('deps.moveCheck(')).toBeLessThan(body.indexOf('const ok = await deps.confirm({'))
+    expect(body.indexOf('const ok = await deps.confirm({')).toBeLessThan(body.indexOf('deps.moveFiles('))
   })
 
   it('moveEntry は window.confirm へ退行していない（2026-09-11 CLAUDE.md 掟5改定: 確認は ConfirmModal で出す）', () => {
-    const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
-    expect(at).toBeGreaterThan(-1)
-    const body = s.slice(at, at + 1200)
-    expect(body).not.toContain('window.confirm(')
+    expect(sidebarSrc()).not.toContain('window.confirm(')
+    expect(stripped('src/renderer/fileEntryOps.ts')).not.toContain('window.confirm(')
   })
 
   it('Sidebar は useConfirm を import し、confirmElement を描画している', () => {
     const s = sidebarSrc()
     expect(s).toContain("import { useConfirm } from '../useConfirm'")
-    expect(s).toContain('const { confirm, element: confirmElement } = useConfirm()')
+    expect(s).toContain('const { confirm, notify, element: confirmElement } = useConfirm()')
     expect(s).toContain('{confirmElement}')
   })
 
   it('moveEntry はディレクトリを弾く（多層防御。ContextMenu 側のフィルタだけに頼らない）', () => {
-    const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
-    expect(s.slice(at, at + 200)).toContain('if (!currentDir || entry.isDir) return')
+    const ops = stripped('src/renderer/fileEntryOps.ts')
+    const at = ops.indexOf('export async function moveFileEntry(')
+    expect(ops.slice(at, at + 600)).toContain('if (!dir || entry.isDir) return')
   })
 
   it('成功後にファイルツリーを更新している（既存の autoRefresh の仕組みを使う）', () => {
-    const s = sidebarSrc()
-    const at = s.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
-    const body = s.slice(at, at + 1500)
-    expect(body).toContain('setAutoRefresh(n => n + 1)')
+    expect(sidebarSrc()).toContain('refreshTree: () => setAutoRefresh(n => n + 1),')
+    expect(stripped('src/renderer/fileEntryOps.ts')).toContain('deps.refreshTree()')
   })
 })
 

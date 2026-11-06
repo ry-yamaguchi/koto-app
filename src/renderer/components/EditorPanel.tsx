@@ -2,7 +2,11 @@ import React, { useRef, useEffect, useState } from 'react'
 import Editor, { OnMount } from '@monaco-editor/react'
 import '../monacoSetup'
 import type { OpenFile, Theme } from '../App'
+import type { SaveResult } from '../editorTabs'
+import { previewTab } from '../editorTabs'
+import { syncBandOf, runBandAction, RELOAD_CONFIRM, type BandAction } from '../editorSyncBand'
 import SakuraLogo from './SakuraLogo'
+import EditorSyncBand from './EditorSyncBand'
 import { useConfirm } from '../useConfirm'
 import { runCloseUnsaved } from '../confirmedActions'
 
@@ -11,7 +15,14 @@ interface Props {
   activeFile: string | null
   onSetActive: (path: string) => void
   onClose: (path: string) => void
-  onSave: (path: string, content: string) => void
+  /** 保存。書いたか、書かずに止めた理由かを返す（プレビュー前の保存がこれを待つ）。 */
+  onSave: (path: string, content: string) => Promise<SaveResult>
+  /** 帯の「外の内容を読み込む」（確認は済んでいる）。 */
+  onReloadFromDisk: (path: string) => Promise<unknown>
+  /** 帯の「自分の編集を保存する」。 */
+  onKeepMine: (path: string) => Promise<unknown>
+  /** 帯の「自分の内容で作り直す」。 */
+  onRecreate: (path: string) => Promise<unknown>
   onContentChange: (path: string, content: string) => void
   apiKey: string
   theme: Theme
@@ -115,10 +126,12 @@ function ImagePreview({ file }: { file: OpenFile }) {
   )
 }
 
-export default function EditorPanel({ openFiles, activeFile, onSetActive, onClose, onSave, onContentChange, theme }: Props) {
+export default function EditorPanel({ openFiles, activeFile, onSetActive, onClose, onSave, onReloadFromDisk, onKeepMine, onRecreate, onContentChange, theme }: Props) {
   const editorRef = useRef<any>(null)
   const monacoRef = useRef<any>(null)
   const { confirm, element: confirmElement } = useConfirm()
+  // 帯のボタンの操作中（二重に押させない）
+  const [bandBusy, setBandBusy] = useState(false)
 
   const applyTheme = (monaco: any, t: Theme) => {
     monaco.editor.defineTheme('sakura-dark', DARK_THEME)
@@ -144,11 +157,40 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
   const activeFileObj = openFiles.find(f => f.path === activeFile)
   const isPreviewable = !!activeFileObj && /\.html?$/i.test(activeFileObj.name)
 
-  // 編集中のHTMLを既定ブラウザでプレビュー（未保存なら先に保存してから開く）
+  // 編集中のHTMLを既定ブラウザでプレビュー（未保存なら先に保存し、書けたのを待ってから開く。止まったら開かない）
   const previewInBrowser = async () => {
     if (!activeFileObj) return
-    if (activeFileObj.isDirty) onSave(activeFileObj.path, activeFileObj.content)
-    await window.electronAPI.shell.openPath(activeFileObj.path)
+    await previewTab(activeFileObj, { save: onSave, open: p => window.electronAPI.shell.openPath(p) })
+  }
+
+  // タブを閉じる。未保存の編集があれば、捨ててよいか確かめてから閉じる（タブの × と帯の「閉じる」が同じ道を通る）
+  const requestClose = async (file: OpenFile) => {
+    if (!file.isDirty) { onClose(file.path); return }
+    await runCloseUnsaved(
+      file.path,
+      `「${file.name}」を保存せずに閉じますか？`,
+      {
+        confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
+        close: (path) => onClose(path),
+      },
+    )
+  }
+
+  // 帯のボタン。確認が要るもの（外の内容を読み込む）は runBandAction の中で確認を通る
+  const handleBandAction = async (file: OpenFile, action: BandAction) => {
+    setBandBusy(true)
+    try {
+      await runBandAction(file, action, {
+        confirmReload: (body) => confirm({ title: RELOAD_CONFIRM.title, body, confirmLabel: RELOAD_CONFIRM.confirmLabel, danger: true }),
+        reload: onReloadFromDisk,
+        keepMine: onKeepMine,
+        recreate: onRecreate,
+        save: onSave,
+        close: requestClose,
+      })
+    } finally {
+      setBandBusy(false)
+    }
   }
 
   if (openFiles.length === 0) {
@@ -189,6 +231,9 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
             >
               {active && <span className="absolute top-0 left-0 right-0 h-0.5 sakura-gradient" />}
               <span className="truncate">{file.name}</span>
+              {file.syncMark && (
+                <span title={syncBandOf(file.syncMark)?.message} className="text-brand-yellow flex-none">⚠️</span>
+              )}
               {file.isDirty && (
                 <span
                   title="未保存の変更があります"
@@ -198,15 +243,7 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
               <button
                 onClick={async e => {
                   e.stopPropagation()
-                  if (!file.isDirty) { onClose(file.path); return }
-                  await runCloseUnsaved(
-                    file.path,
-                    `「${file.name}」を保存せずに閉じますか？`,
-                    {
-                      confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
-                      close: (path) => onClose(path),
-                    },
-                  )
+                  await requestClose(file)
                 }}
                 title={file.isDirty ? '未保存のまま閉じる' : '閉じる'}
                 className={`text-ink-muted hover:text-ink flex-none w-4 h-4 items-center justify-center rounded hover:bg-overlay transition-all ${
@@ -227,6 +264,16 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
          </button>
        )}
       </div>
+
+      {/* 保存を止めたタブの帯（外で書き換わった・消えた・読めない） */}
+      {activeFileObj && (
+        <EditorSyncBand
+          key={activeFileObj.path}
+          mark={activeFileObj.syncMark}
+          busy={bandBusy}
+          onAction={action => { void handleBandAction(activeFileObj, action) }}
+        />
+      )}
 
       {/* Editor */}
       <div className="flex-1 overflow-hidden">

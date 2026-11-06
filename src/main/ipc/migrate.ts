@@ -12,6 +12,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { planMigrate, needsMigration, shouldOfferMigration, withholdFromMove, type Entry, type MigratePlan } from '../../shared/migratePlan'
+import { failureText } from '../../shared/failureText'
 import { isPublished } from '../../shared/publishExclude'
 import { snapshotBeforeChange } from '../backup/store'
 import { verdictOf } from './fsTrash'
@@ -107,7 +108,7 @@ export function registerMigrateHandlers(): void {
       }
       // 空になったフォルダは片づける（残すと「移行済み」と誤判定される）
       try { if (fs.readdirSync(dest).length === 0) fs.rmdirSync(dest) } catch { /* ignore */ }
-      return { ok: false, moved: [], restored, snapshotOk, message: e?.message ?? String(e) }
+      return { ok: false, moved: [], restored, snapshotOk, message: failureText(e) }
     }
   })
 }

@@ -35,7 +35,7 @@ function wired(confirmAnswer = true) {
     trash: p => trashFs(p, { home, trashItem: async abs => { log.trashed.push(abs) } }),
     confirm: async () => { log.confirms++; return confirmAnswer },
     openProjectDelete: d => { log.opened.push(d) },
-    alert: m => { log.alerts.push(m) },
+    notify: o => { log.alerts.push(o.body) },
     announceDeleted: p => { log.announced.push(p) },
   }
   return { log, deps }

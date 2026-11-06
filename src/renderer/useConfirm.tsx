@@ -30,7 +30,11 @@
 // 'confirm' → true・'cancel' → false を固定する。
 
 import { useCallback, useState } from 'react'
-import ConfirmModal from './components/ConfirmModal'
+import ConfirmModal, { type ConfirmInitialFocus } from './components/ConfirmModal'
+import NotifyModal from './components/NotifyModal'
+import { createNotifyQueue, type NotifyOptions } from './notifyQueue'
+
+export type { NotifyOptions }
 
 export interface ConfirmOptions {
   title: string
@@ -38,6 +42,11 @@ export interface ConfirmOptions {
   confirmLabel?: string
   cancelLabel?: string
   danger?: boolean
+  /**
+   * 最初にフォーカスするボタン。赤い確認（danger）は常にキャンセル。赤くなくてもお金に触れる確認は 'cancel' を渡す
+   * （Claude の同意・前のバージョンへ戻す・専有型の公開）。無ければ実行。useConfirmChoices の confirm も同じ型を使う。
+   */
+  initialFocus?: ConfirmInitialFocus
 }
 
 type PendingConfirm = ConfirmOptions & { resolve: (value: boolean) => void }
@@ -52,8 +61,20 @@ export function resolveConfirm(choice: 'confirm' | 'cancel'): boolean {
   return choice === 'confirm'
 }
 
+// ── notify（OK が1つだけの通知。window.alert の代わり・0.6.26）──────────────────────────
+// 確認（confirm）の `pending` は1つ（呼び手が答えを await してから次へ進む）。通知は続けて呼ばれうるので、
+// 待ち行列（notifyQueue.ts）に積み、前の通知が閉じるまで次を出さない（先の Promise を取りこぼさない）。
+// useConfirmChoices の `pending` も1つだが、そちらは notify を出さず、使い手（破棄とプロジェクトの削除）は
+// 確認を await してから次へ進む直列の流れで、続けて2つ出さない。ここでは直さない。
+
 export function useConfirm() {
   const [pending, setPending] = useState<PendingConfirm | null>(null)
+  const [notice, setNotice] = useState<NotifyOptions | null>(null)
+  // 待ち行列は初回の1つを使い回す（useState の初期化関数で作る）
+  const [queue] = useState(() => createNotifyQueue(setNotice))
+
+  const notify = useCallback((opts: NotifyOptions): Promise<void> => queue.push(opts), [queue])
+  const closeNotice = useCallback(() => queue.dismiss(), [queue])
 
   const confirm = useCallback((opts: ConfirmOptions): Promise<boolean> => {
     return new Promise<boolean>(resolve => {
@@ -69,6 +90,7 @@ export function useConfirm() {
   }, [])
 
   const element = (
+    <>
     <ConfirmModal
       open={pending !== null}
       title={pending?.title ?? ''}
@@ -76,10 +98,19 @@ export function useConfirm() {
       confirmLabel={pending?.confirmLabel}
       cancelLabel={pending?.cancelLabel}
       danger={pending?.danger}
+      initialFocus={pending?.initialFocus}
       onConfirm={() => answer('confirm')}
       onCancel={() => answer('cancel')}
     />
+    <NotifyModal
+      open={notice !== null}
+      title={notice?.title ?? ''}
+      body={notice?.body ?? ''}
+      okLabel={notice?.okLabel}
+      onClose={closeNotice}
+    />
+    </>
   )
 
-  return { confirm, element }
+  return { confirm, notify, element }
 }

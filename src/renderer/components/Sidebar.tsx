@@ -1,14 +1,17 @@
-import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react'
 import SakuraLogo from './SakuraLogo'
 import ProjectDeleteDialog from './ProjectDeleteDialog'
 import { useFileDrag } from '../hooks/useFileDrag'
-import { isPublished, isPublishedTop, MATERIALS_DIR } from '../../shared/publishExclude'
-import { PUBLISH_DIR, PUBLISH_DIR_LABEL } from '../../shared/publishRoot'
+import { isPublished, isPublishedTop } from '../../shared/publishExclude'
+import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { isSubmitEnter } from '../keyInput'
 import { subscribe, getSnapshot, loadingKeys, getTurn } from '../chatTurnRegistry'
 import { getWorkspaceDir } from '../workspace'
 import { useConfirm } from '../useConfirm'
-import { deleteFileEntry, submitFileNameDialog, announceFileDeleted } from '../fileEntryOps'
+import { createHintTimer } from '../hintTimer'
+import { deleteFileEntry, moveFileEntry, moveConfirmBody, submitFileNameDialog, announceFileDeleted } from '../fileEntryOps'
+import Modal from '../ui/Modal'
+import { attachMenuDismiss } from '../ui/menuDismiss'
 
 interface FileEntry {
   name: string
@@ -131,19 +134,7 @@ export function isMoveTargetPublished(args: {
   return isInPublishDir(currentDir, entryPath)
 }
 
-/**
- * ファイル移動の確認文（W-23・2026-09-27）。
- *
- * `willCreatePublishDir`（この移動で初めて `public/` ができる＝これまで「公開されるもの」に
- * 並んでいたほかの直下ファイルが一斉に「公開されないもの」へ移る）ときだけ、その影響を
- * 事前に伝える一文を足す。画面の文は素のテキスト（掟5・Markdown記法は使わない）。
- */
-export function moveConfirmBody(entryName: string, destLabel: string, willCreatePublishDir: boolean): string {
-  const warn = willCreatePublishDir
-    ? `「${destLabel}」フォルダができるため、いま「公開されるもの」に並んでいるほかのファイルは公開されなくなります。`
-    : ''
-  return `「${entryName}」を「${destLabel}」へ移動します。${warn}よろしいですか？\n\n🕘 元に戻すで戻せます。`
-}
+export { moveConfirmBody }
 
 function ContextMenu({ menu, onClose, onRename, onDelete, onNewFile, onMove }: {
   menu: MenuState
@@ -155,12 +146,7 @@ function ContextMenu({ menu, onClose, onRename, onDelete, onNewFile, onMove }: {
 }) {
   const { entry, published } = menu
   const isHtml = /\.html?$/i.test(entry.name)
-  useEffect(() => {
-    const close = () => onClose()
-    window.addEventListener('click', close)
-    window.addEventListener('contextmenu', close)
-    return () => { window.removeEventListener('click', close); window.removeEventListener('contextmenu', close) }
-  }, [onClose])
+  useEffect(() => attachMenuDismiss(window, onClose), [onClose])
 
   // roadmap #9②「ファイルの移動手段が無い」: 公開する／しないを手で切り替える項目。
   // 出し分けは isMoveTargetPublished が決めた「いま公開される側にいるか」（W-23）に従う。
@@ -315,6 +301,9 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   useSyncExternalStore(subscribe, getSnapshot)
   const loadingProjects = new Set(loadingKeys())
   const [menu, setMenu] = useState<MenuState | null>(null)
+  // 右クリックのメニューを閉じる関数は描き直しで変えない。変わると、メニューの閉じる見張りが描き直しのたびに付け直され、
+  // ほかの見張り（プロジェクトの切り替えの click）が描き直させたクリックを取りこぼす
+  const closeMenu = useCallback(() => setMenu(null), [])
   const [autoRefresh, setAutoRefresh] = useState(0)
   /**
    * プロジェクト直下に `public/` があるか（W-23・2026-09-27）。
@@ -329,6 +318,8 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   const [workspaceProjects, setWorkspaceProjects] = useState<string[]>([])
   const [recents, setRecents] = useState<string[]>(loadRecents)
   const [dropHint, setDropHint] = useState<string | null>(null)
+  // 案内は12秒で消す。続けて出たときは前の時計を止める（hintTimer.ts）
+  const showDropHint = useMemo(() => createHintTimer(setDropHint, 12000), [])
   const treeDrag = useFileDrag()
   const [nameDialog, setNameDialog] = useState<{ mode: 'new' | 'rename'; targetPath: string; initial: string } | null>(null)
   const [nameInput, setNameInput] = useState('')
@@ -339,7 +330,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
   //   代わりに NewProjectModal で「名前は後から変更できない」旨を作成時に明示する。
   const [confirmProjDelete, setConfirmProjDelete] = useState<string | null>(null)
   /** ファイルの移動確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。 */
-  const { confirm, element: confirmElement } = useConfirm()
+  const { confirm, notify, element: confirmElement } = useConfirm()
 
   // 開いたプロジェクトを「最近」に記録
   useEffect(() => {
@@ -456,8 +447,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       } catch { /* 1件の失敗で全体を止めない */ }
     }
     if (imported.length) {
-      setDropHint(`${imported.join(', ')} を取り込みました。チャットで「${imported[0]} を使って」と伝えるとAIがページに組み込めます`)
-      setTimeout(() => setDropHint(null), 12000)
+      showDropHint(`${imported.join(', ')} を取り込みました。チャットで「${imported[0]} を使って」と伝えるとAIがページに組み込めます`)
     }
   }
 
@@ -468,52 +458,23 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     trash: p => window.electronAPI.fs.trash(p),
     confirm,
     openProjectDelete: dir => setConfirmProjDelete(dir),
-    alert: m => window.alert(m),
+    notify,
     announceDeleted: announceFileDeleted,
   })
 
-  /**
-   * roadmap #9②「ファイルの移動手段が無い」: 手で公開する／しない側を切り替える。
-   * 移動先は、右クリックを開いた瞬間に isMoveTargetPublished が決めた向き（`published`）の逆
-   * （公開される側にいれば素材置き場へ、それ以外は公開されるものへ・W-23）。
-   * ディレクトリは ContextMenu 側で項目自体を出していないが、ここでも防御的に弾く（多層防御）。
-   */
-  const moveEntry = async (entry: FileEntry, published: boolean) => {
-    if (!currentDir || entry.isDir) return
-    const prefix = currentDir.endsWith('/') ? currentDir : `${currentDir}/`
-    if (!entry.path.startsWith(prefix)) return // 想定外（プロジェクト外のパス）は何もしない
-    const rel = entry.path.slice(prefix.length)
-    const dest: 'materials' | 'publish' = published ? 'materials' : 'publish'
-    const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
-    const destLabel = dest === 'publish' ? PUBLISH_DIR_LABEL : MATERIALS_DIR
-    // public/ がまだ無いプロジェクトで初めて「公開するものへ移動」すると、public/ ができて
-    // ほかの直下ファイルが一斉に「公開されないもの」へ移る（isPublishedTop の仕様）。
-    // その影響を移動前に伝える（W-23 別案の確認文）。
-    const willCreatePublishDir = dest === 'publish' && !hasPublishDir
-    const ok = await confirm({
-      title: 'ファイルを移動します',
-      body: moveConfirmBody(entry.name, destLabel, willCreatePublishDir),
-      confirmLabel: '移動する',
-    })
-    if (!ok) return
-    try {
-      const r = await window.electronAPI.fs.moveFiles(currentDir, [rel], dest)
-      if (r.ok) {
-        setAutoRefresh(n => n + 1) // ファイルツリーを更新（fs.watchDir の自動反映を待たず、その場で反映する）
-        const renamedTo = r.renamed?.find(x => x.from === rel)?.to
-        // 開いているタブが古いパスを指したままだと、次のオートセーブで消したはずのファイルを
-        // 復活させてしまう（削除・名前変更と同じ理由でここも通知する）。
-        window.dispatchEvent(new CustomEvent('sakura:file-renamed', {
-          detail: { from: entry.path, to: `${currentDir}/${destDirName}/${renamedTo ?? entry.name}` },
-        }))
-        if (renamedTo) window.alert(`「${entry.name}」と同じ名前が移動先にあったため、「${renamedTo}」にしました。`)
-      } else {
-        window.alert(`移動できませんでした: ${r.message ?? '原因不明'}`)
-      }
-    } catch (e: any) {
-      window.alert(`移動できませんでした: ${e?.message ?? e}`)
-    }
-  }
+  // ファイルの移動（roadmap #9②）: 手で公開する／しない側を切り替える。先に main へ聞く（project.moveCheck）→ 断りなら通知だけ → 確認 → 移す。
+  // 移動先の向き・順序・文は fileEntryOps.ts（moveFileEntry）。
+  const moveEntry = (entry: FileEntry, published: boolean) => moveFileEntry(entry, published, {
+    projectDir: currentDir,
+    hasPublishDir,
+    moveCheck: (d, files, dest) => window.electronAPI.fs.moveCheck(d, files, dest),
+    moveFiles: (d, files, dest) => window.electronAPI.fs.moveFiles(d, files, dest),
+    confirm,
+    notify,
+    refreshTree: () => setAutoRefresh(n => n + 1),
+    announceRenamed: (from, to) => { window.dispatchEvent(new CustomEvent('sakura:file-renamed', { detail: { from, to } })) },
+    showHint: showDropHint,
+  })
 
   // プロジェクトの削除（フォルダごとゴミ箱へ移動・Finderのゴミ箱から復元可能）の確認ダイアログは ProjectDeleteDialog（開いたときの読み込み・
   // 破棄・フォルダを移す操作はそこ）。ここに残すのは、フォルダを移したあとの後始末だけ。
@@ -559,7 +520,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       writeFile: (p, c) => window.electronAPI.fs.writeFile(p, c),
       openFile: onOpenFile,
       announceRenamed: (from, to) => { window.dispatchEvent(new CustomEvent('sakura:file-renamed', { detail: { from, to } })) },
-      alert: m => window.alert(m),
+      notify,
     })
     if (ok) setNameDialog(null)
   }
@@ -810,7 +771,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       {menu && (
         <ContextMenu
           menu={menu}
-          onClose={() => setMenu(null)}
+          onClose={closeMenu}
           onRename={entry => openNameDialog('rename', entry)}
           onDelete={entry => deleteEntry(entry)}
           onNewFile={entry => openNameDialog('new', entry)}
@@ -829,24 +790,20 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
       )}
 
       {nameDialog && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-          onClick={() => setNameDialog(null)}
+        // 枠は ui/Modal（0.6.26）。Esc は変換中なら受けない（変換の取り消しで窓まで閉じない）。背景クリック・キャンセルと同じく閉じるだけ。
+        <Modal
+          onRequestClose={() => setNameDialog(null)} labelledBy="sidebar-name-dialog-title" backdropClassName="bg-black/30"
+          panelClassName="bg-elevated border border-line rounded-xl p-4 w-72"
         >
-          <div
-            className="bg-elevated border border-line rounded-xl p-4 w-72"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="text-[13px] font-semibold text-ink mb-2">
+            <div id="sidebar-name-dialog-title" className="text-[13px] font-semibold text-ink mb-2">
               {nameDialog.mode === 'rename' ? '名前の変更' : '新規ファイル'}
             </div>
             <input
-              autoFocus
+              data-autofocus
               value={nameInput}
               onChange={e => setNameInput(e.target.value)}
               onKeyDown={e => {
                 if (isSubmitEnter(e)) { e.preventDefault(); submitNameDialog() }
-                else if (e.key === 'Escape') { e.preventDefault(); setNameDialog(null) }
               }}
               className="w-full px-2.5 py-1.5 rounded-md bg-surface border border-line text-[13px] text-ink focus:outline-none focus:border-sakura"
               placeholder={nameDialog.mode === 'new' ? '例: index.html' : ''}
@@ -861,8 +818,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
                 className="px-3 py-1.5 rounded-md text-[12px] sakura-gradient text-white hover:opacity-90 transition-opacity"
               >OK</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
       {confirmElement}
     </div>

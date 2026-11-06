@@ -11,7 +11,7 @@
 //   ・押したとき … pressProjectDelete 1 つ（経路は前回の phase で決まる。ここに分岐を書かない）。結果は run に入れ、ProjectDeleteResults が描く。
 //     フォルダを移してよいかの判断は projectDeleteVerdict（失敗・やめた・残りが始まっていない公開先があれば移さない）。
 //     残ったものがある回は見せてから、もう一度押したときに移す。window.alert・window.confirm は使わない。
-//   ・背景を押しても、押したあとの処理（破棄・フォルダを移す）が終わるまで閉じない。確認（ConfirmModal）の要素をこのダイアログが持つので、
+//   ・背景を押しても Esc を押しても（窓は ui/Modal。閉じてよいかはここで決める）、押したあとの処理（破棄・フォルダを移す）が終わるまで閉じない。確認（ConfirmModal）の要素をこのダイアログが持つので、
 //     閉じると答えを返せない確認が宙に浮き、破棄が進まなくなる。
 //   ・赤い箱は開いたときの材料で描く。破棄が済んだ公開先（run の done）は、箱の一覧にもチェックの説明にも出さない（済んだ破棄を「これから消す」と言わない。
 //     結果の欄が済んだと言う）。破棄が済まなかった回（stopped）は、pressProjectDelete が材料を読み直して返し、残った公開先だけの箱に更新する。
@@ -42,6 +42,8 @@
 // 押したときの複製の判断は、開いたときの写し。移す直前に main が、外した公開先（skippedForTwins）の覆う複製を読み直し、無くなっていれば断る（R2-e）。
 // その断りが返ったら、材料を読み直して plan を作り直す（pressProjectDelete の twinsGone。もう一度押すと、破棄から始める）。
 
+import { teardownFailureText } from '../teardown/failureNote'
+import FailureLines from './FailureLines'
 import { useState, useEffect } from 'react'
 import { PUBLISH_TARGET_LABEL } from '../publishStatus'
 import { readRunningOp } from '../projectMeta'
@@ -55,6 +57,7 @@ import {
 } from '../teardown/projectDeletePlan'
 import { projectDeleteCheckWords, rowStorageNotesOf, leftoverStorageNoteLine, keptStorageNoteOf, unsteppedLeftoverNote, vercelStorageTornDown } from '../teardown/projectDeleteWords'
 import { useConfirmChoices } from '../useConfirmChoices'
+import Modal from '../ui/Modal'
 import ManualTeardownNote from './teardown/ManualTeardownNote'
 import ProjectDeleteResults from './teardown/ProjectDeleteResults'
 
@@ -122,7 +125,7 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
       setRun(next)
     } catch (e: any) {
       // 思いがけない失敗。フォルダは移していない（移すのは pressProjectDelete の最後の 1 回だけ）。もう一度押すと、前回の続きの経路で走り直す。
-      setCrashed(`プロジェクトの削除の途中でエラーが発生しました: ${e?.message ?? String(e)}`)
+      setCrashed(`プロジェクトの削除の途中でエラーが発生しました: ${teardownFailureText(e)}`)
     } finally {
       setBusy(false)
     }
@@ -166,19 +169,18 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
     <>
       {/* プロジェクト削除の確認ダイアログ（掟5: 破壊操作は必ず確認）。ゴミ箱移動なので復元可能な旨と、
           公開済みのもの・GitHubのバックアップはローカル削除の対象外である旨を明記する。 */}
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-        onClick={() => { if (!busy) onClose() }}
+      <Modal
+        labelledBy="project-delete-title"
+        describedBy="project-delete-note"
+        backdropClassName="bg-black/30"
+        panelClassName="bg-elevated border border-line rounded-xl p-4 w-[24rem] max-w-[92vw]"
+        onRequestClose={() => { if (!busy) onClose() }}
       >
-        <div
-          className="bg-elevated border border-line rounded-xl p-4 w-[24rem] max-w-[92vw] max-h-[90vh] overflow-y-auto"
-          onClick={e => e.stopPropagation()}
-        >
-          <div className="text-[13px] font-semibold text-ink mb-2">
+          <div id="project-delete-title" className="text-[13px] font-semibold text-ink mb-2">
             プロジェクト「{projectDir.split('/').pop()}」を削除しますか？
           </div>
           <div className="text-[11px] text-ink-secondary leading-relaxed space-y-1.5">
-            <p>フォルダごと<b>ゴミ箱へ移動</b>します（Finderのゴミ箱から復元できます）。チャット履歴・🕘履歴もフォルダと一緒に移動します。</p>
+            <p id="project-delete-note">フォルダごと<b>ゴミ箱へ移動</b>します（Finderのゴミ箱から復元できます）。チャット履歴・🕘履歴もフォルダと一緒に移動します。</p>
 
             {/* ── 公開したものの後始末（2026-08-09 Ryosuke の指摘）──────────────
                 フォルダを消すと .sakura-cloud/state.json（どのレジストリを使っているかの
@@ -274,7 +276,7 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
             <p className="text-ink-muted">GitHub に保存したファイル（コード）は<b>そのまま残ります</b>。アプリに入っているデータは GitHub には入っていません。</p>
             <p className="font-mono text-[10px] text-ink-muted break-all">{projectDir}</p>
             {run !== null && <ProjectDeleteResults run={run} showBlockNote={plan === null || plan.block === null} />}
-            {crashed !== null && <p className="text-brand-red select-text">⚠️ {crashed}</p>}
+            {crashed !== null && <p className="text-brand-red select-text">⚠️ <FailureLines text={crashed} /></p>}
           </div>
           <div className="flex justify-end gap-2 mt-3">
             <button
@@ -288,8 +290,7 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
               className="px-3 py-1.5 rounded-md text-[12px] font-semibold text-white bg-brand-red-fill hover:opacity-90 transition-opacity disabled:opacity-40"
             >{busy ? (words?.running ?? '公開を破棄しています…') : '🗑 ゴミ箱に移動'}</button>
           </div>
-        </div>
-      </div>
+      </Modal>
       {element}
     </>
   )

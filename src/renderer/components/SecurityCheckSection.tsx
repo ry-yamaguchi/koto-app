@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { runSecurityCheck, SecurityCheckResult, CheckRecord, checkRecordKey, formatCheckRecord } from '../securityCheck'
+import { runSecurityCheck, buildFixPrompt, SecurityCheckResult, CheckRecord, checkRecordKey, formatCheckRecord } from '../securityCheck'
 import { foldSecurity } from '../appRunFolding'
 import CopyButton from './CopyButton'
 import SecurityReportBody from './SecurityReportBody'
+import { failureCopyNow } from '../failureCopy'
 
 // 🛡 セキュリティチェックの節。公開フローの「事前チェック」の次に置く
 // （2026-08-21 Ryosuke 指定。最初は上部バーに置いたが、公開の流れの中が自然）。
@@ -160,7 +161,8 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
                   </span>
                 )}
               </p>
-              <CopyButton text={result.report} title="チェック結果をコピー" />
+              {/* 実施できなかった（失敗の文）ときだけ、版と日時を添える。要確認の報告にはスタンプを付けない */}
+              <CopyButton text={result.report} title="チェック結果をコピー" getText={result.verdict === 'skip' && !aborted ? () => failureCopyNow(result.report) : undefined} />
             </div>
             {/* 結果は目印方式で「判定＋指摘（最大5件）」だけに絞ってある（＝要約）。
                 思考の文章は securityCheck 側で捨てるので、ここには届かない */}
@@ -170,8 +172,9 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
                 <button
                   onClick={() => {
                     // 指摘の全文＋「実際に修正しろ」の明確な指示をチャットへ（そのまま送信される）。
-                    // rc.1 では指示が弱く、AIが翻訳・再レビューだけで終わった（2026-08-21 実機）
-                    window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: `簡易セキュリティチェックで次の指摘がありました。該当するファイルを実際に修正して解消してください。直せない項目があれば、その理由と対処方法を教えてください。\n\n${result.report}` } }))
+                    // rc.1 では指示が弱く、AIが翻訳・再レビューだけで終わった（2026-08-21 実機）。
+                    // 指摘の全文は外部のテキストなので、境界で囲む（組み立ては buildFixPrompt の1か所）
+                    window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: buildFixPrompt(result.report) } }))
                   }}
                   className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
                 >🛠 AIに修正させる</button>

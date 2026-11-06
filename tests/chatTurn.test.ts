@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
+import OpenAI from 'openai'
 import {
   runEngineTurn, runCompact, REPEAT_LIMIT,
   type EngineTurnSpec, type EngineTurnPorts, type TurnMessage, type TurnHelpers, type CompactPlanLike,
@@ -18,6 +19,7 @@ import { extractUrls, wantsWebSearch } from '../src/renderer/webContext'
 import { planSend, planCompact, compactPrompt, acceptSummary, compactSource } from '../src/renderer/historyCompact'
 import { searchStatusContext } from '../src/renderer/aiContext'
 import { applyToMessages } from '../src/shared/chatEvents'
+import { splitFailureDetail } from '../src/shared/failureDetail'
 
 // B'-3a: send() の AI Engine 部分を chatTurn.ts へ切り出した。ここでは
 // 「偽の ports ＋ 本物の純粋関数」で runEngineTurn を node で駆動し、
@@ -59,6 +61,12 @@ const h: TurnHelpers = {
   searchStatusContext,
 }
 
+// openai の本物の例外の形: APIConnectionError { cause: TypeError('fetch failed') { cause: Error { code } } }
+const apiConnectionError = (code: string): Error =>
+  new OpenAI.APIConnectionError({ cause: new TypeError('fetch failed', { cause: Object.assign(new Error(code), { code }) }) })
+const TLS_TEXT = '安全な接続を確認できませんでした。社内ネットワークやセキュリティソフトの設定を確かめてください。'
+const CONNECTION_TEXT = 'インターネットに接続できませんでした。接続を確かめてから、もう一度送信してください。'
+
 type Log = any[]
 
 type StreamScript = {
@@ -72,6 +80,8 @@ type StreamScript = {
   thinkingDeltas?: string[]
   /** true なら、この回の chatStream は reject する（Error(message)）。 */
   throwMessage?: string
+  /** 指定すると、この回の chatStream はこの値そのもので reject する（cause を持つ本物の例外を渡す用）。 */
+  throwError?: unknown
 }
 
 interface PortsConfig {
@@ -85,7 +95,7 @@ interface PortsConfig {
   stream: StreamScript[]
   chatOnce?: { content?: string; usage?: { prompt_tokens?: number; completion_tokens?: number } | null }
   /** 指定すると chatOnce がこの内容で reject する（abort 例外・abort 以外の例外の両方を模す）。 */
-  chatOnceThrow?: { message?: string; name?: string }
+  chatOnceThrow?: { message?: string; name?: string; error?: unknown }
   usageAllowed?: boolean[] // usage.check() が呼ばれるたびに先頭から消費。尽きたら最後の値を使い続ける
   usageMessage?: string
   executeTool?: (name: string, argsJson: string, opts: any) => Promise<string> | string
@@ -122,6 +132,7 @@ function makePorts(cfg: PortsConfig): { ports: EngineTurnPorts; log: Log; stream
       const deltas = script.contentDeltas ?? (script.content ? [script.content] : [])
       for (const d of deltas) onDelta(d)
       if (script.throwMessage) throw new Error(script.throwMessage)
+      if (script.throwError) throw script.throwError
       return {
         usage: script.usage,
         aborted: script.aborted,
@@ -132,6 +143,7 @@ function makePorts(cfg: PortsConfig): { ports: EngineTurnPorts; log: Log; stream
     chatOnce: async (req) => {
       log.push({ tag: 'chatOnce', model: req.model })
       if (cfg.chatOnceThrow) {
+        if (cfg.chatOnceThrow.error) throw cfg.chatOnceThrow.error
         const e: any = new Error(cfg.chatOnceThrow.message ?? 'boom')
         if (cfg.chatOnceThrow.name) e.name = cfg.chatOnceThrow.name
         throw e
@@ -278,6 +290,17 @@ describe('runEngineTurn', () => {
     expect(log).toEqual([
       { tag: 'usage.check' },
       { tag: 'emit', ev: { kind: 'append', msg: { role: 'user', content: 'こんにちは' } } },
+      { tag: 'emit', ev: { kind: 'append', msg: { role: 'assistant', content: '🛑 今月の上限です' } } },
+    ])
+  })
+
+  it('予算超過・画像だけの送信: 通常の入口と同じく既定の文と画像が吹き出しに入る', async () => {
+    const { ports, log } = makePorts({ stream: [], usageAllowed: [false], usageMessage: '今月の上限です' })
+    const img = 'data:image/png;base64,xxx'
+    await runEngineTurn(makeSpec({ rawText: '  ', images: [img] }), ports)
+    expect(log).toEqual([
+      { tag: 'usage.check' },
+      { tag: 'emit', ev: { kind: 'append', msg: { role: 'user', content: 'この画像について教えてください。', images: [img] } } },
       { tag: 'emit', ev: { kind: 'append', msg: { role: 'assistant', content: '🛑 今月の上限です' } } },
     ])
   })
@@ -820,6 +843,26 @@ describe('runEngineTurn', () => {
     expect(logFalse.some((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.toolNote && String(e.ev.msg.content).startsWith('⚠️'))).toBe(false)
   })
 
+  // 自動まとめの失敗の警告に、原文（詳細）を足しても「そのため…」の文を割らない（詳細はいつも最後の行）
+  it('まとめ失敗の警告: 失敗の原文（詳細）は「そのため…」より後の最後の行に残る', async () => {
+    const big = 'あ'.repeat(400)
+    const history: TurnMessage[] = Array.from({ length: 25 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: big }))
+    const { ports, log } = makePorts({
+      history,
+      stream: [{ content: '本文', toolCalls: null }],
+      chatOnceThrow: { error: apiConnectionError('SELF_SIGNED_CERT_IN_CHAIN') },
+      compactWarn: [true],
+    })
+    await runEngineTurn(makeSpec(), ports)
+    const warn = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.toolNote && String(e.ev.msg.content).startsWith('⚠️'))
+    expect(warn).toBeTruthy()
+    const content = String(warn.ev.msg.content)
+    const { text, detail } = splitFailureDetail(content)
+    expect(text).toBe(`⚠️ ${TLS_TEXT}\nそのため、古いやり取りの一部はAIへ送れていません。上の【🗂 まとめる】でやり直せます。`)
+    expect(detail).toContain('SELF_SIGNED_CERT_IN_CHAIN')
+    expect(content.endsWith(`\n詳細: ${detail}`)).toBe(true)
+  })
+
   // 19. 2段階 vision
   it('2段階 vision: twoStageVision=true・画像あり・vision.shouldTryDirect=false → 🖼 append → status 🖼 → 視覚モデルで chatStream（tools無し・maxTokens 1024）→ 説明文が本文に合流', async () => {
     const { ports, log } = makePorts({
@@ -878,6 +921,34 @@ describe('runEngineTurn', () => {
     const expected = '⚠️ ' + formatChatError('network down')
     const hit = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.content === expected)
     expect(hit).toBeTruthy()
+    // 失敗の吹き出しには「もう一度送る」の印が付く（利用者の吹き出しには付かない）
+    expect(hit.ev.msg.offerRetry).toBe(true)
+    const userAppend = log.find((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.role === 'user')
+    expect(userAppend.ev.msg.offerRetry).toBeUndefined()
+  })
+
+  // 21b. 投げられた値そのものを formatChatError へ渡す（openai の 'Connection error.' の奥の証明書の失敗を見分けるため）
+  it('エラー整形: cause に証明書の失敗を持つ APIConnectionError → 安全な接続の文（回線断の文ではない）', async () => {
+    const err = apiConnectionError('UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+    expect(err.message).toBe('Connection error.') // message だけでは回線断と見分けられない
+    const { ports, log } = makePorts({ stream: [{ content: '', throwError: err }] })
+    const r = await runEngineTurn(makeSpec({ errorPrefix: '⚠️ ' }), ports)
+    const appended = log.filter((e) => e.tag === 'emit' && e.ev.kind === 'append').map((e) => e.ev.msg.content)
+    const last = splitFailureDetail(appended[appended.length - 1])
+    expect(last.text).toBe('⚠️ ' + TLS_TEXT) // 最後の吹き出しが失敗の文
+    expect(last.text).not.toContain('Connection error')
+    // 原文は最後の行に残る（問い合わせで原因を見分けるため）。SDK の文面だけでなく cause の印も入る
+    expect(last.detail).toContain('UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+    expect(r).toEqual({ endedWithError: true })
+  })
+
+  it('エラー整形: cause が接続拒否の APIConnectionError → 回線断の文', async () => {
+    const { ports, log } = makePorts({ stream: [{ content: '', throwError: apiConnectionError('ECONNREFUSED') }] })
+    await runEngineTurn(makeSpec({ errorPrefix: '⚠️ ' }), ports)
+    const appended = log.filter((e) => e.tag === 'emit' && e.ev.kind === 'append').map((e) => e.ev.msg.content)
+    const last = splitFailureDetail(appended[appended.length - 1])
+    expect(last.text).toBe('⚠️ ' + CONNECTION_TEXT)
+    expect(last.detail).toContain('ECONNREFUSED')
   })
 
   // 22. stream 中の刻み
@@ -1089,6 +1160,16 @@ describe('runCompact', () => {
     expect(log[1]).toEqual({ tag: 'emit', ev: { kind: 'status', value: '🗂 これまでの内容をまとめています…' } })
     expect(log[log.length - 1]).toEqual({ tag: 'emit', ev: { kind: 'status', value: '' } })
     expect(log.some((e) => e.tag === 'usage.record' && e.model === 'modelA' && e.promptTokens === 3 && e.completionTokens === 4)).toBe(true)
+  })
+
+  it('まとめ作りの失敗も、投げられた値の印を見る: 証明書の失敗 → 安全な接続の文を error に返す', async () => {
+    const { ports } = makePorts({ stream: [], chatOnceThrow: { error: apiConnectionError('SELF_SIGNED_CERT_IN_CHAIN') } })
+    const plan: CompactPlanLike = { base: null, from: 0, to: 2, mark: 'm' }
+    const r = await runCompact({ apiKey: 'k', model: 'modelA' }, ports, [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }], plan)
+    expect(r).toMatchObject({ error: expect.any(String) })
+    const { text, detail } = splitFailureDetail((r as { error: string }).error)
+    expect(text).toBe(TLS_TEXT)
+    expect(detail).toContain('SELF_SIGNED_CERT_IN_CHAIN')
   })
 
   // ⏹ 停止（0.3.50・roadmap「次の改善2件」その1）: chatOnce が abort による例外で reject したら、

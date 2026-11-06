@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fs: {
     readFile: (path: string) => ipcRenderer.invoke('fs:readFile', path),
     writeFile: (path: string, content: string) => ipcRenderer.invoke('fs:writeFile', path, content),
+    /** 開いたとき読んだ中身（expected）とディスクが同じときだけ書く。expected が null なら「無いときだけ作る」。 */
+    writeFileIfUnchanged: (path: string, content: string, expected: string | null) => ipcRenderer.invoke('fs:writeFileIfUnchanged', path, content, expected),
+    /** 読めるかを聞く（読むだけ）。readable / missing（ファイルが無い）/ unreadable（それ以外）。 */
+    readCheck: (path: string) => ipcRenderer.invoke('fs:readCheck', path),
     // AI専用：プロジェクト内に閉じ込めた読み書き（rel はルートからの相対パス）
     readFileInProject: (projectDir: string, rel: string) => ipcRenderer.invoke('fs:readFileInProject', projectDir, rel),
     writeFileInProject: (projectDir: string, rel: string, content: string) => ipcRenderer.invoke('fs:writeFileInProject', projectDir, rel, content),
@@ -83,6 +87,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
      */
     moveFiles: (projectDir: string, files: string[], dest: 'materials' | 'publish') =>
       ipcRenderer.invoke('project:moveFiles', projectDir, files, dest),
+    /** 移す前に、断りの規則に当たらないかを聞く（**何も変えない**）。ok:true のときだけ確認へ進む。書き込めるかは見ないので、そのあとの移動が失敗することはある。 */
+    moveCheck: (projectDir: string, files: string[], dest: 'materials' | 'publish') =>
+      ipcRenderer.invoke('project:moveCheck', projectDir, files, dest),
   },
   term: {
     create: (cwd?: string) => ipcRenderer.invoke('term:create', cwd),
@@ -578,7 +585,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     loadApp: (workspaceDir: string) => ipcRenderer.invoke('chat:loadApp', workspaceDir),
     saveApp: (workspaceDir: string, json: string) => ipcRenderer.invoke('chat:saveApp', workspaceDir, json),
     // B'-3c: IDEのプロジェクト別チャットの持ち主（main の convStore.ts）を呼ぶ。
-    // 読み込みは chatConvClient.ts の loadConversationView、書き換えは makeConvClient が使う。
+    // 読み込みは chatConvClient.ts の loadConversationChecked／loadConversationView、書き換えは makeConvClient が使う。
+    // load の返り値（messages と、読めなかった記録の知らせ unreadable）は、そのまま画面へ渡す。
     load: (projectDir: string) => ipcRenderer.invoke('chat:load', projectDir),
     ops: (projectDir: string, ops: unknown[], opts?: { flushNow?: boolean }) => ipcRenderer.invoke('chat:ops', projectDir, ops, opts),
     /** B-1a: main の convStore が会話を1件当てるたびに届く通知（画面更新経路の押し出し口）。
@@ -614,6 +622,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // メッセージ本文は含まない（各セッションの擬似 dir を convStore.ts へそのまま渡して読み書きする。
   // chatConvClient.ts の loadConversationView/makeConvClient を再利用する）。
   appSessions: {
+    // 返り値は { sessions, unreadable }。索引を読めなかった知らせ（unreadable）も、そのまま画面へ渡す。
     list: (workspaceDir: string) => ipcRenderer.invoke('appSessions:list', workspaceDir),
     create: (workspaceDir: string, meta: { id: string; title: string; model: string; createdAt: number }) =>
       ipcRenderer.invoke('appSessions:create', workspaceDir, meta),

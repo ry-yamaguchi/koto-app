@@ -41,6 +41,16 @@
 //     ここだけ方針を変えた。実行段の途中失敗（レース等）は従来どおり中止＋ロールバック）。
 //   ・**書き込み経路には isProtectedWritePath を通す**（移動元・移動先の両方）。
 //
+// ── 移動の前に聞く口（project:moveCheck・0.6.26） ──────────────────────────
+//   ・移動の断り（記録・プロジェクトのフォルダ・保護パス・調べられないもの）は、動かす前の
+//     検証（`planMoveFiles`）が全部持つ。画面が「確認を出す前に」聞けるよう、その検証だけを
+//     取り出して `project:moveCheck` から答える（ディスクは動かさない）。
+//   ・実行（`moveFilesToFs`）も必ず最初に同じ `planMoveFiles` を呼び、`ok === true` でなければ
+//     動かさない。聞いたことを信じず、実行の砦は残す（聞いた時と動かす時の間に変わりうる）。
+//   ・答えの文は実際の移動と同じ（同じ関数が作る）。聞いた時と動かす時で状態が変わっていなければ、断りの規則の答えは一致する（「できる」と答えたのに規則で断る、は起きない）。状態が変わった場合は動かす時の検証が断る。
+//   ・聞くのは**断りの規則だけ**。移動元に書き込めるか・rename が通るかは見ない。それは実行で起き、動かした分を戻して `ok:false` で返る
+//     （`ok:true` のあとで移動が失敗することはある）。
+//
 // migrate.ts（既存プロジェクトを public/ の形へ移す）と実装の骨格は似ているが、独立に持つ
 // （CLAUDE.md の指示により migrate.ts 自体は変更しない）。将来、両者の「安全な移動」の
 // 部分（退避→rename→失敗時ロールバック）を一箇所へまとめる余地はある（未着手）。
@@ -63,6 +73,8 @@ import { isProtectedWritePath } from '../../shared/protectedPaths'
 import { moveRefusalFor } from './fsTrash'
 import { snapshotBeforeChange } from '../backup/store'
 import { BACKUP_DIRNAME, nextFreeSnapshotId } from '../backup/plan'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 
 /** 一覧取得の上限。公開前セキュリティチェック（roadmap #17 追補）と同じ値に揃える。 */
 const UNUSED_CHECK_MAX_FILES = 5000
@@ -271,7 +283,7 @@ export function leftoverDataFilesFs(projectDir: string): {
     }
     return { ok: true, files, truncated, referenced: dataFilesReferenced }
   } catch (e: any) {
-    return { ok: false, files: [], message: e?.message ?? String(e) }
+    return { ok: false, files: [], message: failureText(e, { readOnly: true }) }
   }
 }
 
@@ -289,7 +301,7 @@ export type MoveToMaterialsResult = {
 export type MoveDestKind = 'materials' | 'publish'
 
 /** 1件の移動対象（検証済みの実パスまで解決したもの）。 */
-type MoveTarget = {
+export type MoveTarget = {
   /** 呼び出し側から渡された、プロジェクト直下からの相対パスそのもの。moved・renamed.from に使う。 */
   rel: string
   /** 移動先（プロジェクト直下からの相対パス。`<destDirName>/<basename>`）。 */
@@ -299,49 +311,40 @@ type MoveTarget = {
 }
 
 /**
- * ファイルを Koto 内の別の置き場（素材置き場／公開されるもの）へ移す唯一の実体。
- * project:moveToMaterials（roadmap #18・#22）と project:moveFiles（roadmap #9②・
- * 任意のファイルを手で移す）の両方がここを通る。
- *
- * `files` は**プロジェクト直下からの相対パス**として扱う（呼び出し側の責務。
- * ズレると移動が別の場所を指すため、上のコメントで基準を明示している）。
- * サブフォルダの中にあるファイルも、移動先では basename で `dest` の直下に平置きする。
- *
- * 検証（confineToProject・isProtectedWritePath を移動元・移動先の両方に）・
- * 同名衝突の自動改名（nextFreeMaterialName）・🕘 履歴への退避（移動元・移動先を同じ
- * スナップショットIDで）・実行段の存在チェックと失敗時の逆順ロールバック・
- * 移動元の親フォルダの片づけは、すべて dest によらず共通（既存の守りを一切弱めない）。
- *
- * スナップショットIDはここで発行する（呼び出し側に生成させない＝渡し忘れの余地を無くす）。
+ * 移す前の検証の答え。`ok: true` のときだけ、実行が使う移動対象（`targets`）と置き場の名前を持つ。
+ * 画面へ返す `project:moveCheck` はこのうち `renamed` だけを渡す（`moveCheckFs`）。
  */
-export function moveFilesToFs(
-  projectDir: string, files: readonly string[], dest: MoveDestKind,
-  // 🕘 履歴の見出し（label）の出し分け（W-66・2026-09-27 決定）。既定の 'manual' は
-  // project:moveFiles＝Sidebar.tsx の右クリックでの手動移動。moveToMaterialsFs だけが
-  // 'unused-cleanup' を明示して渡す（🧹 使われていないファイルの確認からの一括移動）。
-  // 呼び出し元を区別せず移動先だけで見出しを決めていたため、手で移したのに履歴には
-  // 身に覚えのない「未使用ファイルの整理」と出ていた問題を直す。
-  // （2026-10-09 画面の文を短くした: 見出しは「ファイルを…へ移動」「未使用ファイルを…へ移動」。区別は「未使用」の有無）
-  reason: 'manual' | 'unused-cleanup' = 'manual',
-): MoveToMaterialsResult {
+export type MovePlan =
+  | { ok: true; renamed: { from: string; to: string }[]; targets: MoveTarget[]; destDirName: string }
+  | { ok: false; message: string }
+
+/**
+ * 移す前の検証だけを行う（**ディスクは何も動かさない**）。`moveFilesToFs` の最初の一歩で、
+ * `project:moveCheck`（移動の前に聞く口）も同じ答えを返す。断りの理由は全部ここが持つ。
+ *
+ * 断る（`ok: false`）もの: projectDir・files・dest の形違い／プロジェクトの外へ出る道／
+ * プロジェクトのフォルダそのもの／保護パス（移動元・移動先の両方）／記録・プロジェクト・
+ * 中にプロジェクトがあるフォルダ・調べられないもの（moveRefusalFor）。**予期しない例外も断る側**へ倒す。
+ * 1件でも断れば全体が `ok: false`（中途半端に動かさない）。
+ *
+ * 移動先の同名衝突は断らず、nextFreeMaterialName で空いている名前を採る。別の名前になる分は
+ * `renamed` で予告する（動かす時にさらに変わることはある。実行の結果が正）。
+ */
+export function planMoveFiles(projectDir: string, files: readonly string[], dest: MoveDestKind): MovePlan {
   if (typeof projectDir !== 'string' || !path.isAbsolute(projectDir)) {
-    return { ok: false, moved: [], snapshotOk: false, message: 'プロジェクトフォルダのパスが不正です' }
+    return { ok: false, message: 'プロジェクトフォルダのパスが不正です' }
   }
-  const list = Array.from(new Set((files ?? []).filter((f): f is string => typeof f === 'string' && !!f)))
-  if (!list.length) return { ok: true, moved: [], snapshotOk: true }
-
+  if (!Array.isArray(files)) return { ok: false, message: 'ファイルの指定が不正です' }
+  if (dest !== 'materials' && dest !== 'publish') return { ok: false, message: '移動先の指定が不正です' }
   const destDirName = dest === 'publish' ? PUBLISH_DIR : MATERIALS_DIR
-  const label = reason === 'unused-cleanup'
-    ? `未使用ファイルを${MATERIALS_DIR}へ移動`
-    : (dest === 'publish' ? `ファイルを${PUBLISH_DIR_LABEL}へ移動` : `ファイルを${MATERIALS_DIR}へ移動`)
 
-  // (1) 検証（何も変えない）。保護パス等、名前を変えても解決しないものだけ弾く
-  // （1件でも弾ければ全体を中止する・中途半端に動かさない）。
+  // 保護パス等、名前を変えても解決しないものだけ弾く（1件でも弾ければ全体を中止する）。
   // 移動先の同名衝突は弾かず、nextFreeMaterialName で空いている名前を自動で採る。
   const targets: MoveTarget[] = []
   // base（元のファイル名）と実際に採った名前が違う分だけ記録する（衝突が無ければ空のまま）。
   const renamed: { from: string; to: string }[] = []
   try {
+    const list = Array.from(new Set(files.filter((f): f is string => typeof f === 'string' && !!f)))
     const usedDest = new Set<string>()
     for (const rel of list) {
       const fromFull = confineToProject(projectDir, rel) // .. ・絶対パスの脱出を拒否
@@ -368,8 +371,63 @@ export function moveFilesToFs(
       targets.push({ rel, destRel, fromFull, toFull })
     }
   } catch (e: any) {
-    return { ok: false, moved: [], snapshotOk: false, message: e?.message ?? String(e) }
+    return { ok: false, message: failureText(e, { readOnly: true }) }
   }
+  return { ok: true, renamed, targets, destDirName }
+}
+
+/** `project:moveCheck` の答え。`renamed` は、同名があって別の名前で移す分の予告（無ければ空）。 */
+export type MoveCheckResult =
+  | { ok: true; renamed: { from: string; to: string }[] }
+  | { ok: false; message: string }
+
+/**
+ * 移動の前に聞く口の実体（project:moveCheck）。**何も変えない**。`planMoveFiles` の答えのうち、
+ * 画面に要る分（`ok`・`renamed`・`message`）だけを返す。`ok` は `true` のときだけ真（それ以外は断る）。
+ */
+export function moveCheckFs(projectDir: string, files: readonly string[], dest: MoveDestKind): MoveCheckResult {
+  const plan = planMoveFiles(projectDir, files, dest)
+  return plan.ok === true ? { ok: true, renamed: plan.renamed } : { ok: false, message: plan.message }
+}
+
+/**
+ * ファイルを Koto 内の別の置き場（素材置き場／公開されるもの）へ移す唯一の実体。
+ * project:moveToMaterials（roadmap #18・#22）と project:moveFiles（roadmap #9②・
+ * 任意のファイルを手で移す）の両方がここを通る。
+ *
+ * `files` は**プロジェクト直下からの相対パス**として扱う（呼び出し側の責務。
+ * ズレると移動が別の場所を指すため、上のコメントで基準を明示している）。
+ * サブフォルダの中にあるファイルも、移動先では basename で `dest` の直下に平置きする。
+ *
+ * 検証（confineToProject・isProtectedWritePath を移動元・移動先の両方に）・
+ * 同名衝突の自動改名（nextFreeMaterialName）は `planMoveFiles` が持ち、**ここは必ず最初にそれを呼ぶ**
+ * （`project:moveCheck` で聞いたかどうかに頼らない）。🕘 履歴への退避（移動元・移動先を同じ
+ * スナップショットIDで）・実行段の存在チェックと失敗時の逆順ロールバック・
+ * 移動元の親フォルダの片づけは、すべて dest によらず共通（既存の守りを一切弱めない）。
+ *
+ * スナップショットIDはここで発行する（呼び出し側に生成させない＝渡し忘れの余地を無くす）。
+ */
+export function moveFilesToFs(
+  projectDir: string, files: readonly string[], dest: MoveDestKind,
+  // 🕘 履歴の見出し（label）の出し分け（W-66・2026-09-27 決定）。既定の 'manual' は
+  // project:moveFiles＝Sidebar.tsx の右クリックでの手動移動。moveToMaterialsFs だけが
+  // 'unused-cleanup' を明示して渡す（🧹 使われていないファイルの確認からの一括移動）。
+  // 呼び出し元を区別せず移動先だけで見出しを決めていたため、手で移したのに履歴には
+  // 身に覚えのない「未使用ファイルの整理」と出ていた問題を直す。
+  // （2026-10-09 画面の文を短くした: 見出しは「ファイルを…へ移動」「未使用ファイルを…へ移動」。区別は「未使用」の有無）
+  reason: 'manual' | 'unused-cleanup' = 'manual',
+): MoveToMaterialsResult {
+  // (1) 検証（何も変えない）。**ok が true でなければ何も動かさない**。
+  const plan = planMoveFiles(projectDir, files, dest)
+  if (plan.ok !== true) return { ok: false, moved: [], snapshotOk: false, message: plan.message }
+  const { targets, destDirName } = plan
+  if (!targets.length) return { ok: true, moved: [], snapshotOk: true }
+  // 実行段のレースで改名が増えることがあるので、予告の配列は写して使う。
+  const renamed = [...plan.renamed]
+
+  const label = reason === 'unused-cleanup'
+    ? `未使用ファイルを${MATERIALS_DIR}へ移動`
+    : (dest === 'publish' ? `ファイルを${PUBLISH_DIR_LABEL}へ移動` : `ファイルを${MATERIALS_DIR}へ移動`)
 
   // (2) 🕘 履歴へ「移す直前」を残す。**移動元・移動先の両方**を同じスナップショットIDで退避する
   // （元＝内容退避=overwrite、先＝まだ無かった印=create）。取れなくても移動は続ける
@@ -425,8 +483,9 @@ export function moveFilesToFs(
       const t = targets.find(x => x.rel === movedRel)!
       try { fs.renameSync(t.toFull, t.fromFull) } catch { allRestored = false }
     }
-    const base = e?.message ?? String(e)
-    const message = allRestored ? base : `${base}（一部は元へ戻せませんでした。🕘 履歴から戻してください）`
+    // 理由は日本語の文＋詳細。詳細は文の途中に挟まず、最後の行に残す
+    const base = failureText(e, { checkAt: 'ファイル一覧' })
+    const message = allRestored ? base : wrapFailureText(base, t => `${t}（一部は元へ戻せませんでした。🕘 履歴から戻してください）`)
     return { ok: false, moved: [], snapshotOk, message }
   }
 
@@ -461,4 +520,6 @@ export function registerUnusedHandlers(): void {
   ipcMain.handle('project:unusedCheck', (_, projectDir: string) => checkUnusedFiles(projectDir))
   ipcMain.handle('project:moveToMaterials', (_, projectDir: string, files: string[]) => moveToMaterialsFs(projectDir, files))
   ipcMain.handle('project:moveFiles', (_, projectDir: string, files: string[], dest: MoveDestKind) => moveFilesToFs(projectDir, files, dest))
+  // 移動の前に聞く口（何も変えない）。画面は、これが ok:true のときだけ確認へ進む。
+  ipcMain.handle('project:moveCheck', (_, projectDir: string, files: string[], dest: MoveDestKind) => moveCheckFs(projectDir, files, dest))
 }

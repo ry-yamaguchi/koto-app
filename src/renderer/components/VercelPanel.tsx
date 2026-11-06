@@ -5,6 +5,9 @@ import { getVercelToken, getVercelTokenById, getVercelTeamId, getVercelTeamIdByI
 import { getTargetProfile } from '../targetProfiles'
 import { beginActivity, PUBLISH_CLOSE_WARNING } from '../activity'
 import CopyButton from './CopyButton'
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
+import { failureCopyNow, maskForCopy } from '../failureCopy'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { askAiAboutFailure, askAiAboutNotice } from '../../shared/askAi'
 import { publishButtonLabel } from '../../shared/publishLabels'
@@ -15,6 +18,7 @@ import { OpProgressCard, OpForeignNote, OpWarnings } from './HanamiiPanel'
 import { useProjectOpsView } from '../hooks/useProjectOpsView'
 import { isVercelOp } from '../projectOpsView'
 import { clockText, opWarningText } from '../../shared/opsText'
+import { otherTargetPriceNote } from '../../shared/cloudCost'
 
 // Vercel（海外のクラウドサービス）への公開パネル。HanamiiPanel と同じ流儀を踏襲する:
 // トークン（＋チームID）は「認証情報」に一元登録し（方式B）、このパネルは使う瞬間に読んで
@@ -151,7 +155,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
   const runPreflight = useCallback(async () => {
     setChecking(true); setConfirmBroken(false)
     try { setPreflight(await window.electronAPI.vercel.preflight(projectDir)) }
-    catch (e: any) { setPreflight({ ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: e?.message ?? String(e) }) }
+    catch (e: any) { setPreflight({ ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: failureText(e, { readOnly: true }) }) }
     finally { setChecking(false) }
   }, [projectDir])
 
@@ -223,13 +227,13 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
         await saveVercelMeta({ tokenId, name })
       } catch (e: any) {
         // 設定の保存に失敗しても、公開の結果は記録が伝える。ここで黙ると、設定が消えている理由が分からない。
-        setMsg(`公開は終わりましたが、設定（トークンの選択・公開名）を保存できませんでした: ${e?.message ?? String(e)}`)
+        setMsg(`公開は終わりましたが、設定（トークンの選択・公開名）を保存できませんでした: ${failureText(e)}`)
       }
       await ops.sync()
     } catch (e: any) {
       // main の本体が例外で終わったときも記録は残る（予期しない失敗として）。残っていなければ、ここで伝える。
       await ops.sync()
-      if (!ops.didFinishSince('vercel:publish', askedAt)) setMsg(`公開処理でエラーが発生しました: ${e?.message ?? String(e)}`)
+      if (!ops.didFinishSince('vercel:publish', askedAt)) setMsg(`公開処理でエラーが発生しました: ${failureText(e, { checkAt: '📡 公開したもの一覧' })}`)
     } finally {
       setPublishing(false)
       endActivity()
@@ -252,6 +256,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
         <p className="text-xs text-ink-secondary leading-relaxed">
           ページを見せるだけのサイト向けで、サーバーで動き続けるアプリは扱えません。Koto がプロジェクトのファイルをアップロードし、Vercel 側でビルド・公開します。
         </p>
+        <p className="text-xs text-ink-secondary leading-relaxed">{otherTargetPriceNote('vercel')}</p>
         {getTargetProfile('vercel').serviceUrl && (
           <p className="text-[11px] text-ink-muted">
             <a href={getTargetProfile('vercel').serviceUrl} className="hover:underline">🌐 公式サイトを見る ↗</a>
@@ -334,7 +339,7 @@ export default function VercelPanel({ apiKey, projectDir, onOpenCredentials }: P
               ))}
             </ul>
             {preflight.message && (
-              <p className="text-[11px] text-brand-red leading-relaxed select-text">{preflight.message}</p>
+              <p className="text-[11px] text-brand-red leading-relaxed select-text"><FailureLines text={preflight.message} /></p>
             )}
             <p className="text-[11px] text-ink-muted leading-relaxed">
               手元のファイルを読んで確かめているだけです。
@@ -449,8 +454,8 @@ function PublishNoticeBlock({ notice }: { notice: string }) {
   return (
     <div className="rounded-lg border border-brand-yellow/70 bg-elevated p-2.5 space-y-2">
       <div className="flex items-start gap-2">
-        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">ℹ️ {notice}</p>
-        <CopyButton text={notice} title="お知らせをコピー" />
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">ℹ️ <FailureLines text={notice} /></p>
+        <CopyButton text={notice} getText={() => failureCopyNow(notice)} title="お知らせをコピー" />
       </div>
       <button
         onClick={() => {
@@ -465,15 +470,16 @@ function PublishNoticeBlock({ notice }: { notice: string }) {
 // 失敗メッセージの表示ブロック（掟5: select-text＋コピーボタン）。
 // HanamiiPanel/AppRunPanel の同種ブロックと同じパターン（各パネルにローカル定義する流儀）。
 function ErrorMessageBlock({ msg, detail }: { msg: string; detail: string }) {
-  const copyText = detail ? `${msg}\n${detail}` : msg
+  // 文・原文・Koto の版・日時を先頭に入れる（問い合わせに貼れる形）。API の応答（detail）はその後ろ。
+  const getCopyText = async () => { const head = await failureCopyNow(msg); return maskForCopy(detail ? `${head}\n${detail}` : head) }
   // Vercel には破棄（teardown）が無く、この表示は常に公開の失敗（判断2）。
   const askAiText = askAiAboutFailure('公開', 'Vercel', msg, detail)
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-2">
       <div className="flex items-start gap-2">
-        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">{msg}</p>
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text"><FailureLines text={msg} /></p>
         <button
-          onClick={() => { navigator.clipboard.writeText(copyText).catch(() => {}) }}
+          onClick={() => { void getCopyText().then(t => navigator.clipboard.writeText(t)).catch(() => {}) }}
           className="flex-none text-[11px] text-sakura hover:underline"
           title="メッセージをコピー"
         >コピー</button>

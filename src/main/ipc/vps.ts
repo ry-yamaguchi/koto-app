@@ -6,6 +6,7 @@ import { isValidHost, isValidPort, isValidUsername, isValidPublicKey } from '../
 import { buildStartupScript, buildInstallKeyCommands, buildHardenSshdCommands } from '../vps/scripts'
 import { generateKeypair, scanHostKey, runSsh, runSshWithPassword } from '../vps/ssh'
 import type { IpcDeps } from './types'
+import { failureText } from '../../shared/failureText'
 
 // 「構成は選ばせない」（docs/vps-plan.md §0 原則1）: 2ユーザーの名前は固定する。
 // renderer からは受け取らない（scripts.ts 側は引数で受けるテスト可能な設計のまま）。
@@ -17,14 +18,14 @@ export function registerVpsHandlers(_deps: IpcDeps) {
     try {
       const keys = await generateKeypair()
       return { ok: true, publicKey: keys.publicKey, privateKey: keys.privateKey }
-    } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, message: failureText(e, { readOnly: true }) } }
   })
 
   ipcMain.handle('vps:buildStartupScript', async (_, publicKey: string) => {
     try {
       const script = buildStartupScript({ publicKey, adminUser: ADMIN_USER, deployUser: DEPLOY_USER })
       return { ok: true, script }
-    } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, message: failureText(e, { readOnly: true }) } }
   })
 
   ipcMain.handle('vps:scanHostKey', async (_, host: string, port: number) => {
@@ -39,7 +40,7 @@ export function registerVpsHandlers(_deps: IpcDeps) {
     if (!isValidUsername(user)) return { ok: false, message: 'ユーザー名の形式が不正です' }
     if (!privateKey) return { ok: false, message: '秘密鍵がありません（先に「🔑 鍵を生成する」を押してください）' }
     if (!fingerprint) return { ok: false, message: 'ホスト鍵のフィンガープリントが未確認です（先にホスト鍵を確認してください）' }
-    const r = await runSsh({ host, port, user, privateKey, knownHostFingerprint: fingerprint, command: 'echo koto-vps-ok' })
+    const r = await runSsh({ host, port, user, privateKey, knownHostFingerprint: fingerprint, command: 'echo koto-vps-ok', readOnly: true })
     if (!r.ok) return r
     const okEcho = (r.stdout ?? '').includes('koto-vps-ok')
     return okEcho ? { ok: true } : { ok: false, stdout: r.stdout, message: '接続はできましたが、想定外の応答でした。' }
@@ -54,7 +55,7 @@ export function registerVpsHandlers(_deps: IpcDeps) {
     let commands: string[]
     try {
       commands = buildInstallKeyCommands({ publicKey, adminUser: ADMIN_USER, deployUser: DEPLOY_USER })
-    } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, message: failureText(e, { readOnly: true }) } }
     return runSshWithPassword({ host, port, user, password, commands })
   })
 

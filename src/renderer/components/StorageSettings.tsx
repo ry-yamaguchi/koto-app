@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { BUCKET_MONTHLY_YEN } from '../../shared/cloudCost'
 import { storageCostNote, type BucketMode } from '../../shared/objectStorage'
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
 
 // StorageSettings — 設定（⌘,）の「データの保存」。
 //
@@ -31,7 +33,12 @@ export default function StorageSettings() {
   const [error, setError] = useState('')
 
   const load = async () => {
-    setStatus(await window.electronAPI.storage.status())
+    try {
+      setStatus(await window.electronAPI.storage.status())
+    } catch (e) {
+      // 呼び出しそのものが失敗した。「確認しています…」のまま止めない
+      setStatus({ ok: false, message: failureText(e, { readOnly: true }), siteReady: false, buckets: [] } as Status)
+    }
   }
   useEffect(() => { void load() }, [])
 
@@ -50,6 +57,9 @@ export default function StorageSettings() {
       window.dispatchEvent(new CustomEvent('sakura:storage-buckets-changed'))
       setNewName('')
       await load()
+    } catch (e) {
+      // 作成の途中で切れたかもしれない。もう一度押す前に、一覧で確かめてもらう
+      setError(failureText(e, { checkAt: '設定の「データの保存」' }))
     } finally { setCreating(false) }
   }
 
@@ -60,7 +70,7 @@ export default function StorageSettings() {
       {!status ? (
         <p className="text-xs text-ink-muted">確認しています…</p>
       ) : !status.ok ? (
-        <p className="text-xs text-ink-secondary leading-relaxed select-text">{status.message}</p>
+        <p className="text-xs text-ink-secondary leading-relaxed select-text"><FailureLines text={status.message ?? ''} /></p>
       ) : !status.siteReady ? (
         <p className="text-xs text-ink-secondary leading-relaxed">
           まだ保存場所を使っていません。データを保存するアプリを公開するときに、費用の確認をしてから用意します。
@@ -119,7 +129,7 @@ export default function StorageSettings() {
               >{creating ? '作成中…' : '作る'}</button>
             </div>
             <p className="text-[11px] text-ink-muted">英字で始まる小文字の英数字とハイフン（3〜63文字）</p>
-            {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {error}</p>}
+            {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ <FailureLines text={error} /></p>}
           </div>
         </details>
       )}

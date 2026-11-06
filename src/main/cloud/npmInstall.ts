@@ -32,6 +32,8 @@ import {
   nativeBinaryKind, blockReasonForPackage, primaryBlockReason,
   type NativeBinaryKind, type NativeBlockReason, type BlockedPackage,
 } from '../../shared/deps'
+import { withFailureDetail, failureText, failureDetailOf, classifyFailure } from '../../shared/failureText'
+import { joinFailureDetail } from '../../shared/failureDetail'
 import { awaitLoginPath, loginPathHintForMissingTool } from '../loginPath'
 
 /**
@@ -58,6 +60,17 @@ export type InstallResult = {
   /** 失敗したときの出力（診断用・そのまま画面に出せる長さに切る）。 */
   log: string
   message?: string
+  /** message が、回線断・手元のファイルの失敗を見分けた文（詳細つき）であること。呼び出し側は別の見出しに置き換えない。 */
+  diagnosed?: boolean
+}
+
+/** npm の出力から失敗の行（`npm ERR!`・`npm error`）だけを取り出す。ログの場所の案内は原因ではないので除く。 */
+export function npmFailureLines(out: string): string {
+  return out.split(/\r?\n/)
+    .filter(l => /^npm (ERR!|error)(\s|$)/.test(l) && !/complete log of this run/i.test(l))
+    .map(l => l.replace(/^npm (ERR!|error)\s*/, '').trim())
+    .filter(Boolean)
+    .join(' ')
 }
 
 /** npm が使えるか（PATH は main 起動時にログインシェルのものへ揃えてある）。 */
@@ -271,10 +284,23 @@ export async function installDependencies(
   })
   const log = r.out.slice(0, 4000)
   if (!r.ok) {
+    // 回線断・手元のファイルの失敗（権限・空き）は、その文を見出しにする。
+    // 「package.json の書き間違い」と言うと、直すところを取り違えさせる
+    const failure = npmFailureLines(r.out) || r.out
+    if (classifyFailure(r.out).kind !== 'unknown') {
+      return {
+        ok: false, nativeBlocked: [], log, diagnosed: true,
+        message: joinFailureDetail(failureText(r.out, { readOnly: true, detail: false }), failureDetailOf(failure)),
+      }
+    }
     return {
       ok: false, nativeBlocked: [], log,
-      message: 'ライブラリを用意できませんでした。package.json に書かれた名前が正しいか、'
-        + 'インターネットに接続できているかを確かめてください。',
+      // 固定の文で原文（npm の出力）を捨てない。先頭が警告の行でも原因が残るよう、npm の失敗の行を優先する
+      message: withFailureDetail(
+        'ライブラリを用意できませんでした。package.json に書かれた名前が正しいか、'
+          + 'インターネットに接続できているかを確かめてください。',
+        failure,
+      ),
     }
   }
 

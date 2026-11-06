@@ -102,7 +102,7 @@ describe('teardownStorageForProject: keepData の保存場所は、確認のあ�
     expect(destructiveCalls(), '消す要求・鍵の要求が出ている').toEqual([])
     expect(storageCalls(), '残す回は、外へ1本も要求を出さない（接続もしない）').toEqual([])
     expect(r).toStrictEqual({
-      ok: true, reason: 'done', permissionRevoked: false, warnings: [KEY_KEPT_CONFIRMED_WARNING],
+      ok: true, reason: 'done', permissionRevoked: false, sweepDone: false, warnings: [KEY_KEPT_CONFIRMED_WARNING],
       done: [{ bucket: A, deletedBucket: false, note: KEPT_AFTER_CONFIRM_NOTE, keptReasons: { ownFiles: false, usedByOthers: false }, keptData: true }],
     })
   })
@@ -175,7 +175,7 @@ describe('teardownStorageForProject: keepData の保存場所は、確認のあ�
     })
     expect(storageCalls()).toEqual([])
     expect(r).toStrictEqual({
-      ok: true, reason: 'done', permissionRevoked: false, warnings: [],
+      ok: true, reason: 'done', permissionRevoked: false, sweepDone: false, warnings: [],
       done: [{ bucket: A, deletedBucket: false, note: `フォルダ『${TWIN}』も同じデータを使っています。`, keptReasons: { ownFiles: false, usedByOthers: true }, keptData: true }],
     })
   })

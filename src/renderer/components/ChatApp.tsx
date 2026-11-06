@@ -14,7 +14,7 @@ import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { CHAT_CONTEXT } from '../aiContext'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
 import ModelSelect from './ModelSelect'
-import { loadConversationView, makeConvClient, type Op } from '../chatConvClient'
+import { loadConversationChecked, makeConvClient, type Op, type ConversationLoad } from '../chatConvClient'
 import { applyToMessages, viewSyncDecision } from '../../shared/chatEvents'
 import { sessionDir, sessionIdFromDir } from '../../shared/appChatDirs'
 import { getWorkspaceDir } from '../workspace'
@@ -26,8 +26,12 @@ import { CHAT_TEXT_WRAP } from '../textWrap'
 import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { subscribe, getSnapshot, loadingKeys, turnKey, getTurn } from '../chatTurnRegistry'
 import { useConfirm } from '../useConfirm'
-import { runDeleteConversation } from '../confirmedActions'
+import { runDeleteSession, NOTHING_ON_DISK } from '../chatDeleteGuard'
+import { unreadableFrom, type UnreadableChat } from '../../shared/chatUnreadable'
+import { ChatAppLoadNotices } from './ChatLoadNotice'
 import { chatStatusLine } from '../../shared/chatStatusLine'
+import RetryButton from './RetryButton'
+import { showsRetry } from '../../shared/retryOffer'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
 function GeoSquares({ className = '' }: { className?: string }) {
@@ -97,6 +101,11 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   // src/shared/appChatDirs.ts）。読み込み完了までは null＝convStore 経由の読み書きをまだ行わない
   // （getConvClient・切替時の読み込み effect の両方がこれをガードにする）。
   const [chatWorkspace, setChatWorkspace] = useState<string | null>(null)
+  // 会話ごとに、最後に記録を読んだ結果（読めたか・読めなかった記録の知らせ・残っている写し）。知らせの表示と、
+  // 表示中の会話を削除するときの判断（読めなかった記録を空と読まない・写しが消えることを言う）に使う。
+  const [loadMarks, setLoadMarks] = useState<Record<string, Omit<ConversationLoad, 'messages'>>>({})
+  // 会話の一覧（索引）を読めなかった知らせ。読めた起動では null。
+  const [indexUnreadable, setIndexUnreadable] = useState<UnreadableChat | null>(null)
   const models = useModels(apiKey)
   const [input, setInput] = useState('')
   const [pendingImages, setPendingImages] = useState<string[]>([])
@@ -106,6 +115,8 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const activeSession = sessions.find(s => s.id === activeId) ?? sessions[0]
+  // 読めなかった記録の知らせ（表示中の会話の分）。写しは、その会話の保存フォルダにある。
+  const activeUnreadable = loadMarks[activeId]?.unreadable ?? null
 
   // 改善2（2026-08-29）: 実行状態の置き場（chatTurnRegistry.ts）を購読し、稼働中のセッションに
   // ⏳ を出す（Sidebar.tsx の作法と同じ）。値そのものは使わず、変わるたびに再描画させるためだけに呼ぶ。
@@ -261,8 +272,9 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     let cancelled = false
     void (async () => {
       const workspaceDir = await getWorkspaceDir()
-      const list = await window.electronAPI.appSessions.list(workspaceDir)
+      const { sessions: list, unreadable } = await window.electronAPI.appSessions.list(workspaceDir)
       if (cancelled) return
+      setIndexUnreadable(unreadableFrom(unreadable))
       if (list.length > 0) {
         setSessions(list.map(m => ({ id: m.id, title: m.title, model: m.model, createdAt: m.createdAt, messages: [] })))
         setActiveId(list[0].id)
@@ -286,9 +298,10 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   useEffect(() => {
     if (!chatWorkspace || !activeId) return
     let cancelled = false
-    loadConversationView(sessionDir(chatWorkspace, activeId)).then(msgs => {
+    loadConversationChecked(sessionDir(chatWorkspace, activeId)).then(({ messages: msgs, ...mark }) => {
       if (cancelled) return
       setSessions(prev => prev.map(s => s.id === activeId ? { ...s, messages: msgs } : s))
+      setLoadMarks(prev => ({ ...prev, [activeId]: mark }))
     })
     return () => { cancelled = true }
   }, [chatWorkspace, activeId])
@@ -322,9 +335,11 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
       if (needsReload && !reloadingIds.has(sid)) {
         // 一致しない＝取りこぼした可能性がある。ストアから読み直して自己修復する。
         reloadingIds.add(sid)
-        loadConversationView(dir).then(msgs => {
+        loadConversationChecked(dir).then(({ messages: msgs, ...mark }) => {
           reloadingIds.delete(sid)
-          if (!cancelled) setSessions(prev => prev.map(s => s.id === sid ? { ...s, messages: msgs } : s))
+          if (cancelled) return
+          setSessions(prev => prev.map(s => s.id === sid ? { ...s, messages: msgs } : s))
+          setLoadMarks(prev => ({ ...prev, [sid]: mark }))
         })
       }
     })
@@ -377,16 +392,14 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   const deleteSession = async (id: string) => {
     const target = sessions.find(s => s.id === id)
     if (!target) return
-    // 見かけ不変: 「本当に中身があるか」で確認ダイアログの要否を決める（従来どおり）。
-    // アクティブなセッションは既に本文を読み込み済みなのでそのまま見る。そうでなければ
-    // （索引にはメッセージ件数を持たせない設計のため）convStore へ読みに行って確かめる。
-    const hasMessages = id === activeId || !chatWorkspace
-      ? target.messages.length > 0
-      : (await loadConversationView(sessionDir(chatWorkspace, id))).length > 0
-    // 実際の削除（記録・状態からの除去）そのものは runDeleteConversation の deps.remove に閉じ込める
-    // （掟10: confirm が false なら一度も呼ばれないことを tests/confirmedActions.test.ts で固定する）。
+    // 実際の削除（記録・状態からの除去）そのものは runDeleteSession の deps.remove に閉じ込める
+    // （掟10: 確認の要否の判断と、confirm が false なら一度も呼ばれないことは tests/chatDeleteGuard.test.ts で固定する）。
     const remove = () => {
       convClientsRef.current.delete(id) // このセッション宛ての直列化クライアントも使い終わり
+      setLoadMarks(prev => {
+        const { [id]: _gone, ...rest } = prev
+        return rest
+      })
       if (chatWorkspace) void window.electronAPI.appSessions.delete(chatWorkspace, id)
       setSessions(prev => {
         const next = prev.filter(s => s.id !== id)
@@ -404,10 +417,17 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
         return next
       })
     }
-    if (!hasMessages) { remove(); return }
-    await runDeleteConversation(
-      id,
-      `「${target.title}」を削除します。よろしいですか？（元に戻せません）`,
+    // 確認なしで消してよいのは「読めて、空」と分かった会話だけ。読めなかった・読み込みが失敗した・形が違う会話は
+    // 確認を出す。表示中の会話は、読み込んだときに覚えた結果（loadMarks）と画面の数で決める。
+    // 表示していない会話は、削除の前に読みに行く（索引にはメッセージ件数を持たせない設計のため）。
+    await runDeleteSession(
+      {
+        id,
+        title: target.title,
+        shownLength: id === activeId ? target.messages.length : null,
+        known: id === activeId ? (loadMarks[id] ?? null) : null,
+        read: () => chatWorkspace ? loadConversationChecked(sessionDir(chatWorkspace, id)) : Promise.resolve(NOTHING_ON_DISK),
+      },
       {
         confirm: (body) => confirm({ title: '会話を削除します', body, confirmLabel: '削除する', danger: true }),
         remove: () => remove(),
@@ -545,6 +565,9 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
           </div>
         </div>
 
+        {/* 読めなかった一覧・記録の知らせ（読めた起動では何も出ない） */}
+        <ChatAppLoadNotices workspaceDir={chatWorkspace} sessionId={activeId} indexUnreadable={indexUnreadable} activeUnreadable={activeUnreadable} />
+
         {/* Messages */}
         <div
           className={`flex-1 overflow-y-auto relative ${drag.over ? 'ring-2 ring-sakura ring-inset' : ''}`}
@@ -654,6 +677,8 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
                                 className="mt-2 sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
                               >▶ 続ける</button>
                             )}
+                            {/* 失敗の吹き出しの「もう一度送る」。最後の失敗にだけ出る（判断は retryOffer.ts）。 */}
+                            <RetryButton show={showsRetry(shown, i)} isLoading={chat.isLoading} onPress={() => void chat.retryLast()} />
                           </div>
                           {/* 触れたら吹き出しの下に時刻。OS のツールチップ（title）は
                               出るまでに間があり、少し動かすと消えるのでやめた（2026-08-26 実機）。 */}

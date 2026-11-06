@@ -8,6 +8,8 @@
 // アップロードは 2 段階: (1) createUpload でアップロード枠（uploadUrl）を取得し、
 // (2) uploadZip で外部ストレージへ直接 PUT する（このPUTには Authorization を付けない）。
 
+import { failureText } from '../../shared/failureText'
+
 /** HANAMII API のベースURL。 */
 export const HANAMII_API_BASE = 'https://hanamii.jp'
 
@@ -203,7 +205,8 @@ export class HanamiiClient {
       }
       return { ok: false, status: r.status, message: `接続に失敗しました（HTTP ${r.status}）` }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      // 回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。見分けられない失敗は原文のまま。
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   }
 }

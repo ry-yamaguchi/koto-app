@@ -16,7 +16,8 @@
 // 単独チャット（ChatApp）は今回対象外・一切変えない。
 import * as fs from 'fs'
 import { projectChatPath } from '../chatStore/paths'
-import { loadProjectChatFile, saveProjectChatFile } from '../chatStore/file'
+import { loadProjectChatFile, saveProjectChatFile, type UnreadableChat } from '../chatStore/file'
+import { listBrokenCopies } from '../chatStore/brokenCopy'
 import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
 import { forStorage } from '../../shared/chatStorage'
 import type { TurnMessage } from '../../shared/chatTurn'
@@ -29,6 +30,8 @@ type Entry = {
   messages: TurnMessage[]
   /** 保存待ちのデバウンスタイマー。無ければ「直前の内容が既に保存済み」。 */
   timer: ReturnType<typeof setTimeout> | null
+  /** 読み込んだとき、ファイルが読めなかった（壊れていた）か。その回の写しの名前（作れなければ null）を持つ。 */
+  unreadable: UnreadableChat | null
 }
 
 /** 保存のデバウンス（renderer が行っていたものと同じ間隔。利用者から見える振る舞いを変えない）。 */
@@ -81,38 +84,97 @@ function appliedOpFor(op: Op, messagesAfter: TurnMessage[]): Op {
   return op
 }
 
-/** ファイルから読んで配列にする（畳めない・無ければ null）。chatStore/file.ts の
- *  loadProjectChatFile（v1/v2 fold）をそのまま使う。 */
-function readFromFile(projectDir: string): TurnMessage[] | null {
+/** ファイルを読んだ結果。unreadable があれば「無い」ではなく「読めなかった」（messages は読めた分、何も読めなければ null）。 */
+type FileRead = { messages: TurnMessage[] | null; unreadable: UnreadableChat | null }
+
+/** 畳んだ JSON を配列にする。配列でなければ null。 */
+function parseMessages(json: string): TurnMessage[] | null {
   try {
-    const result = loadProjectChatFile(projectChatPath(projectDir))
-    if (!result.ok || result.json === null) return null
-    const parsed = JSON.parse(result.json)
+    const parsed = JSON.parse(json)
     return Array.isArray(parsed) ? (parsed as TurnMessage[]) : null
   } catch {
     return null
   }
 }
 
+/** ファイルから読んで配列にする（無ければ messages が null）。chatStore/file.ts の
+ *  loadProjectChatFile（v1/v2 fold）をそのまま使う。読めない・畳めない記録は、読んだ時点で
+ *  file.ts が写しを作り、ここでは unreadable として運ぶ（会話を読む入口はすべてここを通る）。
+ *  途中の壊れた行を捨てて読めた分だけを返す回は、messages にその分を入れ、unreadable も一緒に運ぶ。 */
+function readFromFile(projectDir: string): FileRead {
+  try {
+    const result = loadProjectChatFile(projectChatPath(projectDir))
+    // 読む処理そのものが失敗した回も「読めなかった」側に倒す（「無い」にすると次の保存で置き換わる）
+    if (!result.ok) return { messages: null, unreadable: { backupName: null } }
+    if (result.unreadable) {
+      return { messages: result.json === null ? null : parseMessages(result.json), unreadable: result.unreadable }
+    }
+    if (result.json === null) return { messages: null, unreadable: null }
+    const messages = parseMessages(result.json)
+    return messages ? { messages, unreadable: null } : { messages: null, unreadable: { backupName: null } }
+  } catch {
+    // 読む前に例外が出た回（保存先を組み立てられない不正な projectDir など）も、上と同じ側に倒す
+    return { messages: null, unreadable: { backupName: null } }
+  }
+}
+
+/** 同じフォルダにある、読めなかった記録の写しの名前。保存先を組み立てられない・フォルダを読めない回は空。 */
+function savedCopiesOf(projectDir: string): string[] {
+  try {
+    return listBrokenCopies(projectChatPath(projectDir))
+  } catch {
+    return []
+  }
+}
+
 /**
- * 読み込む（初回はファイルから畳む・以後はメモリ）。
- * ファイルが無ければ null（renderer の旧localStorage移行の判定に使うので、空配列と区別する）。
+ * 読み込み（chat:load）が「読めなかった」と画面に答えた会話の知らせ。key は projectDir。
+ * 画面はこの答えを映している。最初の書き込み（ensureEntry）が読み直して、画面が「書き込みません」と言った
+ * 会話の写しを作れてしまっても、書き込む側を画面の言葉より緩くしない（ensureEntry が引き継ぐ）。
+ */
+const shownUnreadable = new Map<string, UnreadableChat>()
+
+/**
+ * 読み込む（初回はファイルから畳む・以後はメモリ）。messages と、読めなかった記録の知らせを返す。
+ * ファイルが無ければ messages は null（renderer の旧localStorage移行の判定に使うので、空配列と区別する）。
+ * 読めない・畳めない記録は、読めた分（途中の壊れた行の手前まで）を messages に、何も読めなければ null を返し、
+ * どちらも unreadable で「無い」と区別できる。
+ * 記録は読めたが、同じフォルダに読めなかった記録の写しが残っているときは、その名前を copies で添える
+ * （会話を削除すると写しも一緒に消えるので、削除の確認に使う）。写しが無い回は copies を付けない。
  * 返す配列はコピー（呼び出し側が誤って内部の配列を書き換えないように）。
  */
-export function loadConversation(projectDir: string): TurnMessage[] | null {
+export function loadConversationState(projectDir: string): FileRead & { copies?: string[] } {
   const entry = store.get(projectDir)
-  if (entry) return [...entry.messages]
-  const fromFile = readFromFile(projectDir)
-  return fromFile ? [...fromFile] : null
+  let state: FileRead
+  if (entry) {
+    state = { messages: [...entry.messages], unreadable: entry.unreadable }
+  } else {
+    const read = readFromFile(projectDir)
+    if (read.unreadable) shownUnreadable.set(projectDir, read.unreadable)
+    else shownUnreadable.delete(projectDir)
+    state = { messages: read.messages ? [...read.messages] : null, unreadable: read.unreadable }
+  }
+  if (state.unreadable) return state
+  const copies = savedCopiesOf(projectDir)
+  return copies.length > 0 ? { ...state, copies } : state
+}
+
+/** messages だけを返す読み込み（読めなかったかを使わない呼び手向け）。 */
+export function loadConversation(projectDir: string): TurnMessage[] | null {
+  return loadConversationState(projectDir).messages
 }
 
 /** 未ロードの projectDir なら、先にファイルから読んでメモリへ載せる（丸ごと失わないため）。
- *  ファイルも無ければ空配列から始める。 */
+ *  ファイルも無ければ空配列から始める。読めなかった記録は、写しを作ってから空配列で始める。 */
 function ensureEntry(projectDir: string): Entry {
   let entry = store.get(projectDir)
   if (!entry) {
-    const fromFile = readFromFile(projectDir)
-    entry = { messages: fromFile ?? [], timer: null }
+    const read = readFromFile(projectDir)
+    // 画面に「書き込みません」（写しを作れなかった）と答えた会話は、読み直して写しを作れても書かない
+    const shown = shownUnreadable.get(projectDir)
+    shownUnreadable.delete(projectDir)
+    const unreadable = read.unreadable && shown?.backupName === null ? shown : read.unreadable
+    entry = { messages: read.messages ?? [], timer: null, unreadable }
     store.set(projectDir, entry)
   }
   return entry
@@ -122,6 +184,8 @@ function ensureEntry(projectDir: string): Entry {
  *  蘇生させない・2026-07-14 の決まり。ipc/chatStore.ts の chat:saveProject と同じガード）。 */
 function saveNow(projectDir: string, entry: Entry): void {
   if (!fs.existsSync(projectDir)) return
+  // 読めなかった記録の写しを作れなかった回は書かない（元のファイルを置き換えると、読めなかった記録が失われる）
+  if (entry.unreadable && entry.unreadable.backupName === null) return
   saveProjectChatFile(projectChatPath(projectDir), JSON.stringify(forStorage(entry.messages)))
 }
 
@@ -171,6 +235,7 @@ export function resetConversations(): void {
     if (entry.timer) clearTimeout(entry.timer)
   }
   store.clear()
+  shownUnreadable.clear()
 }
 
 /**
@@ -186,6 +251,7 @@ export function resetConversations(): void {
  * この1件だけを狙って落とす口を最小追加する（既存の関数・挙動は一切変えない）。
  */
 export function dropConversation(projectDir: string): void {
+  shownUnreadable.delete(projectDir)
   const entry = store.get(projectDir)
   if (!entry) return
   if (entry.timer) clearTimeout(entry.timer)

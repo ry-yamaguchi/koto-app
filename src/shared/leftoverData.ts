@@ -27,7 +27,8 @@
 // **AI への依頼文だけ**——Koto が知っている事実を渡さないと、AI は記憶で答えて嘘をつく。
 
 import type { ModuleKind } from './objectStorage'
-import { dataLayerUsageLine, rewriteCheckDone, KEEP_SHAPE, type RewriteScan } from './storageNoticeText'
+import { wrapFailureText } from './failureDetail'
+import { dataLayerUsageLine, rewriteCheckDone, withCauseOrRetry, KEEP_SHAPE, type RewriteScan } from './storageNoticeText'
 
 /**
  * 「データらしきファイル」の拡張子（**一元定義**・掟10）。
@@ -346,11 +347,11 @@ export function askAiMoveDataPlan(
   layer: { ok?: boolean; ready?: boolean; moduleKind?: ModuleKind; message?: string } | null | undefined,
 ): { send: true; text: string } | { send: false; error: string } {
   if (!layer || layer.ok !== true || layer.ready !== true) {
-    const detail = typeof layer?.message === 'string' && layer.message.length > 0 ? `（${layer.message}）` : ''
+    const message = typeof layer?.message === 'string' ? layer.message : ''
     return {
       send: false,
-      error: 'データ保存用のファイル（koto-data）を用意できませんでした' + detail
-        + '。少し待ってから、もう一度お試しください。',
+      // 原因の文は括弧に入れず、前置きのあとに続ける。原文（詳細）は最後の行へ移る
+      error: withCauseOrRetry(message, 'データ保存用のファイル（koto-data）を用意できませんでした'),
     }
   }
   return { send: true, text: askAiMoveDataText(files, layer.moduleKind === 'esm' ? 'esm' : 'cjs') }
@@ -405,9 +406,9 @@ export function leftoverScanLine(
   } | null | undefined,
 ): string {
   if (!result || result.ok !== true) {
-    const detail = typeof result?.message === 'string' && result.message.length > 0 ? `（${result.message}）` : ''
-    return 'ℹ️ いま入っているデータを確かめられませんでした' + detail
-      + '。少し待ってから、もう一度お試しください。'
+    const message = typeof result?.message === 'string' ? result.message : ''
+    // 原因の文は括弧に入れず、前置きのあとに続ける。原文（詳細）は最後の行へ移る。
+    return withCauseOrRetry(message, 'ℹ️ いま入っているデータを確かめられませんでした')
   }
   if (result.truncated === true) {
     // **断定しない。** ここに出ていない古いデータがあるかもしれない、とだけ言う

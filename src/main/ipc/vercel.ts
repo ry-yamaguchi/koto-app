@@ -24,6 +24,8 @@ import { markPendingFs, clearPendingFs, writePublishRecordFs } from '../publishM
 import { withProjectLock, projectBusyMessage } from '../projectLock'
 // 進捗の送り口は1つ（記録の更新と renderer への通知を兼ねる）。2026-09-29・projectOps.ts
 import { progressReporter } from '../projectOps'
+import { failureText, withFailureDetail } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 
 // デプロイ状態のポーリング設定。数秒間隔でREADY/ERRORまで待つ（タイムアウトあり）。
 const POLL_INTERVAL_MS = 3000
@@ -141,7 +143,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       const result = summarizePreflight(checks)
       return { ok: true, canPublish: result.canPublish, summary: result.summary, checks }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -181,8 +183,9 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       // **失うものの警告**が入る。片づけの報告（koto-data を差し替えました）を
       // その上に置くと、いちばん大事な行が2行目へ下がる。
       return r.ok
-        ? { ...r, notice: [r.notice, dataLayerLine].filter(Boolean).join('\n') }
-        : { ...r, message: [r.message, dataLayerLine].filter(Boolean).join('\n') }
+        ? { ...r, notice: wrapFailureText(r.notice ?? '', t => [t, dataLayerLine].filter(Boolean).join('\n')) }
+        // 詳細の行を最後に保つ（片づけの報告を後ろに足すと、詳細が最後の行でなくなり分けて描けない）
+        : { ...r, message: wrapFailureText(r.message ?? '', t => [t, dataLayerLine].filter(Boolean).join('\n')) }
     }
     try {
       const token = opts?.token
@@ -222,7 +225,8 @@ export function registerVercelHandlers(_deps: IpcDeps) {
         // 「公開ボタンを押しただけで黙って書き換わった」がこの道にだけ残る。
         return withDataLayerNote({
           ok: false,
-          message: `${storage.message}\nこのまま公開すると、アプリに入力されたデータを読み書きできないため、公開を中止しました。`,
+          // 鍵の用意の失敗は詳細が最後の行にある。案内はその前に挟む（詳細を途中にしない）
+          message: wrapFailureText(storage.message ?? '', t => `${t}\nこのまま公開すると、アプリに入力されたデータを読み書きできないため、公開を中止しました。`),
         })
       }
       // 保存場所を用意していないのに、データの保存を使っているアプリ（2026-09-24 検分の指摘1）。
@@ -276,7 +280,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
           buf = fs.readFileSync(f.absPath)
         } catch (e: any) {
           await revokeJustIssuedKey(storage)   // デプロイを作る前（検分の指摘5・6・7）
-          return withDataLayerNote({ ok: false, message: `ファイル（${f.relPath}）の読み込みに失敗しました: ${e?.message ?? String(e)}` })
+          return withDataLayerNote({ ok: false, message: withFailureDetail(`ファイル（${f.relPath}）の読み込みに失敗しました。`, e) })
         }
         const up = await client.uploadFile(buf)
         if (!up.ok) {
@@ -399,7 +403,7 @@ export function registerVercelHandlers(_deps: IpcDeps) {
       if (markerNote) notice = [notice, markerNote].filter(Boolean).join('\n')
       return withDataLayerNote({ ok: true, deploymentId: info.id, url: info.url, readyState: info.readyState, ...(notice ? { notice } : {}) })
     } catch (e: any) {
-      return withDataLayerNote({ ok: false, message: e?.message ?? String(e) })
+      return withDataLayerNote({ ok: false, message: failureText(e, { checkAt: '📡 公開したもの一覧' }) })
     } finally {
       clearPendingFs(projectDir)
     }

@@ -160,14 +160,14 @@ describe('F-3 入口ごとの呼び出しの形（この文字列のとおり）
     expect(c).toContain('teardown: (d, ts, o) => teardownPublished(d, ts, { confirm, confirmWithChoices }, o),')
     expect(count(DIALOG, 'teardownPublished(')).toBe(1)
     for (const w of ['runTeardownFlow', 'electronFlowDeps', 'sharedTeardownSpec', 'cloud.teardown(', 'targets/shared']) expect(c, w).not.toContain(w)
-    // 確認の要素 {element} は、背景の div の外（後ろの兄弟）に描く。中に描くと、確認の背景を押した click がダイアログの背景の onClick まで届いて両方閉じる
+    // 確認の要素 {element} は、窓（Modal）の外（後ろの兄弟）に描く。中に描くと、確認の背景を押した click がダイアログの背景まで届いて両方閉じる
     const at = c.indexOf('{element}')
     expect(at, '確認の要素を描いていない').toBeGreaterThan(0)
     expect(count(DIALOG, '{element}')).toBe(1)
-    const backdrop = c.lastIndexOf('<div', c.indexOf('fixed inset-0 z-50'))
-    expect(backdrop, '背景の div が見つからない').toBeGreaterThanOrEqual(0)
+    const backdrop = c.indexOf('<Modal\n')
+    expect(backdrop, '窓（Modal）が見つからない').toBeGreaterThanOrEqual(0)
     const before = c.slice(backdrop, at)
-    expect((before.match(/<div\b/g) ?? []).length, '{element} が背景の div の中にある（背景の div を閉じる前に描いている）').toBe((before.match(/<\/div>/g) ?? []).length)
+    expect((before.match(/<Modal\b/g) ?? []).length, '{element} が窓（Modal）の中にある（Modal を閉じる前に描いている）').toBe((before.match(/<\/Modal>/g) ?? []).length)
     // 置き場を消すかの既定は、画面が開いたときの写し（registry）から渡さない（押した時点の main の記録から決まる）
     const call = c.slice(c.indexOf('teardownPublished(d, ts'), c.indexOf('teardownPublished(d, ts') + 160)
     expect(call.length).toBeGreaterThan(40)

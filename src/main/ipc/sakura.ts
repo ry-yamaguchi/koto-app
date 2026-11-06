@@ -14,6 +14,7 @@ import type { IpcDeps } from './types'
 import { sakuraClient, isContextLimitError, safeMaxTokens, runSakuraChat, runSakuraStream } from '../sakura/engine'
 import { MODELS_TIMEOUT_MS, MODELS_MAX_RETRIES } from '../../shared/chatTimeouts'
 import { isConnectionFailure } from '../../shared/connectionFailure'
+import { classifyFailure, failureText, messageForIpc, withFailureDetail } from '../../shared/failureText'
 
 export { sakuraClient, isContextLimitError, safeMaxTokens }
 
@@ -32,19 +33,34 @@ type ChatMsg = {
 // そのまま投げていたため、オンボーディング画面・CredentialsModal の KeyTestButton に英語のまま出ていた。
 // src/main/github/client.ts の describeCreateRepoError、src/main/claude/client.ts の describeClaudeError と
 // 同じ考え方（既知の原因のみ日本語化し、未知はメッセージの先頭を短く見せる）。
+// 状態番号と、回線断・時間切れ・安全な接続の判定と文は、チャットの失敗文（shared/aiToolsCore.ts の formatChatError）と
+// 同じ共通の層（shared/failureText.ts）を通る。接続テストは読み取りなので「もう一度お試しください」と言う。
+const SAKURA_NOT_FOUND = 'さくらのAI Engine からモデルの一覧を取得できませんでした（404）。しばらく待ってから、もう一度お試しください。'
+const SAKURA_SERVER = 'さくらのAI Engine 側で一時的な問題が起きています。しばらく待ってから、もう一度お試しください。'
+// 共通の層が見分けられない回線断の文面（node-fetch の 'request to … failed, reason: …' など）の文を得るための、SDK の回線断の文面。
+const OFFLINE_SAMPLE = 'Connection error.'
+
 export function describeSakuraError(e: unknown): string {
-  const err = (e ?? {}) as { status?: number; message?: string }
-  const status = typeof err.status === 'number' ? err.status : undefined
+  const err = (e ?? {}) as { message?: string }
   const message = typeof err.message === 'string' ? err.message : String(e ?? '')
+  const failure = classifyFailure(e)
+  const { status } = failure
   if (status === 401 || status === 403) {
-    return 'APIキーが正しくないようです。コピーし直して貼り付けてください'
+    return withFailureDetail('APIキーが正しくないようです。コピーし直して貼り付けてください', e)
   }
   if (status === 429) {
-    return 'アクセスが集中しています。しばらく待ってからもう一度お試しください'
+    return withFailureDetail('アクセスが集中しています。しばらく待ってからもう一度お試しください', e)
   }
-  // 回線断の判定はチャットの失敗文と同じもの（shared/connectionFailure.ts）。
-  if (isConnectionFailure(e)) {
-    return 'インターネット接続を確認してください'
+  if (status === 404) return withFailureDetail(SAKURA_NOT_FOUND, e)
+  if (status !== undefined && status >= 500 && status < 600) return withFailureDetail(SAKURA_SERVER, e)
+  // 回線断・時間切れ・安全な接続（状態番号のある失敗は、ここまでで返しているか、下の原文のまま）。
+  if (failure.kind === 'offline' || failure.kind === 'timeout' || failure.kind === 'interrupted' || failure.kind === 'tls') {
+    return failureText(e, { readOnly: true })
+  }
+  // 構造・定型では当たらない回線断の文面は、これまでどおり回線断として言う。
+  if (status === undefined && isConnectionFailure(e)) {
+    // 文は見本から作る。詳細は見本ではなく本物の失敗から付ける（見本の 'Connection error.' は出さない）。
+    return withFailureDetail(failureText(OFFLINE_SAMPLE, { readOnly: true, detail: false }), e)
   }
   return `接続テストに失敗しました: ${message.slice(0, 120)}`
 }
@@ -97,6 +113,10 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
         return await runSakuraChat(args, {
           onAbortReady: (abortFn) => { activeChats.set(id, { abort: abortFn }) },
         })
+      } catch (err) {
+        // IPC を越えると例外は message だけになる。判定した種類を message の頭に載せて、renderer（🗂 まとめ・
+        // セキュリティチェック）が main の経路と同じ日本語の文にできるようにする（印の作りと読みは failureText.ts の1か所）。
+        throw new Error(messageForIpc(err))
       } finally {
         activeChats.delete(id)
       }
@@ -126,7 +146,7 @@ export function registerSakuraHandlers(_deps: IpcDeps) {
         // 両方とも chat-done へ送る。他のエラー（throw されたもの）だけ catch 側で chat-error にする。
         wc.send(`sakura:chat-done:${id}`, result)
       } catch (err: any) {
-        wc.send(`sakura:chat-error:${id}`, err?.message ?? String(err))
+        wc.send(`sakura:chat-error:${id}`, messageForIpc(err))
       } finally {
         activeChats.delete(id)
       }

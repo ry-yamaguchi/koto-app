@@ -1,3 +1,5 @@
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import SakuraLogo from './SakuraLogo'
 import { getDefaultModel } from '../usage'
@@ -8,6 +10,8 @@ import KnowledgeAnswer, { type KnowledgeAnswerData } from './KnowledgeAnswer'
 import { judgeFreshness, parseSourceMeta, sourcesDueForCheck, fingerprint, judgeUpdate } from '../../shared/freshness'
 import { setBaseline, getBaseline, pruneBaselines } from '../knowledgeBaseline'
 import { isSubmitEnter } from '../keyInput'
+import { knowledgeFailureNotice, sourcePageFailureText } from './knowledgeNotice'
+import Modal from '../ui/Modal'
 
 // 「📚 資料」モーダル：さくらのAI Engine RAG API を使った資料（ドキュメント）管理（R1）
 // ＋ このプロジェクトのチャットで資料を使うかの設定（R2・セクション4）
@@ -76,6 +80,8 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
   // AI は古い情報を「いまの情報」として読む。**いつのものかを必ず見せる。**
   /** 資料ID → 元のページを見た結果。 */
   const [sourceState, setSourceState] = useState<Record<string, 'same' | 'changed' | 'checking' | 'no-baseline' | 'no-url' | 'fetch-failed'>>({})
+  // 出典の確認が失敗したときの文（詳細つき）。資料ごと
+  const [sourceFailure, setSourceFailure] = useState<Record<string, string>>({})
   /** 出典URLが見つからなかったときの、実際の本文の先頭（**推測で直さないため**の材料）。 */
   const [sourceHead, setSourceHead] = useState<Record<string, string>>({})
   const [refreshingId, setRefreshingId] = useState<string | null>(null)
@@ -181,7 +187,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
       setPollTimedOut(false)
       load()
     } else {
-      setUploadNotice(`追加に失敗しました: ${r.error ?? ''}`)
+      setUploadNotice(knowledgeFailureNotice('追加', r.error))
     }
   }
 
@@ -203,7 +209,13 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
     try {
       // 出どころ（URL）は資料の本文から読む
       const got = await window.electronAPI.rag.get(apiKey, doc.id)
-      const stored = got.ok ? (got.document?.content ?? null) : null
+      if (!got.ok) {
+        // 資料の本文を読めなかっただけ。「出典URLが無い」とは言わず、読めなかった理由を出す
+        setSourceFailure(prev => ({ ...prev, [doc.id]: got.error ?? '' }))
+        setSourceState(prev => ({ ...prev, [doc.id]: 'fetch-failed' }))
+        return
+      }
+      const stored = got.document?.content ?? null
       const meta = parseSourceMeta(stored)
       if (!meta.url) {
         setSourceHead(prev => ({ ...prev, [doc.id]: String(stored ?? '').replace(/\s+/g, ' ').slice(0, 80) }))
@@ -222,8 +234,9 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
         setBaseline(doc.id, fingerprint(page.content))
       }
       setSourceState(prev => ({ ...prev, [doc.id]: verdict }))
-    } catch {
+    } catch (e: unknown) {
       // 取りに行けないだけで「変わった」とは言わない（相手が落ちている・認証が要る等）
+      setSourceFailure(prev => ({ ...prev, [doc.id]: sourcePageFailureText(e) }))
       setSourceState(prev => ({ ...prev, [doc.id]: 'fetch-failed' }))
     } finally {
       const next = { ...loadLastChecked(), [doc.id]: new Date().toISOString() }
@@ -242,7 +255,8 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
     setRefreshingId(doc.id)
     try {
       const got = await window.electronAPI.rag.get(apiKey, doc.id)
-      const meta = parseSourceMeta(got.ok ? (got.document?.content ?? null) : null)
+      if (!got.ok) { setListError(got.error ?? '取り直しに失敗しました'); return }
+      const meta = parseSourceMeta(got.document?.content ?? null)
       if (!meta.url) { setListError('この資料には出典URLが記録されていないため、取り直せません。'); return }
       const page = await window.electronAPI.web.fetchPage(meta.url, { maxChars: WEB_FETCH_MAX_CHARS })
       const markdown = buildWebPageMarkdown(
@@ -274,7 +288,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
       }
       await load()
     } catch (e: any) {
-      setListError(e?.message ?? String(e))
+      setListError(failureText(e))
     } finally {
       setRefreshingId(null)
     }
@@ -330,7 +344,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
       setEditingId(null)
       load()
     } else {
-      window.alert(`更新に失敗しました: ${r.error ?? ''}`)
+      setUploadNotice(knowledgeFailureNotice('更新', r.error))
     }
   }
 
@@ -343,7 +357,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
     if (r.ok) {
       load()
     } else {
-      window.alert(`削除に失敗しました: ${r.error ?? ''}`)
+      setUploadNotice(knowledgeFailureNotice('削除', r.error))
     }
   }
 
@@ -372,18 +386,21 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+    // 枠は ui/Modal（0.6.26）。Esc・背景クリックも ✕・「閉じる」と同じ onClose を通る（窓の中の確認は枠の中のまま）。
+    <Modal
+      onRequestClose={onClose} labelledBy="knowledge-modal-title" backdropClassName="bg-black/50 backdrop-blur-sm"
+      panelClassName={`w-[620px] ${apiKey ? 'h-[88vh]' : ''} bg-elevated rounded-2xl border border-line shadow-2xl fade-in`}
+    >
       {/* タブ表示時は高さを固定（h-）にする。max-h だと中身の薄いタブ（Webから資料を作る）だけモーダルが縮み、
           中央寄せのため上端＝タブボタンの位置がタブ切替のたびに上下にずれる（2026-07-17 ユーザー報告）。
           キー未登録時（タブなし・案内のみ）は従来どおり中身に合わせて小さく表示する */}
-      <div className={`w-[620px] ${apiKey ? 'h-[88vh]' : 'max-h-[88vh]'} overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in`} onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2.5 px-6 pt-6 pb-4 sticky top-0 bg-elevated z-10">
           <SakuraLogo size={24} />
           <div>
-            <h2 className="text-lg font-bold text-ink">📚 資料</h2>
+            <h2 id="knowledge-modal-title" className="text-lg font-bold text-ink">📚 資料</h2>
             <p className="text-xs text-ink-secondary">AIに読ませる資料をさくらのAI Engineに登録・管理します</p>
           </div>
-          <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
+          <button onClick={onClose} aria-label="閉じる" className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
 
         {apiKey && (
@@ -453,7 +470,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                   対応形式: txt / pdf / html / docx / xlsx / md。取り込んだ資料は<b className="text-ink-secondary">さくらのAI Engine（さくらインターネットのサーバー）に保存</b>されます。
                 </p>
                 {uploadNotice && (
-                  <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all">{uploadNotice}</p>
+                  <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all"><FailureLines text={uploadNotice} /></p>
                 )}
               </div>
 
@@ -492,7 +509,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                 )}
 
                 {listError && (
-                  <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{listError}</p>
+                  <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text"><FailureLines text={listError} /></p>
                 )}
 
                 {loading && documents.length === 0 ? (
@@ -573,7 +590,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                                   : st === 'same' ? { text: '✅ 元のページと同じ内容です', warn: false }
                                   : st === 'no-baseline' ? { text: '取り込んだときの内容が記録されていないため、更新の有無は分かりません（いまの内容を基準にしました）', warn: false }
                                   : st === 'no-url' ? { text: `出典URLが記録されていないため、確認できません（本文の先頭: ${sourceHead[doc.id] ?? '—'}）`, warn: false }
-                                  : st === 'fetch-failed' ? { text: '元のページを取得できませんでした', warn: false }
+                                  : st === 'fetch-failed' ? { text: sourceFailure[doc.id] || '元のページを取得できませんでした', warn: false }
                                   : null
                                 return (
                                   <div className="flex items-baseline gap-2 flex-wrap text-[11px]">
@@ -582,7 +599,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                                       {fresh.level === 'stale' && '（内容が古いかもしれません）'}
                                     </span>
                                     {note && (
-                                      <span className={note.warn ? 'text-brand-yellow font-medium' : 'text-ink-muted'}>{note.text}</span>
+                                      <span className={note.warn ? 'text-brand-yellow font-medium' : 'text-ink-muted'}><FailureLines text={note.text} /></span>
                                     )}
                                     {isWeb && st === 'changed' && (
                                       <button
@@ -655,7 +672,7 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
                   >{asking ? '検索中…' : '検索'}</button>
                 </div>
                 {askError && (
-                  <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{askError}</p>
+                  <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text"><FailureLines text={askError} /></p>
                 )}
                 {answer && <KnowledgeAnswer answer={answer} />}
               </div>
@@ -667,7 +684,6 @@ export default function KnowledgeModal({ apiKey, onClose, onOpenCredentials, pro
             <button onClick={onClose} className="bg-overlay text-ink border border-line rounded-xl px-4 py-2 text-sm font-medium hover:border-sakura">閉じる</button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

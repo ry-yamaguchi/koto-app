@@ -13,6 +13,8 @@
 // 読めない・壊れている記録は数えない（何を使っているか分からない）。
 //
 // **親フォルダの一覧そのものを読めなかったときは投げる**。空に倒すと「使っているプロジェクトは無い」と読んで、既定でオンの確認を出してしまう。
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import * as fs from 'fs'
 import * as path from 'path'
 import { CLOUD_STATE_FILE, cloudFilePath } from './specStore'
@@ -43,7 +45,8 @@ export function otherProjectsUsingRegistry(projectDir: string, registryName: str
   try {
     entries = fs.readdirSync(workspace, { withFileTypes: true })
   } catch (e) {
-    throw new Error(`ほかのプロジェクトが同じコンテナレジストリを使っていないか、確かめられませんでした（${e instanceof Error ? e.message : String(e)}）`)
+    // 原文は詳細の行として最後に残す（括弧の中に英語を埋め込まない）
+    throw new Error(wrapFailureText(failureText(e, { readOnly: true }), t => `ほかのプロジェクトが同じコンテナレジストリを使っていないか、確かめられませんでした（${t.replace(/。$/, '')}）`))
   }
   const users: string[] = []
   for (const e of entries) {

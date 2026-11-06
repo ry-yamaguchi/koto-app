@@ -10,6 +10,7 @@
 //   - dryRun（client.dryRun===true）のときは一切実行せず、各アクションを skipped に積む。
 //   - 返す state は常に新しいオブジェクト（入力の state を破壊しない）。
 
+import { failureText } from '../../shared/failureText'
 import type { EnvSpec } from './spec'
 import type { EnvState, ResourceRef } from './state'
 import type { Plan } from './planner'
@@ -294,7 +295,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
           // 鍵は発行済みで、まだどの版にも載っていない＝ここで取り消す（2026-09-25 検分）
           if (problem) return await stopped(problem)
         } catch (e: any) {
-          return await stopped(`保存場所のアクセスキーを用意できませんでした: ${e?.message ?? e}`)
+          return await stopped(`保存場所のアクセスキーを用意できませんでした: ${failureText(e)}`)
         }
       }
       if (a.type === 'create') {
@@ -420,7 +421,7 @@ export async function applyPlan(opts: ApplyOptions): Promise<ApplyResult> {
           if (prefix) await storage.putMarker(a.name, keepMarkerKey(prefix))
         } catch (e: any) {
           // ensureBucket の文は書き出しに保存場所の名前を持たない（omitHead）。ここで前置きするので、名前と失敗を2回言わない
-          return await stopped(`保存場所『${a.name}』を用意できませんでした: ${e?.message ?? e}`)
+          return await stopped(`保存場所『${a.name}』を用意できませんでした: ${failureText(e)}`)
         }
         state.resources.push({ kind: 'bucket', id: a.name, stateful: true, key: `bucket:${a.name}`, prefix })
         executed.push(a.description)

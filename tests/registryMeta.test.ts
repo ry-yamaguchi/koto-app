@@ -314,8 +314,17 @@ describe('cloud:ensureRegistry の配線（掟10: 一元化した関数を実際
   const cloudIpc = readFileSync(join(__dirname, '..', 'src/main/ipc/cloud.ts'), 'utf-8')
 
   it('provisionRegistryWithMeta を registryProvision.ts からインポートして使っている', () => {
-    expect(cloudIpc).toContain("import { provisionRegistryWithMeta } from '../cloud/registryProvision'")
+    expect(cloudIpc).toContain("import { provisionRegistryWithMeta, lookupExistingRegistry } from '../cloud/registryProvision'")
     expect(cloudIpc).toContain('await provisionRegistryWithMeta(client, region, label, baseName, metaKnownUnsupported)')
+  })
+
+  it('作る前の探し直しは lookupExistingRegistry の1か所を通る＝一覧を読めなかった回に作りにいかない（振る舞いは tests/ensureRegistryListFailure.test.ts）', () => {
+    expect(cloudIpc).toContain('const found = await lookupExistingRegistry(client, region, registryLookupNames(recordedState ?? {}, label))')
+    expect(cloudIpc).toContain("if (found.kind === 'stop') return { ok: false, message: found.message }")
+    // 直す前の形（一覧の ok だけを見て、読めなかった回を「無い」として作りに進む）に戻さない
+    const handler = cloudIpc.slice(cloudIpc.indexOf("ipcMain.handle('cloud:ensureRegistry'"), cloudIpc.indexOf("ipcMain.handle('cloud:setBuilderMode'"))
+    expect(handler).not.toContain('client.listContainerRegistries(')
+    expect(handler).not.toContain('pickContainerRegistries(')
   })
 
   it('既存レジストリを再利用するとき（登録済みが見つかったとき）は provisionRegistryWithMeta を呼ばない＝後から付けにいかない', () => {

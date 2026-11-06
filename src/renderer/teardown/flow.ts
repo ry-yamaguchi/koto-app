@@ -13,6 +13,7 @@
 // 掟4（方式B）: キーは使う瞬間に読んで引数で渡す。ここでは保存しない。
 // 掟5: 確認は ConfirmModal（useConfirm）。window.confirm は使わない。
 
+import { failureText } from '../../shared/failureText'
 import type { ConfirmOptions } from '../useConfirm'
 import type { ConfirmWithChoicesAnswer, ConfirmWithChoicesOptions } from '../useConfirmChoices'
 import { PUBLISH_CLOSE_WARNING, beginActivity } from '../activity'
@@ -103,7 +104,7 @@ export async function runTeardownFlow<R, A, Res>(
   try {
     facts = await deps.loadFacts()
   } catch (e: any) {
-    return { cancelled: false, result: spec.failure(`${spec.words.factsUnreadable}: ${e?.message ?? String(e)}`) }
+    return { cancelled: false, result: spec.failure(`${spec.words.factsUnreadable}: ${failureText(e, { readOnly: true })}`) }
   }
   // 消すものが記録に無い（幽霊の行）。「次を…します: 」と何も名前を出さないまま実行を押させない。IPC も呼ばない。
   // 共用型だけ、これを失敗でなく成功の知らせにする（`nothingToDo` の印。印の無い仕様書の結果の形は今のまま）。

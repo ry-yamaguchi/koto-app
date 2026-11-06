@@ -43,6 +43,9 @@
 
 import * as path from 'path'
 import { redactSecrets } from '../shared/updateLog'
+import { failureText } from '../shared/failureText'
+import { wrapFailureText } from '../shared/failureDetail'
+import { looksSecretKeyName } from '../shared/secretShapes'
 // 結果から警告・起きたことの文を作るのは shared/teardownResult.ts の2つの関数だけ（その場の画面も同じ2つを通る）。
 // ⚠️・※ で始まる行を「知らせ」として warnings へ移す印の定義は、そこから呼ぶ shared/opsText.ts の1か所。
 import { reportedLinesOf, teardownWarningsOf } from '../shared/teardownResult'
@@ -599,9 +602,6 @@ export function scrub(text: string, secrets: readonly string[] = []): string {
   return t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT)}…` : t
 }
 
-/** 値ごと落とす名前（秘密の入れ物になりうるもの）。 */
-const SECRET_KEY_NAME = /token|secret|password|passwd|api[-_]?key|access[-_]?key|authorization|credential/i
-
 /** 数・真偽・文字列・それらの配列／小さな入れ子だけを写す（関数・巨大なもの・深すぎるものは落とす）。 */
 function cleanValue(x: unknown, secrets: readonly string[], depth = 0): unknown {
   if (x === null) return null
@@ -615,7 +615,7 @@ function cleanValue(x: unknown, secrets: readonly string[], depth = 0): unknown 
   if (typeof x === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(x as Record<string, unknown>).slice(0, 40)) {
-      if (SECRET_KEY_NAME.test(k)) continue
+      if (looksSecretKeyName(k)) continue
       const c = cleanValue(v, secrets, depth + 1)
       if (c !== undefined) out[k] = c
     }
@@ -692,6 +692,7 @@ export function summarizeResult(value: unknown, secrets: readonly string[] = [])
 
 /** 例外で終わったとき（IPC 自体は例外を投げ続ける）。何が起きたかを、秘密を伏せて残す。 */
 function failedResult(error: unknown, secrets: readonly string[]): OpResult {
-  const msg = error instanceof Error ? error.message : String(error)
-  return { ok: false, message: scrub(`予期しない失敗で止まりました: ${msg}`, secrets), lines: [], warnings: [], extra: {} }
+  // 原文のまま埋めると回線断などが英語で出る。日本語の文にして、詳細は最後の行に残す
+  const msg = wrapFailureText(failureText(error), t => `予期しない失敗で止まりました: ${t}`)
+  return { ok: false, message: scrub(msg, secrets), lines: [], warnings: [], extra: {} }
 }

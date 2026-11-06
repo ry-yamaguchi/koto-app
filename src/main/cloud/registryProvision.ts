@@ -5,6 +5,8 @@
 //
 // ⚠️ Description/Tags を「作成時に設定できるか」は未確認（掟1）。推測で「できる」と実装しない。
 // ここでやること:
+//   0. 作る前に、既存のレジストリを探す（lookupExistingRegistry）。**一覧を読めなかった回は作らない**
+//      （「無い」と読んで作ると、同じ名前の予約済みにサフィックスを付けて別のレジストリが増え、月額が増える）
 //   1. まず Description/Tags を付けて作成を試す（呼び出し側が既に「対応していない」と
 //      分かっていれば、最初から付けずに試す＝毎回は試さない）
 //   2. 名前が予約済み（重複）で失敗したら、サフィックスを付けて作り直す
@@ -31,6 +33,7 @@ import {
   extractRegistryId,
   extractRegistryMetaApplied,
   apiErrorMessage,
+  readContainerRegistryList,
   type RegistryMeta,
   type RequestResult,
 } from './client'
@@ -61,6 +64,57 @@ export type RegistryProvisionResult =
       metaSupported: boolean | null
     }
   | { ok: false; message: string }
+
+/** 探し直しが必要とするクライアントの最小の形。 */
+export type RegistryLookupClient = {
+  listContainerRegistries(zone: string): Promise<RequestResult>
+}
+
+/**
+ * 既存のレジストリの探し直しの結果。
+ * - found: 探した名前のどれかが一覧にあった（`label` は実際に見つかった名前）
+ * - absent: 一覧を読めて、探した名前はどれも無かった（**作ってよいのはこの回だけ**）
+ * - stop: 認証が通らない・一覧を取得できない・一覧の形を読めない。`message` をそのまま返して**作らない**
+ */
+export type RegistryLookupResult =
+  | { kind: 'found'; id: string; label: string }
+  | { kind: 'absent' }
+  | { kind: 'stop'; message: string }
+
+/**
+ * 作る前に、既存のレジストリを探す。`names` は先に試す順（このプロジェクトが記録している名前が先）。
+ *
+ * 一覧を読めなかった回を「無い」と同じに扱わない。HTTP 5xx・429 や読めない形の応答で作りにいくと、
+ * 記録している名前のレジストリがさくら側に残ったまま、サフィックス付きの別のレジストリが増える。
+ * 記録はその新しい名前で上書きされ、もとのレジストリは破棄でも消えないまま月額がかかり続ける。
+ * 「読めたうえで無い」の判定は破棄と同じ `readContainerRegistryList`（読めなければ null）を通す。
+ */
+export async function lookupExistingRegistry(
+  client: RegistryLookupClient,
+  region: string,
+  names: string[],
+): Promise<RegistryLookupResult> {
+  const listed = await client.listContainerRegistries(region)
+  if (listed.dryRun !== false) return { kind: 'stop', message: 'レジストリの一覧を取得できませんでした。新しいレジストリは作っていません。' }
+  if (listed.status === 401 || listed.status === 403) {
+    return { kind: 'stop', message: '認証に失敗しました（クラウドのアクセストークン/シークレットを確認してください）' }
+  }
+  if (!listed.ok) {
+    return {
+      kind: 'stop',
+      message: `レジストリの一覧を取得できませんでした（HTTP ${listed.status}）。新しいレジストリは作っていません。しばらくしてから、もう一度お試しください。`,
+    }
+  }
+  const rows = readContainerRegistryList(listed.data)
+  if (rows === null) {
+    return { kind: 'stop', message: 'レジストリの一覧の応答を読み取れませんでした。新しいレジストリは作っていません。しばらくしてから、もう一度お試しください。' }
+  }
+  for (const candidate of names) {
+    const existing = rows.find(r => r.subdomainLabel === candidate)
+    if (existing) return { kind: 'found', id: existing.id, label: candidate }
+  }
+  return { kind: 'absent' }
+}
 
 /** 名前の予約衝突（作り直せば通る）っぽいメッセージかどうか。cloud.ts の既存判定と同じ正規表現。 */
 function looksLikeNameConflict(data: unknown): boolean {

@@ -70,10 +70,26 @@ export function describeAssistantError(code: string): string {
     overloaded: 'Anthropic側が混雑しています。しばらく待ってからもう一度お試しください。',
     invalid_request: 'リクエストが不正です。',
     model_not_found: '指定したモデルが見つかりません。',
-    server_error: 'Anthropic側でエラーが発生しました。',
+    server_error: 'Anthropic側でエラーが発生しました。しばらく待ってからもう一度お試しください。',
     max_output_tokens: '出力の上限に達したため打ち切られました。',
   }
   return table[code] ?? `エラーが発生しました（${code}）`
+}
+
+/** 文のブロックだけをつなぐ（空白だけのブロックは数えない）。 */
+function textOfBlocks(blocks: unknown[]): string {
+  return blocks
+    .map(raw => raw as Record<string, unknown>)
+    .filter(b => b?.type === 'text' && typeof b.text === 'string' && (b.text as string).trim())
+    .map(b => (b.text as string).trim())
+    .join('\n')
+}
+
+/** assistant の error 区分と、同じメッセージの文から、画面へ送る失敗の文を決める。
+ *  文があれば原文のまま送る（renderer の formatChatError が、回線断なら回線の文＋詳細に、見分けられなければ原文つきの文にする。
+ *  ここで日本語の文を作ると、renderer がもう一度包んで詳細が途中に挟まる）。文が無ければ区分の文だけ。 */
+function errorMessageOf(code: string, text: string): string {
+  return text || describeAssistantError(code)
 }
 
 /**
@@ -98,15 +114,21 @@ export function mapSdkMessage(msg: unknown): UiEvent[] {
     }
     case 'assistant': {
       const events: UiEvent[] = []
-      if (typeof m.error === 'string') {
-        events.push({ kind: 'error', message: describeAssistantError(m.error) })
-      }
       const message = (m.message ?? {}) as Record<string, unknown>
       const blocks = Array.isArray(message.content) ? message.content : []
+      // CLI は回線断などの API の失敗を「assistant の文」＋ error 区分（server_error・unknown）で返す。
+      // 文を捨てて区分だけ出すと原因（ホスト名・符号）が画面から消えるので、この2区分だけは文を error にする。
+      // 認証・課金・上限などの区分は、後段（請求の判定など）が日本語の固定文に頼るので変えない。
+      const errorCode = typeof m.error === 'string' ? m.error : null
+      const carriesText = errorCode === 'server_error' || errorCode === 'unknown'
+      const errorText = carriesText ? textOfBlocks(blocks) : ''
+      if (errorCode !== null) {
+        events.push({ kind: 'error', message: errorMessageOf(errorCode, errorText) })
+      }
       for (const raw of blocks) {
         const block = raw as Record<string, unknown>
         if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-          events.push({ kind: 'text', text: block.text })
+          if (!errorText) events.push({ kind: 'text', text: block.text })
         } else if (block?.type === 'tool_use' && typeof block.name === 'string') {
           events.push({ kind: 'tool', name: block.name, detail: describeToolDetail(block.name, block.input) })
         }

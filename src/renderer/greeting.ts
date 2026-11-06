@@ -10,6 +10,7 @@
 import type { Op } from './chatConvClient'
 import { IDE_CONTEXT } from './aiContext'
 import { formatChatError } from '../shared/aiToolsCore'
+import { stripRemoteHead } from '../shared/failureText'
 
 /** AI Engine のキーが無く Claude だけのときに出す固定の一言。AI へは何も送らない。 */
 export const GREETING_FIXED_TEXT = 'こんにちは！つくりたいものを日本語で教えてください。'
@@ -175,7 +176,7 @@ export async function runGreeting(run: GreetingRun, ports: GreetingPorts): Promi
     }
     ports.recordUsage(apiKey, model, usage?.prompt_tokens ?? ports.estimateTokens(sys + kickoff), usage?.completion_tokens ?? ports.estimateTokens(text))
   } catch (e: any) {
-    ports.warn(formatChatError(e?.message ?? String(e)))
+    ports.warn(formatChatError(stripRemoteHead(e), 'sakura', e))
     emit({ kind: 'replaceAll', messages: [{ role: 'assistant', content: GREETING_FAILED_TEXT }] })
   } finally {
     ports.setAbort(null)

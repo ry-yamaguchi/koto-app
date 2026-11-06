@@ -131,6 +131,37 @@ export function isSecretFile(name: string): boolean {
   return SECRET_FILE_PATTERNS.some(re => re.test(name))
 }
 
+/** パスのどこかに credentials / secret を含む名前（フォルダ名でもよい）。 */
+const SECRET_NAME_HINT_RE = /credentials|secret/i
+/** サービスアカウントの鍵（service-account.json・serviceAccountKey.json・firebase-service-account.json など）。 */
+const SERVICE_ACCOUNT_KEY_RE = /service[-_]?account[^/]*\.json$/i
+
+/**
+ * そのパスが「中身を見なくても、名前だけで秘密が入っていそうだ」と分かるものか。
+ * 公開前セキュリティチェックが、**中身を読まず外へも送らず、名前だけを伝える**ファイルを決める唯一の定義。
+ * 引数は相対パス（ファイル名だけでもよい）。
+ *
+ * `isSecretFile`（公開から外す名前）に、名前に credentials / secret を含むものと、サービスアカウントの鍵を足したもの。
+ * **足したぶんは公開から外さない**（`SECRET_FILE_PATTERNS` とその書き下しは広げない）。広げると、
+ * 利用者のアプリが動かなくなることがある（上の基準）。ここは「点検が中身を送らない」ための広い網。
+ */
+export function looksSecretByName(relPath: string): boolean {
+  const base = relPath.split('/').pop() ?? relPath
+  return isSecretFile(base) || SECRET_NAME_HINT_RE.test(relPath) || SERVICE_ACCOUNT_KEY_RE.test(base)
+}
+
+/**
+ * `looksSecretByName` に当たり、かつ**公開から外していない**名前か（`isSecretFile` に当たらないもの）。
+ * `credentials.json`・`service-account.json` のように、名前では疑わしいのに公開物に入るもの。
+ * 公開前セキュリティチェックが、AIの答えに関わらず「要確認」にする対象を決める唯一の定義。
+ * `.env`・`*.pem` などは、どの公開先でも除外されて公開されないので含めない
+ * （含めると、`.env` のある普通のプロジェクトがいつも「要確認」になる。止めすぎも害）。
+ */
+export function looksSecretButPublished(relPath: string): boolean {
+  const base = relPath.split('/').pop() ?? relPath
+  return looksSecretByName(relPath) && !isSecretFile(base)
+}
+
 /** ディレクトリを歩くときに丸ごと飛ばす名前（Set で名前一致に使う）。 */
 /**
  * **公開先へ出さないフォルダ名**（GitHub保存では使わない）。

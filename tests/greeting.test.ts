@@ -755,17 +755,20 @@ describe('T-5d: 会話の読み込み済みの印（convLoadedDir）は、読み
     expect(at('setConvLoadedDir(projectDir)')).toBe(mark + 'if (readable) '.length)
   })
 
-  it('読み込みの結果は { messages, readable } で受ける（読めたかを捨てない）', () => {
-    expect(effect).toContain('loadConversationChecked(projectDir).then(({ messages: msgs, readable }) => {')
+  it('読み込みの結果は { messages, readable, unreadable } で受ける（読めたかも、読めなかった記録の知らせも捨てない）', () => {
+    expect(effect).toContain('loadConversationChecked(projectDir).then(({ messages: msgs, readable, unreadable }) => {')
+    expect(effect).not.toContain('.then(({ messages: msgs, readable }) => {')
   })
 })
 
 describe('T-5d: プロジェクトを開く入口6つは、すべて projectDir を変えて同じ effect に届く', () => {
   const app = readCode('src/renderer/App.tsx')
 
-  it('★ App.tsx で currentDir を変える入口は6つ（setCurrentDir の呼び出し5か所＋サイドバーへ渡す1か所）', () => {
-    expect(countOf(app, 'setCurrentDir(')).toBe(5)
-    expect(countOf(app, 'onSetDir={setCurrentDir}')).toBe(1)
+  it('★ App.tsx で currentDir を変える入口は6つ（setCurrentDir を直に呼ぶ3か所＋changeDir〔未保存の確かめを通る口。setCurrentDir の呼び出し1か所〕を通る3か所）', () => {
+    expect(countOf(app, 'setCurrentDir(')).toBe(4)
+    expect(countOf(app, 'onSetDir={changeDir}')).toBe(1)
+    expect(countOf(app, 'void changeDir(dir)')).toBe(1)
+    expect(countOf(app, 'await changeDir(root)')).toBe(1)
   })
 
   it('★ 入口側であいさつを呼ばない（止めるのは effect の判断の1か所だけ）', () => {

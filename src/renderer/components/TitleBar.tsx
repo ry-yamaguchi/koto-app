@@ -19,6 +19,8 @@ interface Props {
   onSwitchMode: (m: AppMode) => void
   theme: Theme
   onSwitchTheme: (t: Theme) => void
+  /** プロジェクトを開いているか。無い間は「公開」「GitHubに保存」「元に戻す」を押せなくする。 */
+  hasProject: boolean
   showChat: boolean
   showTerminal: boolean
   onToggleChat: () => void
@@ -31,8 +33,11 @@ interface Props {
   version: string
 }
 
+/** プロジェクトが無い間、プロジェクトが要る3ボタンに出す理由（title）。 */
+export const NO_PROJECT_REASON = '先にプロジェクトを作るか、フォルダを開いてください。'
+
 export default function TitleBar({
-  mode, onSwitchMode, theme, onSwitchTheme, showChat, showTerminal, onToggleChat, onToggleTerminal, onOpenSettings, onPublish, onOpenKnowledge, onOpenGithubSave, onOpenHistory, version,
+  mode, onSwitchMode, theme, onSwitchTheme, hasProject, showChat, showTerminal, onToggleChat, onToggleTerminal, onOpenSettings, onPublish, onOpenKnowledge, onOpenGithubSave, onOpenHistory, version,
 }: Props) {
   return (
     <div
@@ -84,17 +89,19 @@ export default function TitleBar({
           <>
             <button
               onClick={onPublish}
-              title="プロジェクトを公開（レンタルサーバ / AppRun / HANAMII）"
+              disabled={!hasProject}
+              title={hasProject ? 'プロジェクトを公開（レンタルサーバ / AppRun / HANAMII）' : NO_PROJECT_REASON}
               style={NO_DRAG}
-              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity shadow-sm"
+              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold sakura-gradient text-white hover:opacity-90 transition-opacity shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
             >
               🚀 公開
             </button>
             <button
               onClick={onOpenGithubSave}
-              title="GitHubに保存（バックアップ・共有）"
+              disabled={!hasProject}
+              title={hasProject ? 'GitHubに保存（バックアップ・共有）' : NO_PROJECT_REASON}
               style={NO_DRAG}
-              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
+              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
             >
               💾 GitHubに保存
             </button>
@@ -102,9 +109,10 @@ export default function TitleBar({
                 （2026-08-05 利用者フィードバック）、上部にも文字付きで置く。 */}
             <button
               onClick={onOpenHistory}
-              title="前の状態に戻す（作業の履歴から選びます）"
+              disabled={!hasProject}
+              title={hasProject ? '前の状態に戻す（作業の履歴から選びます）' : NO_PROJECT_REASON}
               style={NO_DRAG}
-              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors"
+              className="flex-none whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-ink-secondary hover:text-ink hover:bg-overlay transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
             >
               🕘 元に戻す
             </button>

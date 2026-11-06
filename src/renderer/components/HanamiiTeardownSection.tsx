@@ -19,6 +19,7 @@
 //
 // 公開の記録（📡 の行・projectId）は、**ここでも画面でも消さない**。消すのは main の hanamii:teardown の1か所だけ
 // （画面が書くと、記録の再生で新しい公開の記録まで消える。HanamiiPanel の showTornDown のコメント）。
+import { teardownFailureText } from '../teardown/failureNote'
 import { useRef, useState } from 'react'
 import { useConfirm } from '../useConfirm'
 import { runTeardownFlow, electronFlowDeps } from '../teardown/flow'
@@ -115,7 +116,7 @@ export default function HanamiiTeardownSection({ projectDir, locked, ops, onStar
     } catch (e: any) {
       if (stale()) return
       if (began) await ops.sync()
-      showIfUnrecorded(hanamiiTeardownSpec.toView(hanamiiTeardownSpec.failure(`破棄処理でエラーが発生しました: ${e?.message ?? String(e)}`)))
+      showIfUnrecorded(hanamiiTeardownSpec.toView(hanamiiTeardownSpec.failure(`破棄処理でエラーが発生しました: ${teardownFailureText(e)}`)))
     } finally {
       startedRef.current = false
       if (began && !stale()) onFinished()

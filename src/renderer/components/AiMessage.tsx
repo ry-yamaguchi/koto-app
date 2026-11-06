@@ -1,6 +1,9 @@
+import { failureText } from '../../shared/failureText'
 import React, { useMemo, useState } from 'react'
 import { CHAT_TEXT_WRAP } from '../textWrap'
+import FailureLines from './FailureLines'
 import { parseChatText, type ChatInline } from '../chatMarkdown'
+import ErrorBand from './ErrorBand'
 
 type Part =
   | { type: 'text'; text: string }
@@ -64,7 +67,7 @@ function FileCard({ path, lang, code, onApply, applyHint }: {
     if (!onApply) return
     setState('applying'); setErr('')
     try { await onApply(path, code); setState('done') }
-    catch (e: any) { setState('error'); setErr(e?.message ?? String(e)) }
+    catch (e: any) { setState('error'); setErr(failureText(e)) }
   }
 
   return (
@@ -90,7 +93,7 @@ function FileCard({ path, lang, code, onApply, applyHint }: {
           </button>
         )}
       </div>
-      {state === 'error' && <div className="px-3 py-1.5 text-[11px] text-white bg-brand-red-fill">{err}</div>}
+      {state === 'error' && <ErrorBand text={err} className="px-3 py-1.5 text-[11px] text-white bg-brand-red-fill" />}
       {applyHint && (
         <div className="px-3 py-1.5 text-[11px] text-ink-muted border-t border-line-soft">💡 {applyHint}</div>
       )}
@@ -127,7 +130,8 @@ function Inlines({ inlines }: { inlines: ChatInline[] }) {
 function ChatText({ text, plain }: { text: string; plain?: boolean }) {
   // 解析は text が変わったときだけ（流し込み中、別の部分だけが変わる描き直しで、全文を解析し直さない）
   const blocks = useMemo(() => (plain ? [] : parseChatText(text)), [text, plain])
-  if (plain) return <p className={CHAT_TEXT_WRAP}>{text}</p>
+  // 失敗の文の末尾に「詳細: 原文」があれば、文のすぐ下に小さく出す（なければ今までどおり文字のまま）。
+  if (plain) return <p className={CHAT_TEXT_WRAP}><FailureLines text={text} /></p>
   return (
     <div className="space-y-2">
       {blocks.map((b, i) => {

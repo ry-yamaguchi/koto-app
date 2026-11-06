@@ -23,6 +23,7 @@
 
 import type { CloudCredentials } from './auth'
 import { readApiErrorTitle } from '../../shared/apprunDedicatedShapes'
+import { failureText } from '../../shared/failureText'
 
 /** APIのベースURL（末尾スラッシュ付き）。ゾーンは URL に出ない。 */
 export const APPRUN_DEDICATED_API_BASE = 'https://secure.sakura.ad.jp/cloud/api/apprun-dedicated/1.0/'
@@ -99,10 +100,11 @@ function formatError(status: number, bodyText: string): string {
 /**
  * 低レベル実装。**fetch を呼ぶのはこの関数だけ**にする（新しいメソッドを足す余地をここ1箇所に閉じ込める）。
  * body を渡すと JSON化して送る（POST用）。渡さなければ本文無し（GET/DELETE用）。
+ * readOnly が真のときだけ、通信の失敗を「もう一度お試しください」の読み取りの文にする（接続テスト・一覧）。
  */
 async function requestJson<T>(
   auth: CloudCredentials, method: string, pathname: string, body: unknown | undefined, baseUrl?: string,
-  contentType: string = 'application/json',
+  contentType: string = 'application/json', readOnly: boolean = false,
 ): Promise<ApprunDedicatedResult<T>> {
   let res: Response
   let text: string
@@ -119,7 +121,10 @@ async function requestJson<T>(
     })
     text = await res.text()
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? String(e) }
+    // 通信の失敗（回線断・時間切れ・安全な接続）は、共通の層（shared/failureText.ts）の日本語の文＋詳細にする。
+    // 読み取り（接続テスト・一覧）だけ「もう一度お試しください」と言う。作る・消す流れの中の呼び出しは慎重な文
+    // （「操作が済んだかは確かめられていません」）で、作り済みのものを二重に作らせない。見分けられない失敗は原文のまま。
+    return { ok: false, message: failureText(e, { readOnly }) }
   }
   if (!res.ok) {
     return { ok: false, message: formatError(res.status, text), detail: text.slice(0, 2000), status: res.status }
@@ -129,24 +134,28 @@ async function requestJson<T>(
   return { ok: true, data: data as T }
 }
 
+/** 読み取りの呼び出しが、通信の失敗の文を読み取り用にするための印。connectionTest は接続テストの古い呼び名（同じ意味）。 */
+type ReadOnlyOpts = { readOnly?: boolean; connectionTest?: boolean }
+
 /** GETのみの低レベル実装（既存呼び出し元互換のための薄いラッパー）。 */
-async function getJson<T>(auth: CloudCredentials, pathname: string, baseUrl?: string): Promise<ApprunDedicatedResult<T>> {
-  return requestJson<T>(auth, 'GET', pathname, undefined, baseUrl)
+async function getJson<T>(auth: CloudCredentials, pathname: string, baseUrl?: string, readOnly: boolean = false): Promise<ApprunDedicatedResult<T>> {
+  return requestJson<T>(auth, 'GET', pathname, undefined, baseUrl, undefined, readOnly)
 }
 
-/** GET /limits — このプランの上限（clusterCount・workerNodeCount など）。 */
-export async function getLimits(auth: CloudCredentials, baseUrl?: string): Promise<ApprunDedicatedResult> {
-  return getJson(auth, '/limits', baseUrl)
+/** GET /limits — このプランの上限（clusterCount・workerNodeCount など）。
+ *  readOnly（接続テスト・画面の「調べる」）の呼び出しは、通信の失敗が「もう一度お試しください」の文で返る。 */
+export async function getLimits(auth: CloudCredentials, baseUrl?: string, opts: ReadOnlyOpts = {}): Promise<ApprunDedicatedResult> {
+  return getJson(auth, '/limits', baseUrl, opts.readOnly === true || opts.connectionTest === true)
 }
 
 /** GET /service_classes/worker — ワーカのプラン一覧。 */
-export async function getWorkerClasses(auth: CloudCredentials, baseUrl?: string): Promise<ApprunDedicatedResult> {
-  return getJson(auth, '/service_classes/worker', baseUrl)
+export async function getWorkerClasses(auth: CloudCredentials, baseUrl?: string, opts: ReadOnlyOpts = {}): Promise<ApprunDedicatedResult> {
+  return getJson(auth, '/service_classes/worker', baseUrl, opts.readOnly === true)
 }
 
 /** GET /service_classes/lb — ロードバランサのプラン一覧。 */
-export async function getLbClasses(auth: CloudCredentials, baseUrl?: string): Promise<ApprunDedicatedResult> {
-  return getJson(auth, '/service_classes/lb', baseUrl)
+export async function getLbClasses(auth: CloudCredentials, baseUrl?: string, opts: ReadOnlyOpts = {}): Promise<ApprunDedicatedResult> {
+  return getJson(auth, '/service_classes/lb', baseUrl, opts.readOnly === true)
 }
 
 /**
@@ -154,8 +163,8 @@ export async function getLbClasses(auth: CloudCredentials, baseUrl?: string): Pr
  * **maxItems は必須。付け忘れると 400 になる**（上の CLUSTERS_MAX_ITEMS のコメント参照）。
  * この段階では件数の把握が目的で、続き（cursor）までは辿らない。
  */
-export async function listClusters(auth: CloudCredentials, baseUrl?: string): Promise<ApprunDedicatedResult> {
-  return getJson(auth, `/clusters?maxItems=${CLUSTERS_MAX_ITEMS}`, baseUrl)
+export async function listClusters(auth: CloudCredentials, baseUrl?: string, opts: ReadOnlyOpts = {}): Promise<ApprunDedicatedResult> {
+  return getJson(auth, `/clusters?maxItems=${CLUSTERS_MAX_ITEMS}`, baseUrl, opts.readOnly === true)
 }
 
 // ── ここから段階②（作る）で追加。クラスタ・ASG・ロードバランサの3資源のみを扱う ──────────
@@ -173,8 +182,8 @@ export async function createCluster(auth: CloudCredentials, body: unknown, baseU
 }
 
 /** GET /clusters/{clusterID} — クラスタが実在するかを確かめる（作成直後の実在確認に使う）。 */
-export async function getCluster(auth: CloudCredentials, clusterID: string, baseUrl?: string): Promise<ApprunDedicatedResult> {
-  return getJson(auth, `/clusters/${encodeURIComponent(clusterID)}`, baseUrl)
+export async function getCluster(auth: CloudCredentials, clusterID: string, baseUrl?: string, opts: ReadOnlyOpts = {}): Promise<ApprunDedicatedResult> {
+  return getJson(auth, `/clusters/${encodeURIComponent(clusterID)}`, baseUrl, opts.readOnly === true)
 }
 
 /** DELETE /clusters/{clusterID} — クラスタを削除する。**ASG・LBを先に消してから呼ぶこと**（5-7）。 */
@@ -296,9 +305,9 @@ export async function getApplication(auth: CloudCredentials, applicationID: stri
  * **GET のみ。** ここでは何も作らない・消さない。
  */
 export async function listApplicationContainers(
-  auth: CloudCredentials, applicationID: string, baseUrl?: string,
+  auth: CloudCredentials, applicationID: string, baseUrl?: string, opts: ReadOnlyOpts = {},
 ): Promise<ApprunDedicatedResult> {
-  return getJson(auth, `/applications/${encodeURIComponent(applicationID)}/containers`, baseUrl)
+  return getJson(auth, `/applications/${encodeURIComponent(applicationID)}/containers`, baseUrl, opts.readOnly === true)
 }
 
 /**
@@ -326,9 +335,9 @@ export async function deleteApplication(auth: CloudCredentials, applicationID: s
  * 他の一覧系と同じく LIST_MAX_ITEMS=20 を渡す。20 は min1〜max30 の範囲内）。
  */
 export async function listApplicationVersions(
-  auth: CloudCredentials, applicationID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string,
+  auth: CloudCredentials, applicationID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string, opts: ReadOnlyOpts = {},
 ): Promise<ApprunDedicatedResult> {
-  return getJson(auth, `/applications/${encodeURIComponent(applicationID)}/versions?maxItems=${maxItems}`, baseUrl)
+  return getJson(auth, `/applications/${encodeURIComponent(applicationID)}/versions?maxItems=${maxItems}`, baseUrl, opts.readOnly === true)
 }
 
 /**
@@ -371,12 +380,13 @@ export async function listWorkerNodes(
  * （DNSのAレコードに書く値。12-1）。原本: maxItems は必須・**min2**・max30・既定20（範囲内）。
  */
 export async function listLoadBalancerNodes(
-  auth: CloudCredentials, clusterID: string, asgID: string, lbID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string,
+  auth: CloudCredentials, clusterID: string, asgID: string, lbID: string, maxItems: number = LIST_MAX_ITEMS, baseUrl?: string, opts: ReadOnlyOpts = {},
 ): Promise<ApprunDedicatedResult> {
   return getJson(
     auth,
     `/clusters/${encodeURIComponent(clusterID)}/asg/${encodeURIComponent(asgID)}/load_balancers/${encodeURIComponent(lbID)}/load_balancer_nodes?maxItems=${maxItems}`,
     baseUrl,
+    opts.readOnly === true,
   )
 }
 

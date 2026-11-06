@@ -3,6 +3,8 @@
 // 0.6.22 段階3B（3B-5）で PublishedListModal.tsx から切り出した（設計書 10.9.10・10.11.9 の D2-5）。中身は移しただけで、押したときだけ
 // さくらへ問い合わせる（cloud:inventory）。props は workspace（プロジェクトを置くフォルダ）だけ。
 // 共通の部品（teardown/・components/teardown/）と同じく、専有型のパネルの部品（apprunDedicatedActions・AppRunDedicatedPanel）を import しない。
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
 import { useCallback, useState } from 'react'
 import { getWorkspaceDir } from '../workspace'
 import { kindLabel, costNote } from '../../shared/inventory'
@@ -31,7 +33,7 @@ export default function PublishedInventoryCard({ workspace }: { workspace: strin
         setCheckedKey(used ? used.label : null)
       } catch { setCheckedKey(null) }
     } catch (e: any) {
-      setInventory({ ok: false, message: e?.message ?? String(e), rows: [] })
+      setInventory({ ok: false, message: failureText(e, { readOnly: true }), rows: [] })
     } finally {
       setChecking(false)
     }
@@ -55,7 +57,7 @@ export default function PublishedInventoryCard({ workspace }: { workspace: strin
         </p>
       )}
       {inventory && !inventory.ok && (
-        <p className="text-[11px] text-brand-red leading-relaxed select-text">{inventory.message}</p>
+        <p className="text-[11px] text-brand-red leading-relaxed select-text"><FailureLines text={inventory.message ?? ''} /></p>
       )}
       {inventory?.ok && (
         <>

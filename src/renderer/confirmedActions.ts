@@ -116,6 +116,20 @@ export async function runDiscardCredentialEdits(message: string, deps: RunDiscar
   return gate(message, deps.confirm, () => deps.discard())
 }
 
+export interface RunRequestCloseCredentialsDeps extends RunDiscardCredentialEditsDeps {
+  /** 未保存の変更（dirty）があるか。 */
+  dirty: boolean
+}
+
+/**
+ * 認証情報の窓の閉じる操作（Esc・背景・✕・「閉じる」の共通の入口）。
+ * 未保存がなければそのまま discard（＝閉じる）。あれば確認を挟み、キャンセルなら discard に触れない。
+ */
+export async function runRequestCloseCredentials(message: string, deps: RunRequestCloseCredentialsDeps): Promise<void> {
+  if (!deps.dirty) { deps.discard(); return }
+  await runDiscardCredentialEdits(message, deps)
+}
+
 // ── CredentialsModal.tsx: VPS の鍵を消去 ─────────────────────────────────────
 
 export interface RunEraseVpsKeyDeps {
@@ -129,4 +143,29 @@ export interface RunEraseVpsKeyDeps {
  */
 export async function runEraseVpsKey(entryId: string, message: string, deps: RunEraseVpsKeyDeps): Promise<ActionOutcome<void>> {
   return gate(message, deps.confirm, () => deps.erase(entryId))
+}
+
+// ── EditorPanel.tsx: 外の内容を読み込む（未保存の編集を捨てる） ───────────────
+
+export interface RunReloadExternalDeps {
+  confirm: ConfirmFn
+  reload: (path: string) => unknown | Promise<unknown>
+}
+
+/**
+ * 外で書き換わったファイルを、ディスクの中身で読み直す。未保存の編集は消えるので、編集があるときは confirm を通ったときだけ
+ * reload を呼ぶ（confirm が false なら reload には一切触れない＝編集もタブも変わらない）。
+ * 編集が無い（`hasUnsavedEdits === false`）ときだけ、捨てるものが無いので確認を出さずに読み直す。真偽の値でないものは「ある」側に倒す。
+ */
+export async function runReloadExternal(
+  path: string,
+  hasUnsavedEdits: boolean,
+  message: string,
+  deps: RunReloadExternalDeps,
+): Promise<ActionOutcome<void>> {
+  if (hasUnsavedEdits === false) {
+    await deps.reload(path)
+    return { cancelled: false, result: undefined }
+  }
+  return gate(message, deps.confirm, async () => { await deps.reload(path) })
 }

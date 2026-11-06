@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useRef, Suspense } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import type { Layout } from 'react-resizable-panels'
 import Sidebar from './components/Sidebar'
@@ -10,6 +10,7 @@ import ServerFilesModal from './components/ServerFilesModal'
 import WorkflowBar, { ProjectMeta } from './components/WorkflowBar'
 import StatusBar from './components/StatusBar'
 import TitleBar, { AppMode } from './components/TitleBar'
+import OfflineBanner from './components/OfflineBanner'
 import NewProjectModal from './components/NewProjectModal'
 import SettingsModal from './components/SettingsModal'
 import CredentialsModal, { getAiEngineKeyInfo } from './components/CredentialsModal'
@@ -17,6 +18,8 @@ import OnboardingModal from './components/OnboardingModal'
 import KnowledgeModal from './components/KnowledgeModal'
 import HistoryModal from './components/HistoryModal'
 import GithubSaveModal from './components/GithubSaveModal'
+import ErrorBoundary from './components/ErrorBoundary'
+import { createRetryableLazy } from './retryableLazy'
 import PublishedListModal from './components/PublishedListModal'
 import { useFileDrag } from './hooks/useFileDrag'
 import { resolvePublishRoot } from './publishRootRenderer'
@@ -25,18 +28,20 @@ import { primeLearningMirror } from './learningMirror'
 import { primeUsageMirror } from './usageMirror'
 import { primeZonesCache } from './zonesCache'
 import { mergeProjectMeta } from './projectMeta'
+import {
+  type OpenFile, loadOpenFile, loadOpenFiles, upsertLoaded, afterAiWrite, reloadOpenFiles, applyReloaded, saveTab,
+  autosaveTargets, saveAllAndQuit, saveBeforeLeave, keepMyEdit, recreateTab, reloadTabFromDisk,
+} from './editorTabs'
+import { snapshotBeforeManualSave as snapshotBeforeManualSaveOf, type ManualSnapshotGroup } from './manualSnapshot'
+import { quitBlockedNotice, leaveUnsavedNotice, type LeaveAction } from './editorSyncBand'
+import { useConfirm } from './useConfirm'
 
-const EditorPanel = lazy(() => import('./components/EditorPanel'))
+// 読み込みに失敗しても、領域の「この部分を読み込み直す」でやり直せる（retryableLazy.ts）
+const EditorPanel = createRetryableLazy(() => import('./components/EditorPanel'))
 
 export type Theme = 'dark' | 'light'
 
-export interface OpenFile {
-  path: string
-  name: string
-  content: string
-  isDirty: boolean
-  language: string
-}
+export type { OpenFile }
 
 function loadLayout(id: string): Layout | undefined {
   try {
@@ -49,41 +54,6 @@ function saveLayout(id: string, layout: Layout) {
   try { localStorage.setItem(`sakura_layout_v2_${id}`, JSON.stringify(layout)) } catch {}
 }
 
-const IMAGE_EXT: Record<string, string> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-  webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', svg: 'image/svg+xml',
-}
-
-function imageMime(filename: string): string | null {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
-  return IMAGE_EXT[ext] ?? null
-}
-
-/** ファイルを OpenFile として読み込む（画像は data URL にしてプレビュー表示用にする） */
-async function loadOpenFile(filePath: string): Promise<OpenFile> {
-  const name = filePath.split('/').pop() ?? filePath
-  const mime = imageMime(name)
-  if (mime) {
-    const b64 = await window.electronAPI.fs.readFileBase64(filePath)
-    return { path: filePath, name, content: `data:${mime};base64,${b64}`, isDirty: false, language: 'image' }
-  }
-  const content = await window.electronAPI.fs.readFile(filePath)
-  return { path: filePath, name, content, isDirty: false, language: detectLanguage(name) }
-}
-
-function detectLanguage(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
-  const map: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-    py: 'python', rs: 'rust', go: 'go', java: 'java', cs: 'csharp',
-    cpp: 'cpp', c: 'c', h: 'c', rb: 'ruby', php: 'php',
-    html: 'html', css: 'css', scss: 'scss', json: 'json',
-    yaml: 'yaml', yml: 'yaml', md: 'markdown', sh: 'shell',
-    sql: 'sql', kt: 'kotlin', swift: 'swift',
-  }
-  return map[ext] ?? 'plaintext'
-}
-
 export default function App() {
   const [mode, setMode] = useState<AppMode>(() =>
     (localStorage.getItem('sakura_mode') as AppMode) ?? 'ide'
@@ -92,7 +62,15 @@ export default function App() {
     // 既定はライト（2026-07-17 ユーザー要望）。一度でも切り替えれば localStorage の選択が優先。
     (localStorage.getItem('sakura_theme') as Theme) ?? 'light'
   )
-  const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
+  const [openFiles, setOpenFilesState] = useState<OpenFile[]>([])
+  // 保存が「いまの基準（diskContent）」を読めるよう、最新の一覧を同期で持つ（描き直しを待たない）。
+  // 続けて2回保存を頼んだとき、2回目が1回目の結果を見られるようにするため。
+  const openFilesRef = useRef<OpenFile[]>([])
+  const setOpenFiles = useCallback((update: OpenFile[] | ((prev: OpenFile[]) => OpenFile[])) => {
+    const next = typeof update === 'function' ? update(openFilesRef.current) : update
+    openFilesRef.current = next
+    setOpenFilesState(next)
+  }, [])
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [showChat, setShowChat] = useState(true)
   /** 画面全体にファイルを重ねているか（落とせることを見せる）。 */
@@ -324,27 +302,29 @@ export default function App() {
   // （2026-08-05 の利用者要望。これが無いと、時点復元のときに自分の編集だけが退避されず消える）。
   // オートセーブが1.5秒ごとに走るため1回ずつ履歴に積むと一覧が埋まる。一定時間内の手動保存は
   // 同じスナップショットにまとめる（同一ファイルの2回目以降は退避しない＝「編集を始める前」が残る）。
-  const MANUAL_SNAPSHOT_GROUP_MS = 5 * 60 * 1000
-  const manualSnapshotRef = useRef<{ dir: string; id: string; at: number } | null>(null)
-  const snapshotBeforeManualSave = useCallback(async (filePath: string, content: string) => {
-    if (!currentDir || !filePath.startsWith(currentDir + '/')) return // プロジェクト外のファイルは対象外
-    const rel = filePath.slice(currentDir.length + 1)
-    const now = Date.now()
-    const g = manualSnapshotRef.current
-    const id = g && g.dir === currentDir && now - g.at < MANUAL_SNAPSHOT_GROUP_MS
-      ? g.id
-      : new Date().toISOString().replace(/[:.]/g, '-')
-    manualSnapshotRef.current = { dir: currentDir, id, at: now }
-    try {
-      await window.electronAPI.backup.snapshotBeforeWrite(currentDir, id, rel, content, '自分で編集して保存')
-    } catch { /* 履歴の失敗で保存を止めない */ }
-  }, [currentDir])
+  // 5分間は同じ時点にまとめる（manualSnapshot.ts）。外で書き換わったファイルを「自分の編集を保存する」で上書きするときは、
+  // 先にこの印を空にして、外の版を新しい時点に残す。
+  const manualSnapshotRef = useRef<ManualSnapshotGroup | null>(null)
+  const snapshotBeforeManualSave = useCallback((filePath: string, content: string) =>
+    snapshotBeforeManualSaveOf(
+      manualSnapshotRef,
+      { currentDir, now: Date.now, snapshot: (dir, id, rel, c, label) => window.electronAPI.backup.snapshotBeforeWrite(dir, id, rel, c, label) },
+      filePath, content),
+  [currentDir])
 
-  const saveFile = useCallback(async (filePath: string, content: string) => {
-    await snapshotBeforeManualSave(filePath, content)
-    await window.electronAPI.fs.writeFile(filePath, content)
-    setOpenFiles(prev => prev.map(f => f.path === filePath ? { ...f, content, isDirty: false } : f))
-  }, [snapshotBeforeManualSave])
+  // 保存の処理が見る口（最新のタブの一覧・一覧の更新・退避）。書く入口（自動保存・⌘S・プレビュー前・終了時）と帯の操作は、すべてこれを通る
+  const saveDeps = useMemo(
+    () => ({ getFiles: () => openFilesRef.current, updateFiles: setOpenFiles, beforeWrite: snapshotBeforeManualSave }),
+    [snapshotBeforeManualSave, setOpenFiles])
+
+  // 保存は、タブが覚えている基準（diskContent）を main に渡し、外で変わっていれば書かない（印を立てる）
+  const saveFile = useCallback((filePath: string, content: string) => saveTab(saveDeps, filePath, content), [saveDeps])
+
+  // 帯の操作。外で書き換わったファイルを自分の編集で上書きするときは、外の版を新しい時点に残してから書く
+  const keepMine = useCallback((filePath: string) =>
+    keepMyEdit({ ...saveDeps, resetSnapshotGroup: () => { manualSnapshotRef.current = null } }, filePath), [saveDeps])
+  const recreateFile = useCallback((filePath: string) => recreateTab(saveDeps, filePath), [saveDeps])
+  const reloadFromDisk = useCallback((filePath: string) => reloadTabFromDisk(saveDeps, filePath), [saveDeps])
 
   const updateFileContent = useCallback((filePath: string, content: string) => {
     setOpenFiles(prev => prev.map(f => f.path === filePath ? { ...f, content, isDirty: true } : f))
@@ -386,6 +366,7 @@ export default function App() {
     // AIが書き換えた後の手動編集は、別の履歴として積む（同じグループに入れると
     // 「AIの成果物」が退避されないまま自分の編集で上書きされ、戻せなくなる）
     manualSnapshotRef.current = null
+    // 利用者が押した「反映」の書き込みなので、基準では確かめない（見て選んだ内容をそのまま書く）。書いたあとは基準を進める
     await window.electronAPI.fs.writeFile(full, content)
     setTreeRefresh(n => n + 1)
 
@@ -399,15 +380,10 @@ export default function App() {
       return
     }
 
-    // エディタで開く / 既に開いていれば内容を更新
-    const name = full.split('/').pop() ?? full
-    setOpenFiles(prev => {
-      const ex = prev.find(f => f.path === full)
-      if (ex) return prev.map(f => f.path === full ? { ...f, content, isDirty: false } : f)
-      return [...prev, { path: full, name, content, isDirty: false, language: detectLanguage(name) }]
-    })
+    // エディタで開く / 既に開いていれば内容と基準を更新
+    setOpenFiles(prev => afterAiWrite(prev, full, content))
     setActiveFile(full)
-  }, [currentDir, openFiles])
+  }, [currentDir, openFiles, setOpenFiles])
 
   // AIがmainプロセス側（B'-3d-2b・チャットの main 直実行）で書いたファイルを、エディタへ反映する。
   //
@@ -425,14 +401,10 @@ export default function App() {
     setTreeRefresh(n => n + 1)
     try {
       const file = await loadOpenFile(full)
-      setOpenFiles(prev => {
-        const ex = prev.find(f => f.path === full)
-        if (ex) return prev.map(f => f.path === full ? file : f)
-        return [...prev, file]
-      })
+      setOpenFiles(prev => upsertLoaded(prev, file))
       setActiveFile(full)
     } catch { /* 直後に消える等で読めなくても、開いていなければ実害は無い */ }
-  }, [])
+  }, [setOpenFiles])
 
   // 「🕘 履歴」からの復元結果をエディタ・ツリーへ反映する。
   // 復元されたタブはディスクから読み直し（isDirty:false ＝ オートセーブが古い内容で上書きしないように）、
@@ -443,18 +415,12 @@ export default function App() {
     manualSnapshotRef.current = null
     const restoredAbs = new Set(restoredRel.map(r => `${currentDir}/${r}`))
     const deletedAbs = new Set(deletedRel.map(r => `${currentDir}/${r}`))
-    const reloaded = new Map<string, OpenFile>()
-    for (const f of openFiles) {
-      if (restoredAbs.has(f.path)) {
-        try { reloaded.set(f.path, await loadOpenFile(f.path)) } catch { /* 読めなければ据え置き */ }
-      }
-    }
-    setOpenFiles(prev => prev
-      .filter(f => !deletedAbs.has(f.path))
-      .map(f => reloaded.get(f.path) ?? f))
-    setActiveFile(prev => (prev && deletedAbs.has(prev)) ? null : prev)
+    const reloaded = await reloadOpenFiles(openFiles, restoredAbs)
+    setOpenFiles(prev => applyReloaded(prev, deletedAbs, reloaded))
+    // 閉じたタブがいま見ているタブなら選びを外す（未保存の編集があって残したタブは、そのまま）
+    setActiveFile(prev => (prev && !openFilesRef.current.some(f => f.path === prev)) ? null : prev)
     setTreeRefresh(n => n + 1)
-  }, [currentDir, openFiles])
+  }, [currentDir, openFiles, setOpenFiles])
 
   const activeFileObj = openFiles.find(f => f.path === activeFile) ?? null
   const anyDirty = openFiles.some(f => f.isDirty)
@@ -482,12 +448,7 @@ export default function App() {
         const raw = (dir ? localStorage.getItem(tabsKey(dir)) : null) ?? localStorage.getItem('sakura_open_tabs')
         if (raw) {
           const { paths, active } = JSON.parse(raw) as { paths: string[]; active: string | null }
-          const files: OpenFile[] = []
-          for (const p of paths ?? []) {
-            try {
-              files.push(await loadOpenFile(p))
-            } catch { /* 移動・削除されたファイルはスキップ */ }
-          }
+          const files = await loadOpenFiles(paths ?? [])
           if (!cancelled && files.length) {
             setOpenFiles(files)
             setActiveFile(files.some(f => f.path === active) ? active : files[files.length - 1].path)
@@ -521,9 +482,7 @@ export default function App() {
         try {
           const parsed = JSON.parse(raw) as { paths: string[]; active: string | null }
           active = parsed.active
-          for (const p of parsed.paths ?? []) {
-            try { files.push(await loadOpenFile(p)) } catch { /* 消えたファイルはスキップ */ }
-          }
+          files.push(...await loadOpenFiles(parsed.paths ?? []))
         } catch { /* 壊れていたら空で開始 */ }
       }
       if (cancelled) return
@@ -539,11 +498,7 @@ export default function App() {
         try {
           const file = await loadOpenFile(pending.full)
           if (!cancelled) {
-            setOpenFiles(prev => {
-              const ex = prev.find(f => f.path === file.path)
-              if (ex) return prev.map(f => f.path === file.path ? file : f)
-              return [...prev, file]
-            })
+            setOpenFiles(prev => upsertLoaded(prev, file))
             setActiveFile(file.path)
           }
         } catch { /* 直後に消える等で読めなくても、開いていなければ実害は無い */ }
@@ -564,8 +519,9 @@ export default function App() {
 
   // ── (2) オートセーブ（編集停止から1.5秒後に未保存を保存） ──
   const autosaveTimer = useRef<number | undefined>(undefined)
+  // 保存を止めた印のあるタブは自動では書かない（利用者が帯で選ぶまで。同じ答えを周期ごとに繰り返さない）
   useEffect(() => {
-    const dirty = openFiles.filter(f => f.isDirty)
+    const dirty = autosaveTargets(openFiles)
     if (dirty.length === 0) return
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
     autosaveTimer.current = window.setTimeout(() => {
@@ -614,15 +570,38 @@ export default function App() {
   }, [anyDirty])
 
   // ── (1)「保存して終了」選択時：全保存してから終了 ──
+  // 書くのは saveFile と同じ道（基準つき・退避つき）。外で変わった・消えた・読めないファイルがあれば、終了せずに知らせる
+  const { confirm: askUser, element: confirmElement } = useConfirm()
+
+  // プロジェクトを切り替える入口（サイドバー・公開したもの一覧・新規作成）は、すべてここを通る。
+  // 切り替えるとタブはまるごと入れ替わり、画面の中だけにある編集（保存を止めたタブのもの）は消える。
+  // 先に保存し、保存できなかったものがあれば捨ててよいか確かめる。断られたら切り替えない。開いていたプロジェクトを消したとき（null）は確かめない
+  // タブをまるごと手放す前の口（保存 → 確認）。フォルダの整理（ChatPanel）も同じ口を通る
+  const leaveProject = useCallback(
+    (action: LeaveAction = 'switch') => saveBeforeLeave({ ...saveDeps, confirmDiscard: unsaved => askUser(leaveUnsavedNotice(unsaved, action)) }),
+    [saveDeps, askUser])
+
+  const changeDir = useCallback(async (dir: string | null): Promise<boolean> => {
+    if (dir !== null && dir !== currentDir) {
+      const ok = await leaveProject()
+      if (!ok) return false
+    }
+    setCurrentDir(dir)
+    return true
+  }, [currentDir, leaveProject])
+
   useEffect(() => {
-    return window.electronAPI.win.onSaveAll(async () => {
-      const dirty = openFiles.filter(f => f.isDirty)
-      // 終了時の一括保存も履歴に残す（saveFile と同じ扱い。ここだけ抜けると戻せない編集ができる）
-      await Promise.all(dirty.map(f => snapshotBeforeManualSave(f.path, f.content)))
-      await Promise.all(dirty.map(f => window.electronAPI.fs.writeFile(f.path, f.content)))
-      await window.electronAPI.win.quitAfterSave()
+    return window.electronAPI.win.onSaveAll(() => {
+      void saveAllAndQuit({
+        ...saveDeps,
+        notifyUnsaved: unsaved => {
+          const notice = quitBlockedNotice(unsaved)
+          void askUser(notice).then(show => { if (show) { setMode('ide'); setActiveFile(unsaved[0].path) } })
+        },
+        quit: () => window.electronAPI.win.quitAfterSave(),
+      })
     })
-  }, [openFiles, snapshotBeforeManualSave])
+  }, [saveDeps, askUser])
 
   return (
     <div className={`${theme === 'light' ? 'theme-light' : ''} flex flex-col h-screen bg-base text-ink overflow-hidden`}>
@@ -631,26 +610,28 @@ export default function App() {
         onSwitchMode={switchMode}
         theme={theme}
         onSwitchTheme={switchTheme}
+        hasProject={!!currentDir}
         showChat={showChat}
         showTerminal={showTerminal}
         onToggleChat={() => setShowChat(v => !v)}
         onToggleTerminal={() => setShowTerminal(v => !v)}
         onOpenSettings={() => setShowSettings(true)}
         onPublish={() => {
-          if (!currentDir) { window.alert('先にプロジェクトを開いてください') ; return }
+          if (!currentDir) return // 押せない状態（TitleBar で disabled）。念のための守り
           setShowPublish(true)
         }}
         onOpenKnowledge={() => setShowKnowledge(true)}
         onOpenGithubSave={() => {
-          if (!currentDir) { window.alert('先にプロジェクトを開いてください') ; return }
+          if (!currentDir) return // 押せない状態（TitleBar で disabled）。念のための守り
           setShowGithubSave(true)
         }}
         onOpenHistory={() => {
-          if (!currentDir) { window.alert('先にプロジェクトを開いてください') ; return }
+          if (!currentDir) return // 押せない状態（TitleBar で disabled）。念のための守り
           setShowHistory(true)
         }}
         version={version}
       />
+      <OfflineBanner />
 
       {/* 作る → 試す → 公開 のワークフローバー（IDEモードでプロジェクトを開いている時） */}
       {mode === 'ide' && currentDir && (
@@ -676,7 +657,9 @@ export default function App() {
             画面上は返事が失われて見える（保存自体は main 側に届いていれば失われない）。
             この隠す化は害が無いのでそのまま残す（撤去は B'-3e-b 後の任意の後片づけ）。 */}
         <div className={mode === 'chat' ? 'h-full fade-in bg-base' : 'hidden'}>
-          <ChatApp apiKey={sakuraApiKey} onSetApiKey={setApiKey} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} />
+          <ErrorBoundary scope="region">
+            <ChatApp apiKey={sakuraApiKey} onSetApiKey={setApiKey} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} />
+          </ErrorBoundary>
         </div>
         {mode === 'ide' && (
           <Group
@@ -725,15 +708,17 @@ export default function App() {
             {/* Sidebar */}
             <Panel id="sidebar" defaultSize="18%" minSize="12%" maxSize="32%">
               <div className="h-full bg-surface">
+                <ErrorBoundary scope="region">
                 <Sidebar
                   currentDir={currentDir}
-                  onSetDir={setCurrentDir}
+                  onSetDir={changeDir}
                   onOpenFile={openFile}
                   onNewProject={() => setShowNewProject(true)}
                   onOpenHistory={() => setShowHistory(true)}
                   onOpenPublishedList={() => setShowPublishedList(true)}
                   refreshKey={treeRefresh}
                 />
+                </ErrorBoundary>
               </div>
             </Panel>
 
@@ -749,6 +734,7 @@ export default function App() {
                 className="h-full flex flex-col"
               >
                 <Panel id="editor" minSize="20%">
+                  <ErrorBoundary scope="region">
                   <Suspense fallback={<div className="h-full w-full flex items-center justify-center bg-surface text-ink-muted text-sm">エディタを読み込み中…</div>}>
                     <EditorPanel
                       openFiles={openFiles}
@@ -756,17 +742,23 @@ export default function App() {
                       onSetActive={setActiveFile}
                       onClose={closeFile}
                       onSave={saveFile}
+                      onReloadFromDisk={reloadFromDisk}
+                      onKeepMine={keepMine}
+                      onRecreate={recreateFile}
                       onContentChange={updateFileContent}
                       apiKey={sakuraApiKey}
                       theme={theme}
                     />
                   </Suspense>
+                  </ErrorBoundary>
                 </Panel>
                 {showTerminal && (
                   <>
                     <Separator className="sep sep-h" />
                     <Panel id="terminal" defaultSize="28%" minSize="8%" maxSize="70%">
-                      <TerminalPanel theme={theme} cwd={termDir ?? currentDir} exec={termExec} />
+                      <ErrorBoundary scope="region">
+                        <TerminalPanel theme={theme} cwd={termDir ?? currentDir} exec={termExec} />
+                      </ErrorBoundary>
                     </Panel>
                   </>
                 )}
@@ -779,7 +771,8 @@ export default function App() {
                 <Separator className="sep sep-v" />
                 <Panel id="chat" defaultSize="24%" minSize="16%" maxSize="45%">
                   <div className="h-full bg-surface">
-                    <ChatPanel apiKey={sakuraApiKey} onSetApiKey={setApiKey} activeFile={activeFileObj} projectDir={currentDir} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} onAiFileWritten={showAiFileInEditor} onExternalFilesChanged={rels => { void applyRestoreResult(rels, []) }}
+                    <ErrorBoundary scope="region">
+                    <ChatPanel apiKey={sakuraApiKey} onSetApiKey={setApiKey} activeFile={activeFileObj} projectDir={currentDir} onBeforeProjectFilesMove={() => leaveProject('organize')} onOpenCredentials={() => setShowCredentials(true)} onApplyFile={applyAiFile} onAiFileWritten={showAiFileInEditor} onExternalFilesChanged={rels => { void applyRestoreResult(rels, []) }}
                       onProjectFilesMoved={() => {
                         // フォルダの整理でファイルが動いた。開いているタブは古い場所を
                         // 指したままなので、**保存で元の場所に復活させないよう全部閉じる**
@@ -792,6 +785,7 @@ export default function App() {
                         //（2026-08-20 実機: 「試す」が実行方法を見つけられなくなった）。
                         setTreeRefresh(n => n + 1)
                       }} />
+                    </ErrorBoundary>
                   </div>
                 </Panel>
               </>
@@ -812,7 +806,7 @@ export default function App() {
       {showPublishedList && (
         <PublishedListModal
           onClose={() => setShowPublishedList(false)}
-          onOpenProject={dir => setCurrentDir(dir)}
+          onOpenProject={dir => { void changeDir(dir) }}
         />
       )}
 
@@ -872,15 +866,17 @@ export default function App() {
           apiKey={sakuraApiKey}
           onClose={() => setShowNewProject(false)}
           onOpenCredentials={() => { setShowNewProject(false); setShowCredentials(true) }}
-          onCreated={(root, openRelPath) => {
+          onCreated={async (root, openRelPath) => {
             setShowNewProject(false)
             setMode('ide')
             localStorage.setItem('sakura_mode', 'ide')
-            setCurrentDir(root)
+            if (!(await changeDir(root))) return // 未保存の編集を捨てないために断られたら、新しいプロジェクトは開かない（作ったものは残る）
             if (openRelPath) openFile(`${root}/${openRelPath}`)
           }}
         />
       )}
+
+      {confirmElement}
     </div>
   )
 }

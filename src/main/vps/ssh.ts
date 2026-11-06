@@ -20,6 +20,8 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { isValidHost, isValidPort, isValidUsername } from './validate'
+import { withFailureDetail } from '../../shared/failureText'
+import { sshNetworkFailureText } from '../sshFailure'
 
 const CONNECT_TIMEOUT_SEC = 10
 const OVERALL_TIMEOUT_MS = 30000
@@ -81,26 +83,29 @@ function runProcess(file: string, args: string[], opts: { env?: NodeJS.ProcessEn
 }
 
 /** ssh/ssh-keyscan の stderr を初心者向けの日本語メッセージへ要約する（remote.ts の friendlySshError と同系統）。 */
-function friendlyMessage(stderr: string): string {
+function friendlyMessage(stderr: string, readOnly = false): string {
   const s = (stderr || '').toLowerCase()
   if (s.includes('permission denied')) {
-    return '認証に失敗しました（ユーザー名・パスワード、または鍵の設置状況を確認してください）'
+    return withFailureDetail('認証に失敗しました（ユーザー名・パスワード、または鍵の設置状況を確認してください）', stderr)
   }
   if (s.includes('host key verification failed')) {
-    return 'ホスト鍵の検証に失敗しました（サーバが再構築された、または通信が乗っ取られている可能性があります）'
+    return withFailureDetail('ホスト鍵の検証に失敗しました（サーバが再構築された、または通信が乗っ取られている可能性があります）', stderr)
   }
   if (s.includes('connection refused')) {
-    return '接続を拒否されました（ポート番号やさくらのパケットフィルタ・ファイアウォール設定を確認してください）'
+    return withFailureDetail('接続を拒否されました（ポート番号やさくらのパケットフィルタ・ファイアウォール設定を確認してください）', stderr)
   }
   if (s.includes('could not resolve') || s.includes('name or service not known') || s.includes('nodename nor servname')) {
-    return 'ホスト名を解決できませんでした（ホスト名/IPを確認してください）'
+    return withFailureDetail('ホスト名を解決できませんでした（ホスト名/IPを確認してください）', stderr)
   }
   if (s.includes('connection timed out') || s.includes('operation timed out')) {
-    return '接続がタイムアウトしました（ホスト名・ポート番号やサーバの起動状況を確認してください）'
+    return withFailureDetail('接続がタイムアウトしました（ホスト名・ポート番号やサーバの起動状況を確認してください）', stderr)
   }
   if (s.includes('no route to host')) {
-    return 'サーバに到達できませんでした（ネットワークやホスト名/IPを確認してください）'
+    return withFailureDetail('サーバに到達できませんでした（ネットワークやホスト名/IPを確認してください）', stderr)
   }
+  // 回線が切れた失敗は共通の文（上の個別の文に当たらなかったものだけ）。見分けられなければ stderr の原文のまま
+  const network = sshNetworkFailureText(stderr, { readOnly })
+  if (network) return network
   return (stderr || '').trim().slice(0, 300) || '接続に失敗しました'
 }
 
@@ -145,7 +150,10 @@ export async function scanHostKey(host: string, port: number): Promise<{ ok: boo
   const r = await runProcess('ssh-keyscan', ['-T', '5', '-p', String(port), '-t', 'ed25519', host], { timeoutMs: 12000 })
   const line = r.stdout.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'))
   if (!line) {
-    return { ok: false, message: 'ホスト鍵を取得できませんでした（サーバが起動しているか、ホスト名/ポート番号を確認してください）' }
+    // 回線が切れたと分かる stderr なら共通の文。そうでなければ今までの文に stderr の原文を添える
+    const network = sshNetworkFailureText(r.stderr, { readOnly: true })
+    if (network) return { ok: false, message: network }
+    return { ok: false, message: withFailureDetail('ホスト鍵を取得できませんでした（サーバが起動しているか、ホスト名/ポート番号を確認してください）', r.stderr) }
   }
   const fp = await runProcess('ssh-keygen', ['-lf', '/dev/stdin'], { input: `${line}\n`, timeoutMs: 5000 })
   const m = /(SHA256:[A-Za-z0-9+/]+)/.exec(fp.stdout)
@@ -171,6 +179,8 @@ export interface RunSshOpts {
   /** リモートで `bash -s` として実行するスクリプト本体（stdin 経由で渡す。シェル引用の問題を避けるため）。 */
   command: string
   timeoutMs?: number
+  /** 接続テストなど、サーバの状態を変えない呼び出し（途中で切れても「済んだかは分からない」と言わない）。 */
+  readOnly?: boolean
 }
 
 /**
@@ -218,7 +228,7 @@ export async function runSsh(opts: RunSshOpts): Promise<{ ok: boolean; stdout?: 
       ]
       const r = await runProcess('ssh', args, { input: command, timeoutMs: opts.timeoutMs ?? OVERALL_TIMEOUT_MS })
       if (r.timedOut) return { ok: false, message: '接続がタイムアウトしました。ホスト名・ポート番号やネットワークを確認してください。' }
-      if (!r.ok) return { ok: false, stdout: r.stdout, stderr: r.stderr, message: friendlyMessage(r.stderr) }
+      if (!r.ok) return { ok: false, stdout: r.stdout, stderr: r.stderr, message: friendlyMessage(r.stderr, opts.readOnly) }
       return { ok: true, stdout: r.stdout, stderr: r.stderr }
     })
   } finally {

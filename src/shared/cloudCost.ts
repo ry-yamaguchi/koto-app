@@ -93,59 +93,77 @@ export function costSummaryLines(opts: {
 // この決まりは tests/cloudCost.test.ts の「画面文言に Markdown 記法を混ぜない」で固定している。
 
 /**
- * 公開の直後に出す、**止まらない費用**（2026-08-14 Ryosuke と設計を合意）。
+ * コンテナレジストリを**新しく作る操作の行**に、常に出す一文（前提チェックの「レジストリ登録」が ✗ のとき）。
  *
- * ── なぜ「合計」で言い切らないのか ────────────────────────────────────
- * 最初は保存場所の495円を足した合計を出そうとしたが、Ryosuke の指摘で改めた:
+ * ── なぜ常に出すか ────────────────────────────────────────────────────
+ * 共用型でレジストリを作る口は `cloud:ensureRegistry` の1つで、画面の入口はどれも確認の窓を通らずに作る。
+ * 金額がボタンの hover（`title`）にしかないと、押す前に目に入らない。かといって公開の確認カードに足すと、
+ * 作らない回（既存のレジストリを借りる回）にも費用を言ってしまう。だから**作る操作の行そのもの**に置く。
  *
- *   ① **共有の保存場所は、プロジェクト単位に割れない。** 3つのプロジェクトが
- *      1つの保存場所を共有していると、それぞれの画面で「＋495円」と出すことになり、
- *      合わせて1,485円に見える。実際は495円。**足すと嘘になる。**
- *   ② **月額は固定ではない。** 495円に含まれるのは 100GiB・10万リクエスト・
- *      転送10GiB まで。超えれば増える（レジストリの5GiBも同じ）。
- *
- * そこで「**このプロジェクトだけのものは合計に入れ、共有のものは別に書き、
- * 実額はコントロールパネルで確かめてもらう**」形にした。
- * 金額を文頭に置くのはこれまでどおり（小さな文字なので読み飛ばされる）。
+ * 言うのは、月額と、使い終わったときの次の操作（「🗑 破棄する」）。アプリを消すだけではレジストリの課金は止まらない。
+ * 金額は必ず `REGISTRY_MONTHLY_YEN` から取る（`registryYen` で上書きできるのはテスト用——定数を直書きに戻す変異を検知するため）。
  */
-export function ongoingCostNotice(opts: {
-  registryName: string | null
-  /** このプロジェクトの保存場所（用意していなければ null）。 */
-  bucket: { name: string; shared: boolean } | null
-}): string {
-  // 合計に入れるのは**このプロジェクトだけのもの**。共有のものは割れないので入れない
-  const dedicated = opts.bucket && !opts.bucket.shared ? opts.bucket : null
-  const total = REGISTRY_MONTHLY_YEN + (dedicated ? BUCKET_MONTHLY_YEN : 0)
-
-  const items = [`コンテナレジストリ${opts.registryName ? `『${opts.registryName}』` : ''}`]
-  if (dedicated) items.push(`データの保存場所『${dedicated.name}』`)
-
-  let out = `月額${total}円（税込）がかかり続けます。内訳: ${items.join('と')}。`
-
-  if (opts.bucket && opts.bucket.shared) {
-    out += `データの保存場所『${opts.bucket.name}』はほかのプロジェクトと共有のため、`
-      + `このプロジェクト分としては出せません（保存場所1つにつき月額${BUCKET_MONTHLY_YEN}円・税込）。`
-  }
-
-  out += `保存した量や通信量によって変わるため、実際の請求額はさくらのクラウドのコントロールパネルでご確認ください。`
-  out += opts.bucket
-    ? `使い終わったら「🗑 破棄する」で削除してください（AppRunアプリを消すだけでは、どちらも止まりません）。`
-    : `使い終わったら「🗑 破棄する」で削除してください（AppRunアプリを消すだけでは止まりません）。`
-  return out
+export function registryCreateNote(opts: { registryYen?: number } = {}): string {
+  const yen = opts.registryYen ?? REGISTRY_MONTHLY_YEN
+  return `コンテナレジストリを新しく作ると、月額${yen}円（税込）がかかります。`
+    + `使い終わったら「🗑 破棄する」で削除してください。アプリを消すだけでは止まりません。`
 }
 
-/** 公開の直後に出す、費用の一言（放置しても止まらない分だけを伝える）。 */
-export function registryCostNotice(registryName: string | null): string {
-  const name = registryName ? `『${registryName}』` : ''
-  // 金額を文頭に置く。枠の中の小さな文字なので、読み飛ばされても最初の一行で額が目に入るようにする。
-  return `月額${REGISTRY_MONTHLY_YEN}円（税込・ストレージ${REGISTRY_INCLUDED_STORAGE_GIB}GiBまで）がかかり続けます。`
-    + `イメージの保存先としてコンテナレジストリ${name}を使っているためです。`
-    + `使い終わったら「🗑 破棄する」で削除してください（AppRunアプリを消すだけでは止まりません）。`
+/**
+ * 「設定し直す」の説明に添える、費用の一文。探し直して**見つからなかったときだけ**新しく作る（＝月額が増える）。
+ * 金額の取り方は `registryCreateNote` と同じ（`registryYen` はテスト用の上書き）。
+ */
+export function registryNotFoundCostNote(opts: { registryYen?: number } = {}): string {
+  const yen = opts.registryYen ?? REGISTRY_MONTHLY_YEN
+  return `見つからないときは新しく作るので、月額${yen}円（税込）がかかります。`
 }
 
 /** 破棄の確認画面に出す、レジストリ削除チェックの説明。 */
 export function registryDeleteLabel(registryName: string | null): string {
   return `コンテナレジストリ${registryName ? `『${registryName}』` : ''}も削除する`
+}
+
+/**
+ * 破棄で、コンテナレジストリを消さなかった・消せたか確かめられなかった回の結びの一文（破棄の結果の「※」の行に続ける）。
+ * Koto からは確かめきれないので、コントロールパネルでの確認と、月額が続くことを言う。
+ * 金額の取り方は `registryCreateNote` と同じ（`registryYen` はテスト用の上書き。main の文が数字を直書きしないようにここへ集めた）。
+ */
+export function registryCheckInPanelNote(opts: { registryYen?: number } = {}): string {
+  const yen = opts.registryYen ?? REGISTRY_MONTHLY_YEN
+  return `さくらのクラウドのコントロールパネルで確認し、不要なら削除してください（月額${yen}円がかかり続けます）。`
+}
+
+/**
+ * 公開先を選ぶ画面の「さくらのAppRun」のカードに出す説明。
+ *
+ * ── 選ぶ前に、費用の組み立てを一度で言う ──────────────────────────────────
+ * 共用型はアプリの実行が使った分の課金で、ほかにコンテナレジストリの月額がかかる。専有型は上級者向けの常時課金。
+ * 専有型の金額はプランを取得しないと分からないので、ここには書かない（専有型のパネルの冒頭に実額が出る）。
+ * 公開の確認カードに金額を足さないのは、既存のレジストリを借りる回にも費用を言ってしまうため。
+ * レジストリを新しく作る回の費用は、作る操作の行（`registryCreateNote`）が言う。
+ * 金額の取り方は `registryCreateNote` と同じ（`registryYen` はテスト用の上書き）。
+ */
+export function appRunSharedCardNote(opts: { registryYen?: number } = {}): string {
+  const yen = opts.registryYen ?? REGISTRY_MONTHLY_YEN
+  return `アプリを動かせる公開先です。準備は Koto がまとめて行います。`
+    + `「共用型」はアプリの実行が使った分の課金で、ほかにコンテナレジストリの月額${yen}円（税込）がかかります。`
+    + `独自ドメインが使える「専有型」は上級者向けの常時課金です。`
+}
+
+/** 料金の案内を出す、さくら以外の公開先。 */
+export type OtherPricedTarget = 'hanamii' | 'vercel'
+
+const OTHER_TARGET_PRICE_NAME: Record<OtherPricedTarget, string> = { hanamii: 'HANAMII', vercel: 'Vercel' }
+
+/**
+ * HANAMII・Vercel の選択カードと、各パネルの冒頭に出す、料金の案内。
+ *
+ * **金額は書かない。** この2つの料金は、公式の原本で確かめていないため、Koto が数字を言うと外れたときに利用者が損をする。
+ * 行き先は各パネルの冒頭にある公式サイトへのリンク（`getTargetProfile(...).serviceUrl`）だけ。料金ページの URL は推測しない。
+ * 選択カードはボタンなので、リンクは置かない（選ぶと開くパネルに同じ文とリンクがある）。
+ */
+export function otherTargetPriceNote(target: OtherPricedTarget): string {
+  return `料金は ${OTHER_TARGET_PRICE_NAME[target]} の公式サイトでご確認ください。`
 }
 
 /**

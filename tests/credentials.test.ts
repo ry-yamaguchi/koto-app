@@ -94,7 +94,7 @@ describe('配線: タイトルバーの「💾 GitHubに保存」（README「Git
   const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/TitleBar.tsx'), 'utf-8')
 
   it('★ onOpenGithubSave ボタンのラベルが「💾 GitHubに保存」になっている（旧「💾 保存」には戻っていない）', () => {
-    expect(src).toMatch(/onClick=\{onOpenGithubSave\}[\s\S]{0,400}>\s*💾 GitHubに保存\s*</)
-    expect(src).not.toMatch(/onClick=\{onOpenGithubSave\}[\s\S]{0,400}>\s*💾 保存\s*</)
+    expect(src).toMatch(/onClick=\{onOpenGithubSave\}[\s\S]{0,700}>\s*💾 GitHubに保存\s*</)
+    expect(src).not.toMatch(/onClick=\{onOpenGithubSave\}[\s\S]{0,700}>\s*💾 保存\s*</)
   })
 })

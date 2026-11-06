@@ -14,6 +14,9 @@
 // 秘密が外へ出る。electron-updater は URL を記録するので、将来 private 配信
 // （PAT 付きURL）へ切り替えたときに素通しになる。**書く前に必ず落とす。**
 
+import { maskSecretShapes } from './secretShapes'
+import { maskHomePath } from './homePath'
+
 /** ログの深刻度。electron-updater の Logger インターフェースに合わせる。 */
 export type UpdateLogLevel = 'info' | 'warn' | 'error' | 'debug'
 
@@ -29,18 +32,11 @@ export function redactSecrets(text: string): string {
   // `key: -----BEGIN RSA PRIVATE KEY-----` の BEGIN 行だけを潰してしまい、
   // 鍵の本体がそのまま残る（テストで実際に捕まえた）。
   // 具体的な形のものから順に落とし、いちばん粗いルールを最後に置く。
-  return String(text ?? '')
-    // (1) 秘密鍵は丸ごと（複数行にまたがるので最初に）
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '***')
-    // (2) 形だけで秘密と分かるもの（前後がどうであれ落とす）
-    .replace(/gh[pousr]_[A-Za-z0-9]{16,}/g, '***')
-    .replace(/github_pat_[A-Za-z0-9_]{20,}/g, '***')
-    .replace(/sk-ant-[A-Za-z0-9_-]{16,}/g, '***')
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi, '$1***')
-    // (3) URL に埋め込まれた資格情報 https://user:pass@host → https://***@host
-    //    `[^/\s]+` を**貪欲に**取る。パスワードに @ が入っていると（p@ssw0rd）
-    //    最初の @ で切れて後半が残ってしまう（テストで実際に捕まえた）。
-    .replace(/(https?:\/\/)[^/\s]+@/gi, '$1***@')
+  //
+  // 形で分かるもの（秘密鍵・既知のキー・Bearer・URL の資格情報）は、秘密の形の唯一の定義
+  // （shared/secretShapes.ts）から伏せる。ここに同じ正規表現を持たない（掟10）。
+  // ログは1行にまとめるので行数は保たず、名前を見て決める形は下の(4)が受け持つ。
+  return maskSecretShapes(String(text ?? ''), { keepLines: false, byName: false })
     // (4) 名前つきのパラメータ（?token=… / "api_key": "…"）。いちばん粗いので最後
     .replace(/((?:access_|api[-_]?|auth|private[-_]?)?(?:token|key|secret|password|passwd|pwd)["'\s]*[:=]["'\s]*)([^\s"'&,}]{8,})/gi, '$1***')
 }
@@ -48,12 +44,14 @@ export function redactSecrets(text: string): string {
 /**
  * ログ1行を組み立てる（純関数）。
  * 改行は空白に潰す。1件＝1行でないと、後ろから行単位で捨てられなくなる。
+ * 秘密を伏せたうえで、ホームのパス（利用者名）を `~` にする（ログは利用者が作者へ送るもので、貼り付け先が公開の場所のこともある）。
+ * `home` は実行している環境のホーム（`os.homedir()`）。渡さなくても `/Users/<名前>` は `~` になる。
  */
-export function formatLogLine(level: UpdateLogLevel, message: unknown, now: Date): string {
+export function formatLogLine(level: UpdateLogLevel, message: unknown, now: Date, home?: string): string {
   const body = message instanceof Error
     ? `${message.message}${message.stack ? ` | ${message.stack}` : ''}`
     : typeof message === 'string' ? message : JSON.stringify(message)
-  const flat = redactSecrets(body).replace(/\s*\n\s*/g, ' ⏎ ').trim()
+  const flat = maskHomePath(redactSecrets(body), home).replace(/\s*\n\s*/g, ' ⏎ ').trim()
   return `${now.toISOString()} [${level}] ${flat}`
 }
 

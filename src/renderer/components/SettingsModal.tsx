@@ -21,6 +21,8 @@ import {
   USD_JPY_APPROX,
 } from '../claudeMode'
 import { useConfirm } from '../useConfirm'
+import Modal from '../ui/Modal'
+import FailureLines from './FailureLines'
 
 interface KeyRow { label: string; apiKey: string }
 
@@ -154,22 +156,23 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="w-[460px] max-h-[90vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
-        onClick={e => e.stopPropagation()}
+    <>
+      {/* 枠は ui/Modal（0.6.26）。Esc・背景クリックも ✕ と同じ onClose を通る。
+          確認の窓は枠の外の兄弟にする（開いた順で前面に重なり、Esc は確認が先に受ける）。 */}
+      <Modal
+        onRequestClose={onClose}
+        labelledBy="settings-modal-title"
+        backdropClassName="bg-black/50 backdrop-blur-sm"
+        panelClassName="w-[460px] bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
       >
         {/* Header */}
         <div className="flex items-center gap-2.5 px-6 pt-6 pb-4">
           <SakuraLogo size={24} />
           <div>
-            <h2 className="text-lg font-bold text-ink">設定</h2>
+            <h2 id="settings-modal-title" className="text-lg font-bold text-ink">設定</h2>
             <p className="text-xs text-ink-secondary">AIの利用状況・費用の上限・Koto の設定</p>
           </div>
-          <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
+          <button onClick={onClose} aria-label="閉じる" className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
 
         <div className="px-6 pb-6 space-y-5">
@@ -312,7 +315,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               >更新を確認</button>
             </div>
             <p className={`text-xs leading-relaxed select-text ${shouldHighlight(update) ? 'text-sakura font-medium' : 'text-ink-secondary'}`}>
-              {updateStatusText(update) || `現在のバージョン: ${appVersion}`}
+              <FailureLines text={updateStatusText(update) || `現在のバージョン: ${appVersion}`} />
             </p>
             {shouldHighlight(update) && (
               <div className="mt-2 space-y-1">
@@ -326,7 +329,6 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
                 <p className="text-[11px] text-ink-muted leading-relaxed">
                   押さなくても、次に Koto を起動したときに自動で切り替わります。
                 </p>
-                {applyError && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {applyError}</p>}
               </div>
             )}
             {/* 更新の記録（2026-08-11）。更新は失敗しても画面が静かなままなので、
@@ -339,6 +341,8 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
               }}
               className="mt-2 text-[11px] text-ink-muted hover:text-sakura underline underline-offset-2"
             >更新の記録を表示…</button>
+            {/* 再起動の失敗も記録を開けなかった失敗も、更新が済んでいない通常の状態でも見えるように、強調の枠の外に置く */}
+            {applyError && <p className="mt-1 text-[11px] text-brand-red leading-relaxed select-text">⚠️ <FailureLines text={applyError} /></p>}
           </div>
 
           {/* AIの思考表示（2026-08-03 ユーザー要望）。推論モデルは本文が出るまで沈黙するため、
@@ -531,8 +535,8 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
             </div>
           </details>
         </div>
-      </div>
+      </Modal>
       {confirmElement}
-    </div>
+    </>
   )
 }

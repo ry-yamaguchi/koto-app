@@ -20,6 +20,10 @@ import {
   emphasize, IMPORT_INTENTS, type ImportTarget, type ImportIntent,
 } from '../importProject'
 import { beginActivity } from '../activity'
+import { failureText } from '../../shared/failureText'
+import ErrorBand from './ErrorBand'
+import { FAILURE_DETAIL_CLASS } from './FailureLines'
+import { splitFailureDetail, FAILURE_DETAIL_LABEL } from '../../shared/failureDetail'
 
 /** 画面に出す「公開されるもの」フォルダの呼び名（Sidebar の見出しと揃える）。 */
 const PUBLISH_DIR_LABEL = '公開されるもの'
@@ -53,12 +57,15 @@ const TARGETS: { id: ImportTarget; label: string; hint: string }[] = [
  * ⚠️ 素の文字列のまま出すと `**` がそのまま見える（0.3.41〜・2026-08-25 実機で判明）。
  * 消すだけだと、いちばん読ませたい一行が平坦になるので**太字にする**。
  */
-function Note({ children }: { children: string }) {
+export function Note({ children }: { children: string }) {
+  // 失敗の文には、最後の行に「詳細: 原文」が付く。文は太字の記法を解き、詳細は小さな行で分けて出す
+  const { text, detail } = splitFailureDetail(children)
   return (
     <p className="text-ink-secondary">
-      ・{emphasize(children).map((sp, i) => (
+      ・{emphasize(text).map((sp, i) => (
         sp.bold ? <b key={i} className="text-ink font-semibold">{sp.text}</b> : <span key={i}>{sp.text}</span>
       ))}
+      {detail && <span className={FAILURE_DETAIL_CLASS}>{FAILURE_DETAIL_LABEL}{detail}</span>}
     </p>
   )
 }
@@ -165,7 +172,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       // **「見つかりません」の本当の意味が「そのキーからは見えません」であることは多い。**
       if (!r.candidates.length) setError(noCandidatesHint(t, list.length))
     } catch (e: any) {
-      setError(e?.message ?? String(e))
+      setError(failureText(e, { readOnly: true }))
     } finally {
       setLoading(false)
     }
@@ -196,7 +203,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       setKeyId(chosen)
       await fetchList(t, chosen, list)
     } catch (e: any) {
-      setError(e?.message ?? String(e)); setLoading(false)
+      setError(failureText(e, { readOnly: true })); setLoading(false)
     }
   }, [fetchList])
 
@@ -218,7 +225,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       setName(await freeName(importFolderName(c.name)))
       setStep('confirm')
     } catch (e: any) {
-      setError(e?.message ?? String(e)); setSelected(null)
+      setError(failureText(e, { readOnly: true })); setSelected(null)
     } finally {
       setLoading(false)
     }
@@ -274,7 +281,7 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       setResult(r)
       setStep('done')
     } catch (e: any) {
-      setError(e?.message ?? String(e)); setStep('confirm')
+      setError(failureText(e, { checkAt: 'ファイル一覧' })); setStep('confirm')
     } finally {
       off()
       endActivity()
@@ -540,12 +547,11 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
       )}
 
       {error && (
-        <div className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">
-          {error}
+        <ErrorBand text={error}>
           {keys.length === 0 && (
             <button onClick={onOpenCredentials} className="ml-2 underline">認証情報を開く</button>
           )}
-        </div>
+        </ErrorBand>
       )}
     </div>
   )

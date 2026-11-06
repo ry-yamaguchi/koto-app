@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { splitFailureDetail } from '../src/shared/failureDetail'
 
 // ── このテストが固定すること（設計書 docs/teardown-unify-plan.md 10.4.9 の C。2026-10-09 段階1の1a-1）──────────────
 // HANAMII の破棄は、共通の骨（cloud/teardownShell.ts）の上に載った。**本物の main（registerHanamiiHandlers が登録するハンドラ）**を呼び、
@@ -242,7 +243,10 @@ describe('★★★ 順序と中止: プロジェクト削除 → 一覧 → デ
       const before = diskState()
       const r = await call()
       expect(r.ok, error.message).toBe(false)
-      expect(r.message, error.message).toBe(`削除に失敗しました: ${error.message}`)
+      // 日本語の文（済んだかは確かめられていません）＋最後の行に原文。英語のまま埋め込まない
+      const shown = splitFailureDetail(r.message as string)
+      expect(shown.text, error.message).toMatch(/^削除に失敗しました: .*操作が済んだかは確かめられていません/)
+      expect(shown.detail, error.message).toContain(error.message)
       expect(r.appDeleted, '消えたかどうか分からないのに、消えたと言っている').toBeUndefined()
       expect(r.deletionAccepted, error.message).toBeUndefined()
       expect(r, '保存場所の残りを言っている（保存場所へ進んでいない）').not.toHaveProperty('remainingBuckets')
@@ -343,4 +347,5 @@ describe('★★★ D7: DELETE の応答の読み方。`deleted === true` と 40
     expect(r(404, { project: { deleted: true } }), '404 は本文を見ない').toBe('not-found')
     for (const status of [400, 401, 403, 409, 429, 500, 503]) expect(r(status, { project: { deleted: true } }), String(status)).toBe('failed')
   })
+
 })

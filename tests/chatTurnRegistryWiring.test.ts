@@ -209,7 +209,9 @@ describe('B-2: ⚠️（見てほしい合図）の配線', () => {
 
   it('turnRunner.ts: chatTurn:start は結末を invoke の返り値に載せる（古い { ok: true } だけの形は無い）', () => {
     const src = readCode('src/main/chat/turnRunner.ts')
-    expect(src).toContain('endedWithError = (await runEngineTurn(payload.spec, buildMainPorts(turnId, wc, payload, entry))).endedWithError')
+    // ports は try の前に作って渡す（想定外の throw の吹き出しを同じ ports.emit から出すため。tests/turnRunnerFailure.test.ts）
+    expect(src).toContain('endedWithError = (await runEngineTurn(payload.spec, ports)).endedWithError')
+    expect(src).not.toContain('runEngineTurn(payload.spec, buildMainPorts(')
     expect(src).toContain('return { ok: true, endedWithError }')
     expect(src).not.toContain('return { ok: true }')
   })

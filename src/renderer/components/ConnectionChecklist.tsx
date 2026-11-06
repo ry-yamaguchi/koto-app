@@ -4,6 +4,8 @@
 // 「✓/✗ と項目名・失敗理由を並べ、下に注記を添える」という表示の形は同じにする。
 // 判断や表示を複製しない（掟10）——この見た目はここ1箇所だけに置く。
 
+import FailureLines from './FailureLines'
+
 export type ConnectionCheckItem = {
   key: string
   label: string
@@ -21,7 +23,7 @@ export default function ConnectionChecklist({ items, note }: { items: Connection
           </span>
           <span className="ml-1.5 text-ink">{c.label}</span>
           {!c.ok && c.message && (
-            <span className="ml-2 text-[11px] text-ink-muted select-text">{c.message}</span>
+            <span className="ml-2 text-[11px] text-ink-muted select-text"><FailureLines text={c.message} /></span>
           )}
         </div>
       ))}

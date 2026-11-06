@@ -28,7 +28,7 @@ import * as path from 'path'
 import type { IpcDeps } from './types'
 import { projectChatPath, appChatPath, isValidJson } from '../chatStore/paths'
 import { loadProjectChatFile, saveProjectChatFile } from '../chatStore/file'
-import { loadConversation, applyConversationOps, flushConversations, setApplyListener, type Op } from '../chat/convStore'
+import { loadConversationState, applyConversationOps, flushConversations, setApplyListener, type Op } from '../chat/convStore'
 import { sendToWindow } from '../windowSend'
 
 function readFileOrNull(filePath: string): string | null {
@@ -81,6 +81,7 @@ export function registerChatStoreHandlers(deps: IpcDeps) {
       // 空フォルダが再作成され「削除したプロジェクトが一覧に復活する」原因になっていた
       // （2026-07-14 ユーザー報告・CDP再現で機序を実証）。
       if (!fs.existsSync(projectDir)) return { ok: true, skipped: 'project-missing' }
+      // 読めない記録の上へ置き換えるときの写し（写せなければ書かない）は、書き直しの入口 saveProjectChatFile が持つ
       return saveProjectChatFile(projectChatPath(projectDir), json)
     } catch (e: any) {
       return { ok: false, message: e?.message ?? String(e) }
@@ -88,10 +89,14 @@ export function registerChatStoreHandlers(deps: IpcDeps) {
   })
 
   // ── B'-3c: IDEのプロジェクト別チャットの持ち主（convStore.ts）を呼ぶ薄い層 ──────────
-  // ChatPanel.tsx（src/renderer/chatConvClient.ts 経由）が使う。単独チャット（ChatApp）は対象外。
+  // ChatPanel.tsx と ChatApp.tsx（どちらも src/renderer/chatConvClient.ts 経由）が使う。ChatApp は
+  // セッションごとの擬似 dir（appChatDirs.ts）を渡す。記録が読めなかった回は、読めた分（途中の壊れた行の手前まで）を messages に、
+  // 何も読めなければ null を返し、どちらも unreadable（写しの名前。作れなかった回は backupName が null）で「会話が無い」と区別する。
+  // 記録は読めたが、読めなかった記録の写しが同じフォルダに残っている回は、その名前を copies で添える。
   ipcMain.handle('chat:load', (_, projectDir: string) => {
     try {
-      return { ok: true, messages: loadConversation(projectDir) }
+      const { messages, unreadable, copies } = loadConversationState(projectDir)
+      return { ok: true, messages, unreadable, ...(copies ? { copies } : {}) }
     } catch (e: any) {
       return { ok: false, messages: null, message: e?.message ?? String(e) }
     }

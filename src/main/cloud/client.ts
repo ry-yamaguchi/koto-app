@@ -12,6 +12,7 @@
 import { createHash } from 'crypto'
 import type { CloudCredentials } from './auth'
 import type { EnvSpec } from './spec'
+import { failureText } from '../../shared/failureText'
 
 // ── APIエンドポイント定数（※実APIキーでの疎通時に要確認） ───────────────
 // AppRun API のベースURL。確定した実API仕様に合わせる。末尾スラッシュ付きのベース。
@@ -429,7 +430,8 @@ export class SakuraCloudClient {
       }
       return { ok: false, status: r.status, message: `APIエラー（HTTP ${r.status}）` }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      // 回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。見分けられない失敗は原文のまま。
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   }
 
@@ -615,6 +617,19 @@ export function pickContainerRegistries(data: unknown): Array<{ id: string; subd
       ),
     }))
     .filter((r: { id: string }) => r.id)
+}
+
+/**
+ * コンテナレジストリの一覧を読む（読めなかったときは `null`）。
+ * `pickContainerRegistries` は形が読めない応答でも `[]` を返す＝「読めなかった」と「0件」を区別できない。
+ * 破棄でこれを「一覧に無い＝削除済み」と読むと、読めていないのに記録から名前を落として二度と見つけられなくなる。
+ * 作る前の探し直しで「無い＝作ってよい」と読むと、読めていないのに新しく作って月額が増える。
+ * 一覧を読んで0件か無いかを決める所（破棄・作る前の探し直し・公開前の確認・棚卸し）は、どれもここを通る。
+ */
+export function readContainerRegistryList(data: unknown): Array<{ id: string; subdomainLabel: string }> | null {
+  const items = (data as any)?.CommonServiceItems ?? (data as any)?.commonserviceitems
+  if (!Array.isArray(items)) return null
+  return pickContainerRegistries(data)
 }
 
 /** AppRunアプリの取得レスポンスから公開URLを取り出す（※フィールド名は実APIで要確認）。

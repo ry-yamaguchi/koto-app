@@ -25,6 +25,9 @@ import { recordTwinsFs } from '../cloud/recordTwins'
 import { runTeardownShell, type TeardownShellSpec } from '../cloud/teardownShell'
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs, forgetPublishTargetFs } from '../publishMetaFs'
 import { STAGE, UNMEASURED, type StageMark } from '../../shared/stageTiming'
+// 失敗の原文は日本語の文＋詳細にする（詳細は文の最後の1行。あとに続く文があるときは wrapFailureText で詳細を最後へ移す）
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 // 消すものが記録に無い（幽霊の行）なら、保存場所には触れない。判断は shared の1つ（画面の確認もこれを使う）。
 import {
   dedicatedTeardownHasWork, dedicatedStorageLeftoverNames, bucketNamesText, STORAGE_TEARDOWN_PROGRESS, storageTeardownDoneLine,
@@ -106,8 +109,9 @@ async function teardownProjectStorage(
     return {
       ...done, ok: false,
       // 双子の HANAMII（ipc/hanamii.ts）と同じ形にそろえる: 月額が続くことと、どこで確かめて消すか（2026-10-08 検分2巡目）
-      message: `保存場所の設定を読めないため、保存場所は削除していません（消すまで月額が続きます）: ${e?.message ?? String(e)}`
-        + '\nさくらのクラウドのコントロールパネル（オブジェクトストレージ）で、残っている保存場所を確かめて削除してください。',
+      message: wrapFailureText(failureText(e, { readOnly: true }), t =>
+        `保存場所の設定を読めないため、保存場所は削除していません（消すまで月額が続きます）: ${t}`
+        + '\nさくらのクラウドのコントロールパネル（オブジェクトストレージ）で、残っている保存場所を確かめて削除してください。'),
     }
   }
   const record = readApprunDedicatedFs(projectDir)
@@ -141,7 +145,7 @@ async function teardownProjectStorage(
     const markWarning = markStorageLeftover(projectDir, allBuckets)
     return {
       ...done, ok: false, executed: [...done.executed, ...markWarning],
-      message: `保存場所を削除できませんでした: ${e?.message ?? String(e)}${leftoverLine(allBuckets)}`,
+      message: wrapFailureText(failureText(e), t => `保存場所を削除できませんでした: ${t}${leftoverLine(allBuckets)}`),
       remaining: { ...res.remaining, storageBucket: allBuckets[0] },
       remainingBuckets: allBuckets,
     }
@@ -181,7 +185,7 @@ async function teardownProjectStorage(
     if (permissionId && st.permissionRevoked) writeApprunDedicatedRecordFs(projectDir, { storagePermissionId: null })
     return {
       ...done, ok: false, executed, ...kept,
-      message: `${st.message}${leftoverLine(remainingBuckets)}`,
+      message: wrapFailureText(st.message, t => `${t}${leftoverLine(remainingBuckets)}`),
       remaining: { ...res.remaining, storageBucket: st.remainingBucket },
       remainingBuckets,
       ...(st.skippedBuckets ? { skippedBuckets: st.skippedBuckets } : {}), // 確認で見せていなくて飛ばした分（共用型と同じ形。0.6.24 R1-d）

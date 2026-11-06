@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { hasTargetConstraint, shouldOfferTargetCheck, TARGET_PROFILES, type ShouldOfferTargetCheckArgs } from '../src/renderer/targetProfiles'
+import { HOSTNAME_PATTERN } from '../src/shared/apprunDedicatedApp'
+import * as fs from 'fs'
+import * as path from 'path'
+import { hasTargetConstraint, profileToContext, isAvailableTarget, shouldOfferTargetCheck, TARGET_PROFILES, type ShouldOfferTargetCheckArgs } from '../src/renderer/targetProfiles'
 
 function makeArgs(overrides: Partial<ShouldOfferTargetCheckArgs> = {}): ShouldOfferTargetCheckArgs {
   return {
@@ -99,5 +102,30 @@ describe('DBの選び方（AppRun）— 閉域網は届かない・オンデマ�
   it('専有型: Koto の構成（共有セグメント固定）では閉域網に届かないと明記している', () => {
     const p = TARGET_PROFILES['sakura-apprun-dedicated']
     expect(p.donts.some(x => x.includes('共有セグメント') && x.includes('閉域網'))).toBe(true)
+  })
+})
+
+describe('専有型の説明は、公開が実装済みであることと合っている（0.6.26）', () => {
+  const ctx = profileToContext(TARGET_PROFILES['sakura-apprun-dedicated'])
+  it('AI へ渡す文脈が「公開はまだ」と言わず、公開まで行えると言う', () => {
+    expect(ctx).toContain('アプリケーションの公開（独自ドメインが必要）まで行える')
+    expect(ctx).not.toContain('にはまだ対応していない')
+    expect(ctx).not.toContain('公開（独自ドメイン）まではまだできない')
+  })
+  it('理由は上級者向け・常時課金のまま、公開先の一覧には出さない', () => {
+    expect(ctx).toContain('常時課金')
+    expect(ctx).toContain('上級者向け')
+    expect(isAvailableTarget('sakura-apprun-dedicated')).toBe(false)
+  })
+  it('独自ドメインが要ること・常時課金が続くことを、禁止事項の側でも言う', () => {
+    // 公開の入力は host が必須（validateAppSpec が空や不正なホスト名を弾く）。注意書きがこの実装と食い違わないよう、両側を見る
+    const p = TARGET_PROFILES['sakura-apprun-dedicated']
+    expect(p.donts.some(x => x.includes('公開には独自ドメインが必要') && x.includes('常時課金が続く'))).toBe(true)
+    expect(HOSTNAME_PATTERN.test('')).toBe(false)
+  })
+  it('公開の窓は、選んでも公開先は変わらないのに「変わります」と言わない', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/PublishModal.tsx'), 'utf-8')
+    expect(src).toContain('・▲ Vercel です。')
+    expect(src).not.toContain('選ぶと公開先もそれに変わります')
   })
 })
