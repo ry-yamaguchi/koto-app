@@ -41,7 +41,7 @@ describe('消すあいだだけ権限を上げる', () => {
   it('★★ 「戻せたか」は呼び出しごとに持つ（共有しない）', () => {
     expect(cloud).not.toContain('let restoreFailed')
     expect(block).toContain('let restored = true')
-    expect(block).toContain('return { raised: true, restored, result }')
+    expect(block).toContain('{ raised: true, restored, result }')
   })
 
   it('★★ パスワードは変えない（動いている公開の認証を切らない）', () => {

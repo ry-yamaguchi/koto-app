@@ -16,7 +16,7 @@ import type { BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { sendToWindow } from './windowSend'
 import { updateLogger, logUpdaterStart } from './updateLog'
-import { shouldCheckOnStartup, type UpdateState } from '../shared/updatePolicy'
+import { shouldCheckOnStartup, updateFailureText, type UpdateState } from '../shared/updatePolicy'
 
 /** renderer へ状態を流すチャンネル（preload / global.d.ts と対応）。 */
 export const UPDATE_STATE_CHANNEL = 'update:state'
@@ -38,7 +38,7 @@ function setState(next: UpdateState) {
  * 更新まわりを初期化する。app.whenReady() の後に一度だけ呼ぶ。
  *
  * @param deps.getMainWindow 状態の送り先。閉じていれば sendToWindow が黙って捨てる
- * @param deps.autoCheck     起動時に自動で確認するか（利用者の設定）
+ * @param deps.autoCheck     起動時に自動で確認するか。いまは main.ts が true を固定で渡す（利用者が切り替える設定は無い）
  */
 export function initUpdater(deps: { getMainWindow: () => BrowserWindow | null; autoCheck: boolean }) {
   getWindow = deps.getMainWindow
@@ -56,6 +56,9 @@ export function initUpdater(deps: { getMainWindow: () => BrowserWindow | null; a
   autoUpdater.autoInstallOnAppQuit = true
   // 開発中は配信元に開発版が無いので確認しない（毎回エラーになるだけ）。
   autoUpdater.forceDevUpdateConfig = false
+  // 版に -rc が付いていると、electron-updater は先行版を探すようになり、rc の印の版だけを見て
+  // 「公開された版が無い」で失敗する。数字の版（利用者）は元から偽なので、そろえて偽にする。
+  autoUpdater.allowPrerelease = false
 
   autoUpdater.on('checking-for-update', () => setState({ kind: 'checking' }))
   autoUpdater.on('update-not-available', () => setState({ kind: 'none' }))
@@ -67,7 +70,8 @@ export function initUpdater(deps: { getMainWindow: () => BrowserWindow | null; a
   autoUpdater.on('update-downloaded', e => setState({ kind: 'downloaded', version: e.version }))
   autoUpdater.on('error', err => {
     // 更新の失敗でアプリを止めない。配信元が未公開・オフライン等は普通に起こる。
-    setState({ kind: 'error', message: err?.message ?? String(err) })
+    // 画面には日本語の1行だけ。英語の原文は electron-updater が更新の記録へ書く。
+    setState({ kind: 'error', message: updateFailureText(err) })
   })
 
   if (shouldCheckOnStartup({ isPackaged: app.isPackaged, enabled: deps.autoCheck })) {
@@ -84,8 +88,9 @@ export async function checkForUpdatesNow(): Promise<UpdateState> {
   }
   try {
     await autoUpdater.checkForUpdates()
-  } catch (e: any) {
-    setState({ kind: 'error', message: e?.message ?? String(e) })
+  } catch (e) {
+    // error イベントも同じ失敗で出るので、ここと上の on('error') は同じ関数を通す（文が食い違わない）。
+    setState({ kind: 'error', message: updateFailureText(e) })
   }
   return current
 }

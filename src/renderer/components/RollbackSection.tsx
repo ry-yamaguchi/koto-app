@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
+import FailureLines from './FailureLines'
 import { pinnedNotice, servingVersionNames } from '../../shared/apprunTraffic'
 import { runSwitch, buildSwitchConfirmMessage } from '../rollbackSwitch'
 import type { SwitchDeps, SwitchRequest } from '../rollbackSwitch'
@@ -95,7 +98,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
       if (v.ok) setVersions(v.versions ?? [])
       else { setVersions([]); if (!errMsg) errMsg = v.message ?? 'バージョン一覧を取得できませんでした' }
     } catch (e: any) {
-      errMsg = e?.message ?? String(e)
+      errMsg = failureText(e, { readOnly: true })
     } finally {
       setError(errMsg)
       setLoading(false)
@@ -114,6 +117,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
         title: '⏪ 公開したものを前のバージョンに戻します',
         body: buildSwitchConfirmMessage(req),
         confirmLabel: '切り替える',
+        initialFocus: 'cancel',
       })
       const outcome = await runSwitch(
         req,
@@ -124,7 +128,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
       setActionMsg(result.ok ? `✅ 『${label}』に切り替えました。` : `⚠️ ${result.message ?? '切り替えに失敗しました'}`)
       if (result.ok) await refresh()
     } catch (e: any) {
-      setActionMsg(`⚠️ ${e?.message ?? String(e)}`)
+      setActionMsg(wrapFailureText(failureText(e), t => `⚠️ ${t}`))
     } finally {
       setSwitchingLatest(false); setSwitching(null)
     }
@@ -175,7 +179,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
         </div>
       )}
 
-      {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {error}</p>}
+      {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ <FailureLines text={error} /></p>}
 
       {!loading && !error && (
         <>
@@ -211,7 +215,7 @@ export default function RollbackSection({ projectDir, refreshSignal, stepNo }: {
             </ul>
           )}
 
-          {actionMsg && <p className="text-xs text-ink-secondary leading-relaxed select-text">{actionMsg}</p>}
+          {actionMsg && <p className="text-xs text-ink-secondary leading-relaxed select-text"><FailureLines text={actionMsg} /></p>}
 
           <p className="text-[11px] text-ink-muted leading-relaxed">
             公開URLは変わりません。戻すと、訪問者に見えるものがすぐに切り替わります。

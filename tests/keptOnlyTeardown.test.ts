@@ -13,7 +13,7 @@ import path from 'node:path'
 //   ・専有型: 保存場所だけが残った印の押し直し＋複製 → 付く。資源の ID がある回は付かない
 //   ・HANAMII は付けない
 //   ・その場の返り値（toTeardownView）と main が書いた記録（summarizeResult → getOps → resumedTeardownView）が同じ keptOnly を読む（T-2b）
-import { A, B, APP, OK_AUTH, PREFIX, CONSENTED_AT, REGISTRY_ROW, bucketRef, h, resetHarness, newProjectDir, workspaceOf, setup } from './sharedTeardownHarness'
+import { A, B, APP, OK_AUTH, PREFIX, CONSENTED_AT, REGISTRY_ROW, bucketRef, h, resetHarness, newProjectDir, workspaceOf, setup, stateMeta } from './sharedTeardownHarness'
 import { shownTeardown } from './shownFromEnv'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
@@ -95,6 +95,21 @@ describe('★★★ 共用型 cloud:teardown: keptOnly を付ける回・付け�
     expect(reply.keptOnly).toBe(true)
     expect(destructive(), '消す要求・鍵の無効化が出た').toEqual([])
     expect(h.calls.filter((c: string) => c.startsWith('listAllKeys '))).toEqual([`listAllKeys ${S}`])
+  })
+
+  it('★★★ 前の回の印（keySweepPending）がある回が keptOnly で済んでも、印は残る（何も消さず、一括の無効化もしていない）。印が無い回は立てない', async () => {
+    setup(dir, { env: [S], resources: [bucketRef(S)], meta: { keySweepPending: 'apprun' } })
+    twin()
+    const reply = await sharedTeardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply.keptOnly).toBe(true)
+    expect(destructive()).toEqual([])
+    expect(stateMeta(dir)).toEqual({ keySweepPending: 'apprun' })
+
+    resetHarness(); resetProjectOpsForTests(); dir = newProjectDir()
+    setup(dir, { env: [S], resources: [bucketRef(S)] })
+    twin()
+    expect((await sharedTeardown(EVENT, dir, OK_AUTH, GO)).keptOnly).toBe(true)
+    expect(stateMeta(dir), '印が無い回は立てない').toBeUndefined()
   })
 
   it('★★★ 確かめられない兄弟（env.json が壊れている・unread）→ keptOnly:true（理由は問わない）。消す要求は0件', async () => {

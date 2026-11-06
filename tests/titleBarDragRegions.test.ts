@@ -10,9 +10,9 @@ import TitleBar from '../src/renderer/components/TitleBar'
 // 描いた HTML で確かめる（ソースの文字列ではなく、実際に付いている style を見る）。
 
 const noop = () => {}
-function render(mode: 'ide' | 'chat'): string {
+function render(mode: 'ide' | 'chat', hasProject = true): string {
   return renderToStaticMarkup(createElement(TitleBar, {
-    mode, onSwitchMode: noop, theme: 'light', onSwitchTheme: noop,
+    mode, onSwitchMode: noop, theme: 'light', onSwitchTheme: noop, hasProject,
     showChat: true, showTerminal: false, onToggleChat: noop, onToggleTerminal: noop,
     onOpenSettings: noop, onPublish: noop, onOpenKnowledge: noop, onOpenGithubSave: noop, onOpenHistory: noop,
     version: '0.6.23',
@@ -50,5 +50,41 @@ describe('上部のバー: 空き地はドラッグできる場所（ダブル�
     const pill = openTags(render('ide'), 'div').find(t => t.includes('bg-elevated rounded-xl'))
     expect(pill).toBeTruthy()
     expect(isNoDrag(pill!)).toBe(true)
+  })
+})
+
+// プロジェクトが無い間は、プロジェクトが要る3ボタン（公開・GitHubに保存・元に戻す）を押せなくし、
+// 理由を title に出す。押せて alert が出る形にはしない。設定・資料・AI・ターミナルはプロジェクト不要。
+describe('プロジェクトが無いときの3ボタン', () => {
+  const REASON = '先にプロジェクトを作るか、フォルダを開いてください。'
+  const tagOf = (html: string, label: string): string => {
+    const re = new RegExp(`<button\\b[^>]*>(?:(?!</button>).)*${label}`, 'g')
+    const m = html.match(re)
+    expect(m, label).toBeTruthy()
+    return m![0]
+  }
+  const THREE = ['🚀 公開', '💾 GitHubに保存', '🕘 元に戻す']
+
+  for (const label of THREE) {
+    it(`★★ 無い間: 「${label}」は disabled で、理由が title に出る`, () => {
+      const t = tagOf(render('ide', false), label)
+      expect(t).toMatch(/\bdisabled=""/)
+      expect(t).toContain(`title="${REASON}"`)
+    })
+    it(`★ ある間: 「${label}」は押せて、理由の title は付かない`, () => {
+      const t = tagOf(render('ide', true), label)
+      expect(t).not.toMatch(/\bdisabled=""/)
+      expect(t).not.toContain(REASON)
+    })
+  }
+
+  it('★ 設定・資料・テーマ・AI・ターミナル・モード切替は、プロジェクトが無くても押せる', () => {
+    const html = render('ide', false)
+    const disabled = openTags(html, 'button').filter(t => /\bdisabled=""/.test(t))
+    expect(disabled.length).toBe(3)
+  })
+
+  it('チャットモードには3ボタンが無い', () => {
+    expect(render('chat', false)).not.toContain(REASON)
   })
 })

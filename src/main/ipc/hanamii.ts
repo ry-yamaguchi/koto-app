@@ -21,6 +21,9 @@ import { readPublishedAtFs } from '../publishMetaFs'
 import { withProjectLock, projectBusyMessage } from '../projectLock'
 // 進捗の送り口は1つ（記録の更新を兼ねる）。公開のあと（動いたと確かめる）は hanamii/aftercare.ts。2026-09-29
 import { progressReporter } from '../projectOps'
+import { failureText, withFailureDetail } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
+import { commandFailureOf } from './commandFailure'
 import { waitForNewVersion, type NewVersionOutcome } from '../hanamii/aftercare'
 // 破棄（hanamii:teardown）は hanamiiTeardown.ts に切り出した（共通の骨 teardownShell の上）。テストが registerHanamiiHandlers 経由でハンドラを取り出すので、
 // 登録はここから呼び、PROJECT_MISMATCH_TEARDOWN と結果の型はここからも読めるようにしておく。
@@ -103,7 +106,7 @@ function zipProjectToBuffer(
     const tmp = path.join(app.getPath('temp'), `hanamii-${randomUUID()}.zip`)
     const args = ['-r', '-q', '-X', tmp, '.', '-x', ...zipExcludePatterns(dropBuildConfig ? [...BUILD_CONFIG_FILES] : [])]
     execFile('zip', args, { cwd: projectDir, timeout: 60000, maxBuffer: 8 * 1024 * 1024 }, (err) => {
-      if (err) { try { fs.rmSync(tmp) } catch {}; reject(new Error(`ZIP化に失敗しました（zip コマンドが必要です）: ${err.message}`)); return }
+      if (err) { try { fs.rmSync(tmp) } catch {}; reject(new Error(withFailureDetail('ZIP化に失敗しました（zip コマンドが必要です）。', commandFailureOf(err)))); return }
       if (!extraFiles?.length) {
         try { const buf = fs.readFileSync(tmp); resolve(buf) } catch (e: any) { reject(e) } finally { try { fs.rmSync(tmp) } catch {} }
         return
@@ -115,7 +118,7 @@ function zipProjectToBuffer(
         const names = extraFiles.map(f => { const p = path.join(tmpDir, f.name); fs.writeFileSync(p, f.content); return p })
         execFile('zip', ['-jgq', tmp, ...names], { timeout: 30000 }, (err2) => {
           try {
-            if (err2) { reject(new Error(`静的サーバの同梱に失敗しました: ${err2.message}`)); return }
+            if (err2) { reject(new Error(withFailureDetail('静的サーバの同梱に失敗しました。', commandFailureOf(err2)))); return }
             resolve(fs.readFileSync(tmp))
           } catch (e: any) { reject(e) }
           finally { try { fs.rmSync(tmp) } catch {}; try { fs.rmSync(tmpDir, { recursive: true }) } catch {} }
@@ -272,11 +275,16 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
   })
   ipcMain.handle('hanamii:listWorkspaces', async (_, token: string) => {
     if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
-    const r = await new HanamiiClient({ token }).listWorkspaces()
-    if (!r.ok) return { ok: false, message: (r.status === 401 || r.status === 403) ? '認証に失敗しました（HANAMII のトークンを確認してください）' : `取得に失敗しました（HTTP ${r.status}）` }
-    const raw = (r.data as any)?.workspaces
-    const workspaces = Array.isArray(raw) ? raw.map((w: any) => ({ id: String(w.id), name: String(w.name ?? w.id), role: String(w.role ?? '') })) : []
-    return { ok: true, workspaces }
+    try {
+      const r = await new HanamiiClient({ token }).listWorkspaces()
+      if (!r.ok) return { ok: false, message: (r.status === 401 || r.status === 403) ? '認証に失敗しました（HANAMII のトークンを確認してください）' : `取得に失敗しました（HTTP ${r.status}）` }
+      const raw = (r.data as any)?.workspaces
+      const workspaces = Array.isArray(raw) ? raw.map((w: any) => ({ id: String(w.id), name: String(w.name ?? w.id), role: String(w.role ?? '') })) : []
+      return { ok: true, workspaces }
+    } catch (e: any) {
+      // 回線が切れても例外を画面へ投げない（読み込み中のまま止まる）
+      return { ok: false, message: failureText(e, { readOnly: true }) }
+    }
   })
   ipcMain.handle('hanamii:publish', async (_, projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: HanamiiHealthCheck; withStorage?: boolean }) => {
     // 失敗時の生応答（JSON短縮・診断用）。message には連結せず detail フィールドで返し、renderer 側が
@@ -320,7 +328,8 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       if (!dataLayerLine) return r
       return r.ok
         ? { ...r, executed: [...(r.executed ?? []), dataLayerLine] }
-        : { ...r, message: [r.message, dataLayerLine].filter(Boolean).join('\n') }
+        // 詳細の行を最後に保つ（後ろに足すと、詳細が最後の行でなくなり分けて描けない）
+        : { ...r, message: wrapFailureText(r.message ?? '', t => [t, dataLayerLine].filter(Boolean).join('\n')) }
     }
     // ── 依頼が受け付けられるところまで（開始マーカーはここで外す）────────────────────
     // 「動いたと確かめる」後段は、開始マーカーの外で行う（依頼が通り projectId を記録した時点で、
@@ -502,7 +511,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
         ...(storagePermissionId ? { storagePermissionId, storageProjectName } : {}),
         ...(storageMarkerNote ? { warnings: [storageMarkerNote] } : {}),
       })
-    } catch (e: any) { return withDataLayerNote({ ok: false, message: e?.message ?? String(e) }) }
+    } catch (e: any) { return withDataLayerNote({ ok: false, message: failureText(e, { checkAt: '📡 公開したもの一覧' }) }) }
     finally { clearPendingFs(projectDir) }
     })()
     // 依頼が通らなかった（token 無し・ZIP 失敗・API 失敗…）／プロジェクトの番号が読めなかったときは、後段へ進まない。
@@ -515,10 +524,14 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
   ipcMain.handle('hanamii:status', async (_, projectId: string, token: string) => {
     if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
     if (!projectId) return { ok: false, message: 'プロジェクトIDがありません' }
-    const r = await new HanamiiClient({ token }).getProject(projectId)
-    if (!r.ok) return { ok: false, message: `状態の取得に失敗しました（HTTP ${r.status}）` }
-    const s = extractProjectStatus(r.data)
-    return { ok: true, url: s.url, readyState: s.readyState, errorCode: s.errorCode, runtime: s.runtime }
+    try {
+      const r = await new HanamiiClient({ token }).getProject(projectId)
+      if (!r.ok) return { ok: false, message: `状態の取得に失敗しました（HTTP ${r.status}）` }
+      const s = extractProjectStatus(r.data)
+      return { ok: true, url: s.url, readyState: s.readyState, errorCode: s.errorCode, runtime: s.runtime }
+    } catch (e: any) {
+      return { ok: false, message: failureText(e, { readOnly: true }) }
+    }
   })
   /**
    * この公開先の古い鍵を片づける（2026-08-15）。
@@ -535,16 +548,20 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       return { ok: true, deleted: r.deleted }
     } catch (e: any) {
       // 片づけに失敗しても公開は成立している
-      return { ok: false, deleted: 0, message: e?.message ?? String(e) }
+      return { ok: false, deleted: 0, message: failureText(e) }
     }
   })
 
   ipcMain.handle('hanamii:logs', async (_, token: string, projectId: string, opts?: { limit?: number; since?: string }) => {
     if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
     if (!projectId) return { ok: false, message: 'プロジェクトIDがありません' }
-    const r = await new HanamiiClient({ token }).getLogs(projectId, opts)
-    if (!r.ok) return { ok: false, message: `ログの取得に失敗しました（HTTP ${r.status}）` }
-    return { ok: true, logs: extractLogs(r.data) }
+    try {
+      const r = await new HanamiiClient({ token }).getLogs(projectId, opts)
+      if (!r.ok) return { ok: false, message: `ログの取得に失敗しました（HTTP ${r.status}）` }
+      return { ok: true, logs: extractLogs(r.data) }
+    } catch (e: any) {
+      return { ok: false, message: failureText(e, { readOnly: true }) }
+    }
   })
   // A-5: env/ヘルスチェックの変更を「再公開（ビルドし直し）」なしで反映する高速経路。
   // 正規の形（dev-plan P2-⑥）: PATCH /env・PUT /health-check は保存のみで、実行中アプリへの反映には
@@ -577,7 +594,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       if (!r.ok) return { ok: false, message: `再起動に失敗しました（HTTP ${r.status}）${reason(r.data)}`, detail: dbg(r.data) }
       const noop = !!(r.data as any)?.noop
       return { ok: true, noop }
-    } catch (e: any) { return { ok: false, message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, message: failureText(e, { checkAt: 'HANAMII の管理画面' }) } }
   })
   // HANAMII の破棄（hanamii:teardown）は ipc/hanamiiTeardown.ts（共通の骨 teardownShell の上）。呼び形は (projectDir, { token }, { confirmed, projectId })。
   registerHanamiiTeardownHandler()
@@ -587,6 +604,6 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       if (!projectDir) return { ok: false, keys: [] as string[] }
       // 送るのは`public/` の中身なので、キーもそこから探す。
       return { ok: true, keys: detectEnvKeysInProject(resolvePublishRoot(projectDir)) }
-    } catch (e: any) { return { ok: false, keys: [] as string[], message: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, keys: [] as string[], message: failureText(e, { readOnly: true }) } }
   })
 }

@@ -42,6 +42,7 @@ import { createAskBridge, type AskBridge } from './askBridge'
 import { applyConversationOps, loadConversation } from './convStore'
 import { requestApproval, cancelApprovalsForTurn } from './approvalStore'
 import { runEngineTurn, type EngineTurnPorts, type TurnHelpers } from '../../shared/chatTurn'
+import { noteWritten, unexpectedFailureAppends, type WrittenState } from '../../shared/chatFailure'
 import { runSakuraChat, runSakuraStream } from '../sakura/engine'
 import type { TurnStartPayload, TurnAnswer, TurnAsk } from '../../shared/chatTurnRpc'
 import {
@@ -142,6 +143,8 @@ type TurnEntry = {
    *  でしかなく、ツール実行中・ラウンドの合間に押すと空振りしてループが止まらなかった。
    *  ここは一度立てたら（chatTurn:abort が押されるたび）ターンが終わるまで true のまま。 */
   stopRequested: boolean
+  /** 会話に入った依頼・失敗の吹き出し（emit が数える）。想定外の throw のとき、足りないものだけを足すため。 */
+  written: WrittenState
 }
 
 // ── B'-3d-2b: executeTool の main 直呼び ────────────────────────────────
@@ -306,6 +309,8 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     if ((ev.kind === 'append' || ev.kind === 'replaceLast' || ev.kind === 'removeLast') && payload.spec.convDir) {
       applyConversationOps(payload.spec.convDir, [ev])
     }
+    // 会話に当てた直後に数える（このあとの送信が投げても、会話には入っている）
+    noteWritten(entry.written, ev)
     if (!wc.isDestroyed()) wc.send(`chatTurn:event:${turnId}`, { type: 'emit', ev })
   }
   return {
@@ -391,7 +396,11 @@ export function registerChatTurnHandlers(_deps: IpcDeps): void {
       bridge: createAskBridge((ask: TurnAsk) => { if (!wc.isDestroyed()) wc.send(`chatTurn:ask:${turnId}`, ask) }),
       abort: null,
       stopRequested: false,
+      written: { request: false, failure: false },
     }
+    // ports は try の前に作る。想定外の throw のとき、catch が同じ emit（convStore へ当てて画面へ送る）で
+    // 失敗の吹き出しを出すため。組み立てるだけで何も登録しておらず、ここで投げれば画面側が受ける。
+    const ports = buildMainPorts(turnId, wc, payload, entry)
     turns.set(turnId, entry)
 
     // 画面が閉じられた・リロードされたとき、未回答の ask が永遠に残らないようにする
@@ -406,12 +415,31 @@ export function registerChatTurnHandlers(_deps: IpcDeps): void {
     // 失われうるため、結末は invoke の返り値でも伝える（chatTurn.ts の runEngineTurn コメント参照・B-2）。
     let endedWithError = false
     try {
-      endedWithError = (await runEngineTurn(payload.spec, buildMainPorts(turnId, wc, payload, entry))).endedWithError
+      endedWithError = (await runEngineTurn(payload.spec, ports)).endedWithError
     } catch (e) {
       // chatTurn.ts 自身がエラーを会話の吹き出しにするので、ここへ来るのは想定外のバグのみ。
-      // ハンドラの外へ投げ直さず（invoke を reject させない）、ログにだけ残す（仕様書の注記）。
+      // ハンドラの外へ投げ直さず（invoke を reject させない）、ログに残す。
       console.error('[chatTurn:start] runEngineTurn failed', e)
       endedWithError = true // 想定外のバグで終わったターンも「見てほしい」対象
+      // 会話に何が入っているかを数えてあるので（emit が数える）、足りないものだけを1回ずつ出す。
+      // runEngineTurn が失敗の吹き出しを出したあとで後片づけが投げた回は、2つ目を出さない。依頼の吹き出しは
+      // runEngineTurn の中で初めて会話に入るので、それより前に投げた回は、依頼もここで足す（無いと、
+      // 「もう一度送る」が1つ前の依頼を指す）。書き主は main なので、画面の renderer からは出さない
+      // （ここで convStore に当たり、chat:applied で画面へ届く）。
+      // 出す側が投げても、ハンドラは reject しない（reject すると画面側もう1つ吹き出しを出す）。
+      const events: Parameters<typeof ports.emit>[0][] = [
+        ...unexpectedFailureAppends({
+          rawText: payload.spec.rawText, images: payload.spec.images, errorPrefix: payload.spec.errorPrefix, written: entry.written,
+        }),
+        { kind: 'attention', value: 'error' },
+      ]
+      for (const ev of events) {
+        try {
+          ports.emit(ev)
+        } catch (emitError) {
+          console.error('[chatTurn:start] failure bubble not emitted', emitError)
+        }
+      }
     } finally {
       // 破棄済みの WebContents はメソッド呼び出し自体が例外を投げることがある
       // （windowSend.ts の isDestroyed() と同じ注意）。触れなくても実害は無いので無視する。

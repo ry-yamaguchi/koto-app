@@ -16,7 +16,7 @@ import { SakuraCloudClient, pickContainerRegistries } from './client'
 import { buildRef, dockerAvailable, buildImage, loginRegistry, pushImage } from './docker'
 import { builderAvailable, buildAndPush } from './imageBuild'
 import { tagForPublish } from '../../shared/publishTag'
-import { looksLikeRegistryProblem } from '../../shared/registryTrouble'
+import { builtinBuildFailure, dockerBuildFailure, dockerLoginFailure, dockerPushFailure } from './imageFailure'
 import { resolvePublishRoot } from '../publishRootFs'
 import { missingDockerignoreLines } from '../../shared/publishExclude'
 import { saveCloudState } from './specStore'
@@ -193,32 +193,13 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
     const b = await buildImage(contextAbs, ref)
     // 所見12: 生ログの行き止まりを避け、主文は「原因の見当＋次の行動」に。生ログは detail へ
     // （renderer 側が折りたたみ「詳細を見る」で表示。原因究明に役立つ実績があるため捨てない）。
-    if (!b.ok) {
-      return {
-        ok: false,
-        message: 'アプリのビルド（Docker）に失敗しました。よくある原因: Dockerfile の記述ミス、存在しないライブラリ名、対応していないベースイメージ。',
-        detail: b.log,
-      }
-    }
+    if (!b.ok) return dockerBuildFailure(b.log)
     progress('🔑 レジストリにログインしています…')
     const lg = await loginRegistry(server, regCreds.user, regCreds.password)
-    if (!lg.ok) {
-      return {
-        ok: false,
-        hint: 'reset-registry' as const,
-        message: 'レジストリへのログインに失敗しました。下の「レジストリを設定し直す」で push 用のパスワードを作り直してから、もう一度お試しください。',
-        detail: lg.message ?? '',
-      }
-    }
+    if (!lg.ok) return dockerLoginFailure(lg.message ?? '')
     progress('📤 レジストリへプッシュしています…')
     const ps = await pushImage(ref)
-    if (!ps.ok) {
-      return {
-        ok: false,
-        message: 'レジストリへのプッシュに失敗しました。インターネット接続を確認して、もう一度お試しください。',
-        detail: ps.log,
-      }
-    }
+    if (!ps.ok) return dockerPushFailure(ps.log)
     progress('📤 レジストリへプッシュしました')
   } else {
     // ── 標準: 同梱 crane で「公開ベース＋ファイル層＋起動設定」を組み立てて push（Docker不要） ──
@@ -247,23 +228,7 @@ export async function prepareAppImage(input: PrepareAppImageInput): Promise<Prep
     })
     // 所見12: 生ログ（stderr要約）の行き止まりを避け、主文は「原因の見当＋次の行動」に。
     // 生ログは detail へ（renderer 側が折りたたみ「詳細を見る」で表示）。
-    if (!built.ok) {
-      const detail = [built.message, built.log].filter(Boolean).join('\n')
-      // **回復の導線を、この経路にも出す。**（2026-08-14）
-      // これまで印を付けていたのは Docker の経路だけで、既定の使い方をしている
-      // 人だけが「直し方の分からない失敗」に取り残されていた
-      const registryTrouble = looksLikeRegistryProblem(detail)
-      return {
-        ok: false,
-        ...(registryTrouble ? { hint: 'reset-registry' as const } : {}),
-        message: registryTrouble
-          ? 'コンテナレジストリへプッシュできませんでした。'
-            + '削除された、または接続情報が古い可能性があります。'
-            + '下の「レジストリを設定し直す」を押してから、もう一度お試しください。'
-          : 'アプリのビルドに失敗しました。よくある原因: package.json の記述ミス、存在しないライブラリ名、対応していないベースイメージ。',
-        detail,
-      }
-    }
+    if (!built.ok) return builtinBuildFailure(built)
     progress('📤 レジストリへプッシュしました')
   }
 

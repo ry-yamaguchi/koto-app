@@ -1,6 +1,7 @@
 // useConfirmChoices.tsx — 選択（チェック）つきの確認を出すフック（段階2・2b-1。設計書 docs/teardown-unify-plan.md の 10.7.7 (1)）。
 //
-// useConfirm.tsx は 1文字も変えない（14か所が使っており、tests/confirmModalWiring.test.ts が戻り値の形を固定している）。
+// useConfirm.tsx の戻り値の形は変えない（12か所が使っており、tests/confirmModalWiring.test.ts が固定している）。
+// ConfirmOptions（initialFocus を含む）はそちらで定義したものをそのまま使う。
 // このフックは、選択の無い確認（confirm）と選択つきの確認（confirmWithChoices）の**両方**を、1つの ConfirmModal で出す。
 // 破棄の流れ（teardown/useTeardownFlow.ts）は useConfirm の代わりにこれを使い、共用型の「コンテナレジストリも削除する」を聞く。
 //
@@ -49,6 +50,11 @@ type Pending = {
   done: (choice: 'confirm' | 'cancel', values: Record<string, unknown>) => void
 }
 
+/**
+ * 注意: `pending` は1つ。続けて2回呼ぶと、先の Promise は解決されないまま上書きされる（tests/notifyQueue.test.ts が形を記録する）。
+ * 通知（notify）を出すのは useConfirm だけで、こちらの使い手（破棄とプロジェクトの削除）は確認を await してから次へ進む
+ * 直列の流れで、続けて2つは出さない。そのため待ち行列にはしていない（続けて出す使い手が現れたら、useConfirm の notify と同じ作りにする）。
+ */
 /** 1つの ConfirmModal で、選択の無い確認（confirm）と選択つきの確認（confirmWithChoices）の両方を出す。 */
 export function useConfirmChoices() {
   const [pending, setPending] = useState<Pending | null>(null)
@@ -85,6 +91,7 @@ export function useConfirmChoices() {
       confirmLabel={pending?.opts.confirmLabel}
       cancelLabel={pending?.opts.cancelLabel}
       danger={pending?.opts.danger}
+      initialFocus={pending?.opts.initialFocus}
       choices={pending?.choices}
       choiceValues={pending ? Object.fromEntries(pending.choices.map(c => [c.id, choiceValueOf(c, pending.values)])) : undefined}
       onToggleChoice={toggle}

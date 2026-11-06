@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { ProjectMeta } from './WorkflowBar'
+import Modal from '../ui/Modal'
+import ErrorBand from './ErrorBand'
+import FailureLines from './FailureLines'
 
 // 「🗄 サーバ」モーダル：さくらのレンタルサーバを SSH 経由で手動操作する（フェーズA＝MVP）。
 // - 接続テスト（remote:test）
@@ -191,14 +194,14 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
   const crumbTail = cwd.startsWith(crumbBase) ? cwd.slice(crumbBase.length).replace(/^\//, '') : cwd
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="w-[620px] max-h-[82vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-xl p-6 fade-in"
-        onClick={e => e.stopPropagation()}
-      >
+    // 枠は ui/Modal（0.6.26）。Esc・背景クリックも ✕・「閉じる」と同じ onClose を通る（窓の中の確認は枠の中のまま）。
+    <Modal
+      onRequestClose={onClose} labelledBy="server-files-title" backdropClassName="bg-black/50 backdrop-blur-sm"
+      panelClassName="w-[620px] bg-elevated rounded-2xl border border-line shadow-xl p-6 fade-in"
+    >
         <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-bold text-ink">🗄 サーバのファイル</h2>
-          <button onClick={onClose} className="text-ink-muted hover:text-ink text-lg leading-none">×</button>
+          <h2 id="server-files-title" className="text-lg font-bold text-ink">🗄 サーバのファイル</h2>
+          <button onClick={onClose} aria-label="閉じる" className="text-ink-muted hover:text-ink text-lg leading-none">×</button>
         </div>
         <p className="text-xs text-ink-muted mb-4 truncate">{configured ? `${account}@${host}` : 'さくらのレンタルサーバ'}</p>
 
@@ -252,12 +255,12 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
               >🔌 接続テスト</button>
             </div>
             {conn === 'ng' && connMsg && (
-              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">{connMsg}</p>
+              <ErrorBand text={connMsg} />
             )}
 
             {/* 操作結果メッセージ */}
             {notice && (
-              <p className="text-xs text-ink bg-surface border border-line rounded-lg px-3 py-2 leading-relaxed break-all">{notice}</p>
+              <p className="text-xs text-ink bg-surface border border-line rounded-lg px-3 py-2 leading-relaxed break-all"><FailureLines text={notice} /></p>
             )}
 
             {/* リモート一覧（読み取り専用） */}
@@ -280,7 +283,7 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
               {listing ? (
                 <p className="text-sm text-ink-secondary py-3">読み込み中…</p>
               ) : listError ? (
-                <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed">{listError}</p>
+                <ErrorBand text={listError} />
               ) : entries.length === 0 ? (
                 <p className="text-sm text-ink-muted py-3">ファイルがありません。</p>
               ) : (
@@ -343,7 +346,6 @@ export default function ServerFilesModal({ open, onClose, projectDir, meta }: Pr
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   )
 }

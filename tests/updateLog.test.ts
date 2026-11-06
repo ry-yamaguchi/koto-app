@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { redactSecrets, formatLogLine, trimLog } from '../src/shared/updateLog'
 
 // 2026-08-11。自動更新は失敗しても画面が静かなままで、原因を追う手段が無かった。
@@ -84,6 +86,27 @@ describe('1行に組み立てる', () => {
   // ここを通さないと、秘密がそのままファイルに残る
   it('組み立てる時点で秘密を落とす', () => {
     expect(formatLogLine('info', 'token=abcdefgh12345678', T)).not.toContain('abcdefgh12345678')
+  })
+
+  // ログは利用者が作者へ送る。貼り付け先が公開の場所のこともあるので、利用者名を含むホームのパスは `~` にする
+  it('★ ホームのパス（利用者名）を ~ にする。その下のフォルダ名は残す。エラーのスタックも', () => {
+    const line = formatLogLine('error', "ENOENT: open '/Users/tanaka/Library/Caches/koto-updater/pending/Koto.zip'", T)
+    expect(line).not.toContain('tanaka')
+    expect(line).toContain("open '~/Library/Caches/koto-updater/pending/Koto.zip'")
+    const withStack = formatLogLine('error', Object.assign(new Error('boom'), { stack: 'Error: boom\n    at read (/Users/tanaka/app/main.js:1:1)' }), T)
+    expect(withStack).not.toContain('tanaka')
+    expect(withStack).toContain('at read (~/app/main.js:1:1)')
+  })
+
+  it('実行している環境のホーム（home）を渡せば、/Users の外でも ~ にする', () => {
+    expect(formatLogLine('info', 'cache=/var/folders/zz/tanaka-home/c', T, '/var/folders/zz/tanaka-home')).toBe('2026-08-11T12:00:00.000Z [info] cache=~/c')
+    expect(formatLogLine('info', 'cache=/var/folders/zz/tanaka-home/c', T)).toContain('/var/folders/zz/tanaka-home/c')
+  })
+
+  it('★ 更新ログの書き手は、ホームを渡して行を組み立てる（組み立ては formatLogLine の1か所）', () => {
+    const src = readFileSync(join(__dirname, '..', 'src/main/updateLog.ts'), 'utf-8')
+    expect(src).toContain("fs.appendFileSync(p, formatLogLine(level, message, new Date(), os.homedir()) + '\\n', 'utf8')")
+    expect(src).not.toContain('formatLogLine(level, message, new Date()) +')
   })
 })
 

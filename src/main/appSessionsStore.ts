@@ -14,8 +14,11 @@
 // アプリ全体で1つのファイルなので違う作法だった）。
 import * as fs from 'fs'
 import * as path from 'path'
+import { failureText } from '../shared/failureText'
 import { sessionDir, sessionsIndexPath, isValidSessionId, isValidWorkspaceDir } from '../shared/appChatDirs'
+import type { UnreadableChat } from '../shared/chatUnreadable'
 import { appChatPath } from './chatStore/paths'
+import { readFileState, copyBrokenOnce } from './chatStore/brokenCopy'
 import { applyConversationOps, flushConversations, dropConversation } from './chat/convStore'
 
 /**
@@ -46,6 +49,10 @@ type Entry = {
   sessions: AppSessionMeta[]
   /** 保存待ちのデバウンスタイマー。無ければ「直前の内容が既に保存済み」（learningStore.ts と同じ）。 */
   timer: ReturnType<typeof setTimeout> | null
+  /** 読み込んだとき、索引のファイルが読めなかった（壊れていた）か。写しの名前（作れなければ null）を持つ。
+   *  あるあいだは索引のファイルへ書かない（persistEntry）。この印はプロセスの間ずっと残り、起動中に読み直さない
+   *  （手で直した一覧を、この間に作った会話だけの一覧で上書きしないため。開き直して読めれば書き込みは再開する）。 */
+  unreadable: UnreadableChat | null
 }
 
 /** 保存のデバウンス（convStore.ts・learningStore.ts と同じ間隔）。 */
@@ -98,13 +105,44 @@ function sanitizeIndex(raw: unknown): AppSessionMeta[] {
   return out
 }
 
-function readIndexFile(workspaceDir: string): AppSessionMeta[] {
+/**
+ * 索引ファイルの文字列を一覧にする。索引の形でなければ null（読めない）。
+ * 空のファイルには守る中身が無いので、空の一覧として読む。JSON でない・配列でない・
+ * 中身があるのに1件も取り出せないものは、読めない索引。
+ */
+function parseIndex(text: string): AppSessionMeta[] | null {
+  if (text.trim() === '') return []
+  let raw: unknown
   try {
-    const raw = fs.readFileSync(sessionsIndexPath(workspaceDir), 'utf-8')
-    return sanitizeIndex(JSON.parse(raw))
+    raw = JSON.parse(text)
   } catch {
-    return []
+    return null
   }
+  if (!Array.isArray(raw)) return null
+  const sessions = sanitizeIndex(raw)
+  if (sessions.length === 0 && raw.length > 0) return null
+  return sessions
+}
+
+/** 索引ファイルを読んだ結果。「無い」と見なすのは ENOENT だけ。それ以外の失敗は「読めない」。 */
+type IndexRead =
+  | { kind: 'missing' }
+  | { kind: 'ok'; sessions: AppSessionMeta[] }
+  | { kind: 'unreadable'; unreadable: UnreadableChat }
+
+/**
+ * 索引ファイルを読む。読めない索引（壊れた・形が違う・読み出せない）は、空の一覧にせず、
+ * 読んだ時点で元のファイルを `sessions.json.broken-<日時>` へ写す（写すだけ。元は消さず名前も変えない）。
+ * 読み出せないファイルは写しも作れないので backupName は null。
+ */
+function readIndexState(workspaceDir: string): IndexRead {
+  const file = sessionsIndexPath(workspaceDir)
+  const state = readFileState(file)
+  if (state.kind === 'missing') return { kind: 'missing' }
+  if (state.kind === 'unreadable') return { kind: 'unreadable', unreadable: { backupName: null } }
+  const sessions = parseIndex(state.bytes.toString('utf-8'))
+  if (sessions) return { kind: 'ok', sessions }
+  return { kind: 'unreadable', unreadable: copyBrokenOnce(file, state.bytes) }
 }
 
 function writeIndexNow(workspaceDir: string, sessions: AppSessionMeta[]): void {
@@ -185,29 +223,47 @@ function migrateLegacyIfPresent(workspaceDir: string): AppSessionMeta[] {
   return metas
 }
 
-/** 未ロードの workspaceDir なら、索引ファイル（無ければ移行）から読んでメモリへ載せる。 */
+/** 未ロードの workspaceDir なら、索引ファイル（無ければ移行）から読んでメモリへ載せる。
+ *  索引を読む入口（list・create・rename・setModel・delete・ensureProject）はすべてここを通る。 */
 function ensureEntry(workspaceDir: string): Entry {
   let entry = store.get(workspaceDir)
   if (entry) return entry
-  const idxPath = sessionsIndexPath(workspaceDir)
-  const sessions = fs.existsSync(idxPath) ? readIndexFile(workspaceDir) : migrateLegacyIfPresent(workspaceDir)
-  entry = { sessions, timer: null }
+  const read = readIndexState(workspaceDir)
+  if (read.kind === 'ok') entry = { sessions: read.sessions, timer: null, unreadable: null }
+  else if (read.kind === 'unreadable') entry = { sessions: [], timer: null, unreadable: read.unreadable }
+  else entry = { sessions: migrateLegacyIfPresent(workspaceDir), timer: null, unreadable: null }
   store.set(workspaceDir, entry)
   return entry
+}
+
+/**
+ * 索引のファイルへ書く唯一の入口（保存待ちの時間切れ・終了時の書き切り）。
+ * 読めなかった索引は、この起動の間は書かない（書くと、読めなかった一覧を1件だけの一覧で置き換えてしまう）。
+ * 動いている間にファイルが読める形に直されても、ここでは読み直さない（直した一覧を上書きしない）。
+ */
+function persistEntry(workspaceDir: string, entry: Entry): void {
+  if (entry.unreadable) return
+  writeIndexNow(workspaceDir, entry.sessions)
 }
 
 function scheduleSave(workspaceDir: string, entry: Entry): void {
   if (entry.timer) clearTimeout(entry.timer)
   entry.timer = setTimeout(() => {
     entry.timer = null
-    writeIndexNow(workspaceDir, entry.sessions)
+    persistEntry(workspaceDir, entry)
   }, DEBOUNCE_MS)
 }
 
-/** 一覧（main が list の初回に一度きりの移行を行う。roadmap 3e 設計の4点目）。 */
-export function listSessions(workspaceDir: string): AppSessionMeta[] {
+/** 一覧と、索引を読めなかった知らせ（main が list の初回に一度きりの移行を行う。roadmap 3e 設計の4点目）。 */
+export function listSessionsState(workspaceDir: string): { sessions: AppSessionMeta[]; unreadable: UnreadableChat | null } {
   assertValidWorkspaceDir(workspaceDir)
-  return [...ensureEntry(workspaceDir).sessions]
+  const entry = ensureEntry(workspaceDir)
+  return { sessions: [...entry.sessions], unreadable: entry.unreadable }
+}
+
+/** 一覧だけを返す（読めなかったかを使わない呼び手向け）。 */
+export function listSessions(workspaceDir: string): AppSessionMeta[] {
+  return listSessionsState(workspaceDir).sessions
 }
 
 /** 新規セッションを索引の先頭へ足す（renderer の `setSessions(prev => [s, ...prev])` と同じ並び）。
@@ -340,7 +396,7 @@ export function ensureSessionProject(
   try {
     fs.mkdirSync(path.join(dir, 'public'), { recursive: true }) // public/ 構成で始める（IDE の作業フォルダの作法）
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? 'プロジェクトの作成に失敗しました' }
+    return { ok: false, message: failureText(e) || 'プロジェクトの作成に失敗しました' }
   }
 
   entry.sessions = entry.sessions.map(s => s.id === id ? { ...s, projectDir: dir } : s)
@@ -356,6 +412,6 @@ export function flushAppSessions(): void {
     if (!entry.timer) continue
     clearTimeout(entry.timer)
     entry.timer = null
-    writeIndexNow(workspaceDir, entry.sessions)
+    persistEntry(workspaceDir, entry)
   }
 }

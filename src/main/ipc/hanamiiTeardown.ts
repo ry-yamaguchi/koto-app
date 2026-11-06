@@ -32,6 +32,8 @@ import { runTeardownShell, type TeardownShellCtx, type TeardownShellSpec } from 
 import { STORAGE_TEARDOWN_PROGRESS, STORAGE_PANEL_DELETE_GUIDE, storageTeardownDoneLine, bucketNamesText } from '../../shared/teardownSupport'
 import { keyRevokeGuide } from '../../shared/storageKeys'
 import { HANAMII_DELETION_ACCEPTED_WARNING } from '../../shared/teardownResult'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import { readHanamiiProjectIdFs, settleHanamiiTeardownFs, markHanamiiStorageLeftoverFs } from '../publishMetaFs'
 
 /**
@@ -145,8 +147,11 @@ async function teardownHanamiiStorage(projectDir: string, shown: unknown): Promi
       ...done, ok: false,
       // ここだけはバケット名を出せない（名前の記録そのものが読めない）。**無い導線を案内しない**ので、
       // 押し直しではなくコントロールパネルで確かめてもらう（検分の指摘3）。
-      message: `保存場所の設定を読めないため、保存場所は削除していません（消すまで月額が続きます）: ${e?.message ?? String(e)}`
-        + '\nさくらのクラウドのコントロールパネル（オブジェクトストレージ）で、残っている保存場所を確かめて削除してください。',
+      message: wrapFailureText(
+        failureText(e, { readOnly: true }),
+        t => `保存場所の設定を読めないため、保存場所は削除していません（消すまで月額が続きます）: ${t}`
+          + '\nさくらのクラウドのコントロールパネル（オブジェクトストレージ）で、残っている保存場所を確かめて削除してください。',
+      ),
     }
   }
   // 保存場所を使っていないプロジェクトでは、何も言わない・何も呼ばない。
@@ -178,8 +183,11 @@ async function teardownHanamiiStorage(projectDir: string, shown: unknown): Promi
   } catch (e: any) {
     return {
       ...done, ok: false, remainingBucket: placements[0].bucket, remainingBuckets: allBuckets,
-      message: `保存場所${allNames}を削除できませんでした（消すまで月額が続きます）: ${e?.message ?? String(e)}`
-        + `\n${RETRY_GUIDE}`,
+      // 詳細の行は最後に保つ（案内の行を後ろに足すと、詳細が最後の行でなくなる）
+      message: wrapFailureText(
+        failureText(e, { checkAt: '📡 公開したもの一覧' }),
+        t => `保存場所${allNames}を削除できませんでした（消すまで月額が続きます）: ${t}\n${RETRY_GUIDE}`,
+      ),
     }
   }
   if (st.reason === 'none') return done
@@ -202,8 +210,9 @@ async function teardownHanamiiStorage(projectDir: string, shown: unknown): Promi
       ...done, ok: false, executed, remainingBucket: st.remainingBucket, remainingBuckets: remaining,
       ...(st.skippedBuckets ? { skippedBuckets: st.skippedBuckets } : {}), // 確認で見せていなくて飛ばした分（共用型と同じ形。0.6.24 R1-d）
       ...keptBucketFields(st.done),
-      message: st.message
-        + (remaining.length > 0 ? `\n保存場所${bucketNamesText(remaining)}が残っています（消すまで月額が続きます）。${RETRY_GUIDE}` : ''),
+      // st.message は詳細が最後の行にある。残りの案内はその前に挟む（詳細を途中にしない）
+      message: wrapFailureText(st.message ?? '', t => t
+        + (remaining.length > 0 ? `\n保存場所${bucketNamesText(remaining)}が残っています（消すまで月額が続きます）。${RETRY_GUIDE}` : '')),
     }
   }
   return { ...done, executed, ...keptBucketFields(st.done) }
@@ -253,7 +262,8 @@ function withLeftoverMark(projectDir: string, projectId: string, res: HanamiiTea
     const marked = markHanamiiStorageLeftoverFs(projectDir, projectId, buckets)
     if (!marked.ok) failure = marked.message
   } catch (e: any) {
-    failure = e?.message ?? String(e)
+    // 文の末尾に入れるので、詳細は最後の行に残る
+    failure = failureText(e)
   }
   if (failure === null) return res
   return {
@@ -283,7 +293,10 @@ async function runHanamiiTeardown(ctx: TeardownShellCtx<HanamiiAuth>): Promise<H
   try {
     r = await new HanamiiClient({ token: auth.token }).deleteProject(projectId)
   } catch (e: any) {
-    return { ok: false, message: `削除に失敗しました: ${e?.message ?? String(e)}` }
+    return {
+      ok: false,
+      message: `削除に失敗しました: ${failureText(e, { checkAt: '📡 公開したもの一覧' })}`,
+    }
   }
   const reading = readHanamiiDeleteReply(r)
   // **消せていないうちは保存場所に触らない**（アプリがまだ動いている＝鍵を消すと 403 で落ちる）。

@@ -195,7 +195,78 @@ describe('ConfirmModal: 取り消しのボタンの名前は「キャンセル�
   })
 })
 
+// ── 0.6.26: 枠は ui/Modal（Esc・背景クリックは Modal が onRequestClose で伝える）──────────────────────────────
+// ConfirmModal はフックを持たず、Modal を要素として返す。その onRequestClose が「キャンセル」に結線されていて、実行には結線されていないこと。
+describe('ConfirmModal: Esc と背景クリックは「キャンセル」。実行には結線しない', () => {
+  const requestClose = (el: ReactElement) => (el.props as any).onRequestClose as (reason: 'escape' | 'backdrop') => void
+
+  it('★★★ Esc は onCancel を1回呼び、onConfirm は呼ばない', () => {
+    const onCancel = vi.fn()
+    const onConfirm = vi.fn()
+    requestClose(render({ onCancel, onConfirm }))('escape')
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+
+  it('★★★ 背景クリックは onCancel を1回呼び、onConfirm は呼ばない', () => {
+    const onCancel = vi.fn()
+    const onConfirm = vi.fn()
+    requestClose(render({ onCancel, onConfirm }))('backdrop')
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+
+  it('★★ 赤い確認でも同じ（Esc・背景は実行にならない）。onCancel には理由の引数を渡さない', () => {
+    const onCancel = vi.fn()
+    const onConfirm = vi.fn()
+    const close = requestClose(render({ danger: true, onCancel, onConfirm }))
+    close('escape')
+    close('backdrop')
+    expect(onCancel.mock.calls).toEqual([[], []])
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+
+  it('★★ 枠は alertdialog。見出しと本文の id を Modal に渡す（Modal 自身の表示は tests/modalMarkup.test.ts）', () => {
+    const el = render()
+    expect((el.props as any).role).toBe('alertdialog')
+    expect((el.props as any).labelledBy).toBe('confirm-modal-title')
+    expect((el.props as any).describedBy).toBe('confirm-modal-body')
+  })
+})
+
+describe('ConfirmModal: 最初にフォーカスするボタンの印（data-autofocus）', () => {
+  const marked = (el: ReactElement) => findAll(el, n => n.type === 'button' && (n.props as any)['data-autofocus'] === true).map(b => textOf(b))
+
+  it('★★★ 赤い確認はキャンセルだけ。赤くない確認は実行だけ。お金に触れる確認は initialFocus で「キャンセル」へ', () => {
+    expect(marked(render({ danger: true }))).toEqual(['キャンセル'])
+    expect(marked(render({ danger: false }))).toEqual(['実行する'])
+    expect(marked(render({ danger: false, initialFocus: 'cancel' }))).toEqual(['キャンセル'])
+  })
+
+  it('★★★ 赤い確認は initialFocus: \'confirm\' と渡されても実行にしない', () => {
+    expect(marked(render({ danger: true, initialFocus: 'confirm', confirmLabel: '削除する' }))).toEqual(['キャンセル'])
+  })
+})
+
 describe('useConfirmChoices: 選択の無い確認と選択つきの確認を1つの ConfirmModal で出す', () => {
+  it('★★★ initialFocus は confirm からも confirmWithChoices からも ConfirmModal に届く。言わなければ無し。次の確認へ持ち越さない', () => {
+    const m = mount()
+    const p1 = m.h.confirm({ title: 't', body: 'b', initialFocus: 'cancel' })
+    expect(m.props.initialFocus).toBe('cancel')
+    m.props.onCancel()
+    void p1
+
+    const p2 = m.h.confirmWithChoices({ title: 't', body: 'b', choices: [REG_ON], initialFocus: 'cancel' })
+    expect(m.props.initialFocus).toBe('cancel')
+    m.props.onCancel()
+    void p2
+
+    const p3 = m.h.confirmWithChoices({ title: 't', body: 'b', choices: [REG_ON] })
+    expect(m.props.initialFocus).toBeUndefined()
+    m.props.onCancel()
+    void p3
+  })
+
   it('★ 最初は閉じている', () => {
     const m = mount()
     expect(m.props.open).toBe(false)

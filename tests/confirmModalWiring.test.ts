@@ -46,13 +46,36 @@ describe('ConfirmModal.tsx: Koto 様式の確認ダイアログ（唯一の定�
   it('danger のときは赤枠（AppRunPanel の破棄確認と同じ border-brand-red 系）', () => {
     expect(confirmModal).toContain('border-brand-red/70')
   })
+
+  // 0.6.26: 枠は ui/Modal。背景・枠・Esc・Tab・フォーカスの復帰は Modal が持ち、ConfirmModal は中身と結線だけ。
+  // 振る舞い（Esc・背景が onCancel で onConfirm ではない）は tests/confirmChoices.test.ts、表示は tests/modalMarkup.test.ts が固定する。
+  it('★ 枠は Modal（alertdialog）。自前の背景・枠の div と、stopPropagation の直書きは無い', () => {
+    expect(confirmModal).toContain("import Modal from '../ui/Modal'")
+    expect(confirmModal).toContain('<Modal\n      role="alertdialog"')
+    expect(confirmModal).toContain('onRequestClose={() => onCancel()}')
+    expect(confirmModal).not.toContain('onRequestClose={() => onConfirm()}')
+    expect(confirmModal).not.toContain('fixed inset-0')
+    expect(confirmModal).not.toContain('stopPropagation')
+    expect(confirmModal).not.toContain('onClick={onCancel}\n    >')
+  })
+
+  it('★ フックを持たない（tests/confirmChoices.test.ts が関数として直接呼ぶ）', () => {
+    expect(confirmModal).not.toMatch(/\buse[A-Z]\w*\(/)
+  })
 })
 
 describe('useConfirm.tsx: window.confirm の代わりに Promise<boolean> を返すフック', () => {
   it('confirm と element を返す（confirm は Promise<boolean>）', () => {
     expect(useConfirmSrc).toContain('export function useConfirm() {')
     expect(useConfirmSrc).toContain('const confirm = useCallback((opts: ConfirmOptions): Promise<boolean> => {')
-    expect(useConfirmSrc).toContain('return { confirm, element }')
+    expect(useConfirmSrc).toContain('return { confirm, notify, element }')
+  })
+
+  it('★ initialFocus を ConfirmOptions に持ち、ConfirmModal へそのまま渡す（useConfirmChoices も同じ型・同じ渡し方）', () => {
+    expect(useConfirmSrc).toContain('initialFocus?: ConfirmInitialFocus')
+    expect(useConfirmSrc).toContain('initialFocus={pending?.initialFocus}')
+    const choicesSrc = read('src/renderer/useConfirmChoices.tsx')
+    expect(choicesSrc).toContain('initialFocus={pending?.opts.initialFocus}')
   })
 
   it('resolveConfirm（判断だけの純関数）を export している（RTL が無いための変異試験用）', () => {
@@ -73,10 +96,11 @@ describe('RollbackSection.tsx: window.confirm → ConfirmModal', () => {
 
 describe('Sidebar.tsx: window.confirm → ConfirmModal（ファイル移動・ゴミ箱移動の両方。UX-B2 で対象化）', () => {
   it('moveEntry（ファイル移動）の window.confirm は無くなっている', () => {
-    const at = sidebar.indexOf('const moveEntry = async (entry: FileEntry, published: boolean) => {')
+    const at = sidebar.indexOf('const moveEntry = (entry: FileEntry, published: boolean) => moveFileEntry(entry, published, {')
     expect(at).toBeGreaterThan(-1)
-    const end = sidebar.indexOf('\n  }\n', at)
+    const end = sidebar.indexOf('\n  })\n', at)
     expect(sidebar.slice(at, end)).not.toContain('window.confirm(')
+    expect(read('src/renderer/fileEntryOps.ts')).not.toContain('window.confirm(')
   })
   it('deleteEntry（ゴミ箱移動）の window.confirm も無くなっている（2026-09-11 UX-B2 で対象化。moveEntry と同じ confirm を共有）。0.6.24 E-4 で、確認は fileEntryOps.ts の deleteFileEntry へ移り、Sidebar は同じ confirm を口として渡す', () => {
     const at = sidebar.indexOf('const deleteEntry = (entry: FileEntry) => deleteFileEntry(entry, {')
@@ -298,34 +322,50 @@ describe('ChatPanel.tsx: 会話の全削除は runClearConversation を通す（
   })
 })
 
-describe('ChatApp.tsx: 会話の削除は runDeleteConversation を通す（UX-B3・完了条件の変異試験(c)）', () => {
-  it('deleteSession は runDeleteConversation( を呼び、旧来の直書きゲートは無い', () => {
+describe('ChatApp.tsx: 会話の削除は runDeleteSession（→ runDeleteConversation）を通す（UX-B3・完了条件の変異試験(c)）', () => {
+  it('deleteSession は runDeleteSession( を呼び、旧来の直書きゲートは無い', () => {
     const at = chatApp.indexOf('const deleteSession = async (id: string) => {')
     expect(at).toBeGreaterThan(-1)
     const end = chatApp.indexOf('\n  }\n', at)
     expect(end).toBeGreaterThan(at)
     const block = chatApp.slice(at, end)
-    expect(block).toContain('await runDeleteConversation(')
-    // 変異(c): runDeleteConversation を通さず、convClientsRef.current.delete(id) 等を
+    expect(block).toContain('await runDeleteSession(')
+    // 変異(c): runDeleteSession を通さず、convClientsRef.current.delete(id) 等を
     // このブロックで直接（confirm を待たずに）呼ぶ形に戻すと、この行が無くなって落ちる。
     expect(block).not.toContain('if (!(await confirm(')
     expect(block).not.toContain('if (!ok) return')
+    expect(block).not.toContain('await runDeleteConversation(')
   })
-  it('confirmedActions.ts から runDeleteConversation を import している', () => {
-    expect(chatApp).toContain("import { runDeleteConversation } from '../confirmedActions'")
+  it('chatDeleteGuard.ts から runDeleteSession を import している', () => {
+    expect(chatApp).toContain("import { runDeleteSession, NOTHING_ON_DISK } from '../chatDeleteGuard'")
+  })
+  it('chatDeleteGuard.ts の runDeleteSession は、確認を要する回を runDeleteConversation（confirm が false なら remove に触れない門）へ通す', () => {
+    const guard = read('src/renderer/chatDeleteGuard.ts')
+    expect(guard).toContain("import { runDeleteConversation, type ActionOutcome, type ConfirmFn } from './confirmedActions'")
+    expect(guard).toContain('return runDeleteConversation(args.id, deleteConfirmBody(kind, args.title), {')
   })
 })
 
 describe('EditorPanel.tsx: 未保存タブを閉じるのは runCloseUnsaved を通す（UX-B3）', () => {
-  it('閉じるボタンの onClick は runCloseUnsaved( を呼び、旧来の直書きゲートは無い', () => {
-    const at = editorPanel.indexOf('onClick={async e => {')
+  it('requestClose は runCloseUnsaved( を呼び、旧来の直書きゲートは無い', () => {
+    const at = editorPanel.indexOf('const requestClose = async (file: OpenFile) => {')
     expect(at).toBeGreaterThan(-1)
-    const end = editorPanel.indexOf("title={file.isDirty ? '未保存のまま閉じる' : '閉じる'}", at)
+    const end = editorPanel.indexOf('\n  }\n', at)
     expect(end).toBeGreaterThan(at)
     const block = editorPanel.slice(at, end)
     expect(block).toContain('await runCloseUnsaved(')
     expect(block).not.toContain('if (!ok) return')
     expect(block).not.toContain('const ok = await confirm(')
+  })
+  it('閉じるボタンの onClick は requestClose を呼ぶだけで、自前のゲートを持たない', () => {
+    const at = editorPanel.indexOf('onClick={async e => {')
+    expect(at).toBeGreaterThan(-1)
+    const end = editorPanel.indexOf("title={file.isDirty ? '未保存のまま閉じる' : '閉じる'}", at)
+    expect(end).toBeGreaterThan(at)
+    const block = editorPanel.slice(at, end)
+    expect(block).toContain('await requestClose(file)')
+    expect(block).not.toContain('runCloseUnsaved(')
+    expect(block).not.toContain('onClose(file.path)')
   })
   it('confirmedActions.ts から runCloseUnsaved を import している', () => {
     expect(editorPanel).toContain("import { runCloseUnsaved } from '../confirmedActions'")
@@ -333,13 +373,15 @@ describe('EditorPanel.tsx: 未保存タブを閉じるのは runCloseUnsaved を
 })
 
 describe('CredentialsModal.tsx: 未保存の破棄・VPS鍵の消去は confirmedActions.ts を通す（UX-B3・完了条件の変異試験(b)）', () => {
-  it('requestClose は runDiscardCredentialEdits( を呼び、旧来の直書きゲートは無い', () => {
+  it('requestClose は runRequestCloseCredentials( を呼び、旧来の直書きゲートは無い', () => {
     const at = credentialsModal.indexOf('const requestClose = async () => {')
     expect(at).toBeGreaterThan(-1)
     const end = credentialsModal.indexOf('\n  }\n', at)
     expect(end).toBeGreaterThan(at)
     const block = credentialsModal.slice(at, end)
-    expect(block).toContain('await runDiscardCredentialEdits(')
+    expect(block).toContain('await runRequestCloseCredentials(')
+    expect(block).not.toContain('await runDiscardCredentialEdits(')
+    expect(block).not.toContain('if (!dirty)')
     expect(block).not.toContain('if (!ok) return')
   })
   it('VPS鍵の消去（onClear）は runEraseVpsKey( を呼び、旧来の直書きゲートは無い（変異(b): ok を見ずに clear/erase を呼ぶ形は confirmedActions.test.ts が捕まえる）', () => {
@@ -351,8 +393,8 @@ describe('CredentialsModal.tsx: 未保存の破棄・VPS鍵の消去は confirme
     expect(block).toContain('await runEraseVpsKey(')
     expect(block).not.toContain('if (!(await confirm(')
   })
-  it('confirmedActions.ts から runDiscardCredentialEdits・runEraseVpsKey を import している', () => {
-    expect(credentialsModal).toContain("import { runDiscardCredentialEdits, runEraseVpsKey } from '../confirmedActions'")
+  it('confirmedActions.ts から runRequestCloseCredentials・runEraseVpsKey を import している', () => {
+    expect(credentialsModal).toContain("import { runRequestCloseCredentials, runEraseVpsKey } from '../confirmedActions'")
   })
 })
 

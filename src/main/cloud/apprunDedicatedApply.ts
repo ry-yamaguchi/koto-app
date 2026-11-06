@@ -24,6 +24,8 @@ import {
 import { readApprunDedicatedFs, writeApprunDedicatedRecordFs } from '../publishMetaFs'
 import type { ApprunDedicatedRecord } from '../../shared/publishMeta'
 import { readKeptOnly } from '../../shared/keptOnly'
+// 通信の失敗の文は詳細（原文）を最後の1行に持つ。あとに文が続く所では wrapFailureText で詳細を最後へ移す
+import { wrapFailureText } from '../../shared/failureDetail'
 import {
   readLimits, readClusters, readClusterId, readAsgId, readLoadBalancerId,
   readClusterRows, readClusterIDs, readAsgRows, readAsgIDs, readAsgIdRows, readLoadBalancerRows, readLoadBalancerIDs, readLoadBalancerIdRows,
@@ -293,7 +295,7 @@ export async function createClusterFlow(
 
   // 2. 上限の確認。（ここから最初の段。上限の確認も、クラスタを作る段の時間に含める）
   opts.onStage?.(STAGE.createCluster)
-  const limitsRes = await getLimits(auth, baseUrl)
+  const limitsRes = await getLimits(auth, baseUrl, { readOnly: true })
   if (!limitsRes.ok) {
     return { ok: false, stage: 'limits', message: `上限を確認できませんでした: ${limitsRes.message}` }
   }
@@ -304,7 +306,7 @@ export async function createClusterFlow(
       message: `上限（clusterCount）を応答から読み取れませんでした（応答の形が想定と違います）。生の応答: ${JSON.stringify(limitsRes.data)}`,
     }
   }
-  const listRes = await listClusters(auth, baseUrl)
+  const listRes = await listClusters(auth, baseUrl, { readOnly: true })
   if (!listRes.ok) {
     return { ok: false, stage: 'limits', message: `既存クラスタ数を確認できませんでした: ${listRes.message}` }
   }
@@ -337,7 +339,7 @@ export async function createClusterFlow(
     }
     return {
       ok: false, stage: 'cluster-create',
-      message: `クラスタの作成に失敗しました: ${clusterRes.message}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`,
+      message: wrapFailureText(clusterRes.message, t => `クラスタの作成に失敗しました: ${t}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`),
     }
   }
   const clusterID = readClusterId(clusterRes.data)
@@ -405,7 +407,7 @@ export async function createClusterFlow(
     }
     return {
       ok: false, stage: 'asg-create',
-      message: `オートスケーリンググループの作成に失敗しました: ${asgRes.message}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`,
+      message: wrapFailureText(asgRes.message, t => `オートスケーリンググループの作成に失敗しました: ${t}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`),
       clusterID,
     }
   }
@@ -452,7 +454,7 @@ export async function createClusterFlow(
     }
     return {
       ok: false, stage: 'lb-create',
-      message: `ロードバランサの作成に失敗しました: ${lbRes.message}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`,
+      message: wrapFailureText(lbRes.message, t => `ロードバランサの作成に失敗しました: ${t}\n作られたかどうか確認できませんでした。コントロールパネルで『${spec.name}』が無いことを確認してください。`),
       clusterID, asgID,
     }
   }

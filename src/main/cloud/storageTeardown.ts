@@ -23,6 +23,8 @@
 // バケットを消す道は、ここ（`teardownStorage`）の1か所だけ。共用型・HANAMII・専有型の3つの破棄（`teardownStorageForProject` 経由）と、
 // 公開の apply の削除は、すべてここを通る。
 
+import { wrapFailureText } from '../../shared/failureDetail'
+import { failureText } from '../../shared/failureText'
 import { teardownPlanFor, twinRiskOf, type StoragePlacement, type StorageTeardown } from '../../shared/objectStorage'
 import { bucketUsersFromRecords } from './bucketUsers'
 import { permissionHeldByOthersFs } from './permissionHolders'
@@ -118,7 +120,8 @@ export function keyWarningLines(warnings: readonly string[], guide: string): str
   // 案内を足すのは「無効にできなかった」警告の最後の1行だけ。**無効にしていない警告（R3-c）には足さない**: 案内は「パーミッションを削除してください」で、
   // ほかのフォルダが使っている現役の鍵（無効にしなかった理由そのもの）を、利用者に削除させてしまう。
   const last = warnings.map(w => KEY_KEPT_WARNINGS.includes(w)).lastIndexOf(false)
-  return warnings.map((w, i) => (i === last ? `⚠️ ${w}${w.endsWith('。') ? '' : '。'}${guide}` : `⚠️ ${w}`))
+  // 警告が失敗の原文（詳細の行）を持つときは、案内を詳細の前に入れる（詳細はいつも最後の行）
+  return warnings.map((w, i) => wrapFailureText(w, t => (i === last ? `⚠️ ${t}${t.endsWith('。') ? '' : '。'}${guide}` : `⚠️ ${t}`)))
 }
 
 /**
@@ -224,7 +227,7 @@ export async function teardownStorage(opts: {
     allKeys = await opts.storage.listAllKeys(bucket)
   } catch (e: any) {
     // 確かめられないなら消さない。**「たぶん空」で消すのがいちばん危ない。**
-    return { ok: false, message: `保存場所『${bucket}』の中身を確認できないため、削除を中止しました: ${e?.message ?? e}` }
+    return { ok: false, message: `保存場所『${bucket}』の中身を確認できないため、削除を中止しました: ${failureText(e, { readOnly: true })}` }
   }
 
   // **ほかのプロジェクトの記録も見る**（一覧に出ない利用者がいる）。バケットごと消すかの判断だけに使う。
@@ -237,7 +240,7 @@ export async function teardownStorage(opts: {
     }
     if (decision.deleteBucket) await opts.storage.deleteBucket(bucket)
   } catch (e: any) {
-    return { ok: false, message: `保存場所『${bucket}』の削除に失敗しました: ${e?.message ?? e}` }
+    return { ok: false, message: `保存場所『${bucket}』の削除に失敗しました: ${failureText(e)}` }
   }
 
   // 鍵も無効にする。残すと、消したはずの保存場所へ届く鍵が生き続ける。**データを残した回（複製かもしれない）は無効にしない**（元の現役の鍵が切れる）。

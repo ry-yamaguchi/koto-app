@@ -16,6 +16,7 @@
 
 import * as fs from 'fs'
 import { spawn } from 'child_process'
+import { failureText } from '../../shared/failureText'
 
 /** Anthropic API のベースURL。 */
 export const ANTHROPIC_API_BASE = 'https://api.anthropic.com'
@@ -203,7 +204,8 @@ export async function testAnthropicKey(key: string): Promise<{ ok: boolean; mode
     const modelCount = parseModelsCount(json)
     return { ok: true, modelCount: modelCount ?? 0 }
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? String(e) }
+    // 回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。見分けられない失敗は原文のまま。
+    return { ok: false, message: failureText(e, { readOnly: true }) }
   }
 }
 
@@ -230,6 +232,6 @@ export async function listAnthropicModels(key: string): Promise<{ ok: boolean; m
     if (!res.ok) return { ok: false, message: describeClaudeError(res.status) }
     return { ok: true, models: parseAnthropicModels(json) }
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? String(e) }
+    return { ok: false, message: failureText(e, { readOnly: true }) }
   }
 }

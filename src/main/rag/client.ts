@@ -8,6 +8,7 @@
 // API仕様は docs/rag-plan.md §1（検証済み OpenAPI）のみを信頼する。
 
 import * as fs from 'fs'
+import { failureText, classifyFailure, withFailureDetail, type FailureTextOptions } from '../../shared/failureText'
 import { parseDocument, parseDocumentList, parseChunkList, parseQueryResult, parseChatResult, type RagDocument, type RagPageMeta, type RagChunk, type RagQueryHit, type RagChatResult } from './parse'
 
 /** RAG API のベースURL（/v1 は含めない。パス側に書く）。 */
@@ -50,11 +51,17 @@ function formatHttpError(status: number, bodyText: string): Error {
   return new Error(`さくらのAI Engine への通信に失敗しました（HTTP ${status}）${snippet ? ': ' + snippet : ''}`)
 }
 
+/** 通信の失敗を日本語の文＋詳細にする。見分けられない失敗は、何の通信かを言う前置きに原文を続ける（原文は残る）。 */
+function connectionFailureMessage(e: unknown, prefix: string, opts: FailureTextOptions): string {
+  const text = failureText(e, opts)
+  return classifyFailure(e).kind === 'unknown' ? `${prefix}: ${text}` : text
+}
+
 async function requestJson(
   apiKey: string,
   method: string,
   pathname: string,
-  opts: { query?: Record<string, string | number | undefined>; body?: unknown; timeoutMs?: number } = {}
+  opts: { query?: Record<string, string | number | undefined>; body?: unknown; timeoutMs?: number; readOnly?: boolean } = {}
 ): Promise<unknown> {
   const url = new URL(pathname, RAG_API_BASE)
   if (opts.query) {
@@ -74,11 +81,11 @@ async function requestJson(
       ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 30000),
     })
-  } catch (e: any) {
-    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
-      throw new Error('さくらのAI Engine への通信がタイムアウトしました。しばらくしてから再度お試しください。')
-    }
-    throw new Error(`さくらのAI Engine への通信に失敗しました: ${e?.message ?? String(e)}`)
+  } catch (e: unknown) {
+    // 一覧・取得・質問は読み取り。作る・直す・消すは、途中で切れたら済んだかを確かめてもらう
+    throw new Error(connectionFailureMessage(e, 'さくらのAI Engine への通信に失敗しました', {
+      readOnly: opts.readOnly ?? method === 'GET', checkAt: '📚 資料の一覧',
+    }))
   }
   const text = await res.text()
   if (!res.ok) throw formatHttpError(res.status, text)
@@ -185,6 +192,7 @@ function clampQuery(query: string): string {
 export async function queryDocuments(apiKey: string, query: string, opts: RagQueryOpts = {}): Promise<RagQueryHit[]> {
   assertBudgetAllows(opts.budgetCheck, '資料の検索')
   const raw = await requestJson(apiKey, 'POST', queryPath(), {
+    readOnly: true,
     body: {
       query: clampQuery(query),
       model: RAG_EMBED_MODEL,
@@ -218,6 +226,7 @@ export interface RagChatOpts {
 export async function chatDocuments(apiKey: string, query: string, opts: RagChatOpts): Promise<RagChatResult> {
   assertBudgetAllows(opts.budgetCheck, '資料の検索')
   const raw = await requestJson(apiKey, 'POST', chatPath(), {
+    readOnly: true,
     body: {
       query: clampQuery(query),
       chat_model: opts.chatModel,
@@ -265,11 +274,13 @@ export async function uploadDocument(apiKey: string, args: RagUploadArgs): Promi
       body: form,
       signal: AbortSignal.timeout(120000),
     })
-  } catch (e: any) {
-    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
-      throw new Error('アップロードがタイムアウトしました。ファイルサイズを確認し、しばらくしてから再度お試しください。')
+  } catch (e: unknown) {
+    // 120 秒の時間切れは、ファイルの大きさがいちばん多い原因なので、その手がかりを言う文を残す（原文は詳細に）
+    const name = (e as { name?: unknown } | null)?.name
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new Error(withFailureDetail('アップロードがタイムアウトしました。ファイルサイズを確認し、しばらくしてから再度お試しください。', e))
     }
-    throw new Error(`アップロードに失敗しました: ${e?.message ?? String(e)}`)
+    throw new Error(connectionFailureMessage(e, 'アップロードに失敗しました', { checkAt: '📚 資料の一覧' }))
   }
   const text = await res.text()
   if (!res.ok) throw formatHttpError(res.status, text)

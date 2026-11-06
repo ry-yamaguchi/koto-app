@@ -63,7 +63,10 @@ describe('preload.ts / global.d.ts: appSessions の3点セットがある', () =
 
   it('global.d.ts に appSessions の型宣言（list/create/rename/setModel/delete/onChanged）がある', () => {
     expect(dts).toContain('appSessions: {')
-    expect(dts).toContain('list(workspaceDir: string): Promise<{ id: string; title: string; model: string; createdAt: number }[]>')
+    // 一覧の返り値は { sessions, unreadable }（索引を読めなかった回を「一覧が空」と区別する。0.6.26）
+    expect(dts).toContain('list(workspaceDir: string): Promise<{')
+    expect(dts).toContain("unreadable: import('../shared/chatUnreadable').UnreadableChat | null")
+    expect(dts).not.toContain('list(workspaceDir: string): Promise<{ id: string; title: string; model: string; createdAt: number }[]>')
     expect(dts).toContain('create(workspaceDir: string, meta: { id: string; title: string; model: string; createdAt: number }): Promise<void>')
     expect(dts).toContain('rename(workspaceDir: string, id: string, title: string): Promise<void>')
     expect(dts).toContain('setModel(workspaceDir: string, id: string, model: string): Promise<void>')
@@ -80,9 +83,10 @@ describe('ChatApp.tsx: 旧 chatStorage の読み書きが消え、appSessions + 
     expect(src).not.toContain('saveAppSessions(')
   })
 
-  it('chatConvClient.ts（loadConversationView / makeConvClient）を使っている', () => {
-    expect(src).toContain("import { loadConversationView, makeConvClient, type Op } from '../chatConvClient'")
-    expect(src).toContain('loadConversationView(sessionDir(chatWorkspace, activeId))')
+  it('chatConvClient.ts（loadConversationChecked / makeConvClient）を使っている', () => {
+    expect(src).toContain("import { loadConversationChecked, makeConvClient, type Op, type ConversationLoad } from '../chatConvClient'")
+    expect(src).not.toContain("import { loadConversationChecked, makeConvClient, type Op } from '../chatConvClient'")
+    expect(src).toContain('loadConversationChecked(sessionDir(chatWorkspace, activeId))')
     expect(src).toContain('makeConvClient(sessionDir(chatWorkspace, id))')
   })
 
@@ -92,7 +96,8 @@ describe('ChatApp.tsx: 旧 chatStorage の読み書きが消え、appSessions + 
   })
 
   it('appSessions IPC（list/create/rename/setModel/delete）をすべて呼んでいる', () => {
-    expect(src).toContain('window.electronAPI.appSessions.list(workspaceDir)')
+    expect(src).toContain('const { sessions: list, unreadable } = await window.electronAPI.appSessions.list(workspaceDir)')
+    expect(src).not.toContain('const list = await window.electronAPI.appSessions.list(workspaceDir)')
     expect(src).toContain('window.electronAPI.appSessions.create(workspaceDir, {')
     expect(src).toContain('window.electronAPI.appSessions.create(chatWorkspace, {')
     expect(src).toContain('window.electronAPI.appSessions.rename(chatWorkspace, id, patch.title)')
@@ -203,7 +208,7 @@ describe('src/renderer/components/ChatApp.tsx: 単独チャットも main が書
     expect(src).toContain('if (s.id !== sid) return s')
   })
 
-  it('viewSyncDecision で apply/reload を判定し、reload 側で loadConversationView から読み直す（ChatPanel と同じ B-1a パターン）', () => {
+  it('viewSyncDecision で apply/reload を判定し、reload 側で loadConversationChecked から読み直す（ChatPanel と同じ B-1a パターン）', () => {
     expect(src).toContain("import { applyToMessages, viewSyncDecision } from '../../shared/chatEvents'")
     expect(src).toContain("const decision = viewSyncDecision(op as Op, s.messages.length, length)")
     expect(src).toContain("decision === 'reload'")

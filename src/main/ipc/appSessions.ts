@@ -5,7 +5,7 @@
 import { ipcMain, app } from 'electron'
 import type { IpcDeps } from './types'
 import {
-  listSessions, createSession, renameSession, setSessionModel, deleteSession,
+  listSessionsState, createSession, renameSession, setSessionModel, deleteSession,
   flushAppSessions, setAppSessionsListener, ensureSessionProject, type AppSessionMeta,
 } from '../appSessionsStore'
 import { sendToWindow } from '../windowSend'
@@ -18,7 +18,9 @@ export function registerAppSessionsHandlers(deps: IpcDeps): void {
   })
 
   // 一覧（初回呼び出し時、索引ファイルがまだ無ければ main 側で一度きりの移行を行う）。
-  ipcMain.handle('appSessions:list', (_, workspaceDir: string) => listSessions(workspaceDir))
+  // 索引のファイルが読めなかった回は、sessions が空のまま unreadable（写しの名前。作れなかった回は
+  // backupName が null）で「一覧が無い」と区別して返す。読めた回は unreadable が null。
+  ipcMain.handle('appSessions:list', (_, workspaceDir: string) => listSessionsState(workspaceDir))
 
   ipcMain.handle('appSessions:create', (_, workspaceDir: string, meta: AppSessionMeta) => {
     createSession(workspaceDir, meta)

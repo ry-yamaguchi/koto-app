@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { getVpsCredentials, getVpsCredentialsById, listVpsEntries, saveVpsKeypair } from './CredentialsModal'
 import { beginActivity } from '../activity'
 import CopyButton from './CopyButton'
+import FailureLines from './FailureLines'
+import { failureCopyNow } from '../failureCopy'
+import { wrapFailureText } from '../../shared/failureDetail'
 import { mergeProjectMeta } from '../projectMeta'
 
 // さくらのVPS 公開機能 V1a: 「手順1 接続」のみ（手順2 初期セットアップ・手順3 公開は次フェーズ。ここでは作らない）。
@@ -201,7 +204,7 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
 
       setInstallMsg('パスワード認証を無効化しています…')
       const harden = await window.electronAPI.vps.hardenSshd(hostInfo.host, hostInfo.port, hostInfo.user, k.privateKey, fp)
-      if (!harden.ok) { setInstallMsg(`鍵認証での接続は確認できましたが、パスワード認証の無効化に失敗しました: ${harden.message ?? ''}（鍵認証自体は有効です）`); return }
+      if (!harden.ok) { setInstallMsg(wrapFailureText(harden.message ?? '', t => `鍵認証での接続は確認できましたが、パスワード認証の無効化に失敗しました: ${t}（鍵認証自体は有効です）`)); return }
       setHardened(true)
       await saveVpsMeta({ sshdHardened: true, hardenedAt: new Date().toISOString() })
       setInstallMsg('')
@@ -369,13 +372,13 @@ export default function VpsPanel({ projectDir, onOpenCredentials }: Props) {
 }
 
 // 失敗メッセージの表示ブロック（掟5: select-text＋コピーボタン）。HanamiiPanel/VercelPanel と同種。
-function ErrorMessageBlock({ msg }: { msg: string }) {
+export function ErrorMessageBlock({ msg }: { msg: string }) {
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-1">
       <div className="flex items-start gap-2">
-        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">{msg}</p>
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text"><FailureLines text={msg} /></p>
         <button
-          onClick={() => { navigator.clipboard.writeText(msg).catch(() => {}) }}
+          onClick={() => { void failureCopyNow(msg).then(t => navigator.clipboard.writeText(t)).catch(() => {}) }}
           className="flex-none text-[11px] text-sakura hover:underline"
           title="メッセージをコピー"
         >コピー</button>

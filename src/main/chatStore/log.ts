@@ -37,10 +37,30 @@ export function isV1ChatLog(text: string): boolean {
   return text.trimStart()[0] === '['
 }
 
+/** 空文字列・空白のみか。foldChatLog は「未保存」と同じに扱う（守る中身が無いので、壊れたものとは区別する）。 */
+export function isBlankChatLog(text: string): boolean {
+  return text.trim() === ''
+}
+
 /** ファイルの中身を畳んで、いまの会話にする。未保存・読めない → null。 */
 export function foldChatLog(text: string | null): { messages: any[]; lines: string[] } | null {
+  const folded = foldChatLogDetailed(text)
+  return folded ? { messages: folded.messages, lines: folded.lines } : null
+}
+
+/**
+ * foldChatLog に、捨てた行の情報を添えたもの（0.6.26）。読み込みが「読めた」と見なしてよいかを決めるのに使う。
+ * - dropped: 壊れていたため（JSON として読めない・オブジェクトでない・i／n が不正・穴を開ける番号）に捨てた空でない行の数。
+ *   知らない種類のレコードとバージョン印の行は、読めているので数えない。
+ * - tornTail: 最後の空でない行が JSON として読めず（途中で切れている）、しかも本文が改行で終わっていない。
+ *   書き込みの途中で落ちた末尾の形（appendFileSync は途中で切れうる）。これだけなら失うのは書きかけの1行で、
+ *   途中の記録は失っていない。JSON として読めても捨てた行（穴を開ける番号など）は、書きかけではないので含めない。
+ */
+export function foldChatLogDetailed(
+  text: string | null
+): { messages: any[]; lines: string[]; dropped: number; tornTail: boolean } | null {
   if (text === null) return null
-  if (text.trim() === '') return null // 空文字列・空白のみは「未保存」と同じ扱い
+  if (isBlankChatLog(text)) return null // 空文字列・空白のみは「未保存」と同じ扱い
 
   if (isV1ChatLog(text)) {
     // v1: 配列まるごとの JSON
@@ -51,7 +71,7 @@ export function foldChatLog(text: string | null): { messages: any[]; lines: stri
       return null // 壊れた JSON
     }
     if (!Array.isArray(parsed)) return null // 配列でなければ不正
-    return { messages: parsed, lines: serializeMessages(parsed) }
+    return { messages: parsed, lines: serializeMessages(parsed), dropped: 0, tornTail: false }
   }
 
   // v2 と認めるのは「最初の空でない行が JSON オブジェクトで v というキーを持つとき」だけ。
@@ -76,17 +96,23 @@ export function foldChatLog(text: string | null): { messages: any[]; lines: stri
 
   // ここから本文（ヘッダの次行以降）。1行ずつ畳み込み、分かる範囲だけ復元する
   const messages: any[] = []
+  let dropped = 0
+  let lastUnparsable = false // 直近に見た空でない行が、JSON として読めなかった行か
   for (let idx = bodyStart; idx < rawLines.length; idx++) {
     const line = rawLines[idx].trim()
     if (line === '') continue // 空行は飛ばす
+    lastUnparsable = false
+    const drop = () => { dropped++ }
 
     let rec: unknown
     try {
       rec = JSON.parse(line)
     } catch {
-      continue // クラッシュ等で末尾の行が途中で切れた場合。捨てて続ける（ここで止めない）
+      drop() // クラッシュ等で行が途中で切れた場合。捨てて続ける（ここで止めない）
+      lastUnparsable = true
+      continue
     }
-    if (typeof rec !== 'object' || rec === null || Array.isArray(rec)) continue // オブジェクトでない行は捨てる
+    if (typeof rec !== 'object' || rec === null || Array.isArray(rec)) { drop(); continue } // オブジェクトでない行は捨てる
 
     const r = rec as Record<string, unknown>
 
@@ -97,6 +123,8 @@ export function foldChatLog(text: string | null): { messages: any[]; lines: stri
       // i が現在の件数より大きい行は捨てる（穴を開けない）。i === messages.length は末尾への追加として許す
       if (typeof i === 'number' && Number.isInteger(i) && i >= 0 && i <= messages.length) {
         messages[i] = r.m // 同じ i を複数回書いた場合はあとに読んだほうで上書きされる（あとの勝ち）
+      } else {
+        drop()
       }
       continue
     }
@@ -105,6 +133,8 @@ export function foldChatLog(text: string | null): { messages: any[]; lines: stri
       const n = r.n
       if (typeof n === 'number' && Number.isInteger(n) && n >= 0) {
         messages.length = Math.min(n, messages.length)
+      } else {
+        drop()
       }
       continue
     }
@@ -113,7 +143,7 @@ export function foldChatLog(text: string | null): { messages: any[]; lines: stri
   }
 
   // ヘッダ行だけ（本文が1件も無い）でも null にはしない。null は「ファイルが無い/読めない」の意味に予約する
-  return { messages, lines: serializeMessages(messages) }
+  return { messages, lines: serializeMessages(messages), dropped, tornTail: lastUnparsable && !text.endsWith('\n') }
 }
 
 /** v2 のファイル全体を作る（初回書き込み・書き直し用）。lines は messages を1件ずつ JSON にしたもの。 */

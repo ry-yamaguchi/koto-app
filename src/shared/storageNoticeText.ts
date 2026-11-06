@@ -23,8 +23,21 @@
 // **画面には素のテキストとして出る。Markdown 記法は使わない**（v0.2.98 の教訓）。
 // **内部の言い回しを書かない**（利用者が読む文である）。
 
+import { wrapFailureText } from './failureDetail'
 import type { FileWriteSite, ModuleKind } from './objectStorage'
 import { DATA_LAYER_FILE, DATA_LAYER_FILE_CJS } from './objectStorage'
+
+/** 原因（failureText の結果など）に前置きと結びを付ける。
+ *  原因が日本語の文（「。」で終わる。案内も含む）なら、括弧に入れず前置きのあとに続け、結びは足さない（案内の二重・括弧の入れ子を避ける）。
+ *  短い言葉だけの原因は、今までどおり括弧に入れて結びを足す。原因が無ければ結びだけ。詳細（原文）は最後の行に残る。 */
+export function withCauseOrRetry(shown: string, lead: string, retry = '少し待ってから、もう一度お試しください。'): string {
+  return wrapFailureText(shown, t => {
+    const cause = t.trim()
+    if (cause.length === 0) return `${lead}。${retry}`
+    if (cause.endsWith('。')) return `${lead}。${cause}`
+    return `${lead}（${cause}）。${retry}`
+  })
+}
 
 /** 依頼文と確認の行に並べる場所の上限。多すぎると読めなくなる。 */
 const MAX_SITES = 5
@@ -173,11 +186,11 @@ export function askAiRewritePlan(
   memory: readonly FileWriteSite[] = [],
 ): { send: true; text: string } | { send: false; error: string } {
   if (!layer || layer.ok !== true || layer.ready !== true) {
-    const detail = typeof layer?.message === 'string' && layer.message.length > 0 ? `（${layer.message}）` : ''
+    const message = typeof layer?.message === 'string' ? layer.message : ''
     return {
       send: false,
-      error: 'データ保存用のファイル（koto-data）を用意できませんでした' + detail
-        + '。少し待ってから、もう一度お試しください。',
+      // 原因の文は括弧に入れず、前置きのあとに続ける。原文（詳細）は最後の行へ移る
+      error: withCauseOrRetry(message, 'データ保存用のファイル（koto-data）を用意できませんでした'),
     }
   }
   return { send: true, text: askAiRewriteText(writes, layer.moduleKind === 'esm' ? 'esm' : 'cjs', memory) }

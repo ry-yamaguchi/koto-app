@@ -1,5 +1,8 @@
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
 import React, { useCallback, useEffect, useState } from 'react'
 import CopyButton from './CopyButton'
+import Modal from '../ui/Modal'
 import { getWorkspaceDir } from '../workspace'
 import { formatPublishedAt, PUBLISH_TARGET_CONSOLE, type PublishTargetKind } from '../publishStatus'
 import { clearPublishRecord } from '../publishRecord'
@@ -18,7 +21,6 @@ import { hanamiiTeardownSpec, HANAMII_KEY_MISSING_MESSAGE } from '../teardown/ta
 import { sharedTeardownSpec, SHARED_KEY_MISSING_MESSAGE } from '../teardown/targets/shared'
 import { dedicatedTeardownSpec, DEDICATED_LIST_KEY_MISSING_MESSAGE } from '../teardown/targets/dedicated'
 import type { TeardownFlowOutcome } from '../teardown/useTeardownFlow'
-
 // 「📡 公開したもの一覧」モーダル（表示メニューから開く・2026-07-31 ユーザー要望）。
 //
 // 目的: サービス側で障害が起きたときなどに「自分は HANAMII に何を公開していたか」をすぐ確認する。
@@ -113,7 +115,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
         setWorkspace(ws)
         await reload(ws)
       } catch (e: any) {
-        if (!cancelled) { setError(e?.message ?? String(e)); setGroups([]) }
+        if (!cancelled) { setError(failureText(e, { readOnly: true })); setGroups([]) }
       }
     })()
     return () => { cancelled = true }
@@ -196,14 +198,14 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
   )
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="relative bg-base border border-line rounded-2xl shadow-xl w-[42rem] max-w-[92vw] max-h-[86vh] flex flex-col"
-        onClick={e => e.stopPropagation()}
-      >
+    // 枠は ui/Modal（0.6.26）。Esc・背景クリックも ✕・「閉じる」と同じ onClose を通る（窓の中の削除の確認は枠の中のまま）。
+    <Modal
+      onRequestClose={onClose} labelledBy="published-list-title" backdropClassName="bg-black/50 backdrop-blur-sm"
+      panelClassName="relative bg-base border border-line rounded-2xl shadow-xl w-[42rem] max-w-[92vw] flex flex-col"
+    >
         <div className="flex items-center justify-between px-5 py-3 border-b border-line flex-none">
-          <h2 className="text-sm font-semibold text-ink">📡 公開したもの一覧</h2>
-          <button onClick={onClose} className="text-ink-muted hover:text-ink text-sm" title="閉じる">✕</button>
+          <h2 id="published-list-title" className="text-sm font-semibold text-ink">📡 公開したもの一覧</h2>
+          <button onClick={onClose} aria-label="閉じる" className="text-ink-muted hover:text-ink text-sm" title="閉じる">✕</button>
         </div>
 
         <div className="overflow-y-auto px-5 py-4 space-y-4">
@@ -279,9 +281,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
           {groups === null && <div className="text-xs text-ink-muted">読み込んでいます…</div>}
 
           {error && (
-            <div className="rounded-xl border border-line bg-surface p-4 text-xs text-ink select-text">
-              読み込みに失敗しました: {error}
-            </div>
+            <div className="rounded-xl border border-line bg-surface p-4 text-xs text-ink select-text">読み込みに失敗しました: <FailureLines text={error} /></div>
           )}
 
           {groups !== null && total === 0 && !error && (
@@ -393,7 +393,6 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
         <div className="px-5 py-3 border-t border-line flex-none flex justify-end">
           <button onClick={onClose} className="text-xs border border-line rounded-lg px-3 py-1.5 text-ink-secondary hover:text-ink hover:border-sakura">閉じる</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

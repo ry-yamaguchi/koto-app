@@ -9,13 +9,14 @@ import SecurityCheckSection from './SecurityCheckSection'
 import UnusedFilesSection from './UnusedFilesSection'
 import TelemetryNotice from './TelemetryNotice'
 import RollbackSection from './RollbackSection'
+import AppRunPrereqChecklist from './AppRunPrereqChecklist'
 import { teardownDataNote } from '../../shared/teardownSupport'
 import { askAiAboutCheck } from '../../shared/preflight'
 import { askAiAboutFailure, type AskAiFailureKind } from '../../shared/askAi'
 import { pinnedAfterApplyNotice } from '../../shared/apprunTraffic'
 import { scaleLabel, type ScaleDecision } from '../../shared/scaleDecision'
 import { nextApplyOpts } from '../scaleDecisionFlow'
-import { costSummaryLines, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
+import { costSummaryLines, registryNotFoundCostNote, REGISTRY_MONTHLY_YEN, REGISTRY_INCLUDED_STORAGE_GIB, REGISTRY_EXTRA_GIB_YEN } from '../../shared/cloudCost'
 import { retentionNotice, shouldNoticeStale } from '../../shared/imageRetention'
 import { isSubmitEnter } from '../keyInput'
 import { shouldBlockPublish } from '../publishGate'
@@ -26,6 +27,10 @@ import { watchProjectOps, unseenOf, readUnseenOps, ackShown, normDir, isSharedTy
 import { warningLine, clockText } from '../../shared/opsText'
 import { isStoppedByQuit, stoppedWhenText } from '../../shared/inFlightOps'
 import { opWordFor } from '../../shared/opWord'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText, splitFailureDetail } from '../../shared/failureDetail'
+import FailureLines from './FailureLines'
+import { failureCopyNow, maskForCopy } from '../failureCopy'
 // D-13 F（2026-09-16）: README・使い方ガイドは「共用型も専有型も同じです」と書いているのに、
 // 「アプリが書いたデータは残らない」の注意を出していたのは専有型の手順8だけだった。
 // **既定で推奨される共用型（大多数が通る道）にも出す。** 文言は複製せず、専有型と同じ
@@ -36,6 +41,8 @@ import { useConfirm } from '../useConfirm'
 // 破棄（S1・S2）の流れと結果の表示は SharedTeardownSection.tsx（共通の流れ teardown/flow.ts と共用型の仕様書 teardown/targets/shared.ts を通る）。
 import { useSharedTeardown, SharedTeardownResultView } from './SharedTeardownSection'
 import { resumedTeardownView, type TeardownView } from '../../shared/teardownResult'
+import { imageTrashNote } from './imageTrashNote'
+import ErrorBand from './ErrorBand'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
 // （小文字英数字とハイフン・先頭末尾は英数字・3〜40文字）と同じ制約をここでも複製する
@@ -468,7 +475,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
    * レジストリを設定し直して整ったか（2026-08-14 Ryosuke 指摘）。
    * **一度直したらボタンを消す。** 出したままだと「効いていないのでは」と何度も
    * 押させることになり、押すたびに push 用パスワードを作り直す（毎回無駄な往復）。
-   * 探し直しに失敗すれば新しいレジストリが作られ、**月額220円が増える**恐れもある。
+   * 探し直して見つからなければ新しいレジストリが作られ、**月額が増える**。一覧を読めなかった回は作らない。
    */
   const [registryFixed, setRegistryFixed] = useState(false)
   // 「↻ 更新」で見直した結果（2026-08-14 Ryosuke 提案）。null は「まだ押していない」。
@@ -517,12 +524,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     } finally {
       setTrashing(false)
     }
-    if (failed.length) window.alert(`${failed.length} 件はゴミ箱へ移せませんでした:\n${failed.slice(0, 5).join('\n')}`)
-    // **何をしたかを残す。** 黙って消すと、指摘が減った理由が分からない
-    const moved = files.length - failed.length
-    setTrashNote(moved > 0
-      ? `🗑 ${moved}件をゴミ箱へ移しました（Finder のゴミ箱から戻せます）。指摘もそのぶん減ります。`
-      : '⚠️ ゴミ箱へ移せませんでした。')
+    // 移せなかったものも alert にせず、同じ帯に一覧で足す
+    setTrashNote(imageTrashNote(files.length, failed))
     await runPreflight() // 片づけた結果をその場で見せる
   }
 
@@ -530,7 +533,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     setChecking(true)
     setPreflight(null)
     try { setPreflight(await window.electronAPI.cloud.preflight(projectDir)) }
-    catch (e: any) { setPreflight({ ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: e?.message ?? String(e) }) }
+    catch (e: any) { setPreflight({ ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: failureText(e, { readOnly: true }) }) }
     finally { setChecking(false) }
   }
 
@@ -600,6 +603,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   // レジストリ自動作成の状態
   const [regCreating, setRegCreating] = useState(false)
   const [regNotice, setRegNotice] = useState('')
+  // regNotice は成功の知らせも流れる欄。失敗のときだけコピーに版と日時を添える
+  const [regNoticeFailed, setRegNoticeFailed] = useState(false)
   // 公開URL（デプロイ済みのとき）
   const [appUrl, setAppUrl] = useState<string | null>(null)
   const [urlLoading, setUrlLoading] = useState(false)
@@ -655,7 +660,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       if (r.ok) setSpec(r.spec)
       else { setSpec(null); setEnvError(r.errors.join(' / ')) }
     } catch (e: any) {
-      setSpec(null); setEnvError(e?.message ?? String(e))
+      setSpec(null); setEnvError(failureText(e, { readOnly: true }))
     } finally { setEnvLoading(false) }
     // spec が変わると前提（dockerfile/image・Dockerfile の有無）も変わり得るので取り直す。
     refreshPrereqs()
@@ -706,7 +711,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         void refreshUrl()
       }
     } catch (e: any) {
-      setRecheck({ healthy: false, note: e?.message ?? String(e) })
+      setRecheck({ healthy: false, note: failureText(e, { readOnly: true }) })
     } finally {
       setRecheckBusy(false)
     }
@@ -737,7 +742,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         setLimitMsg(r.message ?? '取得に失敗しました')
       }
     } catch (e: any) {
-      setLimitMsg(e?.message ?? String(e))
+      setLimitMsg(failureText(e, { readOnly: true }))
     } finally { setLimitLoading(false) }
   }, [projectDir])
 
@@ -776,7 +781,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       else setConnMsg('')
     } catch (e: any) {
       setConn('ng'); setConnChecks(null)
-      setConnMsg(e?.message ?? 'APIキーを確認してください。')
+      setConnMsg(failureText(e, { readOnly: true }))
     }
   }
 
@@ -794,7 +799,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         if (sr.ok) setSpec(sr.spec)
         else setEnvError(sr.errors.join(' / '))
       } catch (e: any) {
-        setEnvError(e?.message ?? String(e))
+        setEnvError(failureText(e))
       }
     }
     setConn('idle'); setConnMsg('')
@@ -810,7 +815,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       if (r.ok) { setSpec(r.spec); refreshPrereqs() }
       else setEnvError(r.errors.join(' / '))
     } catch (e: any) {
-      setEnvError(e?.message ?? String(e))
+      setEnvError(failureText(e))
     } finally { setScaffolding(false) }
   }
 
@@ -833,16 +838,19 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         setRegistryFixed(true)
         // 確認の結果が古くなるので取り直す（直したのに ❌ のままにしない）
         if (preflight) void runPreflight()
+        setRegNoticeFailed(false)
         setRegNotice(`${r.created ? '作成しました' : '既存のレジストリを利用します'}: ${r.server}（認証情報に保存済み）`)
         window.dispatchEvent(new Event('sakura:credentials-changed')) // 認証情報側にも反映
         refreshRegistryName() // 記録が更新されたので、破棄画面と費用案内が出す名前も取り直す
         await refreshPrereqs()
       } else {
         setRegistryFixed(false)
+        setRegNoticeFailed(true)
         setRegNotice(`自動作成に失敗しました: ${r.message ?? ''}`)
       }
     } catch (e: any) {
-      setRegNotice(`自動作成に失敗しました: ${e?.message ?? String(e)}`)
+      setRegNoticeFailed(true)
+      setRegNotice(`自動作成に失敗しました: ${failureText(e)}`)
     } finally { setRegCreating(false) }
   }
 
@@ -853,7 +861,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       const r = await window.electronAPI.cloud.cost()
       setCost(r.ok ? { amountYen: r.amountYen, asOf: r.asOf } : { message: r.message })
     } catch (e: any) {
-      setCost({ message: e?.message ?? String(e) })
+      setCost({ message: failureText(e, { readOnly: true }) })
     } finally { setCostLoading(false) }
   }
 
@@ -872,7 +880,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       if (r.ok) { setSpec(r.spec); refreshExpiry() }
       else setEnvError(r.errors.join(' / '))
     } catch (e: any) {
-      setEnvError(e?.message ?? String(e))
+      setEnvError(failureText(e))
     } finally { setSavingTtl(false) }
   }
 
@@ -888,7 +896,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       if (r.ok) setSpec(r.spec)
       else setEnvError(r.errors.join(' / '))
     } catch (e: any) {
-      setEnvError(e?.message ?? String(e))
+      setEnvError(failureText(e))
     } finally { setSavingScale(false) }
   }
 
@@ -900,7 +908,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       if (r.ok) setPlan(r.plan)
       else setPlanError(r.errors.join(' / '))
     } catch (e: any) {
-      setPlanError(e?.message ?? String(e))
+      setPlanError(failureText(e, { readOnly: true }))
     } finally { setPlanning(false) }
   }
 
@@ -990,7 +998,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     try {
       let pf: Awaited<ReturnType<Window['electronAPI']['cloud']['preflight']>>
       try { pf = await window.electronAPI.cloud.preflight(projectDir) }
-      catch (e: any) { pf = { ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: e?.message ?? String(e) } }
+      catch (e: any) { pf = { ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: failureText(e, { readOnly: true }) } }
       setPreflight(pf)
       setProgress(null)
       if (shouldBlockPublish(pf).block) return
@@ -1011,7 +1019,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         setPlanError(r.errors.join(' / '))
       }
     } catch (e: any) {
-      setPlanError(e?.message ?? String(e))
+      setPlanError(failureText(e, { readOnly: true }))
     } finally { setProgress(null); setPlanning(false) }
   }
 
@@ -1077,7 +1085,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         } catch { /* 確認できなくても公開の成否は変えない */ }
       }
     } catch (e: any) {
-      setOpResult({ ok: false, message: e?.message ?? String(e) })
+      setOpResult({ ok: false, message: failureText(e) })
       setConfirm(null)
     } finally {
       unsubscribe()
@@ -1126,7 +1134,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         dedicatedTag: r.dedicatedTag ?? null, dedicatedTagUnknown: r.dedicatedTagUnknown === true,
       })
     } catch (e: any) {
-      setOpResult({ ok: false, message: e?.message ?? String(e) })
+      setOpResult({ ok: false, message: failureText(e, { readOnly: true }) })
     } finally { setCleaning(false) }
   }
 
@@ -1148,7 +1156,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
       setOpResult(shown)
       setConfirm(null)
     } catch (e: any) {
-      shown = { ok: false, message: e?.message ?? String(e) }
+      // 片づけは main の記録に載らない（開き直しても済んだかは見えない）ので、確かめる先は「もう一度調べる」の一覧にする
+      shown = { ok: false, message: failureText(e, { checkAt: '「🧹 古いイメージを削除する」の一覧' }) }
       setOpResult(shown)
       setConfirm(null)
     } finally {
@@ -1176,7 +1185,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         setEnvError(r.errors.join(' / '))
       }
     } catch (e: any) {
-      setEnvError(e?.message ?? String(e))
+      setEnvError(failureText(e))
     } finally {
       setRenaming(false)
     }
@@ -1295,8 +1304,8 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   // ── 親切カード（名前衝突の代替名提案 / アプリ作成上限）の表示判定 ──
   // どちらかが表示されるケースでは、生の失敗メッセージ本体（OpResultView）を折りたたみに降格して
   // カードを主役にする（所見17）。
-  const conflictCardShown = !!(opResult && !opResult.ok && spec && isNameConflictError(opResult.message ?? ''))
-  const limitCardShown = !!(opResult && !opResult.ok && isCreationLimitError(opResult.message ?? ''))
+  const conflictCardShown = !!(opResult && !opResult.ok && spec && isNameConflictError(splitFailureDetail(opResult.message ?? '').text))
+  const limitCardShown = !!(opResult && !opResult.ok && isCreationLimitError(splitFailureDetail(opResult.message ?? '').text))
 
   // ── この公開に使うキーの導出値 ──
   // 選択中のキー id: env.json のピン留め（spec.auth.keyId）が一覧に存在すればそれ、無ければ「使用中」。
@@ -1531,7 +1540,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
           // エラーがあっても「作成」導線は必ず残す（以前はエラー表示だけになり操作不能に見えた）
           <div className="space-y-2">
             {envError && (
-              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all select-text">{envError}</p>
+              <ErrorBand text={envError} className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all" />
             )}
             <p className="text-sm text-ink-secondary leading-relaxed">
               このプロジェクトにはまだ公開の設定がありません。
@@ -1543,7 +1552,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             >{scaffolding ? '作成中…' : '☁ 公開の設定を作成'}</button>
           </div>
         ) : envError ? (
-          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all">{envError}</p>
+          <ErrorBand text={envError} className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all" />
         ) : (
           <SpecSummary
             spec={spec}
@@ -1638,11 +1647,14 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                         以前は回復のボタンを「公開の失敗」に紐づけていたため、確認で
                         分かっていても一度公開を押させる形だった（2026-08-14 Ryosuke 指摘）。 */}
                     {c.fix === 'reset-registry' && (
-                      <button
-                        onClick={autoCreateRegistry}
-                        disabled={regCreating || !keyReady}
-                        className="ml-2 align-middle bg-sakura text-white rounded px-2 py-0.5 text-[11px] font-semibold hover:opacity-90 disabled:opacity-40"
-                      >{regCreating ? '設定し直しています…' : '↻ 設定し直す'}</button>
+                      <>
+                        <button
+                          onClick={autoCreateRegistry}
+                          disabled={regCreating || !keyReady}
+                          className="ml-2 align-middle bg-sakura text-white rounded px-2 py-0.5 text-[11px] font-semibold hover:opacity-90 disabled:opacity-40"
+                        >{regCreating ? '設定し直しています…' : '↻ 設定し直す'}</button>
+                        <span className="mt-1 block text-[11px] leading-relaxed text-ink-secondary break-words [overflow-wrap:anywhere]">{registryNotFoundCostNote()}</span>
+                      </>
                     )}
                     {c.fix === 'ask-ai' && (
                       <button
@@ -1686,15 +1698,15 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
             </ul>
             )}
             {trashNote && (
-              <p className="text-[11px] text-ink leading-relaxed select-text">{trashNote}</p>
+              <p className="text-[11px] text-ink leading-relaxed select-text whitespace-pre-wrap">{trashNote}</p>
             )}
             {preflight.message && (
-              <p className="text-[11px] text-brand-red leading-relaxed select-text">{preflight.message}</p>
+              <p className="text-[11px] text-brand-red leading-relaxed select-text"><FailureLines text={preflight.message} /></p>
             )}
           </div>
         )}
         {planError && (
-          <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all">{planError}</p>
+          <ErrorBand text={planError} className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all" />
         )}
         {plan && <PlanView plan={plan} />}
       </section>
@@ -1739,7 +1751,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
 
         {/* dockerfile ソースのときだけ前提チェックリストを表示（いずれか✗なら構築不可） */}
         {needsPrereqs && (
-          <PrereqChecklist prereqs={prereqs} onOpenCredentials={onOpenCredentials} onAutoCreateRegistry={autoCreateRegistry} regCreating={regCreating} regNotice={regNotice} keyReady={keyReady} />
+          <AppRunPrereqChecklist prereqs={prereqs} onOpenCredentials={onOpenCredentials} onAutoCreateRegistry={autoCreateRegistry} regCreating={regCreating} regNotice={regNotice} regNoticeFailed={regNoticeFailed} keyReady={keyReady} />
         )}
 
         <div className="flex items-center gap-2">
@@ -1891,7 +1903,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                 </p>
                 {recheck && (
                   <p className="text-[11px] text-ink select-text break-words">
-                    {recheck.note}{recheck.detail ? `（${recheck.detail}）` : ''}
+                    <FailureLines text={wrapFailureText(recheck.note, t => `${t}${recheck.detail ? `（${recheck.detail}）` : ''}`)} />
                   </p>
                 )}
                 <div className="flex gap-2 flex-wrap">
@@ -1938,11 +1950,11 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                 >{regCreating ? '設定し直しています…' : '↻ レジストリを設定し直す'}</button>
                 <p className="text-[11px] text-ink-secondary leading-relaxed">
                   このプロジェクトのコンテナレジストリを探し直し、push 用のパスワードを作り直します。
-                  見つからない場合は新しく作るため、月額{REGISTRY_MONTHLY_YEN}円（税込）がかかり始めます。
+                  {registryNotFoundCostNote()}
                 </p>
               </>
             )}
-            {regNotice && <p className="text-[11px] text-ink select-text break-words">{regNotice}</p>}
+            {regNotice && <p className="text-[11px] text-ink select-text break-words"><FailureLines text={regNotice} /></p>}
           </div>
         )}
       </section>
@@ -2076,13 +2088,13 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
                   const r = await window.electronAPI.cloud.setAccessLimit(projectDir, { isEnabled: limitEnabled, ips: limitIps })
                   setLimitMsg(r.ok ? '✅ 保存しました' : (r.message ?? '保存に失敗しました'))
                 } catch (e: any) {
-                  setLimitMsg(e?.message ?? String(e))
+                  setLimitMsg(failureText(e))
                 } finally { setLimitSaving(false) }
               }}
               disabled={limitSaving}
               className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 disabled:opacity-40"
             >{limitSaving ? '保存中…' : '保存'}</button>
-            {limitMsg && <p className="text-xs text-ink-secondary leading-relaxed flex-1">{limitMsg}</p>}
+            {limitMsg && <p className="text-xs text-ink-secondary leading-relaxed flex-1"><FailureLines text={limitMsg} /></p>}
           </div>
 
           <p className="text-[11px] text-ink-muted leading-relaxed">
@@ -2124,7 +2136,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
         {cost && (
           cost.amountYen != null
             ? <p className="text-xs text-ink">直近の確定請求額{cost.asOf ? `（${cost.asOf}分）` : ''}: <span className="font-semibold">¥{cost.amountYen.toLocaleString()}</span></p>
-            : <p className="text-[11px] text-ink-muted">実額を取得できませんでした: {cost.message}</p>
+            : <p className="text-[11px] text-ink-muted">実額を取得できませんでした: <FailureLines text={cost.message ?? ''} /></p>
         )}
         {!cost && <p className="text-[11px] text-ink-muted">「実額を取得」で直近に確定したクラウドの請求額を確認できます。</p>}
       </section>
@@ -2209,7 +2221,7 @@ function SpecSummary({ spec, onEdit, onSetTtl, savingTtl, onSetScale, savingScal
                 onBlur={commitName}
                 onKeyDown={e => {
                   if (isSubmitEnter(e)) commitName()
-                  if (e.key === 'Escape') { nameCommittedRef.current = true; setNameInput(spec.name); setEditingName(false) } // キャンセル後のネイティブblurで誤確定しないようガード
+                  if (e.key === 'Escape') { e.preventDefault(); nameCommittedRef.current = true; setNameInput(spec.name); setEditingName(false) } // キャンセル後のネイティブblurで誤確定しないようガード
                 }}
                 disabled={renaming}
                 autoFocus
@@ -2421,6 +2433,8 @@ function OpResultView({ result, demoted = false, kind, target }: { result: Panel
     )
   }
   const copyText = [result.message, ...(result.warnings ?? []), result.detail].filter(Boolean).join('\n')
+  // 失敗のコピーには、文・原文・Koto の版・日時を入れる（問い合わせに貼れる形）。
+  const getCopyText = async () => maskForCopy([result.message ? await failureCopyNow(result.message) : '', ...(result.warnings ?? []), result.detail].filter(Boolean).join('\n'))
   // 判断2: 失敗のときだけ「🤖 AIに相談する」を、既存の内容の下に添える（成功時には出さない）。
   const askAiText = result.ok ? null : askAiAboutFailure(kind, target, result.message ?? '失敗しました', result.detail)
   // **「失敗しました」と言い切らない場合がある**（2026-08-14 Ryosuke 指摘）。
@@ -2442,8 +2456,8 @@ function OpResultView({ result, demoted = false, kind, target }: { result: Panel
       )}
       {result.message && (
         <div className="flex items-start gap-1.5">
-          <p className="text-xs text-ink-secondary leading-relaxed break-all flex-1 select-text whitespace-pre-wrap">{result.message}</p>
-          <CopyButton text={copyText} />
+          <p className="text-xs text-ink-secondary leading-relaxed break-all flex-1 select-text whitespace-pre-wrap"><FailureLines text={result.message} /></p>
+          <CopyButton text={copyText} getText={result.ok ? undefined : getCopyText} />
         </div>
       )}
       {result.detail && (demoted ? (
@@ -2507,88 +2521,6 @@ function NameConflictRetry({ currentName, maxLen, onRetry }: { currentName: stri
         onClick={() => onRetry(suggested)}
         className="text-xs text-sakura border border-sakura/50 rounded-md px-2.5 py-1.5 hover:bg-overlay"
       >『{suggested}』に変えて公開し直す</button>
-    </div>
-  )
-}
-
-// ── 前提チェックリスト（構築時：内蔵ビルダー / レジストリ登録） ──
-// Docker のインストールも Dockerfile も不要。IDE 同梱のビルダーで組み立てる。
-function PrereqChecklist({
-  prereqs,
-  onOpenCredentials,
-  onAutoCreateRegistry,
-  regCreating,
-  regNotice,
-  keyReady,
-}: {
-  prereqs: { builderMode: 'builtin' | 'docker'; builder?: boolean; docker?: boolean; dockerfile?: boolean; registry: boolean } | null
-  onOpenCredentials: () => void
-  onAutoCreateRegistry: () => void
-  regCreating: boolean
-  regNotice: string
-  keyReady: boolean
-}) {
-  const isDocker = prereqs?.builderMode === 'docker'
-  const registry = !!prereqs?.registry
-  const mark = (ok: boolean) =>
-    ok ? <span className="text-brand-green font-semibold">✓</span> : <span className="text-brand-red font-semibold">✗</span>
-  return (
-    <div className="rounded-lg border border-line bg-overlay p-3 space-y-2">
-      <p className="text-[11px] font-semibold text-ink-secondary">{isDocker ? '公開するための前提' : '公開するための前提（Docker は不要です）'}</p>
-      <ul className="space-y-1.5 text-xs">
-        {isDocker ? (
-          <>
-            <li className="flex items-center gap-2 flex-wrap">
-              {mark(!!prereqs?.docker)}
-              <span className="text-ink">Docker 導入</span>
-              {!prereqs?.docker && <a href="https://www.docker.com/products/docker-desktop/" className="text-sakura hover:underline">Docker Desktop を入手</a>}
-            </li>
-            <li className="flex items-center gap-2 flex-wrap">
-              {mark(!!prereqs?.dockerfile)}
-              <span className="text-ink">Dockerfile</span>
-              <span className="text-ink-muted">プロジェクト直下に Dockerfile が必要</span>
-            </li>
-          </>
-        ) : (
-          <li className="flex items-center gap-2 flex-wrap">
-            {mark(!!prereqs?.builder)}
-            <span className="text-ink">内蔵ビルダー</span>
-            <span className="text-ink-muted">Koto に内蔵のビルド機能</span>
-          </li>
-        )}
-        <li className="flex items-center gap-2 flex-wrap">
-          {mark(registry)}
-          <span className="text-ink">レジストリ登録</span>
-          {!registry ? (
-            <>
-              <button
-                onClick={onAutoCreateRegistry}
-                disabled={regCreating || !keyReady}
-                className="px-2 py-0.5 rounded bg-sakura/10 text-sakura hover:bg-sakura/20 disabled:opacity-50"
-                title={!keyReady
-                  ? '先に認証情報でクラウドのAPIキーを登録してください'
-                  : `Kotoがコンテナレジストリを自動作成します（月額${REGISTRY_MONTHLY_YEN}円・税込がかかります）`}
-              >{regCreating ? '作成中…' : '🛠 レジストリを自動作成'}</button>
-              <button onClick={onOpenCredentials} className="text-ink-muted hover:underline">手動で登録</button>
-            </>
-          ) : null
-            // ── 登録済みのときはボタンを出さない（2026-08-09 Ryosuke の指摘から）──────
-            // 以前はここに「↻ ユーザー再設定」を常設していたが、
-            //   ・平常時に押す理由が無い（押して得することが何も無い）
-            //   ・ラベルに反して、レジストリが見つからなければ**新規作成する**＝課金が始まる
-            //   ・接続情報を上書きする唯一の場所で、2026-08-06 の誤 push・誤削除の起点になった
-            // という三重の問題があった。必要になるのは push が 401 になったときと、
-            // 別プロジェクトのレジストリを指しているときだけなので、**そのエラーの中に出す**
-            // （下の ResetRegistryButton）。困ったときだけ現れるものにする。
-          }
-        </li>
-      </ul>
-      {regNotice && (
-        <div className="flex items-start gap-1.5">
-          <p className="text-[11px] text-ink-secondary flex-1 select-text whitespace-pre-wrap break-words">{regNotice}</p>
-          <CopyButton text={regNotice} />
-        </div>
-      )}
     </div>
   )
 }

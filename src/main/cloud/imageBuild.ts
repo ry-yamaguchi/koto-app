@@ -22,6 +22,8 @@ import { planDependencies, nativeDepsMessageForBlocked } from '../../shared/deps
 import { MARKER_FILE, markerContent } from '../../shared/publishVerify'
 import { installDependencies } from './npmInstall'
 import { awaitLoginPath } from '../loginPath'
+import { commandFailureOf } from '../ipc/commandFailure'
+import { classifyFailure, failureText } from '../../shared/failureText'
 
 // ── 出力上限・タイムアウト（crane の build/push は時間がかかり得る） ──
 const OUTPUT_MAX = 16000
@@ -433,7 +435,8 @@ export async function stageAndTar(
     const r = await installDependencies(appDir, opts?.onProgress)
     if (!r.ok) {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
-      throw new Error(r.message ?? 'ライブラリを用意できませんでした')
+      // 回線断などを見分けた文は、呼び出し側が別の見出しに置き換えないよう印を付ける
+      throw Object.assign(new Error(r.message ?? 'ライブラリを用意できませんでした'), r.diagnosed ? { diagnosed: true } : {})
     }
     if (r.nativeBlocked.length > 0) {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
@@ -456,6 +459,12 @@ export async function stageAndTar(
   if (!r.ok) {
     // 失敗時はこの tmp を片付けてから throw（呼び出し側へは tmp パスを返さない）。
     try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    // 空き不足・権限は手元のファイルの失敗。日本語の前置きを付けると見分けられず、レジストリや package.json のせいにされるので、
+    // 見分けた文（詳細つき）をそのまま見出しにする（diagnosed）
+    const local = commandFailureOf({ stderr: r.stderr })
+    if (classifyFailure(local).kind.startsWith('fs-')) {
+      throw Object.assign(new Error(failureText(local)), { diagnosed: true })
+    }
     throw new Error(`イメージのレイヤー（公開するファイル）の作成に失敗しました: ${summarizeStderr(r.stderr)}`)
   }
   return layer
@@ -499,7 +508,13 @@ export type BuildAndPushOptions = {
 }
 
 /** buildAndPush の結果。 */
-export type BuildAndPushResult = { ok: boolean; log: string; message?: string }
+export type BuildAndPushResult = {
+  ok: boolean
+  log: string
+  message?: string
+  /** message が、失敗の種類（回線断・手元のファイル）を見分けた文であること。 */
+  diagnosed?: boolean
+}
 
 /**
  * crane の argv を組み立てる純関数（テスト容易性のため分離）。
@@ -605,7 +620,7 @@ export async function buildAndPush(opts: BuildAndPushOptions): Promise<BuildAndP
       })
       layerTmpDir = path.dirname(layer)
     } catch (e: any) {
-      return { ok: false, log: '', message: e?.message ?? String(e) }
+      return { ok: false, log: '', message: e?.message ?? String(e), ...(e?.diagnosed === true ? { diagnosed: true } : {}) }
     }
 
     // 3. 一時 DOCKER_CONFIG ディレクトリに config.json を書く（push 先の認証）。

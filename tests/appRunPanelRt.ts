@@ -111,6 +111,8 @@ export const RT = (() => {
     'OpResultView', 'StoppedResultView', 'WarningsBlock', 'CaptionLine', 'ConfirmDialog',
     // 破棄の結果欄（共通の部品。フックを持たない）。段階2の2c で、破棄の結果は SharedTeardownResultView が描く。
     'SharedTeardownResultView', 'TeardownResultView', 'ResumedNotesView', 'ErrorBlock',
+    // 失敗の文と詳細の行を描く部品（フックを持たない）。
+    'FailureLines',
   ])
   function expand(node: any): any {
     if (node == null || typeof node === 'boolean') return null

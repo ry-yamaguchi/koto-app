@@ -12,9 +12,13 @@
 // どちらとして検査するかは runtimeDetect が自動で決める（利用者には選ばせない）。
 
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel } from './usage'
-import { isSecretFile, BUILD_CONFIG_FILES } from '../shared/publishExclude'
+import { looksSecretByName, looksSecretButPublished, BUILD_CONFIG_FILES } from '../shared/publishExclude'
+import { maskSecretShapes } from '../shared/secretShapes'
+import { wrapUntrusted } from '../shared/untrustedBlock'
 import { detectRuntime } from '../shared/runtimeDetect'
 import { resolvePublishRoot } from './publishRootRenderer'
+import { failureText } from '../shared/failureText'
+import { wrapFailureText } from '../shared/failureDetail'
 
 /** どちらとして検査するか。 */
 export type CheckMode = 'static' | 'node'
@@ -97,9 +101,11 @@ const SECURITY_CHECK_MAX_FILES = 5000
 // README.md やメモに個人情報・接続情報が書かれる実例があり、対象外のままでは警告できない。
 // svg はXMLテキストでスクリプト混入がありうるため、同じ理由で中身を読む対象にする。
 const TARGET_RE = /\.(html?|php|js|mjs|cjs|css|json|ya?ml|sh|md|txt|svg)$|(^|\/)(Dockerfile|\.htaccess)$/i
-// 中身を読むまでもなく公開NGなファイル名。判定の中心は publishExclude.ts の isSecretFile
-// （公開から除外する定義と同じものを使う）。名前に credentials / secret を含むものも足す。
-const SECRET_HINT_RE = /credentials|secret/i
+// 中身を読むまでもなく公開NGなファイル名の判定は publishExclude.ts の looksSecretByName（唯一の定義）。
+// 依存の一覧（ロックファイル）は中身を送らない。名前と版とハッシュが並ぶだけで読んでも指摘は出ず、
+// 大きいと枠（BATCH_CHARS × MAX_BATCHES）を使い切って後ろのソースが「確認していません」に回る。
+// 対象から外すだけで、公開物にある事実は others の名前に残る（yarn.lock が元からそうなっている）。
+const LOCKFILE_RE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$/i
 
 /**
  * Koto が管理するビルド設定か。**ユーザーの作成物ではないので検査しない。**
@@ -112,12 +118,6 @@ const SECRET_HINT_RE = /credentials|secret/i
 function isKotoBuildConfig(relPath: string): boolean {
   const base = relPath.split('/').pop() ?? relPath
   return (BUILD_CONFIG_FILES as readonly string[]).includes(base)
-}
-
-/** そのファイルが「名前だけで公開NGと分かる」ものか。中身は読まない。 */
-function looksSecret(relPath: string): boolean {
-  const base = relPath.split('/').pop() ?? relPath
-  return isSecretFile(base) || SECRET_HINT_RE.test(relPath)
 }
 
 /**
@@ -136,12 +136,21 @@ function looksSecret(relPath: string): boolean {
  * @param entry アプリの入口ファイル（server.js 等）。**サーバーコードこそ検査の本丸**なので先頭に置く。
  */
 export function pickCheckTargets(files: readonly string[], entry?: string | null): { targets: string[]; secretFiles: string[] } {
-  const secretFiles = files.filter(f => looksSecret(f) && f !== '.sakuraide.json')
-  let targets = files.filter(f => TARGET_RE.test(f) && !looksSecret(f) && !isKotoBuildConfig(f))
-  if (entry && files.includes(entry) && !looksSecret(entry)) {
+  const secretFiles = files.filter(f => looksSecretByName(f) && f !== '.sakuraide.json')
+  let targets = files.filter(f => TARGET_RE.test(f) && !looksSecretByName(f) && !LOCKFILE_RE.test(f) && !isKotoBuildConfig(f))
+  if (entry && files.includes(entry) && !looksSecretByName(entry)) {
     targets = [entry, ...targets.filter(f => f !== entry)]
   }
   return { targets, secretFiles }
+}
+
+/**
+ * 名前で見つけた秘密らしいファイル（secretFiles）のうち、**公開物に入るもの**（純関数）。
+ * 判定は publishExclude.ts の looksSecretButPublished（唯一の定義）。`.env`・`*.pem` など、
+ * どの公開先でも除外される名前は数えない（数えると、`.env` のある普通のプロジェクトがいつも「要確認」になる）。
+ */
+export function publishedSecretFiles(secretFiles: readonly string[]): string[] {
+  return secretFiles.filter(looksSecretButPublished)
 }
 
 // ── 名前一覧の肥大防止（roadmap #17 追補・2026-09-03）──────────────────────
@@ -152,10 +161,14 @@ export function pickCheckTargets(files: readonly string[], entry?: string | null
 // 表示件数だけを capList で抑え、超過分は「ほかN件」で必ず件数を残す。
 /** AIへの依頼文に載せる others の上限。 */
 const OTHERS_PROMPT_LIMIT = 80
+/** AIへの依頼文に載せる secretFiles の上限（依頼文は最大 MAX_BATCHES 回、毎回載せる）。 */
+const SECRET_PROMPT_LIMIT = 20
 /** 報告末尾「中身を確認していないファイル」に載せる上限（dataLike + others 合算）。 */
 const UNCHECKED_NOTE_LIMIT = 50
 /** 報告先頭の dataLike 固定文に載せる上限。 */
 const DATA_LIKE_NOTE_LIMIT = 20
+/** 報告先頭の「秘密が入っていそうなファイル」固定文に載せる上限。 */
+const SECRET_NOTE_LIMIT = 20
 
 /**
  * 名前一覧を先頭 n 件に切り、超過分は「ほかN件」の1行にまとめる（純関数）。
@@ -230,12 +243,18 @@ export function classifyUnchecked(
 export type Piece = { file: string; part: number; total: number; text: string }
 
 /**
- * 1ファイルを、送れる大きさのかたまりに分ける（純関数）。
+ * 1ファイルを、AI へ送れる大きさのかたまりに分ける（純関数）。
  * できるだけ行の切れ目で分ける（途中で切ると、その行が読めなくなる）。
+ *
+ * ── 秘密に見える値は、**分ける前に**ファイル全体で伏せる（外へ送る前の唯一の関所）──────
+ * かたまり（Piece）はここでしか作らないので、送る本文はみな伏せ字を通る。分けたあとにかけると、
+ * かたまりの境目で複数行の秘密鍵が BEGIN と END に泣き別れ、伏せ字に当たらず本体がそのまま送られる。
+ * 行数は変わらない（`maskSecretShapes` は既定で行数を保つ）。伏せ字は完全ではない
+ * （形に当たらない固定の文字列は、そのまま残りうる）。
  */
 export function splitIntoPieces(file: string, content: string, chunkChars = CHUNK_CHARS): Piece[] {
   const texts: string[] = []
-  let rest = content
+  let rest = maskSecretShapes(content)
   while (rest.length > chunkChars) {
     const window = rest.slice(0, chunkChars)
     const nl = window.lastIndexOf('\n')
@@ -299,9 +318,23 @@ export function packBatches(
  * 得ないので、dataLike・others と同じ「確認していないファイル」一覧には**含めず**、
  * 件数だけの1行にする。`assets` だけがあって dataLike・others・AIの指摘が無くても、
  * 判定は要確認に倒さない（資産の存在自体は正常なので forceWarn には含めない）。
+ *
+ * ── 読めなかった回・秘密らしい名前・読めなかったファイル ─────────────────────
+ * AIの返事を読めなかった回（skip）が、ほかの回の ok に混ざって「✅ 問題なし」になってはいけない
+ * （その回のファイルは確認できていない）。読めた回が ok でも、skip が1回でもあれば要確認に倒す。
+ * 全部の回が skip のときは、従来どおり skip（実施できなかった）のまま。
+ * 公開物に入る秘密らしい名前（secretFiles）は、AIが何と答えても要確認に倒す（名前で分かる機械の警告）。
+ * 読み込めなかったファイル（unreadable）は、確認していない事実として必ず書く（黙って落とさない）。
+ * 読めたファイルが1つも無く（files が 0）、読めなかったものがあるのに AI が ok と答えたときは、名前だけを見た ok なので
+ * 要確認に倒す（中身を確認した証拠にならない）。files が 0 のときは「N個のファイルを確認しました」とは書かない。
  */
 export function mergeCheckResults(
-  results: readonly { verdict: 'ok' | 'warn' | 'skip'; report: string }[],
+  results: readonly {
+    verdict: 'ok' | 'warn' | 'skip'
+    report: string
+    /** その回で送ったファイル。skip の回に限り、確認できていないファイルとして名指しで伝える。 */
+    files?: readonly string[]
+  }[],
   info: {
     files: number
     batches: number
@@ -314,22 +347,42 @@ export function mergeCheckResults(
     others?: readonly string[]
     /** ファイル一覧そのものが打ち切られていたか（fs:projectFilesInfo の truncated）。あれば要確認に倒す。 */
     truncated?: boolean
+    /** 名前だけで秘密らしいと分かったファイル（pickCheckTargets の secretFiles）。公開物に入るものが1件でもあれば要確認に倒す。 */
+    secretFiles?: readonly string[]
+    /** 読み込めなかったファイル。判定は左右せず、確認していない事実として書く。 */
+    unreadable?: readonly string[]
   },
 ): { verdict: 'ok' | 'warn' | 'skip'; report: string; parts: ReportPart[] } {
   const dataLike = info.dataLike ?? []
   const assets = info.assets ?? []
   const others = info.others ?? []
   const truncated = info.truncated ?? false
-  const forceWarn = dataLike.length > 0 || truncated
+  const secrets = publishedSecretFiles(info.secretFiles ?? [])
+  const unreadable = info.unreadable ?? []
+  const failed = results.filter(r => r.verdict === 'skip')
 
+  // 読めなかった回が混ざるときは、読めた回が ok でも warn（迷ったら警告・掟10）。全部が skip なら skip のまま
   const aiVerdict: 'ok' | 'warn' | 'skip' =
     results.some(r => r.verdict === 'warn') ? 'warn'
-      : results.some(r => r.verdict === 'ok') ? 'ok' : 'skip'
+      : failed.length > 0 && failed.length < results.length ? 'warn'
+        : results.some(r => r.verdict === 'ok') ? 'ok' : 'skip'
+  // 読めた検査対象が1つも無いのに、読めなかったものがある。AI が見たのは名前だけなので、その ok を「確認した」にしない
+  const nothingRead = info.files <= 0 && unreadable.length > 0 && aiVerdict === 'ok'
+  const forceWarn = dataLike.length > 0 || truncated || secrets.length > 0 || nothingRead
   const verdict: 'ok' | 'warn' | 'skip' = forceWarn ? 'warn' : aiVerdict
+
+  // 読み込めなかったファイルの一覧（skip で返すときも、通常の報告でも同じ文）
+  const unreadableNote = unreadable.length
+    ? [`※ 読み込めなかったため、次のファイルは確認していません: ${capList(unreadable, UNCHECKED_NOTE_LIMIT).join(', ')}`]
+    : []
+  // 中身を1つも読めなかったのに要確認になった理由（AI が見たのはファイルの名前だけ）
+  const nothingReadNote = nothingRead ? ['※ 中身を読めたファイルが1つも無く、AIはファイルの名前だけを見ています'] : []
 
   if (verdict === 'skip') {
     // 実施できなかった理由は Koto が書いた文（失敗の理由には外部の応答の文が入りうる）。解釈しない
-    const text = results[0]?.report ?? 'チェックを実施できませんでした。'
+    const base = results[0]?.report ?? 'チェックを実施できませんでした。'
+    // 失敗の詳細（原文）は最後の行に残す。読めなかったファイルの注記より後ろへ移す。
+    const text = wrapFailureText(base, t => [t, ...unreadableNote].join('\n'))
     return { verdict, report: text, parts: [{ text, ai: false }] }
   }
 
@@ -343,13 +396,25 @@ export function mergeCheckResults(
     if (s && !lines.includes(s)) lines.push(s)
   }
   const head = verdict === 'warn' ? '判定: 要確認' : '判定: 問題なし'
-  const note = aiVerdict === 'skip'
-    ? null // AIは未実施なので「N個のファイルを確認しました」とは書かない（嘘になる）
+  const note = aiVerdict === 'skip' || failed.length > 0 || info.files <= 0
+    ? null // AIは未実施（または一部の回を読めなかった・中身を1つも読んでいない）なので「N個のファイルを確認しました」とは書かない（嘘になる）
     : info.batches > 1
       ? `（${info.files}個のファイルを${info.batches}回に分けて確認しました）`
       : `（${info.files}個のファイルを確認しました）`
   const skipNote = info.skipped.length
-    ? [`※ 量が多いため、次のファイルは確認していません: ${info.skipped.join(', ')}`]
+    ? [`※ 量が多いため、次のファイルは確認していません: ${capList(info.skipped, UNCHECKED_NOTE_LIMIT).join(', ')}`]
+    : []
+  // AIの返事を読めなかった回は、何回中何回かと、その回に送ったファイルを書く（原因の文は外部の応答を含みうるので出さない）
+  const failedFiles = [...new Set(failed.flatMap(r => r.files ?? []))]
+  const failedNote = failed.length
+    ? [
+        `※ AIが確認できなかった回があります（${results.length}回中${failed.length}回）。もう一度お試しください`,
+        ...(failedFiles.length ? [`※ 次のファイルは、確認できていない部分があります: ${capList(failedFiles, UNCHECKED_NOTE_LIMIT).join(', ')}`] : []),
+      ]
+    : []
+  // 公開物に入る秘密らしい名前（中身は読んでいない）。AIの判定に関わらず、ここで機械的に伝える
+  const secretNote = secrets.length
+    ? [`${capList(secrets, SECRET_NOTE_LIMIT).join('、')}: 名前からして、秘密が入っていそうなファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください`]
     : []
   // 指摘欄の先頭に固定文で入れる（AIの指摘より前・件数や打ち切り注記より後）。
   // 件数の肥大防止は capList（上限を超えても件数そのものは「ほかN件」で必ず残す）。
@@ -372,7 +437,7 @@ export function mergeCheckResults(
     : []
   // 並びは「Koto の行 → AI の行 → Koto の行」。AI の行（lines）だけが ai: true
   const parts: ReportPart[] = [
-    { text: [head, ...(note ? [note] : []), ...skipNote, ...dataLikeNote].join('\n'), ai: false },
+    { text: [head, ...(note ? [note] : []), ...skipNote, ...unreadableNote, ...nothingReadNote, ...failedNote, ...secretNote, ...dataLikeNote].join('\n'), ai: false },
     { text: lines.join('\n'), ai: true },
     { text: [...truncatedNote, ...assetsNote, ...uncheckedNote].join('\n'), ai: false },
   ].filter(p => p.text)
@@ -442,7 +507,10 @@ export function buildCheckPrompt(opts: {
     (opts.split
       ? '※ ファイルは複数回に分けてお渡ししています（見出しの（1/2）等がその印）。**渡された範囲だけで判断し、「途中で切れている」「全文を確認せよ」とは書かないでください**（こちらの都合です。ほかの部分は別の回に確認します）。\n\n'
       : '') +
-    (opts.secretFiles.length ? `※ 次のファイルは名前からして公開NGの可能性が高い: ${opts.secretFiles.join(', ')}\n\n` : '') +
+    // 秘密に見える値は splitIntoPieces が伏せて渡す。伏せたと知らないと、AI は *** を見本の値と読んで見逃す。
+    // 逆に、*** の所が本物の秘密とは限らない（伏せ字は広く取る。ブラウザ向けの公開キーや、ただの表示用の文字列も *** になる）ので、断定しない
+    (opts.parts.length ? '※ パスワード・APIキー・接続文字列など秘密に見える値は、こちらで *** に置き換えてお渡ししています。*** の所に本物の秘密が書かれていたとは限りません（ブラウザ向けの公開キーや、表示用の文字列のこともあります）。変数名・設定名や前後の書き方から、本物の秘密の直書きに見えるものだけを指摘してください。文章の飾りの *** は気にしなくてかまいません。\n\n' : '') +
+    (opts.secretFiles.length ? `※ 次のファイルは名前からして公開NGの可能性が高い: ${capList(opts.secretFiles, SECRET_PROMPT_LIMIT).join(', ')}\n\n` : '') +
     // 対象外ファイルの「素通り」対策（roadmap #17・案2）。中身はコードとして確認しないが、
     // 名前だけは渡し、そこから疑わしいものがあれば拾わせる（中身は絶対に渡さない）。
     // 件数の肥大防止は capList（上限を超えても件数そのものは「ほかN件」で必ず残す）。
@@ -504,6 +572,19 @@ export function judgeVerdict(report: string): 'ok' | 'warn' {
   const firstLine = report.split('\n')[0] ?? ''
   if (firstLine.includes('要確認')) return 'warn'
   return firstLine.includes('問題なし') ? 'ok' : 'warn'
+}
+
+/**
+ * 「AIに修正させる」でチャットへ送る依頼文を組み立てる（純関数・送る文はここだけ）。
+ *
+ * 報告は**利用者の発言ではない**。AIの文と、プロジェクトのファイル名が入る（ファイルの中身に書かれた文を、
+ * AIが指摘として書き写すこともある）。囲まずに送ると、その中の文が、ファイルを書き換えられるチャットへ
+ * 利用者の依頼として届く。外部のテキストと同じく境界で囲み、囲みの外には Koto の依頼だけを置く。
+ * 囲みの読み方はチャットの指示（UNTRUSTED_RULE）が定めている。
+ */
+export function buildFixPrompt(report: string): string {
+  return '簡易セキュリティチェックで次の指摘がありました。該当するファイルを実際に修正して解消してください。直せない項目があれば、その理由と対処方法を教えてください。\n\n'
+    + wrapUntrusted('簡易セキュリティチェックの報告', report)
 }
 
 export async function runSecurityCheck(
@@ -581,10 +662,12 @@ export async function runSecurityCheck(
 
   onProgress?.(`${targets.length}個のファイルを読んでいます…`)
   const pieces: Piece[] = []
+  // 読めなかったファイルは捨てずに控え、報告に「確認していない」と書く（黙って消さない）
+  const unreadable: string[] = []
   for (const f of targets) {
     try {
       pieces.push(...splitIntoPieces(f, await window.electronAPI.fs.readFile(`${projectDir}/${f}`)))
-    } catch { /* 読めないファイルはスキップ */ }
+    } catch { unreadable.push(f) }
   }
   const { batches, skipped } = packBatches(pieces)
   // 読む中身が無くても、secretFiles・others の「名前だけ」をAIへ見せたいことがある
@@ -594,7 +677,7 @@ export async function runSecurityCheck(
   const split = pieces.some(p => p.total > 1) || batches.length > 1
 
   const model = getDefaultModel()
-  const results: { verdict: 'ok' | 'warn' | 'skip'; report: string }[] = []
+  const results: { verdict: 'ok' | 'warn' | 'skip'; report: string; files: string[] }[] = []
   // 利用量の歯止めは**全体予算のブロック（checkBeforeRequest）に一本化**する
   // （2026-08-21 Ryosuke 指定）。この機能だけが回ごとに独自の判断を持つと、
   // 「どこで止まるのか」が場所ごとに違ってしまう。開始時に1度見れば足りる。
@@ -607,13 +690,16 @@ export async function runSecurityCheck(
     onProgress?.(mode === 'node'
       ? `AIがアプリとして確認しています…${nth}`
       : `AIがサイトとして確認しています…${nth}`)
-    // 秘密ファイル・対象外ファイルの名前は1回目にだけ載せる（毎回載せると同じ指摘が並ぶ）
+    // 秘密ファイル・対象外ファイルの名前は**毎回**載せる。1回目だけにすると、1回目の返事を読めなかったとき、
+    // 名前が一度もAIに届かない。同じ指摘が回ごとに並んでも、同じ行は合成で1つになる
     const userPrompt = buildCheckPrompt({
       mode, entry, split,
-      secretFiles: i === 0 ? secretFiles : [],
-      others: i === 0 ? others : [],
+      secretFiles,
+      others,
       parts: batches[i].map(p => `${pieceHeader(p)}\n${p.text}`),
     })
+    // この回で送ったファイル。返事を読めなかったとき、確認できていないファイルとして報告に載せる
+    const sentFiles = [...new Set(batches[i].map(p => p.file))]
     try {
       // ★ 第2引数（onStart）を**必ず渡す**（2026-09-25 検分の指摘6）。
       //   preload の chat は invoke より先にこれを呼ぶので、返事が一度も返ってこない
@@ -637,13 +723,13 @@ export async function runSecurityCheck(
       // 目印方式: 「判定:」の最後の出現以降だけを受理。推論の文章を利用者に見せない
       const report = raw ? extractCheckReport(raw) : null
       results.push(report
-        ? { verdict: judgeVerdict(report), report }
-        : { verdict: 'skip', report: 'AIの応答から判定を読み取れませんでした。もう一度お試しください。' })
+        ? { verdict: judgeVerdict(report), report, files: sentFiles }
+        : { verdict: 'skip', report: 'AIの応答から判定を読み取れませんでした。もう一度お試しください。', files: sentFiles })
     } catch (e: any) {
       // 中止で切れた通信は「失敗」として数えない（押した本人に失敗を報告しない）。
       if (stopped) break
       // チェック失敗で公開を止めない（skip扱い。ユーザーには表示する）
-      results.push({ verdict: 'skip', report: `チェックに失敗しました（${e?.message ?? e}）。` })
+      results.push({ verdict: 'skip', report: wrapFailureText(failureText(e, { readOnly: true }), t => `チェックに失敗しました（${t.replace(/。$/, '')}）。`), files: sentFiles })
     } finally {
       abortCurrent = null
     }
@@ -657,13 +743,15 @@ export async function runSecurityCheck(
   }
 
   const merged = mergeCheckResults(results, {
-    files: targets.length,
+    files: targets.length - unreadable.length,
     batches: batches.length,
     skipped,
     dataLike,
     assets,
     others,
     truncated,
+    secretFiles,
+    unreadable,
   })
   return { ...merged, mode }
 }

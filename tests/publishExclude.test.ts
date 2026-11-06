@@ -5,7 +5,7 @@ import { publishExcludedDirNames, MATERIALS_DIR,
   KOTO_INTERNAL_DIRS, KOTO_INTERNAL_FILES, SECRET_FILE_PATTERNS,
   excludedDirNames, excludedFileNames, isSecretFile, rsyncExcludeArgs, zipExcludePatterns,
   isPublished, isPublishedTop, BUILD_CONFIG_FILES, servedExcludedFileNames,
-  dockerignoreLines, missingDockerignoreLines, kotoIgnoreLines } from '../src/shared/publishExclude'
+  dockerignoreLines, missingDockerignoreLines, kotoIgnoreLines, looksSecretByName, looksSecretButPublished } from '../src/shared/publishExclude'
 import { DATA_LAYER_LOCAL_DIR } from '../src/shared/objectStorage'
 import { PUBLISH_DIR } from '../src/shared/publishRoot'
 import { SKIP_DIRS, isEnvFileName } from '../src/main/github/enumerate'
@@ -148,6 +148,76 @@ describe('秘密ファイルは、どの形式でも必ず除外される', () =
     for (const g of ['.env', 'id_rsa', '*.pem', '.netrc']) {
       expect(args).toContain(`--exclude='${g}'`)
       expect(pats).toContain(g)
+    }
+  })
+})
+
+// ── 名前だけで秘密が入っていそうだと分かるもの（looksSecretByName）──────────────
+// 公開前セキュリティチェックが「中身を読まず、外へも送らず、名前だけを伝える」ファイルを決める唯一の定義。
+// 公開から除外する名前（isSecretFile）より広い網だが、**公開の除外は広げない**
+// （広げると利用者のアプリが動かなくなることがある。`.npmrc`・`.htpasswd` は除外もしていない）。
+describe('looksSecretByName（点検が中身を送らない名前）', () => {
+  // 止める例: 対で通す例を下に置く（掟10）
+  const STOP = [
+    '.env', '.env.production', 'id_rsa', 'server.pem', '.netrc', // 公開から除外する名前は、そのまま止める
+    'credentials.json', 'my-secret.txt', 'config/secrets.js', 'secret/app.js', 'aws-Credentials', // 名前のどこかに
+    'service-account.json', 'serviceAccountKey.json', 'service_account.json', 'serviceaccount.json',
+    'firebase/firebase-service-account.json', 'keys/service-account-prod.json', 'SERVICE-ACCOUNT.JSON',
+  ]
+  const PASS = [
+    'index.html', 'server.js', 'package.json', 'id_rsa.pub', 'environment.ts', 'env.json',
+    'docs/service-accounts.md', 'service-account.md', 'accounts.json', 'service.json', 'my-service.json',
+    'sub/folder/app.js', '',
+  ]
+
+  it.each(STOP)('止める: %s', (p) => { expect(looksSecretByName(p), p).toBe(true) })
+  it.each(PASS)('通す: %s', (p) => { expect(looksSecretByName(p), p).toBe(false) })
+
+  it('★ 公開から除外する名前（isSecretFile）は、広げていない（足した名前は公開物から外れない）', () => {
+    for (const n of ['service-account.json', 'serviceAccountKey.json', 'credentials.json', 'my-secret.txt']) {
+      expect(isSecretFile(n), n).toBe(false)
+      expect(isPublished(n, false), n).toBe(true)
+      expect(rsyncExcludeArgs(), n).not.toContain(n)
+      expect(zipExcludePatterns(), n).not.toContain(n)
+      expect(dockerignoreLines(), n).not.toContain(n)
+    }
+    expect(rsyncExcludeArgs()).not.toContain('service')
+    expect(zipExcludePatterns().join('\n')).not.toContain('service')
+    expect(dockerignoreLines().join('\n')).not.toContain('service')
+    expect(SECRET_FILE_PATTERNS.length).toBe(4)
+  })
+
+  it('公開から除外する名前は、必ず含まれる（isSecretFile が止めるものを取りこぼさない）', () => {
+    for (const n of ['.env', '.env.local', 'id_rsa', 'id_ed25519', 'server.pem', 'cert.p12', 'a.pfx', '.netrc', '.pgpass']) {
+      expect(isSecretFile(n), n).toBe(true)
+      expect(looksSecretByName(n), n).toBe(true)
+      expect(looksSecretByName(`sub/dir/${n}`), n).toBe(true) // フォルダの中でも、ファイル名で止める
+    }
+  })
+})
+
+// ── 名前では秘密らしいのに、公開物に入るもの（looksSecretButPublished）─────────────
+// 公開前セキュリティチェックが、AIの答えに関わらず「要確認」にする対象の唯一の定義。
+// 公開から除外する名前（isSecretFile）は対象外: どの公開先でも公開されないので、数えると
+// `.env` のある普通のプロジェクトがいつも「要確認」になる。
+describe('looksSecretButPublished（名前では疑わしいのに公開される）', () => {
+  const PUBLISHED = [
+    'credentials.json', 'my-secret.txt', 'config/secrets/app.js', 'service-account.json',
+    'firebase/serviceAccountKey.json', 'sub/dir/aws-Credentials',
+  ]
+  const EXCLUDED_OR_PLAIN = [
+    '.env', '.env.production', 'sub/.env.local', 'id_rsa', 'keys/server.pem', 'cert.p12', '.netrc', // 公開から除外する名前
+    'index.html', 'server.js', 'accounts.json', 'id_rsa.pub', '', // そもそも疑わしくない名前
+  ]
+  it.each(PUBLISHED)('数える: %s', (p) => { expect(looksSecretButPublished(p), p).toBe(true) })
+  it.each(EXCLUDED_OR_PLAIN)('数えない: %s', (p) => { expect(looksSecretButPublished(p), p).toBe(false) })
+
+  it('★ looksSecretByName の部分集合で、公開から除外する名前（isSecretFile）とは重ならない', () => {
+    for (const n of [...PUBLISHED, ...EXCLUDED_OR_PLAIN]) {
+      if (looksSecretButPublished(n)) {
+        expect(looksSecretByName(n), n).toBe(true)
+        expect(isSecretFile(n.split('/').pop() ?? n), n).toBe(false)
+      }
     }
   })
 })

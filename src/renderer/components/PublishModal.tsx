@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { getTargetProfile, isAutoPublishTarget } from '../targetProfiles'
 import StorageNotice from './StorageNotice'
+import Modal from '../ui/Modal'
 import { canForgetRow, PUBLISH_TARGET_CONSOLE, PUBLISH_TARGET_LABEL, buildPublishStatusRows, isStale, formatPublishedAt, parseApprunLegacy, judgePendingPublish, pendingPublishMessage, latestPublishedTarget, isKnownPublishTarget, type PendingPublish, type PublishTargetKind } from '../publishStatus'
 import { mergeProjectMetaThenLoad, forgetPublishTargetThenLoad, dismissInterruptedPublish, loadPublishSnapshot, rentalPublishPatch, type PublishSnapshot } from '../projectMeta'
 import { rsyncExcludeArgs } from '../../shared/publishExclude'
@@ -25,6 +26,9 @@ import { stoppedNoticeHeadline } from '../../shared/inFlightOps'
 import { resultCallOf } from '../../shared/teardownResult'
 import { keptOnlyCardHeadline } from '../../shared/teardownCall'
 import { opWordFor } from '../../shared/opWord'
+import { appRunSharedCardNote, otherTargetPriceNote } from '../../shared/cloudCost'
+import ErrorBand from './ErrorBand'
+import FailureLines from './FailureLines'
 
 // 「🚀 公開」モーダル：
 // - .sakuraide.json の公開先・設定を読み、フォーム入力（次回から再入力不要）
@@ -35,7 +39,7 @@ import { opWordFor } from '../../shared/opWord'
 // 選択やワークフローバーの切替では出さない。手順1 接続（VpsPanel）まではこの画面から到達できる）。
 // sakura-apprun-dedicated も COMING_SOON_TARGETS に残したまま（同上）だが、この画面では
 // 「📦 さくらのAppRun」の1行から選んだ後、共用型/専有型のタブで切り替えて到達する（roadmap #24）。
-// クラスタの作成・破棄はできるが、アプリケーションの公開（独自ドメイン）はまだ実装していない。
+// クラスタの作成・破棄から、アプリケーションの公開（独自ドメインが必要）まで、そのタブで行える。
 type Target = 'sakura-rental' | 'sakura-apprun' | 'hanamii' | 'vercel' | 'sakura-vps' | 'sakura-apprun-dedicated'
 
 // 統一公開記録（publish.targets）: 複数の公開先へ公開した履歴を一元管理する。
@@ -272,7 +276,8 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   // レンタルサーバの公開（ターミナルで進む）は main の記録に載らない（withProjectLock を通らない）ので対象外:
   // 進みはこの画面の外のターミナルにあり、閉じても隠れるものがない。むしろ画面の外をクリックして
   // ターミナルを見る、が自然な動きなので、閉じられないようにしない。
-  const handleBackdropClick = () => { if (!opRunning) onClose() }
+  // Esc は ✕ と同じく、走っている間でも閉じる（処理は続く）。背景クリックだけ、走っている間は閉じない。
+  const handleRequestClose = (reason: 'escape' | 'backdrop') => { if (reason === 'escape' || !opRunning) onClose() }
 
   // main の記録（projectOps）が「走っていない」と言うのに、既存の runningOp（開いたときに聞いた古い答え）が
   // 「走っている」のままなら、読み直す。main は終わりに記録（publish.targets・専有型の資源ID）を書くので、
@@ -393,13 +398,15 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={handleBackdropClick}>
-      <div
-        className="w-[640px] max-h-[85vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-xl p-6 fade-in"
-        onClick={e => e.stopPropagation()}
-      >
+    // 枠は ui/Modal（0.6.26）。窓の中の確認や子の窓は、Modal の積み重ねで前面に重なる。
+    <Modal
+      onRequestClose={handleRequestClose}
+      labelledBy="publish-modal-title"
+      backdropClassName="bg-black/50 backdrop-blur-sm"
+      panelClassName="w-[640px] bg-elevated rounded-2xl border border-line shadow-xl p-6 fade-in"
+    >
         <div className="flex items-center justify-between gap-3 mb-1">
-          <h2 className="text-lg font-bold text-ink">🚀 公開</h2>
+          <h2 id="publish-modal-title" className="text-lg font-bold text-ink">🚀 公開</h2>
           {/* ✗ の近くに、見える形で出す（title だけにしない）。走っている間、✗ は押せば閉じるが、
               閉じても処理は止まらないことを、押す前に伝える（作者の決定 (1)）。 */}
           <div className="flex items-center gap-2 min-w-0">
@@ -555,7 +562,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                   </p>
                 ) : (
                   <p className="text-sm text-ink leading-relaxed">
-                    現在の公開先「{getTargetProfile(cur).label}」は、この画面からはまだ自動公開できません。自動公開できるのは 🌐 さくらのレンタルサーバ・📦 さくらのAppRun・🌸 HANAMII・▲ Vercel です（選ぶと公開先もそれに変わります）。
+                    現在の公開先「{getTargetProfile(cur).label}」は、この画面からはまだ自動公開できません。自動公開できるのは 🌐 さくらのレンタルサーバ・📦 さくらのAppRun・🌸 HANAMII・▲ Vercel です。
                   </p>
                 )}
               </div>
@@ -575,12 +582,9 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               className="w-full text-left rounded-xl border border-line hover:border-sakura bg-surface p-4 transition-colors"
             >
               <p className="text-sm font-semibold text-ink">📦 さくらのAppRun</p>
-              <p className="text-xs text-ink-muted mt-0.5">
-                アプリを動かせる公開先です。準備は Koto がまとめて行います。
-                使った分だけ課金の「共用型」と、独自ドメインが使える「専有型（上級者向け・常時課金）」を選べます。
-                {/* 金額はプランを取得しないと分からないため、ここではハードコードしない
-                    （専有型パネルの冒頭に実額が出ます・判断4・2026-09-11）。 */}
-              </p>
+              {/* 専有型の金額はプランを取得しないと分からないため、ここには書かない（専有型パネルの冒頭に実額が出ます・判断4・2026-09-11）。
+                  共用型のレジストリの月額は、定数から作る文（appRunSharedCardNote）で言う。 */}
+              <p className="text-xs text-ink-muted mt-0.5">{appRunSharedCardNote()}</p>
             </button>
 
             <div className="pt-2 mt-1 border-t border-line-soft space-y-3">
@@ -593,6 +597,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
               >
                 <p className="text-sm font-semibold text-ink">🌸 HANAMII（国産のクラウドサービス）</p>
                 <p className="text-xs text-ink-muted mt-0.5">サーバーで動き続けるアプリ（Node.js など）も公開できます。データは国内です。</p>
+                <p className="text-xs text-ink-muted mt-0.5">{otherTargetPriceNote('hanamii')}</p>
               </button>
               <button
                 onClick={() => setTarget('vercel')}
@@ -601,6 +606,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
                 <p className="text-sm font-semibold text-ink">▲ Vercel（海外のクラウドサービス）</p>
                 {/* 2026-09-24 検分の指摘2と同じ一文。国外なのはアプリが動く場所だけ（データは国内）。 */}
                 <p className="text-xs text-ink-muted mt-0.5">ページを見せるだけのサイト向けで、サーバーで動き続けるアプリは扱えません。アプリが動くのは国外です。データの保存を使う場合、そのデータはさくらのオブジェクトストレージ（日本国内）に置かれます。</p>
+                <p className="text-xs text-ink-muted mt-0.5">{otherTargetPriceNote('vercel')}</p>
               </button>
               <button
                 onClick={() => setTarget('sakura-vps')}
@@ -661,7 +667,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />
             {/* 🧹 未使用ファイルの検出＋片づけ（roadmap #18） */}
             <UnusedFilesSection projectDir={projectDir} />
-            {error && <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2">{error}</p>}
+            {error && <ErrorBand text={error} className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2" />}
             <div className="flex justify-between items-center">
               <button onClick={() => setTarget(null)} className="text-xs text-ink-muted hover:text-ink">← 公開先を変更</button>
               <button onClick={publishRental} disabled={busy || !account || !host}
@@ -725,8 +731,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             )}
           </div>
         ) : null}
-      </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -798,9 +803,9 @@ export function OpFinishedCard({ rec }: { rec: ProjectOpRecordShape }) {
     <div className={`rounded-xl border ${needsAttention ? 'border-brand-yellow/70' : 'border-line'} bg-surface p-4 space-y-2`}>
       <p className="text-sm font-semibold text-ink leading-relaxed">{title}</p>
       {when && <p className="text-[11px] text-ink-muted">{`${when} に終わりました`}</p>}
-      {r?.message && <p className="text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap select-text">{r.message}</p>}
+      {r?.message && <p className="text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap select-text"><FailureLines text={r.message} /></p>}
       {warnings.map((w, i) => (
-        <p key={i} className="text-xs text-ink leading-relaxed whitespace-pre-wrap select-text">{warningLine(w)}</p>
+        <p key={i} className="text-xs text-ink leading-relaxed whitespace-pre-wrap select-text"><FailureLines text={warningLine(w)} /></p>
       ))}
       {r?.url?.startsWith('http') && (
         <a href={r.url} className="text-xs text-sakura hover:underline break-all">{r.url}</a>

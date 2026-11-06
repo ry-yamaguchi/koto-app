@@ -555,7 +555,8 @@ describe('強調の配線', () => {
     // 直す前の形（素の文字列をそのまま `<p>` へ）が残っていないこと
     expect(s).not.toContain('<p key={i} className="text-ink-secondary">・{n}</p>')
     expect(s).toContain('.map((n, i) => <Note key={i}>{n}</Note>)')
-    expect(s).toContain('emphasize(children)')
+    // 失敗の文の詳細（最後の行）を分けたあとの文を通す（描いた結果は tests/failureTextPublishTargetRenderers.test.ts）
+    expect(s).toContain('emphasize(text)')
     // Git 由来の案内も、消すのではなく太字にする
     expect(s).not.toContain("gitNote.replace(/\\*\\*/g, '')")
     expect(s).toContain('emphasize(gitNote)')
@@ -707,7 +708,9 @@ describe('インポートの画面の配線', () => {
 
   it('インポートの最中は閉じさせない（途中で止めると半端なフォルダが残る）', () => {
     const s = read('src/renderer/components/NewProjectModal.tsx')
-    expect(s).toContain('onClick={busy || importBusy ? undefined : onClose}')
+    // 窓の閉じ方（Esc・背景）は判断関数 shouldCloseNewProject を通る（振る舞いは newProjectModalClose.test.ts）
+    expect(s).toContain('if (shouldCloseNewProject(reason, busy, importBusy)) onClose()')
+    expect(s).not.toContain('onClick={busy || importBusy ? undefined : onClose}')
     expect(s).toContain('{!busy && !importBusy && (')
   })
 })

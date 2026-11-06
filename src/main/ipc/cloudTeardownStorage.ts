@@ -9,9 +9,13 @@
 // ── 名前による鍵の一括の無効化（sweep）──────────────────────────────────────────
 // 渡すのは「アプリがあった回」と「前の回が一括の無効化を果たさずに止まった回（印 `meta.keySweepPending`）」だけ。アプリが無い回（保存場所だけ・幽霊の行）には、
 // 同じ名前で公開中の別プロジェクトの現役の鍵を無効にしうるので渡さない（docs/teardown-unify-plan.md 10.7.3 の「鍵」(b)）。
-// 1回目にアプリが消え、この段が最後まで済まずに止まると、押し直しの回は state にアプリが無い＝一括の無効化が永久に走らない。
+// 1回目にアプリが消え、この段が最後まで済まずに止まると、押し直しの回は state にアプリが無い＝印が無ければ一括の無効化が走らない。
 // そこで、**渡す条件が真なのに、この段が `ok:false`（見せていない分・途中の失敗）か例外で終わった回**は、印を記録へ立てる。
-// 印は失敗の保存（`stateToSave({ ok:false })` は state をそのまま残す）に乗る。最後まで済んだ回は `stateAfterTeardown` が meta を作り直すので、印は自然に消える。
+// 印は失敗の保存（`stateToSave({ ok:false })` は state をそのまま残す）に乗る。最後まで済んだ回は、一括の無効化を果たしていれば印を外し、果たしていなければ（複製・「消しません」・一括の無効化の失敗）印を残す（`stateAfterTeardown` は残った印を引き継ぐ）。
+// 印は「一括の無効化がまだ残っている」記録で、外せるのは保存場所が1件以上あって一括の無効化に届いた回だけ。保存場所が0件の回は届かないので、印を残すだけで果たさない
+// （失敗した回は結果の ⚠️ の行が、コントロールパネルでパーミッションを削除するよう案内する）。
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import type { CloudCredentials } from '../cloud/auth'
 import { createStorageAdapter } from '../cloud/storageAdapter'
 import { KEY_REVOKE_FAILED_WARNING, keyWarningLines, keyKeptWarning, recordedKeyRisk } from '../cloud/storageTeardown'
@@ -19,8 +23,6 @@ import { forgetDeletedBuckets, keptBucketReasonFields, teardownStorageForProject
 import type { EnvState } from '../cloud/state'
 import type { StoragePlacement } from '../../shared/objectStorage'
 import { STORAGE_TEARDOWN_PROGRESS, STORAGE_PANEL_DELETE_GUIDE, storageTeardownDoneLine, bucketNamesText } from '../../shared/teardownSupport'
-
-const msgOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 export const SAVE_FAILED_NOTE = '記録を保存できませんでした。もう一度 🗑 破棄を押すと続きからやり直せます。'
 const ENV_KEPT_NOTE = '⚠️ 保存場所の記録（公開の設定・env.json）は残しています。次に公開する前に、【公開】の「保存場所を用意する」からやり直してください'
@@ -49,7 +51,7 @@ export type StorageStageIn = {
 }
 
 export type StorageStageOut = {
-  /** 段のあとの記録（消えたバケット・外せた鍵の ID を反映し、止まった回は一括の無効化の印を立てたもの）。 */
+  /** 段のあとの記録（消えたバケット・外せた鍵の ID を反映し、止まった回・一括の無効化を果たさなかった回は印を立てたもの。果たした回は外したもの）。 */
   cur: EnvState
   /** 結果の `executed` へ足す行（順序つき）。 */
   lines: string[]
@@ -71,7 +73,7 @@ async function revokeRecordedKey(creds: CloudCredentials, permissionId: string):
     try { await storage.deletePermission(permissionId) } finally { await storage.dispose() }
     return null
   } catch (e) {
-    return `${KEY_REVOKE_FAILED_WARNING}: ${msgOf(e)}`
+    return `${KEY_REVOKE_FAILED_WARNING}: ${failureText(e)}`
   }
 }
 
@@ -100,6 +102,10 @@ export async function runStorageStage(i: StorageStageIn): Promise<StorageStageOu
   let done: ReadonlyArray<{ keptData?: true }> = []
   let keyKept: string | null = recordedKey
   let failure: StorageStageFailure | null = null
+  /** 最後まで済んだのに、一括の無効化を行わなかった（複製・確認で「消しません」のため鍵に触れなかった）回。 */
+  let sweepSkipped = false
+  // 前の回が立てた印。一括の無効化に届かない回（保存場所が0件・保存場所を使っていない）は、この印を果たさず、外さずに引き継ぐ（果たすのは、届いた後の回）
+  const hadMark = i.cur.meta?.keySweepPending === 'apprun'
   if (placements.length > 0) {
     i.progress(STORAGE_TEARDOWN_PROGRESS)
     try {
@@ -121,12 +127,19 @@ export async function runStorageStage(i: StorageStageIn): Promise<StorageStageOu
           keyKept = null
           cur = { ...cur, meta: { ...cur.meta, storagePermissionId: undefined } }
         }
+        if (st.ok && !st.sweepDone) sweepSkipped = true
         if (!st.ok) failure = { remaining: st.remainingBuckets, first: st.remainingBucket, message: st.message, skipped: st.skippedBuckets }
+      } else {
+        // 保存場所を使っていない回（reason 'none'）も、一括の無効化には届かない。前の回の印は外さない
+        sweepSkipped = hadMark
       }
     } catch (e) {
-      failure = { remaining: names, first: names[0], message: `保存場所${bucketNamesText(names)}を削除できませんでした: ${msgOf(e)}` }
+      failure = { remaining: names, first: names[0], message: `保存場所${bucketNamesText(names)}を削除できませんでした: ${failureText(e, { checkAt: '📡 公開したもの一覧' })}` }
     }
-  } else if (recordedKey) {
+  } else {
+    sweepSkipped = hadMark
+  }
+  if (placements.length === 0 && recordedKey) {
     // 保存場所が0件でも、記録の鍵は無効にする（残すと、消えた保存場所へ読み書きできる鍵がどこからも辿れないまま生き残る）。
     // **ただし、同じ鍵の ID を記録に持つ兄弟がいる（または確かめられない）回は無効にしない**（複製が記録の鍵の ID だけを写した形。無効にすると元の現役の鍵が切れる。0.6.24 R2-i）。
     // 無効にしない回は、鍵の ID を記録に残し（keyKept のまま）、結果に警告を出す（黙って残さない。R3-c）
@@ -140,8 +153,12 @@ export async function runStorageStage(i: StorageStageIn): Promise<StorageStageOu
       else { keyKept = null; cur = { ...cur, meta: { ...cur.meta, storagePermissionId: undefined } } }
     }
   }
-  // 一括の無効化を果たす責任がある回が、果たさずに止まった（見せていない分・途中の失敗・例外）。押し直しで果たせるよう、印を立てる（アプリが無く印も無い回には立てない）
-  if (failure && owed) cur = { ...cur, meta: { ...cur.meta, keySweepPending: 'apprun' } }
+  // 一括の無効化を果たす責任がある回が、果たさずに終わった（見せていない分・途中の失敗・例外、または最後まで済んでも複製・「消しません」で鍵に触れなかった）。
+  // 後の回が一括の無効化に届いたときに果たせるよう、印を立てる（アプリが無く印も無い回には立てない）。果たした回は、前の回の印を外す
+  if (owed) {
+    const { keySweepPending: _drop, ...meta } = cur.meta ?? {}
+    cur = failure || sweepSkipped ? { ...cur, meta: { ...meta, keySweepPending: 'apprun' } } : { ...cur, meta }
+  }
   return { cur, lines, kept, keptWhy, dataDeleted, done, keyKept, failure }
 }
 
@@ -158,7 +175,11 @@ export function storageFailureFields(
     : 'もう一度 🗑 破棄を押すと、保存場所の削除だけをやり直します。'
   return {
     remainingBucket: failure.first, remainingBuckets: failure.remaining, ...(failure.skipped ? { skippedBuckets: failure.skipped } : {}),
-    message: `${failure.message}\n保存場所${bucketNamesText(failure.remaining)}が残っています（消すまで月額が続きます）。${retry}${PANEL_GUIDE}`
-      + (o.saveFailed ? `\n${SAVE_FAILED_NOTE}` : ''),
+    // 失敗の原文（詳細の行）は、後ろに足す案内より後ろ＝最後の行に置く
+    message: wrapFailureText(
+      failure.message,
+      t => `${t}\n保存場所${bucketNamesText(failure.remaining)}が残っています（消すまで月額が続きます）。${retry}${PANEL_GUIDE}`
+        + (o.saveFailed ? `\n${SAVE_FAILED_NOTE}` : ''),
+    ),
   }
 }

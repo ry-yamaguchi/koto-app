@@ -7,10 +7,10 @@ import path from 'node:path'
 // （アプリが無い回に渡すと、同じ名前で公開中の別プロジェクトの現役の鍵を無効にしうる＝docs/teardown-unify-plan.md 10.7.3）。
 // 1回目にアプリが消え、保存場所の段が止まる（見せていない分がある・途中の失敗・例外）と、押し直しの回は state にアプリが無く、一括の無効化が永久に走らなかった。
 // 直し方: 渡す条件が真なのに、保存場所の段が最後まで済まず見送った回は、記録（state の meta.keySweepPending）に印を立てる。印がある回は、アプリが無くても渡す。
-// 最後まで済んだ回は印が消える（`stateAfterTeardown` が meta を作り直す）。アプリが無く印も無い回は、今どおり渡さず、印も立てない。
+// 最後まで済み、一括の無効化を果たした回は印が消える。最後まで済んでも、複製・何も消さなかった回で鍵に触れなかった回や、一括の無効化が途中で失敗した回は、印が残る（果たすべき仕事が残っている記録）。アプリが無く印も無い回は、今どおり渡さず、印も立てない。
 // 本物の main に偽の保存場所を流し、**出た要求の一覧**（listPermissions・deletePermission）と、保存した state の meta で固定する（掟10）。
 // HANAMII・専有型は一括の無効化を固定で渡す（アプリの有無を見ない）ので、この問題は無い（対象外）。
-import { A, B, APP, OK_AUTH, PREFIX, bucketRef, h, resetHarness, newProjectDir, setup, stateMeta, stateKinds } from './sharedTeardownHarness'
+import { A, B, APP, OK_AUTH, PREFIX, bucketRef, h, resetHarness, newProjectDir, setup, stateMeta, stateKinds, envBuckets, workspaceOf } from './sharedTeardownHarness'
 import { shownTeardown } from './shownFromEnv'
 
 vi.mock('electron', async () => (await import('./sharedTeardownHarness')).electronMock())
@@ -21,7 +21,7 @@ vi.mock('../src/main/cloud/client', async (orig) => (await import('./sharedTeard
 import { registerCloudHandlers } from '../src/main/ipc/cloud'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 import { stateToSave, type EnvState } from '../src/main/cloud/state'
-import { permissionNameFor } from '../src/shared/storageKeys'
+import { permissionNameFor, keyRevokeGuide } from '../src/shared/storageKeys'
 
 registerCloudHandlers({} as any)
 const teardown = shownTeardown(h.handlers.get('cloud:teardown')!)
@@ -146,6 +146,137 @@ describe('★★★ 対照: アプリが無く印も無い回は、今までど�
   })
 })
 
+describe('★★★ 最後まで済んだ（ok:true）のに一括の無効化を果たさなかった回は、印を残す（複製・何も消さなかった回）', () => {
+  /** 複製（`myapp copy`）を、元と同じ親フォルダに置く。元と同じバケット・同じ prefix を env.json に同意済みで持つ。 */
+  const twin = (bucket: string) => {
+    const p = path.join(workspaceOf(dir), 'myapp copy', '.sakura-cloud')
+    fs.mkdirSync(p, { recursive: true })
+    fs.writeFileSync(path.join(p, 'env.json'), JSON.stringify({ persistence: { objectStorage: [{ bucket, prefix: PREFIX, shared: true, consentedAt: '2026-08-14T00:00:00.000Z' }] } }))
+    return path.dirname(p)
+  }
+
+  it('★★★ アプリがあった回で、保存場所が複製と同じ prefix → ok:true・一括の無効化の要求は0件・印が残る。複製が消えたあとの押し直しで走り、印が消える', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A), APP] })
+    const copy = twin(A)
+    oldKey()
+
+    const first = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(first).toMatchObject({ ok: true, appDeleted: true })
+    expect(sweepCalls(), '複製がいるので鍵には触れない').toEqual([])
+    expect(h.calls.filter(c => c.startsWith('deleteBucket '))).toEqual([])
+    expect(stateMeta(dir), '果たしていない一括の無効化の印は成功の回でも残る').toMatchObject({ keySweepPending: 'apprun' })
+
+    fs.rmSync(copy, { recursive: true, force: true })   // 複製が無くなった
+    h.calls = []
+    const second = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(second.ok).toBe(true)
+    expect(h.calls.filter(c => c.startsWith('deleteApp ')), 'アプリは記録に無い').toEqual([])
+    expect(sweepCalls(), '印を読んで、アプリが無い回でも一括の無効化が走る').toEqual(['listPermissions', `deletePermission ${OLD}`])
+    expect(stateMeta(dir), '果たした回は印が消える').toBeUndefined()
+  })
+
+  it('★★★ keptOnly の回（アプリ無し・印だけ・保存場所が全部複製）→ keptOnly:true・要求0件・印が残る', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A)], meta: { keySweepPending: 'apprun' } })
+    twin(A)
+    oldKey()
+
+    const reply = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply).toMatchObject({ ok: true, keptOnly: true })
+    expect(sweepCalls()).toEqual([])
+    expect(stateMeta(dir), '何も消さなかった回は印を落とさない').toMatchObject({ keySweepPending: 'apprun' })
+  })
+
+  it('★★ 確認で「消しません」（keepData）と言った回も、印が残る。要求0件', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A), APP] })
+    oldKey()
+    const reply = await teardown(EVENT, dir, OK_AUTH, { ...GO, shownPlacements: [{ bucket: A, prefix: PREFIX, keepData: true }] })
+    expect(reply.ok).toBe(true)
+    expect(sweepCalls()).toEqual([])
+    expect(stateMeta(dir)).toMatchObject({ keySweepPending: 'apprun' })
+  })
+
+  it('★★ 対照: アプリが無く印も無い回は、複製がいても印を立てない（同じ名前の別プロジェクトの鍵を巻き込まない）', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A)] })
+    twin(A)
+    const reply = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply).toMatchObject({ ok: true, keptOnly: true })
+    expect(stateMeta(dir)?.keySweepPending).toBeUndefined()
+  })
+})
+
+describe('★★★ 一括の無効化を行ったが果たせなかった回（一覧が引けない・無効にできない鍵がある）は、印を残す', () => {
+  it('★★★ 一覧（listPermissions）が投げた ok:true の回 → 保存場所は消え、印が残り、結果に警告と手で消す案内が出る', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A), APP] })
+    oldKey()
+    h.fail.listPermissions = 'throw'
+
+    const first = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(first.ok).toBe(true)
+    expect(h.calls, '一覧を引きに行った').toContain('listPermissions')
+    expect(h.calls.filter(c => c.startsWith('deletePermission ')), '一覧が無いので無効化の要求は0件').toEqual([])
+    expect(stateMeta(dir), '果たしていない一括の無効化の印は残る').toMatchObject({ keySweepPending: 'apprun' })
+    expect(stateKinds(dir), 'バケットは記録から消えている').toEqual([])
+    expect(envBuckets(dir), 'バケットは env.json からも消えている').toEqual([])
+    const guide = keyRevokeGuide(NAME, 'apprun')
+    const warn = (first as any).executed.find((l: string) => l.startsWith('⚠️ ') && l.includes('一覧を取得できなかった'))
+    expect(warn, '警告の行').toBeDefined()
+    expect(warn.endsWith(guide), '警告の最後に、コントロールパネルで消す案内が付く').toBe(true)
+  })
+
+  it('★★ 鍵の無効化（deletePermission）が失敗した回も、保存場所は消え、印が残り、警告と手で消す案内が出る', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A), APP] })
+    oldKey()
+    h.fail[`deletePermission ${OLD}`] = 'throw'
+
+    const reply = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply.ok).toBe(true)
+    expect(sweepCalls()).toEqual(['listPermissions', `deletePermission ${OLD}`])
+    expect(stateMeta(dir)).toMatchObject({ keySweepPending: 'apprun' })
+    expect(stateKinds(dir)).toEqual([])
+    expect(envBuckets(dir)).toEqual([])
+    const warn = (reply as any).executed.find((l: string) => l.startsWith('⚠️ ') && l.includes('無効にできませんでした'))
+    expect(warn, '警告の行').toBeDefined()
+    expect(warn.endsWith(keyRevokeGuide(NAME, 'apprun'))).toBe(true)
+  })
+
+  it('★★★ 保存場所が記録に残っている回（複製・「消しません」のあとなど）: 印あり・保存場所あり・直った一覧 → 一括の無効化が走り、印が消える', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A)], meta: { keySweepPending: 'apprun' } })
+    oldKey()
+    const reply = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply.ok).toBe(true)
+    expect(sweepCalls()).toEqual(['listPermissions', `deletePermission ${OLD}`])
+    expect(stateMeta(dir), '果たした回は印が消える').toBeUndefined()
+  })
+
+  it('★★ 保存場所が記録に残っている回で、一括の無効化がまた失敗したら、印は残る（例外にならない）', async () => {
+    setup(dir, { env: [A], resources: [bucketRef(A)], meta: { keySweepPending: 'apprun' } })
+    oldKey()
+    h.fail.listPermissions = 'throw'
+    const reply = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply.ok).toBe(true)
+    expect(stateMeta(dir)).toMatchObject({ keySweepPending: 'apprun' })
+  })
+})
+
+describe('★★ 印がある回で、保存場所が0件（env.json からも state からも消えている）のとき、印を外さない', () => {
+  it('★★ 印あり・アプリ無し・保存場所0件 → ok:true・一括の無効化の要求は0件・印が残る', async () => {
+    setup(dir, { env: [], resources: [], meta: { keySweepPending: 'apprun' } })
+    oldKey()
+
+    const reply = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply.ok).toBe(true)
+    expect(sweepCalls()).toEqual([])
+    expect(stateMeta(dir), '果たしていない印は、保存場所が無い回でも落とさない').toMatchObject({ keySweepPending: 'apprun' })
+  })
+
+  it('★★ 対照: 印が無い回は、保存場所0件でも印を立てない', async () => {
+    setup(dir, { env: [], resources: [APP] })
+    const reply = await teardown(EVENT, dir, OK_AUTH, GO)
+    expect(reply.ok).toBe(true)
+    expect(stateMeta(dir)?.keySweepPending).toBeUndefined()
+  })
+})
+
 describe('印の保存と消え方（記録を作る純関数）', () => {
   const stateWith = (meta: EnvState['meta']): EnvState => ({ name: NAME, backend: 'apprun', resources: [], meta })
 
@@ -154,11 +285,17 @@ describe('印の保存と消え方（記録を作る純関数）', () => {
     expect(stateToSave({ ok: false, state: s, kind: 'teardown', registryDeleted: false }).meta).toEqual({ keySweepPending: 'apprun', storagePermissionId: REC })
   })
 
-  it('最後まで済んだ回（ok:true）の保存は、印を落とす。残すレジストリの名前と由来だけが残る', () => {
+  it('最後まで済んだ回（ok:true）の保存は、段が残した印を引き継ぐ（印を落とすのは段が果たした回に外したときだけ）。残すレジストリの名前と由来も残る', () => {
     const s = stateWith({ keySweepPending: 'apprun', registryName: 'myreg', registryAdopted: false })
     const saved = stateToSave({ ok: true, state: s, kind: 'teardown', registryDeleted: false })
-    expect(saved.meta).toEqual({ registryName: 'myreg', registryAdopted: false })
-    expect(stateToSave({ ok: true, state: stateWith({ keySweepPending: 'apprun' }), kind: 'teardown', registryDeleted: false }).meta).toBeUndefined()
+    expect(saved.meta).toEqual({ registryName: 'myreg', registryAdopted: false, keySweepPending: 'apprun' })
+    expect(stateToSave({ ok: true, state: stateWith({ keySweepPending: 'apprun' }), kind: 'teardown', registryDeleted: false }).meta).toEqual({ keySweepPending: 'apprun' })
+    expect(stateToSave({ ok: true, state: stateWith({ keySweepPending: 'apprun' }), kind: 'teardown', registryDeleted: true }).meta, '消したレジストリの名前は残さないが、印は残す').toEqual({ keySweepPending: 'apprun' })
+  })
+
+  it('印が無い回・読めない形の印（\'apprun\' 以外）の保存は、印を作らない', () => {
+    expect(stateToSave({ ok: true, state: stateWith({ registryName: 'myreg' }), kind: 'teardown', registryDeleted: false }).meta).toEqual({ registryName: 'myreg' })
+    expect(stateToSave({ ok: true, state: stateWith({ keySweepPending: 'x' as any }), kind: 'teardown', registryDeleted: false }).meta).toBeUndefined()
   })
 })
 
@@ -176,9 +313,12 @@ describe('配線: 一括の無効化を渡す条件・印を立てる所は保�
     expect(stage).toContain('const owed = sweepOwedBy(hadApp, i.cur)')
   })
 
-  it("★ 印を立てるのは段の1か所で、渡す条件（owed）が真で止まった回だけ", () => {
+  it("★ 印を立てるのは段の1か所で、渡す条件（owed）が真で、止まった回か一括の無効化を見送った回だけ。果たした回は外す", () => {
     expect(times(stage, "keySweepPending: 'apprun'")).toBe(1)
-    expect(stage).toContain("if (failure && owed) cur = { ...cur, meta: { ...cur.meta, keySweepPending: 'apprun' } }")
+    expect(stage).toContain("const { keySweepPending: _drop, ...meta } = cur.meta ?? {}")
+    expect(stage).toContain("cur = failure || sweepSkipped ? { ...cur, meta: { ...meta, keySweepPending: 'apprun' } } : { ...cur, meta }")
+    expect(stage).toContain('if (st.ok && !st.sweepDone) sweepSkipped = true')
+    expect(stage).not.toContain("if (failure && owed) cur =")
     expect(main).not.toContain('keySweepPending')
   })
 })

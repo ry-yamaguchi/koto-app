@@ -34,6 +34,8 @@ import { beginActivity } from '../activity'
 import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
 import { runCompact, type EngineTurnSpec, type EngineTurnPorts } from '../../shared/chatTurn'
 import { compactTimeoutMessage } from '../../shared/chatTimeouts'
+import { retryRequestOf } from '../../shared/retryOffer'
+import { failureBubbleOf, noteWritten, requestBubbleOf, requestTextOf, unexpectedFailureAppends, type WrittenState } from '../../shared/chatFailure'
 import type { AskPath } from '../../shared/chatTurnRpc'
 import { stripFunctions, dispatchAsk } from '../chatTurnBridge'
 import { turnKey, getTurn, updateTurn, resetTurn, subscribe, getSnapshot } from '../chatTurnRegistry'
@@ -54,6 +56,10 @@ export type ChatMessage = {
   /** 公開先を変えたあとの案内の吹き出しに、「この公開先で動くか AI に確かめる」ボタンを出す印。
    *  確かめるのは押した時点の公開先なので、公開先の値は持たない。会話の保存に残る。 */
   offerTargetCheck?: true
+  /** 失敗・時間切れ・画像の読み取りの失敗の吹き出しに、「もう一度送る」ボタンを出す印。
+   *  付けるのは failureBubbleOf（chatFailure.ts）だけ。送り直す材料（依頼の文と画像）は持たない
+   *  （画像のデータ URL を会話の保存に二重に入れないため）。会話の保存に残る。 */
+  offerRetry?: true
   /** 推論モデル（Kimi K2.7 / gpt-oss 等）が本文を出す前に流してくる「思考」。
    *  待っている間に「いま何をしているか」を見せるための表示専用（2026-08-03 ユーザー要望）。
    *  **AIへは送り返さない**（費用が増え、モデルも混乱する）。**履歴ファイルにも保存しない**
@@ -478,7 +484,7 @@ export function useAiChat(args: UseAiChatArgs) {
           offerAiEngineFallback: { text, images },
         })
       } else {
-        appendBubble({ role: 'assistant', content: errorPrefix + formatClaudeError(rawMessage) })
+        appendBubble(failureBubbleOf(errorPrefix + formatClaudeError(rawMessage)))
       }
       // 呼び出し元2箇所（'error' イベント・chatStart の catch）を一度にカバーする（B-2）
       emit({ kind: 'attention', value: 'error' })
@@ -635,8 +641,8 @@ export function useAiChat(args: UseAiChatArgs) {
       // 未送信のまま行き止まりにするとき（プロジェクト未選択・同意キャンセル、いずれもモードB）に、
       // ユーザーの発言を残しつつ案内を返すための小さなヘルパー。
       const abortWithGuidance = (message: string) => {
-        const text = rawText.trim() || (hasImages ? 'この画像について教えてください。' : '')
-        appendBubble({ role: 'user', content: text, images: hasImages ? images : undefined })
+        const text = requestTextOf(rawText, hasImages)
+        appendBubble(requestBubbleOf(rawText, images))
         appendBubble({ role: 'assistant', content: message, toolNote: true })
       }
 
@@ -656,15 +662,16 @@ export function useAiChat(args: UseAiChatArgs) {
             body: 'Claudeモードでは、プロジェクトのコードと指示が Anthropic（米国）に送信され、Claudeの利用料金が別途発生します（Anthropicへ直接課金／さくらのAI Engineの月間上限とは別枠）。使わないときは 設定 でさくらのAI Engineに切り替えられます。よろしいですか？（この確認は初回のみ）',
             confirmLabel: '同意して使う',
             danger: false,
+            initialFocus: 'cancel',
           })
           if (agreed) recordClaudeConsent()
         }
         if (hasClaudeConsent()) {
           // 画像のみの送信は従来経路と同じ既定文言を付ける（空のユーザー吹き出し・空テキスト送信を避ける）
-          const text = rawText.trim() || (hasImages ? 'この画像について教えてください。' : '')
+          const text = requestTextOf(rawText, hasImages)
           const historyBefore = getHistory()
           const isFirst = historyBefore.length === 0
-          appendBubble({ role: 'user', content: text, images: hasImages ? images : undefined })
+          appendBubble(requestBubbleOf(rawText, images))
           onUserMessage?.(text, isFirst)
           // aiEngineKey = さくらのAI Engine のキー（delegate_implementation / search_docs ツール用）。
           // B-1（2026-07-13）: AI Engine の月間予算が上限に達している場合はキーを渡さない＝
@@ -745,6 +752,8 @@ export function useAiChat(args: UseAiChatArgs) {
       // 今日は「ストリーム中だけ」だったが、main 側は abort 関数が未登録なら何もしないので、
       // 観測できる振る舞いは同じ（abortRef は廃止。registry（chatTurnRegistry.ts）が持つ）。
       updateTurn(key, { abort: () => { void window.electronAPI.chatTurn.abort(turnId) } })
+      // main が会話に入れた依頼・失敗の吹き出し（届いた出来事で数える）。start が reject したとき、足りないものだけを足す。
+      const written: WrittenState = { request: false, failure: false }
       try {
         const result = await window.electronAPI.chatTurn.start(
           {
@@ -758,7 +767,7 @@ export function useAiChat(args: UseAiChatArgs) {
             // main が書き主のターン。main は既に convStore.ts へ当てているので、ここは
             // 画面へ映すだけの viewOnlyEmit を通す（emit だと onMessageEvent 経由で
             // ops を送り返してしまい、二重書きになる。上の「emit と viewOnlyEmit」コメント参照）。
-            onEvent: (ev) => viewOnlyEmit(ev as any),
+            onEvent: (ev) => { noteWritten(written, ev as any); viewOnlyEmit(ev as any) },
             onActivity: () => { updateTurn(key, { lastActivityAt: Date.now() }) },
             onAsk: (path, args) => dispatchAsk(handlers, path as AskPath, args),
           },
@@ -768,6 +777,14 @@ export function useAiChat(args: UseAiChatArgs) {
         // 追い越すと、preload が購読を先に外して出来事が失われる（下の finally の loading:false と
         // 同じ理由・同じ作法。実際に偽サーバ e2e ではこちらの経路しか届かなかった）。
         if (result?.endedWithError) emit({ kind: 'attention', value: 'error' })
+      } catch (e) {
+        // 通信そのものの失敗（main のハンドラは投げない作り）。届かなかった回は、main は依頼の吹き出しも
+        // 会話に入れていない（runEngineTurn の中で入る）ので、依頼もここで足す。書き主はこちら:
+        // emit は ops を main へ送り、画面へは chat:applied で届く。viewOnlyEmit だと、convDir が
+        // ある会話では捨てられて何も出ない。原文は英語の頭が付くので画面には出さず、ログに残す。
+        console.error('[chatTurn.start] failed', e)
+        for (const ev of unexpectedFailureAppends({ rawText, images, errorPrefix, written })) emit(ev)
+        emit({ kind: 'attention', value: 'error' })
       } finally {
         // abort の登録解除は不要（このあとの emit の loading:false → resetTurn(key) が
         // abort ごとアイドルへ戻す。chatTurnRegistry.ts の resetTurn 参照）。
@@ -798,5 +815,21 @@ export function useAiChat(args: UseAiChatArgs) {
     void send(text, images)
   }, [send])
 
-  return { isLoading, statusNote, stalled, elapsedSec, routedModel, setRoutedModel, send, abort, switchToAiEngineAndResend, compactNow, forgetClaudeSession }
+  // 「もう一度送る」ボタンのハンドラ。材料（依頼の文と画像）は押した時点の会話から取り出し、
+  // 既存の send に渡す（送信の入口は send の1か所）。aiOnlyNote は付けない（上の切替と同じ）。
+  // 押している間は ref の印で二重押しを止める（send が isLoading を立てるまでの隙間に2回押されても1回だけ送る）。
+  const retryingRef = useRef(false)
+  const retryLast = useCallback(async () => {
+    if (retryingRef.current) return
+    const req = retryRequestOf(getHistory())
+    if (!req) return
+    retryingRef.current = true
+    try {
+      await send(req.text, req.images)
+    } finally {
+      retryingRef.current = false
+    }
+  }, [getHistory, send])
+
+  return { isLoading, statusNote, stalled, elapsedSec, routedModel, setRoutedModel, send, abort, switchToAiEngineAndResend, retryLast, compactNow, forgetClaudeSession }
 }

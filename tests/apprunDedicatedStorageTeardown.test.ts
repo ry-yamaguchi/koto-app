@@ -30,6 +30,10 @@ const h = vi.hoisted(() => ({
   listThrowsFor: '',
   /** createStorageAdapter が失敗する（＝保存場所に接続できない）か。 */
   adapterThrows: false,
+  /** adapterThrows のとき投げる値（無ければ日本語の Error）。回線断の値を入れて、画面の文を見る。 */
+  adapterError: null as unknown,
+  /** 片づけそのもの（teardownStorageForProject）が投げる値。無ければ本物を動かす。 */
+  storageError: null as unknown,
   /** deletePermission が失敗するか。 */
   revokeThrows: false,
   /** listPermissions が返す鍵の一覧（⑥の「その公開先の鍵をまとめて無効にする」の材料）。 */
@@ -58,7 +62,7 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
   return {
     ...real,
     createStorageAdapter: async () => {
-      if (h.adapterThrows) throw new Error('保存場所に接続できません（テスト）')
+      if (h.adapterThrows) throw (h.adapterError ?? new Error('保存場所に接続できません（テスト）'))
       h.storageCalls.push('connect')
       return {
         siteInfo: () => ({ s3Endpoint: 's3.isk01.sakurastorage.jp', region: 'jp-north-1' }),
@@ -95,6 +99,16 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
   }
 })
 
+// 片づけそのものが投げる回を作る（storageError が null のときは本物の teardownStorageForProject が動く）。
+vi.mock('../src/main/cloud/storageForTarget', async (importOriginal) => {
+  const real = await importOriginal<any>()
+  return {
+    ...real,
+    teardownStorageForProject: (...args: unknown[]) =>
+      h.storageError ? Promise.reject(h.storageError) : real.teardownStorageForProject(...args),
+  }
+})
+
 // 破棄の本体は**実物**を動かす。偽サーバへ向けるため baseUrl だけを足し、待たない sleep を入れる。
 vi.mock('../src/main/cloud/apprunDedicatedApply', async (importOriginal) => {
   const real = await importOriginal<any>()
@@ -111,6 +125,7 @@ import { writeApprunDedicatedRecordFs, readApprunDedicatedFs, writePublishRecord
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { BUCKET_MONTHLY_YEN, teardownRemainingWarnings } from '../src/shared/cloudCost'
 import { shownTeardown } from './shownFromEnv'
+import { splitFailureDetail } from '../src/shared/failureDetail'
 import { isolatedProjectDir, workspaceDirOf } from './isolatedProject'
 
 registerApprunDedicatedHandlers({} as any)
@@ -133,6 +148,8 @@ beforeEach(() => {
   h.listThrows = false
   h.listThrowsFor = ''
   h.adapterThrows = false
+  h.adapterError = null
+  h.storageError = null
   h.revokeThrows = false
   h.permissions = []
   h.listPermissionsThrows = false
@@ -865,5 +882,59 @@ describe('★★★ ⑥の破棄: 回帰 — 同じ保存場所を使う A・B �
     expect(second.keptBucketName).toBeUndefined()
     expect(second.keptBucketsUsedByOthers).toBeUndefined()
     expect(second.executed).toContain(`保存場所『${BUCKET}』のデータを削除しました — 保存場所ごと削除しました。月額の課金も止まります。`)
+  })
+})
+
+// ── 10. 保存場所の失敗の原文は、日本語の文＋詳細（最後の1行）にする ────────────────────────
+
+/** fetch が回線断で投げる値の形（cause に errno つき）。 */
+const offlineError = (host: string) => Object.assign(new TypeError('fetch failed'), {
+  cause: Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: 'ENOTFOUND' }),
+})
+
+describe('⑥の破棄: 保存場所の失敗が英語の原文のまま出ない', () => {
+  it('★ 保存場所への接続が回線断で失敗 → 日本語の文。詳細にホスト名が残り、残っている保存場所の行のあとでも詳細は最後の1行', async () => {
+    setupProject({ permissionId: 'perm-live' })
+    h.adapterThrows = true
+    h.adapterError = offlineError('s3.isk01.sakurastorage.jp')
+    const { result } = await runTeardown()
+
+    expect(result.ok).toBe(false)
+    const { text, detail } = splitFailureDetail(result.message)
+    expect(text).toContain('インターネットに接続できませんでした')
+    expect(text).not.toContain('fetch failed')
+    expect(detail).toContain('s3.isk01.sakurastorage.jp')
+    // 詳細は文の最後の1行（残りの保存場所の行より後ろ）
+    expect(result.message.lastIndexOf('詳細: ')).toBeGreaterThan(result.message.indexOf('が残っています'))
+  })
+
+  it('★ 片づけそのものが回線断で投げた回: 日本語の文。詳細（ホスト名）は、残っている保存場所の行のあとでも最後の1行', async () => {
+    setupProject({ permissionId: 'perm-live' })
+    h.storageError = offlineError('s3.isk01.sakurastorage.jp')
+    const { result } = await runTeardown()
+
+    expect(result.ok).toBe(false)
+    const { text, detail } = splitFailureDetail(result.message)
+    expect(text).toContain('保存場所を削除できませんでした: インターネットに接続できませんでした')
+    expect(text).toContain('が残っています')
+    expect(text).not.toContain('fetch failed')
+    expect(detail).toContain('s3.isk01.sakurastorage.jp')
+  })
+
+  it('★ env.json を読めない（権限なし）→ 英語の EACCES のままでなく日本語の文＋詳細。月額が続く案内は残る', async () => {
+    setupProject({ permissionId: 'perm-live' })
+    const envPath = path.join(projectDir, '.sakura-cloud', 'env.json')
+    fs.chmodSync(envPath, 0o000)
+    try {
+      const { result } = await runTeardown()
+      expect(result.ok).toBe(false)
+      const { text, detail } = splitFailureDetail(result.message)
+      expect(text).toContain('保存場所の設定を読めないため、保存場所は削除していません（消すまで月額が続きます）')
+      expect(text).toContain('コントロールパネル')
+      expect(text).not.toContain('EACCES')
+      expect(detail).toContain('EACCES')
+    } finally {
+      fs.chmodSync(envPath, 0o644)
+    }
   })
 })

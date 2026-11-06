@@ -6,6 +6,7 @@
 // 押したあとの流れ（pressProjectDelete・runProjectDelete・moveProjectToTrash）は**本物**を走らせる。代役にするのは、材料を読む関数と、公開先の破棄だけ。
 
 import ProjectDeleteDialog from '../src/renderer/components/ProjectDeleteDialog'
+import Modal from '../src/renderer/ui/Modal'
 import ProjectDeleteResults from '../src/renderer/components/teardown/ProjectDeleteResults'
 import type { PublishTargetKind } from '../src/renderer/publishStatus'
 import type { ProjectDeleteFacts } from '../src/renderer/teardown/projectDeletePlan'
@@ -117,7 +118,9 @@ export function createDialogHarness(hooks: Hooks, fake: Fake) {
   const mainButton = () => hooks.rendered.find(el => el.type === 'button' && /ゴミ箱に移動|破棄しています/.test(textOf(el.props)))!
   const cancelButton = () => hooks.rendered.find(el => el.type === 'button' && /^キャンセル$/.test(textOf(el.props)))!
   const checkbox = () => els('input')[0]
-  const backdrop = () => hooks.rendered.find(el => el.type === 'div' && String(el.props.className).includes('fixed inset-0'))!
+  /** 窓（ui/Modal）。背景クリック・Esc は、Modal が onRequestClose(理由) で伝えるので、その理由を渡して呼ぶ。 */
+  const modal = () => hooks.rendered.find(el => el.type === Modal)!
+  const requestClose = (reason: 'escape' | 'backdrop') => modal().props.onRequestClose(reason)
   /** 結果の欄（ProjectDeleteResults）に渡された props。描いていなければ undefined。 */
   const results = () => els(ProjectDeleteResults)[0]?.props as { run: any; showBlockNote: boolean } | undefined
   const press = async () => { const p = mainButton().props.onClick(); await p; await settle(); rerender() }
@@ -131,7 +134,7 @@ export function createDialogHarness(hooks: Hooks, fake: Fake) {
   const withTargets = (targets: PublishTargetKind[], unreadable = false) => withFacts({ targets, unreadable })
 
   return {
-    t, api, props, reset, clearCalls, settle, rerender, render, mount, open, els, textOf, paragraphs, mainButton, cancelButton, checkbox, backdrop, results, press,
+    t, api, props, reset, clearCalls, settle, rerender, render, mount, open, els, textOf, paragraphs, mainButton, cancelButton, checkbox, modal, requestClose, results, press,
     done, failed, cancelled, nothingToDo, withFacts, withTargets,
   }
 }

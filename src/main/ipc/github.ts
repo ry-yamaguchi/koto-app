@@ -10,6 +10,7 @@ import {
 } from '../github/client'
 import { partitionEntries, isSkippedDirName, isSkippedFileName, type EnumerateEntry } from '../github/enumerate'
 import type { IpcDeps } from './types'
+import { failureText } from '../../shared/failureText'
 
 // プロジェクト内のファイルを列挙する（node_modules 等の除外＋ .env系除外＋ 5MB超過除外は
 // partitionEntries が担当。ここではディレクトリ走査のみを行う）。
@@ -69,7 +70,7 @@ export function registerGithubHandlers(_deps: IpcDeps) {
       }
       return { ok: true, repoFullName: fullName }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { checkAt: 'GitHub のリポジトリ一覧' }) }
     }
   })
 
@@ -94,7 +95,8 @@ export function registerGithubHandlers(_deps: IpcDeps) {
       if (!r.ok) return { ok: false, message: r.message ?? '保存に失敗しました', excluded }
       return { ok: true, commitSha: r.commitSha, savedCount: included.length, excluded }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      // ここへ来るのは手元のファイルの読み取りの失敗（回線の失敗は client.save が自分で文にして返す）
+      return { ok: false, message: failureText(e) }
     }
   })
 

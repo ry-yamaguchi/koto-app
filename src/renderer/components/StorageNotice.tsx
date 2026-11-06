@@ -1,3 +1,5 @@
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
 import { useEffect, useRef, useState } from 'react'
 import { storageNeedForScan, memorySitesFor, memorySitesNotWarned, shouldOfferStorage, STORAGE_PORTABLE_NOTE, type PublishTarget, type StorageNeed } from '../../shared/storageNeed'
 import {
@@ -225,7 +227,7 @@ export function rememberLayerLine(projectDir: string | null, layer: DataLayerRes
 export function KeptLines({ markerNote, dataLayerLine, checkLine }: { markerNote: string; dataLayerLine: string; checkLine: string }) {
   return (
     <>
-      {markerNote && <p className="text-[11px] text-brand-yellow leading-relaxed select-text">⚠️ {markerNote}</p>}
+      {markerNote && <p className="text-[11px] text-brand-yellow leading-relaxed select-text">⚠️ <FailureLines text={markerNote} /></p>}
       {dataLayerLine && <p className="text-[11px] text-ink-secondary leading-relaxed select-text">{dataLayerLine}</p>}
       {checkLine && <p className="text-[11px] text-ink-secondary leading-relaxed select-text">{checkLine}</p>}
     </>
@@ -357,7 +359,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
       const r = await window.electronAPI.storage.leftoverData(projectDir)
       return { files: r.ok && Array.isArray(r.files) ? r.files : [], note: leftoverScanLine(r) }
     } catch (e: any) {
-      return { files: [], note: leftoverScanLine({ ok: false, message: e?.message ?? String(e) }) }
+      return { files: [], note: leftoverScanLine({ ok: false, message: failureText(e, { readOnly: true }) }) }
     }
   }
 
@@ -503,6 +505,10 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
       // **目印を置けなかったときは、その場で警告を出す。** 出さないと、同じ保存場所を
       // 共有するプロジェクトを破棄したときに巻き込まれることを誰も知らないまま進む
       setMarkerNote(lines.warn)
+    } catch (e: any) {
+      // 呼び出しそのものが失敗した。費用の出る操作なので、作られたかは一覧で確かめてもらう
+      setError(failureText(e, { checkAt: '「どこに保存しますか」の一覧' }))
+      void bucketListRef.current?.reload()
     } finally { setBusy(false) }
   }
 
@@ -749,7 +755,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
         <div className="space-y-1">
           <p className="text-[11px] text-brand-yellow leading-relaxed select-text">⚠️ 保存場所の一覧を確かめられませんでした。</p>
           {bucketList.listError && (
-            <p className="text-[11px] text-ink-secondary leading-relaxed select-text">{bucketList.listError}</p>
+            <p className="text-[11px] text-ink-secondary leading-relaxed select-text"><FailureLines text={bucketList.listError} /></p>
           )}
           <button
             onClick={() => { void bucketListRef.current?.reload() }}
@@ -811,7 +817,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
       )}
 
       {done && <p className="text-[11px] text-ink-secondary leading-relaxed select-text">✅ {done}</p>}
-      {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {error}</p>}
+      {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ <FailureLines text={error} /></p>}
       {/* **どの枠でも消えない3行**（指摘36）:
           ・⚠️ 用意はできたが目印を置けなかった（黙ると、あとで巻き込まれて消えたときに
             手がかりが1つも残らない・指摘9・14）
@@ -855,7 +861,7 @@ export default function StorageNotice({ projectDir, target, onAskAi }: { project
       */}
       {/* 古いデータを探した結果のうち、**黙ってはいけないこと**だけを1行で出す */}
       {leftoverNote && (
-        <p className="text-[11px] text-ink-secondary leading-relaxed select-text">{leftoverNote}</p>
+        <p className="text-[11px] text-ink-secondary leading-relaxed select-text"><FailureLines text={leftoverNote} /></p>
       )}
 
       {shouldAskLeftoverData({ rewritten: rewriteDone, files: leftover, answered: leftoverAnswered }) && (

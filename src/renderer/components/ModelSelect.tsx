@@ -25,6 +25,18 @@ export function pickerTooltip(id: string): string | null {
 }
 
 /**
+ * 開いている一覧が Esc を受けたとき。一覧を閉じ、イベントはここで止める（窓の Esc まで届かせない）。
+ * 新規プロジェクトなど窓の中で使われるので、止めないと一覧の取り消しと窓が一緒に閉じる。
+ * 受けたら true。
+ */
+export function handleModelSelectEscape(e: { key: string; stopPropagation(): void }, close: () => void): boolean {
+  if (e.key !== 'Escape') return false
+  e.stopPropagation()
+  close()
+  return true
+}
+
+/**
  * モデル選択用の自前ドロップダウン。
  * ネイティブ <select> はブラウザが上下どちらに開くかを自動で決めてしまい「常に下に開く」を
  * 制御できない。そのため下方向（top-full）に固定で開くカスタムUIに置き換えている。
@@ -55,12 +67,13 @@ export default function ModelSelect({ models, value, onChange, buttonClassName, 
     function onDocClick(e: MouseEvent) {
       if (ref.current && e.target instanceof Node && !ref.current.contains(e.target)) setOpen(false)
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
+    function onKey(e: KeyboardEvent) { handleModelSelectEscape(e, () => setOpen(false)) }
     document.addEventListener('mousedown', onDocClick)
-    document.addEventListener('keydown', onKey)
+    // キャプチャ段階で受ける（窓の Esc は document のバブリング段階。先に受けて止める）
+    document.addEventListener('keydown', onKey, true)
     return () => {
       document.removeEventListener('mousedown', onDocClick)
-      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('keydown', onKey, true)
     }
   }, [open])
 

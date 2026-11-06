@@ -6,7 +6,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  loadConversation, applyConversationOps, flushConversations, resetConversations,
+  loadConversation, loadConversationState, applyConversationOps, flushConversations, resetConversations,
   setApplyListener, dropConversation, type Op,
 } from '../src/main/chat/convStore'
 import { projectChatPath } from '../src/main/chatStore/paths'
@@ -397,5 +397,206 @@ describe('12. chatConvClient: 送信が直列化されていること（Promise�
     client.apply({ kind: 'append', msg: { role: 'user', content: 'x' } } as any)
     await client.idle() // chain は Promise チェーンなので、送信は次のマイクロタスクまで待つ
     expect(opsMock).toHaveBeenCalledWith('/tmp/koto-proj', [{ kind: 'append', msg: { role: 'user', content: 'x' } }])
+  })
+})
+
+// ── 壊れた記録を「無い」と区別し、読んだ時点で写しを残す（0.6.26）──────────────────────
+// 会話を読む入口は3つ（chat:load が呼ぶ loadConversation・書き込みの前の ensureEntry・AI のターンの履歴
+// loadConversation(dir) ?? []）。どれも readFromFile を通り、写しは file.ts の1か所で作る。
+// 本物の一時フォルダで、写しの有無・中身と、書き込みの前後のディスクを見る。
+describe('convStore: 壊れた記録は「無い」と区別し、読んだ時点で写しを残す', () => {
+  const STAMP_NAME = 'chat.json.broken-20261103-142530'
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
+  const MSG = { role: 'user', content: '新しい発言' }
+
+  const sideOf = (dir: string) => path.dirname(projectChatPath(dir))
+  const copiesOf = (dir: string) =>
+    fs.existsSync(sideOf(dir)) ? fs.readdirSync(sideOf(dir)).filter((n) => n.startsWith('chat.json.broken-')).sort() : []
+  const putBroken = (dir: string, content: string | Buffer) => {
+    fs.mkdirSync(sideOf(dir), { recursive: true })
+    fs.writeFileSync(projectChatPath(dir), content)
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 10, 3, 14, 25, 30))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // 壊れた記録の表（JSON でない・途中で切れた v1・v1 と v2 の混在）
+  const BROKEN: Array<[string, string]> = [
+    ['JSON でない', '会話の記録ではない文字列'],
+    ['途中で切れた v1', '[{"role":"user","content":"前の発言"},{"role":"assis'],
+    ['v1 と v2 の混在', '[{"role":"user","content":"前の発言"}]\n{"i":1,"m":{"role":"user","content":"続き"}}\n'],
+  ]
+  // 会話を読む入口。どれも読んだ時点で写しができる
+  const DOORS: Array<[string, (dir: string) => void]> = [
+    ['chat:load が呼ぶ loadConversation', (dir) => { loadConversation(dir) }],
+    ['書き込みの前の ensureEntry（applyConversationOps）', (dir) => applyConversationOps(dir, [{ kind: 'append', msg: MSG }])],
+    ['AI のターンの履歴 loadConversation(dir) ?? []', (dir) => { void (loadConversation(dir) ?? []) }],
+  ]
+
+  describe.each(BROKEN)('%s', (_label, content) => {
+    it.each(DOORS)('入口「%s」: 最初の書き込みより前に、元と同じ中身の写しがある。元はまだその場にある', (_door, open) => {
+      const dir = mkProjectDir()
+      putBroken(dir, content)
+
+      open(dir) // 書き込み（flush）はまだしていない
+
+      expect(copiesOf(dir)).toEqual([STAMP_NAME])
+      expect(fs.readFileSync(path.join(sideOf(dir), STAMP_NAME), 'utf-8')).toBe(content)
+      expect(fs.readFileSync(projectChatPath(dir), 'utf-8')).toBe(content) // 元は消えず、名前も変わらず、中身も同じ
+    })
+
+    it('書き込みが進んだあとも、写しは元の中身のまま残る。chat.json は新しい会話に置き換わる', () => {
+      const dir = mkProjectDir()
+      putBroken(dir, content)
+
+      applyConversationOps(dir, [{ kind: 'append', msg: MSG }])
+      flushConversations()
+
+      expect(fs.readFileSync(path.join(sideOf(dir), STAMP_NAME), 'utf-8')).toBe(content)
+      resetConversations()
+      expect(loadConversation(dir)).toEqual([expect.objectContaining(MSG)])
+      expect(copiesOf(dir)).toEqual([STAMP_NAME])
+    })
+  })
+
+  it('読んだ結果は messages が null のまま、unreadable で「無い」と区別できる。メモリに載ったあとも同じ', () => {
+    const dir = mkProjectDir()
+    putBroken(dir, '壊れた記録')
+
+    expect(loadConversation(dir)).toBeNull() // 旧 localStorage の移行の判定は今までどおり null
+    expect(loadConversationState(dir)).toEqual({ messages: null, unreadable: { backupName: STAMP_NAME } })
+
+    applyConversationOps(dir, [{ kind: 'append', msg: MSG }])
+    const after = loadConversationState(dir)
+    expect(after.messages).toEqual([expect.objectContaining(MSG)])
+    expect(after.unreadable).toEqual({ backupName: STAMP_NAME })
+  })
+
+  it('ファイルが無い回は今までどおり null で、unreadable は無く、写しを作らない', () => {
+    const dir = mkProjectDir()
+    expect(loadConversation(dir)).toBeNull()
+    expect(loadConversationState(dir)).toEqual({ messages: null, unreadable: null })
+    applyConversationOps(dir, [{ kind: 'append', msg: MSG }])
+    flushConversations()
+    expect(copiesOf(dir)).toEqual([])
+    expect(loadConversationState(dir).unreadable).toBeNull()
+  })
+
+  it('読めて空の記録（ヘッダだけの v2）は、壊れたものではない。写しを作らない', () => {
+    const dir = mkProjectDir()
+    putBroken(dir, '{"v":2}\n')
+    expect(loadConversationState(dir)).toEqual({ messages: [], unreadable: null })
+    expect(copiesOf(dir)).toEqual([])
+  })
+
+  it('同じ記録を何度読んでも、書き込みの前の ensureEntry を通っても、写しは1つ', () => {
+    const dir = mkProjectDir()
+    putBroken(dir, '壊れた記録')
+    loadConversation(dir)
+    loadConversation(dir)
+    applyConversationOps(dir, [{ kind: 'append', msg: MSG }])
+    loadConversationState(dir)
+    expect(copiesOf(dir)).toEqual([STAMP_NAME])
+  })
+
+  it('写しを作れなかった回（backupName: null）は、その会話へ書き込まない。ディスクの前後が同じ', () => {
+    const dir = mkProjectDir()
+    const original = '壊れた記録（写しを作れない回）'
+    putBroken(dir, original)
+    // 同じ秒の名前をすべて別の中身で埋めて、写しの名前を取れなくする（フォルダ自体は書ける）
+    for (let n = 1; n <= 50; n++) {
+      fs.writeFileSync(path.join(sideOf(dir), n === 1 ? STAMP_NAME : `${STAMP_NAME}-${n}`), `別の写し${n}`)
+    }
+    const listing = fs.readdirSync(sideOf(dir)).sort()
+
+    applyConversationOps(dir, [{ kind: 'append', msg: MSG }])
+    flushConversations()
+    applyConversationOps(dir, [{ kind: 'append', msg: { role: 'assistant', content: '返事' } }], { flushNow: true })
+    flushConversations()
+
+    expect(fs.readdirSync(sideOf(dir)).sort()).toEqual(listing) // 新しいファイルも .tmp も増えていない
+    expect(fs.readFileSync(projectChatPath(dir), 'utf-8')).toBe(original) // 元は置き換わっていない
+    expect(loadConversationState(dir).unreadable).toEqual({ backupName: null })
+    expect(loadConversation(dir)).toHaveLength(2) // 画面の会話は続く（書かないだけ）
+  })
+
+  it.skipIf(isRoot)('読めない記録（権限を外したファイル）の回も、写しを作れず、書き込まない', () => {
+    const dir = mkProjectDir()
+    putBroken(dir, '権限を外す前の中身')
+    const file = projectChatPath(dir)
+    fs.chmodSync(file, 0o000)
+    try {
+      applyConversationOps(dir, [{ kind: 'append', msg: MSG }], { flushNow: true })
+      flushConversations()
+      expect(loadConversationState(dir).unreadable).toEqual({ backupName: null })
+      expect(fs.readdirSync(sideOf(dir))).toEqual(['chat.json'])
+    } finally {
+      fs.chmodSync(file, 0o644)
+    }
+    expect(fs.readFileSync(file, 'utf-8')).toBe('権限を外す前の中身')
+  })
+
+  it('読む処理そのものが例外を投げた回（入れ子が深すぎて畳めない記録）も「無い」にせず、書き込まない', () => {
+    const dir = mkProjectDir()
+    const deep = 100000
+    const original = '{"v":2}\n{"i":0,"m":' + '['.repeat(deep) + ']'.repeat(deep) + '}\n'
+    putBroken(dir, original)
+
+    expect(loadConversation(dir)).toBeNull()
+    expect(loadConversationState(dir)).toEqual({ messages: null, unreadable: { backupName: null } })
+    applyConversationOps(dir, [{ kind: 'append', msg: MSG }], { flushNow: true })
+    flushConversations()
+
+    expect(fs.readFileSync(projectChatPath(dir), 'utf-8')).toBe(original) // 置き換わっていない
+    expect(fs.readdirSync(sideOf(dir))).toEqual(['chat.json'])
+  })
+
+  it('写しがあれば書き込みは止めない（置き換えても、写しに元が残っているため）', () => {
+    const dir = mkProjectDir()
+    putBroken(dir, '壊れた記録')
+    applyConversationOps(dir, [{ kind: 'append', msg: MSG }], { flushNow: true })
+    expect(fs.readFileSync(projectChatPath(dir), 'utf-8').startsWith('{"v":2}')).toBe(true)
+    expect(fs.readFileSync(path.join(sideOf(dir), STAMP_NAME), 'utf-8')).toBe('壊れた記録')
+  })
+})
+
+// 配線の形（コメントを外した本文）。呼び出しの形ごと指し、直す前の形は not.toContain で禁じる。
+describe('convStore / file.ts: 写しを作る入口は1か所（読む入口は readFromFile を通る）', () => {
+  const conv = readCode('src/main/chat/convStore.ts')
+  const file = readCode('src/main/chatStore/file.ts')
+
+  it('convStore は chat.json を loadProjectChatFile(projectChatPath(projectDir)) の1か所だけで読み、unreadable を運ぶ', () => {
+    expect(conv.split('loadProjectChatFile(projectChatPath(projectDir))').length - 1).toBe(1)
+    // 壊れた行を捨てて読めた分は、messages にその分を入れ、unreadable と一緒に運ぶ
+    expect(conv).toContain('if (result.unreadable) {\n      return { messages: result.json === null ? null : parseMessages(result.json), unreadable: result.unreadable }\n    }')
+    expect(conv).toContain('entry = { messages: read.messages ?? [], timer: null, unreadable }')
+    expect(conv).not.toContain('if (result.unreadable) return { messages: null, unreadable: result.unreadable }')
+    // 直す前の形（壊れた記録を null＝無いと同じにして、ensureEntry が空配列で始める）
+    expect(conv).not.toContain('if (!result.ok || result.json === null) return null')
+    expect(conv).not.toContain('const fromFile = readFromFile(projectDir)')
+  })
+
+  it('保存の書き口 saveNow は、写しを作れなかった回を saveProjectChatFile より前に止める', () => {
+    const start = conv.indexOf('function saveNow(')
+    const block = conv.slice(start, conv.indexOf('\n}', start))
+    const guard = block.indexOf('if (entry.unreadable && entry.unreadable.backupName === null) return')
+    expect(guard).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(block.indexOf('saveProjectChatFile(projectChatPath(projectDir)'))
+    // 会話をファイルへ書く呼び出しは saveNow の1か所だけ
+    expect(conv.split('saveProjectChatFile(').length - 1).toBe(1)
+  })
+
+  it('file.ts は壊れた記録の写しを copyBrokenOnce(filePath, state.bytes) の1か所で作り、読めないものを「無い」にしない', () => {
+    expect(file.split('copyBrokenOnce(filePath, state.bytes)').length - 1).toBe(1)
+    expect(file).toContain("if (state.kind === 'unreadable') return { kind: 'unreadable', unreadable: { backupName: null } }")
+    expect(file).toContain("if (found.kind === 'unreadable') return { ok: true, json: null, unreadable: found.unreadable }")
+    // 直す前の形（存在しない・読めないを同じ null にする読み方）
+    expect(file).not.toContain('readFileOrNull')
+    expect(file).not.toContain('if (!folded) return { ok: true, json: null }')
   })
 })

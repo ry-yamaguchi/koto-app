@@ -1,3 +1,6 @@
+import { failureText } from '../../shared/failureText'
+import { splitFailureDetail, joinFailureDetail } from '../../shared/failureDetail'
+import FailureLines from './FailureLines'
 import React, { useState } from 'react'
 import { getSearchConfig } from '../aiTools'
 import { buildWebPageMarkdown, sanitizeFilename, WEB_FETCH_MAX_CHARS } from '../ragContext'
@@ -28,6 +31,14 @@ interface FetchedPage {
 
 const SAKURA_KNOWLEDGE_SITE = ' site:knowledge.sakura.ad.jp'
 const PREVIEW_CHARS = 500
+
+/** 取り込めなかったページの失敗を1つの知らせにまとめる。各件の詳細（原文）は文の途中に挟まず、
+ *  日本語の文を ' / ' でつないだあと、最後の1行にまとめて添える。 */
+export function joinUploadErrors(errors: string[]): string {
+  const parts = errors.map(splitFailureDetail)
+  const details = parts.map(p => p.detail).filter((d, i, a) => d !== '' && a.indexOf(d) === i)
+  return joinFailureDetail(`アップロードに失敗しました。${parts.map(p => p.text).join(' / ')}`, details.join(' / '))
+}
 
 export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUploaded }: Props) {
   const [searchConfig, setSearchConfig] = useState<{ provider: 'tavily' | 'brave'; key: string } | null | undefined>(undefined)
@@ -67,7 +78,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
       setResults(r.slice(0, 10))
       if (r.length === 0) setSearchError('検索結果が見つかりませんでした。')
     } catch (e: any) {
-      setSearchError(e?.message ?? '検索に失敗しました。')
+      setSearchError(failureText(e, { readOnly: true }))
     } finally {
       setSearching(false)
     }
@@ -97,7 +108,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
         const markdown = buildWebPageMarkdown({ title, url: page.url || t.url, content: page.content }, fetchedAt)
         next.push({ url: page.url || t.url, title, content: page.content, markdown })
       } catch (e: any) {
-        next.push({ url: t.url, title: t.title, content: '', markdown: '', error: e?.message ?? '取得に失敗しました。' })
+        next.push({ url: t.url, title: t.title, content: '', markdown: '', error: failureText(e, { readOnly: true }) })
       }
     }
     setPages(next)
@@ -152,7 +163,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
         await window.electronAPI.fs.writeFile(`${dir}/${localName}`, page.markdown)
         successCount += 1
       } catch (e: any) {
-        errors.push(`「${page.title}」: ${e?.message ?? String(e)}`)
+        errors.push(`「${page.title}」: ${failureText(e)}`)
       }
     }
     setUploading(false)
@@ -164,7 +175,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
       setResults([]); setSelected(new Set()); setPages([]); setTagsInput(''); setQuery('')
       onUploaded()
     } else {
-      setUploadNotice(`アップロードに失敗しました。${errors.join(' / ')}`)
+      setUploadNotice(joinUploadErrors(errors))
     }
   }
 
@@ -215,7 +226,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
             </label>
 
             {searchError && (
-              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{searchError}</p>
+              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text"><FailureLines text={searchError} /></p>
             )}
 
             {results.length > 0 && (
@@ -268,7 +279,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
                 </div>
                 <p className="text-[11px] text-ink-muted truncate">{p.url}</p>
                 {p.error ? (
-                  <p className="text-[11px] text-brand-red select-text">{p.error}</p>
+                  <p className="text-[11px] text-brand-red select-text"><FailureLines text={p.error} /></p>
                 ) : expanded.has(p.url) ? (
                   <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-2 py-1.5 whitespace-pre-wrap select-text">
                     {p.content.slice(0, PREVIEW_CHARS)}{p.content.length > PREVIEW_CHARS ? '…' : ''}
@@ -305,7 +316,7 @@ export default function KnowledgeCollectorTab({ apiKey, onOpenCredentials, onUpl
             >保存先フォルダを開く</button>
           </div>
           {uploadNotice && (
-            <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all">{uploadNotice}</p>
+            <p className="text-xs text-ink bg-elevated border border-line rounded-lg px-3 py-2 leading-relaxed select-text break-all"><FailureLines text={uploadNotice} /></p>
           )}
         </div>
       )}

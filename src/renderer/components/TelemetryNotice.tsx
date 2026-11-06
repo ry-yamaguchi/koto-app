@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { TelemetryKind, TelemetryAction } from '../../shared/appLog'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
+import FailureLines from './FailureLines'
 
 // TelemetryNotice — 手順7 ログ・メトリクス（roadmap #30・さくらの開発者の助言）。
 //
@@ -96,7 +99,8 @@ export default function TelemetryNotice({ projectDir, kind }: { projectDir: stri
           }
           return
         }
-        setError(r.message ? `${r.message}${r.detail ? `（${r.detail}）` : ''}` : '設定できませんでした')
+        // 失敗の原文（詳細の行）は最後に残す。ここで足す詳細は文の途中に入れる
+        setError(r.message ? wrapFailureText(r.message, t => `${t}${r.detail ? `（${r.detail}）` : ''}`) : '設定できませんでした')
         return
       }
       setConfirming(false)
@@ -104,6 +108,9 @@ export default function TelemetryNotice({ projectDir, kind }: { projectDir: stri
       // 状態を取り直す。**押しっぱなしの古い表示を残さない**
       const s = await window.electronAPI.cloud.telemetryStatus(projectDir, kind)
       setAction(s.ok ? (s.action ?? null) : null)
+    } catch (e) {
+      // 呼び出しそのものが失敗した（通信が切れた等）。押したきり何も出ない状態にしない
+      setError(failureText(e))
     } finally {
       setBusy(false)
     }
@@ -136,7 +143,7 @@ export default function TelemetryNotice({ projectDir, kind }: { projectDir: stri
           className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-40"
         >{busy ? '接続しています…' : `${label}を接続する`}</button>
         {done && <p className="text-[11px] text-ink-secondary leading-relaxed">✅ 接続しました。</p>}
-        {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {error}</p>}
+        {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ <FailureLines text={error} /></p>}
       </div>
     )
   }
@@ -171,7 +178,7 @@ export default function TelemetryNotice({ projectDir, kind }: { projectDir: stri
           className="border border-line rounded-lg px-3 py-1.5 text-xs text-ink-secondary hover:border-sakura hover:text-sakura"
         >{label}を残せるようにする…</button>
       )}
-      {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ {error}</p>}
+      {error && <p className="text-[11px] text-brand-red leading-relaxed select-text">⚠️ <FailureLines text={error} /></p>}
     </div>
   )
 }

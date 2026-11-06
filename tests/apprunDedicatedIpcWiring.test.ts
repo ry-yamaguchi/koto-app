@@ -176,7 +176,7 @@ describe('main: appStatus は GET のみ（clusterID と auth があるときだ
     const block = handlerBlock('apprunDedicated:appStatus')
     expect(ipc).toContain('getCluster, type ApprunDedicatedResult } from \'../cloud/apprunDedicated\'')
     expect(block).toContain('if (record.clusterID && isCreds(auth)) {')
-    expect(block).toContain('const r = await getCluster(auth, record.clusterID)')
+    expect(block).toContain('const r = await getCluster(auth, record.clusterID, undefined, { readOnly: true })')
     expect(block).toContain('hasLetsEncryptEmail = r.ok ? readHasLetsEncryptEmail(r.data) : null')
     expect(block).toContain('spec = loadCloudSpec(projectDir)')
     expect(block).toContain('envReady: !!spec,')

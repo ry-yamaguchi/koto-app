@@ -23,6 +23,8 @@ import { projectDeleteStoppedTail } from '../../teardown/projectDeleteWords'
 import { everyDoneStepKeptOnly } from '../../teardown/headline'
 import { CONTROL_PANEL_URL } from '../ServicePrincipalSection'
 import TeardownResultView from './TeardownResultView'
+import FailureLines from '../FailureLines'
+import { failureCopyNow } from '../../failureCopy'
 
 /** 公開先1つぶん（残りの段は名詞で）。結果の部品で描けるもの（view と words がある）は部品へ、無いもの（やめた・専有型の砦・例外）は1行を選択できる形で出す。 */
 function StepView({ step }: { step: ProjectDeleteStep }) {
@@ -45,7 +47,7 @@ function StepView({ step }: { step: ProjectDeleteStep }) {
       </div>
     )
   }
-  return <p className="text-brand-red select-text">{step.kind === 'failed' ? step.line : label}</p>
+  return <p className="text-brand-red select-text">{step.kind === 'failed' ? <FailureLines text={step.line} /> : label}</p>
 }
 
 /** フォルダを移せなかった理由。選択・コピーできる形（TeardownResultView の ErrorBlock と同じ見た目）。 */
@@ -53,9 +55,9 @@ function MessageBlock({ msg }: { msg: string }) {
   return (
     <div className="rounded-lg border border-line bg-overlay p-3">
       <div className="flex items-start gap-2">
-        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">{msg}</p>
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text"><FailureLines text={msg} /></p>
         <button
-          onClick={() => { navigator.clipboard.writeText(msg).catch(() => {}) }}
+          onClick={() => { failureCopyNow(msg).then(t => navigator.clipboard.writeText(t)).catch(() => {}) }}
           className="flex-none text-[11px] text-sakura hover:underline"
           title="メッセージをコピー"
         >コピー</button>

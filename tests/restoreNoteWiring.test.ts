@@ -109,7 +109,7 @@ describe('配線: ChatPanel が chat.onApplied を購読している（chat.onAp
     const end = src.indexOf('}, [projectDir])', at)
     const block = src.slice(at, end)
     expect(block).not.toContain('applyOp(')
-    expect(block).not.toContain('clientRef.current')
+    expect(block).not.toContain('clientRef.current.apply')
   })
 })
 

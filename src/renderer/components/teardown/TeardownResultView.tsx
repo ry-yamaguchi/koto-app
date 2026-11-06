@@ -20,6 +20,8 @@ import { teardownHeadlineOf, type TeardownHeadlineTone } from '../../teardown/he
 import type { TeardownWords } from '../../teardown/types'
 import type { TeardownResumedNote } from '../../teardown/watch'
 import StageTimingDetails from '../StageTimingDetails'
+import FailureLines from '../FailureLines'
+import { failureCopyNow } from '../../failureCopy'
 
 /**
  * 失敗の結果に、**残っているもの**（または、やりかけたこと）があるか。ある失敗にだけ、赤い「残っている間は課金が続きます」を出す。
@@ -75,9 +77,9 @@ function ErrorBlock({ msg }: { msg: string }) {
   return (
     <div className="rounded-lg border border-line bg-overlay p-3 space-y-1">
       <div className="flex items-start gap-2">
-        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text">{msg}</p>
+        <p className="flex-1 text-xs text-ink-secondary leading-relaxed whitespace-pre-wrap break-all select-text"><FailureLines text={msg} /></p>
         <button
-          onClick={() => { navigator.clipboard.writeText(msg).catch(() => {}) }}
+          onClick={() => { failureCopyNow(msg).then(t => navigator.clipboard.writeText(t)).catch(() => {}) }}
           className="flex-none text-[11px] text-sakura hover:underline"
           title="メッセージをコピー"
         >コピー</button>
@@ -148,7 +150,7 @@ export default function TeardownResultView({ view, notes, words, retryHint, serv
         {warnings.length > 0 && (
           <div className="rounded-lg border border-brand-yellow/70 bg-overlay p-3 space-y-1" data-teardown-warnings>
             {warnings.map((w, i) => (
-              <p key={i} className="text-xs text-brand-yellow leading-relaxed select-text whitespace-pre-wrap">{warningLine(w)}</p>
+              <p key={i} className="text-xs text-brand-yellow leading-relaxed select-text whitespace-pre-wrap"><FailureLines text={warningLine(w)} /></p>
             ))}
           </div>
         )}

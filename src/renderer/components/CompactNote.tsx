@@ -7,10 +7,18 @@
 //
 // 元の会話は消えていない。**画面には全部残っていて、送るときだけまとめを使う。**
 
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
+import FailureLines from './FailureLines'
 import { useState } from 'react'
 import { COMPACT_NOTE, summaryFilePath, summaryFileBody } from '../historyCompact'
 import CopyButton from './CopyButton'
 import { AiText } from './AiMessage'
+
+/** 「残せませんでした（理由）」の文。理由は括弧の中の日本語の文だけにして、詳細（原文）は文の最後の行へ移す。 */
+export function savedFailureNote(e: unknown): string {
+  return wrapFailureText(failureText(e), t => `残せませんでした（${t}）`)
+}
 
 export default function CompactNote({ text, projectDir }: {
   text: string
@@ -35,7 +43,7 @@ export default function CompactNote({ text, projectDir }: {
       await window.electronAPI.fs.writeFileInProject(projectDir, rel, summaryFileBody(text, now))
       setSavedTo(rel)
     } catch (e: any) {
-      setSaveErr(e?.message ?? String(e))
+      setSaveErr(savedFailureNote(e))
     }
   }
 
@@ -78,7 +86,7 @@ export default function CompactNote({ text, projectDir }: {
                 {/* 色で伝えない（brand-green はライトモードで 1.67:1 しか出ず、白地では読めない。
                     掟5「ライトモードでも読めるか必ず確認する」）。印と太字で伝える。 */}
                 {savedTo && <span className="text-[11px] text-ink font-semibold select-text">✓ {savedTo} に残しました</span>}
-                {saveErr && <span className="text-[11px] text-ink font-semibold select-text">⚠️ 残せませんでした（{saveErr}）</span>}
+                {saveErr && <span className="text-[11px] text-ink font-semibold select-text">⚠️ <FailureLines text={saveErr} /></span>}
               </div>
             )}
           </>

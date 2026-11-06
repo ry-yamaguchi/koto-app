@@ -28,6 +28,9 @@ import {
 import { PUBLISH_DIR } from '../../shared/publishRoot'
 import { snapshotCurrentFiles } from '../backup/store'
 import { adoptedFiles, adoptionPreview } from '../cloud/adopt'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
+import { commandFailureOf } from './commandFailure'
 
 const run = promisify(execFile)
 
@@ -71,7 +74,10 @@ function adoptAppRunApp(
     }
     return { adopted: true, adoptNote: null }
   } catch (e: any) {
-    return { adopted: false, adoptNote: `引き継ぎの設定を書けませんでした（${e?.message ?? String(e)}）。` }
+    return {
+      adopted: false,
+      adoptNote: wrapFailureText(failureText(e), t => `引き継ぎの設定を書けませんでした（${t.replace(/。$/, '')}）。`),
+    }
   }
 }
 
@@ -91,7 +97,13 @@ function makeHistoryOrigin(destDir: string, rels: string[]): { historySnapshotId
   if (skip) return { historySnapshotId: null, historyNote: skip }
   const r = snapshotCurrentFiles(destDir, rels, '公開されていたものをインポートした時点')
   if (!r.ok || !r.snapshotId) {
-    return { historySnapshotId: null, historyNote: `🕘 履歴の起点は作れませんでした（${r.message ?? '理由は分かりません'}）。` }
+    return {
+      historySnapshotId: null,
+      historyNote: wrapFailureText(
+        failureText(r.message ?? '理由は分かりません'),
+        t => `🕘 履歴の起点は作れませんでした（${t.replace(/。$/, '')}）。`,
+      ),
+    }
   }
   return { historySnapshotId: r.snapshotId, historyNote: null }
 }
@@ -115,7 +127,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       const apps = data?.data ?? data?.applications ?? (Array.isArray(data) ? data : [])
       return { ok: true, candidates: appRunCandidates(apps) as ImportCandidate[] }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -160,7 +172,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
         adopt: adoptionPreview({ appName, settings, imageServer: ref.server }),
       }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -234,14 +246,21 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       if (!crane || !fs.existsSync(crane)) return { ok: false, message: '内蔵ビルダー（crane）が見つかりません。' }
 
       notify(e, 'コンテナレジストリへ接続しています…')
-      await run(crane, ['auth', 'login', ref.server, '-u', reg.user, '-p', reg.password])
+      // パスワードは引数に載せず標準入力で渡す（失敗の文や一覧に出さない）
+      try {
+        const login = run(crane, ['auth', 'login', ref.server, '-u', reg.user, '--password-stdin'])
+        login.child.stdin?.end(reg.password)
+        await login
+      } catch (err) { throw commandFailureOf(err) }
 
       notify(e, '公開されているイメージを取り出しています…（少々時間がかかります）')
       const tarPath = path.join(args.destDir, '.koto-import.tar')
-      await run(crane, ['export', ref.image, tarPath], { maxBuffer: 1024 * 1024 * 64 })
+      try {
+        await run(crane, ['export', ref.image, tarPath], { maxBuffer: 1024 * 1024 * 64 })
+      } catch (err) { throw commandFailureOf(err) }
 
       notify(e, '中身を調べています…')
-      const listed = await run('tar', ['-tf', tarPath], { maxBuffer: 1024 * 1024 * 256 })
+      const listed = await run('tar', ['-tf', tarPath], { maxBuffer: 1024 * 1024 * 256 }).catch(err => { throw commandFailureOf(err) })
       const names = listed.stdout.split('\n').filter(Boolean)
       const root = pickImageContentRoot(names)
       if (!root) {
@@ -251,6 +270,7 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
 
       notify(e, '取り込んでいます…')
       await run('tar', ['-xf', tarPath, '-C', publishRoot, '--strip-components', String(root.split('/').length), root], { maxBuffer: 1024 * 1024 * 64 })
+        .catch(err => { throw commandFailureOf(err) })
       fs.rmSync(tarPath, { force: true })
 
       const rels = importedRelPathsFromTar(names, root, PUBLISH_DIR)
@@ -271,7 +291,8 @@ export function registerPublishImportHandlers(_deps: IpcDeps) {
       }
       return { ok: true, fileCount: rels.length, stripped: root, settings, ...origin, ...adopt }
     } catch (e2: any) {
-      return { ok: false, message: e2?.message ?? String(e2) }
+      // 書き込みの途中で切れたかもしれない（フォルダが半端に残りうる）ので、書き込み側の文にする
+      return { ok: false, message: failureText(e2, { checkAt: 'インポート先のフォルダ' }) }
     }
   })
 }

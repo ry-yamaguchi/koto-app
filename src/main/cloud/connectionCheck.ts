@@ -10,6 +10,7 @@
 
 import { extractAccountId, apiErrorMessage } from './client'
 import type { RequestResult } from './client'
+import { failureText } from '../../shared/failureText'
 
 /** 各接続チェック結果の形（成否・HTTPステータス・失敗時メッセージ）。共用型・専有型で共通。 */
 export type ConnCheck = { ok: boolean; status?: number; message?: string }
@@ -49,6 +50,7 @@ export async function checkBilling(client: BillingClient, zone: string): Promise
       message: `請求の取得に失敗 HTTP ${b.dryRun === false ? b.status : '?'}${detail ? ' — ' + detail : ''}`,
     }
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? String(e) }
+    // 回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。見分けられない失敗は原文のまま。
+    return { ok: false, message: failureText(e, { readOnly: true }) }
   }
 }

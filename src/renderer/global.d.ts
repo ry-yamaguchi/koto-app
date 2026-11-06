@@ -83,6 +83,9 @@ type ProjectOpsSnapshotShape = import('../main/projectOps').ProjectOpsSnapshot
 /** どの公開先の操作か（記録の target と同じ。公開先の種類、または 'unknown'）。`publishMeta.runningOp` の戻りの公開先。 */
 type RunningOpTargetShape = import('../main/projectOps').OpTarget
 
+// ── fs.writeFileIfUnchanged の返り値（src/shared/editorSync.ts。main の writeIfUnchangedFs.ts と同じ形を使う）──────────
+type WriteIfUnchangedResultShape = import('../shared/editorSync').WriteIfUnchangedResult
+
 // ── cloud.twinFacts の引数と返り値（src/shared/twinFactsTypes.ts。main の cloud/twinFacts.ts と同じ形を使う）──────────
 type TwinFactsArgsShape = import('../shared/twinFactsTypes').TwinFactsArgs
 type TwinFactsResultShape = import('../shared/twinFactsTypes').TwinFactsResult
@@ -196,6 +199,13 @@ interface Window {
     fs: {
       readFile(path: string): Promise<string>
       writeFile(path: string, content: string): Promise<void>
+      /**
+       * 開いたとき読んだ中身（expected）とディスクが同じときだけ書く。外で変わっていれば書かない。
+       * expected が null なら「ファイルが無いときだけ作る」。
+       */
+      writeFileIfUnchanged(path: string, content: string, expected: string | null): Promise<WriteIfUnchangedResultShape>
+      /** 読めるかを聞く（読むだけ）。readable / missing（ファイルが無い）/ unreadable（それ以外）。 */
+      readCheck(path: string): Promise<'readable' | 'missing' | 'unreadable'>
       readFileInProject(projectDir: string, rel: string): Promise<string>
       writeFileInProject(projectDir: string, rel: string, content: string): Promise<void>
       openDialog(opts?: { filters?: { name: string; extensions: string[] }[] }): Promise<string | null>
@@ -307,6 +317,14 @@ interface Window {
         ok: boolean; moved: string[]; snapshotOk: boolean
         renamed?: { from: string; to: string }[]; message?: string
       }>
+      /**
+       * 移す前に、断りの規則に当たらないかを聞く（**何も変えない**）。`moveFiles` と同じ引数で、断りの文も同じ。
+       * `ok: true` のときだけ確認へ進む。`renamed` は、移動先に同名があって別の名前で移す分の予告
+       * （動かす時にさらに変わることはある）。書き込めるかは見ないので、`ok: true` のあとでも `moveFiles` が失敗することはある。
+       */
+      moveCheck(projectDir: string, files: string[], dest: 'materials' | 'publish'): Promise<
+        { ok: true; renamed: { from: string; to: string }[] } | { ok: false; message: string }
+      >
       /** withPublishDir: 最初から public/ を掘るか（改善1・2026-08-29。NewProjectModal.tsx が判断する）。 */
       createProject(
         parentDir: string,
@@ -1121,7 +1139,7 @@ interface Window {
     backup: {
       snapshotBeforeWrite(projectDir: string, snapshotId: string, rel: string, newContent: string, label?: string): Promise<{ ok: boolean; backedUp: boolean; message?: string }>
       list(projectDir: string): Promise<{ ok: boolean; snapshots: BackupSnapshotSummary[]; message?: string }>
-      restore(projectDir: string, snapshotId: string): Promise<{ ok: boolean; restored?: string[]; deleted?: string[]; failed?: string[]; preRestoreSnapshotId?: string; message?: string }>
+      restore(projectDir: string, snapshotId: string): Promise<{ ok: boolean; restored?: string[]; deleted?: string[]; failed?: string[]; failedReason?: string; preRestoreSnapshotId?: string; message?: string }>
     }
     // チャット履歴のファイル保存。IDEのプロジェクト別は `<project>/.sakuraide/chat.json`、
     // 単独チャット（ChatApp）は `<workspace>/.sakuraide/chats/chat-app.json`。JSON文字列をそのまま読み書きする。
@@ -1133,9 +1151,12 @@ interface Window {
       loadApp(workspaceDir: string): Promise<{ ok: boolean; json: string | null; message?: string }>
       saveApp(workspaceDir: string, json: string): Promise<{ ok: boolean; message?: string }>
       /** B'-3c: IDEのプロジェクト別チャットの読み込み。ファイルが無ければ messages は null
-       *  （空配列と区別する。src/renderer/chatConvClient.ts の旧localStorage移行判定に使う）。 */
+       *  （空配列と区別する。src/renderer/chatConvClient.ts の旧localStorage移行判定に使う）。
+       *  記録が壊れていた回は、読めた分（途中の壊れた行の手前まで）を messages に、何も読めなければ null を返し、
+       *  どちらも unreadable で「無い」と区別できる（写しの名前を運ぶ。作れなかった回は backupName が null）。読めた回は unreadable が null。
+       *  読めた回でも、同じフォルダに読めなかった記録の写しが残っていれば、その名前を copies で運ぶ。 */
       load(projectDir: string): Promise<
-        | { ok: true; messages: import('../shared/chatTurn').TurnMessage[] | null }
+        | { ok: true; messages: import('../shared/chatTurn').TurnMessage[] | null; unreadable: import('../shared/chatUnreadable').UnreadableChat | null; copies?: string[] }
         | { ok: false; messages: null; message: string }
       >
       /** B'-3c: 会話への書き換え（src/renderer/chatConvClient.ts の Op と同じ形）を main へ送る。 */
@@ -1184,7 +1205,12 @@ interface Window {
      * そのまま渡す。src/shared/appChatDirs.ts の sessionDir・renderer/chatConvClient.ts を再利用する）。
      */
     appSessions: {
-      list(workspaceDir: string): Promise<{ id: string; title: string; model: string; createdAt: number }[]>
+      /** 一覧。索引のファイルが読めなかった回は sessions が空で、unreadable が写しの名前を運ぶ
+       *  （作れなかった回は backupName が null）。読めた回は unreadable が null。 */
+      list(workspaceDir: string): Promise<{
+        sessions: { id: string; title: string; model: string; createdAt: number }[]
+        unreadable: import('../shared/chatUnreadable').UnreadableChat | null
+      }>
       create(workspaceDir: string, meta: { id: string; title: string; model: string; createdAt: number }): Promise<void>
       rename(workspaceDir: string, id: string, title: string): Promise<void>
       setModel(workspaceDir: string, id: string, model: string): Promise<void>

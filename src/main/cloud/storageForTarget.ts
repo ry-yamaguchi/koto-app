@@ -14,6 +14,8 @@
 // そのまま公開先へ渡し切る。**ディスクにも env.json にも書かない。**
 // renderer には渡さない（main の中で完結させる）。
 
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import fs from 'fs'
 import path from 'path'
 import type { CloudCredentials } from './auth'
@@ -117,7 +119,7 @@ export async function issueStorageEnvFor(opts: {
       let markerNote: string | undefined
       if (bucket.prefix) {
         try { await storage.putMarker(bucket.bucket, keepMarkerKey(bucket.prefix)) }
-        catch (e: any) { markerNote = keepMarkerFailedNote(String(e?.message ?? e)) }
+        catch (e: any) { markerNote = wrapFailureText(failureText(e), t => keepMarkerFailedNote(t.replace(/。$/, ''))) }
       }
       return {
         ok: true,
@@ -136,7 +138,7 @@ export async function issueStorageEnvFor(opts: {
       await storage.dispose()
     }
   } catch (e: any) {
-    return { ok: false, reason: 'error', message: `保存場所のアクセスキーを用意できませんでした: ${e?.message ?? e}` }
+    return { ok: false, reason: 'error', message: `保存場所のアクセスキーを用意できませんでした: ${failureText(e)}` }
   }
 }
 
@@ -256,6 +258,8 @@ export type ProjectStorageTeardownResult =
       ok: true; reason: 'done'; done: TorndownBucket[]; warnings: string[]
       /** 記録の鍵（`permissionId`）を**実際に無効にできた**ときだけ true（0.6.24 R1-c）。呼び手が記録から鍵の ID を外すのは、これが true のときだけ。複製（かもしれない）回は常に false。 */
       permissionRevoked: boolean
+      /** 名前による鍵の一括の無効化（`sweepKeysFor`）を**最後まで果たした**ときだけ true。渡されなかった回・複製や「消しません」のため見送った回・一覧が引けなかった回・無効にできない鍵があった回は false（呼び手が印を引き継ぐ材料）。 */
+      sweepDone: boolean
     }
   /**
    * どこかで失敗した。**途中まで起きたことは捨てない**（掟10）——`done` は片づけ終わった分、
@@ -409,7 +413,7 @@ export async function teardownStorageForProject(opts: {
       storage = await createStorageAdapter(opts.creds)
     } catch (e: any) {
       // **中身を確かめられないなら消さない**（共用型 `cloud:teardown` と同じ言い方）。
-      return failed(placements, [`保存場所『${placements[0].bucket}』に接続できないため、削除を中止しました: ${e?.message ?? e}`, skippedNote].filter(Boolean).join('\n'), [], [])
+      return failed(placements, wrapFailureText(`保存場所『${placements[0].bucket}』に接続できないため、削除を中止しました: ${failureText(e, { readOnly: true })}`, t => [t, skippedNote].filter(Boolean).join('\n')), [], [])
     }
   }
   try {
@@ -433,7 +437,7 @@ export async function teardownStorageForProject(opts: {
       const outcome = await teardownStorage({ storage: storage ?? NO_STORAGE, placement, permissionId, projectDir: opts.projectDir, mustKeepData: mustKeep(placement) })
       if (!outcome.ok) {
         // **途中で止まっても、片づいた分は捨てない**（掟10）。残っているバケット名（止まった1件・後ろの未着手・飛ばした分）も返す。
-        return failed(placements.slice(i), [outcome.message, skippedNote].filter(Boolean).join('\n'), done, warnings)
+        return failed(placements.slice(i), wrapFailureText(outcome.message, t => [t, skippedNote].filter(Boolean).join('\n')), done, warnings)
       }
       if (outcome.permissionRevoked) permissionRevoked = true
       permissionId = null
@@ -446,10 +450,14 @@ export async function teardownStorageForProject(opts: {
     }
     // 見せていない分が残っている: 回し終えたあとに ok:false（片づいた分は done に残す）。**名前での鍵の一括の無効化はしない**（現役の鍵が残る。押し直しで行う）。
     if (picked.skipped.length > 0) return failed([], skippedNote, done, warnings)
+    // 一括の無効化は、行って**最後まで果たせた**ときだけ sweepDone（一覧が引けない・無効にできない鍵がある回は果たしていない。印を外さない）
+    let sweepDone = false
     if (storage && opts.sweepKeysFor && projectName && !keepKeys) {
-      warnings.push(...await sweepKeys(storage, { projectName, target: opts.sweepKeysFor }))
+      const swept = await sweepKeys(storage, { projectName, target: opts.sweepKeysFor })
+      warnings.push(...swept.warnings)
+      sweepDone = swept.complete
     }
-    return { ok: true, reason: 'done', done, warnings, permissionRevoked }
+    return { ok: true, reason: 'done', done, warnings, permissionRevoked, sweepDone }
   } finally {
     // アダプタが自分用に発行した一時キーを必ず片づける（残すと鍵だけが生き続ける）。作らなかった回は無い。
     await storage?.dispose()
@@ -465,17 +473,17 @@ export async function teardownStorageForProject(opts: {
 async function sweepKeys(
   storage: { listPermissions(): Promise<readonly { id: string; displayName: string }[]>; deletePermission(id: string): Promise<void> },
   target: { projectName: string; target: StorageTarget },
-): Promise<string[]> {
+): Promise<{ warnings: string[]; complete: boolean }> {
   let all: readonly { id: string; displayName: string }[]
   try {
     all = await storage.listPermissions()
   } catch (e: any) {
-    return [`保存場所のパーミッション（アクセスキー）の一覧を取得できなかったため、古いアクセスキーが残っているかもしれません: ${e?.message ?? e}`]
+    return { warnings: [`保存場所のパーミッション（アクセスキー）の一覧を取得できなかったため、古いアクセスキーが残っているかもしれません: ${failureText(e, { readOnly: true })}`], complete: false }
   }
   const ids = permissionsForTarget({ all, projectName: target.projectName, target: target.target })
   let failed = 0
   for (const id of ids) {
     try { await storage.deletePermission(id) } catch { failed++ }
   }
-  return failed > 0 ? [`保存場所のアクセスキーを${failed}件、無効にできませんでした`] : []
+  return failed > 0 ? { warnings: [`保存場所のアクセスキーを${failed}件、無効にできませんでした`], complete: false } : { warnings: [], complete: true }
 }

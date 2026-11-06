@@ -87,6 +87,8 @@ type Msg = {
   content: string
   /** 表示専用（AIへは送らない）。ただし**まとめの材料には使う**（下記 compactSource）。 */
   toolNote?: boolean
+  /** 失敗の吹き出し（chatFailure.ts）の印。Koto が書いた失敗の文で、AI が行った操作の記録ではない。 */
+  offerRetry?: true
   /** これが付いていれば「まとめ」。content にまとめ本文が入る。 */
   summary?: CompactMark
   /** 添付画像（data URL）。まとめには枚数だけ残す。 */
@@ -183,7 +185,9 @@ export function planSend<T extends Msg>(msgs: readonly T[]): { role: string; con
   if (omitted > 0) {
     out.push({ role: 'system', content: `（注: これより前に${omitted}件の古いやり取りがありますが、送信を省略しています。必要なら read_file 等で現状を確認してください）` })
   }
-  out.push(...kept.map(capMessage))
+  // 中身が空の assistant は送らない（サーバーによっては拒まれる）。足したまま取り除けなかったもの・
+  // 古い版が会話に残したものも、ここで止める（送信の入口はこの関数の1つ）。
+  out.push(...kept.filter(m => !(m.role === 'assistant' && !(m.content ?? '').trim())).map(capMessage))
   return out
 }
 
@@ -261,7 +265,8 @@ export function compactSource<T extends Msg>(msgs: readonly T[], from: number, t
   for (const m of msgs ?? []) {
     if (!m || m.summary) continue
     if (m.toolNote) {
-      if (bi >= from && bi < to && workLines(m.content).length > 0) out.push(m)
+      // 失敗の吹き出しは材料にしない（Koto の失敗の文であって、AI が実際に行った操作の記録ではない）
+      if (!m.offerRetry && bi >= from && bi < to && workLines(m.content).length > 0) out.push(m)
       continue
     }
     if (bi >= from && bi < to) out.push(m)

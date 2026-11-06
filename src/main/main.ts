@@ -4,7 +4,6 @@ import { findOtherKoto } from '../shared/singleInstance'
 import type { MenuItemConstructorOptions } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
-import * as os from 'os'
 import { registerAllHandlers } from './ipc'
 import { checkClaudeBinary } from './claude/client'
 import { buildFeedbackUrl } from './feedback'
@@ -15,6 +14,7 @@ import { scheduleBrowserCacheTrim } from './browserCacheLimit'
 import { listRunningOps } from './projectOps'
 import { armInFlightOps, inFlightHasWork } from './inFlightOpsArm'
 import { createQuitGuard, createQuitAsk } from './quitGuard'
+import { createCrashGuard, createCrashLogWriter } from './crashGuard'
 
 const APP_NAME = 'Koto'
 const SAKURA_AI_URL = 'https://ai.sakura.ad.jp/'
@@ -56,6 +56,46 @@ const quitGuard = createQuitGuard({
   quit: () => app.quit(),
 })
 
+// ── 画面の異常と main の例外（落ちた・読み込めない・応答しない・想定外の例外）──────────────────────────
+// 何を無視し、どこで再読み込みを止め、どの文を出すかは crashGuard.ts（electron に触れない）。ここは道具をつなぐだけで、
+// 5つの出来事（画面の3つは createWindow、main の2つは下の process.on）は、選り分けずに全部そちらへ渡す。
+// 窓は親を付けずに出す（窓が最小化されていても、閉じていても見える）。準備前に起きた例外は、準備ができるまで待って出す。
+// 終了は app.quit()（上の quitGuard の 'before-quit' を通る。app.exit や process.exit では抜けない）。
+// 画面が止まったあとは、画面が登録した印（未保存・実行中）が当てにならない。残すと、終了の途中で「保存して終了」が出て、
+// 止まった画面へ保存を頼み続ける。再読み込みでも終了でも、画面の異常のときは印を捨ててから進む。
+function forgetRendererMarks(): void {
+  hasUnsavedChanges = false
+  isBusy = false
+  busyLabel = ''
+  closeBlockingBusy = false
+  closeBlockingLabel = ''
+  closeBlockingDetail = ''
+  closeBlockingConfirm = ''
+}
+const writeCrashLog = createCrashLogWriter(() => app.getPath('logs'))
+const crashGuard = createCrashGuard({
+  dialog: async (opts) => {
+    await app.whenReady()
+    return (await dialog.showMessageBox(opts)).response
+  },
+  reload: () => {
+    forgetRendererMarks()
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload()
+  },
+  quit: (family) => {
+    if (family === 'renderer') forgetRendererMarks()
+    app.quit()
+  },
+  now: () => Date.now(),
+  // 例外を拾うと、Node は標準エラーへ出さなくなる。開発中に見えなくならないよう、エラーは標準エラーにも出す
+  log: (level, message) => {
+    if (level === 'error') console.error('[crash]', message)
+    writeCrashLog(level, message)
+  },
+})
+process.on('uncaughtException', (error) => crashGuard.onUncaughtException(error))
+process.on('unhandledRejection', (reason) => crashGuard.onUnhandledRejection(reason))
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -85,6 +125,15 @@ function createWindow() {
   // macOS はウィンドウを閉じてもアプリが常駐するため、この状態が普通に起きる。
   // 終了の歯止めの「終了する」の印も戻す（ウィンドウが閉じただけで Koto が終了しなかったとき、次の ⌘Q で聞かずに終了しないように）
   mainWindow.on('closed', () => { mainWindow = null; quitGuard.reset() })
+
+  // 画面の異常。読み込みを始める前に付ける（読み込みの失敗を取りこぼさない）
+  const crashWc = mainWindow.webContents
+  crashWc.on('render-process-gone', (_e, details) => crashGuard.onRenderProcessGone(details))
+  crashWc.on('did-fail-load', (_e, errorCode, errorDescription, _url, isMainFrame) => crashGuard.onDidFailLoad({ errorCode, errorDescription, isMainFrame }))
+  crashWc.on('unresponsive', () => crashGuard.onUnresponsive())
+  crashWc.on('responsive', () => crashGuard.onResponsive())
+  // 応答を待っている最中に窓が閉じたら、待ちも取り消す（窓が無いのに「停止しました」を出さない）
+  mainWindow.on('closed', () => crashGuard.onWindowClosed())
 
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173')
@@ -370,8 +419,9 @@ function buildMenu() {
         { label: `${APP_NAME} について`, click: () => app.showAboutPanel() },
         { label: `バージョン ${app.getVersion()}（ベータ提供中）`, enabled: false },
         { type: 'separator' },
-        // A-2: フィードバック導線。リポジトリは private だが友人は協力者として Issues を使える想定（roadmap.md A-2）。
-        { label: 'フィードバックを送る…', click: () => shell.openExternal(buildFeedbackUrl(app.getVersion(), os.release(), process.arch)) },
+        // フィードバック導線。宛先は公開リポジトリ（koto-app）なので、投稿は誰でも読める（feedback.ts が注意の段落を添える）。
+        // macOS の版は process.getSystemVersion()。os.release() は Darwin のカーネルの版で、macOS の版ではない。
+        { label: 'フィードバックを送る…', click: () => shell.openExternal(buildFeedbackUrl(app.getVersion(), process.getSystemVersion(), process.arch)) },
         { label: 'さくらのAI Engine を開く', click: () => shell.openExternal(SAKURA_AI_URL) },
       ],
     },

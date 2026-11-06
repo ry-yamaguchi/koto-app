@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import SakuraLogo from './SakuraLogo'
+import Modal from '../ui/Modal'
+import FailureLines from './FailureLines'
+import { joinFailureDetail, splitFailureDetail } from '../../shared/failureDetail'
+import { restoreFailedNotice, restorePartialLine } from '../historyNotice'
 
 // 「🕘 履歴」モーダル（P2-⑧「前の状態に戻す」）：ファイルを保存する直前に自動で取られた
 // スナップショット（.sakuraide-backup/<ISO日時>/）の一覧と「この時点に戻す」導線。
@@ -84,33 +88,40 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
     setPendingRestore(null)
     if (r.ok) {
       const failed = r.failed ?? []
-      setNotice(
-        `✅ ${formatDate(target.createdAt)} の状態に戻しました。この操作も履歴から取り消せます。`
-        + (failed.length ? `\n⚠️ ただし次のファイルは戻せませんでした（記録が見つかりません）: ${failed.join('、')}` : '')
-      )
+      const done = `✅ ${formatDate(target.createdAt)} の状態に戻しました。この操作も履歴から取り消せます。`
+      if (failed.length) {
+        // 成功の文を頭に、戻せなかった理由の文を続け、詳細（原文）は全体の最後の1行に置く
+        const partial = splitFailureDetail(restorePartialLine(failed, r.failedReason))
+        setNotice(joinFailureDetail(`${done}\n${partial.text}`, partial.detail))
+      } else {
+        setNotice(done)
+      }
       try { await onRestored(r.restored ?? [], r.deleted ?? []) } catch { /* 反映失敗でも一覧は更新する */ }
       load()
     } else {
-      setNotice(`⚠️ 復元できませんでした: ${r.message ?? ''}`)
+      setNotice(restoreFailedNotice(r.message))
       load() // 対象が消えていた場合などに備えて読み直す
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-[560px] max-h-[85vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in" onClick={e => e.stopPropagation()}>
+    // 枠は ui/Modal（0.6.26）。Esc・背景クリックも ✕・「閉じる」と同じ onClose を通る。
+    <Modal
+      onRequestClose={onClose} labelledBy="history-modal-title" backdropClassName="bg-black/50 backdrop-blur-sm"
+      panelClassName="w-[560px] bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
+    >
         <div className="flex items-center gap-2.5 px-6 pt-6 pb-4 sticky top-0 bg-elevated z-10">
           <SakuraLogo size={24} />
           <div>
-            <h2 className="text-lg font-bold text-ink">🕘 履歴（前の状態に戻す）</h2>
+            <h2 id="history-modal-title" className="text-lg font-bold text-ink">🕘 履歴（前の状態に戻す）</h2>
             <p className="text-xs text-ink-secondary">AIの変更・自分の編集の直前を自動で記録しています（直近50件）。※AIが実行したコマンドでの変更・ゴミ箱へ移したものは記録されません</p>
           </div>
-          <button onClick={onClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
+          <button onClick={onClose} aria-label="閉じる" className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
 
         <div className="px-6 pb-6 space-y-4">
           {notice && (
-            <p className="text-xs text-ink bg-surface border border-line rounded-lg px-3 py-2 leading-relaxed select-text whitespace-pre-line">{notice}</p>
+            <p className="text-xs text-ink bg-surface border border-line rounded-lg px-3 py-2 leading-relaxed select-text whitespace-pre-line"><FailureLines text={notice} /></p>
           )}
 
           {/* 復元の確認（破壊的操作なので必ず挟む） */}
@@ -155,7 +166,7 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
             </div>
 
             {listError && (
-              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text">{listError}</p>
+              <p className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed select-text"><FailureLines text={listError} /></p>
             )}
 
             {loading && snapshots.length === 0 ? (
@@ -223,7 +234,6 @@ export default function HistoryModal({ projectDir, onClose, onRestored }: Props)
             <button onClick={onClose} className="bg-overlay text-ink border border-line rounded-xl px-4 py-2 text-sm font-medium hover:border-sakura">閉じる</button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

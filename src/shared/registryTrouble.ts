@@ -28,9 +28,18 @@ const MARKERS: readonly RegExp[] = [
  * 案内すると、利用者は関係のない操作をさせられる（止めすぎも害である）。
  */
 export function looksLikeRegistryProblem(log: string): boolean {
-  const t = String(log ?? '')
+  const t = withoutLocalFileFailures(String(log ?? ''))
   if (t.length === 0) return false
   return MARKERS.some(re => re.test(t))
+}
+
+/** 手元のファイルの失敗の行（権限・空き・見つからない）。`EACCES: permission denied` の denied を
+ *  レジストリの拒否と取り違えないよう、判定の前に外す。 */
+const LOCAL_FILE_ERRNO = /\b(?:EACCES|EPERM|ENOSPC|ENOENT)\b/
+
+function withoutLocalFileFailures(log: string): string {
+  if (!LOCAL_FILE_ERRNO.test(log)) return log
+  return log.split(/\r?\n/).filter(line => !LOCAL_FILE_ERRNO.test(line)).join('\n')
 }
 
 /**

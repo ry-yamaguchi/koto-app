@@ -33,3 +33,23 @@ describe('レジストリが原因らしい失敗を見分ける', () => {
     expect(looksLikeRegistryProblem(undefined as any)).toBe(false)
   })
 })
+
+// 手元のファイルの失敗は、レジストリの不調ではない（`EACCES: permission denied` の denied をレジストリの拒否と取り違えない）
+describe('手元のファイルの失敗（errno の文）は、レジストリの不調に数えない', () => {
+  it('EACCES・EPERM・ENOSPC・ENOENT の文', () => {
+    expect(looksLikeRegistryProblem("EACCES: permission denied, open '/Users/me/app/a.txt'")).toBe(false)
+    expect(looksLikeRegistryProblem("EPERM: operation not permitted, copyfile '/x' -> '/y'")).toBe(false)
+    expect(looksLikeRegistryProblem('ENOSPC: no space left on device, write')).toBe(false)
+    expect(looksLikeRegistryProblem("ENOENT: no such file or directory, open '/x/not found.txt'")).toBe(false)
+  })
+
+  it('errno の行のほかに、レジストリの印の行があれば、レジストリの不調のまま', () => {
+    expect(looksLikeRegistryProblem("EACCES: permission denied, open '/x'\nGET https://auth.sakuracr.jp/token: unknown service")).toBe(true)
+    expect(looksLikeRegistryProblem("ENOENT: x\ndial tcp: lookup a.sakuracr.jp: no such host")).toBe(true)
+  })
+
+  it('errno が無い denied は、今までどおり（境界）', () => {
+    expect(looksLikeRegistryProblem('denied: requested access to the resource is denied')).toBe(true)
+  })
+})
+

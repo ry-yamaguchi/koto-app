@@ -212,7 +212,9 @@ describe('F-5 プロジェクト削除の HANAMII の枝（projectDelete.ts）',
     expect(b).toContain('破棄をキャンセルしました')
     expect(b).toMatch(/破棄をキャンセルしました[\s\S]*?\n\s*break\n/) // やめたあとで共用型の破棄へ進むと、残すと決めた HANAMII のアプリのデータが消える（振る舞いは hanamiiProjectDelete.test.ts）
     expect(b).toContain("kind: 'failed'")
-    expect(b).toContain("const base = `${PUBLISH_TARGET_LABEL[t]}: ${outcome.result.message ?? '原因不明'}`")
+    // 文に詳細が付いてきたときは、注の前に挟まず最後の行へ移す（振る舞いは projectDeleteTeardownDetail.test.ts）
+    expect(b).toContain("wrapFailureText(outcome.result.message ?? '原因不明', msg => {")
+    expect(b).toContain('`${PUBLISH_TARGET_LABEL[t]}: ${msg}`')
     // HANAMII が済んでいない（ok:false）ときも、あとの公開先（共用型・残りの段）は始めない（0.6.24 A-5。振る舞いは tests/projectDeleteLeftoverRun.test.ts の T-A3）
     expect(b).toMatch(/kind: 'failed'[\s\S]*?\n\s*break\n/)
     expect(b).toContain("kind: 'done'")

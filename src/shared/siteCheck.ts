@@ -14,6 +14,8 @@
 //
 // 判定はここに集め、ファイルを読むのは呼び出し側（IO）が行う。
 
+import { wrapUntrusted } from './untrustedBlock'
+
 /** 落とし穴の種類。 */
 export type SiteIssueKind =
   /** 背景画像に大きさの指定が無い（タイル状に敷き詰められる）。 */
@@ -356,10 +358,16 @@ export function siteCheckSummary(issues: readonly SiteIssue[]): string {
 }
 
 /**
- * AI に渡す修正の指示（純関数）。
+ * AI に渡す修正の指示（純関数・送る文はここだけ）。
  *
  * **直せるものだけを渡す**（画像を消す・写真を軽くするは AI にはできない）。
  * どこを・どう直すかまで書く（「直して」だけでは、また手順の説明が返ってくる）。
+ *
+ * ── 問題の場所は利用者の発言ではない（境界で囲む）──────────────────────────
+ * `file` と `detail` は、プロジェクトのファイルから読んだ文字列（HTML の src や href など）。ファイルを書き換えられる
+ * チャットへ利用者の依頼として自動で届くので、囲まずに送ると、その中の文が依頼として読まれる。場所の一覧だけを外部のテキストと
+ * 同じ境界で囲み、囲みの外には Koto の依頼（直す・直し方・報告）だけを置く。直し方は囲みの外に置く
+ * （囲みの中は指示ではなくデータとして読まれ、ツールを使う前に確認を求められる）。囲みの読み方はチャットの指示（UNTRUSTED_RULE）が定めている。
  */
 export function fixInstruction(issues: readonly SiteIssue[]): string {
   const targets = issues.filter(i => aiFixable(i.kind))
@@ -374,10 +382,24 @@ export function fixInstruction(issues: readonly SiteIssue[]): string {
     unused: '',
     heavy: '',
   }
-  const lines = targets.map(i => `・${i.file}${i.detail ? `（${i.detail}）` : ''}: ${how[i.kind]}`)
+  // 問題の種類の呼び名。囲みの中の各行と、囲みの外の直し方を結ぶ
+  const title: Record<SiteIssueKind, string> = {
+    background: '背景画像の大きさ指定',
+    missing: '参照先のファイルが無い',
+    miscased: '大文字小文字の違い',
+    link: 'リンク先のページが無い',
+    viewport: 'スマホ用の指定が無い',
+    imgSize: '画像の大きさ指定が無い',
+    unused: '',
+    heavy: '',
+  }
+  const places = targets.map(i => `・${i.file}${i.detail ? `（${i.detail}）` : ''}: ${title[i.kind]}`)
+  const kinds = [...new Set(targets.map(i => i.kind))]
   return [
-    '公開する前の確認で、見た目の問題が見つかりました。**実際にファイルを直してください**（説明だけで終わらせないこと）。',
-    ...lines,
+    '公開する前の確認で、見た目の問題が見つかりました。**実際にファイルを直してください**（説明だけで終わらせないこと）。問題の場所は次の囲みの中に、直し方はその下にあります。',
+    wrapUntrusted('見た目の確認で見つかった問題の場所', places.join('\n')),
+    '直し方（問題の種類ごと）:',
+    ...kinds.map(k => `・${title[k]}: ${how[k]}`),
     '直したら、何をどう変えたかを2〜3行で教えてください。',
   ].join('\n')
 }

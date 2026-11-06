@@ -355,8 +355,10 @@ describe("useAiChat.ts の配線（chatTurn.start の onEvent は viewOnlyEmit �
     const at = src.indexOf('await window.electronAPI.chatTurn.start(')
     expect(at).toBeGreaterThan(-1)
     const after = src.slice(at, at + 1200)
-    expect(after).toContain('onEvent: (ev) => viewOnlyEmit(ev as any)')
+    // （届いた出来事を数える noteWritten を挟むが、画面へ渡すのは viewOnlyEmit だけ。chatFailureRenderer.test.ts が数える側を固定している）
+    expect(after).toContain('onEvent: (ev) => { noteWritten(written, ev as any); viewOnlyEmit(ev as any) },')
     expect(after).not.toContain('onEvent: (ev) => emit(ev as any)')
+    expect(after).not.toMatch(/onEvent: \(ev\) => \{[^}]*\bemit\(/)
   })
 
   it('B-1a/B\'-3e-b: viewOnlyEmit の message系は convDir が無いときだけ当てる（無条件に当てる形へ戻さない）', () => {

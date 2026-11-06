@@ -1,3 +1,5 @@
+import { failureText } from '../../shared/failureText'
+import FailureLines from './FailureLines'
 import React, { useState } from 'react'
 import { RAG_PACKS, packTotalChars, formatApproxChars, packTags, estimatePackCostPerTurnYen, type RagPack } from '../ragPacks'
 import { buildWebPageMarkdown, sanitizeFilename, WEB_FETCH_MAX_CHARS, CHUNK_MAX_CHARS, RAG_TOP_K } from '../ragContext'
@@ -82,7 +84,7 @@ export default function KnowledgePacksTab({ apiKey, onUploaded }: Props) {
         successCount += 1
         setPackState(pack.id, s => ({ ...s, results: s.results.map(res => res.url === page.url ? { ...res, status: 'ok' as const } : res) }))
       } catch (e: any) {
-        const message = e?.message ?? String(e)
+        const message = failureText(e)
         failedTitles.push(page.title)
         setPackState(pack.id, s => ({ ...s, results: s.results.map(res => res.url === page.url ? { ...res, status: 'error' as const, error: message } : res) }))
       }
@@ -190,7 +192,7 @@ export default function KnowledgePacksTab({ apiKey, onUploaded }: Props) {
                     <div className="min-w-0 flex-1">
                       <p className="text-xs text-ink truncate" title={r.title}>{r.title}</p>
                       {r.status === 'error' && r.error && (
-                        <p className="text-[11px] text-brand-red select-text break-all">{r.error}</p>
+                        <p className="text-[11px] text-brand-red select-text break-all"><FailureLines text={r.error} /></p>
                       )}
                     </div>
                   </li>

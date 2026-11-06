@@ -20,6 +20,7 @@ import { CLOUD_DIR, CLOUD_STATE_FILE, loadCloudSpec } from '../cloud/specStore'
 import { readTwinFacts } from '../cloud/twinFacts'
 import { readApprunDedicatedFs, readMetaFs } from '../publishMetaFs'
 import { runningOpEntryAt } from '../projectLock'
+import { failureText } from '../../shared/failureText'
 
 /** 断りの文（仕様 E-5）。画面にそのまま出る。 */
 export const FS_TRASH_MESSAGES = {
@@ -230,7 +231,7 @@ export async function trashProjectFs(dir: unknown, opts: unknown, deps: TrashDep
   try {
     await deps.trashItem(r.abs)
   } catch (e) {
-    return { ok: false, message: (e as Error | null)?.message ?? String(e) }
+    return { ok: false, message: failureText(e, { checkAt: 'ファイル一覧' }) }
   }
   return { ok: true }
 }

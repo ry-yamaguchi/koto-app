@@ -51,7 +51,10 @@ export type EnvMeta = {
    * 共用型の破棄が、名前による鍵の一括の無効化（`sweepKeysFor: 'apprun'`）を果たさずに止まった印（0.6.24 R1-a）。
    * 一括の無効化は「アプリがあった回」だけに渡す（アプリが無い回に渡すと、同じ名前の別プロジェクトの現役の鍵に当たる）。
    * 1回目にアプリが消えたあと保存場所の段が止まると、押し直しの回は state にアプリが無く、一括の無効化が走らなくなる。
-   * その回の記録へこの印を立て、押し直しの回が読んで渡す。**最後まで済んだ回は `stateAfterTeardown` が meta を作り直すので、印は自然に消える**。
+   * その回の記録へこの印を立てる。印は「一括の無効化がまだ残っている」という記録で、**保存場所の段が一括の無効化に届いて最後まで果たした回だけが外す**。
+   * 最後まで済んでも、果たしていない回（複製・「消しません」・一括の無効化が途中で失敗した回・保存場所が無い回）は印が残る（`stateAfterTeardown` が引き継ぐ）。
+   * 保存場所が0件の回は一括の無効化に届かないので、印は残るだけで果たされない。失敗した回は結果の ⚠️ の行が、コントロールパネルでパーミッションを削除するよう案内する。
+   * 後の回が一括の無効化に届けば（アプリを公開し直して破棄した回・保存場所がまだ記録に残っている回）、そこで果たして印が外れる。
    * 立てる・読む・渡す条件は `src/main/ipc/cloudTeardownStorage.ts` の1か所。
    */
   keySweepPending?: 'apprun'
@@ -284,6 +287,14 @@ export function metaAfterEnsureRegistry(prev: EnvMeta | undefined, label: string
 export function stateAfterTeardown(state: EnvState, registryDeleted: boolean): EnvState {
   const name = state.meta?.registryName
   const keep = !registryDeleted && typeof name === 'string' && name.length > 0
+  // 名前による鍵の一括の無効化を果たさなかった回の印は、成功の回でも引き継ぐ（複製のため鍵に触れなかった回・何も消さなかった回。印を落とすと、後の回が一括の無効化に届いても走らなくなる）。
+  // 印を立てる・外すのは保存場所の段（cloudTeardownStorage.ts）の1か所。ここは、段が残した印を meta の作り直しで落とさないだけ。
+  const sweep = state.meta?.keySweepPending === 'apprun'
+  const meta: EnvMeta = {
+    ...(keep ? { registryName: name as string } : {}),
+    ...(keep && typeof state.meta?.registryAdopted === 'boolean' ? { registryAdopted: state.meta.registryAdopted } : {}),
+    ...(sweep ? { keySweepPending: 'apprun' as const } : {}),
+  }
   return {
     name: state.name,
     backend: state.backend,
@@ -291,9 +302,7 @@ export function stateAfterTeardown(state: EnvState, registryDeleted: boolean): E
     // 名前を残すなら、**作ったか借りたかの印も、あるままに一緒に残す**（true も false も。印が無ければ無いまま）。
     // 片方だけ残すと、次の破棄で印の読みが変わる: 借りた置き場が「Koto が作ったもの」に見えて既定オンに戻り（2026-08-25）、
     // 作ったと分かっている置き場は「分からない」に落ちる（2026-10-19）。
-    ...(keep
-      ? { meta: { registryName: name as string, ...(typeof state.meta?.registryAdopted === 'boolean' ? { registryAdopted: state.meta.registryAdopted } : {}) } }
-      : {}),
+    ...(Object.keys(meta).length > 0 ? { meta } : {}),
   }
 }
 

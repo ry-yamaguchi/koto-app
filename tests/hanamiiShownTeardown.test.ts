@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
+import { splitFailureDetail } from '../src/shared/failureDetail'
 
 // ── T-F1・F2・F3・F4・F7（HANAMII）0.6.24 F-5: 本物の hanamii:teardown に、偽の HANAMII・偽の保存場所を流す ──────────────────
 // 仕様: docs/v0624-aefi-spec.md の F-4・F-5・T-F1〜F4・F7。「見せていない保存場所への要求が0件」を、呼ばれた要求の一覧（h.storage）で固定する（掟10）。
@@ -22,6 +23,8 @@ const h = vi.hoisted(() => ({
   storage: [] as string[],
   /** 一覧が失敗する保存場所（バケット名）。 */
   listThrowsFor: [] as string[],
+  /** 一覧の失敗を回線断にする。 */
+  listOffline: false,
   /** listPermissions が返す鍵。 */
   permissions: [] as { id: string; displayName: string }[],
 }))
@@ -54,7 +57,10 @@ vi.mock('../src/main/cloud/storageAdapter', async (importOriginal) => {
         async putMarker() {},
         async listAllKeys(bucket: string) {
           h.storage.push(`listAllKeys ${bucket}`)
-          if (h.listThrowsFor.includes(bucket)) throw new Error('一覧を取得できませんでした（テスト）')
+          if (h.listThrowsFor.includes(bucket)) {
+            if (h.listOffline) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND s3.isk01.sakurastorage.jp'), { code: 'ENOTFOUND' }) })
+            throw new Error('一覧を取得できませんでした（テスト）')
+          }
           return ['projects/myapp/.koto-keep']
         },
         async deleteKeys(bucket: string) { h.storage.push(`deleteKeys ${bucket}`) },
@@ -123,6 +129,7 @@ beforeEach(() => {
   h.hanamii = []
   h.storage = []
   h.listThrowsFor = []
+  h.listOffline = false
   h.permissions = []
   globalThis.fetch = (async (input: unknown, init: any) => {
     h.hanamii.push(`${init?.method ?? 'GET'} ${String(input)}`)
@@ -287,6 +294,19 @@ describe('残りの数え方（remainingBuckets）: 止まった1件・その後
     expect(r.message).toContain(`保存場所『${B}』『${D}』『${C}』が残っています`)
     expect(marker()).toEqual([B, D, C])
     expect(envBuckets()).toEqual([B, C, D]) // 消えた A だけが外れる
+  })
+
+  it('★ 保存場所の一覧が回線断で止まった回: 残りの案内を足しても、詳細（原文）は最後の1行で、ホスト名が残る', async () => {
+    setEnv([A, B])
+    h.listThrowsFor = [B]
+    h.listOffline = true
+    const r = await go([pair(A), pair(B)])
+    expect(r.ok).toBe(false)
+    const { text, detail } = splitFailureDetail(r.message)
+    expect(text).toContain(`保存場所『${B}』が残っています（消すまで月額が続きます）`)
+    expect(detail).toContain('s3.isk01.sakurastorage.jp')
+    expect(r.message.endsWith(`詳細: ${detail}`)).toBe(true)
+    expect(r.message.split('詳細: ').length).toBe(2)
   })
 
   it('★★ 見せたものが全部片づき、見せていない C だけが残る → 残りは C だけ（片づけた分を残りに数えない）', async () => {

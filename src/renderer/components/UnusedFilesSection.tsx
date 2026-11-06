@@ -3,6 +3,9 @@ import { MATERIALS_DIR } from '../../shared/publishExclude'
 import type { UnusedRuntime } from '../../shared/unusedFiles'
 import { foldUnused } from '../appRunFolding'
 import { useConfirm } from '../useConfirm'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
+import FailureLines from './FailureLines'
 
 // 🧹 未使用ファイルの節（roadmap #18）。公開フローの4パネル（PublishModal / AppRunPanel /
 // HanamiiPanel / VercelPanel）に、SecurityCheckSection と同じ位置へ並べて埋め込む。
@@ -80,8 +83,12 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
         )
         await check(projectDir) // 動かした結果をその場で見せる
       } else {
-        setNote(`⚠️ 移動できませんでした: ${r.message ?? '原因不明'}`)
+        // 理由は日本語の文＋詳細。詳細は前置きの外（最後の行）に残す
+        setNote(wrapFailureText(r.message ?? '原因不明', t => `⚠️ 移動できませんでした: ${t}`))
       }
+    } catch (e: unknown) {
+      // IPC ごと失敗した回（頭つきの英語・印）も、日本語の文＋詳細にする
+      setNote(wrapFailureText(failureText(e, { checkAt: 'ファイル一覧' }), t => `⚠️ 移動できませんでした: ${t}`))
     } finally {
       setMoving(false)
     }
@@ -124,7 +131,7 @@ export default function UnusedFilesSection({ projectDir, stepNo }: { projectDir:
           </ul>
         </>
       )}
-      {note && <p className="text-xs text-ink whitespace-pre-wrap select-text">{note}</p>}
+      {note && <p className="text-xs text-ink whitespace-pre-wrap select-text"><FailureLines text={note} /></p>}
       {supported && unused.length > 0 && (
         <button
           onClick={() => { void move() }}

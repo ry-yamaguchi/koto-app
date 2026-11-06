@@ -146,7 +146,8 @@ describe('📡 棚卸しのカード（PublishedInventoryCard）: 押したと�
     await checkButton()!.props.onClick()
     await settle()
     rerender()
-    const shown = hooks.rendered.filter(el => el.type === 'p').map(el => textOf(el.props))
+    // 失敗の文は FailureLines が描く（文と、すぐ下の小さな詳細の行）。
+    const shown = hooks.rendered.filter(el => typeof el.type === 'function' && (el.type as { name?: string }).name === 'FailureLines').map(el => String(el.props.text))
     expect(shown.some(t => t.includes('さくらに接続できませんでした'))).toBe(true)
   })
 
@@ -156,8 +157,10 @@ describe('📡 棚卸しのカード（PublishedInventoryCard）: 押したと�
     await checkButton()!.props.onClick()
     await settle()
     rerender()
-    const shown = hooks.rendered.filter(el => el.type === 'p').map(el => textOf(el.props))
+    // 失敗の文は FailureLines が描く（文と、すぐ下の小さな詳細の行）。
+    const shown = hooks.rendered.filter(el => typeof el.type === 'function' && (el.type as { name?: string }).name === 'FailureLines').map(el => String(el.props.text))
     expect(shown.some(t => t.includes('ネットワークに接続できません'))).toBe(true)
-    expect(shown.some(t => t.includes('費用のかかるものは見つかりませんでした')), '失敗を「0件」と読んでいる').toBe(false)
+    const paragraphs = hooks.rendered.filter(el => el.type === 'p').map(el => textOf(el.props))
+    expect(paragraphs.some(t => t.includes('費用のかかるものは見つかりませんでした')), '失敗を「0件」と読んでいる').toBe(false)
   })
 })

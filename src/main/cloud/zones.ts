@@ -22,6 +22,7 @@
 
 import type { CloudCredentials } from './auth'
 import { iaasZoneBase } from './client'
+import { failureText } from '../../shared/failureText'
 
 /**
  * ゾーン一覧を引くときに URL へ含める固定ゾーン（5-9・公式サンプルと同じ is1a）。
@@ -70,7 +71,8 @@ export async function getZones(auth: CloudCredentials, baseUrl?: string): Promis
     })
     text = await res.text()
   } catch (e: any) {
-    return { ok: false, message: e?.message ?? String(e) }
+    // ゾーン一覧は読み取りだけ。回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。
+    return { ok: false, message: failureText(e, { readOnly: true }) }
   }
   if (!res.ok) {
     return { ok: false, message: formatError(res.status, text), detail: text.slice(0, 2000) }

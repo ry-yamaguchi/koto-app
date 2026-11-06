@@ -22,6 +22,7 @@
 // 結果は2つの出どころから、同じ結果欄の部品（TeardownResultView）で描く:
 //   ・この画面が始めた削除の返り値 … onDone へ渡す（パネルが teardownView に入れる）
 //   ・閉じて開き直したときの main の処理の記録 … パネルの記録の見張り（hooks/useDedicatedOpsWatch.ts）が resumedTeardownView で同じ形にして渡す
+import { teardownFailureText } from '../teardown/failureNote'
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useConfirmChoices } from '../useConfirmChoices'
 import { runTeardownFlow, electronFlowDeps, teardownProgressText } from '../teardown/flow'
@@ -99,7 +100,7 @@ export function useDedicatedPanelTeardown(projectDir: string, panel: DedicatedTe
         if (!outcome.cancelled) view = dedicatedTeardownSpec.toView(outcome.result)
       } catch (e: any) {
         // 流れが投げた（IPC の例外）。文は素の message（専有型の流れに「破棄」を出さない）。
-        view = dedicatedTeardownSpec.toView(dedicatedTeardownSpec.failure(e?.message ?? String(e)))
+        view = dedicatedTeardownSpec.toView(dedicatedTeardownSpec.failure(teardownFailureText(e)))
       }
       // やめた回は何も起きない（画面は動いていない）。
       if (view) await panelRef.current.onDone(view, stale())

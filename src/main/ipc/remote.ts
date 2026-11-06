@@ -6,6 +6,8 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { execFile } from 'child_process'
 import type { IpcDeps } from './types'
+import { withFailureDetail, failureText } from '../../shared/failureText'
+import { sshNetworkFailureText } from '../sshFailure'
 
 // 共通SSHオプション。BatchMode=yes でパスワード要求時は即失敗（鍵認証前提）。
 const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new']
@@ -64,7 +66,7 @@ function validateRemotePath(p: string, account: string): string {
 const REMOTE_OUTPUT_MAX = 8000
 
 /** execFile を Promise でラップ（タイムアウト・出力上限つき） */
-function runExecFile(cmd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string; code: number }> {
+function runExecFile(cmd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string; code: number; timedOut: boolean }> {
   return new Promise(resolve => {
     execFile(cmd, args, { timeout: SSH_TIMEOUT, maxBuffer: 4 * 1024 * 1024 }, (err: any, stdout, stderr) => {
       resolve({
@@ -72,29 +74,34 @@ function runExecFile(cmd: string, args: string[]): Promise<{ ok: boolean; stdout
         stdout: String(stdout ?? '').slice(0, REMOTE_OUTPUT_MAX),
         stderr: String(stderr ?? '').slice(0, REMOTE_OUTPUT_MAX),
         code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        // 時間切れで止めたとき（stderr は空のことが多い）
+        timedOut: !!(err && err.killed),
       })
     })
   })
 }
 
-/** ssh/scp の stderr を初心者向けの日本語メッセージに要約する。 */
-function friendlySshError(stderr: string): string {
+/** ssh/scp の stderr を初心者向けの日本語メッセージに要約する。要約した文の下に、stderr の原文を「詳細: …」で添える（問い合わせで原因を見分けるため）。 */
+function friendlySshError(stderr: string, opts: { timedOut?: boolean; readOnly?: boolean; checkAt?: string } = {}): string {
   const s = (stderr || '').toLowerCase()
   if (s.includes('permission denied') || s.includes('publickey') || s.includes('password')) {
-    return 'SSHで接続できませんでした。公開の「初めての準備」ガイドに従ってSSHを有効化し、鍵認証（SSH鍵）を設定してください。'
+    return withFailureDetail('SSHで接続できませんでした。公開の「初めての準備」ガイドに従ってSSHを有効化し、鍵認証（SSH鍵）を設定してください。', stderr)
   }
   if (s.includes('host key verification') || s.includes('remote host identification')) {
-    return 'サーバの鍵情報の確認でエラーになりました。known_hosts の設定を確認してください。'
+    return withFailureDetail('サーバの鍵情報の確認でエラーになりました。known_hosts の設定を確認してください。', stderr)
   }
   if (s.includes('could not resolve') || s.includes('name or service not known') || s.includes('nodename nor servname')) {
-    return 'ホスト名を解決できませんでした。ホスト名（例: example.sakura.ne.jp）を確認してください。'
+    return withFailureDetail('ホスト名を解決できませんでした。ホスト名（例: example.sakura.ne.jp）を確認してください。', stderr)
   }
   if (s.includes('connection timed out') || s.includes('operation timed out') || s.includes('connection refused')) {
-    return 'サーバに接続できませんでした（タイムアウト/接続拒否）。ネットワークやSSHの有効化を確認してください。'
+    return withFailureDetail('サーバに接続できませんでした（タイムアウト/接続拒否）。ネットワークやSSHの有効化を確認してください。', stderr)
   }
   if (s.includes('no such file') || s.includes('not found')) {
-    return '指定したファイルまたはフォルダが見つかりませんでした。'
+    return withFailureDetail('指定したファイルまたはフォルダが見つかりませんでした。', stderr)
   }
+  // 回線が切れた・時間切れの失敗は共通の文（上の個別の文に当たらなかったものだけ）。見分けられなければ stderr の原文のまま
+  const network = sshNetworkFailureText(stderr, opts)
+  if (network) return network
   return (stderr || '').trim().slice(0, 300) || '操作に失敗しました。'
 }
 
@@ -107,9 +114,9 @@ export function registerRemoteHandlers(_deps: IpcDeps) {
       const target = `${account}@${host}`
       const r = await runExecFile('ssh', [...SSH_OPTS, target, 'echo', 'sakura-ide-ok'])
       if (r.ok && r.stdout.includes('sakura-ide-ok')) return { ok: true }
-      return { ok: false, message: friendlySshError(r.stderr) }
+      return { ok: false, message: friendlySshError(r.stderr, { timedOut: r.timedOut, readOnly: true }) }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -121,7 +128,7 @@ export function registerRemoteHandlers(_deps: IpcDeps) {
       const rawPath = args.path && args.path.length ? args.path : `/home/${account}/www`
       const remotePath = validateRemotePath(rawPath, account)
       const r = await runExecFile('ssh', [...SSH_OPTS, `${account}@${host}`, 'ls', '-1Ap', '--', remotePath])
-      if (!r.ok) return { ok: false, message: friendlySshError(r.stderr) }
+      if (!r.ok) return { ok: false, message: friendlySshError(r.stderr, { timedOut: r.timedOut, readOnly: true }) }
       const entries = r.stdout
         .split('\n')
         .map(s => s.replace(/\r$/, ''))
@@ -132,7 +139,7 @@ export function registerRemoteHandlers(_deps: IpcDeps) {
         })
       return { ok: true, path: remotePath, entries }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -149,10 +156,11 @@ export function registerRemoteHandlers(_deps: IpcDeps) {
       }
       fs.mkdirSync(path.dirname(localPath), { recursive: true }) // 親ディレクトリを作成
       const r = await runExecFile('scp', [...SSH_OPTS, `${account}@${host}:${remotePath}`, localPath])
-      if (!r.ok) return { ok: false, message: friendlySshError(r.stderr) }
+      if (!r.ok) return { ok: false, message: friendlySshError(r.stderr, { timedOut: r.timedOut, readOnly: true }) }
       return { ok: true, localPath }
     } catch (e: any) {
-      return { ok: false, message: e?.message ?? String(e) }
+      // 取得先のフォルダを作れない失敗（権限・空き）もここ。検証の日本語の文は見分けられない失敗として、そのまま通る
+      return { ok: false, message: failureText(e, { readOnly: true }) }
     }
   })
 
@@ -176,10 +184,10 @@ export function registerRemoteHandlers(_deps: IpcDeps) {
       const backedUp = bak.ok
       // 本体をアップロード
       const r = await runExecFile('scp', [...SSH_OPTS, localPath, `${target}:${remotePath}`])
-      if (!r.ok) return { ok: false, backedUp, message: friendlySshError(r.stderr) }
+      if (!r.ok) return { ok: false, backedUp, message: friendlySshError(r.stderr, { timedOut: r.timedOut, checkAt: 'サーバのファイル一覧' }) }
       return { ok: true, backedUp, backupPath: backedUp ? backupPath : null }
     } catch (e: any) {
-      return { ok: false, backedUp: false, message: e?.message ?? String(e) }
+      return { ok: false, backedUp: false, message: failureText(e) }
     }
   })
 }

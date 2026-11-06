@@ -10,12 +10,15 @@
 // **利用者が自分で辿り着ける場所ではない**ので、設定画面から開くボタンを用意する
 // （`update:openLog`）。非エンジニアに「ログを見てください」は通じない。
 //
-// 秘密の除去と行の組み立ては shared/updateLog.ts（テスト済み）。ここは入出力だけ。
+// 秘密の除去・ホームのパス（利用者名）の置き換え・行の組み立ては shared/updateLog.ts（テスト済み）。ここは入出力だけ。
 
 import { app, shell } from 'electron'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { formatLogLine, trimLog, type UpdateLogLevel } from '../shared/updateLog'
+import { failureText } from '../shared/failureText'
+import { wrapFailureText } from '../shared/failureDetail'
 
 /** ログが際限なく育たないための上限。数回分の更新を追うには十分。 */
 const MAX_BYTES = 256 * 1024
@@ -36,7 +39,7 @@ export function updateLogPath(): string {
 function write(level: UpdateLogLevel, message: unknown): void {
   try {
     const p = updateLogPath()
-    fs.appendFileSync(p, formatLogLine(level, message, new Date()) + '\n', 'utf8')
+    fs.appendFileSync(p, formatLogLine(level, message, new Date(), os.homedir()) + '\n', 'utf8')
     // 追記のたびに全部読むのは無駄なので、上限を超えたときだけ整える
     const st = fs.statSync(p)
     if (st.size > MAX_BYTES) fs.writeFileSync(p, trimLog(fs.readFileSync(p, 'utf8'), MAX_BYTES), 'utf8')
@@ -46,7 +49,7 @@ function write(level: UpdateLogLevel, message: unknown): void {
     // ログより本体のほうが大事な場面でこそ起こる。
     // ただし**黙って諦めない**。理由を控えて、記録を開いたときに利用者へ伝える
     // （空のログを送られても、こちらは何も分からないため）。
-    lastWriteError = e?.message ?? String(e)
+    lastWriteError = failureText(e)
   }
 }
 
@@ -74,10 +77,10 @@ export async function revealUpdateLog(): Promise<{ ok: boolean; path: string; me
     shell.showItemInFolder(p)
     // 書けていなかったのなら、それこそが伝えるべきこと。空のログを送らせない
     if (lastWriteError) {
-      return { ok: false, path: p, message: `記録を残せていません（${lastWriteError}）。このファイルは空か、古いままです。` }
+      return { ok: false, path: p, message: wrapFailureText(lastWriteError, t => `記録を残せていません（${t.replace(/。$/, '')}）。このファイルは空か、古いままです。`) }
     }
     return { ok: true, path: p }
   } catch (e: any) {
-    return { ok: false, path: logPath ?? '', message: e?.message ?? String(e) }
+    return { ok: false, path: logPath ?? '', message: failureText(e) }
   }
 }

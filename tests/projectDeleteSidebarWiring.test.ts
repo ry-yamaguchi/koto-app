@@ -50,7 +50,7 @@ describe('Sidebar: ダイアログを開く口は 3 つのまま。開くだけ�
 
   it('ファイル操作の確認（useConfirm）と要素 {confirmElement} は Sidebar に残る', () => {
     expect(sidebar).toContain("import { useConfirm } from '../useConfirm'")
-    expect(sidebar).toContain('const { confirm, element: confirmElement } = useConfirm()')
+    expect(sidebar).toContain('const { confirm, notify, element: confirmElement } = useConfirm()')
     expect(sidebar.match(/\{confirmElement\}/g)).toHaveLength(1)
   })
 })

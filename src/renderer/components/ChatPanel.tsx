@@ -1,9 +1,11 @@
+import { failureText } from '../../shared/failureText'
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import type { OpenFile } from '../App'
 import SakuraLogo from './SakuraLogo'
 import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
 import MigrateNotice from './MigrateNotice'
+import { runGuardedMigrate } from '../migrateGuard'
 import type { MigratePlan } from '../../shared/migratePlan'
 import { saveRagSettings } from '../ragContext'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
@@ -18,6 +20,8 @@ import { IDE_CONTEXT, buildProjectContext, ragStatusContext } from '../aiContext
 import { onTargetChanged, type TargetChangedDetail } from '../targetCheck'
 import { useTargetCheck } from '../hooks/useTargetCheck'
 import TargetCheckButton from './TargetCheckButton'
+import RetryButton from './RetryButton'
+import { showsRetry } from '../../shared/retryOffer'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
 import { decideGreeting, runGreeting } from '../greeting'
 import { isGreetOnOpenEnabled } from '../greetSetting'
@@ -26,7 +30,9 @@ import ModelSelect from './ModelSelect'
 import BrainToggle from './BrainToggle'
 import { getAnthropicToken } from './CredentialsModal'
 import { isClaudeModeEnabled, getClaudeModel, setClaudeModel, claudeModelShortLabel, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
-import { loadConversationView, loadConversationChecked, makeConvClient, type Op } from '../chatConvClient'
+import { loadConversationView, loadConversationChecked, makeConvClient, opRouteOf, applyOpToConversation, type Op } from '../chatConvClient'
+import { IDE_CHAT_BACKUP_PLACE, type UnreadableChat } from '../../shared/chatUnreadable'
+import ChatLoadNotice from './ChatLoadNotice'
 import { applyToMessages, viewSyncDecision } from '../../shared/chatEvents'
 import { takeNewProjectRequest, hasNewProjectRequest } from '../newProjectRequest'
 import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, mediaTypeOf, type AssetPurpose } from '../../shared/assetImport'
@@ -76,12 +82,14 @@ interface Props {
   onExternalFilesChanged?: (relPaths: string[]) => void
   /** フォルダの整理でファイルの場所が変わったとき。**開いているタブは古い場所を指すので閉じる。** */
   onProjectFilesMoved?: () => void
+  /** フォルダの整理でタブが閉じる前に、保存 → 確認を通す口。false なら整理しない。 */
+  onBeforeProjectFilesMove?: () => Promise<boolean>
   activeFile: OpenFile | null
   projectDir?: string | null
 }
 
 
-export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile, onAiFileWritten, onExternalFilesChanged, onProjectFilesMoved, activeFile, projectDir }: Props) {
+export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile, onAiFileWritten, onExternalFilesChanged, onProjectFilesMoved, onBeforeProjectFilesMove, activeFile, projectDir }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   // ── B'-3c: 会話の持ち主は main（src/main/chat/convStore.ts）───────────────
   // ここは「画面へ即時反映」しつつ「main へ書き換え（ops）を送る」薄い client（chatConvClient.ts）
@@ -96,6 +104,16 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     if (clientRef.current) clientRef.current.apply(op)
     else applyOpLocally(op)
   }, [applyOpLocally])
+  // いま見ているプロジェクト（呼ばれた時点の値を読む）。ターンを始めたプロジェクトと違えば、
+  // そのターンの書き換えは始めたプロジェクトの会話へ送る（下の onMessageEvent。掟11）。
+  const viewingDirRef = useRef<string | null>(projectDir ?? null)
+  useEffect(() => { viewingDirRef.current = projectDir ?? null }, [projectDir])
+  // 会話の読み込み中に chat:applied が届いたか（読み込みが済んだら読み直す。下の読み込み effect）
+  const appliedDuringLoadRef = useRef(false)
+  const applyOpOfTurn = useCallback((op: Op, turnDir: string | null) => {
+    if (turnDir !== null && opRouteOf(turnDir, viewingDirRef.current, clientRef.current !== null) === 'turn') applyOpToConversation(turnDir, op)
+    else applyOp(op)
+  }, [applyOp])
   const [input, setInput] = useState('')
   // あいさつ（greet）専用のローディング／中断。送信パイプラインの状態は useAiChat が持つ。
   const [greetLoading, setGreetLoading] = useState(false)
@@ -103,6 +121,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // 会話の読み込みが済んで、読めたプロジェクト。読み込み前の messages は前のプロジェクトのもの（または空）なので、
   // これが projectDir と同じになるまで、あいさつは会話を空と読まない。
   const [convLoadedDir, setConvLoadedDir] = useState<string | null>(null)
+  // 会話の記録を読めなかった知らせ（写しの名前を持つ）。読めたプロジェクト・切り替えた直後は null。
+  const [loadUnreadable, setLoadUnreadable] = useState<UnreadableChat | null>(null)
   const [model, setModel] = useState(getDefaultModel('ide'))
   // どのプロジェクトの文脈かを dir 付きで保持する。
   // （dir を持たないと、プロジェクト切替直後に「前のプロジェクトの文脈」であいさつしてしまう）
@@ -186,19 +206,18 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     return () => { cancelled = true }
   }, [projectDir])
 
-  const runMigrate = useCallback(async () => {
-    const snapshotId = new Date().toISOString().replace(/[:.]/g, '-')
-    const r = await window.electronAPI.fs.migrate(projectDir!, snapshotId)
-    if (r.ok) {
+  const runMigrate = useCallback(() => runGuardedMigrate({
+    beforeMove: onBeforeProjectFilesMove ?? (async () => true),
+    migrate: () => window.electronAPI.fs.migrate(projectDir!, new Date().toISOString().replace(/[:.]/g, '-')),
+    afterMoved: async () => {
       // 根が変わったので取り直す（AI・ターミナル・公開の起点が一斉に切り替わる）
       const next = await resolvePublishRoot(projectDir!)
       setAiRoot({ dir: projectDir!, root: next || projectDir! })
       // **開いているタブは古い場所を指したままになる。** そのまま保存すると、
       // 移したはずのファイルが元の場所に復活する（2026-07-11 の stale tab 事故と同じ形）。
       onProjectFilesMoved?.()
-    }
-    return r
-  }, [projectDir])
+    },
+  }), [projectDir, onBeforeProjectFilesMove])
 
   /**
    * AI の作業フォルダ（`public/`。無ければプロジェクト直下）。
@@ -318,7 +337,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         if (r.ok && r.rel) { done.push(r.rel); saved.push(img.url) }
         else failed.push(r.message ?? '原因不明')
       } catch (e: any) {
-        failed.push(e?.message ?? String(e))
+        failed.push(failureText(e))
       }
     }
     // ファイル一覧に反映させる（入れたのに見えないと、入ったか分からない）
@@ -537,7 +556,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     updateShown: (updater) => setMessages(prev => updater(prev)),
     // B'-3c: renderer 発の message系の出来事は client 経由で main（convStore.ts）へ ops として送る
     // （画面反映も applyOp が行う。updateShown は使われない）。
-    onMessageEvent: (ev) => applyOp(ev),
+    // 行き先は、この render（＝送信した瞬間）のプロジェクトの会話。ターン中に切り替わっても動かさない。
+    onMessageEvent: (ev) => applyOpOfTurn(ev, projectDir ?? null),
     twoStageVision: true,
     confirm,
   })
@@ -595,13 +615,22 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     // 逆に**戻ってきたときにそのプロジェクト自身の割り振りが消えてしまう**（「この会話では
     // ツール作業のため切り替えた割り振り先を、会話中は維持する」という routedModel 本来の
     // 意味に反する）。切替先の routedModel は、切替先の登録鍵からそのまま正しく読み出される。
+    appliedDuringLoadRef.current = false
     clientRef.current = null // 切替では前の client の完了を待たず、ここで捨てる（main 側は projectDir ごとに独立）
     setConvLoadedDir(null)
+    setLoadUnreadable(null)
     if (!projectDir) { setMessages([]); return }
-    loadConversationChecked(projectDir).then(({ messages: msgs, readable }) => {
+    loadConversationChecked(projectDir).then(({ messages: msgs, readable, unreadable }) => {
       if (cancelled) return
       setMessages(msgs) // ストアから来たものを映すだけ（ops は送らない）
+      setLoadUnreadable(unreadable)
       clientRef.current = makeConvClient(projectDir)
+      // 読み込み中に main が当てた書き換え（A→B→A の途中で届いたターンの結果）は、この読み込み結果に
+      // 入っているとは限らない。一度ストアから読み直して、抜けも二重も残さない。
+      if (appliedDuringLoadRef.current) {
+        appliedDuringLoadRef.current = false
+        loadConversationView(projectDir).then(latest => { if (!cancelled) setMessages(latest) })
+      }
       // 読み込み済みの印は、あいさつの判断が使う。client を付けたあとに立てる（その前は書き換えが main へ届かない）。
       // 読めなかった回は立てない（保存済みの会話があるかが分からないので、あいさつを出さない側へ倒す）。
       if (readable) setConvLoadedDir(projectDir)
@@ -627,6 +656,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     let reloading = false // 読み直しの連打防止（進行中なら重ねて読み直さない）
     const off = window.electronAPI.chat.onApplied(({ projectDir: dir, op, length }) => {
       if (dir !== projectDir) return // いま見ているプロジェクト宛てだけ受ける（誤配の根絶）
+      if (!clientRef.current) { appliedDuringLoadRef.current = true; return } // 読み込み中は画面に当てず、済んだら読み直す
       let needsReload = false
       setMessages(prev => {
         const decision = viewSyncDecision(op as Op, prev.length, length)
@@ -974,6 +1004,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           if (e.dataTransfer.files?.length) addImages(e.dataTransfer.files)
         }}
       >
+        <ChatLoadNotice unreadable={loadUnreadable} place={IDE_CHAT_BACKUP_PLACE} />
         {messages.filter(m => !m.hidden).length === 0 && !isLoading && (
           <div className="text-center text-ink-muted text-xs py-6">
             <div className="flex justify-center mb-2"><SakuraLogo size={32} /></div>
@@ -1063,6 +1094,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
                       >▶ 続ける</button>
                     )}
                     {/* 公開先を変えたあとの案内に付くボタン。押したときだけ AI へ送る（応答中は押せない）。 */}
+                    {/* 失敗の吹き出しの「もう一度送る」。最後の失敗にだけ出る（判断は retryOffer.ts）。 */}
+                    <RetryButton show={showsRetry(shown, i)} isLoading={chat.isLoading} onPress={() => void chat.retryLast()} />
                     <TargetCheckButton offered={msg.offerTargetCheck} dir={projectDir} spent={targetCheck.spent} at={msg.at} isLoading={chat.isLoading} onPress={() => void targetCheck.press()} />
                   </div>
                   {/* 触れたら吹き出しの下に時刻。OS のツールチップ（title）は

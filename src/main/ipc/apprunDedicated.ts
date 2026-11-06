@@ -44,6 +44,8 @@ import { consentedBuckets, STORAGE_ENV } from '../../shared/objectStorage'
 import { stageLeftNoVersion } from '../cloud/apprunDedicatedAppApply'
 import { SakuraCloudClient, apiErrorMessage } from '../cloud/client'
 import { checkBilling, type ConnCheck } from '../cloud/connectionCheck'
+import { failureText } from '../../shared/failureText'
+import { wrapFailureText } from '../../shared/failureDetail'
 import { isTelemetryKind, DEDICATED_VARIANTS } from '../../shared/appLog'
 // 2026-09-25 検分: 公開の直前に koto-data を置く（ほか4経路と同じ約束）。置く実体も、
 // 差し替えを知らせる文も**既にあるもの**を使う（掟10）。上の import 行は
@@ -146,7 +148,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
       const ng: ConnCheck = { ok: false, message: 'クラウドのAPIキーが未登録です' }
       return { ok: false, checks: { api: ng, registry: ng, billing: ng } }
     }
-    const limits = await getLimits(auth)
+    const limits = await getLimits(auth, undefined, { connectionTest: true })
     const api: ConnCheck = limits.ok ? { ok: true } : { ok: false, message: limits.message }
 
     const client = new SakuraCloudClient({ credentials: auth, dryRun: true })
@@ -171,7 +173,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
         registry = { ok: false, message: 'GETがドライラン扱いになりました（想定外）' }
       }
     } catch (e: any) {
-      registry = { ok: false, message: e?.message ?? String(e) }
+      registry = { ok: false, message: failureText(e, { readOnly: true }) }
     }
 
     const billing = await checkBilling(client, BILLING_ZONE)
@@ -182,20 +184,20 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
   // GET /limits（このプランの上限）
   ipcMain.handle('apprunDedicated:limits', async (_, auth: unknown) => {
     if (!isCreds(auth)) return NO_KEY
-    return getLimits(auth)
+    return getLimits(auth, undefined, { readOnly: true })
   })
 
   // ワーカとロードバランサのプランをまとめて返す（画面側は1回のボタンで両方表示するため）。
   ipcMain.handle('apprunDedicated:plans', async (_, auth: unknown) => {
     if (!isCreds(auth)) return { worker: NO_KEY, lb: NO_KEY }
-    const [worker, lb] = await Promise.all([getWorkerClasses(auth), getLbClasses(auth)])
+    const [worker, lb] = await Promise.all([getWorkerClasses(auth, undefined, { readOnly: true }), getLbClasses(auth, undefined, { readOnly: true })])
     return { worker, lb }
   })
 
   // GET /clusters?maxItems=20（既存クラスタの件数を見るためだけに使う）
   ipcMain.handle('apprunDedicated:clusters', async (_, auth: unknown) => {
     if (!isCreds(auth)) return NO_KEY
-    return listClusters(auth)
+    return listClusters(auth, undefined, { readOnly: true })
   })
 
   // GET /zone（さくらのクラウド API v1.1 設備関連API・roadmap #28）。手順5のゾーン選択式化に使う。
@@ -249,11 +251,11 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
     try {
       spec = loadCloudSpec(projectDir)
     } catch (e: any) {
-      return { ok: false, message: `公開の設定を読めませんでした: ${e?.message ?? String(e)}` }
+      return { ok: false, message: `公開の設定を読めませんでした: ${failureText(e, { readOnly: true })}` }
     }
     let hasLetsEncryptEmail: boolean | null = null
     if (record.clusterID && isCreds(auth)) {
-      const r = await getCluster(auth, record.clusterID)
+      const r = await getCluster(auth, record.clusterID, undefined, { readOnly: true })
       hasLetsEncryptEmail = r.ok ? readHasLetsEncryptEmail(r.data) : null
     }
     return {
@@ -321,7 +323,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
       if (!dataLayerLine) return r
       return r.ok
         ? { ...r, warnings: [...(r.warnings ?? []), dataLayerLine] }
-        : { ...r, message: [r.message, dataLayerLine].filter(Boolean).join('\n') }
+        : { ...r, message: wrapFailureText(r.message ?? '', t => [t, dataLayerLine].filter(Boolean).join('\n')) }
     }
     // H-1: 破棄と同時に走らせない（記録が交錯して、消せない資源が残る）。
     // 破棄は実測で約9分かかるので、窓は広い。画面のフラグは窓の再読み込みで消えるため、ここにも置く。
@@ -392,7 +394,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
         // （勝手にバケットを作らない＝勝手に課金しない）。止めるのは 'error' だけ。
         return {
           ok: false, stage: 'storage',
-          message: `${storage.message}\nこのまま公開すると、アプリに入力されたデータが公開のたびに消えてしまうため、公開を中止しました。`,
+          message: wrapFailureText(storage.message, t => `${t}\nこのまま公開すると、アプリに入力されたデータが公開のたびに消えてしまうため、公開を中止しました。`),
         }
       }
       const storageEnv = storage.ok ? storage.envs : []
@@ -514,7 +516,7 @@ export function registerApprunDedicatedHandlers(_deps: IpcDeps) {
       return withDataLayerNote(result.ok && markerNote ? { ...result, warnings: [...(result.warnings ?? []), markerNote] } : result)
     } catch (e: any) {
       progress('⚠️ 失敗しました')
-      return withDataLayerNote({ ok: false, stage: 'invalid', message: e?.message ?? String(e) })
+      return withDataLayerNote({ ok: false, stage: 'invalid', message: failureText(e) })
     } finally {
       clearPendingFs(projectDir)
     }

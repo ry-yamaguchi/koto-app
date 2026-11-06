@@ -7,17 +7,23 @@
 // （出来事の並び）を node のテストで固定できるので、「main へ移しても何も変わらない」ことを
 // 同じテストで保証できる。
 //
-// このリリースでは、まだ renderer（useAiChat.ts）から呼ばれる。利用者から見える振る舞いは
-// 1ミリも変えていない——外部への接点（画面更新・API呼び出し・使用量記録・ツール実行など）を
-// すべて「差し込み口（ports）」にして、呼び出し側（useAiChat.ts）が本物の実装から組み立てて渡す。
+// このループを動かすのは main プロセスの chat/turnRunner.ts（`chatTurn:start` が runEngineTurn を呼ぶ）。
+// renderer の useAiChat.ts は、手動の【🗂 まとめる】で runCompact を呼ぶだけで、ループは動かさない。
+// 利用者から見える振る舞いは1ミリも変えていない——外部への接点（画面更新・API呼び出し・使用量記録・
+// ツール実行など）をすべて「差し込み口（ports）」にして、呼び出し側（turnRunner.ts の buildMainPorts）が
+// 本物の実装から組み立てて渡す。画面に触るのは ports.emit だけ。
 //
 // 大原則: 対象コードはコピーして、識別子の置き換えだけを行っている。ロジックの「改善」は
 // 一切していない。おかしいと思う箇所があってもそのまま移し、報告に書く。
 // コメントもそのまま持ってきている（このリポジトリのコメントは「なぜ」を記録した資産）。
 
 import { type ChatEvent } from './chatEvents'
+// 失敗の吹き出し（「もう一度送る」の印つき・表示専用）は、ここ1か所で作る。
+import { failureBubbleOf, undoEmptyBubble, requestTextOf, requestBubbleOf } from './chatFailure'
 import { streamTimeoutMessage, compactTimeoutMessage, isSdkTimeoutError, type StreamTimeoutKind } from './chatTimeouts'
 import { isToolError } from './toolExecCore'
+import { stripRemoteHead } from './failureText'
+import { wrapFailureText } from './failureDetail'
 // 実行できなかった操作の呼び名は、実行中の見出しと**同じ表**から作る（掟10）。
 import { toolActionName, unexecutedToolsNote } from './aiToolsCore'
 // W-47: 既定モデル（Kimi K2.7 Code）を使っている最中は、その名前を「切り替えて」の案内に出さない。
@@ -41,6 +47,10 @@ export type TurnMessage = {
   /** 公開先を変えたあとの案内の吹き出しに、「この公開先で動くか AI に確かめる」ボタンを出す印。
    *  確かめるのは押した時点の公開先なので、公開先の値は持たない。会話の保存に残る。 */
   offerTargetCheck?: true
+  /** 失敗・時間切れ・画像の読み取りの失敗の吹き出しに、「もう一度送る」ボタンを出す印。
+   *  付けるのは failureBubbleOf（chatFailure.ts）だけ。送り直す材料（依頼の文と画像）は持たない
+   *  （画像のデータ URL を会話の保存に二重に入れないため）。会話の保存に残る。 */
+  offerRetry?: true
   /** 推論モデル（Kimi K2.7 / gpt-oss 等）が本文を出す前に流してくる「思考」。
    *  待っている間に「いま何をしているか」を見せるための表示専用（2026-08-03 ユーザー要望）。
    *  **AIへは送り返さない**（費用が増え、モデルも混乱する）。**履歴ファイルにも保存しない**
@@ -102,7 +112,8 @@ export type CompactPlanLike = { base: string | null; from: number; to: number; m
 
 /** 純粋関数の束。呼び出し側が本物の実装（renderer の各モジュール）から組み立てて渡す。 */
 export type TurnHelpers = {
-  formatChatError(msg: string): string
+  /** thrown は catch で受けた値そのもの。message だけでは、回線断と証明書の失敗（cause.code）を見分けられない。 */
+  formatChatError(msg: string, engine?: 'sakura' | 'claude', thrown?: unknown): string
   condenseReasoning(text: string): string
   hasTextToolMarkup(text: string): boolean
   stripToolMarkup(text: string): string
@@ -298,7 +309,7 @@ export async function runCompact(
     // 時間切れは formatChatError へ渡さない（該当分岐が無く、SDK の 'Request timed out.' が
     // **英語のまま**画面に出る）。利用者向けの日本語は chatTimeouts.ts の一元定義から作る。
     if (isCompactTimeout(e)) return { timedOut: true }
-    return { error: ports.h.formatChatError(e?.message ?? String(e)) }
+    return { error: ports.h.formatChatError(stripRemoteHead(e), 'sakura', e) }
   } finally {
     ports.emit({ kind: 'status', value: '' })
   }
@@ -328,8 +339,9 @@ async function compactIfNeeded(
       kind: 'append',
       msg: {
         role: 'assistant', toolNote: true,
-        content: `⚠️ ${reason}
-そのため、古いやり取りの一部はAIへ送れていません。上の【🗂 まとめる】でやり直せます。`,
+        // 原文（詳細）は最後の行に残し、「そのため…」の前に挟まない。
+        content: wrapFailureText(reason, t => `⚠️ ${t}
+そのため、古いやり取りの一部はAIへ送れていません。上の【🗂 まとめる】でやり直せます。`),
       },
     })
   }
@@ -387,7 +399,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
   // 利用上限チェック
   const budget = await ports.usage.check()
   if (!budget.allowed) {
-    const userMsg: TurnMessage = { role: 'user', content: rawText.trim() }
+    const userMsg: TurnMessage = requestBubbleOf(rawText, images)
     const budgetMsg: TurnMessage = { role: 'assistant', content: `🛑 ${budget.message}` }
     ports.emit({ kind: 'append', msg: userMsg })
     ports.emit({ kind: 'append', msg: budgetMsg })
@@ -409,10 +421,10 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
   if (!hasImages && routedModel && !(await ports.toolSupport.shouldSendTools(model))) useModel = routedModel
   const switched = useModel !== model
 
-  const text = rawText.trim() || (hasImages ? 'この画像について教えてください。' : '')
+  const text = requestTextOf(rawText, hasImages)
   const historyBefore = await ports.getHistory()
   const isFirst = historyBefore.length === 0
-  const userMsg: TurnMessage = { role: 'user', content: text, images: hasImages ? images : undefined }
+  const userMsg: TurnMessage = requestBubbleOf(rawText, images)
   ports.emit({ kind: 'append', msg: userMsg })
   await ports.onUserMessage?.(text, isFirst)
   // W-21: 「止める」設定がオフで上限を超えているときは、止めずに続ける代わりに知らせる（同じ会話では1度だけ）。
@@ -486,6 +498,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         ]
       : apiText
 
+    let imageReadTimedOut = false // 時間切れの吹き出しを出したか（出したなら、このあとの書き換えで上書きさせない）
     /**
      * 画像を「文章」にする（視覚モデルに読み取らせる）。
      *
@@ -493,9 +506,11 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
      * 差し替えるとき**にも使う（2026-08-19）。画像をそのまま渡している
      * ターンは、文章にしてからでないと差し替えられない（画像が失われる）。
      *
+     * @param attemptIsEmpty 末尾が、中身が空のままの吹き出し（直前の試行）か。時間切れの吹き出しは
+     *   そこに差し替える（足すだけだと、空の吹き出しが会話に残る）
      * @returns 読み取れた説明文。失敗・中断なら null
      */
-    const readImagesAsText = async (): Promise<string | null> => {
+    const readImagesAsText = async (attemptIsEmpty = false): Promise<string | null> => {
       const visionModel = await ports.vision.defaultModel()
       ports.emit({ kind: 'status', value: '🖼 画像を読み取っています…' })
       const visionMessages: ApiMsg[] = [
@@ -522,7 +537,8 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       // null を返していた。利用者には「画像かモデルが悪い」としか見えず、同じ操作を
       // 繰り返すことになる。⏹ とは違う言葉を、一度だけ吹き出しに残す。
       if (timedOut) {
-        ports.emit({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: streamTimeoutMessage(timedOut) } })
+        ports.emit({ kind: attemptIsEmpty ? 'replaceLast' : 'append', msg: failureBubbleOf(streamTimeoutMessage(timedOut)) })
+        imageReadTimedOut = true
         return null
       }
       if (aborted || !acc.trim()) return null
@@ -569,11 +585,11 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       // 「（画像の読み取りに失敗しました…）」だけが出て、時間切れだと分からなかった。
       // ⏹ とは違う言葉を出す（押してもいないのに「停止しました」と出さない）。
       if (visionTimedOut) {
-        ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: streamTimeoutMessage(visionTimedOut) } })
+        ports.emit({ kind: 'replaceLast', msg: failureBubbleOf(streamTimeoutMessage(visionTimedOut)) })
         return { endedWithError: false } // やり直しの案内で終える（⚠️ を立てるほどではない）
       }
       if (!descAcc.trim()) {
-        ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: '（画像の読み取りに失敗しました。もう一度お試しください）' } })
+        ports.emit({ kind: 'replaceLast', msg: failureBubbleOf('（画像の読み取りに失敗しました。もう一度お試しください）') })
         return { endedWithError: false } // やり直しの案内で終える（⚠️ を立てるほどではない）
       }
       userContent = apiText + '\n\n# 添付画像の内容（AIによる読み取り）\n' + descAcc
@@ -591,12 +607,16 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
     const streamOnce = async (apiMessages: ApiMsg[], noTools = false): Promise<{ content: string; aborted?: boolean; timedOut?: StreamTimeoutKind; toolCalls?: any[] | null; toolFailed?: boolean; hadToolMarkup?: boolean }> => {
       let acc = ''
       let thinkingAcc = '' // 推論モデルの思考（表示専用。APIにも履歴にも渡さない）
+      // ツールの一覧は、吹き出しを足す前に決める。ここで投げても空の吹き出しが残らないように、
+      // 足したあとで投げうるのは chatStream だけにする（その分は末尾の .catch が取り除く）。
+      const tools = (!noTools && (await ports.toolSupport.shouldSendTools(useModel))) ? ports.h.toolsFor(toolsProjectDir, !!search, hasRag) : undefined
       ports.emit({ kind: 'append', msg: { role: 'assistant', content: '' } })
+      // 投げたときは、中身が空のままの吹き出しをここで取り除く（空の assistant を履歴に残さない。末尾の .catch）
       const { usage, aborted, timedOut, toolCalls, reasoningText } = await ports.chatStream(
         // maxTokens=16384: 推論型モデル（Kimi 等）は推論でトークンを消費してから write_file の引数として
         // ファイル全文を吐くため、4096 だと引数JSONが途中で切れて 400 になっていた（2026-07-14）。
         // 上限を超えるモデルは main 側（sakura.ts）が context-limit を検出して自動で縮めて再試行する。
-        { apiKey, model: useModel, messages: apiMessages, maxTokens: 16384, tools: (!noTools && (await ports.toolSupport.shouldSendTools(useModel))) ? ports.h.toolsFor(toolsProjectDir, !!search, hasRag) : undefined },
+        { apiKey, model: useModel, messages: apiMessages, maxTokens: 16384, tools },
         (delta) => {
           ports.notifyActivity()
           acc += delta
@@ -610,7 +630,18 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           thinkingAcc += delta
           ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc } })
         },
-      )
+      ).catch(async (err) => {
+        // 応答を待つ間に別の書き主が吹き出しを足していたら取り除かない（会話の末尾を見て決める）。
+        // 後片づけが投げても、元の失敗を隠さない（利用者に見せるのは元の失敗）。
+        try {
+          const undo = undoEmptyBubble(acc, await ports.getHistory())
+          if (undo) ports.emit(undo)
+        } catch { /* 元の失敗を優先する */ }
+        throw err
+      })
+      // 時間切れの文（待ち時間の上限で打ち切ったとき）。AI が途中まで書いた本文には足さず、最後に別の吹き出し
+      // （失敗の吹き出し＝表示専用・「もう一度送る」の印つき）として出す。途中の本文は AI の発言のまま残る。
+      let timeoutNote: string | null = null
       if (aborted) {
         acc += '\n\n（⏹ 停止しました）'
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc || undefined } })
@@ -618,13 +649,13 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         // 待ち時間の上限で打ち切った（2026-09-23 実機）。**⏹ とは違う言葉**を出す——
         // 押してもいないのに「停止しました」と出ると、利用者が自分の操作と取り違える。
         // 黙って終わらせないこと（直す前は、固まったまま画面に何も出なかった）。
-        acc += (acc ? '\n\n' : '') + streamTimeoutMessage(timedOut)
-        ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc || undefined } })
+        timeoutNote = streamTimeoutMessage(timedOut)
       }
-      // 失敗の兆候：本文もツール呼び出しも無い（reasoningフォールバックがaccを書き換える前に判定する）
-      const toolFailed = !acc.trim() && !toolCalls?.length
+      // 失敗の兆候：本文もツール呼び出しも無い（reasoningフォールバックがaccを書き換える前に判定する）。
+      // 時間切れは理由が分かっているので、兆候に数えない（ツール無しの再試行も、推論の本文化もしない）
+      const toolFailed = !acc.trim() && !toolCalls?.length && !timeoutNote
       // 推論型モデル対策：本文が空でツール呼び出しも無い場合、reasoningに出た回答を本文として使う
-      if (!acc.trim() && !toolCalls?.length && reasoningText?.trim()) {
+      if (!acc.trim() && !toolCalls?.length && !timeoutNote && reasoningText?.trim()) {
         acc = ports.h.condenseReasoning(reasoningText)
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc || undefined } })
       }
@@ -633,6 +664,12 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       if (hadToolMarkup) {
         acc = ports.h.stripToolMarkup(acc)
         ports.emit({ kind: 'replaceLast', msg: { role: 'assistant', content: acc, thinking: thinkingAcc || undefined } })
+      }
+      if (timeoutNote) {
+        // 途中の本文があればその後ろに足す。無ければ、空の吹き出し（思考だけのこともある）を時間切れの文に差し替える
+        ports.emit(acc.trim()
+          ? { kind: 'append', msg: failureBubbleOf(timeoutNote) }
+          : { kind: 'replaceLast', msg: failureBubbleOf(timeoutNote, { thinking: thinkingAcc || undefined }) })
       }
       // 利用量を記録（usageが無ければ文字数から見積り）
       await ports.usage.record(
@@ -696,7 +733,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
         if ((await ports.toolSupport.shouldSendTools(useModel)) && !retriedNoTools && ports.h.isToolUnsupportedError(e?.message)) {
           await ports.toolSupport.record(useModel, false)
           retriedNoTools = true
-          ports.emit({ kind: 'removeLast' })
+          // 投げた試行の空の吹き出しは streamOnce が取り除いている（ここで消すと利用者の吹き出しまで消える）
           r = await streamOnce(apiMessages, /* noTools */ true)
         } else if (hasImages && !triedVisionFallback && ports.h.isImageUnsupportedError(e?.message)) {
           // ── 画像を受け付けなかった（2026-08-19）────────────────────────
@@ -705,7 +742,6 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
           // 今回は視覚モデルへ回して、利用者の手を止めない。
           await ports.vision.record(useModel, false)
           triedVisionFallback = true
-          ports.emit({ kind: 'removeLast' })
           const fallback = await ports.vision.defaultModel()
           ports.emit({
             kind: 'append',
@@ -763,11 +799,15 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       //（2026-08-19 実機: Kimi は画像を直接読めるので二段構えにならず、
       //  ツールを扱えないまま「差し替えました」とだけ答えていた）
       if (r.hadToolMarkup && !r.toolCalls?.length && !routed && hasImages && !imageIsText) {
-        const desc = await readImagesAsText()
+        const desc = await readImagesAsText(!r.content.trim())
         if (desc) {
           userContent = apiText + '\n\n# 添付画像の内容（AIによる読み取り）\n' + desc
           apiMessages[apiMessages.length - 1] = { role: 'user', content: userContent }
           imageIsText = true
+        } else if (imageReadTimedOut) {
+          // 時間切れの文は末尾に出した。このあとの「最終応答」の書き換え（replaceLast）が上書きするので、
+          // ここで終える（応答の時間切れで次のラウンドへ進まないのと同じ。再試行で更に待たせない）
+          break
         }
       }
       if (r.hadToolMarkup && !r.toolCalls?.length && !routed && (!hasImages || imageIsText)) {
@@ -796,15 +836,14 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       if (!tcs.length) {
         // 最終応答。空ならその旨を表示（空の吹き出しを残さない）
         if (!r.content.trim()) {
+          // 利用者に「もう一度」を勧める失敗の文なので、失敗の吹き出し（「もう一度送る」の印つき・表示専用）で出す。
           ports.emit({
             kind: 'replaceLast',
-            msg: {
-              // W-47: いま使っているモデル（useModel）が既定（Kimi K2.7 Code）なら、その名前は出さない
-              // （もう選んでいるのに、と迷わせるため）。「ツールを使えるもの」という条件は残す。
-              role: 'assistant', content: sawToolMarkup
-                ? `（このモデルはツール（ファイル参照など）が必要な操作に対応していません。${useModel === DEFAULT_MODEL ? 'ツールを使える別のモデルに切り替えてお試しください' : 'モデルを「Kimi K2.7 Code」などに切り替えてお試しください'}）`
-                : '（応答が空でした。もう一度送るか、モデルを変えてお試しください）',
-            },
+            // W-47: いま使っているモデル（useModel）が既定（Kimi K2.7 Code）なら、その名前は出さない
+            // （もう選んでいるのに、と迷わせるため）。「ツールを使えるもの」という条件は残す。
+            msg: failureBubbleOf(sawToolMarkup
+              ? `（このモデルはツール（ファイル参照など）が必要な操作に対応していません。${useModel === DEFAULT_MODEL ? 'ツールを使える別のモデルに切り替えてお試しください' : 'モデルを「Kimi K2.7 Code」などに切り替えてお試しください'}）`
+              : '（応答が空でした。もう一度送るか、モデルを変えてお試しください）'),
           })
         } else {
           // ── 「変えた」と言っているのに、書き込みが1度も走っていない ──────────
@@ -1005,7 +1044,7 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       if (!(await ports.usage.check()).allowed) break // 上限到達時はループを止める
     }
   } catch (err: any) {
-    ports.emit({ kind: 'append', msg: { role: 'assistant', content: errorPrefix + ports.h.formatChatError(err?.message ?? String(err)) } })
+    ports.emit({ kind: 'append', msg: failureBubbleOf(errorPrefix + ports.h.formatChatError(err?.message ?? String(err), 'sakura', err)) })
     ports.emit({ kind: 'attention', value: 'error' }) // 見ていない会話でも気づけるよう ⚠️ の印を付ける（B-2）。見ている会話では UI が出さない
     return { endedWithError: true } // 出来事は追い越しで失われうるので、結末は返り値でも伝える（関数コメント参照）
   } finally {

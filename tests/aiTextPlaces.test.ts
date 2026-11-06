@@ -203,9 +203,11 @@ describe('★ 5か所は、ただの文字ではなく共通の部品を使っ�
     expect(src).not.toContain('AiText')
     expect(src).not.toMatch(/\{result\.report\}\s*<\/(?:p|pre|div|span)>/)
     // コピーされるのは元の文（AI が書いたまま）
-    expect(countOf(src, '<CopyButton text={result.report} title="チェック結果をコピー" />')).toBe(2)
-    // 「AIに修正させる」に渡すのも元の文
-    expect(src).toContain('\\n\\n${result.report}')
+    // （実施できなかった側だけ getText で版・日時を添える。写す元の文は同じ result.report）
+    expect(countOf(src, '<CopyButton text={result.report} title="チェック結果をコピー"')).toBe(2)
+    // 「AIに修正させる」に渡すのも元の文（境界で囲むのは buildFixPrompt。文へ直に差し込む形には戻さない）
+    expect(src).toContain('detail: { text: buildFixPrompt(result.report) }')
+    expect(src).not.toContain('\\n\\n${result.report}')
   })
 
   it('2・3. SecurityReportBody: AI の行だけ AiText で解釈し、Koto の行は plain で文字のまま出す', () => {

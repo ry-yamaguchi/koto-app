@@ -21,6 +21,7 @@ import { NOT_CONFIRMED_MESSAGE, BAD_PROJECT_DIR_MESSAGE } from '../src/main/clou
 import { projectBusyMessage, runningOp } from '../src/main/projectLock'
 import { getOps, resetProjectOpsForTests, setProjectOpsListener } from '../src/main/projectOps'
 import { STORAGE_TEARDOWN_PROGRESS } from '../src/shared/teardownSupport'
+import { registryCheckInPanelNote } from '../src/shared/cloudCost'
 
 registerCloudHandlers({} as any)
 // 画面の代わりに、確認で見せた保存場所（記録から作る）を足して渡す（0.6.24 F。main は見せたものだけを消す）
@@ -257,6 +258,8 @@ describe('C-8 コンテナレジストリ: deleteRegistry === true で、確認�
     const reply = await teardown(EVENT, dir, OK_AUTH, { confirmed: true, deleteRegistry: true, registryName: 'myreg' })
     expect(registryCalls()).toEqual([])
     expect(reply.executed.some((l: string) => l.includes('どのコンテナレジストリを使っていたかの記録がない'))).toBe(true)
+    // 結びは作り手 registryCheckInPanelNote の文（コントロールパネルでの確認と、月額が続くこと）で終わる
+    expect(reply.executed.some((l: string) => l.includes('どのコンテナレジストリを使っていたかの記録がない') && l.endsWith(registryCheckInPanelNote()))).toBe(true)
     expect(reply.keptRegistryName).toBeUndefined()
     expect(reply.keptRegistryUnnamed).toBeUndefined()
   })

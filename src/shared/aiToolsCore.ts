@@ -12,6 +12,7 @@
 import { isDangerousCommand, leavesWorkingDir, writesOutsideWorkingDir, type WritesOutsideOptions } from './commandGuard'
 import { PUBLISH_DIR_LABEL } from './publishRoot'
 import { isConnectionFailureMessage } from './connectionFailure'
+import { classifyFailure, failureText, stripRemoteHead, withFailureDetail } from './failureText'
 // W-47: 「別のモデル（Kimi K2.7 Code など）に切り替えて」は、既定モデルと同じ名前なので
 // 既にそれを使っている人には「もう選んでいるのに」と読める。既定モデルのIDと一元定義から比べる。
 import { DEFAULT_MODEL } from './modelInfo'
@@ -269,24 +270,62 @@ export function isToolUnsupportedError(message?: string): boolean {
   return /tool[-_ ]?call[-_ ]?parser|enable[-_ ]?auto[-_ ]?tool[-_ ]?choice|tool[-_ ]?choice|does not support tools|tools? .*not .*support/i.test(message ?? '')
 }
 
+/** チャットの失敗の文のうち、「もう一度」の言い方（共通の層 shared/failureText.ts の tail に渡す）。 */
+const CHAT_RETRY = 'もう一度送信してください'
+/** 回線断の文を得るために共通の層へ渡す、openai SDK の回線断の文面（'Connection error.'）。 */
+const OFFLINE_SAMPLE = 'Connection error.'
+
+/** 通信そのものの失敗（回線断・時間切れ・安全な接続）を、チャットの言い方の1文にする。当たらなければ null。
+ *  判定と文は共通の層（shared/failureText.ts）。接続テストの失敗文（main/ipc/sakura.ts）と同じ表を読む。
+ *  チャットは送り直しても二重にはならないので、読み取りと同じ文（「操作が済んだかは…」とは言わない）にする。
+ *  thrown は投げられた値そのもの。openai の APIConnectionError は message が 'Connection error.' だけで、
+ *  証明書の失敗などの印（cause.code）は値の中にしか無いので、渡されたら文面より先にそれを見る。 */
+function chatNetworkFailureText(message: string, thrown?: unknown): string | null {
+  const opts = { readOnly: true, tail: CHAT_RETRY }
+  const source = thrown ?? message
+  const failure = classifyFailure(source)
+  // 「接続できなかった」と言うもの: 回線断・errno 名で見分けた切れ／時間切れ（つなぐ段の失敗）・共通の層が知らない回線断の文面
+  // （node-fetch の 'request to … failed, reason: …'・'NetworkError when attempting to fetch resource.' など）。
+  // 文面が 'aborted' や時間切れの語を含んでいても、同じ文に回線断の語（ECONNRESET・fetch failed など）があれば回線断（種類が決まった後ろの網）。
+  const looksOffline = isConnectionFailureMessage(message)
+  const connect =
+    failure.kind === 'offline' ||
+    ((failure.kind === 'interrupted' || failure.kind === 'timeout') && (failure.code !== undefined || looksOffline)) ||
+    (failure.kind === 'unknown' && looksOffline)
+  // 文は見本（'Connection error.'）から作り、詳細は本物の失敗から付ける（見本の文面を詳細に出さない）。
+  if (connect) return withFailureDetail(failureText(OFFLINE_SAMPLE, { ...opts, detail: false }), source)
+  // errno 名の無い時間切れ（SDK の 'Request timed out.'・AbortSignal.timeout の TimeoutError の文）と、安全な接続を確かめられなかった失敗。
+  // 中断（⏹ や 'aborted' の文）は失敗として言わない（ここでは null）。
+  if (failure.kind === 'timeout' || failure.kind === 'tls') return failureText(source, opts)
+  return null
+}
+
 /** チャットのエラーを、原因に応じた分かりやすい日本語の案内文にする。
- *  認証エラー（401 等）はキーの再発行・確認へ誘導する。回線断・403・404・500 番台・Claude が正常に動かなかったときも、原因ごとの文にする。
+ *  認証エラー（401 等）はキーの再発行・確認へ誘導する。回線断・時間切れ・403・404・500 番台・Claude が正常に動かなかったときも、原因ごとの文にする。
  *  engine で頭脳を指定（'sakura'=さくらのAI Engine / 'claude'=Claude）し、認証エラー時の
  *  誘導先（どちらのキーを確認するか）を出し分ける（所見9: Claude経路のエラーに
- *  「さくらのAI Engineのキーを確認」と誤案内していた問題の修正）。 */
-export function formatChatError(message: string, engine: 'sakura' | 'claude' = 'sakura'): string {
-  const m = (message || '').toLowerCase()
+ *  「さくらのAI Engineのキーを確認」と誤案内していた問題の修正）。
+ *  thrown は catch で受けた値そのもの（あれば渡す）。message だけでは、openai の 'Connection error.' の奥にある
+ *  証明書の失敗（cause.code）と回線断を見分けられない。 */
+export function formatChatError(rawMessage: string, engine: 'sakura' | 'claude' = 'sakura', thrown?: unknown): string {
+  // IPC の英語の頭と、main が載せた種類の印は、どの呼び出し元から来ても画面に出さない（最後の分岐は原文を出すため）
+  const message = rawMessage ? stripRemoteHead(rawMessage) : rawMessage
+  // 状態番号は例外の status（IPC を越えるときは main が message に載せた印）からも読む。文面に番号が無い失敗（'Upstream error' など）も数える。
+  const status = classifyFailure(thrown).status
+  // 日本語の固定文に置き換える分岐は、原文（投げられた値、無ければ message）を詳細として最後の行に添える。
+  const withDetail = (sentence: string) => withFailureDetail(sentence, thrown ?? message)
+  const m = `${message || ''}${status === undefined ? '' : ` ${status}`}`.toLowerCase()
   // 認証エラー（401 等）。誘導先のキーを engine で出し分ける。
   if (/\b401\b|invalid token|unauthorized|authentication|invalid api key|invalid_api_key/.test(m)) {
     if (engine === 'claude') {
-      return (
+      return withDetail(
         'Claude のAPIキーが認証されませんでした（401）。キーが期限切れ・失効した可能性があります。\n\n' +
         '🔑 メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）で「Claude」のキーを確認し、\n' +
         'うまくいかない場合は Claude Console（platform.claude.com）でキーを再発行して入れ直してください。\n' +
         '（「🔌 接続テスト」で有効かどうか確認できます）'
       )
     }
-    return (
+    return withDetail(
       'APIキーが認証されませんでした（401）。キーが期限切れ・失効した可能性があります。\n\n' +
       '🔑 メニュー「Koto」→「認証情報（APIキー）…」（⇧⌘,）で「さくらのAI Engine」のキーを確認し、\n' +
       'うまくいかない場合は さくらのAI Engine でキーを再発行して入れ直してください。\n' +
@@ -295,7 +334,7 @@ export function formatChatError(message: string, engine: 'sakura' | 'claude' = '
   }
   // Claude の請求・クレジット不足（402 等）。キーは有効だが利用できない状態への案内。
   if (engine === 'claude' && /\b402\b|billing|credit balance|insufficient|payment|quota/.test(m)) {
-    return (
+    return withDetail(
       'Claude を利用できませんでした。Anthropic アカウントのクレジット残高・請求設定に問題がある可能性があります。\n\n' +
       '💳 Claude Console（platform.claude.com）で請求設定を確認してください。\n' +
       '（さくらのAI Engine のキーも登録していれば、そちらに切り替えて続けることもできます）'
@@ -303,34 +342,33 @@ export function formatChatError(message: string, engine: 'sakura' | 'claude' = '
   }
   // レート制限（429）。両経路共通。
   if (/\b429\b|rate limit|too many requests|overloaded/.test(m)) {
-    return '混み合っています。少し待ってから、もう一度送信してください。'
+    return withDetail('混み合っています。少し待ってから、もう一度送信してください。')
   }
   // コンテキスト（会話）が長くなりすぎた場合。両経路共通。
   if (/context (length|window)|maximum context|too long|token limit|context_length|exceeds? .*token/.test(m)) {
-    return '会話が長くなりすぎました。チャット上部の 🗑（クリア）で会話をリセットしてから、続きを依頼してください。'
+    return withDetail('会話が長くなりすぎました。チャット上部の 🗑（クリア）で会話をリセットしてから、続きを依頼してください。')
   }
   // ここから下は原因ごとの文。どれも engine によらず同じ文（キーの案内は 401 と 403 だけ）。英語の原文・パス・製品名は画面に出さない。
-  // 回線断を状態番号より先に見る（アドレス・ホスト名の数字〔例 'connect ETIMEDOUT 203.0.113.5:500'〕を状態番号と取り違えないため）。
-  // 状態番号で始まる失敗は、本文に network などを含んでも回線断の判定が数えない（connectionFailure.ts）。
-  if (isConnectionFailureMessage(message || '')) {
-    return 'インターネットに接続できませんでした。接続を確かめてから、もう一度送信してください。'
-  }
+  // 通信の失敗（回線断・時間切れ・安全な接続）を状態番号より先に見る（アドレス・ホスト名の数字〔例 'connect ETIMEDOUT 203.0.113.5:500'〕を状態番号と取り違えないため）。
+  // 状態番号で始まる失敗は、本文に network などを含んでも通信の失敗に数えない（connectionFailure.ts・failureText.ts）。
+  const network = chatNetworkFailureText(message || '', thrown)
+  if (network) return network
   // 403（キーにその操作の権限が無い。403 はモデルに限らない）。
   if (/\b403\b|forbidden|permission_error/.test(m)) {
-    return 'APIキーに、この操作の権限がありませんでした（403）。認証情報（🔑）でキーを確かめるか、別のモデルを選んでください。'
+    return withDetail('APIキーに、この操作の権限がありませんでした（403）。認証情報（🔑）でキーを確かめるか、別のモデルを選んでください。')
   }
   // 404（選んでいるモデルが無い）。
   if (/\b404\b|model_not_found|not_found_error/.test(m)) {
-    return '選んでいるモデルが見つかりませんでした（404）。モデルを選び直してから、もう一度送信してください。'
+    return withDetail('選んでいるモデルが見つかりませんでした（404）。モデルを選び直してから、もう一度送信してください。')
   }
   // 500 番台（サービス側の一時的な問題）。
   if (/\b(500|502|503|504)\b|internal server error|bad gateway|service unavailable|gateway timeout/.test(m)) {
-    return 'AI のサービス側で一時的な問題が起きています。しばらく待ってから、もう一度送信してください。'
+    return withDetail('AI のサービス側で一時的な問題が起きています。しばらく待ってから、もう一度送信してください。')
   }
   // Claude が正常に動かなかった（Agent SDK の例外文）。実行ファイルが無い・起動できないときだけでなく、動いたあとで終わったとき
   // （process exited with code N のあとに stderr の末尾が付く）にも出るので、末尾の原因を上で先に見て、どれでもなければこの文にする。
   if (/claude code (native binary|executable|process)/.test(m)) {
-    return 'Claude が正常に動きませんでした。Koto を再起動してから、もう一度送信してください。'
+    return withDetail('Claude が正常に動きませんでした。Koto を再起動してから、もう一度送信してください。')
   }
   const keyHint = engine === 'claude' ? 'Claude のAPIキー' : 'APIキーと利用上限'
   return `エラー: ${message}\n\n💡 うまくいかないときは: もう一度送信するか、認証情報（🔑）で${keyHint}を確認してください。`

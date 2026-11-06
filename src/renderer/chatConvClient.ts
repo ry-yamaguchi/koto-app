@@ -13,35 +13,47 @@
 import type { ChatMessage } from './hooks/useAiChat'
 import type { ChatEvent } from '../shared/chatEvents'
 import { parseJsonArray, resolveChatSource } from './chatMigration'
+import { unreadableFrom, copiesFrom, type UnreadableChat } from '../shared/chatUnreadable'
 
 const LEGACY_PROJECT_PREFIX = 'sakura_chat:'
 
 /** 会話への書き換え1件。main の convStore.ts の Op と同じ形（IPCでそのまま運ぶ）。 */
 export type Op = ChatEvent<ChatMessage> | { kind: 'replaceAll'; messages: ChatMessage[] }
 
-/** 読み込みの結果。`readable` は、main の会話ストアに問い合わせて答えが返ったか。 */
+/** 読み込みの結果。`readable` は、main の会話ストアに問い合わせて答えが返り、記録を読めたか。 */
 export interface ConversationLoad {
   messages: ChatMessage[]
   /**
-   * 問い合わせに失敗した（IPC の失敗・ok:false）回は false。そのとき messages は旧 localStorage か空で、
-   * 保存済みの会話が無いことの証拠にならない。
+   * 問い合わせに失敗した（IPC の失敗・ok:false）回と、記録が読めなかった（unreadable）回は false。
+   * そのとき messages は旧 localStorage か空で、保存済みの会話が無いことの証拠にならない。
    */
   readable: boolean
+  /** 記録が壊れていて読めなかった回の知らせ（写しの名前。作れなかった回は backupName が null）。読めた回・問い合わせに失敗した回は null。 */
+  unreadable: UnreadableChat | null
+  /** 記録は読めたが、同じフォルダに読めなかった記録の写しが残っているときの、その名前。無いときは付かない。 */
+  copies?: string[]
 }
 
 /**
  * 読み込み（ファイル→無ければ旧localStorage移行→空）。読めたかどうかも返す。
  * 移行時は replaceAll を送って main のストアへ載せ、旧キーを消す
  * （今までの loadProjectChat と同じ手順・resolveChatSource を使う）。
+ * 記録が読めなかった回（unreadable）は「会話が無い」ではないので、旧 localStorage の移行へは進まない
+ * （進むと replaceAll が壊れた記録の上へ旧データを書く）。
  */
 export async function loadConversationChecked(projectDir: string): Promise<ConversationLoad> {
   let fileData: ChatMessage[] | null = null
   let readable = false
+  let copies: string[] = []
   try {
     const res = await window.electronAPI.chat.load(projectDir)
     if (res.ok) {
       fileData = res.messages as ChatMessage[] | null
+      const unreadable = unreadableFrom(res.unreadable)
+      // main の手元に会話があればそれを映す（読めなかった記録のあとに書き始めた回・壊れた行の手前まで読めた回）。無ければ空
+      if (unreadable) return { messages: fileData ?? [], readable: false, unreadable }
       readable = true
+      copies = copiesFrom(res.copies)
     }
   } catch { /* IPC失敗はlocalStorageへフォールバック（読めた扱いにはしない） */ }
 
@@ -49,15 +61,16 @@ export async function loadConversationChecked(projectDir: string): Promise<Conve
   const legacyData = parseJsonArray(localStorage.getItem(legacyKey)) as ChatMessage[] | null
   const resolved = resolveChatSource<ChatMessage>(fileData, legacyData)
 
-  if (resolved.kind === 'file') return { messages: resolved.data, readable }
+  const kept = copies.length > 0 ? { copies } : {}
+  if (resolved.kind === 'file') return { messages: resolved.data, readable, unreadable: null, ...kept }
   if (resolved.kind === 'migrate') {
     // 即 main のストアへ載せる（replaceAll）。以前の loadProjectChat と同じく await はしない
     // （旧キーの削除を待たせない。IPC失敗時は次回この関数を呼んだときにまた移行を試みる）。
     void window.electronAPI.chat.ops(projectDir, [{ kind: 'replaceAll', messages: resolved.data }])
     localStorage.removeItem(legacyKey)
-    return { messages: resolved.data, readable }
+    return { messages: resolved.data, readable, unreadable: null, ...kept }
   }
-  return { messages: [], readable }
+  return { messages: [], readable, unreadable: null, ...kept }
 }
 
 /** 読み込み。読めたかどうかを使わない呼び手向け（loadConversationChecked の messages だけ）。 */
@@ -105,4 +118,32 @@ export function makeConvClient(
     /** 送信の完了を待つ（プロジェクト切替時の取りこぼし防止・テスト用）。 */
     idle: () => chain,
   }
+}
+
+/**
+ * renderer 発の書き換えの行き先。`turnDir` はターンを始めたプロジェクト、`viewingDir` はいま見ているもの、
+ * `viewingReady` は、いま見ている会話の読み込みが済んで client が付いているか。
+ * 同じで読み込み済みなら 'viewing'（いまの client。送信の順序を守る）、違えば 'turn'（始めたプロジェクトの会話へ送る）。
+ * 同じでも読み込み中（A→B→A で A を読み直している間）は 'turn'：画面だけに当てると、読み込み結果に
+ * 上書きされて記録から落ちる。始めたプロジェクトが分からない（null）ときは 'viewing'（これまでどおり）。
+ */
+export function opRouteOf(turnDir: string | null, viewingDir: string | null, viewingReady = true): 'viewing' | 'turn' {
+  if (turnDir === null) return 'viewing'
+  return turnDir !== viewingDir || !viewingReady ? 'turn' : 'viewing'
+}
+
+/** 見ていないプロジェクトの会話へ送る client（dir ごとに1つ。同じ会話への書き換えの順序を守る）。 */
+const turnClients = new Map<string, ReturnType<typeof makeConvClient>>()
+
+/**
+ * ターン中に別のプロジェクトへ切り替わったあとの書き換えを、始めたプロジェクトの会話へ送る（掟11）。
+ * 画面へは反映しない（そのプロジェクトを開いたときに読む。chat:applied は見ているプロジェクト宛てだけ受ける）。
+ */
+export function applyOpToConversation(dir: string, op: Op): void {
+  let client = turnClients.get(dir)
+  if (!client) {
+    client = makeConvClient(dir)
+    turnClients.set(dir, client)
+  }
+  client.apply(op)
 }

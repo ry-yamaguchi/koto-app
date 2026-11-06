@@ -5,6 +5,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as ragClient from '../rag/client'
 import { budgetCheckForKey } from '../usageStore'
+import { failureText } from '../../shared/failureText'
 import type { IpcDeps } from './types'
 
 // W-85（2026-09-27 決定）: AI Engine のモデルを使う資料の操作（検索 rag:query・回答づくり rag:chat・
@@ -22,42 +23,42 @@ export function registerRagHandlers(_deps: IpcDeps) {
     try {
       const r = await ragClient.listDocuments(apiKey, opts ?? {})
       return { ok: true, meta: r.meta, documents: r.documents }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { readOnly: true }) } }
   })
 
   ipcMain.handle('rag:get', async (_, apiKey: string, id: string) => {
     try {
       const doc = await ragClient.getDocument(apiKey, id)
       return { ok: true, document: doc }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { readOnly: true }) } }
   })
 
   ipcMain.handle('rag:upload', async (_, apiKey: string, args: { filePath?: string; content?: string; filename: string; name?: string; tags?: string[] }) => {
     try {
       const doc = await ragClient.uploadDocument(apiKey, { ...args, budgetCheck: budgetCheckForKey(apiKey) })
       return { ok: true, document: doc }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { checkAt: '📚 資料の一覧' }) } }
   })
 
   ipcMain.handle('rag:update', async (_, apiKey: string, id: string, fields: { name?: string; tags?: string[] }) => {
     try {
       const doc = await ragClient.updateDocument(apiKey, id, fields)
       return { ok: true, document: doc }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { checkAt: '📚 資料の一覧' }) } }
   })
 
   ipcMain.handle('rag:delete', async (_, apiKey: string, id: string) => {
     try {
       await ragClient.deleteDocument(apiKey, id)
       return { ok: true }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { checkAt: '📚 資料の一覧' }) } }
   })
 
   ipcMain.handle('rag:chunks', async (_, apiKey: string, documentId: string, opts?: { page?: number; pageSize?: number }) => {
     try {
       const r = await ragClient.listChunks(apiKey, documentId, opts ?? {})
       return { ok: true, meta: r.meta, chunks: r.chunks }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { readOnly: true }) } }
   })
 
   ipcMain.handle('rag:query', async (_, apiKey: string, args: { query: string; tags?: string[]; topK?: number; threshold?: number }) => {
@@ -67,7 +68,7 @@ export function registerRagHandlers(_deps: IpcDeps) {
         budgetCheck: budgetCheckForKey(apiKey),
       })
       return { ok: true, hits }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { readOnly: true }) } }
   })
 
   ipcMain.handle('rag:chat', async (_, apiKey: string, args: { query: string; chatModel: string; tags?: string[] }) => {
@@ -77,7 +78,7 @@ export function registerRagHandlers(_deps: IpcDeps) {
         budgetCheck: budgetCheckForKey(apiKey),
       })
       return { ok: true, answer: result.answer, sources: result.sources }
-    } catch (e: any) { return { ok: false, error: e?.message ?? String(e) } }
+    } catch (e: any) { return { ok: false, error: failureText(e, { readOnly: true }) } }
   })
 
   // 📚 資料（R3・ナレッジコレクター）: Webから作った資料のローカル控えを保存するフォルダの絶対パスを返す。

@@ -20,6 +20,7 @@
 // テストの React の代役が useMemo を差し替えていないため、useMemo は使わない）。
 // 確認は useConfirmChoices（選択の無い確認と、選択つきの確認の両方を1つの ConfirmModal で出す。段階2・2b-1）。
 // 選択を持つ仕様書（共用型の「コンテナレジストリも削除する」）は選択つきで、持たない仕様書（HANAMII）は今までどおりの確認を出す。
+import { teardownFailureText } from './failureNote'
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useConfirmChoices } from '../useConfirmChoices'
 import { resumedTeardownView, type TeardownView } from '../../shared/teardownResult'
@@ -145,7 +146,7 @@ export function useTeardownFlow<R, A, Res>(projectDir: string, spec: TargetSpec<
       }))
       if (!out.cancelled) { view = spec.toView(out.result); nothingToDo = out.nothingToDo === true; keptNothing = out.keptNothing === true }
     } catch (e: any) {
-      view = spec.toView(spec.failure(e?.message ?? String(e)))
+      view = spec.toView(spec.failure(teardownFailureText(e)))
     } finally {
       setTearingDownLocal(false)
       startedRef.current = false

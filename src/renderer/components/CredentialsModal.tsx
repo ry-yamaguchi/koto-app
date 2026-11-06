@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from 'react'
 import CopyButton from './CopyButton'
 import SakuraLogo from './SakuraLogo'
+import Modal from '../ui/Modal'
 import { getKeyLimit, setKeyLimit, getSettings } from '../usage'
 import { isSubmitEnter } from '../keyInput'
 import { useConfirm } from '../useConfirm'
-import { runDiscardCredentialEdits, runEraseVpsKey } from '../confirmedActions'
+import { runRequestCloseCredentials, runEraseVpsKey } from '../confirmedActions'
 import { cleanRemoteError } from '../remoteError'
+import { WEB_SEARCH_SEND_NOTE } from '../../shared/dataDestinationNotes'
+import ErrorBand from './ErrorBand'
+import FailureLines from './FailureLines'
 
 interface Props {
   apiKey: string                       // さくらのAI Engine の現在キー（チャットで使用）
@@ -577,7 +581,7 @@ function KeyTestButton({ apiKey }: { apiKey: string }) {
         {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
       </button>
       {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK（{detail}）</span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red">❌ {detail}</span>}
+      {state === 'ng' && <ErrorBand tone="text" text={`❌ ${detail}`} />}
     </div>
   )
 }
@@ -604,7 +608,7 @@ function GithubTestButton({ apiKey }: { apiKey: string }) {
         {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
       </button>
       {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK（{detail}）</span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red">❌ {detail}</span>}
+      {state === 'ng' && <ErrorBand tone="text" text={`❌ ${detail}`} />}
     </div>
   )
 }
@@ -631,7 +635,7 @@ function AnthropicTestButton({ apiKey }: { apiKey: string }) {
         {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
       </button>
       {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK（{detail}）</span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ {detail}</span>}
+      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ <FailureLines text={detail} /></span>}
     </div>
   )
 }
@@ -658,7 +662,7 @@ function HanamiiTestButton({ token }: { token: string }) {
         {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
       </button>
       {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK</span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ {detail}</span>}
+      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ <FailureLines text={detail} /></span>}
     </div>
   )
 }
@@ -706,8 +710,8 @@ function VercelTestButton({ token, teamId }: { token: string; teamId: string }) 
         {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
       </button>
       {state === 'ok' && <span className="text-[11px] text-brand-green">✅ {detail || '接続OK'}</span>}
-      {state === 'warn' && <span className="text-[11px] text-brand-yellow whitespace-pre-wrap select-text">⚠️ {detail}</span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ {detail}</span>}
+      {state === 'warn' && <span className="text-[11px] text-brand-yellow whitespace-pre-wrap select-text">⚠️ <FailureLines text={detail} /></span>}
+      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ <FailureLines text={detail} /></span>}
     </div>
   )
 }
@@ -1012,14 +1016,11 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   // 未保存の変更（dirty）があるときだけ確認を挟み、破棄を選んだ場合のみ閉じる。
   // 「保存」ボタン経由の閉じる（save 後にユーザーが改めて閉じる）は dirty=false なので確認は出ない。
   const requestClose = async () => {
-    if (!dirty) { onClose(); return }
-    await runDiscardCredentialEdits(
-      '保存せずに閉じますか？',
-      {
-        confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
-        discard: () => onClose(),
-      },
-    )
+    await runRequestCloseCredentials('保存せずに閉じますか？', {
+      dirty,
+      confirm: (body) => confirm({ title: '未保存の変更があります', body, confirmLabel: '保存せずに閉じる', danger: true }),
+      discard: () => onClose(),
+    })
   }
 
   // 通常サービス1件分のカード（入力あり・複数エントリ＋使用中の切替）。
@@ -1173,6 +1174,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
         <p className="text-[11px] text-ink-muted mt-0.5">
           AIチャットの検索機能に使用。<b className="text-ink-secondary">どちらか一方の登録でOK</b>です。
         </p>
+        <p className="text-[11px] text-ink-muted mt-0.5">{WEB_SEARCH_SEND_NOTE}</p>
       </div>
       <Field
         def={{ key: 'apiKey', label: 'Tavily APIキー（無料 月1,000回・クレカ不要 / app.tavily.com）', secret: true, placeholder: 'tvly-…' }}
@@ -1247,14 +1249,21 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={requestClose}>
-      <div className="w-[560px] max-h-[88vh] overflow-y-auto bg-elevated rounded-2xl border border-line shadow-2xl fade-in" onClick={e => e.stopPropagation()}>
+    <>
+      {/* 枠は ui/Modal（0.6.26）。Esc・背景クリックも ✕・「閉じる」と同じ requestClose を通る（未保存なら確認）。
+          確認の窓は枠の外の兄弟にする（開いた順で前面に重なり、Esc は確認が先に受ける）。 */}
+      <Modal
+        onRequestClose={() => { void requestClose() }}
+        labelledBy="credentials-modal-title"
+        backdropClassName="bg-black/50 backdrop-blur-sm"
+        panelClassName="w-[560px] bg-elevated rounded-2xl border border-line shadow-2xl fade-in"
+      >
         <div className="flex items-center gap-2.5 px-6 pt-6 pb-4 sticky top-0 bg-elevated z-10">
           <SakuraLogo size={24} />
           <div>
-            <h2 className="text-lg font-bold text-ink">認証情報（APIキー）</h2>
+            <h2 id="credentials-modal-title" className="text-lg font-bold text-ink">認証情報（APIキー）</h2>
           </div>
-          <button onClick={requestClose} className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
+          <button onClick={requestClose} aria-label="閉じる" className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
 
         <div className="px-6 pb-6 space-y-4">
@@ -1285,8 +1294,8 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
             </button>
           </div>
         </div>
-      </div>
+      </Modal>
       {confirmElement}
-    </div>
+    </>
   )
 }
