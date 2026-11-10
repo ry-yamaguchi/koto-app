@@ -14,7 +14,7 @@ import VpsPanel from './VpsPanel'
 import AppRunDedicatedPanel from './AppRunDedicatedPanel'
 import { resolvePublishRoot } from '../publishRootRenderer'
 // 記録を読む・「見た」と伝える・誰の持ち場か決める・警告と時刻の文にする、は共通の1か所（掟10・2026-09-30 検分の指摘2）。
-import { watchProjectOps, sendAck, unseenOf, visiblePanelShows, holdsWarning, type OpsWatch } from '../projectOpsView'
+import { watchProjectOps, sendAck, unseenOf, visiblePanelShows, holdsWarning, withoutSettledAccepted, type OpsWatch } from '../projectOpsView'
 // どこにどれくらい時間がかかったか（2026-10-07）: 走っている枠には待っている段の目安、終わった枠には「かかった時間を見る」。
 // 持ち場の画面が出さない記録（別の公開先を見ているときの専有型の削除・作成・公開など。📡 一覧の専有型の 🗑 も手順6と同じ記録）はここへ出る。
 // 目安の決め方・時間の文は shared の純関数、見た目は別の部品（専有型パネルと同じもの）。
@@ -221,7 +221,8 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
     setOpsKnown(true)
     setOpsRunning(s.running ?? null)
     const finished = unseenOf(s)
-    if (finished.length > 0) setHeldResults(prev => mergeFinished(prev, finished))
+    // 足すのは新しく終わった分。main が外した HANAMII の「途中」（あとの破棄が済んだ）は、開いたままでも手元から外す。
+    setHeldResults(prev => withoutSettledAccepted(mergeFinished(prev, finished), finished))
   }, [])
 
   // 開いたとき1回聞き、開いている間は押し出しを受ける（共通の watchProjectOps。別のプロジェクトの知らせは無視し、

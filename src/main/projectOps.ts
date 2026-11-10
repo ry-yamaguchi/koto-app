@@ -56,7 +56,7 @@ import { isInFlightKey, isStoppedByQuit, type InFlightFile, type InFlightRun, ty
 import { inFlightVersionOf, isInFlightDirty, isInFlightSinkConnected, resetInFlightOutletForTests, writeInFlightThrough } from './inFlightOutlet'
 // 止まった回の持ち方・知らせ・今回との合わせ方は stoppedOps.ts（このファイルは 700 行以下）。ここは走っている記録（live）と見られていない結果（unseen）の持ち主。
 import {
-  adoptStopped, inFlightRunOf, markNoticeSeen, markNoticeSeenByBegin, resetStoppedForTests, settleStopped, stoppedSnapshot, withoutStoppedNotice,
+  adoptStopped, inFlightRunOf, markNoticeSeen, markNoticeSeenByBegin, resetStoppedForTests, settleStopped, stoppedSnapshot, withoutStoppedNotice, withoutAcceptedNotice,
 } from './stoppedOps'
 
 /** いま走っている操作（画面に出す日本語そのもの）。 */
@@ -525,7 +525,7 @@ export function finishOp(projectDir: string, outcome: { value: unknown } | { err
     if (timings && settled.earlier) timings.earlierRuns = settled.earlier
     if (settled.cleared) dropStoppedNotice(key, settled.cleared.op, settled.cleared.target)
   } catch { /* 合わせられなくても結果は出す */ }
-  unseen.set(key, capUnseen([...(unseen.get(key) ?? []), rec]))
+  unseen.set(key, capUnseen([...withoutAcceptedNotice(unseen.get(key) ?? [], rec), rec])) // 済んだ回は、前の「受け付けただけ」（途中）を外す
   notify(key)
   // うまくいった操作の、終わった段の所要時間だけを保存する（失敗した回は目安に混ぜない）。
   // **`ok:true` は「時間を測れた」の証拠ではない**（2026-10-07 検分）: IP が付かないまま待ち切った・応答を確かめられなかった・
@@ -636,7 +636,7 @@ const EXTRA_KEYS = [
   'needsScaleDecision', 'adoptedScaleMin', 'staleImages', 'skipped',
   'keptBucketName', 'keptBucketNames', 'keptBucketsUsedByOthers', 'keptBucketsWithOwnFiles',
   'keptRegistryName', 'keptRegistryOrigin', 'keptRegistryUsers', 'keptRegistryUnnamed', 'keptOnly',
-  'remaining', 'inProgress', 'appDeleted', 'remainingBucket', 'remainingBuckets', 'deletionAccepted',
+  'remaining', 'inProgress', 'appDeleted', 'remainingBucket', 'remainingBuckets', 'deletionAccepted', 'deletionReview',
   'projectId', 'deploymentId', 'deployState', 'readyState', 'errorCode',
   'applicationID', 'version', 'lbAddresses', 'verify', 'containerStates',
   'clusterID', 'asgID', 'loadBalancerID',

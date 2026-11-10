@@ -82,12 +82,13 @@ describe('記録の購読と「見た」の伝え方は、共通の部品だけ'
     expect(holders).toEqual(['src/renderer/projectOpsView.ts'])
   })
 
-  it('★ 記録を読む6つの画面は、共通の watchProjectOps を通る', () => {
+  it('★ 記録を読む7つの画面は、共通の watchProjectOps を通る', () => {
     const users = RENDERER.filter(f => /\bwatchProjectOps\(/.test(code(f))).map(f => f.replace(/\\/g, '/')).sort()
     expect(users).toEqual([
       'src/renderer/apprunDedicatedActions.ts',       // 専有型（AppRunDedicatedPanel が watchDedicatedOps 経由で使う）
       'src/renderer/components/AppRunPanel.tsx',      // 共用型
       'src/renderer/components/PublishModal.tsx',     // モーダルの上部
+      'src/renderer/components/teardown/ProjectDeleteProgressLine.tsx', // プロジェクトの削除の窓の進み具合の1行（読むだけ・ack しない）
       'src/renderer/hooks/useProjectOpsView.ts',      // HANAMII・Vercel
       'src/renderer/projectOpsView.ts',               // 定義
       'src/renderer/teardown/watch.ts',               // 破棄の共通の部品（watchTeardownOps。段階0）

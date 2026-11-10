@@ -36,14 +36,25 @@ export const TEARDOWN_HANDLER_TARGET: Readonly<Record<string, PublishTargetKind>
 })
 
 /**
+ * 自動の続き（teardown/hanamiiResume.ts が呼ぶ hanamii:resumeTeardown）の記録の handler。上の表（3つの IPC）には入れず、
+ * 最初の破棄（hanamii:teardown）と同じ公開先の破棄として読む別名にする（進み具合・結果・「済んだ」の扱いが同じ）。
+ */
+export const HANAMII_RESUME_HANDLER = 'hanamii:resumeTeardown'
+
+/** HANAMII の破棄の記録の handler か（最初の破棄・自動の続きの両方）。画面が `=== 'hanamii:teardown'` と書き分けない。 */
+export const isHanamiiTeardownHandler = (h: unknown): boolean => h === 'hanamii:teardown' || h === HANAMII_RESUME_HANDLER
+
+/**
  * 記録が、この公開先の破棄か。**見分けは target と handler の両方**。
  * 鍵はプロジェクト単位なので、走っている・終わった記録は別の公開先の操作や、同じ公開先の公開・作成のことがある——
  * そういう記録の詳細はここで出さず（掟11）、ack でも巻き込まない。
  */
 export function isTeardownRecordOf(target: PublishTargetKind, rec: { target?: string; handler?: string } | null | undefined): boolean {
   if (!rec || rec.target !== target || typeof rec.handler !== 'string') return false
+  // 自動の続きは、最初の破棄と同じ公開先（表に入れず、ここで読み替える）。
+  const handler = rec.handler === HANAMII_RESUME_HANDLER ? 'hanamii:teardown' : rec.handler
   // 表に無い名前（constructor など Object.prototype 由来のものを含む）は、公開先の文字列と等しくならないので false になる。
-  return TEARDOWN_HANDLER_TARGET[rec.handler] === target
+  return TEARDOWN_HANDLER_TARGET[handler] === target
 }
 
 /** 走っているものの見え方。`running` がこの公開先の破棄、`other` が別の操作。どちらも無ければ何も走っていない。 */

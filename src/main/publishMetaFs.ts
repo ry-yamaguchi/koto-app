@@ -16,7 +16,8 @@ import * as path from 'path'
 import {
   withPendingPublish, withoutPendingPublish, withPublishRecord, withHanamiiProjectId,
   withApprunDedicatedRecord, withMetaPatch, withoutPublishTargetInMeta, withHanamiiStorageLeftover, hasPublishRecordInMeta,
-  type PublishTargetKind, type ApprunDedicatedRecord,
+  withHanamiiDeletionAccepted, hanamiiDeletionAcceptedOf,
+  type PublishTargetKind, type ApprunDedicatedRecord, type HanamiiDeletionAcceptedMark,
 } from '../shared/publishMeta'
 import { runningOp } from './projectLock'
 
@@ -313,6 +314,33 @@ export function markHanamiiStorageLeftoverFs(
   if (typeof onDisk !== 'string' || onDisk === '' || onDisk !== deletedProjectId) return { ok: true, marked: false }
   const r = updateMetaFs(projectDir, disk => withHanamiiStorageLeftover(disk, buckets), 'HANAMII の保存場所が残った印')
   return r.ok ? { ok: true, marked: true } : { ok: false, message: r.message }
+}
+
+/**
+ * HANAMII が削除を受け付けた（202）ときの「受け付けの印」を書く（`publish.hanamii.deletionAccepted`）。**待ち始める前に**、鍵の中で呼ぶ。
+ * 次に Koto を開いたとき、この印があるプロジェクトだけ、削除の続きを自動で確かめる（`hanamii:resumeTeardown`）。
+ * 印は、外す（gone で保存場所の段を終えた回）か、行ごと消える（`settleHanamiiTeardownFs`）か、「保存場所が残った」印へ引き継がれる
+ * （`withHanamiiStorageLeftover`）まで残る。待ち切れなかった・確かめられなかった・確認が要る回・Koto の終了で止まった回は、残る。
+ *
+ * ── 守り（`markHanamiiStorageLeftoverFs` と同じ規則）──
+ * 記録の projectId が、印の projectId と**同じときだけ**書く（違う＝別の公開の記録、無い＝書く先の行が無い）。
+ * 記録ファイルが無い・壊れているときは、ファイルを作らず、壊れたものを上書きもしない。書けなかったときは `ok:false`。
+ */
+export function writeHanamiiAcceptedMarkFs(
+  projectDir: string, mark: HanamiiDeletionAcceptedMark,
+): { ok: true; marked: boolean } | { ok: false; message: string } {
+  let existing: unknown
+  try { existing = JSON.parse(fs.readFileSync(metaFilePath(projectDir), 'utf-8')) } catch { return { ok: true, marked: false } }
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return { ok: true, marked: false }
+  const onDisk = (existing as any)?.publish?.hanamii?.projectId
+  if (typeof onDisk !== 'string' || onDisk === '' || onDisk !== mark.projectId) return { ok: true, marked: false }
+  const r = updateMetaFs(projectDir, disk => withHanamiiDeletionAccepted(disk, mark), 'HANAMII の受け付けの印')
+  return r.ok ? { ok: true, marked: true } : { ok: false, message: r.message }
+}
+
+/** 受け付けの印を**この場で**読む（無い・壊れている・形が違うなら null）。続きの入口（`hanamii:resumeTeardown`）が鍵の中で呼ぶ。 */
+export function readHanamiiAcceptedMarkFs(projectDir: string): HanamiiDeletionAcceptedMark | null {
+  return hanamiiDeletionAcceptedOf(readMetaRaw(projectDir))
 }
 
 /**

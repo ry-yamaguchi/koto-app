@@ -78,7 +78,7 @@ import { registerHanamiiHandlers } from '../src/main/ipc/hanamii'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { permissionNameFor } from '../src/shared/storageKeys'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
 
 registerHanamiiHandlers({} as any)
@@ -121,6 +121,7 @@ function setEnv(buckets: string[]) {
 }
 const envBuckets = (): string[] => JSON.parse(fs.readFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), 'utf-8')).persistence.objectStorage.map((b: any) => b.bucket)
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetProjectOpsForTests()
   projectDir = isolatedProjectDir('koto-hanamii-shown-')

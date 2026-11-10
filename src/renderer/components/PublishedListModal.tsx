@@ -8,6 +8,7 @@ import { formatPublishedAt, PUBLISH_TARGET_CONSOLE, type PublishTargetKind } fro
 import { clearPublishRecord } from '../publishRecord'
 import { buildPublishedIndex, groupPublishedByTarget, type PublishedEntry, type PublishedGroup } from '../publishedIndex'
 import { teardownSupport } from '../../shared/teardownSupport'
+import { resumeHanamiiDeletionsIn } from '../teardown/hanamiiResume'
 // HANAMII・共用型（さくらのAppRun）・専有型の 🗑 は、どれも共通の「破棄の流れ」（teardown/・段階1の1b・段階2の2b-2・段階3B）。
 // 確認の文・実行・窓を閉じる警告・進み具合・結果は共通の部品が受け持つ。公開先ごとの違いは仕様書（teardown/targets/ の hanamii.ts・shared.ts・dedicated.ts）に1つずつ。
 // この一覧は押せる場所と、行・結果の置き場だけを持つ。
@@ -112,7 +113,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
       try {
         const ws = await getWorkspaceDir()
         if (cancelled) return
-        setWorkspace(ws)
+        setWorkspace(ws); void resumeHanamiiDeletionsIn(ws) // 受け付けの印があるプロジェクトの続きを自動で確かめる（結果は処理の記録に乗る）
         await reload(ws)
       } catch (e: any) {
         if (!cancelled) { setError(failureText(e, { readOnly: true })); setGroups([]) }

@@ -8,7 +8,7 @@
 //
 // ── 順序（0.6.22 段階3B-1 より前の専有型の削除とは、確認の印の位置が違う）────────────────
 //   1. projectDir が空でない文字列でなければ断る
-//   2. opts.confirmed が true でなければ断る（**鍵より前**。処理の記録も作らない）
+//   2. opts.confirmed が true でなければ断る（**鍵より前**。処理の記録も作らない。`requireConfirmed:false` の入口だけは見ない）
 //        以前の専有型は鍵を取ってから teardownFlow の中で断っていたため、確認の印が無い呼び出しでも「削除」の記録が1件できた
 //   3. 認証の形が違えば断る
 //   4. withProjectLock（同じプロジェクトで作成・削除・公開を同時に走らせない）。断られたら外へ1本も出さない
@@ -40,7 +40,7 @@ export type TeardownShellCtx<A> = {
   /** confirmed 以外の、公開先ごとの追加（HANAMII の projectId・共用型の deleteRegistry）。形の確かめは run の側。 */
   opts: Record<string, unknown>
   /** 進み具合の送り口（処理の記録を更新し、sendProgress があればそこへも送る）。 */
-  progress: (message: string, extra?: { stage?: string }) => void
+  progress: (message: string, extra?: { stage?: string; detail?: string }) => void
   /** 段の切り替わりだけを記録する送り口（画面に出す文は変えない）。 */
   onStage: (stage: string, mark?: StageMark) => void
 }
@@ -64,6 +64,12 @@ export interface TeardownShellSpec<A, R extends TeardownShellResultBase> {
    * **`'unknown'`（親フォルダの一覧を読めない。0.6.24 R2-f）・配列でない答え・投げた回も、確かめられないので同じく断る**（`TWINS_UNKNOWN_MESSAGE`）。
    */
   twinsOf(projectDir: string): string[] | 'unknown'
+  /**
+   * 確認の印（`opts.confirmed === true`）を要るとするか。**既定は要る**（false にしたときだけ、骨は印を見ない）。
+   * false にするのは、利用者が最初の破棄で確認したことの証が**記録の中**にある続きの入口（hanamii:resumeTeardown の受け付けの印）だけ。
+   * そのときの歯止めは run の頭（鍵の中で記録の印を確かめ、無ければ外へ1本も出さずに断る）に置く。
+   */
+  requireConfirmed?: boolean
   /** 外部サービスへ要求を出す本体。ここだけが外へ出てよい。 */
   run(ctx: TeardownShellCtx<A>): Promise<R>
   /** 公開の記録（📡 の行）を消してよいか。run の結果と、run の前に読んだ記録の有無から決める。 */
@@ -101,6 +107,8 @@ function messageOf(e: unknown): string {
 
 /** confirmed を除いた、公開先ごとの追加。isConfirmed を通ったあとなので opts は必ずオブジェクト。 */
 function extraOptsOf(opts: unknown): Record<string, unknown> {
+  // 確認の印を要らないとする入口（requireConfirmed:false）では、opts がオブジェクトとは限らない（空の追加として扱う）。
+  if (!opts || typeof opts !== 'object' || Array.isArray(opts)) return {}
   const { confirmed: _confirmed, ...rest } = opts as Record<string, unknown>
   return rest
 }
@@ -121,7 +129,7 @@ export async function runTeardownShell<A, R extends TeardownShellResultBase>(
   // 1. projectDir
   if (typeof projectDir !== 'string' || !projectDir) return spec.refused(BAD_PROJECT_DIR_MESSAGE)
   // 2. 確認の印。鍵より前（処理の記録も作らない）。
-  if (!isConfirmed(args.opts)) return spec.refused(NOT_CONFIRMED_MESSAGE)
+  if (spec.requireConfirmed !== false && !isConfirmed(args.opts)) return spec.refused(NOT_CONFIRMED_MESSAGE)
   // 3. 認証の形。
   const auth = spec.parseAuth(args.auth)
   if (auth === null || auth === undefined) return spec.refused(spec.authMissingMessage)

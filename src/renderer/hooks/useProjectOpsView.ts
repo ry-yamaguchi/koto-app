@@ -17,7 +17,7 @@
 // （HANAMII の破棄後の記録の片づけ＝src/main/publishMetaFs.ts の settleHanamiiTeardownFs）。
 
 import { useState, useEffect, useRef } from 'react'
-import { watchProjectOps, unseenOf, ackUpToFor, sendAck, type OpsWatch } from '../projectOpsView'
+import { watchProjectOps, unseenOf, ackUpToFor, sendAck, withoutSettledAccepted, type OpsWatch } from '../projectOpsView'
 
 /**
  * @param isOwn 自分の公開先の記録か（違うもの＝同じプロジェクトの別の公開先の操作は、進み具合・結果・警告を出さず、
@@ -62,6 +62,8 @@ export function useProjectOpsView(
         try { void Promise.resolve(onFinished.current?.(r)).catch(() => {}) } catch { /* 後始末の失敗で表示を止めない */ }
       }
     }
+    // main が外した HANAMII の「途中」（あとの破棄が済んだ）は、開いたままでも手元から外す（ほかの結果は今までどおり残す）。
+    setShown(prev => withoutSettledAccepted(prev, finished))
     // 出した結果を「見た」と伝える。**別の公開先の、まだ見られていない結果より新しいものは伝えない**（ackUpToFor が止める。
     // 伝えると、別の公開先の画面が出すはずの警告が消える）。伝えなかった分は、次に開いたとき同じ結果をもう一度出す
     // （見逃すより、二度見えるほうを選ぶ）。

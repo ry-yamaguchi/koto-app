@@ -34,7 +34,7 @@ import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated
 import { writeApprunDedicatedRecordFs } from '../src/main/publishMetaFs'
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { toTeardownView, resumedTeardownView, resultCallOf } from '../src/shared/teardownResult'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 registerCloudHandlers({} as any)
 registerHanamiiHandlers({} as any)
@@ -52,6 +52,7 @@ const GO_DELETE_REGISTRY = { confirmed: true, deleteRegistry: true, registryName
 let dir = ''
 let server: Server | null = null
 const realFetch = globalThis.fetch
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetHarness()
   resetProjectOpsForTests()

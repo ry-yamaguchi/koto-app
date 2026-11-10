@@ -10,7 +10,7 @@
 // （書くのは projectOps が口を通して inFlightOpsStore.ts に頼む）。持つのは InFlightRun の形（決まった語・数・段の内部名）だけで、
 // 進み具合の文・結果・URL・資源の ID・秘密は入れない（掟4）。fs・electron は import しない。
 import {
-  isInFlightKey, isStoppedByQuit, MAX_SEGMENTS, MAX_STOPPED_ENTRIES, stoppedNextStep, stoppedRunTimings,
+  isInFlightKey, isStoppedByQuit, MAX_SEGMENTS, settlesAcceptedNotice, MAX_STOPPED_ENTRIES, stoppedNextStep, stoppedRunTimings,
   type InFlightRun, type InFlightSegment, type StoppedEntry, type StoppedRun,
 } from '../shared/inFlightOps'
 import { MAX_EARLIER_RUNS, type StoppedRunTimings } from '../shared/stageTiming'
@@ -95,6 +95,17 @@ export function markNoticeSeenByBegin(key: string, op: ProjectOp, target: OpTarg
 /** 見られていない記録から、その公開先・種類の「止まりました」の知らせを外す。 */
 export function withoutStoppedNotice(list: readonly ProjectOpRecord[], op: ProjectOp, target: OpTarget): ProjectOpRecord[] {
   return list.filter(r => !(isStoppedByQuit(r.result) && r.op === op && r.target === target))
+}
+
+/**
+ * HANAMII の破棄が**済んだ**回（`finished.result.ok === true`）が終わったとき、見られていない記録から、**同じプロジェクトの、それより前の
+ * HANAMII の破棄の「受け付けただけ」（`extra.deletionAccepted === true`）の結果**を外す（見たことにする）。画面の上部の「途中です」が、
+ * 続きで済んだ回も、手での押し直しで済んだ回も、利用者が何もしなくても消える。
+ * 外さないもの: 済んでいない回（ok でない）が終わったとき・別の公開先・別の種類（op）・「受け付けただけ」でない結果・あとから始まった回の結果。
+ * 呼ぶのは projectOps の `finishOp` の1か所（`withoutStoppedNotice` と同じ形の純関数）。
+ */
+export function withoutAcceptedNotice(list: readonly ProjectOpRecord[], finished: ProjectOpRecord): ProjectOpRecord[] {
+  return list.filter(r => !settlesAcceptedNotice(finished, r))
 }
 
 // ── 次に終わったとき ─────────────────────────────────────────────────────────────

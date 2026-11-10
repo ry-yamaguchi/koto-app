@@ -400,10 +400,14 @@ describe('P4 文・判定・種類の表', () => {
 
   it('★ stoppedNextStep: 専有型は続きから進むと言う。共用型・HANAMII・そのほかは確かめていないので言わない', () => {
     expect(stoppedNextStep('sakura-apprun-dedicated')).toBe('もう一度削除を押すと、続きから進みます。')
-    for (const t of ['sakura-apprun', 'hanamii', 'vercel', 'sakura-rental', 'unknown', '']) {
+    for (const t of ['sakura-apprun', 'vercel', 'sakura-rental', 'unknown', '']) {
       expect(stoppedNextStep(t), t).toBe('どこまで済んだか管理画面で確かめてから、もう一度破棄を押してください。')
       expect(stoppedNextStep(t), t).not.toContain('続きから')
     }
+    // HANAMII は、受け付けの印があれば Koto が自動で続ける。押し直し（確認の窓）を最初の手として言わない
+    expect(stoppedNextStep('hanamii')).toBe('HANAMII が削除を受け付けていれば、Koto が自動で続きの削除を進めます。終わらないときは、管理画面で確かめてから、もう一度破棄を押してください。')
+    expect(stoppedNextStep('hanamii')).not.toMatch(/^どこまで済んだか/)
+    expect(stoppedNextStep('hanamii')).toContain('自動で')
   })
 
   it('★ isStoppedByQuit: extra.stoppedByQuit が true のときだけ true（偽の知らせにならない）', () => {

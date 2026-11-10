@@ -68,6 +68,11 @@ export interface PublishMeta {
      * 全部消えた回と「一覧から削除」（withoutPublishTarget）が null に戻す。
      */
     storageLeftoverBuckets?: string[] | null
+    /**
+     * HANAMII が削除を受け付けた（202）という「受け付けの印」（main が書く。形と読み方は shared/publishMeta.ts の `hanamiiDeletionAcceptedOf`）。
+     * 次に Koto を開いたとき、この印があるプロジェクトだけ、削除の続きを自動で確かめる。削除が済んだと確かめた回と「一覧から削除」が外す。
+     */
+    deletionAccepted?: Record<string, unknown> | null
   }
   lastPublishedAt?: string
   host?: string

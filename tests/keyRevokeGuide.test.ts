@@ -12,7 +12,7 @@ import path from 'node:path'
 // 文は書き下す（関数を通すと同語反復になる）。
 import { A, h, resetHarness, newProjectDir, setup, APP, bucketRef, OK_AUTH, stateMeta } from './sharedTeardownHarness'
 import { shownTeardown, shownFromEnv } from './shownFromEnv'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 /** 保存場所へ最初の deleteKeys が入った直後に呼ぶ関数（env.json が読めなくなる回を作る）。 */
 const hook = vi.hoisted(() => ({ afterDeleteKeys: null as null | (() => void) }))
@@ -60,6 +60,7 @@ const count = (lines: readonly string[], needle: string) => lines.join('\n').spl
 
 let dir = ''
 const realFetch = globalThis.fetch
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetProjectOpsForTests(); resetHarness(); hook.afterDeleteKeys = null; dir = newProjectDir()
   // 偽の HANAMII API（実物の HanamiiClient をそのまま動かす）。DELETE は 200（削除済み）。

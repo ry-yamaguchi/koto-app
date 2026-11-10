@@ -38,7 +38,9 @@
 
 // ── 持ち場（どのパネルが、どの記録を出すか）──────────────────────────────────────────────
 
-type OwnedRecord = { target?: string; handler?: string } | null | undefined
+import { settlesAcceptedNotice } from '../shared/inFlightOps'
+
+type OwnedRecord ={ target?: string; handler?: string } | null | undefined
 
 /** 専有型の公開先（記録の target）。 */
 export const DEDICATED_TARGET = 'sakura-apprun-dedicated'
@@ -90,6 +92,19 @@ export function visiblePanelShows(target: string | null | undefined, rec: OwnedR
 export function holdsWarning(rec: { result?: { warnings?: unknown } | null } | null | undefined): boolean {
   const w = rec?.result?.warnings
   return Array.isArray(w) && w.length > 0
+}
+
+/**
+ * 画面が手元に溜めた結果（【公開】の上部のカード・HANAMII の画面の結果）から、**あとの破棄が済んだ** HANAMII の「途中」（受け付けただけ）を外す
+ * （純関数。判定は main と同じ shared の `settlesAcceptedNotice` の1つ）。済んだ記録は、手元の結果か、届いた写しの見られていない記録から探す
+ * （済んだ回はパネルがすぐ「見た」にするので、写しからは消えていることがある）。main も同じ回に「途中」を外すので、**開いたまま自動で消える**。
+ * 写しに「途中」が見当たらないことは根拠にしない（遅れて届いた古い写しで、見逃してはいけない知らせを隠さない）。
+ * 外すものが無ければ同じ配列を返す（描き直さない）。
+ */
+export function withoutSettledAccepted<T extends ProjectOpRecordShape>(held: T[], unseen: readonly ProjectOpRecordShape[]): T[] {
+  const pool: readonly ProjectOpRecordShape[] = [...held, ...unseen]
+  const kept = held.filter(r => !pool.some(later => settlesAcceptedNotice(later, r)))
+  return kept.length === held.length ? held : kept
 }
 
 // ── 読む ──────────────────────────────────────────────────────────────────────────

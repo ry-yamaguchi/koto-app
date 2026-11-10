@@ -70,7 +70,7 @@ import { markHanamiiStorageLeftoverFs, forgetPublishTargetFs } from '../src/main
 import { withHanamiiStorageLeftover, withoutPublishTarget } from '../src/shared/publishMeta'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
 import { shownTeardown } from './shownFromEnv'
 
@@ -111,6 +111,7 @@ function setEnv(buckets: string[], raw?: string) {
   fs.writeFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), raw ?? JSON.stringify(spec, null, 2), 'utf-8')
 }
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetProjectOpsForTests()
   projectDir = isolatedProjectDir('koto-hanamii-leftover-')
@@ -210,7 +211,10 @@ describe('★★★ 保存場所だけ残った回: main が印（残ってい�
     for (const status of [202, 500, 403]) {
       h.status = status
       await run()
-      expect(readMeta(), String(status)).toEqual(before)
+      // 202 だけは、待ち始める前に「受け付けの印」（deletionAccepted）が足される。「保存場所が残った」印（storageLeftoverBuckets）は書かない。
+      const after = readMeta()
+      delete after.publish.hanamii.deletionAccepted
+      expect(after, String(status)).toEqual(before)
     }
   })
 

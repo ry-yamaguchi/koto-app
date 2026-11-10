@@ -28,6 +28,7 @@ import { waitForNewVersion, type NewVersionOutcome } from '../hanamii/aftercare'
 // 破棄（hanamii:teardown）は hanamiiTeardown.ts に切り出した（共通の骨 teardownShell の上）。テストが registerHanamiiHandlers 経由でハンドラを取り出すので、
 // 登録はここから呼び、PROJECT_MISMATCH_TEARDOWN と結果の型はここからも読めるようにしておく。
 import { registerHanamiiTeardownHandler } from './hanamiiTeardown'
+import { registerHanamiiResumeHandler } from './hanamiiResumeTeardown'
 export { PROJECT_MISMATCH_TEARDOWN } from './hanamiiTeardown'
 export type { HanamiiTeardownResult } from './hanamiiTeardown'
 
@@ -598,6 +599,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
   })
   // HANAMII の破棄（hanamii:teardown）は ipc/hanamiiTeardown.ts（共通の骨 teardownShell の上）。呼び形は (projectDir, { token }, { confirmed, projectId })。
   registerHanamiiTeardownHandler()
+  registerHanamiiResumeHandler()
 
   ipcMain.handle('hanamii:detectEnvKeys', async (_, projectDir: string) => {
     try {
