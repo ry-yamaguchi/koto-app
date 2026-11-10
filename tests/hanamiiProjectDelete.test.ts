@@ -91,7 +91,7 @@ import { teardownRemainingWarnings } from '../src/shared/cloudCost'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../src/renderer/publishStatus'
 import { failureLinesOf, type ProjectDeleteStep } from '../src/renderer/teardown/projectDeletePlan'
 import type { ConfirmOptions } from '../src/renderer/useConfirm'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
 
 const PROJECT_ID = 'hnm-proj-1'
@@ -107,11 +107,11 @@ const mainTeardown = (() => { registerHanamiiHandlers({} as any); return h.handl
 
 const metaFile = () => path.join(dir, '.sakuraide.json')
 const readMeta = (): any => JSON.parse(fs.readFileSync(metaFile(), 'utf-8'))
-
 function writeRecord(hanamii: Record<string, unknown> | null, targets: Record<string, unknown> = { hanamii: { publishedAt: '2026-09-29T00:00:00.000Z', url: 'https://myapp.example.test' }, vercel: { publishedAt: '2026-09-28T00:00:00.000Z', url: 'https://myapp.vercel.test' } }) {
   fs.writeFileSync(metaFile(), JSON.stringify({ name: 'myapp', publish: { ...(hanamii ? { hanamii: { workspaceId: 'ws-1', ...hanamii } } : {}), targets } }, null, 2), 'utf-8')
 }
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetProjectOpsForTests()
   dir = isolatedProjectDir('koto-hanamii-projdel-')
@@ -251,7 +251,7 @@ describe('H3 プロジェクト削除の HANAMII: 破棄できなかった回は
     h.status = 202
     const failed = await run(['hanamii'], fakeConfirm(true).confirm)
     expect(failed).toEqual([`${HANAMII}: ${HANAMII_DELETION_ACCEPTED_WARNING}`])
-    expect(h.calls).toEqual([DELETE_CALL])
+    expect(h.calls.filter(c => c !== DELETE_CALL && !c.startsWith('GET https://')), '待っても済まなかったのに保存場所へ出た').toEqual([])
     expect(readMeta().publish.hanamii.projectId).toBe(PROJECT_ID)
     expect(readMeta().publish.targets.hanamii).toBeTruthy()
   })

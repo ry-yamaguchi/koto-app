@@ -48,7 +48,7 @@ import { registerHanamiiHandlers, PROJECT_MISMATCH_TEARDOWN } from '../src/main/
 import { settleHanamiiTeardownFs } from '../src/main/publishMetaFs'
 import { setProjectOpsListener, resetProjectOpsForTests, getOps } from '../src/main/projectOps'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 registerHanamiiHandlers({} as any)
 const teardown = h.handlers.get('hanamii:teardown')!
@@ -96,6 +96,7 @@ function withStorageEnv() {
   fs.writeFileSync(path.join(projectDir, '.sakura-cloud', 'env.json'), JSON.stringify(spec, null, 2), 'utf-8')
 }
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'koto-hnm-teardown-record-'))
   h.hasCreds = true

@@ -253,7 +253,8 @@ export function withApprunDedicatedRecord(meta: unknown, patch: Partial<ApprunDe
  * 記録にある projectId と**違う**空でない projectId を書くとき（再公開で新しいプロジェクトができた回）は、
  * 「保存場所だけが残った」印（`storageLeftoverBuckets`）を null にする。その印は、消えた前のプロジェクトについてのもの。
  * 残すと、生きた新しいプロジェクトの破棄が「前回の破棄で消えた」と読まれる。
- * 同じ ID の書き直し・null（空）の書き込みは、印を保つ。印が無い記録には、印のキーを足さない。
+ * 同じ ID の書き直し・null（空）の書き込みは、「保存場所だけが残った」印を保つ。印が無い記録には、印のキーを足さない。
+ * **受け付けの印（`deletionAccepted`）は、空でない projectId を書くとき（公開の成功）に、同じ ID でも外す。** null の書き込みは保つ。
  */
 export function withHanamiiProjectId(meta: unknown, projectId: string | null): Record<string, unknown> {
   const m = asRecord(meta)
@@ -261,11 +262,16 @@ export function withHanamiiProjectId(meta: unknown, projectId: string | null): R
   const hanamii = asRecord(publish.hanamii)
   const replaced = typeof projectId === 'string' && projectId !== '' && projectId !== hanamii.projectId
   const staleMark = replaced && hanamii.storageLeftoverBuckets != null
+  // 受け付けの印は、空でない projectId を書くとき（公開が成功したとき）に外す。別のプロジェクトに替わった回はもちろん、**同じ projectId への公開し直しでも**:
+  // 公開し直したという新しい意思を、古い削除の確認で上書きしない（残すと、続きの自動の確かめが生きたプロジェクトへ DELETE を送る）。
+  // null（空）の書き込みは、印を保つ。
+  const staleAccepted = typeof projectId === 'string' && projectId !== '' && hanamii.deletionAccepted != null
+  const { deletionAccepted: _dropped, ...hanamiiKept } = hanamii
   return {
     ...m,
     publish: {
       ...publish,
-      hanamii: { ...hanamii, projectId, ...(staleMark ? { storageLeftoverBuckets: null } : {}) },
+      hanamii: { ...(staleAccepted ? hanamiiKept : hanamii), projectId, ...(staleMark ? { storageLeftoverBuckets: null } : {}) },
     },
   }
 }
@@ -286,13 +292,68 @@ export function withHanamiiStorageLeftover(meta: unknown, buckets: readonly stri
   const names = buckets === null
     ? null
     : Array.from(new Set(buckets.filter((b): b is string => typeof b === 'string' && b !== '')))
+  // 保存場所だけが残った＝HANAMII のプロジェクトは消えた。受け付けの印は役目を終えた（残りの保存場所は、この印が引き継ぐ）。
+  const { deletionAccepted: _accepted, ...hanamiiKept } = hanamii
   return {
     ...m,
     publish: {
       ...publish,
-      hanamii: { ...hanamii, storageLeftoverBuckets: names },
+      hanamii: { ...hanamiiKept, storageLeftoverBuckets: names },
     },
   }
+}
+
+/**
+ * HANAMII の「受け付けの印」（`publish.hanamii.deletionAccepted`）。利用者が確認したうえで、HANAMII が削除を受け付けた（202）ことの証。
+ * 次に Koto を開いたとき、**この印があり、印の projectId が記録の projectId と一致するプロジェクトだけ**、削除の続きを自動で確かめる。
+ * `shownPlacements` は、確認で見せた保存場所の組（続きで消してよいのは、この組だけ）。
+ * 書く先は main の `writeHanamiiAcceptedMarkFs` の1つ。
+ */
+export type HanamiiDeletionAcceptedMark = {
+  projectId: string
+  /** 受け付けられた時刻（ISO）。 */
+  acceptedAt: string
+  /** 確認で見せた保存場所の組（`keepData: true` は「消しません」と見せたもの）。 */
+  shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }>
+  /** HANAMII が「確認が要る」と答えたか（202 の本文の `project.requiresReview === true`）。 */
+  requiresReview: boolean
+  operationId?: string
+}
+
+/**
+ * 記録から受け付けの印を読む（純関数）。**形が違うもの（項目の欠け・型違い・壊れた組）は null**（印なし＝自動の続きをしない側に倒す）。
+ * 画面（続きの探し方）と main（続きの入口）が同じこれを通る。
+ */
+export function hanamiiDeletionAcceptedOf(meta: unknown): HanamiiDeletionAcceptedMark | null {
+  const raw = asRecord(asRecord(asRecord(meta).publish).hanamii).deletionAccepted
+  if (!isPlainObject(raw)) return null
+  const { projectId, acceptedAt, shownPlacements, requiresReview, operationId } = raw
+  if (typeof projectId !== 'string' || projectId === '') return null
+  if (typeof acceptedAt !== 'string' || acceptedAt === '') return null
+  if (typeof requiresReview !== 'boolean') return null
+  if (!Array.isArray(shownPlacements)) return null
+  const shown: HanamiiDeletionAcceptedMark['shownPlacements'] = []
+  for (let i = 0; i < shownPlacements.length; i++) {
+    const e: unknown = shownPlacements[i]
+    if (!isPlainObject(e)) return null
+    const { bucket, prefix, keepData } = e
+    if (typeof bucket !== 'string' || typeof prefix !== 'string') return null
+    if (keepData !== undefined && typeof keepData !== 'boolean') return null
+    shown.push(keepData === true ? { bucket, prefix, keepData: true } : { bucket, prefix })
+  }
+  if (operationId !== undefined && operationId !== null && typeof operationId !== 'string') return null
+  return {
+    projectId, acceptedAt, shownPlacements: shown, requiresReview,
+    ...(typeof operationId === 'string' && operationId !== '' ? { operationId } : {}),
+  }
+}
+
+/** `publish.hanamii.deletionAccepted` を書く（null で外す。外すときはキーごと消す）。`publish.hanamii` のほかの項目は保つ。 */
+export function withHanamiiDeletionAccepted(meta: unknown, mark: HanamiiDeletionAcceptedMark | null): Record<string, unknown> {
+  const m = asRecord(meta)
+  const publish = asRecord(m.publish)
+  const { deletionAccepted: _old, ...hanamiiKept } = asRecord(publish.hanamii)
+  return { ...m, publish: { ...publish, hanamii: mark === null ? hanamiiKept : { ...hanamiiKept, deletionAccepted: mark } } }
 }
 
 /** プレーンオブジェクトか（配列・null・文字列・数値は「葉」として置き換える側に回す）。 */
@@ -375,7 +436,11 @@ export function withoutPublishTarget(
   // 破棄の導線（📡 公開したもの一覧）はここしか通らないので、ここで消す。
   // HANAMII の「保存場所だけが残った印」（storageLeftoverBuckets）も一緒に消す。残すと、行も projectId も無いのに
   // 印だけが残り、次に同じ記録へ projectId が入ったとき（公開し直し）、確認が「プロジェクトはすでに削除されています」と言い違える。
-  if (target === 'hanamii') next.hanamii = { ...(base.hanamii ?? {}), projectId: null, storageLeftoverBuckets: null }
+  // 受け付けの印（deletionAccepted）も一緒に消す: 行ごと片づけた回に、続きの自動の確かめを残さない。
+  if (target === 'hanamii') {
+    const { deletionAccepted: _accepted, ...hanamiiKept } = base.hanamii ?? {}
+    next.hanamii = { ...hanamiiKept, projectId: null, storageLeftoverBuckets: null }
+  }
   if (target === 'sakura-rental') {
     next.lastPublishedAt = undefined
     next.host = undefined

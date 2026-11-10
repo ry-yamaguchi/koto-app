@@ -60,6 +60,7 @@ import { useConfirmChoices } from '../useConfirmChoices'
 import Modal from '../ui/Modal'
 import ManualTeardownNote from './teardown/ManualTeardownNote'
 import ProjectDeleteResults from './teardown/ProjectDeleteResults'
+import ProjectDeleteProgressLine from './teardown/ProjectDeleteProgressLine'
 
 export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: {
   projectDir: string
@@ -275,6 +276,7 @@ export default function ProjectDeleteDialog({ projectDir, onClose, onDeleted }: 
 
             <p className="text-ink-muted">GitHub に保存したファイル（コード）は<b>そのまま残ります</b>。アプリに入っているデータは GitHub には入っていません。</p>
             <p className="font-mono text-[10px] text-ink-muted break-all">{projectDir}</p>
+            {busy && <ProjectDeleteProgressLine projectDir={projectDir} />}
             {run !== null && <ProjectDeleteResults run={run} showBlockNote={plan === null || plan.block === null} />}
             {crashed !== null && <p className="text-brand-red select-text">⚠️ <FailureLines text={crashed} /></p>}
           </div>

@@ -82,6 +82,39 @@ describe('H1: 切り替え・やり直しでも、表示が混ざらない（掟
   })
 })
 
+describe('H1: 「途中」は、あとの破棄が済んだら開いたまま消える（作者の依頼: 途中ですのメッセージも自動的に無くなるように）', () => {
+  it('★★★ 開いたまま、次に開いたときの自動の続き（hanamii:resumeTeardown）が済むと、前の「途中」の文が画面から消える', async () => {
+    published()
+    world.teardownReply = { ok: false, appDeleted: false, deletionAccepted: true, message: HANAMII_DELETION_ACCEPTED_WARNING }
+    const screen = open()
+    await settle()
+    await press(screen)
+    confirmButton(screen)!.click()
+    await settle()
+    expect(screen.count(HANAMII_DELETION_ACCEPTED_WARNING), '前提: 途中が出ている').toBe(1)
+    // 自動の続きが済んだ（本物の main の処理の記録を通す。記録の片づけは本物のハンドラのテストが固定している）
+    await world.guard(DIR, '削除', { target: 'hanamii', handler: 'hanamii:resumeTeardown' }, '🗑 HANAMII の削除の続きを確かめています…',
+      async () => ({ ok: true, appDeleted: true, executed: [] }))
+    await settle()
+    expect(screen.count(HANAMII_DELETION_ACCEPTED_WARNING), '済んだのに、前の「途中」が画面に残っている').toBe(0)
+    expect(screen.has('⏳ 破棄の途中です'), '済んだのに「破棄の途中です」が残っている').toBe(false)
+  })
+
+  it('★★ あとの回もまた途中（待ち切れなかった）なら、消さない', async () => {
+    published()
+    world.teardownReply = { ok: false, appDeleted: false, deletionAccepted: true, message: HANAMII_DELETION_ACCEPTED_WARNING }
+    const screen = open()
+    await settle()
+    await press(screen)
+    confirmButton(screen)!.click()
+    await settle()
+    await world.guard(DIR, '削除', { target: 'hanamii', handler: 'hanamii:resumeTeardown' }, '🗑 HANAMII の削除の続きを確かめています…',
+      async () => ({ ok: false, appDeleted: false, deletionAccepted: true, message: HANAMII_DELETION_ACCEPTED_WARNING }))
+    await settle()
+    expect(screen.has('⏳ 破棄の途中です'), 'まだ済んでいないのに「途中」が消えた').toBe(true)
+  })
+})
+
 describe('H1: 結果は main の記録から出る（閉じて開き直しても同じ）', () => {
   it('★★★ HANAMII が削除を受け付けただけ（deletionAccepted）: 「途中」と出して文は1回だけ。専有型の「待ち切れずに止まりました」は出さない。入口と公開の記録は残す', async () => {
     published()

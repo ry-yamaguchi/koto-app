@@ -33,7 +33,7 @@ import { registerApprunDedicatedHandlers } from '../src/main/ipc/apprunDedicated
 import { writeApprunDedicatedRecordFs } from '../src/main/publishMetaFs'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 import { teardownStorageForProject } from '../src/main/cloud/storageForTarget'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 registerCloudHandlers({} as any)
 registerHanamiiHandlers({} as any)
@@ -57,6 +57,7 @@ const KEY_WARNING_LINE = `⚠️ ${KEY_KEPT_CONFIRMED_WARNING}`
 let dir = ''
 let server: Server | null = null
 const realFetch = globalThis.fetch
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetHarness()
   resetProjectOpsForTests()

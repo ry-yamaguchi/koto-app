@@ -77,6 +77,15 @@ export async function readHanamiiTeardownRecord(projectDir: string): Promise<Han
 export const HANAMII_KEY_MISSING_MESSAGE = 'HANAMII のトークンが見つかりません。公開に使った登録を「認証情報」で確かめ、トークンを入れ直してから、もう一度お試しください。'
   + 'その登録を消した場合は、足し直しても使えません。HANAMII の管理画面でプロジェクトを削除し、保存場所が残っていないかコントロールパネルで確かめてください。'
 
+/**
+ * 破棄に使う HANAMII のトークンを、使う瞬間に読む（D8。流れの loadAuth と、自動の続き〔teardown/hanamiiResume.ts〕が同じこれを通る）。
+ * 公開したときのトークン（記録の tokenId）だけで呼ぶ。見つからなければ null（呼ばずに止める）。使用中・先頭の登録へは倒さない。
+ * tokenId が記録に無い旧い記録だけ、使用中のトークン（無ければ先頭）を使う。
+ */
+export async function loadHanamiiToken(tokenId: string | null): Promise<string | null> {
+  return tokenId ? await getHanamiiTokenById(tokenId) : await getHanamiiToken()
+}
+
 export const HANAMII_TEARDOWN_WORDS: TeardownWords = {
   verb: '破棄',
   confirmTitle: 'HANAMII の公開を破棄します',
@@ -118,8 +127,7 @@ export const hanamiiTeardownSpec: TargetSpec<HanamiiTeardownRecord, { token: str
     return `前回の破棄で、HANAMII のプロジェクトは削除済みか見つからない状態でした。残っている保存場所${bucketNamesText(removing)}を削除します。`
   },
   loadAuth: async record => {
-    // 公開したときのトークンだけで呼ぶ。見つからなければ null（流れが、呼ばずに止めて案内を出す）。使用中・先頭の登録へは倒さない。
-    const token = record.tokenId ? await getHanamiiTokenById(record.tokenId) : await getHanamiiToken()
+    const token = await loadHanamiiToken(record.tokenId)
     return token ? { token } : null
   },
   invoke: (projectDir, auth, opts, record) =>

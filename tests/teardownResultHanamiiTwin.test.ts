@@ -67,10 +67,10 @@ import { teardownRemainingWarnings } from '../src/shared/cloudCost'
 import type { PublishTargetKind } from '../src/shared/publishMeta'
 import {
   toTeardownView, resumedTeardownView, teardownWarningsOf,
-  HANAMII_DELETION_ACCEPTED_WARNING, TEARDOWN_REMAINING_WARNING_HEAD, TEARDOWN_IN_PROGRESS_WARNING_HEAD,
+  HANAMII_DELETION_ACCEPTED_WARNING, HANAMII_DELETION_REVIEW_WARNING, TEARDOWN_REMAINING_WARNING_HEAD, TEARDOWN_IN_PROGRESS_WARNING_HEAD,
   type TeardownLeftover,
 } from '../src/shared/teardownResult'
-import { deleteProjectReplyText } from './hanamiiTeardownFixtures'
+import { deleteProjectReplyText, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
 import { shownTeardown } from './shownFromEnv'
 
@@ -97,6 +97,7 @@ const REMAINING_SENTENCE = (names: string) =>
 const KEY_WARN = '⚠️ 保存場所のアクセスキーを無効にできませんでした。コントロールパネルから確認してください'
 const PROJECT_LINE = "HANAMII のプロジェクト『myapp』を削除しました"
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 describe('★★★ HANAMII の残った保存場所: 月額が続く警告が、その場でも記録からも出る（以前は記録の警告に出ず、自動で「見た」にされうる状態だった）', () => {
   it('★ 複数の保存場所が残った → 全件を名指しした1つの警告。見出しは failed、一覧は2件、その場と記録が一致', () => {
     const raw = {
@@ -219,10 +220,15 @@ describe('★★★ HANAMII の受付済み（deletionAccepted）: 「待ち切�
   })
 
   it('受付済みの文は、HANAMII の main が返す message と同じ1つの定数（文が2か所で書き分けられていない）', () => {
-    expect(HANAMII_DELETION_ACCEPTED_WARNING).toBe('HANAMII の削除が済んだと確認できませんでした（受け付けただけで、まだ終わっていない場合があります）。しばらくしてから、もう一度破棄を押してください。保存場所と記録は、削除が確認できるまで残してあります。')
-    // 2xx で deleted が true でないものは全部この回に入る（204・空の本文など、原本に例の無い形を含む）。確かめていない「受け付けた」「終わっていない」を断定しない。
-    expect(HANAMII_DELETION_ACCEPTED_WARNING).not.toContain('受け付けましたが')
-    expect(HANAMII_DELETION_ACCEPTED_WARNING).not.toContain('まだ終わっていません')
+    // 文の一字一句（Koto が約5分待っても済まなかった回。次に開いたときの自動の続きを言う）。
+    expect(HANAMII_DELETION_ACCEPTED_WARNING).toBe('HANAMII の削除が、まだ済んでいません。次に Koto を起動したときか、この画面を開き直したときに、続きを自動で確かめて、削除を終えます。保存場所と記録は、削除が確認できるまで残してあります。')
+    // 以前の「押し直してください」を、もう言わない（押し直しは要らない）。
+    expect(HANAMII_DELETION_ACCEPTED_WARNING).not.toContain('もう一度破棄を押してください')
+  })
+
+  it('★★★ 確認が要る回の文（REVIEW）の一字一句。押し直しを求めない（作者の決定: 確認が要る回も、済めば次に開いたとき自動で続ける）', () => {
+    expect(HANAMII_DELETION_REVIEW_WARNING).toBe('HANAMII から、この削除には確認が要るという応答がありました。HANAMII の管理画面で状態を確かめてください。削除が済めば、次に Koto を開いたときに、続きを自動で進めます。保存場所と記録は残してあります。')
+    expect(HANAMII_DELETION_REVIEW_WARNING).not.toContain('もう一度破棄を押してください')
   })
 })
 
@@ -260,7 +266,8 @@ describe('★★★ 本物の main（hanamii:teardown）の返り値と、main �
   it('★★★ 202（受け付けただけ）: 保存場所へ触れず、その場の見出しも記録の見出しも「途中」。記録の警告は HANAMII の文だけ', async () => {
     h.status = 202
     const raw = await run()
-    expect(h.calls).toEqual([DELETE_CALL])
+    expect(h.calls[0]).toBe(DELETE_CALL)
+    expect(h.calls.filter(c => !/^(DELETE|GET) https:/.test(c)), '待っても済まなかったのに保存場所へ出た').toEqual([])
     const live = toTeardownView(HANAMII, raw)
     const resumed = resumedTeardownView(HANAMII, record())
     expect(resumed).toEqual(live)
@@ -268,6 +275,23 @@ describe('★★★ 本物の main（hanamii:teardown）の返り値と、main �
     expect(record()?.warnings).toEqual([HANAMII_DELETION_ACCEPTED_WARNING])
     expect(record()?.extra?.deletionAccepted).toBe(true)
     expect(holdsWarning({ result: record() })).toBe(true)
+  })
+
+  it('★★★ 202 で requiresReview:true: 記録の extra に deletionReview が載り、警告は「確認が要る」の文だけ。開き直した見出しはその場と同じ（受け付けの文と食い違う2つの文を並べない）', async () => {
+    globalThis.fetch = (async (input: unknown, init: any) => {
+      h.calls.push(`${init?.method ?? 'GET'} ${String(input)}`)
+      return { ok: true, status: 202, async text() { return deleteProjectReplyText(202, PROJECT_ID, { requiresReview: true }) } }
+    }) as unknown as typeof fetch
+    const raw = await run()
+    expect(raw).toMatchObject({ ok: false, appDeleted: false, deletionAccepted: true, deletionReview: true, message: HANAMII_DELETION_REVIEW_WARNING })
+    expect(h.calls.filter(c => !/^(DELETE|GET) https:/.test(c)), '確認が要る回に保存場所へ出た').toEqual([])
+    expect(record()?.extra?.deletionReview, '記録の extra に deletionReview が載っていない').toBe(true)
+    expect(record()?.extra?.deletionAccepted).toBe(true)
+    expect(teardownWarningsOf(raw)).toEqual([HANAMII_DELETION_REVIEW_WARNING])
+    expect(record()?.warnings).toEqual([HANAMII_DELETION_REVIEW_WARNING])
+    const live = toTeardownView(HANAMII, raw)
+    expect(resumedTeardownView(HANAMII, record())).toEqual(live)
+    expect(live).toMatchObject({ ok: false, state: 'inProgress' })
   })
 
   it('★★★ 200 のあと保存場所の一覧に失敗: 保存場所が丸ごと残る。記録の警告に「課金が続きます」が出る（以前は出なかった）', async () => {

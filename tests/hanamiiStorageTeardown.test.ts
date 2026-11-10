@@ -112,7 +112,7 @@ import { registerHanamiiHandlers } from '../src/main/ipc/hanamii'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { getOps, resetProjectOpsForTests } from '../src/main/projectOps'
 import { BUCKET_MONTHLY_YEN, teardownRemainingWarnings } from '../src/shared/cloudCost'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir, workspaceDirOf } from './isolatedProject'
 import { shownTeardown } from './shownFromEnv'
 
@@ -132,6 +132,7 @@ const MINE = 'koto-myapp-hanamii'
 let projectDir = ''
 const realFetch = globalThis.fetch
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetProjectOpsForTests()
   projectDir = isolatedProjectDir('koto-hanamii-teardown-')

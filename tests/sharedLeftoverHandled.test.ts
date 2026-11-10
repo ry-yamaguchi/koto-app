@@ -32,7 +32,7 @@ import { HANAMII_TEARDOWN_WORDS } from '../src/renderer/teardown/targets/hanamii
 import { resolveConfirmWithChoices, type ConfirmWithChoicesAnswer, type ConfirmWithChoicesOptions } from '../src/renderer/useConfirmChoices'
 import type { ConfirmOptions } from '../src/renderer/useConfirm'
 import { BUCKET_MONTHLY_YEN } from '../src/shared/cloudCost'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { h, resetHarness, newProjectDir, workspaceOf, setup as setupProject, A, B, APP, PREFIX, bucketRef } from './sharedTeardownHarness'
 
 const LEFTOVER_TITLE = '保存場所を破棄します'
@@ -84,6 +84,7 @@ function putSibling() {
   fs.writeFileSync(metaFile(sib), JSON.stringify({ name: 'sibling', publish: { targets: { hanamii: HANAMII_ROW } } }), 'utf-8')
 }
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetProjectOpsForTests()
   resetHarness()

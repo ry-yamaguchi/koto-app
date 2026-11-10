@@ -30,6 +30,9 @@ import { STORAGE_LISTED_CHECK } from './teardownSupport'
 import { isStoppedByQuit } from './inFlightOps'
 import { readKeptOnly, readKeptStorage } from './keptOnly'
 import { teardownCallOf, teardownStateOf, type TeardownCall } from './teardownCall'
+import {
+  HANAMII_DELETION_ACCEPTED_WARNING, HANAMII_DELETION_REVIEW_WARNING, HANAMII_RESUME_NO_MARK_MESSAGE, HANAMII_ACCEPTED_MARK_FAILED_LINE, HANAMII_DELETION_WAIT_PROGRESS,
+} from './hanamiiDeletionText'
 
 /**
  * 警告の書き出し。**定義はこの1か所**（0.6.22 段階3B-2 で、専有型の apprunDedicatedActions.ts の同じ定数を消してここへ一本化した。
@@ -40,15 +43,10 @@ const REMAINING_WARNING_TAIL = 'できずに残っているものがあります
 export const TEARDOWN_REMAINING_WARNING_HEAD = `削除${REMAINING_WARNING_TAIL}`
 export const TEARDOWN_IN_PROGRESS_WARNING_HEAD = '削除の途中で、待ち切れずに止まりました'
 
-/**
- * HANAMII が DELETE を受け付けただけで、まだ終わっていない回（`deletionAccepted: true`。原本は 202・`deleted=false`・`deletion=accepted`）の文。
- * main は 2xx で `deleted` が true でないものを全部この回に入れる（204・空の本文など、原本に例の無い形を含む）ので、文は「済んだと確認できなかった」と
- * 確かめた範囲で言い、「受け付けた」「まだ終わっていない」は可能性として添える（断定しない）。
- * main の `hanamii:teardown` が結果の message に使い、`teardownWarningsOf` が警告にも使う（同じ文の作り手を1つにする）。
- * 専有型の「待ち切れずに止まりました」（`TEARDOWN_IN_PROGRESS_WARNING_HEAD`）とは別の文——Koto が待ち切れなかったのではなく、HANAMII が受け付けただけ。
- */
-export const HANAMII_DELETION_ACCEPTED_WARNING =
-  'HANAMII の削除が済んだと確認できませんでした（受け付けただけで、まだ終わっていない場合があります）。しばらくしてから、もう一度破棄を押してください。保存場所と記録は、削除が確認できるまで残してあります。'
+// HANAMII が削除を受け付けた（202）あとの文（待っている間・待ち切れなかった回・確認が要る回・続きの断り）は hanamiiDeletionText.ts の定数（ここからも読める）。
+export {
+  HANAMII_DELETION_ACCEPTED_WARNING, HANAMII_DELETION_REVIEW_WARNING, HANAMII_RESUME_NO_MARK_MESSAGE, HANAMII_ACCEPTED_MARK_FAILED_LINE, HANAMII_DELETION_WAIT_PROGRESS,
+}
 
 /**
  * 結果欄の赤い欄の書き出し。**警告の書き出し（TEARDOWN_REMAINING_WARNING_HEAD）の「削除」を、その流れの言葉（`TeardownWords.verb`）に替えたもの**
@@ -223,7 +221,7 @@ export function reportedLinesOf(raw: unknown): { executed: string[]; warnings: s
  *   ・HANAMII・共用型の remainingBuckets（無ければ remainingBucket）… ok でなく、専有型の remaining が無いとき（消せずに残った保存場所。
  *     専有型の「消せずに残った」と同じ文・同じ書き出し。専有型は remaining を返すので、ここは通らない）。共用型の旧い返り値
  *     （keptBucketName だけ）はここを通らず、上の teardownRemainingWarnings が言う
- *   ・HANAMII の deletionAccepted（HANAMII が削除を受け付けただけ）… HANAMII_DELETION_ACCEPTED_WARNING
+ *   ・HANAMII の deletionAccepted（HANAMII が削除を受け付けたが、まだ済んでいない）… HANAMII_DELETION_ACCEPTED_WARNING（`deletionReview` なら HANAMII_DELETION_REVIEW_WARNING）
  *     （専有型の inProgress の文〔Koto が待ち切れなかった〕とは別の文。事実が違う）
  *
  * 含めないもの:
@@ -267,8 +265,8 @@ export function teardownWarningsOf(raw: unknown): string[] {
     }
   }
 
-  // HANAMII: 削除を受け付けただけで、まだ終わっていない（Koto が待ち切れなかったのではない。専有型の文は使わない）。
-  if (v.deletionAccepted === true) pushUnique(out, HANAMII_DELETION_ACCEPTED_WARNING)
+  // HANAMII: 削除を受け付けたが、まだ済んでいない（専有型の文は使わない）。確認が要ると答えた回（deletionReview）は、その文を言う。
+  if (v.deletionAccepted === true) pushUnique(out, v.deletionReview === true ? HANAMII_DELETION_REVIEW_WARNING : HANAMII_DELETION_ACCEPTED_WARNING)
   return out
 }
 

@@ -277,10 +277,36 @@ export function isStoppedByQuit(result: unknown): boolean {
   return isRecord(extra) && extra.stoppedByQuit === true
 }
 
-/** 知らせの本文。専有型は押し直すと続きから進むことを確かめてある（2026-10-10 実機）。共用型・HANAMII は確かめていないので続きからとは言わない（判断 I）。 */
+/**
+ * 処理の記録が、HANAMII の破棄の「受け付けただけ」（途中）の結果か（`target === 'hanamii'` かつ `result.extra.deletionAccepted === true`）。
+ * main（あとの破棄が済んだ回に、見られていない記録から外す・stoppedOps.ts の `withoutAcceptedNotice`）と、
+ * 画面（main が外した「途中」を、開いている画面の手元の写しからも外す・projectOpsView.ts の `withoutSettledAccepted`）が、この1つを通る。
+ */
+export function isHanamiiAcceptedNotice(rec: unknown): boolean {
+  if (!isRecord(rec) || rec.target !== 'hanamii') return false
+  const extra = isRecord(rec.result) ? rec.result.extra : undefined
+  return isRecord(extra) && extra.deletionAccepted === true
+}
+
+/**
+ * `later` が、`rec`（HANAMII の「途中」）を済ませた記録か: 同じ種類（op）の HANAMII の記録が、`rec` より**あとに始まり**、**済んだ**（`result.ok === true`）。
+ * 自動の続きで済んだ回も、手での押し直しで済んだ回も同じ。main（`withoutAcceptedNotice`）と画面（`withoutSettledAccepted`）が、この1つを通る。
+ * **「済んだ記録が見えた」ときだけ外す**（記録が見当たらないことは根拠にしない。古い写しで、見逃してはいけない知らせを隠さない）。
+ */
+export function settlesAcceptedNotice(later: unknown, rec: unknown): boolean {
+  if (!isHanamiiAcceptedNotice(rec) || !isRecord(later) || !isRecord(rec)) return false
+  if (later.target !== 'hanamii' || later.op !== rec.op) return false
+  if (typeof later.startedAt !== 'number' || typeof rec.startedAt !== 'number' || later.startedAt <= rec.startedAt) return false
+  return isRecord(later.result) && later.result.ok === true
+}
+
+/** 知らせの本文。専有型は押し直すと続きから進むことを確かめてある（2026-10-10 実機）。共用型は確かめていないので続きからとは言わない（判断 I）。HANAMII は受け付けの印があれば自動で続く。 */
 export function stoppedNextStep(target: string): string {
   // 押すボタンの名前で言う（専有型は「🗑 削除」、共用型・HANAMII は「🗑 破棄」。1回の流れの中で名前を変えない・
   // docs/wording-decisions.md の決め。2026-10-19 親: 共用型・HANAMII でも「削除を押して」と言っていた）
+  // HANAMII は、削除を受け付けた（202）あとに止まった回なら、記録の「受け付けの印」から次の起動で Koto が自動で続ける（確認の窓は出ない）。
+  // 受け付ける前に止まった回は印が無く、自動では続かない。target だけでは見分けられないので、どちらでも間違いにならない言い方にする。
+  if (target === 'hanamii') return 'HANAMII が削除を受け付けていれば、Koto が自動で続きの削除を進めます。終わらないときは、管理画面で確かめてから、もう一度破棄を押してください。'
   return target === 'sakura-apprun-dedicated'
     ? 'もう一度削除を押すと、続きから進みます。'
     : 'どこまで済んだか管理画面で確かめてから、もう一度破棄を押してください。'

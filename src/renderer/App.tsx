@@ -27,6 +27,8 @@ import { cleanAiRelPath } from '../shared/publishRoot'
 import { primeLearningMirror } from './learningMirror'
 import { primeUsageMirror } from './usageMirror'
 import { primeZonesCache } from './zonesCache'
+import { resumeHanamiiDeletionsIn } from './teardown/hanamiiResume'
+import { getWorkspaceDir } from './workspace'
 import { mergeProjectMeta } from './projectMeta'
 import {
   type OpenFile, loadOpenFile, loadOpenFiles, upsertLoaded, afterAiWrite, reloadOpenFiles, applyReloaded, saveTab,
@@ -172,6 +174,12 @@ export default function App() {
   // 【公開】を押さずに（＝起動直後から）選べるようにするため。失敗しても起動は止めない
   // （zonesCache.ts の primeZonesCache のコメント参照）。
   useEffect(() => { primeLearningMirror(); primeUsageMirror(); primeZonesCache() }, [])
+
+  // 起動のあと1回、作業場所が分かってから、HANAMII の削除の受け付けの印があるプロジェクトの続きを自動で確かめる
+  // （待ち切れなかった回・確認が要った回・待っている間に Koto を終えた回。押し直しは要らない）。呼ぶのは teardown/hanamiiResume.ts の1つだけ。
+  useEffect(() => {
+    void getWorkspaceDir().then(ws => resumeHanamiiDeletionsIn(ws)).catch(() => {})
+  }, [])
 
   // メニューバー「認証情報（APIキー）…」から開く
   useEffect(() => {

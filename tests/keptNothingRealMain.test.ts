@@ -53,7 +53,7 @@ import { resolveConfirmWithChoices, type ConfirmWithChoicesAnswer, type ConfirmW
 import type { ConfirmOptions } from '../src/renderer/useConfirm'
 import type { TargetSpec, TeardownPlacement } from '../src/renderer/teardown/types'
 import type { TwinFactsArgs } from '../src/shared/twinFactsTypes'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 registerCloudHandlers({} as any)
 registerHanamiiHandlers({} as any)
@@ -67,6 +67,7 @@ const ROW = { publishedAt: CONSENTED_AT, url: 'https://x.example/' }
 let dir = ''
 let external: string[] = []
 const realFetch = globalThis.fetch
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetHarness()
   resetProjectOpsForTests()

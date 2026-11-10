@@ -49,7 +49,7 @@ describe('★★ hanamii:teardown の3点セット（main・preload・global.d.t
     const main = blockFrom(code('src/main/ipc/hanamiiTeardown.ts'), 'export type HanamiiTeardownResult = {')
     const keys = [...main.matchAll(/^ {2}(\w+)\??:/gm)].map(m => m[1])
     // 項目を書き下す（読み取りが空になって何も見ないテストにしない）
-    expect(keys).toEqual(['ok', 'appDeleted', 'executed', 'remainingBucket', 'remainingBuckets', 'skippedBuckets', 'keptBucketName', 'keptBucketNames', 'keptBucketsUsedByOthers', 'keptBucketsWithOwnFiles', 'deletionAccepted', 'message'])
+    expect(keys).toEqual(['ok', 'appDeleted', 'executed', 'remainingBucket', 'remainingBuckets', 'skippedBuckets', 'keptBucketName', 'keptBucketNames', 'keptBucketsUsedByOthers', 'keptBucketsWithOwnFiles', 'deletionAccepted', 'deletionReview', 'message'])
     const dts = blockFrom(code('src/renderer/global.d.ts'), DTS_HEAD)
     for (const k of keys) expect(dts, `renderer の型に ${k} が無い`).toMatch(new RegExp(`\\b${k}\\??: `))
   })
@@ -67,8 +67,12 @@ describe('★★ hanamii:teardown の3点セット（main・preload・global.d.t
   })
 
   it('★★ 結果の message の文は共通の定義（shared/teardownResult.ts）から読む。直書きしない', () => {
-    const teardown = code('src/main/ipc/hanamiiTeardown.ts')
-    expect(teardown).toContain("import { HANAMII_DELETION_ACCEPTED_WARNING } from '../../shared/teardownResult'")
-    expect(teardown).not.toContain('HANAMII が削除を受け付けました')
+    // 待ち切れなかった回・確認が要る回の結果は hanamiiDeletionFlow.ts が作り、文は shared の1つの定義（teardownResult.ts が再エクスポート）から読む
+    const flow = code('src/main/ipc/hanamiiDeletionFlow.ts')
+    expect(flow).toContain("import { HANAMII_DELETION_ACCEPTED_WARNING, HANAMII_DELETION_REVIEW_WARNING, HANAMII_ACCEPTED_MARK_FAILED_LINE } from '../../shared/teardownResult'")
+    for (const file of ['src/main/ipc/hanamiiTeardown.ts', 'src/main/ipc/hanamiiDeletionFlow.ts', 'src/main/ipc/hanamiiResumeTeardown.ts']) {
+      expect(code(file), file).not.toContain('HANAMII の削除が、まだ済んでいません')
+      expect(code(file), file).not.toContain('HANAMII が削除を受け付けました')
+    }
   })
 })

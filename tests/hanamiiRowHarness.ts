@@ -16,7 +16,7 @@ import { hanamiiTeardownSpec } from '../src/renderer/teardown/targets/hanamii'
 import type { TeardownFlowOutcome } from '../src/renderer/teardown/useTeardownFlow'
 import { PUBLISH_CLOSE_WARNING } from '../src/renderer/activity'
 import type { PublishedEntry } from '../src/renderer/publishedIndex'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, fastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
 
 /** react の小さな代役の入れ物（テストのファイルの vi.hoisted で作る）。 */
@@ -75,6 +75,7 @@ export function createRowHarness(rt: RowRt, h: RowMain) {
   let win!: Win
   /** HANAMII の DELETE を止める（走っている最中を作る）。 */
   let deleteGate: Promise<void> | null = null
+  let fastWait: ReturnType<typeof fastHanamiiDeletionWait> | null = null
 
   const metaFile = () => path.join(dir, '.sakuraide.json')
   const readMeta = (): any => JSON.parse(fs.readFileSync(metaFile(), 'utf-8'))
@@ -133,6 +134,7 @@ export function createRowHarness(rt: RowRt, h: RowMain) {
 
   /** beforeEach: 一時フォルダに公開の記録（HANAMII・tokenId つき）と保存場所の設定を置き、偽の HANAMII サーバと窓を立てる。 */
   function setup() {
+    fastWait = fastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
     resetProjectOpsForTests()
     dir = isolatedProjectDir('koto-hanamii-row-')
     h.hasCreds = true; h.status = 200; h.calls = []; h.auths = []; h.listThrows = false
@@ -150,6 +152,7 @@ export function createRowHarness(rt: RowRt, h: RowMain) {
   }
   /** afterEach */
   function cleanup() {
+    fastWait?.restore(); fastWait = null
     globalThis.fetch = realFetch
     fs.rmSync(dir, { recursive: true, force: true })
     delete (globalThis as any).window

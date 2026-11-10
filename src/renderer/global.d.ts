@@ -722,8 +722,9 @@ interface Window {
        * - `remainingBucket`／`remainingBuckets` … まだ残っている保存場所（先頭の1件／全件。**消すまで月額が続く**）
        * - `keptBucketName`／`keptBucketNames` … 片づけたが、**バケットごとは消さなかった**保存場所
        *   （利用者が自分で置いたファイルがある・ほかのプロジェクトが使っている）。**残れば月額も続く**
-       * - `deletionAccepted` … HANAMII が削除を受け付けただけで、まだ終わっていない（原本は 202）。このとき
-       *   `ok:false`・`appDeleted:false` で、保存場所にも記録にも触れていない。専有型の `inProgress`（Koto が待ち切れなかった）とは別の事実
+       * - `deletionAccepted` … HANAMII が削除を受け付けたが、Koto が最長で約5分待っても、まだ済んだと確かめられていない（原本は 202）。このとき
+       *   `ok:false`・`appDeleted:false` で、保存場所にも記録の行にも触れていない（記録に「受け付けの印」が残り、次に開いたとき自動で続ける）。専有型の `inProgress` とは別の事実
+       * - `deletionReview` … `deletionAccepted` のうち、HANAMII が「この削除には確認が要る」と答えた回（Koto は待たずに止める）
        * - `shownPlacements`（opts）… 確認で見せた保存場所（名前と prefix の組）。必須。main は、この組と一致する保存場所だけを消す（0.6.24 F）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
        * - `skippedBuckets` … 見せていない・形が違うために消さなかった保存場所（残れば月額が続く）
        */
@@ -733,6 +734,21 @@ interface Window {
         keptBucketName?: string; keptBucketNames?: string[]; message?: string
         keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[]
         deletionAccepted?: boolean
+        deletionReview?: boolean
+      }>
+      /**
+       * 破棄の自動の続き。HANAMII が削除を受け付けた（202）あと、待ち切れなかった・確認が要る・Koto を終えた回の続きを、次に開いたときに自動で確かめて片づける。
+       * `confirmed` も `shownPlacements` も受け取らない: main が、記録（.sakuraide.json）の「受け付けの印」を鍵の中で確かめ、印が無い・projectId が違う・
+       * 複製があるときは HANAMII へも保存場所へも1本も要求を出さずに断る。消すのは、最初の破棄の確認で見せた保存場所（印の中）だけ。
+       * トークンは画面が使う瞬間に読んで渡す（掟4）。返り値は `teardown` と同じ形（`deletionAccepted`＝まだ済んでいない・`deletionReview`＝HANAMII の確認が要る）。
+       */
+      resumeTeardown(projectDir: string, auth: { token: string }, opts: { projectId: string }): Promise<{
+        ok: boolean; appDeleted?: boolean; executed?: string[]; remainingBucket?: string; remainingBuckets?: string[]
+        skippedBuckets?: string[]
+        keptBucketName?: string; keptBucketNames?: string[]; message?: string
+        keptBucketsUsedByOthers?: string[]; keptBucketsWithOwnFiles?: string[]
+        deletionAccepted?: boolean
+        deletionReview?: boolean
       }>
       detectEnvKeys(projectDir: string): Promise<{ ok: boolean; keys: string[]; message?: string }>
       // デプロイログ取得（JSON形式）。limit 既定100・最大500。

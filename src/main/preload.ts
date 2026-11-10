@@ -342,6 +342,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // `shownPlacements` は確認で見せた保存場所（名前と prefix の組）。main は、この組と一致する保存場所だけを消す（0.6.24 F）。確認が「消しません」と言った保存場所には `keepData: true` が付き、main はそれを消さない。
     teardown: (projectDir: string, auth: { token: string }, opts: { confirmed: boolean; projectId: string; shownPlacements: Array<{ bucket: string; prefix: string; keepData?: true }> }) =>
       ipcRenderer.invoke('hanamii:teardown', projectDir, auth, opts),
+    // 破棄の自動の続き。HANAMII が削除を受け付けた（202）あと、待ち切れなかった・確認が要る・Koto を終えた回の続きを、次に開いたときに自動で確かめて片づける。
+    // 呼び形は (projectDir, { token }, { projectId })。`confirmed` も `shownPlacements` も受け取らない: main が記録の「受け付けの印」を鍵の中で確かめ、
+    // 印が無い・projectId が違う・複製があるときは1本も要求を出さずに断る。消すのは、最初の破棄の確認で見せた保存場所（印の中）だけ。
+    resumeTeardown: (projectDir: string, auth: { token: string }, opts: { projectId: string }) =>
+      ipcRenderer.invoke('hanamii:resumeTeardown', projectDir, auth, opts),
     detectEnvKeys: (projectDir: string) => ipcRenderer.invoke('hanamii:detectEnvKeys', projectDir),
     logs: (token: string, projectId: string, opts?: { limit?: number; since?: string }) =>
       ipcRenderer.invoke('hanamii:logs', token, projectId, opts),

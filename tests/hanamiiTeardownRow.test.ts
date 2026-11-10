@@ -194,7 +194,8 @@ describe('E 行 → 流れ → 本物の main: 押す → 確認 → 破棄 → 
     await until(() => m.outcomes.length === 1, '結果が届かない')
     await tick()
 
-    expect(h.calls).toEqual([DELETE_CALL]) // 保存場所へは出ない
+    expect(h.calls[0]).toBe(DELETE_CALL)
+    expect(h.calls.filter(c => !/^(DELETE|GET) https:/.test(c)), '待っても済まなかったのに保存場所へ出た').toEqual([])
     const view = m.outcomes[0].outcome.view
     expect(view.state).toBe('inProgress')
     expect(view.ok).toBe(false)

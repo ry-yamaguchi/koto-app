@@ -35,7 +35,7 @@ import { applyPlan, type StorageClientLike, type CloudClientLike } from '../src/
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { emptyState } from '../src/main/cloud/state'
 import type { Plan } from '../src/main/cloud/planner'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 registerCloudHandlers({} as any)
 registerHanamiiHandlers({} as any)
@@ -53,6 +53,7 @@ let dir = ''
 let server: Server | null = null
 const realFetch = globalThis.fetch
 const lockedFiles: string[] = []
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetHarness()
   resetProjectOpsForTests()

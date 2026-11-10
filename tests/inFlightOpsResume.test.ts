@@ -134,11 +134,11 @@ describe('U1 止まった削除が、そのプロジェクトの getOps().last �
     expect(disk.running).toEqual({})
   })
 
-  it('共用型・HANAMII の知らせは、続きからとは言わない（確かめていない。判断 I）', () => {
+  it('HANAMII の知らせは、受け付けの印があれば Koto が自動で続けると言い、押し直しを最初の手にしない（作者の決定: 押し直しの確認は出さない）', () => {
     stuckDeletion(A, HAN)
     quitAndBoot(QUIT_AT, REBOOT_AT)
     expect(getOps(A).last!.target).toBe('hanamii')
-    expect(getOps(A).last!.result!.message).toBe('どこまで済んだか管理画面で確かめてから、もう一度破棄を押してください。')
+    expect(getOps(A).last!.result!.message).toBe('HANAMII が削除を受け付けていれば、Koto が自動で続きの削除を進めます。終わらないときは、管理画面で確かめてから、もう一度破棄を押してください。')
   })
 
   it('★ 作成・公開が止まっても知らせは出ない（表のとおり捨てる）。止まった削除があるプロジェクトの知らせも置き換えない', () => {

@@ -22,7 +22,7 @@ import { registerHanamiiHandlers } from '../src/main/ipc/hanamii'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 import { planProjectDeleteTeardown, type ProjectDeleteFacts, type ProjectDeleteStep } from '../src/renderer/teardown/projectDeletePlan'
 import { runProjectDelete, type ProjectDeleteRunDeps } from '../src/renderer/teardown/projectDelete'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 registerCloudHandlers({} as any)
 registerHanamiiHandlers({} as any)
@@ -35,6 +35,7 @@ let dir = ''
 const realFetch = globalThis.fetch
 const hanamiiFetch: string[] = []
 const trashed: string[] = []
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetHarness()
   resetProjectOpsForTests()

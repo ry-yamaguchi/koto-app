@@ -20,6 +20,8 @@ import { publishButtonLabel } from '../../shared/publishLabels'
 import AccessKeySection from './AccessKeySection'
 import HanamiiTeardownSection, { HanamiiTeardownResult } from './HanamiiTeardownSection'
 import { looksSecretName } from '../../shared/secretShapes'
+import { resumeHanamiiDeletionIn } from '../teardown/hanamiiResume'
+import { isHanamiiTeardownHandler } from '../teardown/watch'
 
 // HANAMII の公開名の文字数上限。HANAMII 側の公開APIリファレンス（hanamii.jp/docs/api）には
 // 名前の上限が明記されていないが、HANAMII は AppRun 基盤上で動く（コンテナをビルドし EXPOSE から
@@ -306,6 +308,10 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectDir])
 
+  // この画面を開いたとき（projectDir が変わったときも）、このプロジェクトに HANAMII の削除の受け付けの印があれば、続きを自動で確かめる。
+  // 呼ぶのは teardown/hanamiiResume.ts の1つだけ（印・トークン・二重呼びの判断はそこ）。結果は処理の記録に乗り、下の ops が読む。
+  useEffect(() => { void resumeHanamiiDeletionIn(projectDir) }, [projectDir])
+
   useEffect(() => {
     let cancelled = false
     window.electronAPI.hanamii.detectEnvKeys(projectDir).then(r => {
@@ -377,7 +383,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     }
     // 記録に projectId が無い。破棄が「うまくいった」と言っているときだけ、消えた表示にする
     // （保存場所だけ残った回は、projectId も記録も残してある）。
-    if (rec.handler === 'hanamii:teardown' && rec.result?.ok) await showTornDown()
+    if (isHanamiiTeardownHandler(rec.handler) && rec.result?.ok) await showTornDown()
   }
   const ops = useProjectOpsView(projectDir, isHanamiiOp, afterOpFinished)
 
@@ -525,7 +531,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   const rs = status?.readyState
   // 公開が進んでいるか（この画面が頼んだ直後・開き直した画面が main の記録で知ったもの・HANAMII 側の状態）。
   const publishRunning = publishing || ops.ownRunning?.handler === 'hanamii:publish'
-  const teardownRunning = tearingDown || ops.ownRunning?.handler === 'hanamii:teardown'
+  const teardownRunning = tearingDown || isHanamiiTeardownHandler(ops.ownRunning?.handler)
   const busy = publishRunning || rs === 'BUILDING'
   // 押せない間（この画面の公開・破棄・別の公開先の操作を含め、同じプロジェクトでは1つずつしか走らせない・main の鍵）。
   // 断られてから文で知らせるのではなく、押せない形にして理由を出す。

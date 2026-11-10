@@ -64,7 +64,7 @@ import { DEDICATED_TEARDOWN_WORDS } from '../src/renderer/teardown/targets/dedic
 import { resumedTeardownView } from '../src/shared/teardownResult'
 import { PUBLISH_TARGET_LABEL } from '../src/renderer/publishStatus'
 import { stoppedNotice } from './stoppedNoticeHarness'
-import { deleteProjectReplyText } from './hanamiiTeardownFixtures'
+import { deleteProjectReplyText, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
 
 registerHanamiiHandlers({} as any)
@@ -79,6 +79,7 @@ const DIR = '/tmp/koto-teardown-call-render'
 const realFetch = globalThis.fetch
 let projectDir = ''
 
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   ops.resetProjectOpsForTests()
   h.status = 202
@@ -135,7 +136,7 @@ describe('【公開】の結果カード（OpFinishedCard）: d1・d2', () => {
     const t = text(html(createElement(OpFinishedCard, { rec })))
     expect(t).toContain(`⏳ ${LABEL}の破棄は途中です`)
     expect(t, '受け付けただけの回を失敗と言っている').not.toContain('失敗')
-    expect(t).toContain('しばらくしてから、もう一度破棄を押してください')
+    expect(t).toContain('次に Koto を起動したときか、この画面を開き直したときに、続きを自動で確かめて、削除を終えます')
     expect(t).not.toContain('の削除は途中です') // 言葉は opWordFor（HANAMII は「破棄」）
   })
 

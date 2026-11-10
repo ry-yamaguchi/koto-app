@@ -31,7 +31,7 @@ import { writeApprunDedicatedRecordFs, readApprunDedicatedFs } from '../src/main
 import { resetProjectOpsForTests } from '../src/main/projectOps'
 import { recordTwinsFs, readRecordTwins, RECORD_TWINS_UNKNOWN_MESSAGE } from '../src/main/cloud/recordTwins'
 import { TWINS_UNKNOWN_MESSAGE } from '../src/main/cloud/teardownShell'
-import { deleteProjectReply } from './hanamiiTeardownFixtures'
+import { deleteProjectReply, useFastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 
 registerCloudHandlers({} as any)
 registerHanamiiHandlers({} as any)
@@ -49,6 +49,7 @@ const skipIfRoot = rootIsMe ? it.skip : it
 let dir = ''
 let server: Server | null = null
 const realFetch = globalThis.fetch
+useFastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
 beforeEach(() => {
   resetHarness()
   resetProjectOpsForTests()

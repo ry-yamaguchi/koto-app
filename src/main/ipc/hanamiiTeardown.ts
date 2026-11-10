@@ -8,8 +8,10 @@
 //
 // ── ここが持つもの（run の中身）────────────────────────────────────────────────
 //   ・渡された projectId が記録（.sakuraide.json）が指すものと一致するときだけ消す（掟11）。**鍵の中**で読むので、断った回も処理の記録に残る
-//   ・DELETE の応答の読み方（D7）: `project.deleted === true` か 404 のときだけ「消えた」。202（`deleted=false`）などは「受け付けただけ」で、
-//     保存場所にも記録にも触れずに `deletionAccepted` で返す（記録を消したあとに HANAMII 側の削除が終わらないと、Koto から辿れなくなる）
+//   ・DELETE の応答の読み方（D7。hanamii/deleteReply.ts の1か所）: `project.deleted === true` か 404 のときだけ「消えた」。202（`deleted=false`）などは
+//     「受け付けただけ」。**受け付けの印を書いてから、Koto が最長で約5分、済むまで待つ**（hanamiiDeletionFlow.ts・hanamii/deletionWait.ts）。
+//     済んだと確かめたら保存場所の段へ進む。待ち切れなかった・確かめられなかった・確認が要る（requiresReview）回は、保存場所にも記録の行にも触れず
+//     `deletionAccepted` で返す（印は残り、次に Koto を開いたとき hanamii:resumeTeardown が自動で続ける。記録を消したあとに HANAMII 側の削除が終わらないと、Koto から辿れなくなる）
 //   ・消えたあとに保存場所を片づける（teardownHanamiiStorage。手順と守りは cloud/storageTeardown.ts の1つ）。消すのは、**確認で見せた保存場所（名前と prefix の組）だけ**
 //     （`shownPlacements`。絞るのは storageForTarget.ts の teardownStorageForProject の1か所で、ここでは選ばない・残りも数え直さない。0.6.24 F）
 //   ・保存場所だけが残った回は、`publish.hanamii.storageLeftoverBuckets` に印を書く（押し直したときの確認が、消えたプロジェクトの名前を挙げない）
@@ -31,10 +33,15 @@ import { recordTwinsFs } from '../cloud/recordTwins'
 import { runTeardownShell, type TeardownShellCtx, type TeardownShellSpec } from '../cloud/teardownShell'
 import { STORAGE_TEARDOWN_PROGRESS, STORAGE_PANEL_DELETE_GUIDE, storageTeardownDoneLine, bucketNamesText } from '../../shared/teardownSupport'
 import { keyRevokeGuide } from '../../shared/storageKeys'
-import { HANAMII_DELETION_ACCEPTED_WARNING } from '../../shared/teardownResult'
 import { failureText } from '../../shared/failureText'
 import { wrapFailureText } from '../../shared/failureDetail'
-import { readHanamiiProjectIdFs, settleHanamiiTeardownFs, markHanamiiStorageLeftoverFs } from '../publishMetaFs'
+import { readHanamiiProjectIdFs, settleHanamiiTeardownFs, markHanamiiStorageLeftoverFs, writeHanamiiAcceptedMarkFs } from '../publishMetaFs'
+import { readHanamiiDeleteReply, readHanamiiAccepted } from '../hanamii/deleteReply'
+import { buildHanamiiAcceptedMark } from '../hanamii/acceptedMark'
+import { continueAcceptedDeletion } from './hanamiiDeletionFlow'
+
+// DELETE の応答の読み方（D7）は hanamii/deleteReply.ts の1か所。既存の import（テスト）を壊さないよう、ここからも再エクスポートする。
+export { readHanamiiDeleteReply, type HanamiiDeleteReading } from '../hanamii/deleteReply'
 
 /**
  * HANAMII の破棄の結果（`hanamii:teardown` が返すもの）。
@@ -77,6 +84,11 @@ export type HanamiiTeardownResult = {
    * 専有型の `inProgress`（Koto が待ち切れずに止まった）とは別の事実なので、同じ名前にしない。
    */
   deletionAccepted?: boolean
+  /**
+   * `deletionAccepted` のうち、HANAMII が「この削除には確認が要る」と答えた回（202 の本文の `project.requiresReview === true`）。
+   * Koto は待たずに止める。HANAMII の管理画面で確かめてもらい、済めば次に開いたときの自動の続きが片づける。
+   */
+  deletionReview?: boolean
   message?: string
 }
 
@@ -98,6 +110,9 @@ function keptBucketFields(done: ReadonlyArray<TorndownBucket>): Pick<HanamiiTear
  * 保存場所の片づけだけを続け、📡 一覧は片づけ残りがある間は記録を残す。
  * それでも直らないとき（env.json が壊れている等）のために、**コントロールパネルの手順も添える。**
  */
+/** 受け付けの印を書かなかった回（`writeHanamiiAcceptedMarkFs` が `marked:false`）の理由。結果の「起きたこと」の末尾に付く。 */
+const ACCEPTED_MARK_NOT_WRITTEN_REASON = '公開の記録が見つからないか、読めないか、別のプロジェクトのものになっていました'
+
 const RETRY_GUIDE = '📡 公開したもの一覧で、もう一度 🗑 を押すと、保存場所の削除だけをやり直します。'
   + `やり直しても消えないときは、${STORAGE_PANEL_DELETE_GUIDE}`
 
@@ -228,27 +243,11 @@ export const PROJECT_MISMATCH_TEARDOWN =
   '破棄しようとした HANAMII のプロジェクトが、このプロジェクトの記録が指すものと一致しません。'
   + '何も削除していません。公開のダイアログを閉じて開き直してから、もう一度お試しください。'
 
-// ── DELETE の応答の読み方（D7）──────────────────────────────────────────────────
-// 原本（https://hanamii.jp/docs/api の「プロジェクトを削除」）: 200＝物理削除済み（`deleted=true`・`deletion=completed`）、
-// 202＝削除受付済み（`deleted=false`・`deletion=accepted`。外部リソースの削除が続くとき）、403＝権限不足、
-// 404＝プロジェクトが存在しない**または参照できない**、429＝レート制限。202 の本文の例・削除の途中に押し直したときの応答は原本に無い。
-// 以前はハンドラが `r.ok || r.status === 404` だけを見て、202 も「消えた」と読んでいた。
-export type HanamiiDeleteReading = 'deleted' | 'not-found' | 'accepted' | 'failed'
-
-/** DELETE の応答を読む（純関数）。`deleted === true` と 404 だけが「消えた」側（呼び手が保存場所へ進んでよい）。 */
-export function readHanamiiDeleteReply(r: Pick<HanamiiResult, 'ok' | 'status' | 'data'>): HanamiiDeleteReading {
-  if (r.status === 404) return 'not-found'
-  if (!r.ok) return 'failed'
-  const project = (r.data as { project?: unknown } | null | undefined)?.project
-  const deleted = project && typeof project === 'object' ? (project as { deleted?: unknown }).deleted : undefined
-  return deleted === true ? 'deleted' : 'accepted'
-}
-
 // ── 骨に載せる ──────────────────────────────────────────────────────────────────
 
-type HanamiiAuth = { token: string }
+export type HanamiiAuth = { token: string }
 
-function projectIdOf(opts: Record<string, unknown>): string | null {
+export function projectIdOf(opts: Record<string, unknown>): string | null {
   const id = opts.projectId
   return typeof id === 'string' && id !== '' ? id : null
 }
@@ -290,8 +289,9 @@ async function runHanamiiTeardown(ctx: TeardownShellCtx<HanamiiAuth>): Promise<H
   // 投げると確認ダイアログが開いたまま固まる）。
   let r: HanamiiResult
   progress('🗑 HANAMII のプロジェクトを破棄しています…')
+  const client = new HanamiiClient({ token: auth.token })
   try {
-    r = await new HanamiiClient({ token: auth.token }).deleteProject(projectId)
+    r = await client.deleteProject(projectId)
   } catch (e: any) {
     return {
       ok: false,
@@ -301,17 +301,43 @@ async function runHanamiiTeardown(ctx: TeardownShellCtx<HanamiiAuth>): Promise<H
   const reading = readHanamiiDeleteReply(r)
   // **消せていないうちは保存場所に触らない**（アプリがまだ動いている＝鍵を消すと 403 で落ちる）。
   if (reading === 'failed') return { ok: false, message: `削除に失敗しました（HTTP ${r.status}）` }
-  // 受け付けただけ（202 など）: 保存場所にも記録にも触れない（D7）。結果は `deletionAccepted`（`inProgress` ではない）。
+  // 確認で見せた保存場所の組は、画面が運んだものをそのまま渡す（形は信用しない。読むのは teardownStorageForProject の中）
+  const shown = ctx.opts.shownPlacements
+  // 受け付けた（202 など）: HANAMII 側の削除が続いている。**保存場所にも記録の行にも触れず**、受け付けの印を書いてから、済むまで待つ（D7）。
+  // 印は「利用者が確認したうえで削除が受け付けられた」の証で、待ち切れなくても次に開いたとき自動で続ける根拠になる（見せた保存場所もここに残す）。
   if (reading === 'accepted') {
-    return { ok: false, appDeleted: false, deletionAccepted: true, message: HANAMII_DELETION_ACCEPTED_WARNING }
+    const accepted = readHanamiiAccepted(r)
+    const mark = buildHanamiiAcceptedMark({ projectId, acceptedAt: new Date(), shown, ...accepted })
+    let markFailure: string | null = null
+    try {
+      const written = writeHanamiiAcceptedMarkFs(projectDir, mark)
+      if (!written.ok) markFailure = written.message
+      // 書かなかった回（記録が無い・壊れている・projectId が替わった）も、書けた回と同じには扱わない: 続きの自動の確かめの根拠が無い。
+      else if (!written.marked) markFailure = ACCEPTED_MARK_NOT_WRITTEN_REASON
+    } catch (e: any) {
+      markFailure = failureText(e)
+    }
+    return continueAcceptedDeletion({
+      ctx, client, projectId, mark, deleteJustSent: true, finalConfirm: true, stopOnReview: true, markFailure,
+      onGone: () => teardownAfterGone(ctx, projectId, shown),
+    })
   }
   // 'deleted' も 'not-found' も「動いているアプリはもう無い」＝鍵を消しても 403 で落ちるものが無いので、保存場所へ進んでよい
   // （2026-09-25 検分の指摘3。2度目の破棄は 404 になる。共用型 apply.ts の削除も 404 を同じ扱いにしている）。
-  progress(STORAGE_TEARDOWN_PROGRESS)
-  // 確認で見せた保存場所の組は、画面が運んだものをそのまま渡す（形は信用しない。読むのは teardownStorageForProject の中）
-  const res = await teardownHanamiiStorage(projectDir, ctx.opts.shownPlacements)
-  // 全部片づいた回は、公開の記録を骨が消す（settleHanamiiTeardownFs）。保存場所だけ残った回は、行も projectId も残し、印を書く。
-  return res.ok ? res : withLeftoverMark(projectDir, projectId, res)
+  return teardownAfterGone(ctx, projectId, shown)
+}
+
+/**
+ * HANAMII のプロジェクトが消えたと確かめたあとの、保存場所の段（最初の破棄・待って済んだ回・次に開いたときの自動の続きが、同じこれを通る）。
+ * 全部片づいた回は、公開の記録（受け付けの印を含む行）を骨が消す（settleHanamiiTeardownFs）。保存場所だけ残った回は、行も projectId も残し、
+ * 「保存場所が残った」印を書く（受け付けの印は、その印が引き継ぐ＝外れる）。
+ */
+export async function teardownAfterGone(
+  ctx: Pick<TeardownShellCtx<unknown>, 'projectDir' | 'progress'>, projectId: string, shown: unknown,
+): Promise<HanamiiTeardownResult> {
+  ctx.progress(STORAGE_TEARDOWN_PROGRESS)
+  const res = await teardownHanamiiStorage(ctx.projectDir, shown)
+  return res.ok ? res : withLeftoverMark(ctx.projectDir, projectId, res)
 }
 
 /** HANAMII の破棄を骨に載せる定義。公開の記録を消す規則は「全部片づいた（ok）回だけ」。 */

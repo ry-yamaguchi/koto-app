@@ -78,7 +78,7 @@ import { STORAGE_TEARDOWN_PROGRESS } from '../src/shared/teardownSupport'
 import { defaultSpec, type EnvSpec } from '../src/main/cloud/spec'
 import { HANAMII_DELETION_ACCEPTED_WARNING } from '../src/shared/teardownResult'
 import { NOT_CONFIRMED_MESSAGE, BAD_PROJECT_DIR_MESSAGE } from '../src/main/cloud/teardownShell'
-import { deleteProjectReplyText } from './hanamiiTeardownFixtures'
+import { deleteProjectReplyText, fastHanamiiDeletionWait } from './hanamiiTeardownFixtures'
 import { isolatedProjectDir } from './isolatedProject'
 import { shownTeardown } from './shownFromEnv'
 
@@ -94,8 +94,10 @@ const DELETE_CALL = `DELETE https://hanamii.jp/api/v1/projects/${PROJECT_ID}`
 
 let projectDir = ''
 const realFetch = globalThis.fetch
+let wait: ReturnType<typeof fastHanamiiDeletionWait>
 
 beforeEach(() => {
+  wait = fastHanamiiDeletionWait() // 202 のあとの待ちは偽の時計で回す（本物の sleep で待たない）
   resetProjectOpsForTests()
   projectDir = isolatedProjectDir('koto-hanamii-shell-')
   h.hasCreds = true
@@ -119,6 +121,7 @@ beforeEach(() => {
   }, null, 2), 'utf-8')
 })
 afterEach(() => {
+  wait.restore()
   globalThis.fetch = realFetch
   fs.rmSync(projectDir, { recursive: true, force: true })
 })
@@ -276,20 +279,32 @@ describe('W3 進み具合の動詞: HANAMII の破棄の進み具合は「破棄
   })
 })
 
-describe('★★★ D7: DELETE の応答の読み方。`deleted === true` と 404 だけが「消えた」で、受け付けただけ（202 など）は保存場所にも記録にも触れない', () => {
+describe('★★★ D7: DELETE の応答の読み方。`deleted === true` と 404 だけが「消えた」で、受け付けただけ（202 など）は、待っても済まなければ保存場所にも記録の行にも触れない', () => {
   const ACCEPTED = { ok: false, appDeleted: false, deletionAccepted: true, message: HANAMII_DELETION_ACCEPTED_WARNING }
+  /** 保存場所へ出た要求（HANAMII へ出た DELETE・GET を除く）。 */
+  const storageCalls = () => h.calls.filter(c => !c.startsWith('DELETE https://') && !c.startsWith('GET https://'))
+  /** 受け付けの印を除いた記録（印は、待ち始める前に書かれる）。 */
+  const metaWithoutMark = (text: string) => {
+    const m = JSON.parse(text)
+    delete m.publish.hanamii.deletionAccepted
+    return m
+  }
 
-  it('★★★ 202（deleted=false・deletion=accepted）→ 保存場所への要求0件・記録も env.json もそのまま。結果は deletionAccepted（inProgress ではない）', async () => {
+  it('★★★ 202（deleted=false・deletion=accepted）→ 待っても済まなければ、保存場所への要求0件・env.json はそのまま・記録の行と projectId もそのまま（受け付けの印だけが足される）。結果は deletionAccepted（inProgress ではない）', async () => {
     h.status = 202
     const before = diskState()
     const r = await call()
     expect(r).toEqual(ACCEPTED)
     expect(r).not.toHaveProperty('inProgress')
-    expect(h.calls, '受け付けただけなのに保存場所へ進んだ').toEqual([DELETE_CALL])
-    expect(diskState(), '受け付けただけなのに記録（行・projectId）を書き換えた').toEqual(before)
+    expect(h.calls[0]).toBe(DELETE_CALL)
+    expect(storageCalls(), '受け付けただけなのに保存場所へ進んだ').toEqual([])
+    const after = diskState()
+    expect(after.env, '受け付けただけなのに env.json を書き換えた').toBe(before.env)
+    expect(metaWithoutMark(after.meta), '受け付けただけなのに記録（行・projectId）を書き換えた').toEqual(JSON.parse(before.meta))
+    expect(JSON.parse(after.meta).publish.hanamii.deletionAccepted.projectId).toBe(PROJECT_ID)
   })
 
-  it('★★★ 2xx でも deleted が true でない（false・無い・文字列の "true"・本文が空・JSON でない）→ 同じく「受け付けただけ」', async () => {
+  it('★★★ 2xx でも deleted が true でない（false・無い・文字列の "true"・本文が空・JSON でない）→ 同じく「受け付けただけ」（待っても済まなければ、保存場所に触れない）', async () => {
     const bodies: [number, string | null][] = [
       [200, JSON.stringify({ project: { id: PROJECT_ID, deleted: false, deletion: 'accepted' } })],
       [200, JSON.stringify({ project: { id: PROJECT_ID } })],
@@ -305,7 +320,8 @@ describe('★★★ D7: DELETE の応答の読み方。`deleted === true` と 40
       h.calls = []
       const r = await call()
       expect(r, `${status} ${body}`).toEqual(ACCEPTED)
-      expect(h.calls, `${status} ${body}`).toEqual([DELETE_CALL])
+      expect(h.calls[0], `${status} ${body}`).toBe(DELETE_CALL)
+      expect(storageCalls(), `${status} ${body}`).toEqual([])
     }
     expect(diskState().meta).toContain(PROJECT_ID)
   })
@@ -332,7 +348,7 @@ describe('★★★ D7: DELETE の応答の読み方。`deleted === true` と 40
     expect((await call()).deletionAccepted).toBe(true)
     h.status = 202
     expect((await call()).deletionAccepted).toBe(true)
-    expect(h.calls.filter(c => c !== DELETE_CALL), '受け付けただけの回に保存場所へ触れた').toEqual([])
+    expect(storageCalls(), '受け付けただけの回に保存場所へ触れた').toEqual([])
     h.status = 404
     expect((await call()).ok).toBe(true)
   })
