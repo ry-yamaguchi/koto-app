@@ -455,10 +455,14 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // モードB（Claudeのみ）では delegate_implementation ツール自体が登録されないため付けない。
     // 現在日時（この端末のローカル時刻）も添える（AIに今日を推測させない・chatTime.ts の nowContext）。
     // ここは main なので new Date() はエージェント起動＝送信ごとに評価され、常に最新になる。
+    // SDK 0.3.267 から systemPrompt は既定で最初の要求の形を記録し、resume ではその記録をそのまま送る
+    // （snapshot の既定は true）。Koto は毎ターン resume で立て直し、append に送信時刻を入れるので、
+    // snapshot:false にして毎回組み立て直さないと 2 往復目以降に古い時刻が残る。
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
       append: (aiEngineKey ? `${UNTRUSTED_RULE}\n\n${DELEGATION_GUIDANCE}` : UNTRUSTED_RULE) + `\n\n${nowContext()}`,
+      snapshot: false,
     },
   }
 

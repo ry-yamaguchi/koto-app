@@ -4,6 +4,8 @@
 
 > 本アプリ「Koto」は個人が開発・提供する非公式ツールであり、さくらインターネット株式会社の製品ではありません。さくらインターネットの各サービス（AI Engine・AppRun・レンタルサーバ 等）に接続・公開する機能を持ちますが、同社が提供・保証するものではありません。
 
+**動く環境**: 0.6.29 以降は macOS 13 以上の Mac（Apple Silicon）が必要です（0.6.28 までは macOS 11 以上）。macOS 12 以前には自動更新も配られません。
+
 プログラミングが初めての方でも、AIに日本語で頼むだけでコードの作成・修正・実行ができ、完成したものを「さくらのレンタルサーバ」「さくらのAppRun」、さくらのクラウド基盤上で動く国産のクラウドサービス「HANAMII」へワンクリックで公開できることを目指したアプリケーションです。AIエンジンには [さくらのAI Engine](https://ai.sakura.ad.jp/) を利用します。
 
 ---
@@ -345,7 +347,7 @@ AIによるファイル変更・コマンド実行をどこまで自動で許可
 ## 開発・ビルド
 
 ### 必要環境
-- macOS（Apple Silicon / arm64）
+- macOS 13 以上（Apple Silicon / arm64）
 - Node.js（推奨 LTS）
 
 ### セットアップ
@@ -416,7 +418,7 @@ docs/          使い方ガイド・設計ドキュメント
 
 ## 技術スタック
 
-- **Electron 33** — `contextIsolation` / `sandbox` / `safeStorage` / `electron-builder`
+- **Electron 44** — `contextIsolation` / `sandbox` / `safeStorage` / `electron-builder`
 - **React 18 + TypeScript + Vite**
 - **Monaco Editor** — コードエディタ
 - **xterm + node-pty** — ターミナル

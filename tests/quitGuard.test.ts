@@ -415,21 +415,21 @@ describe('ダイアログへ渡す設定と、押されたボタンの扱い', (
 
 // ── 3c. macOS で、どのボタンに Return（青）と Escape が付くか（Electron の原本の写し）────────────────
 // 0.6.21-rc.2 の実際の画面: 0 番目のボタン（当時の名前は「終了しない」。0.6.23 で「キャンセル」に改名）が青くならなかった（defaultId=0・cancelId=0 で、どちらのボタンも灰色）。
-// 原本（Electron 33.4.11）:
-//   shell/browser/ui/message_box_mac.mm 68〜85 行 — defaultId のボタンに Return（\r）を付け、cancelId のボタンに Escape（\e）を付ける。
+// 原本（Electron 44.11.1）:
+//   shell/browser/ui/message_box_mac.mm 71〜76 行（Return）・78〜88 行（Escape）— defaultId のボタンに Return（\r）を付け、cancelId のボタンに Escape（\e）を付ける。
 //     1つのボタンはキーを1つしか持てないので、同じボタンだと Return が Escape に上書きされる＝青いボタンが無くなる。
 //     cancelId がボタンの数以上なら、Escape はどのボタンにも付かない。
-//   lib/browser/api/dialog.ts 195〜203 行 — cancelId を省く（null）と、defaultId=0 のとき cancelId=1 を当てる（「終了する」に Escape が付く）。
+//   lib/browser/api/dialog.ts 206〜217 行 — cancelId を省く（null）と、defaultId=0 のとき cancelId=1 を当てる（「終了する」に Escape が付く）。
 // 以下はその規則の写し。ダイアログの設定が、この規則の上で「キャンセル」に Return・「終了する」にはキーなし、となることを固定する。
 // ※ 実際の見た目（青く描かれるか）は、署名した版の実機でしか確かめられない。実機で未確認。
 
-/** dialog.ts 195〜203 行の写し（text が cancel / no のボタンを探す処理は省く。このテストのボタンには無い）。 */
+/** dialog.ts 206〜217 行の写し（text が cancel / no のボタンを探す処理は省く。このテストのボタンには無い）。 */
 function resolveCancelId(o: { buttons: string[]; defaultId: number; cancelId?: number | null }): number {
   if (o.cancelId != null) return o.cancelId
   return o.defaultId === 0 && o.buttons.length > 1 ? 1 : 0
 }
 
-/** message_box_mac.mm 68〜85 行の写し。Return が付くボタンの番号と、Escape が付くボタンの番号（無ければ null）。 */
+/** message_box_mac.mm 71〜88 行の写し。Return が付くボタンの番号と、Escape が付くボタンの番号（無ければ null）。 */
 function macKeys(o: { buttons: string[]; defaultId: number; cancelId?: number | null }): { returnTo: number | null; escapeTo: number | null } {
   const count = o.buttons.length
   const cancelId = resolveCancelId(o)

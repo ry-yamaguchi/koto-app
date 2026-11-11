@@ -16,5 +16,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Electron 42 以降は postinstall で本体を落とさない。テストが electron を読み込むので、先に取る（npm test の途中で遅延ダウンロードさせない）
+      - run: npm run ensure:electron
       - run: npm run build
       - run: npm test

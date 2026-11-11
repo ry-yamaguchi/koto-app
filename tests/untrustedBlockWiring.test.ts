@@ -154,7 +154,7 @@ describe('システムプロンプトへの組み込み', () => {
     // オブジェクトリテラルの物理行区切りは実際の改行、テンプレート内の `\n\n` はソース中の2文字（\\n）。
     expect(src).toContain(
       "systemPrompt: {\n      type: 'preset',\n      preset: 'claude_code',\n      " +
-      "append: (aiEngineKey ? `${UNTRUSTED_RULE}\\n\\n${DELEGATION_GUIDANCE}` : UNTRUSTED_RULE) + `\\n\\n${nowContext()}`,\n    },"
+      "append: (aiEngineKey ? `${UNTRUSTED_RULE}\\n\\n${DELEGATION_GUIDANCE}` : UNTRUSTED_RULE) + `\\n\\n${nowContext()}`,\n      snapshot: false,\n    },"
     )
     // 旧形（aiEngineKey が無いと systemPrompt 自体が付かない形）へ戻っていない
     expect(src).not.toContain(

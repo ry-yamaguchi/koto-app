@@ -1,6 +1,6 @@
 {
   "name": "koto",
-  "version": "0.6.28",
+  "version": "0.6.29",
   "description": "AIと対話してアプリを作り、公開できるmacOS向けIDE",
   "main": "dist/main/main.js",
   "license": "Apache-2.0",
@@ -15,9 +15,10 @@
     "build": "npm run build:renderer && npm run build:main",
     "build:renderer": "tsc --noEmit -p tsconfig.json && vite build",
     "build:main": "tsc -p tsconfig.main.json",
-    "electron": "NODE_ENV=development electron .",
-    "start": "npm run fetch:crane && npm run build:main && concurrently -n renderer,electron -c magenta,green \"npm run dev:renderer\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
-    "dist": "npm run check:build && npm run fetch:crane && npm run gen:licenses && npm run build && electron-builder --mac --config electron-builder.config.js && node scripts/dmg-notarize.mjs --auto",
+    "ensure:electron": "install-electron --no",
+    "electron": "npm run ensure:electron && NODE_ENV=development electron .",
+    "start": "npm run ensure:electron && npm run fetch:crane && npm run build:main && concurrently -n renderer,electron -c magenta,green \"npm run dev:renderer\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
+    "dist": "npm run ensure:electron && npm run check:build && npm run fetch:crane && npm run gen:licenses && npm run build && electron-builder --mac --config electron-builder.config.js && node scripts/dmg-notarize.mjs --auto",
     "smoke": "node scripts/smoke-test.mjs",
     "check:models": "node scripts/check-models.mjs",
     "check:pricing": "node scripts/check-pricing.mjs",
@@ -26,10 +27,10 @@
     "release": "npm version patch --no-git-tag-version && npm run dist && npm run smoke",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check:build": "node scripts/check-build-config.mjs"
+    "check:build": "node scripts/check-build-config.mjs && node scripts/check-electron-assets.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "@anthropic-ai/claude-agent-sdk": "0.3.308",
     "@monaco-editor/react": "^4.6.0",
     "electron-updater": "^6.8.9",
     "monaco-editor": "^0.52.0",
@@ -43,13 +44,13 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
-    "@types/node": "^20.0.0",
+    "@types/node": "^24.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.0",
     "concurrently": "^9.0.0",
-    "electron": "^33.0.0",
+    "electron": "44.11.1",
     "electron-builder": "^26.15.2",
     "license-checker-rseidelsohn": "^5.0.1",
     "postcss": "^8.4.0",
@@ -116,6 +117,7 @@
       ],
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
+      "minimumSystemVersion": "13.0",
       "identity": null
     },
     "publish": [

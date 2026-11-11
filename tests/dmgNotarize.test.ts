@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 // @ts-expect-error — ビルド用スクリプト（型定義は持たない）
-import { pickDmgs, pickSigningIdentity, notarytoolCredentialArgs, updateDmgEntry, judgeGatekeeper, dmgsForVersion } from '../scripts/dmg-notarize.mjs'
+import { darwinVersionForMacOS, setMinimumSystemVersion, minimumDarwinVersionFromPackage, pickDmgs, pickSigningIdentity, notarytoolCredentialArgs, updateDmgEntry, judgeGatekeeper, dmgsForVersion, applyMinimumSystemVersion, assertMinimumSystemVersionRecorded } from '../scripts/dmg-notarize.mjs'
 
 // 2026-08-11。v0.3.1 の DMG が署名も公証もされていないことが分かって足した工程。
 // electron-builder は .app しか公証しないので、ここが唯一の防波堤になる。
@@ -246,5 +250,126 @@ describe('版の DMG を選ぶ — 試作を巻き込まない', () => {
 
   it('ほかの版は巻き込まない', () => {
     expect(dmgsForVersion(FILES, '0.3.33')).toEqual(['Koto-0.3.33-arm64.dmg'])
+  })
+})
+
+// ── 古い macOS へ自動更新を配らない（Electron 44 は macOS 13 以上）──────────────
+describe('latest-mac.yml の minimumSystemVersion', () => {
+  it('macOS の版を Darwin の版にする（13 = 22.0.0、electron-updater は os.release() と比べる）', () => {
+    expect(darwinVersionForMacOS('13.0')).toBe('22.0.0')
+    expect(darwinVersionForMacOS('12')).toBe('21.0.0')
+    expect(darwinVersionForMacOS('14.2')).toBe('23.0.0')
+    expect(darwinVersionForMacOS('11')).toBe('20.0.0')
+    expect(darwinVersionForMacOS('15.1')).toBe('24.0.0')
+    // macOS 26 以降は「主版 + 9」から外れる
+    expect(darwinVersionForMacOS('26.0')).toBe('25.0.0')
+    expect(darwinVersionForMacOS('27.2')).toBe('27.0.0')
+    // 表に無い版は止める
+    expect(() => darwinVersionForMacOS('28.0')).toThrow(/表にありません/)
+    expect(() => darwinVersionForMacOS('16')).toThrow(/表にありません/)
+    expect(() => darwinVersionForMacOS('10.15')).toThrow()
+    expect(() => darwinVersionForMacOS('')).toThrow()
+  })
+  it('yml に足す・置き換える（何度かけても同じ）', () => {
+    const yml = 'version: 0.6.29\npath: a.zip\n'
+    const once = setMinimumSystemVersion(yml, '22.0.0')
+    expect(once).toBe('version: 0.6.29\npath: a.zip\nminimumSystemVersion: 22.0.0\n')
+    expect(setMinimumSystemVersion(once, '22.0.0')).toBe(once)
+    expect(setMinimumSystemVersion(once, '23.0.0')).toContain('minimumSystemVersion: 23.0.0')
+    expect(() => setMinimumSystemVersion(yml, '13')).toThrow()
+  })
+  it('★ 設定が無ければ止める（黙って古い OS に配らない）', () => {
+    expect(() => minimumDarwinVersionFromPackage({ build: { mac: {} } })).toThrow(/minimumSystemVersion/)
+    expect(minimumDarwinVersionFromPackage({ build: { mac: { minimumSystemVersion: '13.0' } } })).toBe('22.0.0')
+  })
+  it('★ 署名あり・なしのどちらの設定でも mac.minimumSystemVersion が 13.0（Info.plist の LSMinimumSystemVersion）', () => {
+    const saved = { ...process.env }
+    try {
+      for (const env of [{}, { KOTO_SIGN: '1', APPLE_KEYCHAIN_PROFILE: 'koto' }]) {
+        delete process.env.KOTO_SIGN; delete process.env.APPLE_KEYCHAIN_PROFILE
+        Object.assign(process.env, env)
+        const p = require.resolve('../electron-builder.config.js')
+        delete require.cache[p]
+        expect(require(p).mac.minimumSystemVersion).toBe('13.0')
+      }
+    } finally {
+      process.env = saved
+    }
+  })
+  it('★ dist の最後（--auto）が、署名の有無より前に yml を書く', () => {
+    const src = readFileSync(join(__dirname, '..', 'scripts', 'dmg-notarize.mjs'), 'utf8')
+    const auto = src.indexOf('if (auto) {')
+    expect(auto).toBeGreaterThan(0)
+    expect(src.indexOf('applyMinimumSystemVersion(fileURLToPath', auto)).toBeLessThan(src.indexOf("process.env.KOTO_SIGN !== '1'", auto))
+  })
+})
+
+describe('latest-mac.yml への最低の版の書き込み（配線）', () => {
+  const root = join(__dirname, '..')
+  const base = 'version: 1.0.0\nfiles:\n  - url: a.zip\n    sha512: x\n    size: 1\npath: a.zip\n'
+  const withTmp = (fn: (dir: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), 'koto-yml-'))
+    try { fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('applyMinimumSystemVersion は yml に 22.0.0 を書き、2回かけても同じ', () => {
+    withTmp((dir) => {
+      const yml = join(dir, 'latest-mac.yml')
+      writeFileSync(yml, base)
+      applyMinimumSystemVersion(yml)
+      const once = readFileSync(yml, 'utf8')
+      expect(once).toMatch(/^minimumSystemVersion: 22\.0\.0$/m)
+      applyMinimumSystemVersion(yml)
+      expect(readFileSync(yml, 'utf8')).toBe(once)
+      expect(once.match(/minimumSystemVersion/g)).toHaveLength(1)
+    })
+  })
+
+  it('yml が無ければ止まる', () => {
+    withTmp((dir) => {
+      expect(() => applyMinimumSystemVersion(join(dir, 'latest-mac.yml'))).toThrow(/がありません/)
+    })
+  })
+
+  it('★ --auto は release/latest-mac.yml に最低の版を書く（署名・公証・通信なしの未署名の形で実走）', () => {
+    // スクリプトは自分の位置からの相対（../release・../package.json）を読むので、
+    // 一時フォルダに scripts/・package.json・release/ を組んで、そこで走らせる。
+    withTmp((dir) => {
+      mkdirSync(join(dir, 'scripts'))
+      mkdirSync(join(dir, 'release'))
+      copyFileSync(join(root, 'scripts/dmg-notarize.mjs'), join(dir, 'scripts/dmg-notarize.mjs'))
+      copyFileSync(join(root, 'package.json'), join(dir, 'package.json'))
+      const yml = join(dir, 'release/latest-mac.yml')
+      writeFileSync(yml, base)
+      const env = { ...process.env }
+      delete env.KOTO_SIGN // 未署名の形: 書き込みのあと何もせず終わる
+      execFileSync(process.execPath, [join(dir, 'scripts/dmg-notarize.mjs'), '--auto'], { env, cwd: dir, stdio: 'pipe' })
+      expect(readFileSync(yml, 'utf8')).toMatch(/^minimumSystemVersion: 22\.0\.0$/m)
+    })
+  })
+
+  it('★ syncUpdateRecord の中でも applyMinimumSystemVersion を呼ぶ（署名ありの流れは実走できないのでソースで固定）', () => {
+    // syncUpdateRecord は DMG の実物（署名・staple 済み）を前提にするため、テストでは走らせない。
+    const src = readFileSync(join(root, 'scripts/dmg-notarize.mjs'), 'utf8')
+    const start = src.indexOf('export function syncUpdateRecord')
+    const end = src.indexOf('\nexport function', start + 1)
+    expect(start).toBeGreaterThan(0)
+    expect(src.slice(start, end)).toContain('applyMinimumSystemVersion(yml)')
+  })
+
+  it('★ --verify-only の確かめ（verifyDmg）は、yml に minimumSystemVersion が無ければ失敗にする', () => {
+    withTmp((dir) => {
+      const yml = join(dir, 'latest-mac.yml')
+      expect(() => assertMinimumSystemVersionRecorded(yml)).toThrow(/がありません/)
+      writeFileSync(yml, base)
+      expect(() => assertMinimumSystemVersionRecorded(yml)).toThrow(/minimumSystemVersion がありません/)
+      applyMinimumSystemVersion(yml)
+      expect(() => assertMinimumSystemVersionRecorded(yml)).not.toThrow()
+    })
+    // verifyDmg が実際にこの確認を呼んでいること（verifyDmg は spctl を走らせるのでソースで固定）
+    const src = readFileSync(join(root, 'scripts/dmg-notarize.mjs'), 'utf8')
+    const start = src.indexOf('export function verifyDmg')
+    const end = src.indexOf('\nexport function', start + 1)
+    expect(src.slice(start, end)).toContain("assertMinimumSystemVersionRecorded(join(dirname(dmgPath), 'latest-mac.yml'))")
   })
 })

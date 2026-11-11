@@ -232,6 +232,16 @@ describe('query() へ実際に渡った options: allowedTools・permissionMode�
     expect(options.settingSources).toEqual([])
   })
 
+  it('★★ systemPrompt は preset で snapshot:false（resume でも毎回組み立て直し、2往復目以降に古い時刻が残らない）', async () => {
+    for (const over of [{ resumeSessionId: null }, { resumeSessionId: 'sess-1' }] as const) {
+      const { options } = await runChat(over)
+      expect(options.systemPrompt.type).toBe('preset')
+      expect(options.systemPrompt.preset).toBe('claude_code')
+      expect(options.systemPrompt.snapshot).toBe(false)
+      expect(options.systemPrompt.append).toContain('現在')
+    }
+  })
+
   it('★ resume の自己修復リトライ（2回目の query）でも同じ守りが渡る（runOptions は options の写し）', async () => {
     // resume を指定して1回目の query() が開始直後に失敗 → resume 無しでやり直す。その2回目にも守りが付いていること。
     const queries: QueryArg[] = []
