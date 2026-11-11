@@ -128,4 +128,23 @@ describe('専有型の説明は、公開が実装済みであることと合っ�
     expect(src).toContain('・▲ Vercel です。')
     expect(src).not.toContain('選ぶと公開先もそれに変わります')
   })
+  it('HANAMII の前提: ソース一式を送る形で、scripts.start・Procfile・PORT を含む', () => {
+    const ctx = profileToContext(TARGET_PROFILES.hanamii)
+    expect(ctx).not.toContain('ビルド済みファイルをアップロードするだけ')
+    expect(ctx).toContain('ソース一式')
+    expect(ctx).toContain('scripts.start')
+    expect(ctx).toContain('Procfile')
+    expect(ctx).toContain('PORT')
+    expect(ctx).toContain('NEXT_PUBLIC_')
+    // Koto は静的サイトも HANAMII へ公開できる（小さなサーバを添える）。対応の一覧から落とさない
+    expect(ctx).toContain('静的サイト')
+  })
+  it('HANAMII の前提: 決まりとすすめの区別・置き場所・成果物・PHP の Dockerfile', () => {
+    const ctx = profileToContext(TARGET_PROFILES.hanamii)
+    expect(ctx).toContain('HANAMII の決まり')
+    expect(ctx).toContain('Koto のすすめ')
+    expect(ctx).toContain('公開されるフォルダの直下に置く（public/ があればその中）')
+    expect(ctx).toContain('dist/・build/ などのビルドの成果物を送る前提で作らない')
+    expect(ctx).toContain('PHP（Dockerfile が要る）')
+  })
 })

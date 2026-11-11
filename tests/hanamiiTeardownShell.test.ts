@@ -233,6 +233,45 @@ describe('★★★ 順序と中止: プロジェクト削除 → 一覧 → デ
     }
   })
 
+  it('★★★ 削除の失敗に、HANAMII の理由（error.message）が主の文に、原文（本文）が詳細に付く。保存場所へは進まない', async () => {
+    h.status = 403
+    h.bodyOverride = JSON.stringify({ error: { code: 'forbidden', message: 'このプロジェクトを削除する権限がありません' } })
+    h.calls = []
+    const r = await call()
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('削除に失敗しました（HTTP 403）: このプロジェクトを削除する権限がありません')
+    expect(r.message).toContain('\n詳細: ')
+    expect(r.message).toContain('forbidden')
+    expect(h.calls).toEqual([DELETE_CALL])
+  })
+
+  it('★★★ 削除の失敗の主の文は伏せて1行: HTML の本文は主の文に出さず（詳細にだけ）、理由の中の秘密の形は伏せる', async () => {
+    const secret = 'hnm' + '_Ab12Cd34Ef56Gh78Ij90Kl12Mn34'
+    h.status = 502
+    h.bodyOverride = '<html><body>Bad Gateway</body></html>'
+    h.calls = []
+    const html = await call()
+    const shownHtml = splitFailureDetail(html.message as string)
+    expect(shownHtml.text).toBe('削除に失敗しました（HTTP 502）')
+    expect(shownHtml.detail).toContain('Bad Gateway')
+    h.status = 403
+    h.bodyOverride = JSON.stringify({ error: { code: 'forbidden', message: `トークン ${secret} では削除できません` } })
+    const masked = await call()
+    expect(masked.message).not.toContain(secret)
+    expect(splitFailureDetail(masked.message as string).text).toBe('削除に失敗しました（HTTP 403）: トークン *** では削除できません')
+  })
+
+  it('★★ 200 の本文 error の削除は失敗（HTTP 200 とは書かず code を添える）。保存場所へは進まない', async () => {
+    h.status = 200
+    h.bodyOverride = JSON.stringify({ error: { code: 'delete_failed', message: '削除できませんでした' } })
+    h.calls = []
+    const r = await call()
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('削除に失敗しました（delete_failed）: 削除できませんでした')
+    expect(r.message).not.toContain('HTTP 200')
+    expect(h.calls).toEqual([DELETE_CALL])
+  })
+
   it('★★★ HANAMII への通信が例外で終わった（切断・AbortSignal の時間切れ）→ 保存場所へ1件も要求を出さず、記録も env.json も変えず、残りの印も書かない', async () => {
     // 時間切れは「HANAMII 側で削除が進んだか分からない」回。ここで鍵とデータを消すと、まだ動いているアプリが 403 で落ちる。
     // 例外の枝は HTTP の失敗（上のテスト）とは別の枝なので、別に固定する。

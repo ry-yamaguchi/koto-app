@@ -2,6 +2,11 @@
 import { ipcMain } from 'electron'
 import { lookup } from 'dns/promises'
 import net from 'net'
+import http from 'node:http'
+import https from 'node:https'
+import zlib from 'node:zlib'
+import { PassThrough, type Readable } from 'node:stream'
+import { withFailureDetail } from '../../shared/failureText'
 import type { IpcDeps } from './types'
 
 // ── Webページの取得（AIに本文を渡すため。メインプロセスなのでCORS制約なし） ──
@@ -56,11 +61,25 @@ function isBlockedIp(ip: string): boolean {
   return true // 解析不能なものは遮断側に倒す
 }
 
-/** fetch 対象URLが安全か検証する。内部IPを指すホストは拒否。 */
+/** Fetch の仕様の禁止ポート（ブラウザ・undici が接続を断る一覧）。
+ *  出典: undici 6.27.0 の lib/web/fetch/constants.js の badPorts（Fetch Standard の bad port blocking）を写した。 */
+const FETCH_BAD_PORTS: ReadonlySet<string> = new Set([
+  '1', '7', '9', '11', '13', '15', '17', '19', '20', '21', '22', '23', '25', '37', '42', '43', '53', '69', '77', '79',
+  '87', '95', '101', '102', '103', '104', '109', '110', '111', '113', '115', '117', '119', '123', '135', '137',
+  '139', '143', '161', '179', '389', '427', '465', '512', '513', '514', '515', '526', '530', '531', '532',
+  '540', '548', '554', '556', '563', '587', '601', '636', '989', '990', '993', '995', '1719', '1720', '1723',
+  '2049', '3659', '4045', '4190', '5060', '5061', '6000', '6566', '6665', '6666', '6667', '6668', '6669', '6679',
+  '6697', '10080',
+])
+
+/** fetch 対象URLが安全か検証する。内部IPを指すホスト・禁止ポート・資格情報つきURLは拒否。 */
 async function assertFetchAllowed(rawUrl: string): Promise<void> {
   let u: URL
   try { u = new URL(rawUrl) } catch { throw new Error('URLの形式が正しくありません') }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('http/https のURLのみ取得できます')
+  // 以前の global fetch（undici）が断っていたものを、自前の通信でも同じに断る
+  if (u.username !== '' || u.password !== '') throw new Error('安全のため、利用者名・パスワードを含むURLは取得できません')
+  if (u.port !== '' && FETCH_BAD_PORTS.has(u.port)) throw new Error('安全のため、このポート番号へはアクセスできません')
   const host = u.hostname
   if (net.isIP(host)) {
     if (isBlockedIp(host)) throw new Error('安全のため、内部ネットワークのアドレスへはアクセスできません')
@@ -117,6 +136,134 @@ async function searchTavily(key: string, query: string): Promise<SearchResult[]>
 // web:fetch ハンドラの応答型（renderer 側 web.fetchPage の戻り値と一致させること）
 export type FetchedPage = { url: string; title: string; content: string }
 
+// ── 通信（node:http / node:https）。global fetch・Electron の net は使わない ──
+// 理由: CVE-2026-111497（Brotli の展開の領域外書き込み）。global fetch（undici）は Content-Encoding: br を
+// 自動で展開する。この展開を Electron の版上げ（別の版）まで通さないための緩和であり、Electron 側の Brotli の
+// 修正を確かめたものではない。node:http は自動で展開しないので、Accept-Encoding は gzip, deflate だけを送り、
+// gzip・deflate だけ自分で展開し、br と知らない符号化は本文を1バイトも展開せずに断る。
+// 対象はこの fetchUrlPage の経路だけ。search_web（Brave・Tavily）は固定の API を global fetch で読むので対象外。
+const FETCH_TIMEOUT_MS = 15000
+const FETCH_MIN_BYTES = 2 * 1024 * 1024 // 展開後に読む量の下限（上限は maxChars に見合う大きさ）
+const FETCH_MAX_BYTES_CEILING = 8 * 1024 * 1024 // どんな maxChars でも超えない天井
+
+// 途中で切れた応答は読めたところまで返す（Z_SYNC_FLUSH）。以前の global fetch（undici）と同じ。Brotli はここでも使わない。
+const ZLIB_OPTS = { finishFlush: zlib.constants.Z_SYNC_FLUSH }
+
+/** 断る文に入れる Content-Encoding の値。サーバー任せの値なので、制御文字を落として80字までに切る。 */
+function safeEncodingForMessage(enc: string): string {
+  // eslint-disable-next-line no-control-regex
+  return enc.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, 80)
+}
+
+type Inflater = zlib.Gunzip | zlib.Inflate | zlib.InflateRaw
+
+/** 最初のチャンクを見て展開器を選び、残りを流し込む。本文が1バイトも無ければ空として読む（以前の undici と同じ）。 */
+function openInflate(res: Readable, pick: (first: Buffer) => Inflater): Readable {
+  const out = new PassThrough()
+  let started = false
+  res.once('data', (first: Buffer) => {
+    started = true
+    const z = pick(first)
+    z.on('error', (e) => out.destroy(e))
+    out.on('close', () => z.destroy())
+    z.pipe(out)
+    z.write(first)
+    res.pipe(z)
+  })
+  res.once('end', () => { if (!started) out.end() })
+  return out
+}
+
+const openGunzip = (res: Readable): Readable => openInflate(res, () => zlib.createGunzip(ZLIB_OPTS))
+
+/** deflate は zlib の頭つき（先頭バイトの下位4ビットが 8）と頭なしの生の2通りがある。先頭の1バイトで見分ける。 */
+const openDeflate = (res: Readable): Readable =>
+  openInflate(res, (first) => ((first[0] & 0x0f) === 8 ? zlib.createInflate(ZLIB_OPTS) : zlib.createInflateRaw(ZLIB_OPTS)))
+
+type FetchedHop = { status: number; location: string | null; ctype: string; text: string }
+
+function requestOnce(current: string, maxBytes: number): Promise<FetchedHop> {
+  return new Promise<FetchedHop>((resolve, reject) => {
+    const u = new URL(current)
+    const mod = u.protocol === 'https:' ? https : http
+    let done = false
+    const finish = (fn: () => void): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      fn()
+    }
+    const req = mod.request(u, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh) SakuraIDE/0.1',
+        Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+      },
+    }, (res) => {
+      const status = res.statusCode ?? 0
+      const header = (name: string): string => {
+        const v = res.headers[name]
+        return Array.isArray(v) ? v.join(', ') : (v ?? '')
+      }
+      const ctype = header('content-type')
+      if (status < 200 || status >= 300) {
+        // 本文は読まない（リダイレクト・エラーの応答）
+        const location = header('location') || null
+        res.destroy()
+        finish(() => resolve({ status, location, ctype, text: '' }))
+        return
+      }
+      const enc = header('content-encoding').trim().toLowerCase()
+      let stream: Readable = res
+      if (enc === '' || enc === 'identity') {
+        // そのまま読む
+      } else if (enc === 'gzip' || enc === 'x-gzip' || enc === 'deflate') {
+        stream = enc === 'deflate' ? openDeflate(res) : openGunzip(res)
+      } else {
+        // br を含む・知らない符号化は、1バイトも展開せずに切る
+        res.destroy()
+        finish(() => reject(new Error(withFailureDetail(
+          'このページは、Koto が読めない圧縮の形式で返ってきたため、読みませんでした。',
+          new Error(`Content-Encoding: ${safeEncodingForMessage(enc)}`),
+        ))))
+        return
+      }
+      const chunks: Buffer[] = []
+      let total = 0
+      const complete = (): void => finish(() => resolve({ status, location: null, ctype, text: Buffer.concat(chunks).toString('utf8') }))
+      stream.on('data', (chunk: Buffer) => {
+        if (done) return
+        const room = maxBytes - total
+        if (chunk.length >= room) {
+          chunks.push(chunk.subarray(0, room))
+          total = maxBytes
+          res.destroy()
+          stream.destroy()
+          complete() // 上限に達したら読み切らずに切る
+          return
+        }
+        chunks.push(chunk)
+        total += chunk.length
+      })
+      stream.on('end', complete)
+      stream.on('error', (e) => finish(() => reject(e)))
+      res.on('error', (e) => finish(() => reject(e)))
+      res.on('close', () => {
+        if (!res.complete) finish(() => reject(new Error('接続が途中で切れました')))
+      })
+    })
+    const timer = setTimeout(() => {
+      const err = new Error('The operation was aborted due to timeout')
+      err.name = 'TimeoutError'
+      req.destroy()
+      finish(() => reject(err))
+    }, FETCH_TIMEOUT_MS)
+    req.on('error', (e) => finish(() => reject(e)))
+    req.end()
+  })
+}
+
 /**
  * 指定URLのWebページ本文を取得する（web:fetch ハンドラの実体）。
  * main プロセス内で完結する処理のため、Claude頭脳モード（C2b）の fetch_url MCPツール
@@ -127,37 +274,34 @@ export type FetchedPage = { url: string; title: string; content: string }
  * 発生しない用途は、呼び出し側が明示的に大きい値（例: 200000）を渡す。
  */
 export async function fetchUrlPage(url: string, opts?: { maxChars?: number }): Promise<FetchedPage> {
-  const maxChars = opts?.maxChars ?? FETCH_MAX_CHARS
+  // renderer から IPC（web:fetch）で来る値もここを通る。有限で正の数だけ使い、それ以外（Infinity・NaN・0・負・数でない値）は既定。
+  const rawMax = opts?.maxChars
+  const maxChars = typeof rawMax === 'number' && Number.isFinite(rawMax) && rawMax > 0 ? rawMax : FETCH_MAX_CHARS
   if (!/^https?:\/\//i.test(url)) throw new Error('http/https のURLのみ取得できます')
+  const maxBytes = Math.min(FETCH_MAX_BYTES_CEILING, Math.max(FETCH_MIN_BYTES, maxChars * 8))
   // 手動でリダイレクトを辿り、各ホップで内部IP宛てでないか検証する（リダイレクト経由のSSRF対策）
   let current = url
-  let res: Response | null = null
+  let res: FetchedHop | null = null
   for (let hop = 0; hop <= 5; hop++) {
     await assertFetchAllowed(current)
-    const r = await fetch(current, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh) SakuraIDE/0.1', Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' },
-      redirect: 'manual',
-      signal: AbortSignal.timeout(15000),
-    })
+    const r = await requestOnce(current, maxBytes)
     if (r.status >= 300 && r.status < 400) {
-      const loc = r.headers.get('location')
-      if (!loc) { res = r; break } // 3xxだがLocation無し → そのまま扱う
-      current = new URL(loc, current).toString()
+      if (!r.location) { res = r; break } // 3xxだがLocation無し → そのまま扱う
+      current = new URL(r.location, current).toString()
       continue
     }
     res = r
     break
   }
   if (!res) throw new Error('リダイレクトが多すぎます（5回まで）')
-  if (!res.ok) throw new Error(`ページを取得できませんでした（HTTP ${res.status}）`)
-  const ctype = res.headers.get('content-type') ?? ''
-  const raw = await res.text()
-  if (/html/i.test(ctype) || /^\s*</.test(raw)) {
+  if (!(res.status >= 200 && res.status < 300)) throw new Error(`ページを取得できませんでした（HTTP ${res.status}）`)
+  const raw = res.text
+  if (/html/i.test(res.ctype) || /^\s*</.test(raw)) {
     const { title, text } = htmlToText(raw)
-    return { url: res.url || current, title, content: text.slice(0, maxChars) }
+    return { url: current, title, content: text.slice(0, maxChars) }
   }
   // プレーンテキスト・JSON等はそのまま（上限のみ適用）
-  return { url: res.url || current, title: '', content: raw.slice(0, maxChars) }
+  return { url: current, title: '', content: raw.slice(0, maxChars) }
 }
 
 /**

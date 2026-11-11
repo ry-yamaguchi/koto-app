@@ -302,6 +302,8 @@ const SECRET_SHAPES: readonly SecretShape[] = [
   knownKey('aws-access-key-id', /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/g, () => 'AKIA'.length),
   // OpenAI。`sk-` のあとに数字が混ざるものだけ（`sk-learn-…` のような識別子を拾わない）。sk-ant- は上で先に取られる
   knownKey('openai-key', /(?<![\w-])sk-(?:proj-|svcacct-|admin-)?(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{20,}/g, () => 'sk-'.length),
+  // HANAMII の API トークン（`hnm_` で始まる。原本に長さの決まりは無いので、普通の識別子〔hnm_token など〕を伏せないよう16字以上に絞る）
+  knownKey('hanamii-token', /(?<![A-Za-z0-9])hnm_[A-Za-z0-9]{16,}(?![A-Za-z0-9])/g, () => 'hnm_'.length),
   knownKey('npm-token', /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g, () => 'npm_'.length),
   {
     // Google の API キー（`AIza…`）。地図・Firebase の web 設定は公開してよいので警告しない（isBrowserSafeKey と同じ考え）が、送りはしない

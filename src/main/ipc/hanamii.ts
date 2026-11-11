@@ -5,7 +5,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { execFile } from 'child_process'
 import { randomUUID } from 'crypto'
-import { HanamiiClient, extractProjectIds, extractProjectStatus, extractLogs, normalizeHealthCheck, hanamiiErrorMessage, type HanamiiEnv, type HanamiiHealthCheck, type HanamiiResult } from '../hanamii/client'
+import { HanamiiClient, extractProjectIds, extractProjectStatus, extractLogs, normalizeHealthCheck, hanamiiFailureMessage, hanamiiStatusTag, readRestartReply, type HanamiiEnv, type HanamiiHealthCheck, type HanamiiResult } from '../hanamii/client'
 import { detectEnvKeysInProject } from '../envDetect'
 import { issueStorageEnvFor, cleanUpOldKeysFor } from '../cloud/storageForTarget'
 // 公開が途中で止まったとき、いま発行した鍵を取り消す（公開の側の守り）。破棄の保存場所の片づけは hanamiiTeardown.ts に移した。
@@ -21,7 +21,9 @@ import { readPublishedAtFs } from '../publishMetaFs'
 import { withProjectLock, projectBusyMessage } from '../projectLock'
 // 進捗の送り口は1つ（記録の更新を兼ねる）。公開のあと（動いたと確かめる）は hanamii/aftercare.ts。2026-09-29
 import { progressReporter } from '../projectOps'
-import { failureText, withFailureDetail } from '../../shared/failureText'
+import { failureText, failureDetailOf, withFailureDetail } from '../../shared/failureText'
+import { maskSecretShapes } from '../../shared/secretShapes'
+import { describeErrorCode } from '../../shared/hanamiiErrorCode'
 import { wrapFailureText } from '../../shared/failureDetail'
 import { commandFailureOf } from './commandFailure'
 import { waitForNewVersion, type NewVersionOutcome } from '../hanamii/aftercare'
@@ -162,6 +164,31 @@ export const PROJECT_MISMATCH_PUBLISH =
   '公開しようとした HANAMII のプロジェクトが、このプロジェクトの記録と一致しません。'
   + '何も公開していません。公開のダイアログを閉じて開き直してから、もう一度お試しください。'
 
+/**
+ * 失敗の応答の原文（画面の「詳細」）。JSON を短く（400 字）して、failureDetailOf（秘密の形とホームのパスを伏せ、1 行にして切る）を通す。
+ * 主の文には載せず、原因の見分けに使う原文として残す。
+ */
+function dbg(x: unknown): string {
+  let raw: string
+  try { raw = JSON.stringify(x) ?? String(x) } catch { raw = String(x) }
+  // 先に切らずに渡す。failureDetailOf が伏せてから切る（切れ目に秘密がまたがると、伏せの形に当たらない断片が詳細に残るため）
+  return failureDetailOf(raw)
+}
+
+/**
+ * 初回の作成（POST /projects）が「作られたか分からない」まま終わった回の文。作成は keepalive のストリームで返り、始まったあとの失敗は
+ * 200＋本文 error で返る（公式文書: 作成・発行の結果は不明のことがある）。この回は記録を書かないので 📡 には出ない。
+ */
+function projectNotConfirmedMessage(name: string): string {
+  return `HANAMII のプロジェクト『${name}』が作られたか確かめられませんでした。HANAMII の管理画面で『${name}』があるか確かめてください。`
+}
+
+/** errorCode の説明（表にある値だけ。表に無い値は上の文の括弧に出ているので重ねない）。無ければ ''。 */
+function errorCodeSentence(code: string | null | undefined): string {
+  const text = describeErrorCode(code)
+  return text && !text.startsWith('エラーコード: ') ? text : ''
+}
+
 /** 待った時間を画面の文にする（90秒未満は秒、それ以上は約N分）。 */
 function waitedText(sec: number): string {
   return sec < 90 ? `${Math.max(1, sec)}秒` : `約${Math.round(sec / 60)}分`
@@ -239,6 +266,7 @@ async function finishHanamiiPublish(args: {
       ...rest, deployState: 'error', readyState: 'ERROR',
       ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
       message: `HANAMII が新しいバージョンを起動できませんでした${outcome.errorCode ? `（エラーコード: ${outcome.errorCode}）` : ''}。`
+        + errorCodeSentence(outcome.errorCode)
         + (args.redeployed ? '前のバージョンが動き続けている場合があります。' : '')
         + `HANAMII の管理画面でログを確かめてください。${keepNote}`,
       ...(carried.length > 0 ? { warnings: carried } : {}),
@@ -278,7 +306,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
     try {
       const r = await new HanamiiClient({ token }).listWorkspaces()
-      if (!r.ok) return { ok: false, message: (r.status === 401 || r.status === 403) ? '認証に失敗しました（HANAMII のトークンを確認してください）' : `取得に失敗しました（HTTP ${r.status}）` }
+      if (!r.ok) return { ok: false, message: (r.status === 401 || r.status === 403) ? '認証に失敗しました（HANAMII のトークンを確認してください）' : hanamiiFailureMessage('取得', r) }
       const raw = (r.data as any)?.workspaces
       const workspaces = Array.isArray(raw) ? raw.map((w: any) => ({ id: String(w.id), name: String(w.name ?? w.id), role: String(w.role ?? '') })) : []
       return { ok: true, workspaces }
@@ -288,16 +316,9 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     }
   })
   ipcMain.handle('hanamii:publish', async (_, projectDir: string, opts: { token: string; workspaceId: string; projectId?: string; name: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: HanamiiHealthCheck; withStorage?: boolean }) => {
-    // 失敗時の生応答（JSON短縮・診断用）。message には連結せず detail フィールドで返し、renderer 側が
-    // 折りたたみ（詳細を見る）で表示する（所見11: 生JSON連結の修正。生JSONは過去に原因究明で
-    // 役立った実績があるため、捨てずに折りたたみとして残す）。
-    const dbg = (x: unknown) => { try { const s = JSON.stringify(x); return s ? s.slice(0, 400) : String(x) } catch { return String(x) } }
-    // 応答から人間可読な理由を取り出して「: <理由>」として message に添える。
-    // hanamiiErrorMessage がJSON全文へフォールバックした場合は detail と重複するため添えない。
-    const reason = (data: unknown) => {
-      const m = hanamiiErrorMessage(data)
-      return m && !/^[[{]/.test(m) ? `: ${m}` : ''
-    }
+    // 失敗時の生応答（JSON短縮・診断用）は、モジュール先頭の dbg（failureDetailOf を通す）で detail フィールドに返し、
+    // renderer 側が折りたたみ（詳細を見る）で表示する（所見11: 生JSON連結の修正。原因究明に役立つので捨てずに残す）。
+    // 失敗の主の文は hanamiiFailureMessage（理由の取り出しと、2xx なのに本文の error で失敗した回の書き分け）が作る。
     // 同じプロジェクトの公開・破棄を二重に走らせない（2026-09-29・src/main/projectLock.ts）。
     // 画面を閉じて開き直して、もう一度「公開」を押すと二重に走る。とくに**projectId を保存する前
     // （初回の公開の最中）に二重に走ると、HANAMII のプロジェクトが二重に作られる**。
@@ -386,7 +407,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       }
       progress('☁️ HANAMII へアップロードしています…')
       const up = await client.createUpload(opts.workspaceId, `${opts.name || 'app'}.zip`)
-      if (!up.ok) return withDataLayerNote({ ok: false, message: `アップロードの準備に失敗しました（HTTP ${up.status}）${reason(up.data)}`, detail: dbg(up.data) })
+      if (!up.ok) return withDataLayerNote({ ok: false, message: hanamiiFailureMessage('アップロードの準備', up), detail: dbg(up.data) })
       // 応答形の揺れに強く: { upload: {...} } でも {...} 直下でも拾う。
       const upload = (up.data as any)?.upload ?? (up.data as any)
       const uploadUrl = upload?.uploadUrl
@@ -396,18 +417,20 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       if (!put.ok) return withDataLayerNote({ ok: false, message: `ZIP(${zip.length}バイト)のアップロードに失敗しました（HTTP ${put.status}）` })
       progress('🔎 アップロードした内容を HANAMII が検証しています…')
       const chk = await client.checkUpload(uploadId)
-      if (!chk.ok) return withDataLayerNote({ ok: false, message: `アップロードの検証に失敗しました（HTTP ${chk.status}）${reason(chk.data)}`, detail: dbg(chk.data) })
+      if (!chk.ok) return withDataLayerNote({ ok: false, message: hanamiiFailureMessage('アップロードの検証', chk), detail: dbg(chk.data) })
       // 応答の揺れに強く: result は直下/トップレベル どちらでも拾う。
       const result = (chk.data as any)?.result ?? (chk.data as any)
       // 「公開できない」判定を先に（HANAMIIの errors を分かりやすく表示）。checkId は canDeploy:true のときだけ返る。
       if (result?.canDeploy === false) {
+        // HANAMII の文は主の文に出すので、1件ずつ秘密の形を伏せて1行・200 字に切り、件数も絞る。原文は伏せた詳細に必ず残す。
         const errs = Array.isArray(result.errors)
-          ? result.errors.map((e: any) => e?.message ?? e?.type ?? '').filter(Boolean).join('\n')
+          ? result.errors.map((e: any) => e?.message ?? e?.type ?? '').filter((m: unknown) => typeof m === 'string' && m.trim())
+            .slice(0, 10).map((m: string) => maskSecretShapes(m).replace(/\s+/g, ' ').trim().slice(0, 200)).join('\n')
           : ''
         return withDataLayerNote({
           ok: false,
           message: `HANAMII が公開を受け付けませんでした:\n${errs || `${result.errorCount ?? 0}件のエラー`}`,
-          ...(errs ? {} : { detail: dbg(result.errors ?? chk.data) }),
+          detail: dbg(result.errors ?? chk.data),
         })
       }
       const checkId = result?.checkId ?? (chk.data as any)?.checkId
@@ -463,41 +486,68 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       const healthCheck = opts.healthCheck ? normalizeHealthCheck(opts.healthCheck) : undefined
       progress('🚀 HANAMII へ公開を依頼しています…')
       let dep: HanamiiResult
+      // 再公開で、新しい鍵を載せた環境変数を HANAMII へ保存し終えたか。保存し終えたあとは、保存された env がこの鍵を指すので取り消さない。
+      let envSaved = false
+      const projectName = opts.name || 'app'
       if (knownProjectId) {
         // 既存プロジェクトの再公開: envs/healthCheck は正規経路（PATCH /env・PUT /health-check）で先に保存し、
         // その後 redeploy する（redeploy 自体が保存済みの設定を反映する。restart は不要）。
         if (envs && envs.length) {
           const envRes = await client.patchEnv(knownProjectId, envs)
           if (!envRes.ok) {
-            await revokeJustIssuedKey()   // 版はまだ作られていない（検分の指摘14）
-            return withDataLayerNote({ ok: false, message: `環境変数の保存に失敗しました（HTTP ${envRes.status}）${reason(envRes.data)}`, detail: dbg(envRes.data) })
+            await revokeJustIssuedKey()   // 新しい鍵はまだ HANAMII に保存されていない（検分の指摘14）
+            return withDataLayerNote({ ok: false, message: hanamiiFailureMessage('環境変数の保存', envRes), detail: dbg(envRes.data) })
           }
+          envSaved = true
         }
         if (healthCheck) {
           const hcRes = await client.putHealthCheck(knownProjectId, healthCheck)
           if (!hcRes.ok) {
-            await revokeJustIssuedKey()   // 版はまだ作られていない（検分の指摘14）
-            return withDataLayerNote({ ok: false, message: `ヘルスチェック設定の保存に失敗しました（HTTP ${hcRes.status}）${reason(hcRes.data)}`, detail: dbg(hcRes.data) })
+            // 環境変数の保存が済んでいれば、HANAMII の env は新しい鍵を指している。取り消すと次の「再起動」で 403 になる。
+            // 残った新しい鍵は、次に READY を確かめた公開の cleanUpOldKeysFor が名前で片づける（古い鍵はまだ消していない）。
+            if (!envSaved) await revokeJustIssuedKey()
+            return withDataLayerNote({ ok: false, message: hanamiiFailureMessage('ヘルスチェック設定の保存', hcRes), detail: dbg(hcRes.data) })
           }
         }
         dep = await client.redeploy(knownProjectId, checkId)
       } else {
-        dep = await client.createProject({
-          name: opts.name || 'app',
-          workspaceId: opts.workspaceId,
-          source: { type: 'zip', checkId },
-          ...(envs && envs.length ? { envs } : {}),
-          // 新規作成で enabled:false を送る意味はない（無効=未設定）。有効時のみボディに含める
-          ...(healthCheck && healthCheck.enabled ? { healthCheck } : {}),
-        })
+        try {
+          dep = await client.createProject({
+            name: projectName,
+            workspaceId: opts.workspaceId,
+            source: { type: 'zip', checkId },
+            ...(envs && envs.length ? { envs } : {}),
+            // 新規作成で enabled:false を送る意味はない（無効=未設定）。有効時のみボディに含める
+            ...(healthCheck && healthCheck.enabled ? { healthCheck } : {}),
+          })
+        } catch (e: any) {
+          // 時間切れ・切断: 作られたか分からない。鍵は取り消さない（作られていたら、そのアプリがこの鍵で動く）。記録も書かない。
+          return withDataLayerNote({ ok: false, message: projectNotConfirmedMessage(projectName), detail: failureDetailOf(e) })
+        }
       }
       if (!dep.ok) {
-        // createProject / redeploy が**通らなかった**＝この鍵を載せた版はどこにも無い（検分の指摘14）
-        await revokeJustIssuedKey()
-        return withDataLayerNote({ ok: false, message: `公開に失敗しました（HTTP ${dep.status}）${reason(dep.data)}`, detail: dbg(dep.data) })
+        if (knownProjectId) {
+          // 再公開の redeploy が通らなかった: 環境変数の保存が済んでいれば鍵は取り消さない（上と同じ理由。次の公開の cleanUpOldKeysFor が片づける）。
+          if (!envSaved) await revokeJustIssuedKey()
+          return withDataLayerNote({ ok: false, message: hanamiiFailureMessage('公開', dep), detail: dbg(dep.data) })
+        }
+        // 初回の作成: **ストリームが始まる前の断り（HTTP 4xx。400・401・403・409・413・415・429 など）だけ**が「作られていない」と言い切れる。
+        // その回だけ、いま発行した鍵を取り消す（検分の指摘14）。2xx の本文 error・5xx（502 external_api_error は「結果が不明のことがある」）は
+        // 作られているかもしれない: 取り消すと、実は作られたアプリが取り消した鍵で動いて保存場所へ 403 になり、Koto は記録していないので消せず、
+        // 次の公開は同じ名前で 409 になる。鍵を残し、記録に projectId は書かない。
+        if (dep.status >= 400 && dep.status < 500) {
+          await revokeJustIssuedKey()
+          return withDataLayerNote({ ok: false, message: hanamiiFailureMessage('公開', dep), detail: dbg(dep.data) })
+        }
+        return withDataLayerNote({ ok: false, message: projectNotConfirmedMessage(projectName), detail: `${hanamiiStatusTag(dep)} ${dbg(dep.data)}`.trim() })
       }
       const ids = extractProjectIds(dep.data)
       const projectId = knownProjectId ?? ids.projectId
+      // 作成の応答が通っても projectId が取り出せなければ、プロジェクトが作られたか確かめられない。
+      // 「公開した」と記録せず（projectId=null の行を書かない）、鍵も取り消さない（作られているかもしれない。上と同じ扱い）。
+      if (!projectId) {
+        return withDataLayerNote({ ok: false, message: projectNotConfirmedMessage(projectName), detail: dbg(dep.data) })
+      }
       // 公開記録を main 側で残す（renderer が閉じても失われない・roadmap #20）。
       // projectId を保存しないと、次回公開が新規プロジェクトとして二重作成されうる。
       // URL は READY まで分からないため null（renderer のポーリングが後から更新する・従来どおり）。
@@ -527,7 +577,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     if (!projectId) return { ok: false, message: 'プロジェクトIDがありません' }
     try {
       const r = await new HanamiiClient({ token }).getProject(projectId)
-      if (!r.ok) return { ok: false, message: `状態の取得に失敗しました（HTTP ${r.status}）` }
+      if (!r.ok) return { ok: false, message: hanamiiFailureMessage('状態の取得', r) }
       const s = extractProjectStatus(r.data)
       return { ok: true, url: s.url, readyState: s.readyState, errorCode: s.errorCode, runtime: s.runtime }
     } catch (e: any) {
@@ -558,7 +608,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     if (!projectId) return { ok: false, message: 'プロジェクトIDがありません' }
     try {
       const r = await new HanamiiClient({ token }).getLogs(projectId, opts)
-      if (!r.ok) return { ok: false, message: `ログの取得に失敗しました（HTTP ${r.status}）` }
+      if (!r.ok) return { ok: false, message: hanamiiFailureMessage('ログの取得', r) }
       return { ok: true, logs: extractLogs(r.data) }
     } catch (e: any) {
       return { ok: false, message: failureText(e, { readOnly: true }) }
@@ -570,11 +620,10 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
   // （renderer の HanamiiPanel が現在のフォーム内容を毎回渡す想定）。restart 自体が no-op のときは
   // HANAMII 側が { noop:true } を返すのでそのまま伝える。
   ipcMain.handle('hanamii:restart', async (_, projectId: string, opts: { token: string; envs?: HanamiiEnv[]; healthCheck?: HanamiiHealthCheck }) => {
-    const dbg = (x: unknown) => { try { const s = JSON.stringify(x); return s ? s.slice(0, 400) : String(x) } catch { return String(x) } }
-    const reason = (data: unknown) => {
-      const m = hanamiiErrorMessage(data)
-      return m && !/^[[{]/.test(m) ? `: ${m}` : ''
-    }
+    // 保存できた設定の印。restart より前の段で止まっても、保存が済んだ側だけを画面に伝える（手元の写しを HANAMII と食い違わせない）。
+    let envsSaved = false
+    let healthCheckSaved = false
+    const savedFlags = () => ({ ...(envsSaved ? { envsSaved: true } : {}), ...(healthCheckSaved ? { healthCheckSaved: true } : {}) })
     try {
       const token = opts?.token
       if (!token) return { ok: false, message: 'HANAMII のトークンが未登録です' }
@@ -585,17 +634,25 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
         : undefined
       if (envs && envs.length) {
         const envRes = await client.patchEnv(projectId, envs)
-        if (!envRes.ok) return { ok: false, message: `環境変数の保存に失敗しました（HTTP ${envRes.status}）${reason(envRes.data)}`, detail: dbg(envRes.data) }
+        if (!envRes.ok) return { ok: false, message: hanamiiFailureMessage('環境変数の保存', envRes), detail: dbg(envRes.data) }
+        envsSaved = true
       }
       if (opts?.healthCheck) {
         const hcRes = await client.putHealthCheck(projectId, opts.healthCheck)
-        if (!hcRes.ok) return { ok: false, message: `ヘルスチェック設定の保存に失敗しました（HTTP ${hcRes.status}）${reason(hcRes.data)}`, detail: dbg(hcRes.data) }
+        if (!hcRes.ok) return { ok: false, message: hanamiiFailureMessage('ヘルスチェック設定の保存', hcRes), detail: dbg(hcRes.data), ...savedFlags() }
+        healthCheckSaved = true
       }
+      // ここまでで、渡された設定の保存は済んでいる。restart だけが失敗しても、保存した設定は自動では戻らず（いまの版が維持される）、
+      // HANAMII には新しい設定が保存されている。画面が手元の写しを HANAMII と食い違わせないよう、保存が済んだ側を返す（savedFlags）。
       const r = await client.restart(projectId)
-      if (!r.ok) return { ok: false, message: `再起動に失敗しました（HTTP ${r.status}）${reason(r.data)}`, detail: dbg(r.data) }
-      const noop = !!(r.data as any)?.noop
-      return { ok: true, noop }
-    } catch (e: any) { return { ok: false, message: failureText(e, { checkAt: 'HANAMII の管理画面' }) } }
+      if (!r.ok) return { ok: false, message: hanamiiFailureMessage('再起動', r), detail: dbg(r.data), ...savedFlags() }
+      // 成功は「反映する変更はない（noop）」か「新しい版が READY と応答が言う」ときだけ。文書が言わない形は成功と言わない。
+      const reading = readRestartReply(r.data)
+      if (reading === 'unconfirmed') {
+        return { ok: true, noop: false, unconfirmed: true, message: '⚠️ 再起動の結果を確かめられませんでした。HANAMII の管理画面で状態を確かめてください。', detail: dbg(r.data) }
+      }
+      return { ok: true, noop: reading === 'noop' }
+    } catch (e: any) { return { ok: false, message: failureText(e, { checkAt: 'HANAMII の管理画面' }), ...savedFlags() } }
   })
   // HANAMII の破棄（hanamii:teardown）は ipc/hanamiiTeardown.ts（共通の骨 teardownShell の上）。呼び形は (projectDir, { token }, { confirmed, projectId })。
   registerHanamiiTeardownHandler()

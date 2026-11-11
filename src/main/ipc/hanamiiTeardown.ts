@@ -25,7 +25,7 @@
 // 公開の記録の読み書き・保存場所の片づけは、ここに新しく書かない（掟10。publishMetaFs.ts と cloud/storageForTarget.ts の1つを通る）。
 // electron に依存するのは ipcMain だけ。
 import { ipcMain } from 'electron'
-import { HanamiiClient, type HanamiiResult } from '../hanamii/client'
+import { HanamiiClient, hanamiiFailureMessage, type HanamiiResult } from '../hanamii/client'
 import { storagePlacementsOf, storageProjectNameOf, teardownStorageForProject, forgetDeletedBuckets, keptBucketReasonFields, type TorndownBucket } from '../cloud/storageForTarget'
 import { keyWarningLines } from '../cloud/storageTeardown'
 import { loadCredentials } from '../cloud/auth'
@@ -33,8 +33,8 @@ import { recordTwinsFs } from '../cloud/recordTwins'
 import { runTeardownShell, type TeardownShellCtx, type TeardownShellSpec } from '../cloud/teardownShell'
 import { STORAGE_TEARDOWN_PROGRESS, STORAGE_PANEL_DELETE_GUIDE, storageTeardownDoneLine, bucketNamesText } from '../../shared/teardownSupport'
 import { keyRevokeGuide } from '../../shared/storageKeys'
-import { failureText } from '../../shared/failureText'
-import { wrapFailureText } from '../../shared/failureDetail'
+import { failureText, failureDetailOf } from '../../shared/failureText'
+import { wrapFailureText, joinFailureDetail } from '../../shared/failureDetail'
 import { readHanamiiProjectIdFs, settleHanamiiTeardownFs, markHanamiiStorageLeftoverFs, writeHanamiiAcceptedMarkFs } from '../publishMetaFs'
 import { readHanamiiDeleteReply, readHanamiiAccepted } from '../hanamii/deleteReply'
 import { buildHanamiiAcceptedMark } from '../hanamii/acceptedMark'
@@ -300,7 +300,11 @@ async function runHanamiiTeardown(ctx: TeardownShellCtx<HanamiiAuth>): Promise<H
   }
   const reading = readHanamiiDeleteReply(r)
   // **消せていないうちは保存場所に触らない**（アプリがまだ動いている＝鍵を消すと 403 で落ちる）。
-  if (reading === 'failed') return { ok: false, message: `削除に失敗しました（HTTP ${r.status}）` }
+  // HANAMII の理由（error.message）は文に添え、原文（本文）は最後の1行の詳細に残す。本文が無ければ今までどおりの文。
+  if (reading === 'failed') {
+    const bodyText = r.data == null || r.data === '' ? '' : (typeof r.data === 'string' ? r.data : JSON.stringify(r.data))
+    return { ok: false, message: joinFailureDetail(hanamiiFailureMessage('削除', r), failureDetailOf(bodyText)) }
+  }
   // 確認で見せた保存場所の組は、画面が運んだものをそのまま渡す（形は信用しない。読むのは teardownStorageForProject の中）
   const shown = ctx.opts.shownPlacements
   // 受け付けた（202 など）: HANAMII 側の削除が続いている。**保存場所にも記録の行にも触れず**、受け付けの印を書いてから、済むまで待つ（D7）。
