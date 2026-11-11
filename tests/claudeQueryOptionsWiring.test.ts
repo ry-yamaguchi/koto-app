@@ -211,6 +211,22 @@ describe('query() へ実際に渡った options: allowedTools・permissionMode�
     expect(options.allowDangerouslySkipPermissions).toBeFalsy()
   })
 
+  it('★★ disallowedTools に WebFetch・WebSearch が入る（SDK 内蔵の Web 道具を一覧から外す・CVE-2026-111497）', async () => {
+    const { options } = await runChat()
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch']))
+    // 許可の一覧には入っていない（外した道具を名前だけで許可し直していない）
+    for (const t of ['WebFetch', 'WebSearch']) expect(options.allowedTools).not.toContain(t)
+  })
+
+  it('★★ tools は使える内蔵の道具だけ（Agent など canUseTool を通らない内蔵の道具を一覧から外す）', async () => {
+    const { options } = await runChat()
+    expect([...options.tools].sort()).toEqual(['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'])
+    // 下請けの AI を起動できる道具・自分で許可を返す道具は入っていない
+    for (const t of ['Agent', 'Task', 'Skill', 'WebFetch', 'WebSearch', 'NotebookEdit', 'SendMessage']) expect(options.tools).not.toContain(t)
+    // IDE の道具（MCP）は tools の対象外で、許可の一覧に残る
+    expect(options.allowedTools).toEqual(expect.arrayContaining(['mcp__ide__fetch_url']))
+  })
+
   it('★★ settingSources は空配列（利用者の ~/.claude の許可ルールで、上の守りが上書きされない）', async () => {
     const { options } = await runChat()
     expect(options.settingSources).toEqual([])

@@ -9,6 +9,17 @@
 // (2) uploadZip で外部ストレージへ直接 PUT する（このPUTには Authorization を付けない）。
 
 import { failureText } from '../../shared/failureText'
+import { maskSecretShapes } from '../../shared/secretShapes'
+
+/** 既定の時間切れ（本文の読み取りまで含む）。 */
+export const HANAMII_REQUEST_TIMEOUT_MS = 30_000
+/**
+ * 時間のかかる4つ（検証 check・作成・再デプロイ deploy・restart）の時間切れ＝20 分。
+ * 公式 CLI も、これらに 20 分を使っている（CLI は分割アップロードの検証にも 20 分を使うが、Koto はその経路を使わない）。
+ * HANAMII は 1 秒を超えるとこれらを keepalive の空白を流す
+ * ストリームで返し、本文が終わるまで続くので、30 秒では本文の読み取り中に切れてしまう。ほかの要求は 30 秒のまま。
+ */
+export const HANAMII_LONG_REQUEST_TIMEOUT_MS = 20 * 60 * 1000
 
 /** HANAMII API のベースURL。 */
 export const HANAMII_API_BASE = 'https://hanamii.jp'
@@ -41,7 +52,13 @@ export function hanamiiProjectLogsPath(id: string): string {
 
 // ── 型 ─────────────────────────────────────────────────────────
 /** API呼び出しの汎用結果（成否・ステータス・生データ）。 */
-export type HanamiiResult = { ok: boolean; status: number; data: unknown }
+export type HanamiiResult = {
+  ok: boolean
+  status: number
+  data: unknown
+  /** 本文に {"error":{"code","message"}}（または error の文字列）があったとき、取り出した中身。HTTP の状態に関わらず付く。 */
+  apiError?: { code: string | null; message: string | null }
+}
 
 /** 環境変数1件（type省略時はplain想定）。 */
 export type HanamiiEnv = { key: string; value: string; type?: 'plain' | 'secret' }
@@ -77,6 +94,68 @@ export function normalizeHealthCheck(hc: HanamiiHealthCheck): HanamiiHealthCheck
   return { enabled: !!hc?.enabled, path, port }
 }
 
+/** 本文（JSON）の error キーを読む。オブジェクトなら {code,message}、空でない文字列なら message、それ以外（無い・null・空）は null。 */
+export function readBodyError(data: unknown): { code: string | null; message: string | null } | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null
+  const e = (data as { error?: unknown }).error
+  if (typeof e === 'string') return e.trim() ? { code: null, message: e } : null
+  if (e && typeof e === 'object' && !Array.isArray(e)) {
+    const o = e as { code?: unknown; message?: unknown }
+    return {
+      code: typeof o.code === 'string' && o.code ? o.code : null,
+      message: typeof o.message === 'string' && o.message ? o.message : null,
+    }
+  }
+  return null
+}
+
+/** 主の文に添える理由の長さの上限。 */
+const FAILURE_REASON_MAX = 200
+
+/**
+ * 失敗の主の文に添える HANAMII の理由。本文の error.message（apiError.message）だけを使う。
+ * 秘密の形を伏せ、改行を詰めて1行にし、長ければ切る。無い・空・code と同じなら ''（HTML など文字列の本文は添えない。原文は呼び手が detail に残す）。
+ */
+export function hanamiiReasonOf(r: Pick<HanamiiResult, 'data' | 'apiError'>): string {
+  const e = r.apiError ?? readBodyError(r.data)
+  if (!e?.message) return ''
+  const one = maskSecretShapes(e.message).replace(/\s+/g, ' ').trim()
+  if (!one || one === e.code) return ''
+  return one.length > FAILURE_REASON_MAX ? `${one.slice(0, FAILURE_REASON_MAX)}…` : one
+}
+
+/**
+ * 失敗した応答の「どう失敗したか」の短い印。2xx なのに本文の error で失敗した回は「HTTP 200」と書かず code（無ければ「HANAMII の応答」）、
+ * それ以外は「HTTP n」、状態が無い（通信エラー）は '通信エラー'。待ち・見守りの詳細の文が使う。
+ */
+export function hanamiiStatusTag(r: Pick<HanamiiResult, 'status' | 'apiError'>): string {
+  if (!r.status) return '通信エラー'
+  if (r.status >= 200 && r.status < 300 && r.apiError) return r.apiError.code ?? 'HANAMII の応答'
+  return `HTTP ${r.status}`
+}
+
+/**
+ * 失敗の主の文を作る: 「<何>に失敗しました（HTTP n）: <HANAMII の理由>」。
+ * 2xx なのに本文の error で失敗した回は「HTTP 200」と書かず、code を添える（例: 再起動に失敗しました（health_check_failed））。
+ * 理由は本文の error.message だけ（`hanamiiReasonOf`）。JSON 全文・HTML などの文字列は主の文に載せない（呼び手が元の本文を詳細として残す）。
+ */
+export function hanamiiFailureMessage(what: string, r: Pick<HanamiiResult, 'status' | 'data' | 'apiError'>): string {
+  const bodyFailure = r.status >= 200 && r.status < 300
+  const tag = bodyFailure ? (r.apiError?.code ?? 'HANAMII の応答') : `HTTP ${r.status}`
+  const reason = hanamiiReasonOf(r)
+  return `${what}に失敗しました（${tag}）${reason ? `: ${reason}` : ''}`
+}
+
+/** 再起動の応答の読み方。成功は noop、または新しい版が READY と応答が言うときだけ。文書が言わない形は成功と言わない。 */
+export function readRestartReply(data: unknown): 'noop' | 'ready' | 'unconfirmed' {
+  const d = data as { noop?: unknown; deployment?: { readyState?: unknown } | null } | null | undefined
+  if (d && typeof d === 'object') {
+    if (d.noop === true) return 'noop'
+    if (d.deployment && typeof d.deployment === 'object' && d.deployment.readyState === 'READY') return 'ready'
+  }
+  return 'unconfirmed'
+}
+
 /** HANAMII PaaS デプロイAPI クライアント。 */
 export class HanamiiClient {
   private readonly token: string
@@ -85,7 +164,7 @@ export class HanamiiClient {
     this.token = opts.token
   }
 
-  private async request(method: string, pathname: string, body?: unknown): Promise<HanamiiResult> {
+  private async request(method: string, pathname: string, body?: unknown, timeoutMs: number = HANAMII_REQUEST_TIMEOUT_MS): Promise<HanamiiResult> {
     const res = await fetch(HANAMII_API_BASE + pathname, {
       method,
       headers: {
@@ -94,7 +173,7 @@ export class HanamiiClient {
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     let data: unknown = null
     const text = await res.text()
@@ -103,7 +182,10 @@ export class HanamiiClient {
     } catch {
       data = text
     }
-    return { ok: res.ok, status: res.status, data }
+    // ストリームが始まったあとの失敗は HTTP 200 のまま本文に {"error":{"code","message"}} で返る（公式文書・公式 CLI も同じ読み方）。
+    // だから ok は HTTP の状態だけでは決めず、本文に error があれば失敗にする。状態コードはそのまま返す。
+    const apiError = readBodyError(data)
+    return { ok: res.ok && !apiError, status: res.status, data, ...(apiError ? { apiError } : {}) }
   }
 
   /** ワークスペース一覧を取得（GET）。 */
@@ -136,12 +218,12 @@ export class HanamiiClient {
 
   /** アップロードの検証（POST）。checkId・canDeploy を得る。 */
   async checkUpload(uploadId: string): Promise<HanamiiResult> {
-    return this.request('POST', hanamiiUploadCheckPath(uploadId), {})
+    return this.request('POST', hanamiiUploadCheckPath(uploadId), {}, HANAMII_LONG_REQUEST_TIMEOUT_MS)
   }
 
   /** プロジェクト作成＝初回公開（POST）。 */
   async createProject(body: CreateProjectBody): Promise<HanamiiResult> {
-    return this.request('POST', HANAMII_PROJECTS_PATH, body)
+    return this.request('POST', HANAMII_PROJECTS_PATH, body, HANAMII_LONG_REQUEST_TIMEOUT_MS)
   }
 
   /** プロジェクト詳細（GET）。url / latestDeployment.readyState を含む。 */
@@ -152,7 +234,7 @@ export class HanamiiClient {
   /** 再デプロイ（POST）。新しい checkId を渡す。
    *  注: envs は含めない（正規経路ではない）。環境変数の更新は先に patchEnv で行うこと。 */
   async redeploy(id: string, checkId: string): Promise<HanamiiResult> {
-    return this.request('POST', hanamiiProjectDeployPath(id), { source: { type: 'zip', checkId } })
+    return this.request('POST', hanamiiProjectDeployPath(id), { source: { type: 'zip', checkId } }, HANAMII_LONG_REQUEST_TIMEOUT_MS)
   }
 
   /** プロジェクト削除（DELETE）。 */
@@ -183,7 +265,7 @@ export class HanamiiClient {
 
   /** 保存済みの env / health-check を稼働中アプリへ反映（POST）。no-op 時は {noop:true} が返る。 */
   async restart(id: string): Promise<HanamiiResult> {
-    return this.request('POST', hanamiiProjectRestartPath(id), {})
+    return this.request('POST', hanamiiProjectRestartPath(id), {}, HANAMII_LONG_REQUEST_TIMEOUT_MS)
   }
 
   /** デプロイログを取得（GET・JSON形式）。limit 既定100・最大500、since は `-15m`/`-2h`/`-1d` または ISO8601。 */
@@ -203,7 +285,7 @@ export class HanamiiClient {
       if (r.status === 401 || r.status === 403) {
         return { ok: false, status: r.status, message: '認証に失敗しました（HANAMII のトークンを確認してください）' }
       }
-      return { ok: false, status: r.status, message: `接続に失敗しました（HTTP ${r.status}）` }
+      return { ok: false, status: r.status, message: hanamiiFailureMessage('接続', r) }
     } catch (e: any) {
       // 回線断・時間切れ・安全な接続は共通の層（shared/failureText.ts）の読み取りの文。見分けられない失敗は原文のまま。
       return { ok: false, message: failureText(e, { readOnly: true }) }
@@ -280,16 +362,13 @@ export function hanamiiErrorMessage(data: unknown): string {
   const first = errArr?.[0]
   const firstMsg = typeof first === 'string' ? first : (first?.message ?? first?.type)
 
-  const msg = d.message ?? d.error ?? d.detail ?? firstMsg
+  // 公式文書の形 {"error":{"code","message"}}: message が理由。message が無ければ code を見せる。
+  const errObj = d.error && typeof d.error === 'object' && !Array.isArray(d.error) ? d.error : null
+  const errMsg = errObj ? (typeof errObj.message === 'string' && errObj.message.trim() ? errObj.message : undefined) : undefined
+  const errStr = typeof d.error === 'string' ? d.error : undefined
+  const errCode = errObj && typeof errObj.code === 'string' ? errObj.code : undefined
+
+  const msg = errMsg ?? d.message ?? errStr ?? d.detail ?? firstMsg ?? errCode
   if (typeof msg === 'string' && msg.trim()) return msg.slice(0, 400)
   return JSON.stringify(d).slice(0, 400)
-}
-
-/** errorCode を非エンジニア向けの日本語説明に変換する（確実な既知コードのみ・未知はコードをそのまま見せる）。 */
-export function describeErrorCode(code: string | null | undefined): string {
-  if (!code) return ''
-  const table: Record<string, string> = {
-    BUILD_FAILED: 'ビルドに失敗しました。直前に追加したライブラリ名の誤りや、package.json の記述ミスが典型的な原因です。',
-  }
-  return table[code] ?? `エラーコード: ${code}`
 }

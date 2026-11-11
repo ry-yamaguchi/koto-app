@@ -80,9 +80,13 @@ function targetPrompt(target: TargetId): string {
       return (
         `\n\n【公開先: HANAMII（重要・最優先で従うこと）】\n` +
         `- さくらのクラウド基盤上の国産のクラウドサービス。コンテナとして実行される\n` +
-        `- 言語マニフェスト（Node なら package.json、Python なら requirements.txt 等）を必ず含める\n` +
-        `- アプリは環境変数 PORT（既定 8080）で待ち受ける。0.0.0.0 でリッスンする\n` +
-        `- Dockerfile を含める場合は必ず「EXPOSE 8080」を書く（HANAMII は待ち受けポートを EXPOSE で判定する）\n` +
+        `- ソース一式を送るとビルドは HANAMII 側で行う（dist/・build/ などの成果物は含めない）\n` +
+        `- 公開されるのは public/ フォルダがあればその中、無ければプロジェクトの直下。package.json・Procfile・requirements.txt・composer.json・Dockerfile は、その公開されるフォルダの直下に置く（public/ を作るなら public/package.json のように）\n` +
+        `- Node.js は package.json を含め、scripts.start を必ず定義する（HANAMII の決まり）。中身は本番用の起動コマンドにし、開発用の起動は避ける（Koto のすすめ）\n` +
+        `- Python は requirements.txt（gunicorn・uvicorn などのサーバも入れる）と、直下の Procfile に起動コマンドを書く\n` +
+        `- PHP は composer.json と Dockerfile を含める（EXPOSE は待ち受けるポート・CMD を明示）\n` +
+        `- アプリは環境変数 PORT（未設定なら 8080）で待ち受ける。0.0.0.0 でリッスンする\n` +
+        `- Dockerfile を使うときは、EXPOSE にアプリが待ち受けるポートを書く（PORT に従う Node なら 8080）\n` +
         `- 永続データはコンテナ内のローカルファイルに保存しない（再起動で消える前提）\n` +
         `- README.md に公開手順（Koto の【公開】→ HANAMII から公開）を日本語で書く`
       )

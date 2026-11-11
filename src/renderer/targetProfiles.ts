@@ -138,15 +138,20 @@ export const TARGET_PROFILES: Record<TargetId, TargetProfile> = {
     // （2026-09-27 再検分の指摘4: ここだけ直し漏れていた）。
     label: 'HANAMII（国産のクラウドサービス）',
     summary:
-      'さくらのクラウド基盤上で動く国産のクラウドサービス。ビルド済みファイルをアップロードするだけで数十秒で公開でき、データは国内。AppRunと同様にコンテナで動くため、静的サイトも Node.js の常駐サーバも公開できる。状態は持たない前提。',
+      'さくらのクラウド基盤上で動く国産のクラウドサービス。ソース一式を送ると HANAMII 側でビルドし、数十秒で公開でき、データは国内。AppRunと同様にコンテナで動き、静的サイト（Koto が小さなサーバを添える）・Node.js（Next.js のサーバ側を含む）・Python・PHP（Dockerfile が要る）を公開できる。状態は持たない前提。',
     recommended: [
-      '静的サイト・Node.js/一般的なWebアプリを置ける',
-      '待ち受けポートは環境変数で受け取る（ハードコードしない）',
+      'Node.js は package.json に scripts.start が要る（HANAMII の決まり）。中身は本番用の起動コマンドにし、開発用の起動は避ける（Koto のすすめ）',
+      'package.json・Procfile などは公開されるフォルダの直下に置く（public/ があればその中）',
+      'Python は直下の Procfile に起動コマンドを書き、gunicorn・uvicorn なども requirements.txt に入れる',
+      'PHP は composer.json と Dockerfile が要る（EXPOSE は待ち受けるポート）',
+      '待ち受けポートは環境変数 PORT（未設定なら 8080）で受け取る（ハードコードしない）',
       '永続データは外部DB等に保存する',
     ],
     donts: [
       'コンテナ内のローカルファイルに永続データを保存しない（再起動で消える前提）',
       'ポート番号をコードに固定で埋め込まない',
+      'dist/・build/ などのビルドの成果物を送る前提で作らない（ビルドは HANAMII 側）',
+      'NEXT_PUBLIC_・VITE_ などで始まる変数に秘密を入れない（ブラウザから読める）',
     ],
     autoPublish: true,
     serviceUrl: 'https://hanamii.jp/',

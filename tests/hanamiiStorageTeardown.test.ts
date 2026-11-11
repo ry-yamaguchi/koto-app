@@ -711,37 +711,51 @@ describe('HANAMII の公開: 途中で止まったら、いま発行した鍵を
     expect(h.hanamiiCalls.some(c => c.startsWith('PATCH'))).toBe(true)
   })
 
-  it('★★ ヘルスチェックの保存に失敗したときも取り消す（版はまだ作られていない）', async () => {
+  it('★★ ヘルスチェックの保存に失敗したときは取り消さない（環境変数は新しい鍵を載せて保存済み。取り消すと次の「再起動」で 403 になる）', async () => {
     setupPublishProject()
     setupPublishFetch({ hc: 500 })
     const r = await republish()
 
     expect(r.ok).toBe(false)
     expect(r.message).toContain('ヘルスチェック設定の保存に失敗しました')
-    expect(h.deletedPermissions).toEqual(['perm-tmp'])
+    expect(h.deletedPermissions).toEqual([])
+    expect(touched()).toEqual(['issueKey'])
     // 版（デプロイ）は作られていない
     expect(h.hanamiiCalls.some(c => c.endsWith('/deploy'))).toBe(false)
   })
 
-  it('★★ 再公開（deploy）が通らなかったときも取り消す', async () => {
+  it('★★ 再公開（deploy）が通らなかったときは取り消さない（環境変数は新しい鍵で保存済み。残った鍵は次に動いた公開の片づけが名前で消す）', async () => {
     setupPublishProject()
     setupPublishFetch({ deploy: 500 })
     const r = await republish()
 
     expect(r.ok).toBe(false)
     expect(r.message).toContain('公開に失敗しました')
-    expect(touched()).toEqual(['issueKey', 'deletePermission perm-tmp'])
+    expect(touched()).toEqual(['issueKey'])
+    expect(h.deletedPermissions).toEqual([])
   })
 
-  it('★★ 初回公開（createProject）が通らなかったときも取り消す', async () => {
+  it('★★ 初回公開（createProject）が HTTP 4xx で断られたときは取り消す（ストリームが始まる前の断り＝作られていない）', async () => {
     setupPublishProject()
-    setupPublishFetch({ create: 500 })
+    setupPublishFetch({ create: 403 })
     const r = await publish(EVENT, projectDir, {
       token: TOKEN, workspaceId: 'ws-1', name: 'myapp', envs: [], withStorage: true,
     })
 
     expect(r.ok).toBe(false)
     expect(touched()).toEqual(['issueKey', 'deletePermission perm-tmp'])
+  })
+
+  it('★★★ 初回公開（createProject）が 5xx のときは取り消さない（作られたか分からない。取り消すと実は作られたアプリが 403 で落ちる）', async () => {
+    setupPublishProject()
+    setupPublishFetch({ create: 502 })
+    const r = await publish(EVENT, projectDir, {
+      token: TOKEN, workspaceId: 'ws-1', name: 'myapp', envs: [], withStorage: true,
+    })
+
+    expect(r.ok).toBe(false)
+    expect(touched()).toEqual(['issueKey'])
+    expect(h.deletedPermissions).toEqual([])
   })
 
   it('★★ 公開が通ったら取り消さない（その鍵で新しい版が動き出す・2026-08-14 の 403 事故）', async () => {

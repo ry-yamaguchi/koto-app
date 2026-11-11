@@ -407,6 +407,21 @@ describe('★★★ READY を確かめられなかったときは、古い鍵を
     expect(r.warnings[0]).toContain('HTTP 503')
   })
 
+  it('★★★ 状態の取得が 200＋本文 error: 失敗に数える。本文に READY が書いてあっても「動いた」と読まず、消さない。理由は code で、「HTTP 200」と書かない', async () => {
+    setupProject()
+    hanamiiWaitTuning.maxPolls = 10
+    const body = { error: { code: 'internal_error', message: '内部エラー' }, project: { id: PROJECT_ID, url: URL_LIVE, latestDeployment: { id: NEW, readyState: 'READY', errorCode: null } } }
+    h.detailQueue = [{ status: 200, body }]
+    const r = await republish()
+
+    expect(r.ok).toBe(true)
+    expect(r.deployState).toBe('unknown')
+    expect(stateGets()).toBe(5)
+    expect(h.deleted, '本文 error の応答の READY で、前の版の鍵を消した').toEqual([])
+    expect(r.warnings[0]).toContain('（internal_error）')
+    expect(r.warnings[0]).not.toContain('HTTP 200')
+  })
+
   it('通信の例外でも落ちない（続けて失敗したら unknown）', async () => {
     setupProject()
     hanamiiWaitTuning.maxPolls = 10

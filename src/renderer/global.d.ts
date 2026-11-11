@@ -707,7 +707,7 @@ interface Window {
       status(projectId: string, token: string): Promise<{ ok: boolean; url?: string | null; readyState?: string | null; errorCode?: string | null; runtime?: { status: string | null; detail: string | null; syncedAt: string | null }; message?: string }>
       // A-5: env/ヘルスチェックの変更を再公開（ビルドし直し）なしで反映する高速経路（PATCH /env・PUT /health-check → POST /restart）。
       // detail は失敗時の生API応答（診断用）。noop=true は HANAMII 側で変更がなく再起動が不要だった場合。
-      restart(projectId: string, opts: { token: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }): Promise<{ ok: boolean; noop?: boolean; message?: string; detail?: string }>
+      restart(projectId: string, opts: { token: string; envs?: Array<{ key: string; value: string; type?: 'plain' | 'secret' }>; healthCheck?: { enabled: boolean; path: string; port: number | null } }): Promise<{ ok: boolean; noop?: boolean; unconfirmed?: boolean; envsSaved?: boolean; healthCheckSaved?: boolean; message?: string; detail?: string }>
       /**
        * HANAMII のプロジェクトを削除し、続けて**保存場所も片づける**
        * （2026-09-25 検分。バケット・このプロジェクトのデータ・`koto-<名前>-hanamii` の鍵）。

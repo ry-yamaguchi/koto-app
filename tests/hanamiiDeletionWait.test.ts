@@ -218,3 +218,45 @@ describe('readHanamiiAccepted（202 の本文の読み方）', () => {
     expect(readHanamiiAccepted({ data })).toEqual({ requiresReview: false, operationId: ACCEPTED_OPERATION_ID })
   })
 })
+
+// ── 本文の error（HTTP 200 のまま {"error":{...}} で返る失敗）。client は ok:false・apiError 付きで返す ──
+describe('★★★ waitForHanamiiDeletion: 200＋本文 error は失敗に数える（「受け付け中」とも「消えた」とも読まない）', () => {
+  const bodyError = (extra: Record<string, unknown> = {}): HanamiiResult => ({
+    ok: false, status: 200,
+    data: { error: { code: 'internal_error', message: '内部エラー' }, ...extra },
+    apiError: { code: 'internal_error', message: '内部エラー' },
+  })
+
+  it('GET が 200＋本文 error のまま続く → 5 回で unconfirmed（timeout にも gone にもならない）。詳細は code で、「HTTP 200」と書かない。DELETE は 0 本', async () => {
+    let gets = 0, deletes = 0
+    const r = await waitForHanamiiDeletion({
+      getProject: async () => { gets++; return bodyError() },
+      deleteProject: async () => { deletes++; return { ok: true, status: 404, data: null } },
+      deleteJustSent: false, finalConfirm: false,
+    })
+    expect(r).toEqual({ kind: 'unconfirmed', detail: 'internal_error' })
+    expect(gets).toBe(hanamiiDeletionWaitTuning.maxFailures)
+    expect(deletes).toBe(0)
+  })
+
+  it('確かめの DELETE が 200＋本文 error（deleted:true が一緒に書いてあっても）→ 「消えた」と読まず失敗に数え、5 回で unconfirmed', async () => {
+    let deletes = 0
+    const r = await waitForHanamiiDeletion({
+      getProject: async () => ({ ok: false, status: 404, data: null }),
+      deleteProject: async () => { deletes++; return bodyError({ project: { id: PID, deleted: true, deletion: 'completed' } }) },
+      deleteJustSent: false, finalConfirm: true,
+    })
+    expect(r).toEqual({ kind: 'unconfirmed', detail: 'internal_error' })
+    expect(deletes).toBe(hanamiiDeletionWaitTuning.maxFailures)
+  })
+
+  it('途中で普通の 200 が返れば失敗の連続は 0 に戻る（本文 error が 4 回続いても、間に 200 があれば打ち切らない）', async () => {
+    let n = 0
+    const r = await waitForHanamiiDeletion({
+      getProject: async () => (++n % 5 === 0 ? { ok: true, status: 200, data: { project: { id: PID } } } : bodyError()),
+      deleteProject: async () => ({ ok: true, status: 404, data: null }),
+      deleteJustSent: false, finalConfirm: false,
+    })
+    expect(r.kind).toBe('timeout')
+  })
+})

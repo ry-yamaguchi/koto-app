@@ -18,7 +18,7 @@
 // 「切り替わる前に、古いほうの足元を外さない」・2026-08-14 の 403 事故）。
 // 確かめられなかったとき（ERROR・時間切れ・状態を取れない・どの deployment か分からない）は
 // **消さない**。消さなかった鍵は、次に「動いたと確かめられた」公開で片づく。
-import { extractProjectStatus, extractLatestDeploymentId, type HanamiiResult } from './client'
+import { extractProjectStatus, extractLatestDeploymentId, hanamiiStatusTag, type HanamiiResult } from './client'
 
 /**
  * 待ち方の調整。**テストだけが変える**（実物は既定のまま）。
@@ -76,11 +76,11 @@ export async function waitForNewVersion(opts: {
       // id が違う（前回の版が latest のまま・まだ切り替わっていない）は、READY でも「新しい版が動いた」ではない。待つ。
     } else if (res.status === 401 || res.status === 403 || res.status === 404) {
       // 何度聞いても変わらない答え（トークンの権限・プロジェクトが見えない）。待たずに打ち切る。
-      return { kind: 'unknown', message: `HANAMII から状態を取れませんでした（HTTP ${res.status}）` }
+      return { kind: 'unknown', message: `HANAMII から状態を取れませんでした（${hanamiiStatusTag(res)}）` }
     } else {
       failures++
       if (failures >= MAX_CONSECUTIVE_FAILURES) {
-        return { kind: 'unknown', message: `HANAMII から状態を取れない状態が続きました（HTTP ${res.status || '通信エラー'}）` }
+        return { kind: 'unknown', message: `HANAMII から状態を取れない状態が続きました（${hanamiiStatusTag(res)}）` }
       }
     }
     const sec = Math.round((Date.now() - startedAt) / 1000)

@@ -16,7 +16,7 @@
 //     **最初の破棄の回だけ**（`finalConfirm: true`）。次に開いたときの自動の続きは送らない: 確認を見ている人がいないうえ、続きは起動のたび・画面を開くたびに
 //     走るので、GET が 200 のまま（確認待ち・却下で残った）のプロジェクトへ DELETE を送り続けることになる（requiresReview 中の DELETE の送り直しは原本に無い）
 // DELETE は、確かめの回数の上限 maxConfirms と、間隔 confirmGapMs で押さえる（レート制限: 1プロジェクトあたり 30回/300秒）。
-import type { HanamiiResult } from './client'
+import { hanamiiStatusTag, type HanamiiResult } from './client'
 import { readHanamiiDeleteReply } from './deleteReply'
 import { HANAMII_DELETION_WAIT_PROGRESS } from '../../shared/hanamiiDeletionText'
 import { failureDetailOf } from '../../shared/failureText'
@@ -42,7 +42,8 @@ export type DeletionWaitOutcome =
 type Fail = { kind: 'fatal'; detail: string }
 
 function detailOf(r: HanamiiResult): string {
-  return r.status ? `HTTP ${r.status}` : (typeof r.data === 'string' && r.data ? r.data : '通信エラー')
+  // 200 なのに本文の error で失敗した回は「HTTP 200」と書かず code を使う
+  return r.status ? hanamiiStatusTag(r) : (typeof r.data === 'string' && r.data ? r.data : '通信エラー')
 }
 
 async function attempt(call: () => Promise<HanamiiResult>): Promise<HanamiiResult> {

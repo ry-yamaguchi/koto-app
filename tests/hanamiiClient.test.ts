@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { extractProjectIds, extractProjectStatus, buildPatchEnvBody, normalizeHealthCheck, extractLogs, describeErrorCode, hanamiiErrorMessage } from '../src/main/hanamii/client'
+import { extractProjectIds, extractProjectStatus, buildPatchEnvBody, normalizeHealthCheck, extractLogs, hanamiiErrorMessage } from '../src/main/hanamii/client'
+import { describeErrorCode } from '../src/shared/hanamiiErrorCode'
 
 describe('extractProjectIds', () => {
   it('extracts projectId and deploymentId when present', () => {
@@ -221,10 +222,15 @@ describe('hanamiiErrorMessage', () => {
 })
 
 describe('describeErrorCode', () => {
-  it('translates a known error code to a plain-Japanese explanation', () => {
-    expect(describeErrorCode('BUILD_FAILED')).toBe(
-      'ビルドに失敗しました。直前に追加したライブラリ名の誤りや、package.json の記述ミスが典型的な原因です。'
-    )
+  it('translates the four HANAMII errorCode values（全文一致。言い切らない推定の文）', () => {
+    expect(describeErrorCode('check_error')).toBe('アップロードした内容の検証で問題が見つかったようです。必要なファイル（Node.js は package.json と scripts.start、Python は requirements.txt か pyproject.toml、PHP は composer.json と Dockerfile）がそろっているか確かめてください。')
+    expect(describeErrorCode('build_error')).toBe('ビルドに失敗しました。直前に追加したライブラリ名の誤りや、package.json の記述ミスが典型的な原因です。')
+    expect(describeErrorCode('deploy_error')).toBe('アプリの起動を確かめられなかったようです。起動のコマンド（package.json の scripts.start など）と、環境変数 PORT（未設定なら 8080）で待ち受けているかを確かめてください。')
+    expect(describeErrorCode('health_error')).toBe('ヘルスチェックに応えなかったようです。ヘルスチェックのパスで、アプリが 200 を返すかを確かめてください。')
+  })
+
+  it('BUILD_FAILED does not exist in HANAMII: shown as a raw code', () => {
+    expect(describeErrorCode('BUILD_FAILED')).toBe('エラーコード: BUILD_FAILED')
   })
 
   it('falls back to showing the raw code for an unknown code', () => {

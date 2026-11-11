@@ -122,9 +122,24 @@ describe('buildNewProjectRequest — 公開先ごとの構成指示（sitePrompt
     expect(p).toMatch(/PORT/)
   })
 
-  it('アプリ×HANAMII: EXPOSE 8080の指示', () => {
+  it('アプリ×HANAMII: scripts.start・Procfile・PORT・EXPOSE の指示', () => {
     const p = buildNewProjectRequest(appArgs({ target: 'hanamii' }))
-    expect(p).toContain('EXPOSE 8080')
+    expect(p).toContain('scripts.start')
+    expect(p).toContain('Procfile')
+    expect(p).toContain('requirements.txt')
+    expect(p).toContain('composer.json')
+    expect(p).toMatch(/PORT（未設定なら 8080）/)
+    expect(p).toContain('EXPOSE にアプリが待ち受けるポートを書く')
+    expect(p).not.toContain('EXPOSE で判定する')
+  })
+
+  it('アプリ×HANAMII: マニフェストの置き場所・決まりとすすめの区別・成果物を含めない', () => {
+    const p = buildNewProjectRequest(appArgs({ target: 'hanamii' }))
+    expect(p).toContain('public/ フォルダがあればその中、無ければプロジェクトの直下')
+    expect(p).toContain('その公開されるフォルダの直下に置く')
+    expect(p).toContain('（HANAMII の決まり）')
+    expect(p).toContain('（Koto のすすめ）')
+    expect(p).toContain('dist/・build/ などの成果物は含めない')
   })
 
   it('アプリ×さくらのVPS/クラウド: それぞれの一言案内が入る', () => {

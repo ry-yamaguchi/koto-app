@@ -503,11 +503,11 @@ describe('配線（ソースの形）', () => {
     expect(src).not.toContain('KEY|SECRET|TOKEN|PASS|PWD|CREDENTIAL|PRIVATE|APIKEY')
   })
 
-  it('secretShapes を読み込む src は、次の6つだけ（呼び元を書き下す。足すときはここも足す）', () => {
+  it('secretShapes を読み込む src は、次の8つだけ（呼び元を書き下す。足すときはここも足す）', () => {
     const importers = listSourceFiles('src')
       .filter(file => file !== 'src/shared/secretShapes.ts')
       .filter(file => /from '[./]*(?:[\w./-]*\/)?secretShapes'/.test(read(file)))
-    expect(importers).toEqual(['src/main/projectOps.ts', 'src/renderer/components/HanamiiPanel.tsx', 'src/renderer/securityCheck.ts', 'src/shared/failureDetail.ts', 'src/shared/failureText.ts', 'src/shared/updateLog.ts'])
+    expect(importers).toEqual(['src/main/hanamii/client.ts', 'src/main/ipc/hanamii.ts', 'src/main/projectOps.ts', 'src/renderer/components/HanamiiPanel.tsx', 'src/renderer/securityCheck.ts', 'src/shared/failureDetail.ts', 'src/shared/failureText.ts', 'src/shared/updateLog.ts'])
   })
 
   it('秘密の形の正規表現は、secretShapes.ts のほかのどの src にも無い', () => {
@@ -535,6 +535,7 @@ describe('位置引数の秘密も、送る前に1文字も残さず伏せる', 
   const openai = 'sk-' + 'proj-Ab12Cd34Ef56Gh78Ij90Kl12'
   const npm = 'npm' + '_abcdefghijklmnopqrstuvwxyz0123456789'
   const ghp = 'gh' + 'p_abcdefghijklmnopqrstuvwxyz0123456789'
+  const hnm = 'hnm' + '_Ab12Cd34Ef56Gh78Ij90Kl12Mn34'
 
   const CASES: Array<{ name: string; code: string; secret: string; keep: string[] }> = [
     { name: 'SendGrid', code: `sgMail.setApiKey('${sendgrid}')`, secret: sendgrid, keep: ['sgMail.setApiKey('] },
@@ -551,6 +552,7 @@ describe('位置引数の秘密も、送る前に1文字も残さず伏せる', 
     { name: 'OpenAI', code: `new OpenAI('${openai}')`, secret: openai, keep: ['new OpenAI('] },
     { name: 'npm', code: `//registry/:_x=${npm} # メモ`, secret: npm, keep: ['# メモ'] },
     { name: 'GitHub', code: `login('${ghp}')`, secret: ghp, keep: ['login('] },
+    { name: 'HANAMII のトークン', code: `Authorization は Bearer なしでも ${hnm} を送る`, secret: hnm, keep: ['Authorization は Bearer なしでも ', ' を送る'] },
   ]
 
   for (const c of CASES) {
@@ -581,6 +583,9 @@ describe('位置引数の秘密も、送る前に1文字も残さず伏せる', 
       "const d = 'AKIA-not-a-key'",
       "const e = 'npm_install_script'",
       "const f = 'xoxo-hugs'",
+      "const g = 'hnm_token'",
+      "const h = 'hnm_' + suffix",
+      'HANAMII のトークンは hnm_ で始まります',
     ]
     for (const code of QUIET) expect(maskSecretShapes(code), code).toBe(code)
   })
@@ -592,6 +597,7 @@ describe('位置引数の秘密も、送る前に1文字も残さず伏せる', 
     expect(kinds(`x('${aws}')`)).toEqual(['known-key'])
     expect(kinds(`x('${openai}')`)).toEqual(['known-key'])
     expect(kinds(`x('${npm}')`)).toEqual(['known-key'])
+    expect(kinds(`x('${hnm}')`)).toEqual(['known-key'])
     expect(kinds(`x('${google}')`)).toEqual([])
   })
 

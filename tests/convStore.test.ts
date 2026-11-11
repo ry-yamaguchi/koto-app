@@ -543,14 +543,25 @@ describe('convStore: 壊れた記録は「無い」と区別し、読んだ時�
 
   it('読む処理そのものが例外を投げた回（入れ子が深すぎて畳めない記録）も「無い」にせず、書き込まない', () => {
     const dir = mkProjectDir()
-    const deep = 100000
-    const original = '{"v":2}\n{"i":0,"m":' + '['.repeat(deep) + ']'.repeat(deep) + '}\n'
+    // 入れ子の深さは V8 の上限（Node の版で違う）に頼らない。読んだ記録を畳み直す JSON.stringify が、
+    // この印の記録のときだけ RangeError を投げる形にする（深すぎて畳めないときに実際に起きる例外と同じ種類）。
+    // ほかの記録は本物の JSON.stringify で畳む。
+    const original = '{"v":2}\n{"i":0,"m":"DEEP_NESTING_MARKER"}\n'
     putBroken(dir, original)
-
-    expect(loadConversation(dir)).toBeNull()
-    expect(loadConversationState(dir)).toEqual({ messages: null, unreadable: { backupName: null } })
-    applyConversationOps(dir, [{ kind: 'append', msg: MSG }], { flushNow: true })
-    flushConversations()
+    const realStringify = JSON.stringify.bind(JSON)
+    const spy = vi.spyOn(JSON, 'stringify').mockImplementation(((value: any, ...rest: any[]) => {
+      if (value === 'DEEP_NESTING_MARKER') throw new RangeError('Maximum call stack size exceeded')
+      return (realStringify as any)(value, ...rest)
+    }) as typeof JSON.stringify)
+    try {
+      expect(loadConversation(dir)).toBeNull()
+      expect(loadConversationState(dir)).toEqual({ messages: null, unreadable: { backupName: null } })
+      applyConversationOps(dir, [{ kind: 'append', msg: MSG }], { flushNow: true })
+      flushConversations()
+      expect(spy.mock.calls.some(c => c[0] === 'DEEP_NESTING_MARKER')).toBe(true) // 例外の経路を通った
+    } finally {
+      spy.mockRestore()
+    }
 
     expect(fs.readFileSync(projectChatPath(dir), 'utf-8')).toBe(original) // 置き換わっていない
     expect(fs.readdirSync(sideOf(dir))).toEqual(['chat.json'])

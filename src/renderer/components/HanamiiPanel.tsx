@@ -20,6 +20,8 @@ import { publishButtonLabel } from '../../shared/publishLabels'
 import AccessKeySection from './AccessKeySection'
 import HanamiiTeardownSection, { HanamiiTeardownResult } from './HanamiiTeardownSection'
 import { looksSecretName } from '../../shared/secretShapes'
+import { describeErrorCode } from '../../shared/hanamiiErrorCode'
+import { restartOutcomeOf, restartMetaPatchOf } from '../hanamiiRestartOutcome'
 import { resumeHanamiiDeletionIn } from '../teardown/hanamiiResume'
 import { isHanamiiTeardownHandler } from '../teardown/watch'
 
@@ -31,15 +33,7 @@ import { isHanamiiTeardownHandler } from '../teardown/watch'
 // 2026-07-13 実測: 45字の公開名で公開成功（公式上限は未公表・これを超える長さは未検証）。
 const HANAMII_NAME_MAX_LEN = 45
 
-// main/hanamii/client.ts の describeErrorCode と同じ内容（renderer は main の Node専用コードを import しない流儀のため複製）。
-// 既知コードのみ日本語化し、未知のコードはそのまま見せる（推測で網羅しない）。
-function describeErrorCode(code: string | null | undefined): string {
-  if (!code) return ''
-  const table: Record<string, string> = {
-    BUILD_FAILED: 'ビルドに失敗しました。直前に追加したライブラリ名の誤りや、package.json の記述ミスが典型的な原因です。',
-  }
-  return table[code] ?? `エラーコード: ${code}`
-}
+// errorCode の説明の表は shared/hanamiiErrorCode.ts の1か所（main と renderer の共通）。
 
 // フォームの envs / ヘルスチェック設定を、API送信用（sendEnvs）とメタ保存用（persistEnvs。
 // シークレットは値を保存しない）に変換する（純粋関数・テスト対象）。パスは `/` 始まりでなければ自動補正する。
@@ -492,16 +486,16 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     setRestarting(true)
     const dir = projectDir
     const r = await window.electronAPI.hanamii.restart(projectId, { token, envs: sendEnvs, healthCheck })
+    const out = restartOutcomeOf(r)
+    const metaPatch = restartMetaPatchOf(out, persistEnvs, { enabled: healthCheck.enabled, path: healthCheck.path })
     // 待っている間に別のプロジェクトへ切り替わったら、結果の文はいまの画面へ入れない（設定の保存は再起動したプロジェクト dir へ）。
     if (dirRef.current !== dir) {
-      if (r.ok) await saveHanamiiMeta({ envs: persistEnvs, healthCheck: { enabled: healthCheck.enabled, path: healthCheck.path } }).catch(() => {})
+      if (metaPatch) await saveHanamiiMeta(metaPatch).catch(() => {})
       return
     }
     setRestarting(false); setConfirmRestart(false)
-    if (!r.ok) { setRestartOk(false); setRestartMsg(r.message ?? '再起動に失敗しました'); setRestartMsgDetail(r.detail ?? ''); return }
-    setRestartOk(true)
-    setRestartMsg(r.noop ? '設定に変更がなかったため、再起動は不要でした。' : '✅ 再起動して設定を反映しました。')
-    await saveHanamiiMeta({ envs: persistEnvs, healthCheck: { enabled: healthCheck.enabled, path: healthCheck.path } })
+    setRestartOk(out.ok); setRestartMsg(out.message); setRestartMsgDetail(out.detail)
+    if (metaPatch) await saveHanamiiMeta(metaPatch)
   }
 
   const loadLogs = useCallback(async () => {

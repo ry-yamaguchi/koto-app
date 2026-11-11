@@ -92,6 +92,19 @@ const AUTO_APPROVED_TOOL_NAMES = ['Read', 'Glob', 'Grep'] as const
  *  修飾名 `mcp__ide__<tool名>` で登録する（修飾規則の一次情報は toolText.ts 冒頭コメント参照）。 */
 const ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([...BUILTIN_TOOL_NAMES, ...IDE_MCP_TOOL_NAMES])
 
+/** SDK の道具一覧から外す内蔵の Web 道具（CVE-2026-111497 の緩和の一部）。
+ *  内蔵の WebFetch・WebSearch は SDK 同梱の実行体が自前で通信する。disallowedTools を渡すとモデルへ渡す道具の一覧から消え、
+ *  呼ばれても実行されないことを、手元の偽 API と同梱の実行体で確かめた（実機の Koto ではない）。
+ *  Koto の search_web（Brave・Tavily）は固定の API を global fetch で読むので、この対象ではない。 */
+export const CLAUDE_DISALLOWED_TOOLS = ['WebFetch', 'WebSearch'] as const
+
+/** SDK の `tools` に渡す、使える内蔵の道具の一覧（BUILTIN_TOOL_NAMES だけ）。
+ *  Agent（Task）など、自分で許可を返す内蔵の道具は canUseTool を通らずに動き、下請けの AI（費用のかかる API 呼び出し）を
+ *  起動できた。ここに無い内蔵の道具は一覧から消える。IDE の道具（mcp__ide__*）は MCP なので、この一覧の影響を受けない
+ *  （手元の偽 API と同梱の実行体で確かめた。同じ試しで、名前が ide の MCP サーバーの道具は、この変更と無関係に
+ *  一覧へ出なかったため、確かめには別名のサーバーを使った）。 */
+export const CLAUDE_BUILTIN_TOOLS: readonly string[] = BUILTIN_TOOL_NAMES
+
 /**
  * SDK の `query()` に渡す `allowedTools`/`permissionMode` の組（W-18 の配線を固定するために
  * 純関数として切り出した。tests/w-chat-claudeApproval.test.ts から直接呼び、Edit/Write/Bash が
@@ -419,6 +432,12 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // 'acceptEdits' にしない（claudeToolGatingOptions() のコメント参照。どちらも
     // canUseTool より先にツール呼び出しを自動許可してしまい、「✋ 毎回確認」が効かなくなる）。
     ...claudeToolGatingOptions(),
+    // 内蔵の道具は BUILTIN_TOOL_NAMES だけにする（Agent など canUseTool を通らない内蔵の道具を一覧から外す）。
+    // MCP（mcp__ide__*）はこの一覧の対象外。
+    tools: [...CLAUDE_BUILTIN_TOOLS],
+    // 内蔵の WebFetch・WebSearch も一覧から外す（CVE-2026-111497 の緩和。SDK 同梱の実行体の通信を使わせない）。
+    // 上の tools で既に外れるが、tools が将来変わっても残るよう明示する。canUseTool の断りは多重の守りとして残す。
+    disallowedTools: [...CLAUDE_DISALLOWED_TOOLS],
     settingSources: [], // ユーザーの ~/.claude 設定・project/local settings を読ませない
     // 書き込みを許すのは作業フォルダの中だけ（退避先の projectDir ではない）。
     // W-18: 承認ダイアログを出す先（dir）は退避先の projectDir（さくらのAI Engine 経路の
