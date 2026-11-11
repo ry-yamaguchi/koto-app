@@ -128,8 +128,13 @@ describe('CHANGELOG の節の並び: `[未リリース]` は（あれば）1つ�
     const written = insertAbove(BEFORE_WRITING, '0.6.28', UNRELEASED_SECTION)
     expect(isUnreleased(top(written))).toBe(true)
     expect(changelogProblems(written)).toEqual([])
-    const publicForm = written.replace(/^## \[(\d+\.\d+\.\d+)\]/gm, '## $1')
-    expect(publicForm).not.toBe(written)
+    // 公開の木（koto-app）の CHANGELOG は、もともと版の見出しに角括弧が無い。どちらの木で走っても
+    // 「角括弧あり」と「角括弧なし」の両方を試すよう、角括弧つきの形をここで組み立ててから外す
+    // （2026-11-11、角括弧を外すだけの形は公開の木で元と同じになり、この対照が公開の CI だけで落ちた）。
+    const bracketed = written.replace(/^## (\d+\.\d+\.\d+)(?= - )/gm, '## [$1]')
+    const publicForm = bracketed.replace(/^## \[(\d+\.\d+\.\d+)\]/gm, '## $1')
+    expect(publicForm).not.toBe(bracketed)
+    expect(changelogProblems(bracketed)).toEqual([])
     expect(changelogProblems(publicForm)).toEqual([])
   })
 
