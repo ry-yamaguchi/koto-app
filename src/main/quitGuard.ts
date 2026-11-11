@@ -43,10 +43,10 @@ function projectNameOf(projectDir: string): string {
  *
  * ── defaultId と cancelId（2026-10-12・0.6.21-rc.2 の実際の画面で 0 番目のボタン〔当時の名前は「終了しない」〕が青くならなかった）──────────
  * defaultId=0（キャンセル）と cancelId=0 を同じにすると、macOS では**どのボタンも青くならない**。
- *   Electron 33.4.11 の原本 shell/browser/ui/message_box_mac.mm 68〜85 行: defaultId のボタンに Return（`\r`）を付けたあと、
+ *   Electron 44.11.1 の原本 shell/browser/ui/message_box_mac.mm 71〜76 行（Return）と 78〜88 行（Escape）: defaultId のボタンに Return（`\r`）を付けたあと、
  *   cancelId のボタンに Escape（`\e`）を付ける。同じボタンだと Return が Escape に**上書き**され（setKeyEquivalent は
  *   1つしか持てない）、Return のボタンが無くなる＝青くならず、Return を押しても何も起きない。
- * かといって cancelId を省くと、lib/browser/api/dialog.ts 195〜203 行が defaultId=0 のとき cancelId=1 を当てる
+ * かといって cancelId を省くと、lib/browser/api/dialog.ts 206〜217 行が defaultId=0 のとき cancelId=1 を当てる
  *   ＝**「終了する」に Escape が付く**（Esc で処理が止まったまま終了する）。省かない。
  * そこで cancelId を**ボタンの数以上の値**にする。message_box_mac.mm は範囲外の cancelId にはキーを付けない
  *   （`cancel_id < button_count` のときだけ）。dialog.ts は cancelId が null でなければそのまま渡す。

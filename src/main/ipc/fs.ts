@@ -14,6 +14,7 @@ import { createProjectOnDisk } from '../projectCreateFs'
 import { writeFileIfUnchangedFs, readCheckFs } from '../writeIfUnchangedFs'
 import { failureText } from '../../shared/failureText'
 import { publishExcludedDirNames, excludedFileNames } from '../../shared/publishExclude'
+import { dialogStartDir, rememberedDirAfterPick } from './dialogStart'
 
 function confineToProject(projectDir: string, rel: string): string {
   if (path.isAbsolute(rel)) throw new Error('不正なパスです（絶対パスは指定できません）')
@@ -261,12 +262,22 @@ export function registerFsHandlers(deps: IpcDeps) {
   ipcMain.handle('fs:writeFileInProject', (_, projectDir: string, rel: string, content: string) =>
     writeFileInProjectFs(projectDir, rel, content))
 
+  // Electron 43 から、defaultPath を渡さないと毎回「ダウンロード」から始まる（dialogStart.ts）。
+  // 選んだ場所をこの起動の間だけ覚えて、次のダイアログの始まりにする（まだなら、ホーム）。
+  let lastDialogDir: string | null = null
+  const isDirOnDisk = (p: string) => { try { return fs.statSync(p).isDirectory() } catch { return false } }
+  const startDir = () => dialogStartDir(lastDialogDir, os.homedir(), isDirOnDisk)
+
   ipcMain.handle('fs:openDialog', async (_, opts?: { filters?: { name: string; extensions: string[] }[] }) => {
     const result = await dialog.showOpenDialog(deps.getMainWindow()!, {
+      defaultPath: startDir(),
       properties: opts?.filters ? ['openFile'] : ['openFile', 'openDirectory'],
       ...(opts?.filters ? { filters: opts.filters } : {}),
     })
-    return result.filePaths[0] ?? null
+    const picked = result.filePaths[0] ?? null
+    // ファイルは入っているフォルダ、フォルダは親（隣のフォルダを選びやすい）を覚える
+    if (picked) lastDialogDir = rememberedDirAfterPick(picked, isDirOnDisk(picked), false)
+    return picked
   })
 
   ipcMain.handle('fs:readDir', async (_, dirPath: string) => {
@@ -277,10 +288,14 @@ export function registerFsHandlers(deps: IpcDeps) {
   // Pick a directory only (for choosing where to create a new project)
   ipcMain.handle('fs:pickDirectory', async () => {
     const result = await dialog.showOpenDialog(deps.getMainWindow()!, {
+      defaultPath: startDir(),
       properties: ['openDirectory', 'createDirectory'],
       buttonLabel: '選択',
     })
-    return result.filePaths[0] ?? null
+    const picked = result.filePaths[0] ?? null
+    // 作り場所は、選んだフォルダ自身を覚える（次のプロジェクトも同じ場所に作ることが多い）
+    if (picked) lastDialogDir = rememberedDirAfterPick(picked, isDirOnDisk(picked), true)
+    return picked
   })
 
   // Check whether a path already exists

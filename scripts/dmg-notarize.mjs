@@ -192,6 +192,65 @@ export function updateDmgEntry(ymlText, { url, sha512, size }) {
   return lines.join('\n')
 }
 
+/**
+ * macOS の主版 → Darwin の主版（`os.release()`／`uname -r` の先頭）。
+ * 「macOS の主版 + 9」は macOS 15 までで、macOS 26 で外れる（26 は Darwin 25）ので、表で持つ。
+ * 11〜26 は公開されている macOS と Darwin の版の対応表（Wikipedia「Darwin (operating system)」の版の一覧）による。
+ * 27 は実測（`sw_vers` が 27.2・`uname -r` が 27.2.0）による。27 の表は出典で確かめていない。
+ * 表に無い版は止める（推測で配布の下限を決めない）。
+ */
+const DARWIN_MAJOR_FOR_MACOS = {
+  11: 20, 12: 21, 13: 22, 14: 23, 15: 24, 26: 25, 27: 27,
+}
+
+/**
+ * macOS の版（例 '13.0'）を、electron-updater が比べる Darwin の版（例 '22.0.0'）にする。
+ *
+ * ── なぜ要るか（2026-11-10。Electron 44 は macOS 13 以上）──────────────
+ * electron-builder の `mac.minimumSystemVersion` は Info.plist の LSMinimumSystemVersion にしか
+ * 入らず、latest-mac.yml には書かれない。electron-updater は yml の `minimumSystemVersion` を
+ * `os.release()`（macOS では **Darwin の版**。macOS 13 = 22.0.0、macOS 12 = 21.x）と semver で
+ * 比べ（AppUpdater.js の checkIfUpdateSupported）、足りなければ更新を出さない。
+ * これが無いと、動かない新しい版が macOS 12 の利用者に自動で配られてしまう。
+ */
+export function darwinVersionForMacOS(macVersion) {
+  const m = String(macVersion || '').match(/^(\d+)(?:\.\d+)*$/)
+  if (!m) {
+    throw new Error(`macOS の版の指定が読めません（数字の版を指定してください）: ${macVersion}`)
+  }
+  const darwin = DARWIN_MAJOR_FOR_MACOS[Number(m[1])]
+  if (darwin === undefined) {
+    throw new Error(
+      `macOS ${macVersion} に対応する Darwin の版が表にありません（scripts/dmg-notarize.mjs の DARWIN_MAJOR_FOR_MACOS に足してください）。` +
+      `対応済み: ${Object.keys(DARWIN_MAJOR_FOR_MACOS).join('・')}`
+    )
+  }
+  return `${darwin}.0.0`
+}
+
+/**
+ * latest-mac.yml の先頭の階層に `minimumSystemVersion` を入れる（あれば置き換える）。何度かけても同じ。
+ * 値は引用符なしで書く（`22.0.0` は YAML では文字列で、electron-updater がそのまま semver で比べる）。
+ */
+export function setMinimumSystemVersion(ymlText, darwinVersion) {
+  if (!/^\d+\.\d+\.\d+$/.test(String(darwinVersion))) {
+    throw new Error(`minimumSystemVersion は x.y.z の形で指定してください: ${darwinVersion}`)
+  }
+  const line = `minimumSystemVersion: ${darwinVersion}`
+  const text = String(ymlText)
+  if (/^minimumSystemVersion:.*$/m.test(text)) return text.replace(/^minimumSystemVersion:.*$/m, line)
+  return text.replace(/\n*$/, '\n') + line + '\n'
+}
+
+/** package.json の build.mac.minimumSystemVersion（唯一の定義）から、yml に書く Darwin の版を求める。 */
+export function minimumDarwinVersionFromPackage(pkg) {
+  const mac = pkg && pkg.build && pkg.build.mac && pkg.build.mac.minimumSystemVersion
+  if (!mac) {
+    throw new Error('package.json の build.mac.minimumSystemVersion がありません（古い macOS に更新が配られる）。')
+  }
+  return darwinVersionForMacOS(mac)
+}
+
 /** electron-builder と同じ形式（sha512 の base64）でハッシュを取る。 */
 export function sha512Base64(filePath) {
   return createHash('sha512').update(readFileSync(filePath)).digest('base64')
@@ -271,8 +330,24 @@ export function verifyDmg(dmgPath) {
     )
   }
 
+  // 自動更新の最低の版が yml に入っているか（無いと古い macOS に動かない版が配られる）
+  assertMinimumSystemVersionRecorded(join(dirname(dmgPath), 'latest-mac.yml'))
+
   console.log(`✅ ${basename(dmgPath)} — 署名・公証・staple すべて確認しました`)
   console.log(`   ${all.split('\n').join('\n   ')}`)
+}
+
+/** latest-mac.yml に minimumSystemVersion が書かれているかを確かめる（無ければ throw。何も書き換えない）。 */
+export function assertMinimumSystemVersionRecorded(ymlPath) {
+  if (!existsSync(ymlPath)) {
+    throw new Error(`${ymlPath} がありません（minimumSystemVersion を確かめられません）。`)
+  }
+  if (!/^minimumSystemVersion:\s*\d+\.\d+\.\d+\s*$/m.test(readFileSync(ymlPath, 'utf8'))) {
+    throw new Error(
+      `${ymlPath} に minimumSystemVersion がありません（古い macOS に動かない版が配られます）。\n` +
+        '  node scripts/dmg-notarize.mjs --auto を実行するか、applyMinimumSystemVersion で書いてください。'
+    )
+  }
 }
 
 /**
@@ -294,6 +369,18 @@ export function syncUpdateRecord(dmgPath) {
   })
   writeFileSync(yml, updated)
   console.log('📝 latest-mac.yml の記録を実物に合わせました')
+  applyMinimumSystemVersion(yml)
+}
+
+/** latest-mac.yml に、古い macOS へ更新を配らないための minimumSystemVersion を書く。 */
+export function applyMinimumSystemVersion(ymlPath) {
+  if (!existsSync(ymlPath)) {
+    throw new Error(`${ymlPath} がありません。electron-builder が書く前に呼んでいないか確認してください。`)
+  }
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const darwin = minimumDarwinVersionFromPackage(pkg)
+  writeFileSync(ymlPath, setMinimumSystemVersion(readFileSync(ymlPath, 'utf8'), darwin))
+  console.log(`📝 latest-mac.yml に minimumSystemVersion: ${darwin}（macOS ${pkg.build.mac.minimumSystemVersion}）を書きました`)
 }
 
 /**
@@ -348,8 +435,15 @@ if (process.argv[1] && process.argv[1].endsWith('dmg-notarize.mjs')) {
   const auto = argv.includes('--auto')
   let targets = argv.filter((a) => !a.startsWith('--'))
 
-  // `npm run dist` の最後から呼ばれる形。未署名ビルドでは何もしない。
+  // `npm run dist` の最後から呼ばれる形。未署名ビルドでは、yml への書き込みのほかは何もしない。
   if (auto) {
+    // 署名の有無に関わらず、yml に最低の OS の版を書く（署名しないビルドの yml も同じ形にしておく）。
+    try {
+      applyMinimumSystemVersion(fileURLToPath(new URL('../release/latest-mac.yml', import.meta.url)))
+    } catch (e) {
+      console.error(`\n❌ ${String(e.message || e)}`)
+      process.exit(1)
+    }
     if (process.env.KOTO_SIGN !== '1') {
       console.log('📦 未署名ビルドなので DMG の公証はしません（KOTO_SIGN=1 で有効）')
       process.exit(0)
