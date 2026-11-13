@@ -99,7 +99,7 @@ describe('コピーの配線（当て先は一意。直す前の形を禁じる�
 describe('描き口: 詳細の行を出す FailureLines の数（{x} へ戻すと数が減って落ちる）', () => {
   const table: Array<[string, number]> = [
     ['KnowledgeModal', 4], ['KnowledgePacksTab', 1], ['StorageNotice', 4], ['PublishedListModal', 1],
-    ['RollbackSection', 2], ['ServerFilesModal', 1], ['CredentialsModal', 4], ['AppRunPanel', 6],
+    ['RollbackSection', 2], ['ServerFilesModal', 1], ['CredentialsTestButtons', 4], ['AppRunPanel', 6],
     ['VercelPanel', 3], ['HanamiiPanel', 3], ['SettingsModal', 2], ['HistoryModal', 2], ['UnusedFilesSection', 1], ['AppRunPrereqChecklist', 1],
     ['TelemetryNotice', 2], ['StorageSettings', 2],
   ]

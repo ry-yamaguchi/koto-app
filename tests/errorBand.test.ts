@@ -98,7 +98,7 @@ describe('12か所が ErrorBand を使う', () => {
     ['AppRunPanel.tsx', '<ErrorBand text={envError} className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all" />', 2],
     ['AppRunPanel.tsx', '<ErrorBand text={planError} className="text-xs text-white bg-brand-red-fill rounded-lg px-3 py-2 leading-relaxed break-all" />', 1],
     ['AiMessage.tsx', '<ErrorBand text={err} className="px-3 py-1.5 text-[11px] text-white bg-brand-red-fill" />', 1],
-    ['CredentialsModal.tsx', '{state === \'ng\' && <ErrorBand tone="text" text={`❌ ${detail}`} />}', 2],
+    ['CredentialsTestButtons.tsx', '{state === \'ng\' && <ErrorBand tone="text" text={`❌ ${detail}`} />}', 2],
     ['OnboardingModal.tsx', '<ErrorBand tone="text" className="text-xs mt-3 text-brand-red" text={result.msg} />', 1],
   ]
   it.each(SITES)('%s は %s を使う', (file, shape, count) => {
@@ -118,6 +118,6 @@ describe('12か所が ErrorBand を使う', () => {
     expect(app).not.toMatch(/<p className="[^"]*bg-brand-red-fill[^"]*">\{(envError|planError)\}/)
     expect(app).not.toContain('{envError}</p>')
     expect(app).not.toContain('{planError}</p>')
-    expect(read('CredentialsModal.tsx')).not.toContain('<span className="text-[11px] text-brand-red">❌ {detail}</span>')
+    expect(read('CredentialsTestButtons.tsx')).not.toContain('<span className="text-[11px] text-brand-red">❌ {detail}</span>')
   })
 })

@@ -335,11 +335,12 @@ describe('IPC の頭の落とし方は1か所（shared/failureText.ts）', () =>
     // 認証情報: クラウドのキー保存（1）と、5つのテストボタン（5）
     const cred = code('src/renderer/components/CredentialsModal.tsx')
     expect(count(cred, 'return { ok: false, message: cleanRemoteError(e) }')).toBe(1)
-    expect(count(cred, "setState('ng'); setDetail(cleanRemoteError(e))")).toBe(5)
+    expect(count(code('src/renderer/components/CredentialsTestButtons.tsx'), "setState('ng'); setDetail(cleanRemoteError(e))")).toBe(5)
     // 木全体でも7か所（定義と import は呼び出しではない）
     const calls = srcFiles(ROOT).map(f => [f, count(code(f), 'cleanRemoteError(e)')] as const).filter(([, n]) => n > 0)
     expect(calls).toEqual([
-      ['src/renderer/components/CredentialsModal.tsx', 6],
+      ['src/renderer/components/CredentialsModal.tsx', 1],
+      ['src/renderer/components/CredentialsTestButtons.tsx', 5],
       ['src/renderer/components/OnboardingModal.tsx', 1],
     ])
   })
@@ -348,7 +349,7 @@ describe('IPC の頭の落とし方は1か所（shared/failureText.ts）', () =>
     for (const rel of ['src/renderer/fileEntryOps.ts', 'src/renderer/components/OnboardingModal.tsx']) {
       expect(countRaw(fs.readFileSync(path.join(ROOT, rel), 'utf-8')), rel).toBe(0)
     }
-    const cred = code('src/renderer/components/CredentialsModal.tsx')
+    const cred = code('src/renderer/components/CredentialsModal.tsx') + code('src/renderer/components/CredentialsTestButtons.tsx')
     expect(cred).not.toMatch(/setDetail\(\s*e\??\.message/)
     expect(cred).not.toMatch(/setDetail\(\s*String\(e/)
     expect(cred).not.toMatch(/message:\s*e\??\.message/)

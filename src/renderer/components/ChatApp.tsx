@@ -4,12 +4,12 @@ import AiMessage from './AiMessage'
 import CompactNote from './CompactNote'
 import { canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
-import { MODELS, getDefaultModel, setDefaultModel, getDefaultVisionModel, modelLabel, pickBestModel, DEFAULT_CHAT_MODEL } from '../usage'
+import { MODELS, getDefaultModel, setDefaultModel, getDefaultVisionModel, modelLabel, pickBestModel, retiredModelNoticeText, syncStoredDefaultWithOffered, DEFAULT_CHAT_MODEL } from '../usage'
 // W-45: 「画像対応モデルで処理します」を出す条件は、ChatPanel.tsx（IDE側）と同じ
 // shouldTryImagesDirectly にそろえる（未確認のモデルはまず直接渡して試す。isVisionModel の
 // 名前の一覧だけで決め打ちしない）。文面はそのまま・条件だけを揃える（決定: やること）。
 import { shouldTryImagesDirectly } from '../visionSupport'
-import { useModels } from '../hooks/useModels'
+import { useModelList } from '../hooks/useModels'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { CHAT_CONTEXT } from '../aiContext'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
@@ -106,7 +106,7 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   const [loadMarks, setLoadMarks] = useState<Record<string, Omit<ConversationLoad, 'messages'>>>({})
   // 会話の一覧（索引）を読めなかった知らせ。読めた起動では null。
   const [indexUnreadable, setIndexUnreadable] = useState<UnreadableChat | null>(null)
-  const models = useModels(apiKey)
+  const { models, live: modelsLive } = useModelList(apiKey)
   const [input, setInput] = useState('')
   const [pendingImages, setPendingImages] = useState<string[]>([])
   const drag = useFileDrag()
@@ -232,12 +232,15 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   // 選択中のモデルが提供終了していたら、提供中の最適なモデルへ自動で切り替える
   useEffect(() => {
     if (!models.length || !activeSession) return
+    // 保存済みの既定も提供終了なら（一覧が実際に取得できたときだけ）保存し直す。次の新しい会話で案内を繰り返さない
+    syncStoredDefaultWithOffered('chat', models.map(m => m.id), modelsLive)
     if (!models.some(m => m.id === activeSession.model)) {
       const next = pickBestModel(models.map(m => m.id))
       updateSession(activeId, { model: next })
+      applyOp({ kind: 'append', msg: { role: 'assistant', content: retiredModelNoticeText(activeSession.model, modelLabel(next)), toolNote: true } })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [models, activeId])
+  }, [models, modelsLive, activeId])
 
   // 画像を取り込む（縮小してdata URL化し、添付候補に追加）
   const addImages = useCallback(async (files: FileList | File[]) => {

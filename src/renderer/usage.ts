@@ -21,8 +21,8 @@ export { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estima
 
 // isVisionModel / DEFAULT_VISION_MODEL は B'-3d-1a で shared/modelInfo.ts へ移した
 // （main のターン実行と両方が使うため。複製しない＝掟10）。ここは従来の呼び出し側のために re-export する。
-export { isVisionModel, DEFAULT_VISION_MODEL } from '../shared/modelInfo'
-import { isVisionModel, DEFAULT_VISION_MODEL } from '../shared/modelInfo'
+export { isVisionModel, DEFAULT_VISION_MODEL, retiredModelNoticeText, retiredDefaultReplacement } from '../shared/modelInfo'
+import { isVisionModel, DEFAULT_VISION_MODEL, retiredDefaultReplacement } from '../shared/modelInfo'
 
 // 予算・利用実績の型・定数・判定/計算の純関数は shared へ移した（B'-3d-1b）。
 // hashKey / PRICING / priceFor / DEFAULT_SETTINGS / 型は互換のため re-export する。
@@ -92,6 +92,17 @@ export function getDefaultModel(mode: ChatMode = 'ide'): string {
 export function setDefaultModel(id: string, mode: ChatMode = 'ide') {
   localStorage.setItem(MODEL_PREF_KEY[mode], id)
   window.dispatchEvent(new Event('sakura-usage-changed'))
+}
+
+/**
+ * 提供中の一覧（live=サービスから取得できたとき）に保存済みの既定モデルが無ければ、
+ * そのモードの既定を提供中の最適なモデルへ保存し直す。新しい会話のたびに同じ案内が出るのを防ぐ。
+ * 取得に失敗した／予備の一覧のとき（live=false）は何も書かない。書き換えたら新しいIDを返す。
+ */
+export function syncStoredDefaultWithOffered(mode: ChatMode, offeredIds: string[], live: boolean): string | null {
+  const next = retiredDefaultReplacement(getDefaultModel(mode), offeredIds, live, pickBestModel)
+  if (next) setDefaultModel(next, mode)
+  return next
 }
 
 // ── 予算設定 ────────────────────────────────────────────────────

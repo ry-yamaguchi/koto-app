@@ -43,7 +43,7 @@ export const TOOL_SUPPORT_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // 実測で確定している「種」。ここに載っていないモデルは全て null（未確認）として扱い、
 // 実際に試した結果から学習する（旧ブロックリストの preview\/|-VL-|multimodal|kimi|gpt-oss は
 // 「未確認」に含まれる＝今回の誤判定の原因だったため種から外した）。
-const TOOL_SEED_TRUE = /kimi-k2\.6|gpt-oss-120b/i // 2026-07-14/16 ユーザー実測（probe-models.mjs）: tools=ok
+const TOOL_SEED_TRUE = /gpt-oss-120b/i // 2026-07-16 ユーザー実測（probe-models.mjs）: tools=ok（Kimi K2.6 は提供終了のため外した。根拠: 公式の終了案内 2026-10-14、2026-11-11 の check-pricing で公開料金表に無いこと）
 const TOOL_SEED_FALSE = /llm-jp/i // 2026-07-14 実測: サーバー側がツール非対応で400
 
 /**
@@ -90,9 +90,9 @@ export function isKnownToolCapable(store: LearnStore, model: string, now: number
 export const VISION_SUPPORT_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 // 実測で確定している種。`-VL-` / `multimodal` は画像専用として提供されているもの、
-// kimi-k2.6 は 2026-07-14 のユーザー実測（verify-vision.mjs）で直接読めることを確認済み。
+// （Kimi K2.6 は 2026-07-14 に実測で直接読めたが、提供終了したため種から外した。根拠: 公式の終了案内 2026-10-14、2026-11-11 の check-pricing で公開料金表に無いこと。）
 // （vision には「非対応と確定している種」は無い＝すべて未確認から始まり、実測で学習する。）
-const VISION_SEED_TRUE = /-VL-|multimodal|kimi-k2\.6/i
+const VISION_SEED_TRUE = /-VL-|multimodal/i
 
 /**
  * 画像入力の対応状況を判定する（純関数・記録を読むだけ）。判定順:

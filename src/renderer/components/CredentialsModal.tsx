@@ -8,8 +8,8 @@ import { useConfirm } from '../useConfirm'
 import { runRequestCloseCredentials, runEraseVpsKey } from '../confirmedActions'
 import { cleanRemoteError } from '../remoteError'
 import { WEB_SEARCH_SEND_NOTE } from '../../shared/dataDestinationNotes'
-import ErrorBand from './ErrorBand'
-import FailureLines from './FailureLines'
+import { KeyTestButton, GithubTestButton, AnthropicTestButton, HanamiiTestButton, VercelTestButton } from './CredentialsTestButtons'
+import { snapshotValues, savedKeyFor } from '../credentialsSaved'
 
 interface Props {
   apiKey: string                       // さくらのAI Engine の現在キー（チャットで使用）
@@ -561,112 +561,6 @@ function LimitControl({ value, onChange }: { value: string; onChange: (v: string
   )
 }
 
-function KeyTestButton({ apiKey }: { apiKey: string }) {
-  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
-  const [detail, setDetail] = useState('')
-  const test = async () => {
-    if (!apiKey.trim()) { setState('ng'); setDetail('キーが空です'); return }
-    setState('testing')
-    try {
-      const models = await window.electronAPI.sakura.models(apiKey.trim())
-      setState('ok'); setDetail(`利用可能なモデル: ${models.length}個`)
-    } catch (e: any) {
-      setState('ng'); setDetail(cleanRemoteError(e))
-    }
-  }
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={test} disabled={state === 'testing'}
-        className="text-[11px] text-sakura border border-sakura/50 rounded-md px-2 py-1 hover:bg-overlay disabled:opacity-50">
-        {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
-      </button>
-      {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK（{detail}）</span>}
-      {state === 'ng' && <ErrorBand tone="text" text={`❌ ${detail}`} />}
-    </div>
-  )
-}
-
-// GitHub のトークン疎通テスト（GET /user）。接続OK時はログイン名を表示する。
-function GithubTestButton({ apiKey }: { apiKey: string }) {
-  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
-  const [detail, setDetail] = useState('')
-  const test = async () => {
-    if (!apiKey.trim()) { setState('ng'); setDetail('トークンが空です'); return }
-    setState('testing')
-    try {
-      const r = await window.electronAPI.github.test(apiKey.trim())
-      if (r.ok) { setState('ok'); setDetail(r.login ? `ログイン: ${r.login}` : '接続できました') }
-      else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
-    } catch (e: any) {
-      setState('ng'); setDetail(cleanRemoteError(e))
-    }
-  }
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={test} disabled={state === 'testing'}
-        className="text-[11px] text-sakura border border-sakura/50 rounded-md px-2 py-1 hover:bg-overlay disabled:opacity-50">
-        {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
-      </button>
-      {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK（{detail}）</span>}
-      {state === 'ng' && <ErrorBand tone="text" text={`❌ ${detail}`} />}
-    </div>
-  )
-}
-
-// Claude（Anthropic API）のキー疎通テスト（GET /v1/models）。接続OK時は利用可能なモデル件数を表示する。
-function AnthropicTestButton({ apiKey }: { apiKey: string }) {
-  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
-  const [detail, setDetail] = useState('')
-  const test = async () => {
-    if (!apiKey.trim()) { setState('ng'); setDetail('キーが空です'); return }
-    setState('testing')
-    try {
-      const r = await window.electronAPI.claude.test(apiKey.trim())
-      if (r.ok) { setState('ok'); setDetail(`利用可能なモデル: ${r.modelCount ?? 0}個`) }
-      else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
-    } catch (e: any) {
-      setState('ng'); setDetail(cleanRemoteError(e))
-    }
-  }
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={test} disabled={state === 'testing'}
-        className="text-[11px] text-sakura border border-sakura/50 rounded-md px-2 py-1 hover:bg-overlay disabled:opacity-50">
-        {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
-      </button>
-      {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK（{detail}）</span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ <FailureLines text={detail} /></span>}
-    </div>
-  )
-}
-
-// HANAMII トークンの接続テスト（ワークスペース一覧の取得で有効性を確認・読み取りのみ）。
-function HanamiiTestButton({ token }: { token: string }) {
-  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'ng'>('idle')
-  const [detail, setDetail] = useState('')
-  const test = async () => {
-    if (!token.trim()) { setState('ng'); setDetail('トークンが空です'); return }
-    setState('testing')
-    try {
-      const r = await window.electronAPI.hanamii.testConnection(token.trim())
-      if (r.ok) { setState('ok'); setDetail('') }
-      else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
-    } catch (e: any) {
-      setState('ng'); setDetail(cleanRemoteError(e))
-    }
-  }
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={test} disabled={state === 'testing'}
-        className="text-[11px] text-sakura border border-sakura/50 rounded-md px-2 py-1 hover:bg-overlay disabled:opacity-50">
-        {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
-      </button>
-      {state === 'ok' && <span className="text-[11px] text-brand-green">✅ 接続OK</span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ <FailureLines text={detail} /></span>}
-    </div>
-  )
-}
-
 // さくらのVPS の鍵の状態表示（registry サービスと同じ「IDEが自動管理」の流儀）。
 // 秘密鍵そのものは入力欄にしない・値も表示しない。生成は「🚀 公開」→さくらのVPSの「手順1 接続」パネルで行う
 // （host/port 未設定でも鍵だけ先に生成できる）。ここでは状態表示と、トラブル時の消去のみ。
@@ -685,38 +579,6 @@ function VpsKeyStatus({ hasKey, onClear }: { hasKey: boolean; onClear: () => voi
   )
 }
 
-// Vercel トークンの接続テスト（読み取りのみ）。teamId は任意。
-// **2段階**で見る: (1)トークンが有効か（/v2/user）(2)公開する範囲が見えているか（デプロイ一覧）。
-// (2)が通らないときは緑の ✅ にしない（2026-08-22 Ryosuke 指摘。範囲の無いトークンでも
-// (1)は 200 を返すため、「接続OK」と出したのに公開で落ちる形になっていた）。
-function VercelTestButton({ token, teamId }: { token: string; teamId: string }) {
-  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'warn' | 'ng'>('idle')
-  const [detail, setDetail] = useState('')
-  const test = async () => {
-    if (!token.trim()) { setState('ng'); setDetail('トークンが空です'); return }
-    setState('testing')
-    try {
-      const r = await window.electronAPI.vercel.testConnection(token.trim(), teamId.trim() || undefined)
-      if (r.ok) { setState(r.warn ? 'warn' : 'ok'); setDetail(r.message ?? '') }
-      else { setState('ng'); setDetail(r.message ?? '接続に失敗しました') }
-    } catch (e: any) {
-      setState('ng'); setDetail(cleanRemoteError(e))
-    }
-  }
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={test} disabled={state === 'testing'}
-        className="text-[11px] text-sakura border border-sakura/50 rounded-md px-2 py-1 hover:bg-overlay disabled:opacity-50">
-        {state === 'testing' ? '接続中…' : '🔌 接続テスト'}
-      </button>
-      {state === 'ok' && <span className="text-[11px] text-brand-green">✅ {detail || '接続OK'}</span>}
-      {state === 'warn' && <span className="text-[11px] text-brand-yellow whitespace-pre-wrap select-text">⚠️ <FailureLines text={detail} /></span>}
-      {state === 'ng' && <span className="text-[11px] text-brand-red whitespace-pre-wrap select-text">❌ <FailureLines text={detail} /></span>}
-    </div>
-  )
-}
-
-// 🔰 Claude（Anthropic API）キーの取得手順（折りたたみ）。
 function AnthropicKeyGuide() {
   return (
     <details className="rounded-xl border border-brand-yellow/70 bg-surface p-3">
@@ -777,6 +639,9 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
   // setSingleKey）で true にし、保存が完了したら false に戻す。初回読み込みの setStore はここを経由しないため
   // dirty にはならない。
   const [dirty, setDirty] = useState(false)
+  // 保存されている値（項目ごと）。接続テストの未保存の一言を、テストにかけた値とこれの違いで決める。
+  // メモリの中だけで比べる（表示も記録もしない）。読み込み時と保存の完了時に、そのときの store から取り直す。
+  const [savedValues, setSavedValues] = useState<Record<string, Record<string, string>>>({})
   // 未保存破棄・鍵消去の確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
   const { confirm, element: confirmElement } = useConfirm()
   // コンテナレジストリ認証の登録状況（【公開】→AppRun が自動作成。ここでは表示のみ）
@@ -897,11 +762,17 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
           }
         } catch { /* ignore（取り込み失敗時は通常表示のまま） */ }
         setStore(s)
+        setSavedValues(snapshotValues(s))
       } catch {
         setStore(migrate(null, apiKey))
       }
     })()
   }, [])
+
+  /** その項目の保存されている値（接続テストと比べる形）。一度も保存していない項目は null。 */
+  const savedKeyOf = (entryId: string, ...keys: string[]): string | null => {
+    return savedKeyFor(savedValues, entryId, keys)
+  }
 
   const svc = (id: string) => store[id] ?? { entries: [], activeId: null }
 
@@ -996,6 +867,7 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
     const active = ai.entries.find(e => e.id === ai.activeId) ?? ai.entries[0]
     onSetApiKey((active?.values.apiKey ?? '').trim())
     setDirty(false) // 保存完了→未保存の変更は無くなった
+    setSavedValues(snapshotValues(store))
     setSaved(true)
     setTimeout(() => setSaved(false), 3000)
   }
@@ -1075,11 +947,11 @@ export default function CredentialsModal({ apiKey, onSetApiKey, onClose }: Props
               {def.fields.map(f => (
                 <Field key={f.key} def={f} value={e.values[f.key] ?? ''} onChange={v => setValue(def.id, e.id, f.key, v)} />
               ))}
-              {def.id === 'aiEngine' && <KeyTestButton apiKey={e.values.apiKey ?? ''} />}
-              {def.id === 'github' && <GithubTestButton apiKey={e.values.apiKey ?? ''} />}
-              {def.id === 'anthropic' && <AnthropicTestButton apiKey={e.values.apiKey ?? ''} />}
-              {def.id === 'hanamii' && <HanamiiTestButton token={e.values.apiKey ?? ''} />}
-              {def.id === 'vercel' && <VercelTestButton token={e.values.apiKey ?? ''} teamId={e.values.teamId ?? ''} />}
+              {def.id === 'aiEngine' && <KeyTestButton apiKey={e.values.apiKey ?? ''} saved={savedKeyOf(e.id, 'apiKey')} />}
+              {def.id === 'github' && <GithubTestButton apiKey={e.values.apiKey ?? ''} saved={savedKeyOf(e.id, 'apiKey')} />}
+              {def.id === 'anthropic' && <AnthropicTestButton apiKey={e.values.apiKey ?? ''} saved={savedKeyOf(e.id, 'apiKey')} />}
+              {def.id === 'hanamii' && <HanamiiTestButton token={e.values.apiKey ?? ''} saved={savedKeyOf(e.id, 'apiKey')} />}
+              {def.id === 'vercel' && <VercelTestButton token={e.values.apiKey ?? ''} teamId={e.values.teamId ?? ''} saved={savedKeyOf(e.id, 'apiKey', 'teamId')} />}
               {def.id === 'vps' && (
                 <VpsKeyStatus
                   hasKey={!!(e.values.privateKey && e.values.publicKey)}

@@ -41,7 +41,6 @@ export const PRICING: Record<string, { in: number; out: number }> = {
   'preview/Phi-4-mini-instruct-cpu': { in: 1, out: 3 },        // 0.01 / 0.03
   'preview/Qwen3-0.6B-cpu': { in: 1, out: 3 },                 // 0.01 / 0.03
   'preview/Qwen3.6-35B-A3B': { in: 30, out: 150 },             // 0.3 / 1.5
-  'preview/Kimi-K2.6': { in: 60, out: 300 },                   // 0.6 / 3
   'preview/Kimi-K2.7-Code': { in: 52, out: 504 },  // 0.52 / 5.04 円（1万tok）2026-09-04 公式ページ
   'preview/gemma-4-31B-it': { in: 24, out: 96 },   // 0.24 / 0.96
   // 2026-09-25: 2026-09-24 提供開始のお知らせ（cloud.sakura.ad.jp/news/2026/09/24/ai-engine-weblab-medllm-gpt-oss-120b-pubprev/）と

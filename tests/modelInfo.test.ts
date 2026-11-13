@@ -17,14 +17,13 @@ import { renderToStaticMarkup } from 'react-dom/server'
 // tools 非対応(400) = Phi-4-mini-instruct-cpu / Qwen3-0.6B-cpu。
 
 describe('MODELS / VISION_MODELS / DEFAULT_MODEL（2026-09-04 世代交代）', () => {
-  it('MODELS は9件、Qwen3-Coder系（旧世代）は含まれない', () => {
+  it('MODELS は8件、Qwen3-Coder系（旧世代）は含まれない', () => {
     expect(MODELS).toEqual([
       { id: 'preview/Kimi-K2.7-Code', label: 'Kimi K2.7 Code（プレビュー）' },
       { id: 'preview/Qwen3.6-35B-A3B', label: 'Qwen3.6 35B（プレビュー）' },
       { id: 'preview/gemma-4-31B-it', label: 'Gemma 4 31B（プレビュー）' },
       { id: 'gpt-oss-120b', label: 'GPT-OSS 120B' },
       { id: 'llm-jp-3.1-8x13b-instruct4', label: 'llm-jp 3.1 8x13b（日本語）' },
-      { id: 'preview/Kimi-K2.6', label: 'Kimi K2.6（プレビュー）' },
       { id: 'preview/Qwen3-0.6B-cpu', label: 'Qwen3 0.6B（CPU・プレビュー）' },
       { id: 'preview/Phi-4-mini-instruct-cpu', label: 'Phi-4 mini（CPU・プレビュー）' },
       // 2026-09-24 提供開始（tests/modelPricingMedLLM.test.ts）
@@ -133,7 +132,6 @@ describe('purposeLabel（表示の元は MODEL_PURPOSE の1箇所だけ）', () 
     expect(purposeLabel('preview/gemma-4-31B-it')).toBe('高速・軽い（相談向け）')
     expect(purposeLabel('gpt-oss-120b')).toBe('推論型')
     expect(purposeLabel('preview/Qwen3.6-35B-A3B')).toBe('推論型（長い応答は途中で切れることあり）')
-    expect(purposeLabel('preview/Kimi-K2.6')).toBe('画像も読める（推論型）')
     expect(purposeLabel('preview/Qwen3-VL-30B-A3B-Instruct')).toBe('画像読み取り用（ツール非対応）')
     expect(purposeLabel('llm-jp-3.1-8x13b-instruct4')).toBe('日本語特化（ツール非対応・文脈を無視することあり）')
     expect(purposeLabel('preview/Qwen3-0.6B-cpu')).toBe('小型（ツール非対応）')

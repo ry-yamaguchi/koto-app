@@ -33,6 +33,42 @@ export const hanamiiWaitTuning = {
 /** 状態を取れないことが続いたら打ち切る回数（Vercel の公開と同じ）。 */
 const MAX_CONSECUTIVE_FAILURES = 5
 
+/**
+ * 公開の依頼が受け付けられた時点で書く公開記録（`publish.targets.hanamii`）。
+ * 初回の公開は URL がまだ無い（null）。公開日時は依頼の時刻（従来どおり）。
+ * **再公開（更新）は、記録にある URL と公開日時をそのまま保つ**——新しい版が起動しなかったとき、
+ * HANAMII は前の版を動かし続けるので（上の原本の案内）、URL を消すと動いているサイトの URL を失い、
+ * 公開日時を進めると「変更あり」の判定が、公開されていない版を基準にしてしまう。
+ * 以前の記録に日時が無い再公開は null（日時不明）のままにする——作り物の日時は入れない。
+ * 新しい版が READY と確かめられたら、confirmedPublishRecord が新しい値で上書きする。
+ */
+export function acceptedPublishRecord(args: { redeployed: boolean; previousUrl: string | null; previousPublishedAt: string | null; now: Date }): { publishedAt: string | null; url: string | null } {
+  return args.redeployed
+    ? { publishedAt: args.previousPublishedAt, url: args.previousUrl }
+    : { publishedAt: args.now.toISOString(), url: null }
+}
+
+/**
+ * 新しい版が READY と確かめられたときに書く公開記録。書かないとき（書き換える材料が無い）は null。
+ * - 再公開（更新）: 公開日時を**この版に載せたファイルをまとめた時刻**（packedAt。無ければ確かめた時刻）にする。
+ *   URL は READY の応答のもの、無ければいま記録にあるもの。
+ * - 初回の公開: 依頼を受け付けたときの公開日時を保ち、READY の応答に URL があるときだけ URL を足す（従来どおり）。
+ */
+export function confirmedPublishRecord(args: {
+  redeployed: boolean
+  readyUrl: string | null
+  recordedPublishedAt: string | null
+  recordedUrl: string | null
+  packedAt: string | null
+  now: Date
+}): { publishedAt: string; url: string | null } | null {
+  if (args.redeployed) {
+    return { publishedAt: args.packedAt ?? args.now.toISOString(), url: args.readyUrl ?? args.recordedUrl }
+  }
+  if (!args.readyUrl) return null
+  return { publishedAt: args.recordedPublishedAt ?? args.now.toISOString(), url: args.readyUrl }
+}
+
 export type NewVersionOutcome =
   /** 新しい版が READY になったと確かめた。 */
   | { kind: 'ready'; url: string | null }

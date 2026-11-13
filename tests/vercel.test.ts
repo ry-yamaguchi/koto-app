@@ -294,7 +294,7 @@ describe('資格情報まわりの配線', () => {
     const ipc = read('src/main/ipc/vercel.ts')
     expect(ipc).toContain('if (r.dropTeamId)')
     expect(ipc).toContain('warn: true')
-    const ui = read('src/renderer/components/CredentialsModal.tsx')
+    const ui = read('src/renderer/components/CredentialsTestButtons.tsx')
     expect(ui).toContain("setState(r.warn ? 'warn' : 'ok')")
     expect(ui).toContain("{state === 'warn' &&")
   })

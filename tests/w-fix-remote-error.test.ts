@@ -44,10 +44,12 @@ describe('W-59: cleanRemoteError（remoteError.ts）の振る舞い', () => {
 
 describe('W-59: 取る関数は1つだけで、接続テストの失敗表示はすべてそれを通る', () => {
   const cred = read('src/renderer/components/CredentialsModal.tsx')
+  // 5つの接続テストのボタンは CredentialsTestButtons.tsx にある（CredentialsModal.tsx から切り出した）
+  const buttons = read('src/renderer/components/CredentialsTestButtons.tsx')
   const onboard = read('src/renderer/components/OnboardingModal.tsx')
 
   it('★ 認証情報・初回案内のどちらも、自前で英語の頭を取る処理を持たず、remoteError.ts から import する', () => {
-    for (const src of [cred, onboard]) {
+    for (const src of [cred, buttons, onboard]) {
       expect(src).toContain("import { cleanRemoteError } from '../remoteError'")
       expect(src).not.toMatch(/function\s+cleanRemoteError/)
       expect(src).not.toMatch(/function\s+stripInvokeErrorPrefix/)
@@ -58,11 +60,11 @@ describe('W-59: 取る関数は1つだけで、接続テストの失敗表示は
 
   // 各テストボタン（関数の本体）を切り出す。次の「\nfunction」「\nexport」「\n// ─」までを1つとみなす。
   const bodyOf = (name: string): string => {
-    const start = cred.indexOf(`function ${name}(`)
+    const start = buttons.indexOf(`function ${name}(`)
     expect(start, `${name} が見つからない`).toBeGreaterThanOrEqual(0)
-    const rest = cred.slice(start + 10)
+    const rest = buttons.slice(start + 10)
     const m = rest.search(/\n(?:export\s+)?(?:async\s+)?function\s|\n\/\/ ─/)
-    return m < 0 ? cred.slice(start) : cred.slice(start, start + 10 + m)
+    return m < 0 ? buttons.slice(start) : buttons.slice(start, start + 10 + m)
   }
 
   for (const name of ['KeyTestButton', 'GithubTestButton', 'AnthropicTestButton', 'HanamiiTestButton', 'VercelTestButton']) {
@@ -77,7 +79,7 @@ describe('W-59: 取る関数は1つだけで、接続テストの失敗表示は
   }
 
   it('★ 接続テストの失敗表示は5つ全部が cleanRemoteError を通る（数が減っていない）', () => {
-    const n = (cred.match(/setDetail\(cleanRemoteError\(e\)\)/g) ?? []).length
+    const n = (buttons.match(/setDetail\(cleanRemoteError\(e\)\)/g) ?? []).length
     expect(n).toBe(5)
   })
 

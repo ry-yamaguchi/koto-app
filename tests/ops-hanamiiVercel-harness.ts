@@ -197,6 +197,8 @@ export type Mounted = {
   buttons(): Btn[]
   /** 文字に s を含むボタン（無ければ undefined）。 */
   button(s: string): Btn | undefined
+  /** 文字に s を含む label の中のチェックボックスを、checked にする（onChange を呼ぶ）。無ければ false。 */
+  setCheckbox(s: string, checked: boolean): boolean
   unmount(): void
   /** 同じ画面のまま、渡す値だけ変える（開いたままプロジェクトが切り替わる）。 */
   rerender(props: Record<string, unknown>): void
@@ -231,6 +233,26 @@ export function mount(Component: (p: any) => unknown, props: Record<string, unkn
     count: s => text().split(s).length - 1,
     buttons,
     button: s => buttons().find(b => b.text.includes(s)),
+    setCheckbox: (label, checked) => {
+      let done = false
+      const walk = (n: Out) => {
+        if (done || n === null || typeof n === 'string') return
+        if (Array.isArray(n)) { n.forEach(walk); return }
+        if (n.tag === 'label' && linesOf(n.children).join(' ').includes(label)) {
+          const find = (m: Out): { props: Record<string, any> } | null => {
+            if (m === null || typeof m === 'string') return null
+            if (Array.isArray(m)) { for (const x of m) { const r = find(x); if (r) return r } return null }
+            if (m.tag === 'input' && m.props.type === 'checkbox') return m
+            return find(m.children)
+          }
+          const box = find(n.children)
+          if (box) { (box.props.onChange as (ev: unknown) => void)({ target: { checked } }); done = true; return }
+        }
+        walk(n.children)
+      }
+      walk(root.tree)
+      return done
+    },
     unmount: () => root.unmount(),
     rerender: p => { root.props = p; root.render() },
   }

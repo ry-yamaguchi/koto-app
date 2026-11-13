@@ -254,10 +254,12 @@ describe('★★★ 新しい版が READY になったと確かめてから、�
     expect(deleteAt, '古い鍵を READY を確かめる前に消している（2026-08-14 の 403 事故と同じ形）').toBeGreaterThan(readyAt)
     expect(h.events.indexOf('issueKey')).toBeLessThan(h.events.indexOf('GET project'))
     expect(stateGets()).toBe(3)
-    // URL は記録に書かれ、公開日時は依頼を受け付けたときのまま
+    // URL は記録に書かれる。再公開の公開日時は、受け付けた時点では前の版のまま（この記録には前の日時が無いので null）で、
+    // 動いたと確かめてから新しい日時になる
     const rec = readMeta().publish.targets.hanamii
     expect(rec.url).toBe(URL_LIVE)
-    expect(rec.publishedAt).toBe(publishedAtAtAccept)
+    expect(publishedAtAtAccept, '動いたと確かめる前に公開日時を進めている').toBeNull()
+    expect(typeof rec.publishedAt).toBe('string')
     // 片づけ済みなので、旧い画面が使う「鍵の識別子」は返さない（画面がもう一度片づけに走らない）
     expect(r.storagePermissionId).toBeUndefined()
     expect(r.storageProjectName).toBeUndefined()

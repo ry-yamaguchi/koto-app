@@ -5,15 +5,15 @@
 //
 // 使い方:
 //   node scripts/verify-vision.mjs
-//   モデルを指定:  SAKURA_API_KEY=<キー> node scripts/verify-vision.mjs preview/Kimi-K2.6
+//   モデルを指定:  SAKURA_API_KEY=<キー> node scripts/verify-vision.mjs <モデルID>
 //   （引数を省略すると既定の一覧を検証する）
 
 import { createInterface } from 'node:readline/promises'
 
 const BASE = 'https://api.ai.sakura.ad.jp/v1'
 // アプリが画像添付時に自動選択するモデル（usage.ts の DEFAULT_VISION_MODEL と同じ）。
-// 引数でモデルIDを渡せばそれを検証する（例: Kimi-K2.6 の画像入力可否の実測）。
-// ※ Kimi-K2.5 は提供終了（2026-06実測: not available）。K2.6 は 2026-07-14 時点で画像入力が未実測。
+// 引数でモデルIDを渡せばそれを検証する（新しいモデルの画像入力可否の実測）。
+// ※ Kimi-K2.5 は提供終了（2026-06実測: not available）。Kimi-K2.6 も提供終了（公式の終了案内 2026-10-14、2026-11-11 の check-pricing で公開料金表に無いことによる）。
 const DEFAULT_VISION_MODELS = ['preview/Qwen3-VL-30B-A3B-Instruct']
 const VISION_MODELS = process.argv.slice(2).filter(a => !a.startsWith('-'))
 VISION_MODELS.length || VISION_MODELS.push(...DEFAULT_VISION_MODELS)

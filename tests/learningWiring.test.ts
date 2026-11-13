@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import { defaultVisionModelFor } from '../src/main/chat/turnRunner'
+import { MODELS } from '../src/shared/modelInfo'
 
 // B'-3d-1a: 学習キャッシュ（ツール対応・画像対応）の持ち主が renderer の localStorage から
 // main の src/main/learningStore.ts へ移った配線を固定する（tests/chatTurnRegistryWiring.test.ts
@@ -93,9 +94,12 @@ describe('turnRunner.ts: defaultVisionModelFor（renderer/usage.ts の getDefaul
     expect(defaultVisionModelFor(models)).toBe('preview/Phi-4-multimodal-instruct')
   })
 
-  it('VISION_MODELS一覧に無くても、命名パターン（-VL-/multimodal/kimi-k2.6）で見つける', () => {
+  it('VISION_MODELS一覧に無くても、命名パターン（-VL-/multimodal）で見つける', () => {
     expect(defaultVisionModelFor([{ id: 'some-brand-new-VL-model' }])).toBe('some-brand-new-VL-model')
-    expect(defaultVisionModelFor([{ id: 'preview/Kimi-K2.6' }])).toBe('preview/Kimi-K2.6')
+    // 提供終了した Kimi-K2.6 は画像対応として拾わない（一覧にあっても既定の画像モデルへ戻る）
+    expect(defaultVisionModelFor([{ id: 'preview/Kimi-K2.6' }])).toBe('preview/Qwen3-VL-30B-A3B-Instruct')
+    // 予備の一覧だけ（オフライン）でも、画像モデルは Qwen3-VL に決まる
+    expect(defaultVisionModelFor(MODELS)).toBe('preview/Qwen3-VL-30B-A3B-Instruct')
   })
 
   it('一覧の並び順で最初に一致したものを使う', () => {

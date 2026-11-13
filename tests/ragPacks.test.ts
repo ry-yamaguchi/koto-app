@@ -108,7 +108,7 @@ describe('estimatePackCostPerTurnYen', () => {
 
   it('scales with the model input price (a pricier model costs more per turn)', () => {
     const cheap = estimatePackCostPerTurnYen('gpt-oss-120b') // in: 15
-    const pricey = estimatePackCostPerTurnYen('preview/Kimi-K2.6') // in: 60
+    const pricey = estimatePackCostPerTurnYen('preview/Kimi-K2.7-Code') // in: 52
     expect(pricey).toBeGreaterThan(cheap)
   })
 
