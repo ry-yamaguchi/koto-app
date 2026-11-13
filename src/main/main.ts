@@ -342,12 +342,21 @@ function buildMenu() {
     copyright: '© 2026 meryo',
   })
 
+  // 「更新を確認…」（2026-11-13 作者の要望: 一般のアプリのように画面上部のメニューから更新へ行けるように）。
+  // 更新の欄そのものは設定の中のまま。押すと設定の窓の「Koto の更新」へ送り、確認を始める（画面側が決める）。
+  // 定義は1つにして、アプリのメニューとヘルプの2か所で使い回す。ショートカットキーは付けない。
+  const checkUpdateItem: MenuItemConstructorOptions = {
+    label: '更新を確認…',
+    click: () => sendToWindow(mainWindow, 'menu:check-update'),
+  }
+
   const template: MenuItemConstructorOptions[] = [
     ...(isMac
       ? [{
           label: APP_NAME,
           submenu: [
             { role: 'about', label: `${APP_NAME} について` },
+            checkUpdateItem,
             { type: 'separator' },
             // macOS では ⌘, が設定の定位置。以前はここが「認証情報」だったが、
             // 設定（⚙️）が画面の中にしか無く、メニューから探した利用者が辿り着けなかった
@@ -418,6 +427,7 @@ function buildMenu() {
         { type: 'separator' },
         { label: `${APP_NAME} について`, click: () => app.showAboutPanel() },
         { label: `バージョン ${app.getVersion()}（ベータ提供中）`, enabled: false },
+        checkUpdateItem,
         { type: 'separator' },
         // フィードバック導線。宛先は公開リポジトリ（koto-app）なので、投稿は誰でも読める（feedback.ts が注意の段落を添える）。
         // macOS の版は process.getSystemVersion()。os.release() は Darwin のカーネルの版で、macOS の版ではない。

@@ -369,6 +369,8 @@ interface Window {
       onOpenPublished(cb: () => void): () => void
       /** 「Koto → 設定…」（⌘,）メニューの購読（解除関数を返す）。 */
       onOpenSettings(cb: () => void): () => void
+      /** 「更新を確認…」メニュー（アプリのメニューとヘルプ）の購読（解除関数を返す）。 */
+      onCheckUpdate(cb: () => void): () => void
     }
     /** 永続データ（保存場所）。値は読まず、扱いだけを調べる。 */
     storage: {

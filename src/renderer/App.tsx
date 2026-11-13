@@ -94,6 +94,8 @@ export default function App() {
   }, [currentDir, treeRefresh])
   const [showNewProject, setShowNewProject] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  // 「更新を確認…」メニューの依頼の回数（nonce）。真偽値だと2回目以降が効かないので数で渡す。0 は依頼なし（閉じるときに戻す）。
+  const [updateRequest, setUpdateRequest] = useState(0)
   const [showCredentials, setShowCredentials] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
   // 「表示 → 公開したもの一覧…」（メニューから開く。プロジェクト未オープンでも見られる）
@@ -195,6 +197,15 @@ export default function App() {
   // 設定（⚙️）が画面の中にしか無く、メニューから探した利用者が辿り着けなかった（2026-08-11 Ryosuke 指摘）
   useEffect(() => {
     return window.electronAPI.app.onOpenSettings(() => setShowSettings(true))
+  }, [])
+
+  // メニューバー「更新を確認…」から、設定の窓を開いて「Koto の更新」の枠へ送る（2026-11-13 作者の要望）。
+  // SettingsModal はモード・プロジェクトの有無に関係なく同じ場所（return の末尾）で出るので、どの場面でも効く。
+  useEffect(() => {
+    return window.electronAPI.app.onCheckUpdate(() => {
+      setShowSettings(true)
+      setUpdateRequest(n => n + 1)
+    })
   }, [])
   const [sakuraApiKey, setSakuraApiKey] = useState('')
   const [version, setVersion] = useState('')
@@ -804,7 +815,7 @@ export default function App() {
 
       {mode === 'ide' && <StatusBar activeFile={activeFileObj} meta={projectMeta} apiKey={sakuraApiKey} />}
 
-      {showSettings && <SettingsModal apiKey={sakuraApiKey} onClose={() => setShowSettings(false)} onOpenCredentials={() => setShowCredentials(true)} />}
+      {showSettings && <SettingsModal apiKey={sakuraApiKey} updateRequest={updateRequest} onClose={() => { setShowSettings(false); setUpdateRequest(0) }} onOpenCredentials={() => setShowCredentials(true)} />}
 
       {showPublish && currentDir && (
         <PublishModal projectDir={currentDir} apiKey={sakuraApiKey} onClose={() => setShowPublish(false)} onRun={runInTerminal} onOpenCredentials={() => setShowCredentials(true)} onOpenPublishedList={() => setShowPublishedList(true)} />

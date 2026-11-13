@@ -153,6 +153,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('menu:open-settings', handler)
       return () => ipcRenderer.removeListener('menu:open-settings', handler)
     },
+    // 「Koto → 更新を確認…」「ヘルプ → 更新を確認…」（menu:check-update）。onOpenSettings と同じ作法。
+    onCheckUpdate: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('menu:check-update', handler)
+      return () => ipcRenderer.removeListener('menu:check-update', handler)
+    },
   },
   // 永続データ（storage:*）。値は読まず、扱いだけを調べる。
   storage: {

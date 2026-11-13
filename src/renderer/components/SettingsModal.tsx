@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import StorageSettings from './StorageSettings'
 import SakuraLogo from './SakuraLogo'
 import {
@@ -12,7 +12,7 @@ import { useModels } from '../hooks/useModels'
 import { getAnthropicToken } from './CredentialsModal'
 import { SHOW_THINKING_KEY, isThinkingAlwaysOpen } from './ThinkingBlock'
 import { GREET_ON_OPEN_LABEL, isGreetOnOpenEnabled, setGreetOnOpen } from '../greetSetting'
-import { updateStatusText, shouldHighlight, type UpdateState } from '../../shared/updatePolicy'
+import { updateStatusText, shouldHighlight, shouldCheckFromMenu, type UpdateState } from '../../shared/updatePolicy'
 // 料金の表示は shared の1か所から（料金表に無いモデルに、実在しない料金を出さない・2026-09-25）
 import { priceLabel, usageCostNote, unknownPriceRuleText } from '../../shared/usageBudget'
 import {
@@ -52,9 +52,11 @@ interface Props {
   onClose: () => void
   /** 「認証情報を開く」ボタン用（未登録時の導線・2026-09-11 利用者目線レビュー）。 */
   onOpenCredentials?: () => void
+  /** 「更新を確認…」メニューの依頼の回数（nonce）。増えるたびに1回ずつ効く。0・未指定は依頼なし。 */
+  updateRequest?: number
 }
 
-export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Props) {
+export default function SettingsModal({ apiKey, onClose, onOpenCredentials, updateRequest = 0 }: Props) {
   const models = useModels(apiKey)
   const [settings, setLocal] = useState<BudgetSettings>(getSettings())
   const [usage, setUsage] = useState<MonthUsage>(getUsage())
@@ -86,9 +88,38 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
   const [update, setUpdate] = useState<UpdateState>({ kind: 'idle' })
   const [applyError, setApplyError] = useState<string | null>(null)
   const [appVersion, setAppVersion] = useState('')
+  // 状態の最初の読み込みが済んだか。済む前に依頼が来ても、古い状態（idle）で判断しないために待つ。
+  const [updateLoaded, setUpdateLoaded] = useState(false)
+  const runUpdateCheck = async () => { setUpdate(await window.electronAPI.update.check()) }
+
+  // メニュー「更新を確認…」の依頼（2026-11-13）。(a) 「Koto の更新」の枠へ送る (b) 状態が許すときだけ確認を始める。
+  // 処理済みの回数を覚え、同じ依頼を二度やらない（状態が流れてきて effect が回り直しても、確認は1回）。
+  const updateCardRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const handledRequest = useRef(0)
+  // 送ったあと、上の「データの保存」の枠が読み込みで伸びて下の枠がずれる（P-83）ので、
+  // 短いあいだ（3秒）だけ、伸びるたびに送り直す。利用者が窓の中を動かしたら（wheel・touch・キー・つかみ）すぐやめる。タイマーは使わない（期限の時刻と比べるだけ）。
+  const pinUntil = useRef(0)
+  const stopPin = () => { pinUntil.current = 0 }
+  useEffect(() => {
+    if (updateRequest <= handledRequest.current || !updateLoaded) return
+    handledRequest.current = updateRequest
+    updateCardRef.current?.scrollIntoView({ block: 'nearest' })
+    pinUntil.current = Date.now() + 3000
+    if (shouldCheckFromMenu(update)) void runUpdateCheck().catch(() => { /* 失敗は main が error の状態で流す */ })
+  }, [updateRequest, updateLoaded, update])
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (Date.now() < pinUntil.current) updateCardRef.current?.scrollIntoView({ block: 'nearest' })
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   useEffect(() => {
     window.electronAPI.app.getVersion().then(setAppVersion).catch(() => { /* 版数が取れなくても支障はない */ })
-    window.electronAPI.update.state().then(setUpdate).catch(() => { /* 未対応版でも画面は動く */ })
+    window.electronAPI.update.state().then(s => { setUpdate(s); setUpdateLoaded(true) }).catch(() => { setUpdateLoaded(true) /* 未対応版でも画面は動く */ })
     return window.electronAPI.update.onState(s => { setUpdate(s); setApplyError(null) })
   }, [])
 
@@ -175,7 +206,7 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
           <button onClick={onClose} aria-label="閉じる" className="ml-auto text-ink-muted hover:text-ink w-7 h-7 rounded-lg hover:bg-overlay">✕</button>
         </div>
 
-        <div className="px-6 pb-6 space-y-5">
+        <div ref={contentRef} onWheel={stopPin} onTouchStart={stopPin} onPointerDown={stopPin} onKeyDown={stopPin} className="px-6 pb-6 space-y-5">
           {/* Usage this month */}
           <div className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-baseline justify-between mb-2">
@@ -305,11 +336,11 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials }: Pr
           {/* アプリの更新（2026-08-10）。**勝手に再起動しない**のが設計の要。
               見つけたら裏でダウンロードだけ済ませ、切り替えは次回起動時。
               「いますぐ再起動」は利用者が押したときだけで、作業中なら断る（updatePolicy.ts）。 */}
-          <div className="bg-surface border border-line rounded-xl p-4">
+          <div ref={updateCardRef} className="bg-surface border border-line rounded-xl p-4">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs font-semibold text-ink-secondary">Koto の更新</div>
               <button
-                onClick={async () => { setUpdate(await window.electronAPI.update.check()) }}
+                onClick={runUpdateCheck}
                 disabled={update.kind === 'checking' || update.kind === 'downloading'}
                 className="text-[11px] border border-line rounded-md px-2 py-0.5 text-ink-secondary hover:border-sakura hover:text-sakura disabled:opacity-50"
               >更新を確認</button>
