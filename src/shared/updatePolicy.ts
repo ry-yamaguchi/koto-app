@@ -147,3 +147,13 @@ function updateFailureSentence(err: unknown): string {
 export function shouldHighlight(state: UpdateState): boolean {
   return state.kind === 'downloaded'
 }
+
+/**
+ * メニューバー「更新を確認…」を押したとき、更新の確認を始めてよいか（純関数・2026-11-13）。
+ * 始めてよいのは、何も進んでいない idle・前回の結果が出ている none・前回失敗した error のときだけ。
+ * 確認中・見つけた・ダウンロード中・準備ができた、のときは始めない
+ * （落としている途中や、準備ができた状態を、押し直しで壊さない。窓を開いて「Koto の更新」の枠を見せるだけにする）。
+ */
+export function shouldCheckFromMenu(state: UpdateState): boolean {
+  return state.kind === 'idle' || state.kind === 'none' || state.kind === 'error'
+}
