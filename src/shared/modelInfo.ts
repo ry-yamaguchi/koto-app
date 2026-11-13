@@ -31,8 +31,6 @@ export const MODELS: { id: string; label: string }[] = [
   { id: 'preview/gemma-4-31B-it', label: 'Gemma 4 31B（プレビュー）' },
   { id: 'gpt-oss-120b', label: 'GPT-OSS 120B' },
   { id: 'llm-jp-3.1-8x13b-instruct4', label: 'llm-jp 3.1 8x13b（日本語）' },
-  // 2026-07-14 ユーザー実測（probe-models.mjs）で tools=ok を確認しツール（ファイル参照）対応に昇格。
-  { id: 'preview/Kimi-K2.6', label: 'Kimi K2.6（プレビュー）' },
   { id: 'preview/Qwen3-0.6B-cpu', label: 'Qwen3 0.6B（CPU・プレビュー）' },
   { id: 'preview/Phi-4-mini-instruct-cpu', label: 'Phi-4 mini（CPU・プレビュー）' },
   // 2026-09-24 提供開始（医療特化・東京大学 松尾・岩澤研究室。gpt-oss-120b に日本語の医学論文・
@@ -46,6 +44,24 @@ export const MODELS: { id: string; label: string }[] = [
 export const VISION_MODELS: { id: string; label: string }[] = [
   { id: 'preview/Qwen3-VL-30B-A3B-Instruct', label: 'Qwen3-VL 30B（画像対応・プレビュー）' },
 ]
+
+/** 選択中のモデルが提供終了していて自動で切り替えたときの案内（IDE のチャットとチャットモードで共通・掟10）。 */
+export function retiredModelNoticeText(retiredId: string, nextLabel: string): string {
+  return `ℹ️ モデル「${retiredId}」は提供終了したため、「${nextLabel}」に自動で切り替えました。`
+}
+
+/**
+ * 保存済みの既定モデルを、提供中の最適なモデルへ書き換えるべきか決める（IDE のチャットとチャットモードで共通）。
+ * 書き換えるのは「一覧をサービスから実際に取得できた（live）」うえで、保存済みの既定がその一覧に無いときだけ。
+ * 取得に失敗した／キャッシュ・予備の一覧のときは null（ユーザーが選んだ保存値は触らない）。
+ */
+export function retiredDefaultReplacement(
+  storedDefault: string, offeredIds: string[], live: boolean, pick: (ids: string[]) => string,
+): string | null {
+  if (!live || offeredIds.length === 0) return null
+  if (offeredIds.includes(storedDefault)) return null
+  return pick(offeredIds)
+}
 
 export function modelLabel(id: string): string {
   return [...MODELS, ...VISION_MODELS].find(m => m.id === id)?.label ?? id
@@ -69,7 +85,6 @@ export const MODEL_PURPOSE: Record<string, { purpose: string; note?: string }> =
   'preview/gemma-4-31B-it': { purpose: '高速・軽い', note: '相談向け' },
   'gpt-oss-120b': { purpose: '推論型' },
   'preview/Qwen3.6-35B-A3B': { purpose: '推論型', note: '長い応答は途中で切れることあり' },
-  'preview/Kimi-K2.6': { purpose: '画像も読める', note: '推論型' },
   'preview/Qwen3-VL-30B-A3B-Instruct': { purpose: '画像読み取り用', note: 'ツール非対応' },
   'llm-jp-3.1-8x13b-instruct4': { purpose: '日本語特化', note: 'ツール非対応・文脈を無視することあり' },
   'preview/Qwen3-0.6B-cpu': { purpose: '小型', note: 'ツール非対応' },
@@ -125,14 +140,13 @@ export function orderModelsForPicker(ids: string[], defaultId: string): string[]
 const VISION_IDS = new Set(VISION_MODELS.map(m => m.id))
 
 /** モデルが画像入力に対応しているか（ID命名からも推定）。
- *  kimi-k2.6: 2026-07-14 ユーザー実測（verify-vision.mjs）で画像を直接読めることを確認（content に回答）→
- *  画像添付時に2段階処理（Qwen3-VLで読み取り→本来モデルで実行）を挟まず、そのまま読ませる。
- *  ※ 提供終了した K2.5 と区別するためバージョンまで含めて判定する。
+ *  名前の一覧（VISION_MODELS）と、-VL- / multimodal の命名で判定する。
+ *  Kimi K2.6 は提供終了したため、判定からも外した（根拠: 公式の終了案内 2026-10-14、および 2026-11-11 の check-pricing で公開料金表に無いこと。K2.5 も提供終了済み）。
  *  ── B'-3d-1a で renderer/usage.ts からここ（shared）へ移した。main のターン実行
  *  （turnRunner.ts の vision.defaultModel）と renderer の両方が使うため。**複製しないこと**
  *  （掟10: 片方だけ直されて、ずれても誰も気づかない）。 */
 export function isVisionModel(id: string): boolean {
-  return VISION_IDS.has(id) || /-VL-|multimodal|kimi-k2\.6/i.test(id)
+  return VISION_IDS.has(id) || /-VL-|multimodal/i.test(id)
 }
 
 // 画像送信時に既定で使うvisionモデル（コード理解も得意な Qwen3-VL を優先）。isVisionModel と同じ理由で shared に置く。

@@ -55,11 +55,11 @@ describe('formatChatError - その他のエラー', () => {
 // モデル別のツール（Function Calling）対応判定は src/renderer/toolSupport.ts へ移行した
 // （旧: このファイルにあった判定テスト）。回帰テストは tests/toolSupport.test.ts を参照。
 describe('isVisionModel（モデル別の画像対応・2026-07-14 実測反映）', () => {
-  it('isVisionModel: Kimi-K2.6 は画像を直接読める（実測PASS）。提供終了のK2.5は対象外', async () => {
+  it('isVisionModel: 提供終了した Kimi-K2.6 / K2.5 は対象外', async () => {
     const { isVisionModel } = await import('../src/renderer/usage')
     expect(isVisionModel('preview/Qwen3-VL-30B-A3B-Instruct')).toBe(true)
     expect(isVisionModel('preview/Phi-4-multimodal-instruct')).toBe(true)
-    expect(isVisionModel('preview/Kimi-K2.6')).toBe(true)
+    expect(isVisionModel('preview/Kimi-K2.6')).toBe(false)
     expect(isVisionModel('preview/Kimi-K2.5')).toBe(false)
     expect(isVisionModel('Qwen3-Coder-480B-A35B-Instruct-FP8')).toBe(false)
     expect(isVisionModel('gpt-oss-120b')).toBe(false)

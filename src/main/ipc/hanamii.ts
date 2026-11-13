@@ -16,7 +16,7 @@ import { resolvePublishRoot } from '../publishRootFs'
 import { ensureDataLayer } from '../dataLayer'
 // koto-data を差し替えたときの1行（文面は共用型・Vercel・専有型と同じ一元定義を通す・掟10）。
 import { dataLayerUpdateLine } from '../../shared/storageNoticeText'
-import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs, readHanamiiProjectIdFs } from '../publishMetaFs'
+import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs, readHanamiiProjectIdFs, readPublishedUrlFs } from '../publishMetaFs'
 import { readPublishedAtFs } from '../publishMetaFs'
 import { withProjectLock, projectBusyMessage } from '../projectLock'
 // 進捗の送り口は1つ（記録の更新を兼ねる）。公開のあと（動いたと確かめる）は hanamii/aftercare.ts。2026-09-29
@@ -26,7 +26,7 @@ import { maskSecretShapes } from '../../shared/secretShapes'
 import { describeErrorCode } from '../../shared/hanamiiErrorCode'
 import { wrapFailureText } from '../../shared/failureDetail'
 import { commandFailureOf } from './commandFailure'
-import { waitForNewVersion, type NewVersionOutcome } from '../hanamii/aftercare'
+import { waitForNewVersion, acceptedPublishRecord, confirmedPublishRecord, type NewVersionOutcome } from '../hanamii/aftercare'
 // 破棄（hanamii:teardown）は hanamiiTeardown.ts に切り出した（共通の骨 teardownShell の上）。テストが registerHanamiiHandlers 経由でハンドラを取り出すので、
 // 登録はここから呼び、PROJECT_MISMATCH_TEARDOWN と結果の型はここからも読めるようにしておく。
 import { registerHanamiiTeardownHandler } from './hanamiiTeardown'
@@ -184,8 +184,8 @@ function projectNotConfirmedMessage(name: string): string {
 }
 
 /** errorCode の説明（表にある値だけ。表に無い値は上の文の括弧に出ているので重ねない）。無ければ ''。 */
-function errorCodeSentence(code: string | null | undefined): string {
-  const text = describeErrorCode(code)
+function errorCodeSentence(code: string | null | undefined, healthCheckEnabled: boolean): string {
+  const text = describeErrorCode(code, { healthCheckEnabled })
   return text && !text.startsWith('エラーコード: ') ? text : ''
 }
 
@@ -218,6 +218,10 @@ async function finishHanamiiPublish(args: {
   requested: HanamiiPublishReply
   /** 既存のプロジェクトへの再公開か（失敗しても前の版が動き続けている場合があるため、文を分ける）。 */
   redeployed: boolean
+  /** 再公開で、この版に載せるファイルをまとめた時刻（ISO）。確かめられたら、これを新しい公開日時にする（無ければ確かめた時刻）。 */
+  packedAt: string | null
+  /** この公開で、ヘルスチェックを有効にして送ったか（deploy_error の文に足す一文の条件。送っていなければ false＝足さない）。 */
+  healthCheckEnabled: boolean
   progress: (message: string, extra?: { detail?: string }) => void
 }): Promise<HanamiiPublishReply> {
   const { projectDir, requested, progress } = args
@@ -239,9 +243,13 @@ async function finishHanamiiPublish(args: {
   if (outcome.kind === 'ready') {
     // 公開記録の url は、READY になった応答から（HANAMII 公式 API リファレンスの案内どおり）。
     // 依頼を受け付けたときに書いた公開日時は保つ（url だけを足す）。
-    if (outcome.url) {
-      writePublishRecordFs(projectDir, 'hanamii', { publishedAt: readPublishedAtFs(projectDir, 'hanamii') ?? new Date().toISOString(), url: outcome.url })
-    }
+    // 再公開（更新）は、ここで初めて公開日時と URL が新しい版のものになる（依頼を受け付けた時点では前の版の記録のまま）。
+    const confirmed = confirmedPublishRecord({
+      redeployed: args.redeployed, readyUrl: outcome.url ?? null,
+      recordedPublishedAt: readPublishedAtFs(projectDir, 'hanamii'), recordedUrl: readPublishedUrlFs(projectDir, 'hanamii'),
+      packedAt: args.packedAt, now: new Date(),
+    })
+    if (confirmed) writePublishRecordFs(projectDir, 'hanamii', confirmed)
     const warnings: string[] = [...carried]
     let keysDone = !hasKey
     if (hasKey) {
@@ -266,7 +274,7 @@ async function finishHanamiiPublish(args: {
       ...rest, deployState: 'error', readyState: 'ERROR',
       ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
       message: `HANAMII が新しいバージョンを起動できませんでした${outcome.errorCode ? `（エラーコード: ${outcome.errorCode}）` : ''}。`
-        + errorCodeSentence(outcome.errorCode)
+        + errorCodeSentence(outcome.errorCode, args.healthCheckEnabled)
         + (args.redeployed ? '前のバージョンが動き続けている場合があります。' : '')
         + `HANAMII の管理画面でログを確かめてください。${keepNote}`,
       ...(carried.length > 0 ? { warnings: carried } : {}),
@@ -336,6 +344,8 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     let dataLayerLine = ''
     // 再公開かどうか（失敗したとき、前の版が動き続けている場合があるかで文を分ける）。
     let redeployed = false
+    // ファイルをまとめた時刻（再公開が READY と確かめられたとき、これを公開日時にする）。
+    let packedAt: string | null = null
     /**
      * 公開の結果に「koto-data を差し替えた」の1行を**必ず**載せる（2026-09-25 検分の指摘13）。
      *
@@ -399,6 +409,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       const extra = (!hasManifest && hasIndex) ? staticServerFiles(opts.name || 'app') : undefined
       // extra が付く＝Koto が Dockerfile を同梱する＝プロジェクト側のものは外す（上記）。
       progress('📦 公開するファイルをまとめています…')
+      packedAt = new Date().toISOString()
       const zip = await zipProjectToBuffer(root, extra, !!extra)
       if (!zip.length) return withDataLayerNote({ ok: false, message: 'ZIPが空です（公開できるファイルが見つかりません）' })
       // マニフェストも index.html も無い＝HANAMIIが公開形態を判定できない。分かりやすく案内する。
@@ -550,9 +561,11 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
       }
       // 公開記録を main 側で残す（renderer が閉じても失われない・roadmap #20）。
       // projectId を保存しないと、次回公開が新規プロジェクトとして二重作成されうる。
-      // URL は READY まで分からないため null（renderer のポーリングが後から更新する・従来どおり）。
+      // 初回の公開の URL は READY まで分からないため null（動いたと確かめたあとに finishHanamiiPublish が書く）。
+      // **再公開（更新）は、いま動いている版の URL を消さない**: 新しい版が起動しなかったとき HANAMII は前の版を動かし続けるので、
+      // ここで null にすると 📡 と【公開】が動いているサイトの URL を失う（2026-11-11 実機）。新しい URL は READY の確認後に上書きされる。
       writeHanamiiProjectIdFs(projectDir, projectId ?? null)
-      writePublishRecordFs(projectDir, 'hanamii', { publishedAt: new Date().toISOString(), url: null })
+      writePublishRecordFs(projectDir, 'hanamii', acceptedPublishRecord({ redeployed: !!knownProjectId, previousUrl: readPublishedUrlFs(projectDir, 'hanamii'), previousPublishedAt: readPublishedAtFs(projectDir, 'hanamii'), now: new Date() }))
       return withDataLayerNote({
         ok: true,
         projectId,
@@ -568,7 +581,7 @@ export function registerHanamiiHandlers(_deps: IpcDeps) {
     // 依頼が通らなかった（token 無し・ZIP 失敗・API 失敗…）／プロジェクトの番号が読めなかったときは、後段へ進まない。
     if (!requested.ok || !requested.projectId) return requested
     // ── 後段: 画面に依らず、新しい版が動いたと確かめるまで進める（古い鍵は READY を確かめてから消す）──
-    return finishHanamiiPublish({ projectDir, token: opts.token, requested, redeployed, progress })
+    return finishHanamiiPublish({ projectDir, token: opts.token, requested, redeployed, packedAt, healthCheckEnabled: opts.healthCheck?.enabled === true, progress })
     }, { target: 'hanamii', handler: 'hanamii:publish', secrets: [opts?.token] })
     return locked.busy ? { ok: false, message: projectBusyMessage(locked.running, locked.runningTarget) } : locked.value
   })

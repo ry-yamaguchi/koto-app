@@ -54,6 +54,16 @@ export function withPublishRecord(
 }
 
 /**
+ * `publish.targets[target].url`（📡 公開したもの一覧の行が持つ URL）を読む（純関数）。無い・壊れている・文字列でない・空なら null。
+ * HANAMII の再公開が、新しい版が動くと確かめる前に、いま動いている版の URL を消さないために使う。
+ */
+export function publishedUrlInMeta(meta: unknown, target: PublishTargetKind): string | null {
+  const m = meta as { publish?: { targets?: Record<string, { url?: unknown } | null> | null } | null } | null | undefined
+  const url = m?.publish?.targets?.[target]?.url
+  return typeof url === 'string' && url ? url : null
+}
+
+/**
  * `publish.targets[target]`（📡 公開したもの一覧の1行）があるか（純関数）。値が真なら行（`{}` や日時の無い行も行）。null・false・無いは行ではない。
  * 壊れた meta（null・配列・文字列）でも落ちない。main の `hasPublishRecordFs`（自分のプロジェクト）と、
  * `main/cloud/bucketUsers.ts`（兄弟のプロジェクトが公開中か）が同じこれを通る——「行がある」の見方を1つにする。

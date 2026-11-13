@@ -12,8 +12,20 @@ const ERROR_CODE_TEXT: Record<string, string> = {
   health_error: 'ヘルスチェックに応えなかったようです。ヘルスチェックのパスで、アプリが 200 を返すかを確かめてください。',
 }
 
-/** errorCode を日本語の説明に変える。空は ''、表に無い値は「エラーコード: <値>」。 */
-export function describeErrorCode(code: string | null | undefined): string {
+/**
+ * deploy_error に足す一文（ヘルスチェックを有効にしているときだけ）。
+ * 2026-11-10 の 0.6.28-rc.2 の実機の確かめで1回観察: ヘルスチェックのパスが 404 の公開し直しが、health_error ではなく deploy_error で返った。
+ * HANAMII が健康確認の失敗を常に deploy_error にするとは言えないので、断定しない。
+ */
+export const HEALTH_CHECK_ALSO_SENTENCE = 'ヘルスチェックを有効にしている場合は、そのパスでアプリが 200 を返すかも確かめてください。'
+
+/**
+ * errorCode を日本語の説明に変える。空は ''、表に無い値は「エラーコード: <値>」。
+ * `healthCheckEnabled`: そのプロジェクトのヘルスチェックを有効にしているか。true で deploy_error のときだけ一文を足す。
+ * 呼ぶ側（main の公開の結果・【公開】の状態欄）が、自分の知っている設定を渡す。
+ */
+export function describeErrorCode(code: string | null | undefined, opts?: { healthCheckEnabled?: boolean }): string {
   if (!code) return ''
-  return Object.prototype.hasOwnProperty.call(ERROR_CODE_TEXT, code) ? ERROR_CODE_TEXT[code] : `エラーコード: ${code}`
+  if (!Object.prototype.hasOwnProperty.call(ERROR_CODE_TEXT, code)) return `エラーコード: ${code}`
+  return code === 'deploy_error' && opts?.healthCheckEnabled === true ? ERROR_CODE_TEXT[code] + HEALTH_CHECK_ALSO_SENTENCE : ERROR_CODE_TEXT[code]
 }

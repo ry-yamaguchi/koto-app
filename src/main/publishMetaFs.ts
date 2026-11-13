@@ -16,7 +16,7 @@ import * as path from 'path'
 import {
   withPendingPublish, withoutPendingPublish, withPublishRecord, withHanamiiProjectId,
   withApprunDedicatedRecord, withMetaPatch, withoutPublishTargetInMeta, withHanamiiStorageLeftover, hasPublishRecordInMeta,
-  withHanamiiDeletionAccepted, hanamiiDeletionAcceptedOf,
+  withHanamiiDeletionAccepted, hanamiiDeletionAcceptedOf, publishedUrlInMeta,
   type PublishTargetKind, type ApprunDedicatedRecord, type HanamiiDeletionAcceptedMark,
 } from '../shared/publishMeta'
 import { runningOp } from './projectLock'
@@ -142,6 +142,14 @@ export function readPublishedAtFs(projectDir: string, target: PublishTargetKind)
   const m = readMetaRaw(projectDir) as any
   const at = m?.publish?.targets?.[target]?.publishedAt
   return typeof at === 'string' && at ? at : null
+}
+
+/**
+ * `publish.targets[target].url` を**この場で**読む（無い・壊れている・文字列でないなら null）。
+ * HANAMII の再公開が、依頼を受け付けた時点で記録を書き直すとき、いま動いている版の URL を保つのに使う。
+ */
+export function readPublishedUrlFs(projectDir: string, target: PublishTargetKind): string | null {
+  return publishedUrlInMeta(readMetaRaw(projectDir), target)
 }
 
 /**

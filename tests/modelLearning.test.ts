@@ -21,8 +21,12 @@ import {
 describe('toolSupportOf（実測の種＋TTL付きキャッシュ）', () => {
   const empty: LearnStore = {}
 
-  it('種: preview/Kimi-K2.6 は実測でツール対応(true)', () => {
-    expect(toolSupportOf(empty, 'preview/Kimi-K2.6')).toBe(true)
+  it('種: gpt-oss-120b は実測でツール対応(true)', () => {
+    expect(toolSupportOf(empty, 'gpt-oss-120b')).toBe(true)
+  })
+
+  it('提供終了した preview/Kimi-K2.6 は種に残さない（未確認 null）', () => {
+    expect(toolSupportOf(empty, 'preview/Kimi-K2.6')).toBeNull()
   })
 
   it('種: llm-jp系は実測で非対応(false)', () => {
@@ -52,7 +56,7 @@ describe('shouldSendTools（未確認は楽観的に送る）', () => {
   })
 
   it('既知で対応(true)のモデルは true', () => {
-    expect(shouldSendTools(empty, 'preview/Kimi-K2.6')).toBe(true)
+    expect(shouldSendTools(empty, 'gpt-oss-120b')).toBe(true)
   })
 
   it('既知で非対応(false)のモデルは false', () => {
@@ -68,7 +72,7 @@ describe('isKnownToolCapable（実測済みtrueのみ）', () => {
   })
 
   it('既知で対応(true)のモデルは true', () => {
-    expect(isKnownToolCapable(empty, 'preview/Kimi-K2.6')).toBe(true)
+    expect(isKnownToolCapable(empty, 'gpt-oss-120b')).toBe(true)
   })
 
   it('既知で非対応(false)のモデルは false', () => {

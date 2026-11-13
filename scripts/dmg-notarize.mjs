@@ -57,6 +57,45 @@ export function pickDmgs(artifactPaths) {
   return (artifactPaths || []).filter((p) => typeof p === 'string' && p.endsWith('.dmg'))
 }
 
+/** `security find-identity -v -p codesigning` の出力から Developer ID Application を全部拾う（純関数）。 */
+export function listSigningIdentities(findIdentityOutput) {
+  const found = []
+  for (const line of String(findIdentityOutput || '').split('\n')) {
+    const m = line.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"(Developer ID Application: [^"]+)"/i)
+    if (m) found.push({ hash: m[1], name: m[2] })
+  }
+  return found
+}
+
+/** 証明書の名前の末尾の `(TeamID)` を取り出す。 */
+function teamIdOf(name) {
+  const m = String(name).match(/\(([A-Z0-9]{10})\)\s*$/)
+  return m ? m[1] : null
+}
+
+/**
+ * 署名に使う証明書を決める（純関数）。**DMG の署名工程と、署名前の事前確認（check-signing-identity.mjs）が
+ * 同じこの関数を使う**——事前確認が「DMG の工程が止まるのと同じところで」止まるようにするため。
+ *
+ * 戻り値:
+ * - `{ identity }` … 1枚に決まった
+ * - `{ problem: 'none' }` … 1枚も無い
+ * - `{ problem: 'no-team', found }` … 指定した Team ID の証明書が無い
+ * - `{ problem: 'ambiguous', candidates, sameTeam }` … 複数あって決められない。
+ *   `sameTeam` が true なら全部が同じ Team ID で、**Team ID では絞れない**
+ */
+export function selectSigningIdentity(found, teamId) {
+  const list = found || []
+  if (list.length === 0) return { problem: 'none' }
+  const narrowed = teamId ? list.filter((f) => f.name.includes(`(${teamId})`)) : list
+  if (narrowed.length === 0) return { problem: 'no-team', found: list }
+  if (narrowed.length > 1) {
+    const teams = new Set(narrowed.map((f) => teamIdOf(f.name)))
+    return { problem: 'ambiguous', candidates: narrowed, sameTeam: teams.size === 1 }
+  }
+  return { identity: narrowed[0] }
+}
+
 /**
  * `security find-identity -v -p codesigning` の出力から Developer ID Application を選ぶ。
  *
@@ -64,32 +103,29 @@ export function pickDmgs(artifactPaths) {
  * 古い方で署名すると公証で落ちる（気づくのは数分後）。ここで止めて理由を出す。
  */
 export function pickSigningIdentity(findIdentityOutput, teamId) {
-  const found = []
-  for (const line of String(findIdentityOutput || '').split('\n')) {
-    const m = line.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"(Developer ID Application: [^"]+)"/i)
-    if (m) found.push({ hash: m[1], name: m[2] })
-  }
-  if (found.length === 0) {
+  const r = selectSigningIdentity(listSigningIdentities(findIdentityOutput), teamId)
+  if (r.identity) return r.identity
+  if (r.problem === 'none') {
     throw new Error(
       'Developer ID Application の証明書がキーチェーンに見つかりません。\n' +
         '  `security find-identity -v -p codesigning` で確認してください。'
     )
   }
-  const narrowed = teamId ? found.filter((f) => f.name.includes(`(${teamId})`)) : found
-  if (narrowed.length === 0) {
+  if (r.problem === 'no-team') {
     throw new Error(
       `Team ID ${teamId} の Developer ID Application が見つかりません。見つかったのは:\n` +
-        found.map((f) => `  - ${f.name}`).join('\n')
+        r.found.map((f) => `  - ${f.name}`).join('\n')
     )
   }
-  if (narrowed.length > 1) {
-    throw new Error(
-      'Developer ID Application が複数あり、どれで署名すべきか決められません:\n' +
-        narrowed.map((f) => `  - ${f.name}`).join('\n') +
-        '\n  APPLE_TEAM_ID を指定して絞り込んでください。'
-    )
-  }
-  return narrowed[0]
+  throw new Error(
+    'Developer ID Application が複数あり、どれで署名すべきか決められません:\n' +
+      r.candidates.map((f) => `  - ${f.name}`).join('\n') +
+      (r.sameTeam
+        ? '\n  どれも同じ Team ID なので、APPLE_TEAM_ID では絞れません。' +
+          '使わない方をログインキーチェーンから削除してください' +
+          '（詳しくは `npm run check:build` を KOTO_SIGN=1 で実行すると、各証明書の期限と発行元が出ます）。'
+        : '\n  APPLE_TEAM_ID を指定して絞り込んでください。')
+  )
 }
 
 /**

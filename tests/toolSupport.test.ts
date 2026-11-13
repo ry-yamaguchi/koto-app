@@ -31,7 +31,8 @@ describe('公開API（キー・TTL）の値は変えていない', () => {
 
 describe('toolSupportOf/shouldSendTools/isKnownToolCapable はミラーを読む', () => {
   it('ミラーが空でも、種（seed）の判定は効く', () => {
-    expect(toolSupportOf('preview/Kimi-K2.6')).toBe(true)
+    expect(toolSupportOf('gpt-oss-120b')).toBe(true)
+    expect(toolSupportOf('preview/Kimi-K2.6')).toBeNull()
     expect(toolSupportOf('llm-jp-3.1-8x13b-instruct4')).toBe(false)
     expect(toolSupportOf('some-brand-new-model')).toBeNull()
   })

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { extractProjectIds, extractProjectStatus, buildPatchEnvBody, normalizeHealthCheck, extractLogs, hanamiiErrorMessage } from '../src/main/hanamii/client'
-import { describeErrorCode } from '../src/shared/hanamiiErrorCode'
+import { describeErrorCode, HEALTH_CHECK_ALSO_SENTENCE } from '../src/shared/hanamiiErrorCode'
 
 describe('extractProjectIds', () => {
   it('extracts projectId and deploymentId when present', () => {
@@ -218,6 +218,26 @@ describe('hanamiiErrorMessage', () => {
   it('returns an empty string for null/undefined', () => {
     expect(hanamiiErrorMessage(null)).toBe('')
     expect(hanamiiErrorMessage(undefined)).toBe('')
+  })
+})
+
+describe('describeErrorCode × ヘルスチェック', () => {
+  const BASE = 'アプリの起動を確かめられなかったようです。起動のコマンド（package.json の scripts.start など）と、環境変数 PORT（未設定なら 8080）で待ち受けているかを確かめてください。'
+  it('★★★ deploy_error: ヘルスチェックを有効にしているときだけ、一文を足す', () => {
+    expect(describeErrorCode('deploy_error', { healthCheckEnabled: true })).toBe(BASE + HEALTH_CHECK_ALSO_SENTENCE)
+    expect(HEALTH_CHECK_ALSO_SENTENCE).toContain('200')
+    expect(describeErrorCode('deploy_error', { healthCheckEnabled: false })).toBe(BASE)
+    expect(describeErrorCode('deploy_error', {})).toBe(BASE)
+    expect(describeErrorCode('deploy_error')).toBe(BASE)
+  })
+  it('★★★ 一文は deploy_error だけ（ほかの値・表に無い値・空には足さない）', () => {
+    for (const c of ['check_error', 'build_error', 'health_error']) expect(describeErrorCode(c, { healthCheckEnabled: true })).toBe(describeErrorCode(c))
+    expect(describeErrorCode('SOME_UNKNOWN', { healthCheckEnabled: true })).toBe('エラーコード: SOME_UNKNOWN')
+    expect(describeErrorCode(null, { healthCheckEnabled: true })).toBe('')
+  })
+  it('★ 一文は断定しない（HANAMII が常にそうすると言わない）', () => {
+    expect(HEALTH_CHECK_ALSO_SENTENCE).toContain('場合は')
+    expect(HEALTH_CHECK_ALSO_SENTENCE).not.toMatch(/常に|必ず|いつも/)
   })
 })
 

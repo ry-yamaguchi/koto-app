@@ -10,10 +10,10 @@ import type { MigratePlan } from '../../shared/migratePlan'
 import { saveRagSettings } from '../ragContext'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
-import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel, DEFAULT_MODEL } from '../usage'
+import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel, retiredModelNoticeText, syncStoredDefaultWithOffered, DEFAULT_MODEL } from '../usage'
 import { shouldTryImagesDirectly } from '../visionSupport'
 import { shouldSendTools } from '../toolSupport'
-import { useModels } from '../hooks/useModels'
+import { useModelList } from '../hooks/useModels'
 import { useClaudeModels } from '../hooks/useClaudeModels'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { IDE_CONTEXT, buildProjectContext, ragStatusContext } from '../aiContext'
@@ -184,7 +184,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   const answerApproval = useCallback((id: string, approved: boolean) => {
     void window.electronAPI.approval.answer(id, approved)
   }, [])
-  const models = useModels(apiKey)
+  const { models, live: modelsLive } = useModelList(apiKey)
 
   // C2c: チャットの頭脳が Claude か（StatusBar.tsx と同じ判定方式）。Claudeのときは
   // ModelSelect の選択肢を AI Engine のモデル一覧から Claudeモデル一覧（ライブ取得。useClaudeModels）へ切り替える。
@@ -278,13 +278,15 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // 選択中のモデルが提供終了していたら、提供中の最適なモデルへ自動で切り替える
   useEffect(() => {
     if (!models.length) return
+    // 保存済みの既定も提供終了なら（一覧が実際に取得できたときだけ）保存し直す。次の新しい会話で案内を繰り返さない
+    syncStoredDefaultWithOffered('ide', models.map(m => m.id), modelsLive)
     if (!models.some(m => m.id === model)) {
       const next = pickBestModel(models.map(m => m.id))
       setModel(next)
-      applyOp({ kind: 'append', msg: { role: 'assistant', content: `ℹ️ モデル「${model}」は提供終了したため、「${modelLabel(next)}」に自動で切り替えました。` } })
+      applyOp({ kind: 'append', msg: { role: 'assistant', content: retiredModelNoticeText(model, modelLabel(next)) } })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [models])
+  }, [models, modelsLive])
 
   const toggleWriteMode = () => {
     setWriteMode(prev => {

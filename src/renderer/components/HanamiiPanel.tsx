@@ -21,7 +21,7 @@ import AccessKeySection from './AccessKeySection'
 import HanamiiTeardownSection, { HanamiiTeardownResult } from './HanamiiTeardownSection'
 import { looksSecretName } from '../../shared/secretShapes'
 import { describeErrorCode } from '../../shared/hanamiiErrorCode'
-import { restartOutcomeOf, restartMetaPatchOf } from '../hanamiiRestartOutcome'
+import { restartOutcomeOf, restartMetaPatchOf, healthCheckChangedBy } from '../hanamiiRestartOutcome'
 import { resumeHanamiiDeletionIn } from '../teardown/hanamiiResume'
 import { isHanamiiTeardownHandler } from '../teardown/watch'
 
@@ -110,6 +110,9 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
   const [envs, setEnvs] = useState<Array<{ key: string; value: string; secret: boolean }>>([])
   const [hcEnabled, setHcEnabled] = useState(false)
   const [hcPath, setHcPath] = useState('/')
+  // **公開した版に実際に送った／記録した**ヘルスチェックの設定（.sakuraide.json の publish.hanamii.healthCheck）。
+  // 失敗の説明（状態欄の ERROR）はこれで決める。フォームの hcEnabled は編集中の値で、失敗した版の設定ではない。
+  const [recordedHcEnabled, setRecordedHcEnabled] = useState(false)
   const [detectedKeys, setDetectedKeys] = useState<string[]>([])
   const [msg, setMsg] = useState('')
   // 失敗時の生API応答（JSON短縮・診断用・所見11）。主表示（msg）とは分け、折りたたみ「詳細を見る」で見せる。
@@ -158,6 +161,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
         ...(publishRecord ? { targets: { hanamii: publishRecord } } : {}),
       },
     })
+    if (h.healthCheck) setRecordedHcEnabled(!!h.healthCheck.enabled)
     window.dispatchEvent(new Event('sakura-meta-changed'))
   }, [projectDir])
 
@@ -261,7 +265,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     teardownSettled.current = false
     setProjectId(null); setStatus(null)
     setWorkspaceId(''); setPublishName('')
-    setEnvs(p => (p.length === 0 ? p : [])); setHcEnabled(false); setHcPath('/')
+    setEnvs(p => (p.length === 0 ? p : [])); setHcEnabled(false); setHcPath('/'); setRecordedHcEnabled(false)
     setPlacement(null); setUsesData(false)
     setPublishing(false); setTearingDown(false); setRestarting(false); setConfirmRestart(false)
     setMsg(''); setMsgDetail(''); setMsgOk(false); setLastAttemptedName('')
@@ -278,6 +282,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
       if (Array.isArray(h?.envs)) setEnvs(h.envs.map((e: any) => ({ key: String(e.key ?? ''), value: e.secret ? '' : String(e.value ?? ''), secret: !!e.secret })))
       if (h?.healthCheck) {
         setHcEnabled(!!h.healthCheck.enabled)
+        setRecordedHcEnabled(!!h.healthCheck.enabled)
         setHcPath(typeof h.healthCheck.path === 'string' && h.healthCheck.path ? h.healthCheck.path : '/')
       }
 
@@ -485,8 +490,10 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
     if (emptySecretKey) { setConfirmRestart(false); setRestartOk(false); setRestartMsg(`シークレット環境変数「${emptySecretKey}」の値が未入力です。値を入力してから再起動してください。`); return }
     setRestarting(true)
     const dir = projectDir
+    // ヘルスチェックを変えた回かは、押した時点のディスクの記録と比べて決める（画面の写しは古いことがある）。
+    const hcChanged = healthCheckChangedBy(await readMeta(), { enabled: healthCheck.enabled, path: healthCheck.path })
     const r = await window.electronAPI.hanamii.restart(projectId, { token, envs: sendEnvs, healthCheck })
-    const out = restartOutcomeOf(r)
+    const out = restartOutcomeOf(r, { healthCheckChanged: hcChanged })
     const metaPatch = restartMetaPatchOf(out, persistEnvs, { enabled: healthCheck.enabled, path: healthCheck.path })
     // 待っている間に別のプロジェクトへ切り替わったら、結果の文はいまの画面へ入れない（設定の保存は再起動したプロジェクト dir へ）。
     if (dirRef.current !== dir) {
@@ -870,7 +877,7 @@ export default function HanamiiPanel({ apiKey, projectDir, onOpenCredentials }: 
               {rs === 'ERROR' && (
                 <div className="space-y-1 pt-1">
                   <p className="text-xs text-brand-red leading-relaxed select-text">
-                    {describeErrorCode(status.errorCode) || '公開に失敗しました。'}
+                    {describeErrorCode(status.errorCode, { healthCheckEnabled: recordedHcEnabled }) || '公開に失敗しました。'}
                   </p>
                   <a href="https://hanamii.jp" className="inline-block text-xs text-sakura hover:underline">HANAMII の管理画面で詳細を見る ↗</a>
                 </div>

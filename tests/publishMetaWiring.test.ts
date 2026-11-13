@@ -23,10 +23,10 @@ describe('main の3経路: markPendingFs / clearPendingFs / writePublishRecordFs
     {
       name: 'HANAMII（hanamii:publish）',
       file: 'src/main/ipc/hanamii.ts',
-      imports: "import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs, readHanamiiProjectIdFs } from '../publishMetaFs'",
+      imports: "import { markPendingFs, clearPendingFs, writePublishRecordFs, writeHanamiiProjectIdFs, readHanamiiProjectIdFs, readPublishedUrlFs } from '../publishMetaFs'",
       mark: "markPendingFs(projectDir, 'hanamii')",
       clear: 'finally { clearPendingFs(projectDir) }',
-      record: "writePublishRecordFs(projectDir, 'hanamii', { publishedAt: new Date().toISOString(), url: null })",
+      record: "writePublishRecordFs(projectDir, 'hanamii', acceptedPublishRecord({ redeployed: !!knownProjectId, previousUrl: readPublishedUrlFs(projectDir, 'hanamii'), previousPublishedAt: readPublishedAtFs(projectDir, 'hanamii'), now: new Date() }))",
     },
     {
       name: 'Vercel（vercel:publish）',
@@ -106,7 +106,7 @@ describe('HanamiiPanel のポーリング（READY 後の URL 記録）は画面�
     expect(s).not.toContain('startPolling')
     expect(s).not.toContain('await saveHanamiiMeta({}, { publishedAt: prevAt, url: r.url })')
     // 公開記録（publish.targets）に url を書くのは main（ipc/hanamii.ts の writePublishRecordFs）
-    expect(read('src/main/ipc/hanamii.ts')).toContain("writePublishRecordFs(projectDir, 'hanamii', { publishedAt:")
+    expect(read('src/main/ipc/hanamii.ts')).toContain("if (confirmed) writePublishRecordFs(projectDir, 'hanamii', confirmed)")
   })
 })
 

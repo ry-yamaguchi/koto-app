@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 // @ts-expect-error — ビルド用スクリプト（型定義は持たない）
-import { darwinVersionForMacOS, setMinimumSystemVersion, minimumDarwinVersionFromPackage, pickDmgs, pickSigningIdentity, notarytoolCredentialArgs, updateDmgEntry, judgeGatekeeper, dmgsForVersion, applyMinimumSystemVersion, assertMinimumSystemVersionRecorded } from '../scripts/dmg-notarize.mjs'
+import { darwinVersionForMacOS, setMinimumSystemVersion, minimumDarwinVersionFromPackage, pickDmgs, pickSigningIdentity, selectSigningIdentity, notarytoolCredentialArgs, updateDmgEntry, judgeGatekeeper, dmgsForVersion, applyMinimumSystemVersion, assertMinimumSystemVersionRecorded } from '../scripts/dmg-notarize.mjs'
 
 // 2026-08-11。v0.3.1 の DMG が署名も公証もされていないことが分かって足した工程。
 // electron-builder は .app しか公証しないので、ここが唯一の防波堤になる。
@@ -53,6 +53,32 @@ describe('署名に使う証明書の選択', () => {
   it('複数あって決められないときは、黙って選ばずに止める', () => {
     const two = `${ONE}\n  2) BBBB2222BBBB2222BBBB2222BBBB2222BBBB2222 "Developer ID Application: RYOSUKE YAMAGUCHI (ZZZZZZZZZZ)"`
     expect(() => pickSigningIdentity(two)).toThrow(/複数/)
+  })
+
+  // 同じ Team ID の同名の証明書が2枚（更新の前後）。Team ID では絞れないので、そう言う（絞れない案内を出さない）
+  it('同じ Team ID が2枚: 止まり、APPLE_TEAM_ID では絞れないと言って、削除を案内する', () => {
+    const same = `${ONE}\n  2) CCCC3333CCCC3333CCCC3333CCCC3333CCCC3333 "Developer ID Application: RYOSUKE YAMAGUCHI (6L9VX84LZU)"`
+    let msg = ''
+    try { pickSigningIdentity(same) } catch (e) { msg = String((e as Error).message) }
+    expect(msg).toContain('複数')
+    expect(msg).toContain('APPLE_TEAM_ID では絞れません')
+    expect(msg).toContain('キーチェーンから削除')
+    expect(msg).not.toContain('指定して絞り込んでください')
+    // Team ID を指定しても、同じ Team ID が2枚なら絞れず止まる
+    expect(() => pickSigningIdentity(same, '6L9VX84LZU')).toThrow(/複数/)
+  })
+
+  it('Team ID が違う2枚なら、従来どおり APPLE_TEAM_ID での絞り込みを案内する', () => {
+    const two = `${ONE}\n  2) BBBB2222BBBB2222BBBB2222BBBB2222BBBB2222 "Developer ID Application: RYOSUKE YAMAGUCHI (ZZZZZZZZZZ)"`
+    expect(() => pickSigningIdentity(two)).toThrow(/APPLE_TEAM_ID を指定して絞り込んでください/)
+  })
+
+  it('selectSigningIdentity: 事前確認と署名工程が共有する判断（同じ Team ID は sameTeam）', () => {
+    const l = [{ hash: 'A', name: 'Developer ID Application: X (AAAAAAAAAA)' }, { hash: 'B', name: 'Developer ID Application: X (AAAAAAAAAA)' }]
+    expect(selectSigningIdentity(l).problem).toBe('ambiguous')
+    expect(selectSigningIdentity(l).sameTeam).toBe(true)
+    expect(selectSigningIdentity([]).problem).toBe('none')
+    expect(selectSigningIdentity(l.slice(0, 1)).identity.hash).toBe('A')
   })
 
   it('Team ID を指定すれば絞り込める', () => {

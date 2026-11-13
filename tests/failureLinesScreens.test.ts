@@ -65,8 +65,8 @@ describe('描き口の配線（ソースの形。当て先は一意）', () => {
     }
   })
 
-  it('CredentialsModal の接続テストの span（Claude・HANAMII・Vercel）は FailureLines で描く', () => {
-    const src = read('renderer/components/CredentialsModal.tsx')
+  it('認証情報の接続テストの span（Claude・HANAMII・Vercel）は FailureLines で描く（CredentialsTestButtons.tsx）', () => {
+    const src = read('renderer/components/CredentialsTestButtons.tsx')
     expect(src.split('❌ <FailureLines text={detail} />').length - 1).toBe(3)
     once(src, '⚠️ <FailureLines text={detail} />')
     expect(src).not.toContain('select-text">❌ {detail}</span>')
