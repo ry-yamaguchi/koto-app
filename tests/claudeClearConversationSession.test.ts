@@ -53,7 +53,7 @@ vi.mock('../src/renderer/components/CredentialsModal', () => ({
 
 import { useAiChat } from '../src/renderer/hooks/useAiChat'
 import { getClaudeSessionId, setClaudeSessionId } from '../src/renderer/claudeSession'
-import { CLAUDE_CONSENT_KEY } from '../src/renderer/claudeMode'
+import { CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION } from '../src/renderer/claudeMode'
 import { runClearConversation, clearConversationAction } from '../src/renderer/confirmedActions'
 import { resetTurn, turnKey } from '../src/renderer/chatTurnRegistry'
 
@@ -104,7 +104,7 @@ beforeEach(() => {
     },
   })
   // Claude モードは既定でオン。同意の確認ダイアログを出さずに済むよう、同意済みにしておく。
-  store.set(CLAUDE_CONSENT_KEY, '1')
+  store.set(CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION)
 })
 afterEach(() => {
   resetTurn(turnKey(PROJECT, 'x'))

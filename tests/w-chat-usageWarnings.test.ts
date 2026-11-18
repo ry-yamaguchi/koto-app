@@ -85,7 +85,9 @@ describe('W-53: useAiChat.ts の Claude結果ハンドラが、目安額超過�
 
   it('★ result ハンドラで、記録後に claudeChatWarningText(今月のClaude利用額, 目安額) を吹き出しに出す', () => {
     expect(src).toContain('const claudeWarning = claudeChatWarningText(getClaudeCostThisMonth(), getClaudeWarnUsd())')
-    expect(src).toContain('if (claudeWarning) appendBubble({ role: \'assistant\', content: claudeWarning, toolNote: true })')
+    // 失敗した回は、失敗の知らせの吹き出しのあとに出すため、いったん tail に集めてから吹き出しにする
+    expect(src).toContain('if (claudeWarning) tail.push(claudeWarning)')
+    expect(src).toContain('for (const line of tail) appendBubble({ role: \'assistant\', content: line, toolNote: true })')
     // 順序: 利用額を先に記録してから判定する（記録前の古い額で判定しない）
     expect(src.indexOf('recordClaudeCost(ev.costUsd)')).toBeLessThan(src.indexOf('const claudeWarning ='))
   })

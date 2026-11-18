@@ -58,6 +58,7 @@ import { initUsageStore, setSettings, recordUsage, budgetCheckForKey, checkBefor
 import { hashKey } from '../src/shared/usageBudget'
 import { buildMainIo } from '../src/main/chat/turnRunner'
 import { buildIdeToolsServer } from '../src/main/claude/tools'
+import { IDE_TOOL_BARE_NAMES } from '../src/main/claude/toolText'
 import { registerClaudeHandlers } from '../src/main/ipc/claude'
 
 // ══ 1. 全部の道を数える（src/main の全 .ts の構文木）══════════════════════════════
@@ -382,7 +383,7 @@ describe('claude/tools.ts の search_docs: 渡された ragBudgetCheck で、上
       createSdkMcpServer: (opts: any) => opts,
     }
     const server: any = buildIdeToolsServer(sdk, {
-      projectDir, writeRoot: projectDir, aiEngineKey: KEY, writeMode: 'auto', turnId: 'claude-test-turn',
+      projectDir, writeRoot: projectDir, aiEngineKey: KEY, ragTags: [], enabledTools: IDE_TOOL_BARE_NAMES, writeMode: 'auto', turnId: 'claude-test-turn',
       isStopped: () => false,
       onOpenPreview: () => {}, snapshotId: 'snap', snapshotLabel: 'テスト',
       onDelegated: () => {}, onFileWritten: () => {},
@@ -421,7 +422,7 @@ describe('ipc/claude.ts: startClaudeChat へ渡す ragBudgetCheck は、AI Engin
     const fn = h.handlers.get('claude:chatStart')
     if (!fn) throw new Error('claude:chatStart が登録されていない')
     const event = { sender: { send: () => {} } }
-    fn(event, projectDir, 'anthropic-key', 'こんにちは', [], 'snap', null, aiEngineKey, '', 'auto')
+    fn(event, projectDir, 'anthropic-key', 'こんにちは', [], 'snap', null, aiEngineKey, '', 'auto', { tags: [] })
     if (!h.started) throw new Error('startClaudeChat が呼ばれていない')
     return h.started
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mapSdkMessage, describeToolDetail, describeAssistantError } from '../src/main/claude/events'
+import { mapSdkMessage, describeToolDetail, describeAssistantError, assistantErrorMessage, assistantErrorWithSdkText } from '../src/main/claude/events'
 import { isDangerousCommand } from '../src/main/claude/guard'
 import {
   addClaudeMonthlyCost, claudeMonthKey, claudeCostFooter, claudeToolLabel, claudeBareToolName,
@@ -106,14 +106,13 @@ describe('mapSdkMessage', () => {
     ])
   })
 
-  it('prepends an error event when the assistant message carries an error code', () => {
+  it('turns an error-coded assistant message into one error event (its text moves into the detail, no extra text bubble)', () => {
     const msg = {
       type: 'assistant', session_id: 's1', uuid: 'u1', parent_tool_use_id: null, error: 'rate_limit',
       message: { content: [{ type: 'text', text: '応答' }] },
     }
     expect(mapSdkMessage(msg)).toEqual([
-      { kind: 'error', message: describeAssistantError('rate_limit') },
-      { kind: 'text', text: '応答' },
+      { kind: 'error', message: assistantErrorWithSdkText('rate_limit', '応答') },
     ])
   })
 
@@ -184,25 +183,25 @@ describe('describeToolDetail', () => {
     expect(describeToolDetail('Read', {})).toBe('')
   })
 
-  // C2b: IDE固有MCPツール（修飾名 mcp__ide__<tool名>）の url / query / path を拾う
+  // C2b: IDE固有MCPツール（修飾名 mcp__koto__<tool名>）の url / query / path を拾う
   it('returns url for the qualified fetch_url MCP tool', () => {
-    expect(describeToolDetail('mcp__ide__fetch_url', { url: 'https://example.com/doc' })).toBe('https://example.com/doc')
+    expect(describeToolDetail('mcp__koto__fetch_url', { url: 'https://example.com/doc' })).toBe('https://example.com/doc')
   })
 
   it('returns query for the qualified search_docs MCP tool', () => {
-    expect(describeToolDetail('mcp__ide__search_docs', { query: '会員規約' })).toBe('会員規約')
+    expect(describeToolDetail('mcp__koto__search_docs', { query: '会員規約' })).toBe('会員規約')
   })
 
   it('returns path for the qualified open_preview MCP tool, defaulting to index.html', () => {
-    expect(describeToolDetail('mcp__ide__open_preview', { path: 'about.html' })).toBe('about.html')
-    expect(describeToolDetail('mcp__ide__open_preview', {})).toBe('index.html') // path省略時の既定
+    expect(describeToolDetail('mcp__koto__open_preview', { path: 'about.html' })).toBe('about.html')
+    expect(describeToolDetail('mcp__koto__open_preview', {})).toBe('index.html') // path省略時の既定
   })
 
   // C3: delegate_implementation の task 先頭60文字
   it('returns the first 60 chars of task for the qualified delegate_implementation MCP tool', () => {
-    expect(describeToolDetail('mcp__ide__delegate_implementation', { task: '会員一覧ページを作成する' })).toBe('会員一覧ページを作成する')
+    expect(describeToolDetail('mcp__koto__delegate_implementation', { task: '会員一覧ページを作成する' })).toBe('会員一覧ページを作成する')
     const longTask = 'あ'.repeat(100)
-    expect(describeToolDetail('mcp__ide__delegate_implementation', { task: longTask })).toBe('あ'.repeat(60))
+    expect(describeToolDetail('mcp__koto__delegate_implementation', { task: longTask })).toBe('あ'.repeat(60))
   })
 
   it('returns an empty string for unknown MCP tools without url/query/path', () => {
@@ -434,9 +433,9 @@ describe('claudeCostFooter', () => {
 
 describe('claudeBareToolName', () => {
   it('strips the MCP qualification (mcp__<server>__<tool>)', () => {
-    expect(claudeBareToolName('mcp__ide__fetch_url')).toBe('fetch_url')
-    expect(claudeBareToolName('mcp__ide__search_docs')).toBe('search_docs')
-    expect(claudeBareToolName('mcp__ide__open_preview')).toBe('open_preview')
+    expect(claudeBareToolName('mcp__koto__fetch_url')).toBe('fetch_url')
+    expect(claudeBareToolName('mcp__koto__search_docs')).toBe('search_docs')
+    expect(claudeBareToolName('mcp__koto__open_preview')).toBe('open_preview')
   })
 
   it('returns non-MCP names unchanged', () => {
@@ -456,23 +455,30 @@ describe('claudeToolLabel', () => {
   })
 
   // C2b: IDE固有MCPツール（aiTools.ts の toolStatusLabel と同じ絵文字・文言）。
-  // 修飾名（mcp__ide__…）でも素の名前でも同じラベルになること。
+  // 修飾名（mcp__koto__…）でも素の名前でも同じラベルになること。
   it('labels the IDE MCP tools with the same emoji/wording as toolStatusLabel', () => {
     expect(claudeToolLabel('fetch_url', 'https://example.com')).toBe('🌐 ページを取得しています… https://example.com')
     expect(claudeToolLabel('search_docs', '会員規約')).toBe('📚 資料を検索しています… 「会員規約」')
     expect(claudeToolLabel('open_preview', 'index.html')).toBe('🌐 プレビューを開いています… index.html')
   })
 
+  it('会話の記録に残る昔のサーバー名の道具も、今の名前と同じラベルになる', () => {
+    const old = 'mcp__' + 'ide' + '__'
+    expect(claudeBareToolName(old + 'fetch_url')).toBe('fetch_url')
+    expect(claudeToolLabel(old + 'fetch_url', 'https://example.com')).toBe(claudeToolLabel('mcp__koto__fetch_url', 'https://example.com'))
+    expect(claudeToolLabel(old + 'open_preview', 'index.html')).toBe(claudeToolLabel('open_preview', 'index.html'))
+  })
+
   it('labels the IDE MCP tools identically for qualified and bare names', () => {
-    expect(claudeToolLabel('mcp__ide__fetch_url', 'https://example.com')).toBe(claudeToolLabel('fetch_url', 'https://example.com'))
-    expect(claudeToolLabel('mcp__ide__search_docs', '会員規約')).toBe(claudeToolLabel('search_docs', '会員規約'))
-    expect(claudeToolLabel('mcp__ide__open_preview', 'index.html')).toBe(claudeToolLabel('open_preview', 'index.html'))
+    expect(claudeToolLabel('mcp__koto__fetch_url', 'https://example.com')).toBe(claudeToolLabel('fetch_url', 'https://example.com'))
+    expect(claudeToolLabel('mcp__koto__search_docs', '会員規約')).toBe(claudeToolLabel('search_docs', '会員規約'))
+    expect(claudeToolLabel('mcp__koto__open_preview', 'index.html')).toBe(claudeToolLabel('open_preview', 'index.html'))
   })
 
   // C3: 実装委譲ツール（delegate_implementation）。所見18で「委譲」→「作業を任せています」に文言変更。
   it('labels delegate_implementation with the handshake emoji and the softened wording (所見18)', () => {
     expect(claudeToolLabel('delegate_implementation', '会員一覧ページを作成する')).toBe('🤝 さくらのAI Engineに作業を任せています… 会員一覧ページを作成する')
-    expect(claudeToolLabel('mcp__ide__delegate_implementation', '会員一覧ページを作成する')).toBe(claudeToolLabel('delegate_implementation', '会員一覧ページを作成する'))
+    expect(claudeToolLabel('mcp__koto__delegate_implementation', '会員一覧ページを作成する')).toBe(claudeToolLabel('delegate_implementation', '会員一覧ページを作成する'))
   })
 
   // 所見20: 頻出SDKツール（Task/WebSearch/WebFetch/TodoWrite/TodoRead）を日本語化する。

@@ -5,6 +5,8 @@ import {
   IDE_MCP_SERVER_NAME,
   IDE_TOOL_BARE_NAMES,
   IDE_MCP_TOOL_NAMES,
+  OFFERED_IDE_TOOL_NAMES,
+  resolveIdeTools,
   qualifyMcpToolName,
   SEARCH_DOCS_NO_KEY_MESSAGE,
   buildRagBlockText,
@@ -32,17 +34,17 @@ const stripNonce = (s: string) => s.replace(/KOTO-EXT-[0-9a-f]{8}/g, 'KOTO-EXT-N
 // ── ツール名の修飾規則（mcp__<server>__<tool>） ────────────────────────
 describe('MCP tool name qualification', () => {
   it('qualifies a tool name as mcp__<server>__<tool>', () => {
-    expect(qualifyMcpToolName('ide', 'fetch_url')).toBe('mcp__ide__fetch_url')
+    expect(qualifyMcpToolName('koto', 'fetch_url')).toBe('mcp__koto__fetch_url')
   })
 
   it('exposes the four IDE tools with fully-qualified names (for allowedTools / canUseTool)', () => {
-    expect(IDE_MCP_SERVER_NAME).toBe('ide')
+    expect(IDE_MCP_SERVER_NAME).toBe('koto')
     expect(IDE_TOOL_BARE_NAMES).toEqual(['fetch_url', 'search_docs', 'open_preview', 'delegate_implementation'])
     expect(IDE_MCP_TOOL_NAMES).toEqual([
-      'mcp__ide__fetch_url',
-      'mcp__ide__search_docs',
-      'mcp__ide__open_preview',
-      'mcp__ide__delegate_implementation',
+      'mcp__koto__fetch_url',
+      'mcp__koto__search_docs',
+      'mcp__koto__open_preview',
+      'mcp__koto__delegate_implementation',
     ])
   })
 })
@@ -319,5 +321,52 @@ describe('summarizeDelegateResult', () => {
       { promptTokens: 1, completionTokens: 2 }
     )
     expect(text).not.toContain('export')
+  })
+})
+
+describe('resolveIdeTools（出す道具を決める純関数）', () => {
+  it('既定の一覧は3つ（delegate_implementation は出さない）。search_docs は ragEnabled のときだけ', () => {
+    expect([...OFFERED_IDE_TOOL_NAMES]).toEqual(['fetch_url', 'search_docs', 'open_preview'])
+    for (const hasAiEngineKey of [true, false]) {
+      const r = resolveIdeTools({ hasAiEngineKey, ragEnabled: true })
+      expect(r.bareNames).toEqual(['fetch_url', 'search_docs', 'open_preview'])
+      expect(r.qualifiedNames).toEqual(['mcp__koto__fetch_url', 'mcp__koto__search_docs', 'mcp__koto__open_preview'])
+      expect(r.delegationGuidance).toBe(false)
+      const off = resolveIdeTools({ hasAiEngineKey, ragEnabled: false })
+      expect(off.bareNames).toEqual(['fetch_url', 'open_preview'])
+      expect(off.qualifiedNames).toEqual(['mcp__koto__fetch_url', 'mcp__koto__open_preview'])
+    }
+  })
+  it('delegate_implementation を一覧に足すと、キーがあるときだけ登録・許可・案内が揃う', () => {
+    const all = [...IDE_TOOL_BARE_NAMES]
+    const on = resolveIdeTools({ hasAiEngineKey: true, ragEnabled: true, offered: all })
+    expect(on.bareNames).toContain('delegate_implementation')
+    expect(on.qualifiedNames).toContain('mcp__koto__delegate_implementation')
+    expect(on.delegationGuidance).toBe(true)
+    const off = resolveIdeTools({ hasAiEngineKey: false, ragEnabled: true, offered: all })
+    expect(off.bareNames).not.toContain('delegate_implementation')
+    expect(off.qualifiedNames).not.toContain('mcp__koto__delegate_implementation')
+    expect(off.delegationGuidance).toBe(false)
+  })
+})
+
+// ── 昔のサーバー名を src に戻さない ──
+describe('サーバー名 koto の定義は1か所', () => {
+  const fsx = require('fs') as typeof import('fs')
+  const pathx = require('path') as typeof import('path')
+  const walk = (dir: string): string[] => fsx.readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+    e.isDirectory() ? walk(pathx.join(dir, e.name)) : /\.(ts|tsx)$/.test(e.name) ? [pathx.join(dir, e.name)] : [])
+  const SRC = pathx.join(__dirname, '..', 'src')
+
+  it('★★ src のどこにも、修飾名の昔の形が残っていない（同梱の実行体は ide という名前のサーバーの道具をモデルへ渡さない）', () => {
+    const old = 'mcp__' + 'ide' + '__'
+    const hits = walk(SRC).filter(f => fsx.readFileSync(f, 'utf8').includes(old))
+    expect(hits).toEqual([])
+  })
+
+  it('★★ 修飾名 mcp__koto__ を直接書いて道具名を作っているのは、コメント以外に無い（IDE_MCP_SERVER_NAME / qualifyMcpToolName 経由）', () => {
+    const hits = walk(SRC).filter(f => /mcp__koto__/.test(fsx.readFileSync(f, 'utf8').replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '')))
+    expect(hits).toEqual([])
+    expect(IDE_MCP_SERVER_NAME).toBe('koto')
   })
 })

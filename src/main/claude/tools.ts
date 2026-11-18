@@ -19,7 +19,7 @@
 //   Claudeへは summarizeDelegateResult の「要約のみ」を返す（設計方針: Claudeの文脈へ生成物本体を
 //   持ち込まない＝Opusトークンの二重消費を防ぐ）。
 //   ⚠️ W-18: この書き込みは SDK の canUseTool（agent.ts の makeCanUseTool）を**通らない**
-//   （`mcp__ide__delegate_implementation` は allowedTools に名前で入っており、SDK は canUseTool より先に
+//   （`mcp__koto__delegate_implementation` は allowedTools に名前で入っており、SDK は canUseTool より先に
 //   自動許可する。しかもどのファイルを書くかは AI Engine の応答が返るまで分からない）。
 //   そのため「✋ 毎回確認」の承認は、書き込みの直前にここ（writeDelegatedFiles）で取る。仕組みは
 //   makeCanUseTool と同じもの（shared/approvalPlan.ts の planApproval → chat/approvalStore.ts の requestApproval・
@@ -38,6 +38,7 @@ import {
 import { snapshotBeforeWrite } from '../backup/store'
 import { planApproval, writeDenialMessage, type WriteMode } from '../../shared/approvalPlan'
 import { isProtectedWritePath, protectedWriteMessage } from '../../shared/protectedPaths'
+import { OPEN_PREVIEW_DESCRIPTION, OPEN_PREVIEW_PATH_DESCRIPTION } from '../../shared/toolExecCore'
 import { requestApproval } from '../chat/approvalStore'
 import {
   IDE_MCP_SERVER_NAME,
@@ -45,7 +46,6 @@ import {
   formatFetchedPage,
   formatSearchDocsResult,
   normalizePreviewPath,
-  parseRagTags,
   DELEGATE_MODELS,
   DELEGATE_DEFAULT_MODEL,
   DELEGATE_NO_KEY_MESSAGE,
@@ -56,6 +56,7 @@ import {
   summarizeDelegateDenied,
   summarizeDelegateStopped,
   type DelegateContextFile,
+  type IdeToolBareName,
   type DelegateParsedFile,
 } from './toolText'
 
@@ -70,8 +71,12 @@ export type IdeToolsParams = {
   writeRoot: string
   /** さくらのAI Engine のAPIキー（方式B: renderer が使う瞬間に読んで渡す。null なら資料検索/委譲は案内文言を返す）。 */
   aiEngineKey: string | null
-  /** open_preview の副作用（renderer への通知）。相対パスを受け取る。 */
-  onOpenPreview: (relPath: string) => void
+  /** 資料検索のタグ絞り込み（画面の「📚 資料を使う」の設定の値。送信時点のもの）。必須: 省くと絞り込みが黙って外れる。 */
+  ragTags: readonly string[]
+  /** 登録する道具（resolveIdeTools の bareNames）。必須: 省くと「全部登録」か「何も登録しない」に黙って倒れる。 */
+  enabledTools: readonly IdeToolBareName[]
+  /** open_preview: renderer へ開く依頼を送り、結果の文（成功・失敗）を待って返す。相対パスを受け取る。 */
+  onOpenPreview: (relPath: string) => Promise<string>
   /** W-85: search_docs（📚 資料の検索）を通信の前に止めるための上限の確認。上限を超えていれば通信を行わずに止まる。
    *  作り方は usageStore.ts の budgetCheckForKey（ipc/claude.ts が作って agent.ts 経由で渡す）。
    *  ここで usageStore.ts を import しない: usageStore.ts は electron を読み込み、このファイルを使うテストの作りに響く。
@@ -116,16 +121,6 @@ const DELEGATE_CONTEXT_FILE_MAX_BYTES = 50 * 1024
 /** MCPツールの戻り値（SDK sdk.d.ts の CallToolResult 形式: content配列の text ブロック）。 */
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] }
-}
-
-/** プロジェクトの .sakuraide.json から資料検索のタグフィルタを読む（無い/壊れている場合は []）。 */
-function readProjectRagTags(projectDir: string): string[] {
-  try {
-    const raw = fs.readFileSync(path.join(projectDir, '.sakuraide.json'), 'utf8')
-    return parseRagTags(JSON.parse(raw))
-  } catch {
-    return []
-  }
 }
 
 /**
@@ -233,12 +228,12 @@ export async function writeDelegatedFiles(files: DelegateParsedFile[], ctx: Dele
 }
 
 /**
- * IDE固有ツール4種（うち delegate_implementation はモードA限定）を注入するインプロセスMCPサーバ構成を作る。
+ * IDE固有ツール（enabledTools に挙がったものだけ）を注入するインプロセスMCPサーバ構成を作る。
  * agent.ts が options.mcpServers = { [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, …) } で使う。
- * 実際のツール名は `mcp__ide__<tool名>` に修飾される（toolText.ts の IDE_MCP_TOOL_NAMES 参照）。
+ * 実際のツール名は `mcp__koto__<tool名>` に修飾される（toolText.ts の IDE_MCP_TOOL_NAMES 参照）。
  */
 export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): McpSdkServerConfigWithInstance {
-  const { projectDir, writeRoot, aiEngineKey, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, writeMode, turnId, isStopped } = params
+  const { projectDir, writeRoot, aiEngineKey, ragTags, enabledTools, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, writeMode, turnId, isStopped } = params
 
   const fetchUrlTool = sdk.tool(
     'fetch_url',
@@ -264,8 +259,8 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
       const q = String(query ?? '').trim()
       if (!q) return textResult('エラー: 検索クエリが空です')
       try {
-        // renderer 版（ChatPanel の ragSearch）と同じ条件: プロジェクト設定のタグフィルタ＋上位3件。
-        const tags = readProjectRagTags(projectDir)
+        // renderer 版（ChatPanel の ragSearch）と同じ条件: 画面から受けたタグフィルタ＋上位3件。
+        const tags = [...ragTags]
         const hits = await queryDocuments(aiEngineKey, q, { tags: tags.length ? tags : undefined, topK: 3, budgetCheck: ragBudgetCheck })
         return textResult(formatSearchDocsResult(hits))
       } catch (e: any) {
@@ -276,20 +271,20 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
 
   const openPreviewTool = sdk.tool(
     'open_preview',
-    'プロジェクト内のHTMLファイルを既定ブラウザで開いてユーザーに見せる。作業が一段落して見た目を確認してもらうときに使う。',
-    { path: z.string().optional().describe('開くHTMLファイルの相対パス（省略時は index.html）') },
+    OPEN_PREVIEW_DESCRIPTION,
+    { path: z.string().optional().describe(OPEN_PREVIEW_PATH_DESCRIPTION) },
     async ({ path: relPath }) => {
       const rel = normalizePreviewPath(typeof relPath === 'string' ? relPath : undefined)
       if (!rel) {
         return textResult(`エラー: 不正なパスです（${relPath}）。プロジェクトルートからの相対パスを指定してください`)
       }
-      onOpenPreview(rel) // 副作用のみ（renderer が存在確認のうえ既定ブラウザで開く）
-      return textResult(`プレビューを開きました: ${rel}（ユーザーに見た目の感想を聞いてください）`)
+      // renderer が存在確認・拡張子の確認のうえ既定ブラウザで開き、その結果の文が返るまで待つ（確かめる前に「開きました」と言わない）。
+      return textResult(await onOpenPreview(rel))
     }
   )
 
   // C3・モードA限定: 実装作業をさくらのAI Engine（コード系モデル・Kimi K2.7 Code）へ委譲し、直接ファイルへ書き込む。
-  // このツール自体、aiEngineKey が無いモード（B）では tools 配列に含めない（下の if 分岐）。
+  // 出すかどうかは enabledTools（toolText.ts の resolveIdeTools）で決まる。
   const delegateImplementationTool = sdk.tool(
     'delegate_implementation',
     'まとまった実装作業（新規ファイル作成・複数ファイルの機械的変更・テスト作成・類似ページ量産）を、' +
@@ -381,12 +376,16 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
     }
   )
 
+  // 登録する道具は enabledTools（resolveIdeTools の bareNames）だけ。出さない道具は登録しない。
+  const all: Record<IdeToolBareName, SdkMcpToolDefinition<any>> = {
+    fetch_url: fetchUrlTool,
+    search_docs: searchDocsTool,
+    open_preview: openPreviewTool,
+    delegate_implementation: delegateImplementationTool,
+  }
   // 各ツールはそれぞれ異なる zod スキーマを持つため、SDK の CreateSdkMcpServerOptions.tools と
-  // 同じ広い型（Array<SdkMcpToolDefinition<any>>）で受ける（配列リテラルからの狭い型推論を避ける）。
-  const tools: Array<SdkMcpToolDefinition<any>> = [fetchUrlTool, searchDocsTool, openPreviewTool]
-  // モードAのときだけ delegate_implementation を登録する（許可リストは常に含めてよいが、
-  // ツール未登録なら SDK 側から呼ばれることは無い。toolText.ts の IDE_TOOL_BARE_NAMES 参照）。
-  if (aiEngineKey) tools.push(delegateImplementationTool)
+  // 同じ広い型（Array<SdkMcpToolDefinition<any>>）で受ける。
+  const tools: Array<SdkMcpToolDefinition<any>> = enabledTools.map(name => all[name])
 
   return sdk.createSdkMcpServer({
     name: IDE_MCP_SERVER_NAME,

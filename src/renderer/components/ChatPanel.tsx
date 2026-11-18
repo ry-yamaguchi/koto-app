@@ -45,7 +45,7 @@ import { useConfirm } from '../useConfirm'
 import { runClearConversation } from '../confirmedActions'
 import { clearConversationAction } from '../confirmedActions'
 import { chatStatusLine } from '../../shared/chatStatusLine'
-import { decideRagToggleAction } from '../../shared/aiToolsCore'
+import { decideRagToggleAction, ragToolEnabled } from '../../shared/aiToolsCore'
 
 type Message = ChatMessage
 
@@ -437,7 +437,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   }
 
   // 📚 資料をこのプロジェクトのチャットで使うか（設定が有効 かつ APIキーあり）
-  const ragEnabled = !!ragSettings?.enabled && !!apiKey
+  const ragEnabled = ragToolEnabled(!!ragSettings?.enabled, !!apiKey)
   const [ragBusy, setRagBusy] = useState(false)
   /**
    * 📚 の切替。**資料が1件も無いときは、切り替えずに知らせる**
@@ -786,9 +786,12 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     // scrollIntoView は祖先（文書全体）まで横スクロールさせることがあり、コンテンツが窓幅を超えていると
     // アプリ全体が横にずれて「左端に前の画面の切れ端が残る」原因になった（2026-07-14 ユーザー報告）。
     // メッセージ一覧コンテナの内側だけを縦スクロールする。
+    // 許可の札（pendingApproval）が出たときも末尾へ送る。札は、進行中の1行の小さな吹き出し（isLoading && !pendingApproval）と
+    // 入れ替わりで出て、messages も isLoading も変わらないので、ここに入れないと札の下側（「許可する」「拒否」）が
+    // 枠の外に残る（0.6.32-rc.1 の実機）。
     const sc = bottomRef.current?.parentElement
     if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' })
-  }, [messages, isLoading])
+  }, [messages, isLoading, pendingApproval?.id])
 
   // ワークフローバー「作る」から入力欄へフォーカス
   useEffect(() => {
@@ -1123,9 +1126,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
                 const [first, ...rest] = pendingApproval.label.split('\n')
                 return (
                   <div className="mb-2">
-                    <p className="text-sm text-ink">✋ AIが次の操作の許可を求めています: <span className="font-mono text-sakura">{first}</span></p>
+                    {/* 0.6.32-rc.1 の実機: 切れ目の無い長い URL（ページの読み取りの確認）が折り返さず、札が右へはみ出して
+                        末尾が横スクロールしないと見えなかった。吹き出しの本文と同じ折り返し（CHAT_TEXT_WRAP・textWrap.ts）を付ける。 */}
+                    <p className={`text-sm text-ink ${CHAT_TEXT_WRAP}`}>✋ AIが次の操作の許可を求めています: <span className="font-mono text-sakura">{first}</span></p>
                     {rest.length > 0 && (
-                      <p className="text-sm text-ink-secondary mt-1 whitespace-pre-wrap">{rest.join('\n')}</p>
+                      <p className={`text-sm text-ink-secondary mt-1 ${CHAT_TEXT_WRAP}`}>{rest.join('\n')}</p>
                     )}
                   </div>
                 )

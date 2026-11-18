@@ -15,25 +15,71 @@ import { wrapUntrusted } from '../../shared/untrustedBlock'
 // allowedTools / canUseTool の許可リストにはこの修飾名で登録する必要がある。
 
 /** IDE固有ツールを注入するインプロセスMCPサーバ名（修飾名の <server名> 部分）。 */
-export const IDE_MCP_SERVER_NAME = 'ide'
+export const IDE_MCP_SERVER_NAME = 'koto'
 
 /**
- * IDE固有ツールの素の名前（renderer の aiTools.ts TOOLS 配列と同名）。
- * C3: delegate_implementation は許可リスト（IDE_MCP_TOOL_NAMES）には常に含めるが、
- * 実際にMCPサーバへ登録する（＝呼び出し可能にする）かはモード（aiEngineKeyの有無）次第
- * （tools.ts の buildIdeToolsServer 側で判定。許可されていてもツール未登録なら呼ばれない）。
+ * IDE固有ツールの素の名前の全体（renderer の aiTools.ts TOOLS 配列と同名）。
+ * ここは「コードに在る道具」の一覧で、「Claude へ出す道具」は OFFERED_IDE_TOOL_NAMES が決める。
  */
 export const IDE_TOOL_BARE_NAMES = ['fetch_url', 'search_docs', 'open_preview', 'delegate_implementation'] as const
+export type IdeToolBareName = typeof IDE_TOOL_BARE_NAMES[number]
+
+/**
+ * 5A-1 で Claude へ出す道具（作者の決定 2026-11-13）。delegate_implementation は出さない
+ * （コードは残してあり、あとの版でここへ名前を足すだけで、登録・許可・「任せる案内」が揃って付く）。
+ */
+export const OFFERED_IDE_TOOL_NAMES: readonly IdeToolBareName[] = ['fetch_url', 'search_docs', 'open_preview']
 
 /** ツール名を SDK の修飾規則（mcp__<server>__<tool>）で修飾する。 */
 export function qualifyMcpToolName(server: string, tool: string): string {
   return `mcp__${server}__${tool}`
 }
 
-/** IDE固有ツールの修飾名一覧（allowedTools / canUseTool の許可リスト登録用）。 */
+/** IDE固有ツールの修飾名一覧（コードに在る全道具。出す道具の一覧は resolveIdeTools の qualifiedNames）。 */
 export const IDE_MCP_TOOL_NAMES: readonly string[] = IDE_TOOL_BARE_NAMES.map(t =>
   qualifyMcpToolName(IDE_MCP_SERVER_NAME, t)
 )
+
+/** resolveIdeTools の入力。道具ごとの「使える条件」をここで受ける（条件の中身は呼び出し側が決める）。 */
+export type ResolveIdeToolsInput = {
+  /** さくらのAI Engine のキーがあるか（delegate_implementation の条件）。 */
+  hasAiEngineKey: boolean
+  /** 「📚 資料を使う」で、さくらのAI Engine のキーもあるか（shared/aiToolsCore.ts の ragToolEnabled の結果）。search_docs の条件。
+   *  必須: 省くと「常に出す」か「常に出さない」に黙って倒れる。 */
+  ragEnabled: boolean
+  /** 出す道具の一覧。省略時は OFFERED_IDE_TOOL_NAMES（あとの版・試験で別の一覧を渡せる）。 */
+  offered?: readonly IdeToolBareName[]
+}
+
+export type ResolvedIdeTools = {
+  /** MCP サーバーへ登録する道具（素の名前）。 */
+  bareNames: IdeToolBareName[]
+  /** allowedTools へ入れる道具（修飾名）。bareNames と必ず同じ道具になる。 */
+  qualifiedNames: string[]
+  /** 「任せる案内」（DELEGATION_GUIDANCE）を systemPrompt へ付けるか。delegate_implementation を出すときだけ true。 */
+  delegationGuidance: boolean
+}
+
+/**
+ * Claude へ出す道具を決める純粋関数。登録・許可の一覧・「任せる案内」の3つは必ずここから導く
+ * （別々に決めると、登録だけ・許可だけ・案内だけが残って食い違う）。出さない道具は、3つのどれにも出ない。
+ * 現在の条件: delegate_implementation は出す一覧に入っていて、AI Engine のキーがあるときだけ。
+ * search_docs は、「📚 資料を使う」で AI Engine のキーがあるときだけ（ragEnabled）。
+ */
+export function resolveIdeTools(input: ResolveIdeToolsInput): ResolvedIdeTools {
+  const offered = input.offered ?? OFFERED_IDE_TOOL_NAMES
+  const bareNames = IDE_TOOL_BARE_NAMES.filter(name => {
+    if (!offered.includes(name)) return false
+    if (name === 'delegate_implementation') return input.hasAiEngineKey
+    if (name === 'search_docs') return input.ragEnabled
+    return true
+  })
+  return {
+    bareNames,
+    qualifiedNames: bareNames.map(t => qualifyMcpToolName(IDE_MCP_SERVER_NAME, t)),
+    delegationGuidance: bareNames.includes('delegate_implementation'),
+  }
+}
 
 // ── search_docs ────────────────────────────────────────────────────
 

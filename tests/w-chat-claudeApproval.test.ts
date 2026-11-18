@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { makeCanUseTool, claudeToolGatingOptions } from '../src/main/claude/agent'
+import { resolveIdeTools } from '../src/main/claude/toolText'
 import {
   setApprovalListener, answerApproval, listPending, resetApprovalsForTest, cancelApprovalsForTurn,
 } from '../src/main/chat/approvalStore'
@@ -130,23 +131,23 @@ describe('W-18: makeCanUseTool（Claude経路）は writeMode を見て承認を
 // 一度も呼ばれない。以前の実装はまさにこの形（allowedTools に BUILTIN_TOOL_NAMES を
 // 丸ごと渡し、かつ permissionMode: 'acceptEdits'＝Edit/Write の自動許可）だった。
 //
-// ⚠️ 下の2件が見ているのは claudeToolGatingOptions() の**返り値だけ**。それが query() へ実際に
+// ⚠️ 下の2件が見ているのは claudeToolGatingOptions(resolveIdeTools({ hasAiEngineKey: true, ragEnabled: true }).qualifiedNames, 'auto') の**返り値だけ**。それが query() へ実際に
 // 渡っていること（展開の1行を消す・後ろのキーで上書きする変異）は、ここでは捕まらない。
 // 渡った先の検査は tests/claudeQueryOptionsWiring.test.ts（偽の SDK が受け取った options を見る）。
 describe('W-18: query() へ渡す配線（allowedTools / permissionMode）が canUseTool を迂回しない', () => {
   it('★★★ allowedTools に Edit/Write/Bash を名前だけで含まない（含めると SDK が canUseTool を呼ばずに全許可する）', () => {
-    const { allowedTools } = claudeToolGatingOptions()
+    const { allowedTools } = claudeToolGatingOptions(resolveIdeTools({ hasAiEngineKey: true, ragEnabled: true }).qualifiedNames, 'auto')
     expect(allowedTools).not.toContain('Edit')
     expect(allowedTools).not.toContain('Write')
     expect(allowedTools).not.toContain('Bash')
-    // 読み取り専用（危険が無い）は確認なしのままでよい
-    expect(allowedTools).toContain('Read')
-    expect(allowedTools).toContain('Glob')
-    expect(allowedTools).toContain('Grep')
+    // P42-5: 読み取り（Read・Glob・Grep）も名前だけで入れない（入れるとプロジェクトの外も承認なしで読める）
+    expect(allowedTools).not.toContain('Read')
+    expect(allowedTools).not.toContain('Glob')
+    expect(allowedTools).not.toContain('Grep')
   })
 
   it('★★★ permissionMode は acceptEdits ではない（acceptEdits は Edit/Write を canUseTool より先に自動許可しうる）', () => {
-    expect(claudeToolGatingOptions().permissionMode).not.toBe('acceptEdits')
-    expect(claudeToolGatingOptions().permissionMode).not.toBe('bypassPermissions')
+    expect(claudeToolGatingOptions(resolveIdeTools({ hasAiEngineKey: true, ragEnabled: true }).qualifiedNames, 'auto').permissionMode).not.toBe('acceptEdits')
+    expect(claudeToolGatingOptions(resolveIdeTools({ hasAiEngineKey: true, ragEnabled: true }).qualifiedNames, 'auto').permissionMode).not.toBe('bypassPermissions')
   })
 })

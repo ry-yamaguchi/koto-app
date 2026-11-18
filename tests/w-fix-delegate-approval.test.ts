@@ -3,7 +3,7 @@
 // 書き込みの前に確認を出していなかった。
 //
 // ── なぜ委譲だけ別に確認が要るか ──────────────────────────────────────
-// `mcp__ide__delegate_implementation` は allowedTools に名前で入っており、SDK は canUseTool
+// `mcp__koto__delegate_implementation` は allowedTools に名前で入っており、SDK は canUseTool
 // （agent.ts の makeCanUseTool）より先に自動許可する。しかもどのファイルを書くかは AI Engine の
 // 応答が返るまで分からない。だから承認は、書き込みの直前に tools.ts の writeDelegatedFiles で取る。
 // 仕組みは makeCanUseTool と同じもの（planApproval → requestApproval・同じ turnId）を使い回している
@@ -41,6 +41,7 @@ vi.mock('../src/main/ipc/web', () => ({ fetchUrlPage: async () => { throw new Er
 vi.mock('../src/main/rag/client', () => ({ queryDocuments: async () => [] }))
 
 import { buildIdeToolsServer, writeDelegatedFiles } from '../src/main/claude/tools'
+import { IDE_TOOL_BARE_NAMES } from '../src/main/claude/toolText'
 import { summarizeDelegateDenied } from '../src/main/claude/toolText'
 import {
   setApprovalListener, answerApproval, listPending, resetApprovalsForTest, cancelApprovalsForTurn,
@@ -79,7 +80,7 @@ function delegateHandler(writeMode: WriteMode): (args: any) => Promise<{ content
     createSdkMcpServer: (opts: any) => opts,
   }
   const server: any = buildIdeToolsServer(sdk, {
-    projectDir, writeRoot, aiEngineKey: 'test-key', writeMode, turnId: TURN_ID,
+    projectDir, writeRoot, aiEngineKey: 'test-key', ragTags: [], enabledTools: IDE_TOOL_BARE_NAMES, writeMode, turnId: TURN_ID,
     isStopped: () => false, // ⏹ の抜け道は tests/w-fix-delegate-stop.test.ts で固定
     onOpenPreview: () => {}, snapshotId: SNAPSHOT_ID, snapshotLabel: 'テスト',
     ragBudgetCheck: () => ({ allowed: true }), // W-85: search_docs の上限の確認（このテストは委譲だけを見るので常に許可）
@@ -291,10 +292,11 @@ describe('W-18: 配線（agent.ts は writeMode と turnId を委譲のツール
   it('agent.ts: buildIdeToolsServer へ、makeCanUseTool と同じ writeMode・turnId を渡す', () => {
     const agent = read('src/main/claude/agent.ts')
     // 呼び出しの側を前後ごと一意に指す（定義や別の呼び出しに当たらない）
-    expect(agent).toContain('buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, writeMode, turnId, onOpenPreview,')
+    expect(agent).toContain('buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, ragTags: ragTags ?? [], enabledTools: ideTools.bareNames, writeMode, turnId, onOpenPreview,')
     expect(agent).toContain('canUseTool: makeCanUseTool(projectDir, writeRoot, writeMode, turnId)')
     // 渡していなかった直す前の形に戻っていない
     expect(agent).not.toContain('buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, onOpenPreview,')
+    expect(agent).not.toContain('buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, writeMode, turnId, onOpenPreview,')
   })
 
   it('tools.ts: writeMode・turnId は必須（?で任意にすると、渡し忘れても型検査を素通りして「おまかせ」に倒れる）', () => {

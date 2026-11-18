@@ -52,6 +52,13 @@ function isBlockedIp(ip: string): boolean {
     // IPv4射影（::ffff:x.x.x.x）は内側のIPv4で判定
     const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
     if (mapped) return isBlockedIp(mapped[1])
+    // URL 解析は ::ffff:127.0.0.1 を16進の ::ffff:7f00:1 に正規化する。こちらも内側のIPv4で判定
+    const mappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+    if (mappedHex) {
+      const hi = parseInt(mappedHex[1], 16)
+      const lo = parseInt(mappedHex[2], 16)
+      return isBlockedIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`)
+    }
     if (lower === '::1') return true                  // ループバック
     if (lower === '::') return true                   // unspecified
     if (/^f[cd]/.test(lower)) return true             // fc00::/7 ULA
@@ -80,7 +87,8 @@ async function assertFetchAllowed(rawUrl: string): Promise<void> {
   // 以前の global fetch（undici）が断っていたものを、自前の通信でも同じに断る
   if (u.username !== '' || u.password !== '') throw new Error('安全のため、利用者名・パスワードを含むURLは取得できません')
   if (u.port !== '' && FETCH_BAD_PORTS.has(u.port)) throw new Error('安全のため、このポート番号へはアクセスできません')
-  const host = u.hostname
+  // URL の hostname は IPv6 だと角括弧つき（[::1]）で、net.isIP が認識しない。外してから判定に通す
+  const host = u.hostname.replace(/^\[(.*)\]$/, '$1')
   if (net.isIP(host)) {
     if (isBlockedIp(host)) throw new Error('安全のため、内部ネットワークのアドレスへはアクセスできません')
     return

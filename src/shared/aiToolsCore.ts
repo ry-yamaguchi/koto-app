@@ -10,9 +10,11 @@
 // 承認（approveToolCall）を main へ一元化する（掟10）ための材料。main（turnRunner.ts）・
 // renderer（aiTools.ts が re-export・互換維持）の両方から同じ実装を呼べるようにする。
 import { isDangerousCommand, leavesWorkingDir, writesOutsideWorkingDir, type WritesOutsideOptions } from './commandGuard'
+import { OPEN_PREVIEW_DESCRIPTION, OPEN_PREVIEW_PATH_DESCRIPTION } from './toolExecCore'
 import { PUBLISH_DIR_LABEL } from './publishRoot'
 import { isConnectionFailureMessage } from './connectionFailure'
 import { classifyFailure, failureText, stripRemoteHead, withFailureDetail } from './failureText'
+import { joinFailureDetail, splitFailureDetail } from './failureDetail'
 // W-47: 「別のモデル（Kimi K2.7 Code など）に切り替えて」は、既定モデルと同じ名前なので
 // 既にそれを使っている人には「もう選んでいるのに」と読める。既定モデルのIDと一元定義から比べる。
 import { DEFAULT_MODEL } from './modelInfo'
@@ -123,11 +125,11 @@ const OPEN_PREVIEW_TOOL = {
   type: 'function',
   function: {
     name: 'open_preview',
-    description: 'プロジェクト内のHTMLファイルを既定ブラウザで開いてユーザーに見せる。作業が一段落して見た目を確認してもらうときに使う。',
+    description: OPEN_PREVIEW_DESCRIPTION,
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '開くHTMLファイルの相対パス（省略時は index.html）' },
+        path: { type: 'string', description: OPEN_PREVIEW_PATH_DESCRIPTION },
       },
     },
   },
@@ -183,6 +185,14 @@ const SEARCH_IN_FILES_TOOL = {
       required: ['query'],
     },
   },
+}
+
+/**
+ * 📚 資料を探す道具（search_docs）を出すか。「このプロジェクトで資料を使う」設定が有効 かつ さくらのAI Engine のキーがある、のときだけ。
+ * さくらのAI Engine の経路（ChatPanel の ragEnabled → toolsFor の hasRag）と Claude の経路（main の道具の登録）が、同じこの判断を通る。
+ */
+export function ragToolEnabled(useDocs: boolean, hasAiEngineKey: boolean): boolean {
+  return useDocs && hasAiEngineKey
 }
 
 /** 利用可能なツール一覧。プロジェクト・検索設定・資料設定の有無に応じて変える。 */
@@ -309,11 +319,15 @@ function chatNetworkFailureText(message: string, thrown?: unknown): string | nul
  *  証明書の失敗（cause.code）と回線断を見分けられない。 */
 export function formatChatError(rawMessage: string, engine: 'sakura' | 'claude' = 'sakura', thrown?: unknown): string {
   // IPC の英語の頭と、main が載せた種類の印は、どの呼び出し元から来ても画面に出さない（最後の分岐は原文を出すため）
-  const message = rawMessage ? stripRemoteHead(rawMessage) : rawMessage
+  const stripped = rawMessage ? stripRemoteHead(rawMessage) : rawMessage
+  // main（Claude の events.ts）が付けた「詳細:」の最後の行は、判定にかけず、最後の行へそのまま運ぶ。
+  // 詳細の区分名（billing_error・authentication_failed など）が下の語の判定に当たって、文が別の案内に変わるのを防ぐ。
+  // 判定に使う message は詳細を除いた文。詳細の行は withDetail と最後の分岐が付け直す（二重に包まない）。
+  const { text: message, detail: carriedDetail } = splitFailureDetail(stripped || '')
   // 状態番号は例外の status（IPC を越えるときは main が message に載せた印）からも読む。文面に番号が無い失敗（'Upstream error' など）も数える。
   const status = classifyFailure(thrown).status
   // 日本語の固定文に置き換える分岐は、原文（投げられた値、無ければ message）を詳細として最後の行に添える。
-  const withDetail = (sentence: string) => withFailureDetail(sentence, thrown ?? message)
+  const withDetail = (sentence: string) => carriedDetail ? joinFailureDetail(sentence, carriedDetail) : withFailureDetail(sentence, thrown ?? message)
   const m = `${message || ''}${status === undefined ? '' : ` ${status}`}`.toLowerCase()
   // 認証エラー（401 等）。誘導先のキーを engine で出し分ける。
   if (/\b401\b|invalid token|unauthorized|authentication|invalid api key|invalid_api_key/.test(m)) {
@@ -370,8 +384,13 @@ export function formatChatError(rawMessage: string, engine: 'sakura' | 'claude' 
   if (/claude code (native binary|executable|process)/.test(m)) {
     return withDetail('Claude が正常に動きませんでした。Koto を再起動してから、もう一度送信してください。')
   }
+  // 見分けられない英語の原文だけの失敗（main が区分名つきの詳細を添えたもの）は、原文を文にせず、一般の日本語の文にする（原文は詳細に残っている）。
+  // Claude の経路だけ（さくらのAI Engine の失敗を「Claude の…」と言わない）。
+  if (engine === 'claude' && carriedDetail && !/[ぁ-んァ-ヶ一-龠]/.test(message || '')) {
+    return joinFailureDetail('Claude の処理が失敗しました。', carriedDetail)
+  }
   const keyHint = engine === 'claude' ? 'Claude のAPIキー' : 'APIキーと利用上限'
-  return `エラー: ${message}\n\n💡 うまくいかないときは: もう一度送信するか、認証情報（🔑）で${keyHint}を確認してください。`
+  return joinFailureDetail(`エラー: ${message}\n\n💡 うまくいかないときは: もう一度送信するか、認証情報（🔑）で${keyHint}を確認してください。`, carriedDetail)
 }
 
 /**

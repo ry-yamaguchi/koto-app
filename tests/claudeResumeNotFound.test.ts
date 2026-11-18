@@ -160,10 +160,11 @@ describe('resume あり→「No conversation found」で終わる: error/result 
   it('やり直しも失敗したときは、2回目の誤りだけが届く（1回目の誤りは届かない）', async () => {
     const second: Script = async function* () { yield errResult('Credit balance is too low'); throw thrown('Credit balance is too low') }
     const first: Script = async function* () { yield errResult(notFoundText()); throw thrown(notFoundText()) }
-    const { events, queries } = await run([first, second], { resume: OLD_SESSION, expectCount: 3 })
+    const { events, queries } = await run([first, second], { resume: OLD_SESSION, expectCount: 2 })
     expect(queries).toHaveLength(2) // やり直しは1回だけ（3回目は無い）
     expect(errorMessages(events).some(m => /no conversation found/i.test(m))).toBe(false)
-    expect(errorMessages(events)).toEqual(['Credit balance is too low', 'Claude Code returned an error result: Credit balance is too low'])
+    // 失敗の吹き出しは1つ（終了時の例外「returned an error result」は同じ失敗の言い直しなので送らない）
+    expect(errorMessages(events)).toEqual(['Credit balance is too low'])
   })
 
   it('1回目が session を流してから「No conversation found」・やり直しが session より前に失敗 → 届くのは古い session と2回目の誤りだけ（番号は次の依頼で自己修復される）', async () => {
@@ -192,13 +193,13 @@ describe('resume あり→「No conversation found」で終わる: error/result 
 describe('resume あり→中身なしで別の誤りで終わる: やり直さず（query 1回）その誤りがそのまま届く', () => {
   it('★★★ 請求の誤り（結果の errors → 終了時に例外）', async () => {
     const first: Script = async function* () { yield errResult('Credit balance is too low'); throw thrown('Credit balance is too low') }
-    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 3 })
+    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 2 })
     expect(queries).toHaveLength(1)
     expect(queries[0].options.resume).toBe(OLD_SESSION)
+    // 費用つきの結果が先、失敗の知らせは1つ（終了時の例外の言い直しは送らない）
     expect(events).toEqual([
-      { kind: 'error', message: 'Credit balance is too low' },
       { kind: 'result', costUsd: 0, durationMs: 0, isError: true },
-      { kind: 'error', message: 'Claude Code returned an error result: Credit balance is too low' },
+      { kind: 'error', message: 'Credit balance is too low' },
     ])
   })
 
@@ -207,16 +208,16 @@ describe('resume あり→中身なしで別の誤りで終わる: やり直さ�
     const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 2 })
     expect(queries).toHaveLength(1)
     expect(events).toEqual([
-      { kind: 'error', message: 'Credit balance is too low' },
       { kind: 'result', costUsd: 0, durationMs: 0, isError: true },
+      { kind: 'error', message: 'Credit balance is too low' },
     ])
   })
 
-  it('先に session が来ていても、誤りが別なら session はすぐ・error/result は順どおりそのまま届く（session → error → result → error）', async () => {
+  it('先に session が来ていても、誤りが別なら session はすぐ・result → error の順で届く（session → result → error）', async () => {
     const first: Script = async function* () { yield initMsg(OLD_SESSION); yield errResult('rate limit'); throw thrown('rate limit') }
-    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 4 })
+    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 3 })
     expect(queries).toHaveLength(1)
-    expect(events.map(e => e.kind)).toEqual(['session', 'error', 'result', 'error'])
+    expect(events.map(e => e.kind)).toEqual(['session', 'result', 'error'])
     expect(events[0]).toEqual({ kind: 'session', sessionId: OLD_SESSION })
   })
 
@@ -225,9 +226,11 @@ describe('resume あり→中身なしで別の誤りで終わる: やり直さ�
       yield { type: 'assistant', error: 'billing_error', message: { content: [{ type: 'text', text: 'Credit balance is too low' }] } }
       yield okResult()
     }
-    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 3 })
+    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 2 })
     expect(queries).toHaveLength(1)
-    expect(events.map(e => e.kind)).toEqual(['error', 'text', 'result'])
+    // SDK の本文は text にせず error の詳細へ。error を持つ回は失敗の回として、result（費用）→ error の順で届く
+    expect(events.map(e => e.kind)).toEqual(['result', 'error'])
+    expect(events[0]).toMatchObject({ kind: 'result', isError: true })
   })
 })
 
@@ -256,9 +259,9 @@ describe('resume あり→text が先に来てから誤りで終わる: やり�
       yield errResult('Credit balance is too low')
       throw thrown('Credit balance is too low')
     }
-    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 5 })
+    const { events, queries } = await run([first], { resume: OLD_SESSION, expectCount: 4 })
     expect(queries).toHaveLength(1)
-    expect(events.map(e => e.kind)).toEqual(['session', 'tool', 'error', 'result', 'error'])
+    expect(events.map(e => e.kind)).toEqual(['session', 'tool', 'result', 'error'])
   })
 })
 
@@ -320,8 +323,9 @@ describe('貯めるのは resume を渡したときだけ（待ち方の振る�
     await settle()
     expect(events).toEqual([{ kind: 'session', sessionId: OLD_SESSION }]) // error/result はまだ貯まっている
     release()
-    await waitUntil(() => events.length >= 4, '貯めた error・result と終了時の error が順に届く')
-    expect(events.map(e => e.kind)).toEqual(['session', 'error', 'result', 'error'])
+    await waitUntil(() => events.length >= 3, '貯めた result・error が順に届く')
+    await settle()
+    expect(events.map(e => e.kind)).toEqual(['session', 'result', 'error'])
     expect(fake.queries).toHaveLength(1) // 別の誤りなのでやり直さない
   })
 
@@ -359,13 +363,14 @@ describe('貯めるのは resume を渡したときだけ（待ち方の振る�
     expect(fake.queries[1].options.resume).toBeUndefined()
   })
 
-  it('resume あり: 中身（text）が来た時点で、貯めた error が先に届き、そのあとは貯めずに流れる', async () => {
+  it('resume あり: 中身（text）が来たらすぐ届き、失敗の知らせ（error）は結果のあとに1つ届く', async () => {
     let release!: () => void
     const gate = new Promise<void>(r => { release = r })
     const only: Script = async function* () {
       yield initMsg(OLD_SESSION)
       // 本文つきの billing_error は error → text の順に出る（events.ts）。text が来た時点で error が流れる
       yield { type: 'assistant', error: 'billing_error', message: { content: [{ type: 'text', text: '本文' }] } }
+      yield textMsg('続き')
       await gate
       yield okResult()
     }
@@ -377,11 +382,12 @@ describe('貯めるのは resume を渡したときだけ（待ち方の振る�
       onEvent: e => { events.push(e) },
       onOpenPreview: () => {}, ragBudgetCheck: () => ({ allowed: true }), onDelegated: () => {}, onFileWritten: () => {},
     }, fake.sdk)
-    await waitUntil(() => events.length >= 3, 'session・error・text が終わりを待たずに届く')
-    expect(events.map(e => e.kind)).toEqual(['session', 'error', 'text'])
+    await waitUntil(() => events.length >= 2, 'session・text が終わりを待たずに届く')
+    await settle()
+    expect(events.map(e => e.kind)).toEqual(['session', 'text']) // 失敗の知らせは、結果が来るまで手元に持つ
     release()
-    await waitUntil(() => events.length >= 4, 'result が届く')
-    expect(events.map(e => e.kind)).toEqual(['session', 'error', 'text', 'result'])
+    await waitUntil(() => events.length >= 4, 'result・error が届く')
+    expect(events.map(e => e.kind)).toEqual(['session', 'text', 'result', 'error'])
   })
 
   it('resume あり・正常な会話: 中身が来たあとは、そのまま流れる（最初の text は終わりを待たずに届く）', async () => {

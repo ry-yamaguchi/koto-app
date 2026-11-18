@@ -3,11 +3,17 @@
 // historyCompact.ts / aiTools.ts と同様に独立した純粋ロジックは別モジュールへ切り出す）。
 
 import { isClaudeCostOverWarnUsd } from '../shared/usageBudget'
+import { splitFailureDetail } from '../shared/failureDetail'
 
 /** モードのオン/オフ（既定=オン）。'off' が明示されているときだけ Claude 経路を使わない。 */
 export const CLAUDE_MODE_KEY = 'sakura_claude_mode'
-/** 初回同意フラグ（コード・指示が Anthropic へ送信される旨への同意）。 */
+/** 旧い同意の旗（コード・指示が Anthropic へ送信される旨への同意。'1' なら同意済みだった）。
+ *  Claude が Koto のツールを使えるようになり送られるものが増えたため、これだけでは同意済みと見なさない。 */
 export const CLAUDE_CONSENT_KEY = 'sakura_claude_consent'
+/** 同意の版を持つ新しいキー。値が CLAUDE_CONSENT_VERSION と同じときだけ同意済み。 */
+export const CLAUDE_CONSENT_VERSION_KEY = 'sakura_claude_consent_version'
+/** いまの同意の文の版。送られるものが増えたときに上げると、同意済みの人にも1回だけ確認し直す。 */
+export const CLAUDE_CONSENT_VERSION = '2'
 /** 月別のコスト累計（USD）。`{ "2026-07": 0.1234 }` 形式で localStorage に保存する。 */
 export const CLAUDE_USAGE_KEY = 'sakura_claude_usage_usd'
 /** 選択中の Claude モデルID。localStorage に保存する。 */
@@ -142,6 +148,8 @@ export function setClaudeMode(enabled: boolean): void {
  */
 export function isClaudeUsageBlockedError(message: string): boolean {
   if (typeof message !== 'string' || !message) return false
+  // 最後の「詳細:」の行（events.ts が付ける区分名・原文）は判定にかけない。文そのものと、従来どおりの英語の原文だけを見る。
+  message = splitFailureDetail(message).text
   return /\b402\b|billing|credit balance|insufficient|payment|quota|請求設定に問題|クレジット|残高/i.test(message)
 }
 
@@ -182,14 +190,37 @@ export function claudeConsentDeclinedGuidance(hasApiKey: boolean): string | null
   return '送信を中止しました。'
 }
 
-/** 初回同意済みか。 */
+/** いまの版に同意済みか。読めないとき（保存領域が使えない）は未同意に倒す。 */
 export function hasClaudeConsent(): boolean {
-  return localStorage.getItem(CLAUDE_CONSENT_KEY) === '1'
+  try {
+    return localStorage.getItem(CLAUDE_CONSENT_VERSION_KEY) === CLAUDE_CONSENT_VERSION
+  } catch {
+    return false
+  }
 }
 
-/** 同意したことを記録する（次回以降ダイアログを出さない）。 */
+/** 旧い版（版を持たない旗）にだけ同意していて、いまの版には未同意か（確認し直しの文を出す判定）。 */
+export function isClaudeConsentReconfirm(): boolean {
+  try {
+    return !hasClaudeConsent() && localStorage.getItem(CLAUDE_CONSENT_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** 同意したことを記録する（同じ版では次回以降ダイアログを出さない）。書けなくても例外にしない。 */
 export function recordClaudeConsent(): void {
-  localStorage.setItem(CLAUDE_CONSENT_KEY, '1')
+  try {
+    localStorage.setItem(CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION)
+  } catch {
+    // 保存できなくても続行する（次回また確認が出るだけ）
+  }
+}
+
+/** Claude を使うときの同意の確認の本文。確認し直しのとき（旧い旗だけの人）は、変わった点を1文添える。 */
+export function claudeConsentBody(reconfirm: boolean): string {
+  const lead = reconfirm ? 'Claude が Koto のツールを使えるようになり、送られるものが増えました。' : ''
+  return lead + 'Claudeモードでは、プロジェクトのコードと指示に加えて、Claude が読んだページの内容と、Claude が探した資料の抜粋（「📚 資料を使う」にしたプロジェクトだけ）が Anthropic（米国）に送信され、Claudeの利用料金が別途発生します（Anthropicへ直接課金／さくらのAI Engineの月間上限とは別枠）。使わないときは 設定 でさくらのAI Engineに切り替えられます。よろしいですか？（この確認は、初回と、送られるものが増えたときだけ出ます）'
 }
 
 /** 指定日時（既定=現在）の月キー（'YYYY-MM'）。src/renderer/usage.ts の thisMonth() と同じ規則。 */
@@ -306,7 +337,8 @@ export function claudeCostFooter(costUsd: number, modelId: string, isError: bool
 
 /**
  * MCP修飾名（mcp__<server名>__<tool名>）から素のツール名を取り出す。非MCP名はそのまま返す。
- * C2b: IDE固有ツールは SDK により mcp__ide__fetch_url 等へ修飾されるため、
+ * C2b: IDE固有ツールは SDK により mcp__koto__fetch_url 等へ修飾されるため（会話の記録に残る古い出来事は
+ * 昔のサーバー名で修飾されている。サーバー名は問わず末尾の道具名を取るので、どちらも同じラベルになる）、
  * 修飾名でも素の名前でも同じラベルになるよう claudeToolLabel の前段で正規化する。
  */
 export function claudeBareToolName(name: string): string {

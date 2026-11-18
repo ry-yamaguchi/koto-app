@@ -36,7 +36,7 @@ vi.mock('../src/renderer/components/CredentialsModal', () => ({
 }))
 
 import { useAiChat } from '../src/renderer/hooks/useAiChat'
-import { CLAUDE_CONSENT_KEY } from '../src/renderer/claudeMode'
+import { CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION } from '../src/renderer/claudeMode'
 import { resetTurn, turnKey } from '../src/renderer/chatTurnRegistry'
 
 const PROJECT = '/work/retry-project'
@@ -75,7 +75,7 @@ beforeEach(() => {
       },
     },
   })
-  store.set(CLAUDE_CONSENT_KEY, '1')
+  store.set(CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION)
 })
 afterEach(() => {
   resetTurn(turnKey(PROJECT, 'x'))

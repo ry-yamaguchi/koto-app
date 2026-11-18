@@ -167,7 +167,7 @@ type ClaudeUiEvent =
   | { kind: 'result'; costUsd: number; durationMs: number; isError: boolean }
   | { kind: 'error'; message: string }
   // C2b: open_preview ツールの副作用通知（renderer が従来の open_preview ツールと同じ処理で開く）
-  | { kind: 'openPreview'; path: string }
+  | { kind: 'openPreview'; id: string; path: string; projectDir: string; writeRoot: string }
   // C3: delegate_implementation の実行後（AI Engine 側の使用量を usage.ts へ記録するために使う）
   | { kind: 'delegated'; model: string; promptTokens: number; completionTokens: number }
   // Claude/委譲がファイルを書き込んだ直後（データ喪失バグ修正・2026-07-11）。
@@ -896,9 +896,11 @@ interface Window {
       // 直接画像を読む（main側 agent.ts がストリーミング入力モードへ切り替える）。
       // writeMode は W-18: 「✋ 毎回確認」なら、Write/Edit/Bash の前に承認ダイアログを出す
       // （さくらのAI Engine 経路と同じ approval:* の仕組みを使い回す）。'auto' | 'confirm'。
-      chatStart(projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string): Promise<{ ok: boolean }>
+      chatStart(projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string, rag: { tags: string[] } | null): Promise<{ ok: boolean }>
       // 進行中の Claude セッションを中断する。
       chatCancel(): Promise<{ ok: boolean }>
+      // open_preview の知らせへの返事（存在確認・拡張子の確認のうえ開いた結果の文）。id は知らせの id。
+      openPreviewResult(id: string, result: string): Promise<{ ok: boolean }>
       // ストリームイベント購読。戻り値の関数を呼ぶと購読解除。
       onStream(cb: (event: ClaudeUiEvent) => void): () => void
     }

@@ -7,6 +7,9 @@
 //   そのため本ファイルではブロックの中身を実行時に安全にチェックする防御的な実装にしてある
 //   （型に頼らず `typeof` / `Array.isArray` 等で確認してから使う）。
 
+import { withFailureDetail, failureDetailOf } from '../../shared/failureText'
+import { joinFailureDetail } from '../../shared/failureDetail'
+
 export type UiEvent =
   | { kind: 'session'; sessionId: string }
   | { kind: 'text'; text: string }
@@ -15,7 +18,8 @@ export type UiEvent =
   | { kind: 'error'; message: string }
   // C2b: open_preview ツールの副作用通知。mapSdkMessage からではなく、MCPツールのハンドラ実行時に
   // ipc/claude.ts が発行する（renderer は従来の open_preview ツールと同じ処理で既定ブラウザを開く）
-  | { kind: 'openPreview'; path: string }
+  // id は結果の返信（claude:openPreviewResult）の鍵。projectDir・writeRoot は送信時のもの。
+  | { kind: 'openPreview'; id: string; path: string; projectDir: string; writeRoot: string }
   // C3: delegate_implementation の実行後。mapSdkMessage からではなく、ipc/claude.ts が
   // tools.ts の onDelegated コールバックから発行する（renderer は AI Engine 側のusageとして記録する）。
   | { kind: 'delegated'; model: string; promptTokens: number; completionTokens: number }
@@ -40,8 +44,8 @@ export function describeToolDetail(name: string, input: unknown): string {
     case 'Grep':
       return typeof i.pattern === 'string' ? i.pattern : ''
     default:
-      // C2b/C3: IDE固有MCPツール（修飾名 mcp__ide__fetch_url / mcp__ide__search_docs /
-      // mcp__ide__open_preview / mcp__ide__delegate_implementation）。
+      // C2b/C3: IDE固有MCPツール（修飾名 mcp__koto__fetch_url / mcp__koto__search_docs /
+      // mcp__koto__open_preview / mcp__koto__delegate_implementation）。
       // 将来のMCPツール追加にも耐えるよう、修飾名（mcp__…）全般で url / query / task / path を拾う。
       if (name.startsWith('mcp__')) {
         if (typeof i.url === 'string') return i.url
@@ -73,7 +77,9 @@ export function describeAssistantError(code: string): string {
     server_error: 'Anthropic側でエラーが発生しました。しばらく待ってからもう一度お試しください。',
     max_output_tokens: '出力の上限に達したため打ち切られました。',
   }
-  return table[code] ?? `エラーが発生しました（${code}）`
+  // 表に無い区分（unknown・account_on_hold・verification_required・cloud_credential_error と、SDK が後から足すもの）は一般の文にする。
+  // 画面が「エラー: 」を前に付けるので、文は「エラー」で始めない。区分そのものは assistantErrorMessage が「詳細」に添える。
+  return Object.prototype.hasOwnProperty.call(table, code) ? table[code] : 'Claude の処理が失敗しました。'
 }
 
 /** 文のブロックだけをつなぐ（空白だけのブロックは数えない）。 */
@@ -87,9 +93,41 @@ function textOfBlocks(blocks: unknown[]): string {
 
 /** assistant の error 区分と、同じメッセージの文から、画面へ送る失敗の文を決める。
  *  文があれば原文のまま送る（renderer の formatChatError が、回線断なら回線の文＋詳細に、見分けられなければ原文つきの文にする。
- *  ここで日本語の文を作ると、renderer がもう一度包んで詳細が途中に挟まる）。文が無ければ区分の文だけ。 */
-function errorMessageOf(code: string, text: string): string {
-  return text || describeAssistantError(code)
+ *  ここで日本語の文を作ると、renderer がもう一度包んで詳細が途中に挟まる）。
+ *  文が無ければ区分の日本語の文に、区分そのもの（authentication_failed など）を「詳細」として添える（失敗の文は原文を捨てない）。
+ *  詳細を作る・運ぶのは shared/failureText.ts の withFailureDetail の1か所。renderer の formatChatError は、送られた文の
+ *  最後の「詳細:」の行を判定にかけず、そのまま最後の行へ運ぶ。 */
+export function assistantErrorMessage(code: string, text: string): string {
+  // 文があるときも、区分名つきの詳細を添える（画面が文を見分けて日本語の文に置き換えても、区分名と原文が残る）。
+  return text ? joinFailureDetail(text, failureDetailOf(`${code} / ${text}`)) : withFailureDetail(describeAssistantError(code), code)
+}
+
+/** SDK の文を持つ失敗（認証・モデル不明など、日本語の固定文に置き換える区分）の文。
+ *  日本語の文は変えない（請求の判定が頼る）。詳細に、区分名と SDK の原文の両方を残す（原文を捨てない）。
+ *  秘密の形とホームの場所は withFailureDetail が伏せる。 */
+export function assistantErrorWithSdkText(code: string, sdkText: string): string {
+  return withFailureDetail(describeAssistantError(code), sdkText ? `${code} / ${sdkText}` : code)
+}
+
+/** result.errors（SDK の型では文字列の配列だが、実行時は確かめない）から文を取り出す。
+ *  文字列はそのまま、message を持つ値はその message。どちらでもない値は捨てる。 */
+function errorStringsOf(errors: unknown[]): string[] {
+  const out: string[] = []
+  for (const e of errors) {
+    if (typeof e === 'string') { if (e.trim()) out.push(e) }
+    else if (e && typeof e === 'object' && typeof (e as { message?: unknown }).message === 'string') {
+      const msg = (e as { message: string }).message
+      if (msg.trim()) out.push(msg)
+    }
+  }
+  return out
+}
+
+/** result が失敗で、errors が空のときの文。原因を言い切らず、SDK が返した区分（subtype）と result の文を詳細に残す。 */
+export function resultErrorMessage(subtype: unknown, resultText: unknown): string {
+  const original = [typeof subtype === 'string' ? subtype : '', typeof resultText === 'string' ? resultText.trim() : '']
+    .filter(Boolean).join(' / ')
+  return withFailureDetail('Claude の処理がエラーで終わりました。', original)
 }
 
 /**
@@ -121,14 +159,20 @@ export function mapSdkMessage(msg: unknown): UiEvent[] {
       // 認証・課金・上限などの区分は、後段（請求の判定など）が日本語の固定文に頼るので変えない。
       const errorCode = typeof m.error === 'string' ? m.error : null
       const carriesText = errorCode === 'server_error' || errorCode === 'unknown'
-      const errorText = carriesText ? textOfBlocks(blocks) : ''
+      // 失敗の assistant の文は、どの区分でも SDK の原文。error に載せ（server_error・unknown は文そのもの、
+      // 他の区分は日本語の文の詳細へ）、同じ文を text の吹き出しとして重ねて出さない（失敗の吹き出しは1つ）。
+      const sdkText = errorCode !== null ? textOfBlocks(blocks) : ''
+      const errorText = carriesText ? sdkText : ''
       if (errorCode !== null) {
-        events.push({ kind: 'error', message: errorMessageOf(errorCode, errorText) })
+        events.push({
+          kind: 'error',
+          message: carriesText ? assistantErrorMessage(errorCode, errorText) : assistantErrorWithSdkText(errorCode, sdkText),
+        })
       }
       for (const raw of blocks) {
         const block = raw as Record<string, unknown>
         if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-          if (!errorText) events.push({ kind: 'text', text: block.text })
+          if (!sdkText) events.push({ kind: 'text', text: block.text })
         } else if (block?.type === 'tool_use' && typeof block.name === 'string') {
           events.push({ kind: 'tool', name: block.name, detail: describeToolDetail(block.name, block.input) })
         }
@@ -138,8 +182,12 @@ export function mapSdkMessage(msg: unknown): UiEvent[] {
     case 'result': {
       const events: UiEvent[] = []
       const isError = !!m.is_error
-      if (isError && Array.isArray(m.errors) && m.errors.length) {
-        events.push({ kind: 'error', message: (m.errors as unknown[]).filter(e => typeof e === 'string').join('\n') })
+      const errorStrings = isError && Array.isArray(m.errors) ? errorStringsOf(m.errors) : []
+      if (errorStrings.length) {
+        events.push({ kind: 'error', message: errorStrings.join('\n') })
+      } else if (isError) {
+        // errors が無い・空・文字列でない値だけの失敗。以前は「エラー: 」だけ（または何も）が画面に出た。
+        events.push({ kind: 'error', message: resultErrorMessage(m.subtype, m.result) })
       }
       events.push({
         kind: 'result',

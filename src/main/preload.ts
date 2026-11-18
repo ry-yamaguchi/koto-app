@@ -444,10 +444,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // images は C2d（画像添付ターンをClaude自身に直接処理させる。data URL配列・空配列可）。
     // writeMode は W-18: 「✋ 毎回確認」（'confirm'）／「🪄 おまかせ」（'auto'）。ChatPanel.tsx の
     // getWriteMode() を送信時点で読んで渡す（さくらのAI Engine 経路の turnOpts.writeMode と同じ形）。
-    chatStart: (projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string) =>
-      ipcRenderer.invoke('claude:chatStart', projectDir, apiKey, prompt, images, snapshotId, resumeSessionId, aiEngineKey, model, writeMode),
+    // rag は「📚 資料を使う」の送信時点の設定（使わない＝null・使う＝{ tags }）。ChatPanel の turnOpts.rag と同じ値。必須（省くと search_docs が黙って常に出る／出ない）。
+    chatStart: (projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string, rag: { tags: string[] } | null) =>
+      ipcRenderer.invoke('claude:chatStart', projectDir, apiKey, prompt, images, snapshotId, resumeSessionId, aiEngineKey, model, writeMode, rag),
     // 進行中の Claude セッションを中断する。
     chatCancel: () => ipcRenderer.invoke('claude:chatCancel'),
+    openPreviewResult: (id: string, result: string) => ipcRenderer.invoke('claude:openPreviewResult', id, result),
     // ストリームイベント購読。戻り値の関数を呼ぶと購読解除（term.onData と同じパターン）。
     onStream: (cb: (event: any) => void) => {
       const handler = (_: Electron.IpcRendererEvent, event: any) => cb(event)

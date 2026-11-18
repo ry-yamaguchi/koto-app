@@ -54,7 +54,7 @@ vi.mock('../src/main/ipc/sakura', () => ({
 vi.mock('../src/main/ipc/web', () => ({ fetchUrlPage: async () => { throw new Error('このテストでは使わない') } }))
 
 import { startClaudeChat, type ClaudeSdkModule, type StartClaudeChatParams, type ClaudeChatHandle } from '../src/main/claude/agent'
-import { IDE_MCP_SERVER_NAME, summarizeDelegateStopped } from '../src/main/claude/toolText'
+import { IDE_MCP_SERVER_NAME, IDE_TOOL_BARE_NAMES, DELEGATION_GUIDANCE, summarizeDelegateStopped } from '../src/main/claude/toolText'
 import type { UiEvent } from '../src/main/claude/events'
 import {
   setApprovalListener, answerApproval, listPending, resetApprovalsForTest, cancelApprovalsForTurn,
@@ -134,12 +134,12 @@ async function runChat(over: Partial<StartClaudeChatParams> = {}): Promise<Run> 
   const events: UiEvent[] = []
   let finish!: () => void
   const finished = new Promise<void>(r => { finish = r })
-  const onOpenPreview = vi.fn()
+  const onOpenPreview = vi.fn(async (_rel: string) => 'ブラウザで開きました')
   const onDelegated = vi.fn()
   const onFileWritten = vi.fn()
   const ragBudgetCheck = vi.fn(() => ({ allowed: true }))
   const handle = startClaudeChat({
-    projectDir, writeRoot, apiKey: 'test-anthropic-key', writeMode: 'auto', aiEngineKey: 'test-ai-engine-key',
+    projectDir, writeRoot, apiKey: 'test-anthropic-key', writeMode: 'auto', aiEngineKey: 'test-ai-engine-key', rag: { tags: [] },
     prompt: 'ページを作って', images: [], snapshotId: SNAPSHOT_ID, resumeSessionId: null, model: '',
     onEvent: e => { events.push(e); if (e.kind === 'result' || e.kind === 'error') finish() },
     onOpenPreview, ragBudgetCheck, onDelegated, onFileWritten,
@@ -190,17 +190,13 @@ describe('query() へ実際に渡った options: allowedTools・permissionMode�
     expect(bare).not.toContain('Bash')
   })
 
-  it('★★ allowedTools は「読み取り専用の3つ」＋「IDE の MCP ツール」だけ（ほかに自動許可を増やしていない）', async () => {
+  it('★★★ allowedTools は IDE の MCP ツールだけ（Read・Glob・Grep も名前だけで許可しない。外すと SDK はプロジェクトの外を指すときだけ canUseTool へ回す）', async () => {
     const { options } = await runChat()
     const tools = options.allowedTools as string[]
-    // 読み取り専用は確認なしのままでよい（渡っていなければ、毎回 canUseTool を通るだけで安全側だが、意図した形を固定する）
-    expect(tools).toContain('Read')
-    expect(tools).toContain('Glob')
-    expect(tools).toContain('Grep')
-    // それ以外はすべて IDE の MCP ツール（mcp__ide__…）。Edit/Write/Bash 以外の書き込み系（NotebookEdit 等）も入れない
-    const others = tools.filter(t => !['Read', 'Glob', 'Grep'].includes(t))
-    expect(others.length).toBeGreaterThan(0)
-    for (const t of others) expect(t.startsWith(`mcp__${IDE_MCP_SERVER_NAME}__`), t).toBe(true)
+    // P42-5: 以前は Read・Glob・Grep を名前だけで許可しており、プロジェクトの外の絶対パスも承認なしで読めた。
+    for (const t of ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']) expect(tools).not.toContain(t)
+    expect(tools.length).toBeGreaterThan(0)
+    for (const t of tools) expect(t.startsWith(`mcp__${IDE_MCP_SERVER_NAME}__`), t).toBe(true)
   })
 
   it('★★★ permissionMode は \'default\'（acceptEdits でも bypassPermissions でもない）・危険な許可のスキップも付いていない', async () => {
@@ -224,7 +220,7 @@ describe('query() へ実際に渡った options: allowedTools・permissionMode�
     // 下請けの AI を起動できる道具・自分で許可を返す道具は入っていない
     for (const t of ['Agent', 'Task', 'Skill', 'WebFetch', 'WebSearch', 'NotebookEdit', 'SendMessage']) expect(options.tools).not.toContain(t)
     // IDE の道具（MCP）は tools の対象外で、許可の一覧に残る
-    expect(options.allowedTools).toEqual(expect.arrayContaining(['mcp__ide__fetch_url']))
+    expect(options.allowedTools).toEqual(expect.arrayContaining(['mcp__koto__fetch_url']))
   })
 
   it('★★ settingSources は空配列（利用者の ~/.claude の許可ルールで、上の守りが上書きされない）', async () => {
@@ -257,7 +253,7 @@ describe('query() へ実際に渡った options: allowedTools・permissionMode�
     let finish!: () => void
     const finished = new Promise<void>(r => { finish = r })
     startClaudeChat({
-      projectDir, writeRoot, apiKey: 'k', writeMode: 'confirm', aiEngineKey: null,
+      projectDir, writeRoot, apiKey: 'k', writeMode: 'confirm', aiEngineKey: null, rag: null,
       prompt: 'こんにちは', images: [], snapshotId: SNAPSHOT_ID, resumeSessionId: 'old-session', model: '',
       onEvent: e => { if (e.kind === 'result' || e.kind === 'error') finish() },
       onOpenPreview: () => {}, ragBudgetCheck: () => ({ allowed: true }), onDelegated: () => {}, onFileWritten: () => {},
@@ -280,7 +276,7 @@ describe('query() へ実際に渡った options: allowedTools・permissionMode�
 describe('query() へ実際に渡った canUseTool: 危険コマンド・守るパス・「✋ 毎回確認」', () => {
   for (const mode of ['confirm', 'auto'] as const) {
     it(`★★★ ${mode}: 危険なコマンド（rm -rf /）の Bash は deny（確認するまでもなく拒否・帳簿にも積まない）`, async () => {
-      const run = await runChat({ writeMode: mode })
+      const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: mode })
       const r = await callCanUseTool(run, 'Bash', { command: 'rm -rf /' })
       expect(r.behavior).toBe('deny')
       expect(r.message).toContain('危険')
@@ -288,7 +284,7 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
     })
 
     it(`★★★ ${mode}: 守るパス（.git/hooks/x）への Write は deny（承認では守れない領域なので、聞きもしない）`, async () => {
-      const run = await runChat({ writeMode: mode })
+      const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: mode })
       const r = await callCanUseTool(run, 'Write', { file_path: inWriteRoot('.git/hooks/x'), content: 'x' })
       expect(r.behavior).toBe('deny')
       expect(listPending()).toEqual([])
@@ -296,7 +292,7 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
     })
 
     it(`${mode}: 守るパス（.sakuraide-backup）への Edit も deny`, async () => {
-      const run = await runChat({ writeMode: mode })
+      const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: mode })
       const r = await callCanUseTool(run, 'Edit', { file_path: inWriteRoot('.sakuraide-backup/a/b.txt'), old_string: 'a', new_string: 'b' })
       expect(r.behavior).toBe('deny')
       expect(listPending()).toEqual([])
@@ -304,7 +300,7 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
   }
 
   it('★★★ confirm（✋ 毎回確認）: 普通の Write は承認を求めて駐機する。許可すると allow', async () => {
-    const run = await runChat({ writeMode: 'confirm' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'confirm' })
     const p = callCanUseTool(run, 'Write', { file_path: inWriteRoot('index.html'), content: '<html></html>' })
     await tick()
     expect(listPending()).toHaveLength(1)
@@ -317,7 +313,7 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
   })
 
   it('★★★ confirm: 承認を拒否すると deny（さくらのAI Engine 経路と同じ拒否文面）', async () => {
-    const run = await runChat({ writeMode: 'confirm' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'confirm' })
     const p = callCanUseTool(run, 'Write', { file_path: inWriteRoot('index.html'), content: 'x' })
     await tick()
     answerApproval(listPending()[0].id, false)
@@ -327,7 +323,7 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
   })
 
   it('★★ confirm: Bash も承認を求める（安全そうな ls でも、✋ 毎回確認なら聞く）', async () => {
-    const run = await runChat({ writeMode: 'confirm' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'confirm' })
     const p = callCanUseTool(run, 'Bash', { command: 'ls' })
     await tick()
     expect(listPending()).toHaveLength(1)
@@ -337,13 +333,13 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
   })
 
   it('★★ auto（おまかせ）: 普通の Write は駐機せず allow', async () => {
-    const run = await runChat({ writeMode: 'auto' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'auto' })
     expect(await callCanUseTool(run, 'Write', { file_path: inWriteRoot('index.html'), content: 'x' })).toEqual({ behavior: 'allow' })
     expect(listPending()).toEqual([])
   })
 
   it('★ 承認待ちの束ね先は handle.turnId（⏹ 相当の cancelApprovalsForTurn(handle.turnId) で拒否として解ける）', async () => {
-    const run = await runChat({ writeMode: 'confirm' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'confirm' })
     const p = callCanUseTool(run, 'Write', { file_path: inWriteRoot('index.html'), content: 'x' })
     await tick()
     expect(listPending()).toHaveLength(1)
@@ -373,9 +369,54 @@ describe('query() へ実際に渡った canUseTool: 危険コマンド・守る�
 describe('query() へ実際に渡った MCP サーバのツール: 登録・isStopped・writeMode・turnId・ragBudgetCheck・onOpenPreview', () => {
   const toolNames = (run: Run) => (run.options.mcpServers[IDE_MCP_SERVER_NAME].tools as ToolDef[]).map(t => t.name).sort()
 
-  it('AI Engine のキーがあれば4つ（fetch_url・search_docs・open_preview・delegate_implementation）、無ければ delegate_implementation を除く3つ', async () => {
-    expect(toolNames(await runChat({ aiEngineKey: 'k' }))).toEqual(['delegate_implementation', 'fetch_url', 'open_preview', 'search_docs'])
-    expect(toolNames(await runChat({ aiEngineKey: null }))).toEqual(['fetch_url', 'open_preview', 'search_docs'])
+  // 出す道具は1つの一覧（resolveIdeTools）から導く。登録・許可・「任せる案内」が同じ道具を指すことを、
+  // query() へ実際に渡った options で固定する。
+  const ideAllowed = (run: Run) => (run.options.allowedTools as string[]).filter(t => t.startsWith(`mcp__${IDE_MCP_SERVER_NAME}__`)).sort()
+  const qualified = (names: string[]) => names.map(n => `mcp__${IDE_MCP_SERVER_NAME}__${n}`).sort()
+  const promptOf = (run: Run) => (run.options.systemPrompt as { append: string }).append
+
+  it('★★★ 既定: 資料を使う＋AI Engine のキーありなら fetch_url・search_docs・open_preview の3つ（delegate_implementation は出さない）。キーが無ければ search_docs だけ外れる', async () => {
+    const run = await runChat({ aiEngineKey: 'k', rag: { tags: [] } })
+    expect(toolNames(run)).toEqual(['fetch_url', 'open_preview', 'search_docs'])
+    expect(ideAllowed(run)).toEqual(qualified(['fetch_url', 'open_preview', 'search_docs']))
+    expect(promptOf(run)).not.toContain(DELEGATION_GUIDANCE)
+    const noKey = await runChat({ aiEngineKey: null, rag: { tags: [] } })
+    expect(toolNames(noKey)).toEqual(['fetch_url', 'open_preview'])
+    expect(ideAllowed(noKey)).toEqual(qualified(['fetch_url', 'open_preview']))
+  })
+
+  it('★★★ 登録された MCP サーバーの名前は koto・許可の修飾名は mcp__koto__ の3つ（キーあり・資料を使う）。使わないときは2つ。delegate_implementation は無い', async () => {
+    const run = await runChat({ aiEngineKey: 'k', rag: { tags: [] } })
+    expect(Object.keys(run.options.mcpServers)).toEqual(['koto'])
+    expect((run.options.allowedTools as string[]).filter(t => t.startsWith('mcp__'))).toHaveLength(3)
+    expect(ideAllowed(run)).toEqual(['mcp__koto__fetch_url', 'mcp__koto__open_preview', 'mcp__koto__search_docs'])
+    const noRag = await runChat({ aiEngineKey: 'k', rag: null })
+    expect(ideAllowed(noRag)).toEqual(['mcp__koto__fetch_url', 'mcp__koto__open_preview'])
+    for (const r of [run, noRag]) expect(r.options.allowedTools.join(',')).not.toContain('delegate_implementation')
+  })
+
+  it('★★★ 出さない道具は、登録も許可も案内も無い（delegate_implementation はキーがあっても出ない）', async () => {
+    const run = await runChat({ aiEngineKey: 'k' })
+    expect(toolNames(run)).not.toContain('delegate_implementation')
+    expect(run.options.allowedTools).not.toContain('mcp__koto__delegate_implementation')
+    expect(promptOf(run)).not.toContain('delegate_implementation')
+  })
+
+  it('★★★ 一覧に足せば、登録・許可・案内が揃って付く（キーがあるとき）。キーが無ければ3つとも付かない', async () => {
+    const on = await runChat({ aiEngineKey: 'k', offeredIdeTools: IDE_TOOL_BARE_NAMES })
+    expect(toolNames(on)).toEqual(['delegate_implementation', 'fetch_url', 'open_preview', 'search_docs'])
+    expect(ideAllowed(on)).toEqual(qualified(['delegate_implementation', 'fetch_url', 'open_preview', 'search_docs']))
+    expect(promptOf(on)).toContain(DELEGATION_GUIDANCE)
+    const noKey = await runChat({ aiEngineKey: null, offeredIdeTools: IDE_TOOL_BARE_NAMES })
+    expect(toolNames(noKey)).toEqual(['fetch_url', 'open_preview'])
+    expect(ideAllowed(noKey)).toEqual(qualified(['fetch_url', 'open_preview']))
+    expect(promptOf(noKey)).not.toContain(DELEGATION_GUIDANCE)
+  })
+
+  it('一覧から外せば、その道具は登録も許可も無い（fetch_url を外す）', async () => {
+    const run = await runChat({ offeredIdeTools: ['search_docs', 'open_preview'] })
+    expect(toolNames(run)).toEqual(['open_preview', 'search_docs'])
+    expect(ideAllowed(run)).toEqual(qualified(['open_preview', 'search_docs']))
   })
 
   // ── ragBudgetCheck（W-85）──
@@ -424,7 +465,7 @@ describe('query() へ実際に渡った MCP サーバのツール: 登録・isSt
       let asked = 0
       setApprovalListener(list => { if (list.length) { asked += 1; answerApproval(list[0].id, true) } }) // 聞かれたら即「許可」。聞いたこと自体を捕まえる
       const hold = holdAiEngine()
-      const run = await runChat({ writeMode: mode })
+      const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: mode })
       const p = sdkTool(run, 'delegate_implementation')({ task: 'ページを作る' })
       await waitAiCalled()
       run.handle.abort() // ⏹（ipc/claude.ts の claude:chatCancel: abort() → cancelApprovalsForTurn）
@@ -442,7 +483,7 @@ describe('query() へ実際に渡った MCP サーバのツール: 登録・isSt
 
   it('★ 対照（auto）: ⏹ を押していなければ、同じ流れで書く（onFileWritten・onDelegated も渡した関数が呼ばれる）', async () => {
     aiReplies([{ path: 'index.html', content: 'OK' }])
-    const run = await runChat({ writeMode: 'auto' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'auto' })
     const r = await sdkTool(run, 'delegate_implementation')({ task: 'ページを作る' })
     expect(fs.readFileSync(inWriteRoot('index.html'), 'utf8')).toBe('OK')
     expect(run.onFileWritten).toHaveBeenCalledWith('public/index.html') // エディタの開きタブはプロジェクト直下からの相対パス
@@ -454,7 +495,7 @@ describe('query() へ実際に渡った MCP サーバのツール: 登録・isSt
   // ── delegate_implementation: writeMode・turnId ──
   it('★★ delegate_implementation（confirm）: 書く前に承認を求める（dir は projectDir）。許可すると書く', async () => {
     aiReplies([{ path: 'index.html', content: 'OK' }])
-    const run = await runChat({ writeMode: 'confirm' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'confirm' })
     const p = sdkTool(run, 'delegate_implementation')({ task: 'ページを作る' })
     for (let i = 0; i < 50 && listPending().length < 1; i++) await tick()
     expect(listPending()).toHaveLength(1)
@@ -467,7 +508,7 @@ describe('query() へ実際に渡った MCP サーバのツール: 登録・isSt
 
   it('★★ delegate_implementation（confirm）: 承認待ちは handle.turnId で束ねられ、⏹ 相当の cancelApprovalsForTurn で拒否として解け、書かない', async () => {
     aiReplies([{ path: 'index.html', content: 'NO' }])
-    const run = await runChat({ writeMode: 'confirm' })
+    const run = await runChat({ offeredIdeTools: IDE_TOOL_BARE_NAMES, writeMode: 'confirm' })
     const p = sdkTool(run, 'delegate_implementation')({ task: 'ページを作る' })
     for (let i = 0; i < 50 && listPending().length < 1; i++) await tick()
     expect(listPending()).toHaveLength(1)

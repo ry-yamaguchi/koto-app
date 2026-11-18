@@ -23,11 +23,12 @@ import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultVisionModel,
 import { shouldTryImagesDirectly, recordVisionSupport, isImageUnsupportedError } from '../visionSupport'
 import { extractUrls, fetchPagesBlock, autoSearchBlock, wantsWebSearch } from '../webContext'
 import { toolsFor, isToolUnsupportedError, executeTool, toolStatusLabel, getSearchConfig, formatChatError, formatClaudeError, condenseReasoning, hasTextToolMarkup, stripToolMarkup, unexecutedToolWarning, claimsFileChange, unexecutedChangeWarning, stripRepeatedGuidance, WRITING_TOOLS, isToolArgsComplete, type ToolContext } from '../aiTools'
+import { handleOpenPreviewNotice } from '../claudeOpenPreview'
 import { shouldSendTools, isKnownToolCapable, recordToolSupport } from '../toolSupport'
 import { planSend, planCompact, planManualCompact, compactPrompt, acceptSummary, compactSource, type CompactMark } from '../historyCompact'
 import { searchStatusContext } from '../aiContext'
 import { getAnthropicToken } from '../components/CredentialsModal'
-import { isClaudeModeEnabled, hasClaudeConsent, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode, getClaudeCostThisMonth, getClaudeWarnUsd } from '../claudeMode'
+import { isClaudeModeEnabled, hasClaudeConsent, isClaudeConsentReconfirm, claudeConsentBody, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode, getClaudeCostThisMonth, getClaudeWarnUsd } from '../claudeMode'
 import { claudeChatWarningText } from '../../shared/usageBudget'
 import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
@@ -458,7 +459,7 @@ export function useAiChat(args: UseAiChatArgs) {
   // aiEngineKey は search_docs ツール用（C2b・方式B: 使う瞬間に読んで main へ引数で渡す。無ければ null）。
   // images は C2d: このターンでユーザーが添付した画像（data URL配列・空配列可）。main側 agent.ts が
   // 1枚以上ならストリーミング入力モードへ切り替え、Claude自身に直接読ませる（2段階visionを経由しない）。
-  const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null, writeMode: string) => {
+  const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null, writeMode: string, rag: { tags: string[] } | null) => {
     // 呼び出し時点の projectDir（send() から渡された、送信した瞬間のプロジェクト）の鍵。
     // このターンの ⏹ 登録・活動通知はここへ書く（emit の scalar も、この呼び出しの間は
     // 同じ値の toolsProjectDir を指しているので一致する。詳しくは send() 冒頭のコメント参照）。
@@ -469,6 +470,8 @@ export function useAiChat(args: UseAiChatArgs) {
     emit({ kind: 'loading', value: true })
     let assistantOpen = false
     let textAcc = ''
+    // 失敗した回の費用の行・⚠️。結果は失敗の知らせより先に届くので、知らせの吹き出しのあとへ回す。
+    let afterFailure: string[] = []
     // C2c: このターンで使うClaudeモデル（設定で選択済みのもの）。chatStart に渡し、
     // 終端の costFooter にも同じモデルのラベルを付ける。
     const claudeModel = getClaudeModel()
@@ -521,36 +524,45 @@ export function useAiChat(args: UseAiChatArgs) {
               textAcc = ''
               appendBubble({ role: 'assistant', content: claudeToolLabel(ev.name, ev.detail), toolNote: true })
               break
-            case 'result':
+            case 'result': {
               assistantOpen = false
+              // 費用は、成功でも失敗でも、受け取りをやめる前に必ず1回記録する（失敗した回も今月の利用額に入る）。
               recordClaudeCost(ev.costUsd)
               // W-102: エラーで終わり、かつ実際にはかかっていない（costUsd<=0）ときは
               // claudeCostFooter が空文字を返す。その場合は吹き出しを出さない。
-              {
-                const footer = claudeCostFooter(ev.costUsd, claudeModel, ev.isError)
-                if (footer) appendBubble({ role: 'assistant', content: footer, toolNote: true })
-              }
+              const tail: string[] = []
+              const footer = claudeCostFooter(ev.costUsd, claudeModel, ev.isError)
+              if (footer) tail.push(footer)
               // W-53（2026-09-27決定・別案）: 今月のClaude利用額が目安額を超えたら、設定画面だけでなく
               // チャット欄にも⚠️を出す（送信は止めない）。判定・文面は shared/usageBudget.ts に一元化。
-              {
-                const claudeWarning = claudeChatWarningText(getClaudeCostThisMonth(), getClaudeWarnUsd())
-                if (claudeWarning) appendBubble({ role: 'assistant', content: claudeWarning, toolNote: true })
+              const claudeWarning = claudeChatWarningText(getClaudeCostThisMonth(), getClaudeWarnUsd())
+              if (claudeWarning) tail.push(claudeWarning)
+              if (ev.isError) {
+                // 失敗の回は、main が結果のすぐあとに失敗の知らせを1つ送る。まだ終えず、知らせの吹き出しのあとに出す。
+                afterFailure = tail
+                break
               }
+              for (const line of tail) appendBubble({ role: 'assistant', content: line, toolNote: true })
               finish()
               break
+            }
             case 'error':
               assistantOpen = false
               // Claude 経路のエラーは Claude のキー/請求への案内に出し分ける（所見9）。
               // 請求・クレジット不足でさくらのAI Engineキーがあれば切替提案を出す（#31）。
               showClaudeError(ev.message)
+              for (const line of afterFailure) appendBubble({ role: 'assistant', content: line, toolNote: true })
+              afterFailure = []
               finish()
               break
             case 'openPreview':
-              // C2b: open_preview ツールの副作用。従来経路（AI Engineループ）の open_preview と
-              // 完全に同じ処理＝aiTools.ts executeTool の open_preview 分岐（存在確認→既定ブラウザで
-              // 開く）を buildExecuteOpts の文脈（projectDir 等）で実行する。結果文字列は使わない
-              // （ツール実行中の吹き出しは 'tool' イベント側で表示済み）。
-              void executeTool('open_preview', JSON.stringify({ path: ev.path }), { ...buildExecuteOpts() })
+              // C2b: open_preview ツール。従来経路（AI Engineループ）の open_preview と完全に同じ処理＝
+              // aiTools.ts executeTool の open_preview 分岐（拡張子・存在の確認→既定ブラウザで開く）を、
+              // **知らせに載った送信時のプロジェクト**で実行し、結果の文を main へ返す（道具の返事はそれを待つ）。
+              void handleOpenPreviewNotice(ev, {
+                execute: (name, argsJson, ctx) => executeTool(name, argsJson, ctx),
+                reply: (id, result) => window.electronAPI.claude.openPreviewResult(id, result),
+              })
               break
             case 'delegated':
               // C3: delegate_implementation の実行後。AI Engine 側の使用量として usage.ts へ記録する
@@ -573,7 +585,7 @@ export function useAiChat(args: UseAiChatArgs) {
           },
         })
 
-        window.electronAPI.claude.chatStart(projectDir, claudeKey, text, images, snapshotId, claudeSessionRef.current, aiEngineKey, claudeModel, writeMode)
+        window.electronAPI.claude.chatStart(projectDir, claudeKey, text, images, snapshotId, claudeSessionRef.current, aiEngineKey, claudeModel, writeMode, rag)
           .catch((e: any) => {
             showClaudeError(e?.message ?? String(e))
             finish()
@@ -655,18 +667,21 @@ export function useAiChat(args: UseAiChatArgs) {
       const claudeReady = !!claudeKey && isClaudeModeEnabled()
 
       if (toolsProjectDir && claudeReady) {
-        if (!hasClaudeConsent()) {
+        // 送信してよいか: すでに同意済み、またはいま「はい」と答えた。記録の成否には依存させない
+        // （保存領域が書けない環境でも、同意した回は送る。次回はまた確認が出る）。
+        let consented = hasClaudeConsent()
+        if (!consented) {
           // 所見7: 料金発生（Anthropicへ直接課金・AI Engineの月間上限とは別枠）と、設定での切替可否を明記する。
           const agreed = await confirm({
             title: 'Claudeモードを使いますか',
-            body: 'Claudeモードでは、プロジェクトのコードと指示が Anthropic（米国）に送信され、Claudeの利用料金が別途発生します（Anthropicへ直接課金／さくらのAI Engineの月間上限とは別枠）。使わないときは 設定 でさくらのAI Engineに切り替えられます。よろしいですか？（この確認は初回のみ）',
+            body: claudeConsentBody(isClaudeConsentReconfirm()),
             confirmLabel: '同意して使う',
             danger: false,
             initialFocus: 'cancel',
           })
-          if (agreed) recordClaudeConsent()
+          if (agreed) { recordClaudeConsent(); consented = true }
         }
-        if (hasClaudeConsent()) {
+        if (consented) {
           // 画像のみの送信は従来経路と同じ既定文言を付ける（空のユーザー吹き出し・空テキスト送信を避ける）
           const text = requestTextOf(rawText, hasImages)
           const historyBefore = getHistory()
@@ -697,7 +712,7 @@ export function useAiChat(args: UseAiChatArgs) {
           }
           // W-18: 送信時点の writeMode（turnOpts のスナップショット）を Claude 経路にもそのまま渡す
           // （さくらのAI Engine 経路の decideApproval と同じ「送信時点で固定」・掟10）。
-          await sendViaClaude(text + assetBlock, images, claudeKey as string, snapshotId, toolsProjectDir, delegateKey, (turnOpts as { writeMode?: string }).writeMode ?? 'auto')
+          await sendViaClaude(text + assetBlock, images, claudeKey as string, snapshotId, toolsProjectDir, delegateKey, (turnOpts as { writeMode?: string }).writeMode ?? 'auto', (turnOpts as { rag?: { tags: string[] } | null }).rag ?? null)
           return
         }
         // 同意ダイアログをキャンセルした場合：AI Engineキーがあれば（モードA）従来どおり黙ってAI Engine経路へ

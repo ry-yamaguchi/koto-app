@@ -50,6 +50,7 @@ vi.mock('../src/main/ipc/web', () => ({ fetchUrlPage: async () => { throw new Er
 vi.mock('../src/main/rag/client', () => ({ queryDocuments: async () => [] }))
 
 import { buildIdeToolsServer, writeDelegatedFiles } from '../src/main/claude/tools'
+import { IDE_TOOL_BARE_NAMES } from '../src/main/claude/toolText'
 import { summarizeDelegateStopped } from '../src/main/claude/toolText'
 import {
   setApprovalListener, answerApproval, listPending, resetApprovalsForTest, cancelApprovalsForTurn,
@@ -88,7 +89,7 @@ function delegateHandler(writeMode: WriteMode): (args: any) => Promise<{ content
     createSdkMcpServer: (opts: any) => opts,
   }
   const server: any = buildIdeToolsServer(sdk, {
-    projectDir, writeRoot, aiEngineKey: 'test-key', writeMode, turnId: TURN_ID,
+    projectDir, writeRoot, aiEngineKey: 'test-key', ragTags: [], enabledTools: IDE_TOOL_BARE_NAMES, writeMode, turnId: TURN_ID,
     isStopped: () => stopped,
     onOpenPreview: () => {}, snapshotId: SNAPSHOT_ID, snapshotLabel: 'テスト',
     ragBudgetCheck: () => ({ allowed: true }), // W-85: search_docs の上限の確認（このテストは委譲だけを見るので常に許可）
