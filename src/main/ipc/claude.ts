@@ -4,6 +4,7 @@
 import { ipcMain } from 'electron'
 import { testAnthropicKey, checkClaudeBinary, listAnthropicModels } from '../claude/client'
 import { startClaudeChat, type ClaudeChatHandle } from '../claude/agent'
+import { createOpenPreviewBridge, answerOpenPreview } from '../claude/openPreviewBridge'
 import type { IpcDeps } from './types'
 import { resolvePublishRoot } from '../publishRootFs'
 import type { WriteMode } from '../../shared/approvalPlan'
@@ -17,6 +18,8 @@ import { budgetCheckForKey } from '../usageStore'
 // 同時実行は1セッションのみ（C2の設計どおり）。新しい claude:chatStart が来たら、
 // 進行中のセッションがあれば中断してから開始する。
 let activeChat: ClaudeChatHandle | null = null
+// 進行中のターンの open_preview の橋（中断・終了のとき、待っている分を解く）。
+const previewBridges = new Set<ReturnType<typeof createOpenPreviewBridge>>()
 
 export function registerClaudeHandlers(_deps: IpcDeps) {
   // 疎通テスト（GET /v1/models）。モデル件数を返す。
@@ -43,9 +46,18 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
   // images は C2d（画像添付ターンをClaude自身に直接処理させる。data URL配列・空配列可）。
   ipcMain.handle(
     'claude:chatStart',
-    (event, projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string) => {
+    (event, projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string, rag: { tags?: unknown } | null) => {
       // 前のセッションが残っていれば、応答だけでなく承認待ちも一緒に閉じる（W-18）。
       if (activeChat) { activeChat.abort(); cancelApprovalsForTurn(activeChat.turnId) }
+      // 前のターンの、返事を待っているプレビューの橋も取り消す（待ちを「中断されました」で解く）。
+      for (const b of previewBridges) b.cancelAll()
+      previewBridges.clear()
+      const previewBridge = createOpenPreviewBridge({
+        projectDir,
+        writeRoot: resolvePublishRoot(projectDir),
+        send: notice => event.sender.send('claude:stream', notice),
+      })
+      previewBridges.add(previewBridge)
       const handle = startClaudeChat({
         projectDir,
         // Claude の作業フォルダは`public/`（無ければプロジェクト直下）。
@@ -55,6 +67,8 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
         aiEngineKey: aiEngineKey ?? null,
         // W-85: 資料検索の上限の確認。キーが無ければ search_docs はそもそも「キーが要る」と返して通信しないので、確認は通す側でよい。
         ragBudgetCheck: aiEngineKey ? budgetCheckForKey(aiEngineKey) : () => ({ allowed: true }),
+        // 画面の「📚 資料を使う」の送信時点の設定（使わない＝null）。形の読めない値は「使わない」に倒す。
+        rag: rag && typeof rag === 'object' && Array.isArray(rag.tags) ? { tags: rag.tags.filter((t): t is string => typeof t === 'string') } : null,
         prompt,
         images: images ?? [],
         snapshotId,
@@ -66,14 +80,13 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
           try { event.sender.send('claude:stream', uiEvent) } catch { /* ウィンドウ破棄時は無視 */ }
           // result/error はそのターンの終端。次のセッションが不要に前回分を中断しないよう解放する。
           if (uiEvent.kind === 'result' || uiEvent.kind === 'error') {
+            previewBridge.cancelAll(); previewBridges.delete(previewBridge)
             if (activeChat === handle) activeChat = null
           }
         },
-        // open_preview の副作用（C2b）: openPreview イベントとして renderer へ通知し、renderer 側で
-        // 従来経路の open_preview ツールと同じ処理（存在確認→既定ブラウザで開く）を行う。
-        onOpenPreview: relPath => {
-          try { event.sender.send('claude:stream', { kind: 'openPreview', path: relPath }) } catch { /* ウィンドウ破棄時は無視 */ }
-        },
+        // open_preview（C2b）: 送信時のプロジェクトを載せた openPreview イベントを renderer へ送り、renderer 側で
+        // 従来経路の open_preview と同じ処理（拡張子・存在の確認→既定ブラウザで開く）を行った結果の文を待つ。
+        onOpenPreview: relPath => previewBridge.request(relPath),
         // delegate_implementation の実行後（C3）: renderer へ通知し、AI Engine 側の使用量として記録させる。
         onDelegated: info => {
           try { event.sender.send('claude:stream', { kind: 'delegated', ...info }) } catch { /* ウィンドウ破棄時は無視 */ }
@@ -93,7 +106,14 @@ export function registerClaudeHandlers(_deps: IpcDeps) {
   // （2026-09-23 の教訓と同じ形・W-18でClaude経路にも承認待ちが生まれたため必須）。
   ipcMain.handle('claude:chatCancel', () => {
     if (activeChat) { activeChat.abort(); cancelApprovalsForTurn(activeChat.turnId) }
+    for (const b of previewBridges) b.cancelAll()
+    previewBridges.clear()
     activeChat = null
     return { ok: true }
+  })
+
+  // open_preview の知らせへの返事（renderer が開いた結果の文）。待っている道具の返事を解く。
+  ipcMain.handle('claude:openPreviewResult', (_, id: string, result: string) => {
+    return { ok: answerOpenPreview(id, result) }
   })
 }

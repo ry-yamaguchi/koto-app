@@ -54,6 +54,24 @@ function sanitizeForWrap(content: string): string {
 }
 
 /**
+ * 題（囲いの1行目）の長さの上限（文字数）。
+ * 題には「参照ページ: URL（ページの題）」「Web検索結果（クエリ: …）」「〇〇からの応答（…の失敗）」
+ * など、外部由来の URL・ページの題・検索語が入りうる。普通の URL と題は数百文字に収まるので、
+ * 300 文字で切る。上限が無いと、とても長い題で1行目が膨らみ、費用と境界の見通しを損なう。
+ */
+const LABEL_MAX_CHARS = 300
+
+/** 題を本文と同じ消毒に通す。改行・制御文字は空白にし（1行目に収める）、偽の境界を除き、長さで切る。 */
+function sanitizeLabel(label: string): string {
+  // eslint-disable-next-line no-control-regex
+  const oneLine = label.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ')
+  const safe = sanitizeForWrap(oneLine)
+  // 文字の単位（コードポイント）で切る。UTF-16 の単位で切ると、絵文字などの2つ組の文字の片割れが残る。
+  const chars = Array.from(safe)
+  return chars.length > LABEL_MAX_CHARS ? chars.slice(0, LABEL_MAX_CHARS).join('') + '…' : safe
+}
+
+/**
  * 外部から取得したテキスト（Webページ本文・検索結果・資料の抜粋）を、
  * 推測不能なランダム境界トークンで囲む。
  *
@@ -62,13 +80,14 @@ function sanitizeForWrap(content: string): string {
  *   {サニタイズ済み content}
  *   <<<END-KOTO-EXT-{同じ8桁hex}>>>
  *
- * @param sourceLabel 何のデータか（例: "参照ページ: https://…"）。1行目に入る。
+ * @param sourceLabel 何のデータか（例: "参照ページ: https://…"）。1行目に入る。外部由来の文字も入りうるので、消毒して長さを切る。
  * @param content     外部由来の本文（サニタイズしてから囲む）。
  */
 export function wrapUntrusted(sourceLabel: string, content: string): string {
   const nonce = makeNonce()
   const safeContent = sanitizeForWrap(content)
-  return `<<<KOTO-EXT-${nonce}>>> ${sourceLabel}\n${safeContent}\n<<<END-KOTO-EXT-${nonce}>>>`
+  const safeLabel = sanitizeLabel(sourceLabel)
+  return `<<<KOTO-EXT-${nonce}>>> ${safeLabel}\n${safeContent}\n<<<END-KOTO-EXT-${nonce}>>>`
 }
 
 /**

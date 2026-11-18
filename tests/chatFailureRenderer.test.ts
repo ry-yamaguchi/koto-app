@@ -38,7 +38,7 @@ vi.mock('../src/renderer/components/CredentialsModal', () => ({
 }))
 
 import { useAiChat, type ChatMessage } from '../src/renderer/hooks/useAiChat'
-import { CLAUDE_CONSENT_KEY } from '../src/renderer/claudeMode'
+import { CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION } from '../src/renderer/claudeMode'
 import { getTurn, resetTurn, turnKey } from '../src/renderer/chatTurnRegistry'
 import { applyToMessages, type ChatEvent } from '../src/shared/chatEvents'
 import { failureBubbleOf, requestBubbleOf, UNEXPECTED_FAILURE_TEXT } from '../src/shared/chatFailure'
@@ -80,7 +80,7 @@ beforeEach(() => {
       },
     },
   })
-  store.set(CLAUDE_CONSENT_KEY, '1')
+  store.set(CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION)
 })
 afterEach(() => {
   resetTurn(turnKey(PROJECT, 'x'))

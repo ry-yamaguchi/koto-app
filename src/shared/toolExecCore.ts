@@ -42,6 +42,11 @@ export function isToolError(result: string): boolean {
   return (result ?? '').startsWith(TOOL_ERROR_PREFIX)
 }
 
+/** open_preview が開いてよいのは HTML だけ（ブラウザで開く＝他の種類は OS の既定のアプリが走りうる）。 */
+export const PREVIEW_EXT_RE = /\.html?$/i
+export const OPEN_PREVIEW_DESCRIPTION = 'プロジェクト内のHTMLファイル（.html・.htm）を既定ブラウザで開いてユーザーに見せる。HTML 以外のファイルは開けない。作業が一段落して見た目を確認してもらうときに使う。'
+export const OPEN_PREVIEW_PATH_DESCRIPTION = '開くHTMLファイルの相対パス（.html または .htm のみ・省略時は index.html）'
+
 /** プロジェクトルート配下の安全な絶対パスに解決する。絶対パス・脱出を試みるパスは null。 */
 export function resolveInProject(projectDir: string, relPath: string): string | null {
   if (relPath.startsWith('/') || relPath.includes('..')) return null
@@ -305,6 +310,7 @@ export async function executeToolCore(name: string, argsJson: string, ctx: CoreT
     const rel = String(args.path ?? 'index.html')
     const full = resolveInProject(ctx.writeRoot, rel)
     if (!full) return `エラー: 不正なパスです（${rel}）`
+    if (!PREVIEW_EXT_RE.test(rel)) return `エラー: プレビューで開けるのは HTML ファイル（.html・.htm）だけです（${rel}）`
     if (!(await io.exists(full))) return `エラー: ファイルがありません（${rel}）`
     try {
       await io.openPath(full)

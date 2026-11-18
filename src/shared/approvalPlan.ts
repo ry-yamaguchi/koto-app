@@ -81,3 +81,19 @@ export function runCommandDenialMessage(toolArgsJson: string): string {
   try { cmd = JSON.parse(toolArgsJson || '{}').command ?? '' } catch { /* 不明でも文面は返す */ }
   return `ユーザーがコマンド「${cmd}」の実行を許可しませんでした。実行せずに、どう進めるべきかユーザーに確認してください。`
 }
+
+/** URL を承認の文へ出すための整形。切らずに全部出す（この確認は「何が外へ送られるか」を見るためのもので、後ろの部分に持ち出すデータが載りうる）。 */
+function shortUrl(rawUrl: string): string {
+  // 改行・制御文字は空白にする（確認の文に偽の行を作らせない）。
+  return rawUrl.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+}
+
+/** Claude のページを読む道具（fetch_url）の、取得する前の確認の文（「✋ 毎回確認」のときだけ出す）。 */
+export function fetchUrlApprovalLabel(url: string): string {
+  return `🌐 ページの読み取り（${shortUrl(url) || '(不明なURL)'}）`
+}
+
+/** fetch_url が断られたとき、AIへ返す文面。 */
+export function fetchUrlDenialMessage(url: string): string {
+  return `ユーザーが ${shortUrl(url) || 'このURL'} の読み取りを許可しませんでした。読まずに、どう進めるべきかユーザーに確認してください。`
+}

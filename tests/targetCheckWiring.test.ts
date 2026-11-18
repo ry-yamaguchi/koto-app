@@ -45,7 +45,7 @@ import { useAiChat } from '../src/renderer/hooks/useAiChat'
 import { useTargetCheck, makeTargetCheckPorts, resetTargetCheckSpent, isOtherProjectLoading, type TargetCheckIo } from '../src/renderer/hooks/useTargetCheck'
 import { onTargetChanged, targetCheckButtonState, buildTargetCheckPrompt, TARGET_CHECK_OTHER_BUSY_NOTE, TARGET_CHECK_STALE_NOTE } from '../src/renderer/targetCheck'
 import { getTargetProfile } from '../src/renderer/targetProfiles'
-import { CLAUDE_CONSENT_KEY } from '../src/renderer/claudeMode'
+import { CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION } from '../src/renderer/claudeMode'
 import { resetTurn, turnKey, updateTurn, CHAT_APP_KEY } from '../src/renderer/chatTurnRegistry'
 import { applyToMessages } from '../src/shared/chatEvents'
 import { forStorage } from '../src/shared/chatStorage'
@@ -271,7 +271,7 @@ beforeEach(() => {
       },
     },
   })
-  store.set(CLAUDE_CONSENT_KEY, '1')
+  store.set(CLAUDE_CONSENT_VERSION_KEY, CLAUDE_CONSENT_VERSION)
   setMeta(PROJECT, { name: 'a', target: TARGET })
 })
 afterEach(() => {
