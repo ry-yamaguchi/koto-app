@@ -3,10 +3,10 @@ import * as fs from 'fs'
 import * as path from 'path'
 import type { ReactElement } from 'react'
 
-// ── 確認の窓の呼び口 17 か所は、すべて ConfirmModal 1 部品を通る ───────────────────────────────────────
+// ── 確認の窓の呼び口 18 か所は、すべて ConfirmModal 1 部品を通る ───────────────────────────────────────
 // 確認の窓（枠・読み上げの印・Esc と Tab・フォーカスの復帰）は ui/Modal の上の ConfirmModal だけが持つ。
-// 呼び口は useConfirm（13）と useConfirmChoices（4）で、どの画面も自前の確認の窓を描かず、フックが返す element を置く。
-// だから「ConfirmModal 本体を直せば 17 か所すべてが直る」。それを 2 つの面から固定する。
+// 呼び口は useConfirm（14）と useConfirmChoices（4）で、どの画面も自前の確認の窓を描かず、フックが返す element を置く。
+// だから「ConfirmModal 本体を直せば 18 か所すべてが直る」。それを 2 つの面から固定する。
 //   (1) 呼び口を 1 つずつ書き下す: 呼ぶ形が 1 回だけ・element を置く形・ConfirmModal を直接取り込まない・自前の確認の窓を描かない
 //   (2) 両方のフックが返す element は ConfirmModal で、ConfirmModal は alertdialog の Modal を返す
 // 一覧に無い呼び口が増えたら、全件の走査で落ちる（足したときは、この一覧にも書き足す）。
@@ -58,7 +58,7 @@ function expectCallSite(file: string, call: string, placed: string[]) {
   expect(src).not.toContain('role="alertdialog"')
 }
 
-describe('useConfirm の呼び口 13 か所', () => {
+describe('useConfirm の呼び口 14 か所', () => {
   it('App.tsx（保存できなかった編集を捨てて、プロジェクトを切り替える・フォルダを整理する）', () => {
     expectCallSite('App.tsx', 'const { confirm: askUser, element: confirmElement } = useConfirm()', ['{confirmElement}'])
   })
@@ -98,6 +98,9 @@ describe('useConfirm の呼び口 13 か所', () => {
   it('SettingsModal.tsx（今月の記録を0に戻す）', () => {
     expectCallSite('components/SettingsModal.tsx', 'const { confirm, element: confirmElement } = useConfirm()', ['{confirmElement}'])
   })
+  it('OsvCheckBlock.tsx（ライブラリの脆弱性を調べる初回の確認）', () => {
+    expectCallSite('components/OsvCheckBlock.tsx', 'const { confirm, element: confirmElement } = useConfirm()', ['{confirmElement}'])
+  })
 })
 
 describe('useConfirmChoices の呼び口 4 か所', () => {
@@ -131,7 +134,7 @@ describe('呼び口の全件（一覧に無い呼び口が増えたら落ちる�
   const using = (needle: string) =>
     files.filter(f => read(f).split('\n').some(l => !l.trim().startsWith('//') && l.includes(needle))).sort()
 
-  it('★★★ `= useConfirm()` を呼ぶファイルは、書き下した 13 個だけ', () => {
+  it('★★★ `= useConfirm()` を呼ぶファイルは、書き下した 14 個だけ', () => {
     expect(using('= useConfirm()')).toEqual([
       'App.tsx',
       'components/AppRunDedicatedPanel.tsx',
@@ -141,6 +144,7 @@ describe('呼び口の全件（一覧に無い呼び口が増えたら落ちる�
       'components/CredentialsModal.tsx',
       'components/EditorPanel.tsx',
       'components/HanamiiTeardownSection.tsx',
+      'components/OsvCheckBlock.tsx',
       'components/RollbackSection.tsx',
       'components/SettingsModal.tsx',
       'components/Sidebar.tsx',

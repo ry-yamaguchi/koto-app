@@ -850,6 +850,11 @@ interface Window {
       estimates(): Promise<Record<string, import('../shared/stageEstimate').StageEstimate>>
     }
 
+    osv: {
+      preview(projectDir: string): Promise<import('../shared/osvTypes').OsvPreview>
+      check(projectDir: string, consented: boolean): Promise<import('../shared/osvTypes').OsvCheckReply>
+    }
+
     vercel: {
       /** 疎通テスト。`warn: true` は「トークンは有効だが、公開する範囲が見えていない」。 */
       testConnection(token: string, teamId?: string): Promise<{ ok: boolean; warn?: boolean; status?: number; message?: string }>

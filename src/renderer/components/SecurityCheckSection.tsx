@@ -4,6 +4,7 @@ import { foldSecurity } from '../appRunFolding'
 import CopyButton from './CopyButton'
 import SecurityReportBody from './SecurityReportBody'
 import { failureCopyNow } from '../failureCopy'
+import OsvCheckBlock from './OsvCheckBlock'
 
 // 🛡 セキュリティチェックの節。公開フローの「事前チェック」の次に置く
 // （2026-08-21 Ryosuke 指定。最初は上部バーに置いたが、公開の流れの中が自然）。
@@ -186,6 +187,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
           </div>
         )
       )}
+      <OsvCheckBlock projectDir={projectDir} />
     </section>
   )
 }
