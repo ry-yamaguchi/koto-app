@@ -38,6 +38,7 @@ import type { RagBudgetCheck } from '../rag/client'
 import { ragToolEnabled } from '../../shared/aiToolsCore'
 import { IDE_MCP_SERVER_NAME, OFFERED_IDE_TOOL_NAMES, DELEGATION_GUIDANCE, qualifyMcpToolName, resolveIdeTools, type IdeToolBareName } from './toolText'
 import { UNTRUSTED_RULE } from '../../shared/untrustedBlock'
+import { SECURE_WRITING_RULE } from '../../shared/secureWritingRule'
 import { nowContext } from '../../shared/chatTime'
 import { snapshotBeforeWrite, snapshotBeforeChange } from '../backup/store'
 import { buildUserContent } from './vision'
@@ -49,6 +50,8 @@ import { requiresConfirmation } from '../../shared/aiToolsCore'
 import { planApproval, writeDenialMessage, runCommandDenialMessage, fetchUrlApprovalLabel, fetchUrlDenialMessage, type WriteMode } from '../../shared/approvalPlan'
 import { CONFINED_READ_TOOLS, readTargetOutsideProject, readOutsideDenialMessage } from './readConfinement'
 import { requestApproval } from '../chat/approvalStore'
+import { createWriteWatch, type WriteWatch } from '../../shared/writeWatch'
+import { readForWatch } from '../writeWatchRead'
 
 /** Claude頭脳モードの既定モデル（dev-plan.md C2 で指定）。
  *  renderer の DEFAULT_CLAUDE_MODEL（claudeMode.ts）と一致させること（未指定時のみ使う保険）。 */
@@ -352,8 +355,10 @@ export function makeCanUseTool(scopeDir: string, writeRoot: string, writeMode: W
  * snapshotBeforeWrite を使い、Edit は最終内容が事前に分からないため snapshotBeforeChange
  * （既存内容があれば常に退避）を使う。
  * パスは projectDir 配下に限定し（relPathInProject）、外を指す場合は何もしない。
+ * あわせて、書く直前の旧内容を writeWatch へ控える（ターンの終わりの点検用）。退避とは別の try にして、
+ * どちらが失敗してももう一方と書き込み自体は止めない。
  */
-function makePreToolUseHook(projectDir: string, snapshotId: string, snapshotLabel: string): HookCallback {
+function makePreToolUseHook(projectDir: string, snapshotId: string, snapshotLabel: string, writeWatch: Pick<WriteWatch, 'touch'>): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return { continue: true }
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
@@ -368,6 +373,16 @@ function makePreToolUseHook(projectDir: string, snapshotId: string, snapshotLabe
         }
       } catch {
         // スナップショット失敗でチャット自体は止めない（履歴機能の欠落よりチャット継続を優先）
+      }
+      if (input.tool_name === 'Write' || input.tool_name === 'Edit') {
+        try {
+          const abs = path.join(projectDir, rel)
+          let before: string | null = null
+          try { before = fs.readFileSync(abs, 'utf8') } catch { before = null }
+          writeWatch.touch(abs, before)
+        } catch {
+          // 控えの失敗で書き込みは止めない
+        }
       }
     }
     return { continue: true }
@@ -454,6 +469,10 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
   const makePromptArg = (): string | AsyncGenerator<SDKUserMessage> =>
     images.length > 0 ? singleUserMessage(prompt, images) : prompt
 
+  // このターンで AI が書いたファイルの控え。成功で終わるターンの終わりに、いまの内容を読み直して点検する。
+  // resume のやり直し（runOnce をもう一度呼ぶ）でも同じものを使う。
+  const writeWatch = createWriteWatch({ displayRoot: projectDir, read: readForWatch })
+
   const options: Options = {
     cwd: writeRoot,
     // C2c: renderer で選択されたモデル（claudeMode.ts CLAUDE_MODELS）。未指定時は既定定数。
@@ -485,7 +504,7 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // scopeDir と同じ役割・ChatPanel.tsx の pendingApprovals が dir===projectDir で絞り込む）。
     canUseTool: makeCanUseTool(projectDir, writeRoot, writeMode, turnId),
     hooks: {
-      PreToolUse: [{ matcher: 'Edit|Write', hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)] }],
+      PreToolUse: [{ matcher: 'Edit|Write', hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel, writeWatch)] }],
       // 実行成功後にエディタへ反映を通知（stale tab のオートセーブ上書きによるデータ喪失防止）
       PostToolUse: [{ matcher: 'Edit|Write', hooks: [makePostToolUseHook(projectDir, onFileWritten)] }],
     },
@@ -502,7 +521,7 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
-      append: (ideTools.delegationGuidance ? `${UNTRUSTED_RULE}\n\n${DELEGATION_GUIDANCE}` : UNTRUSTED_RULE) + `\n\n${nowContext()}`,
+      append: (ideTools.delegationGuidance ? `${UNTRUSTED_RULE}\n\n${DELEGATION_GUIDANCE}` : UNTRUSTED_RULE) + `\n\n${SECURE_WRITING_RULE}` + `\n\n${nowContext()}`,
       snapshot: false,
     },
   }
@@ -525,7 +544,7 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // そのとき承認待ちはまだ無く cancelApprovalsForTurn は0件を取り消すだけ。応答が返ったあとに承認待ちを
     // 新しく立てると ⏹ ではもう消せないので、止まっていれば聞かず・書かない（tools.ts の writeDelegatedFiles）。
     options.mcpServers = {
-      [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, ragTags: ragTags ?? [], enabledTools: ideTools.bareNames, writeMode, turnId, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, isStopped: () => abortController.signal.aborted }),
+      [IDE_MCP_SERVER_NAME]: buildIdeToolsServer(sdk, { projectDir, writeRoot, aiEngineKey, ragTags: ragTags ?? [], enabledTools: ideTools.bareNames, writeMode, turnId, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, noteWrite: (p, b) => writeWatch.touch(p, b), isStopped: () => abortController.signal.aborted }),
     }
 
     // query() を1回実行してストリームを onEvent へ流す。emittedAny=このストリームで何かイベントを
@@ -605,6 +624,12 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
               // 途中の失敗のあとに回復して成功で終わる形が実際に来るかは未確認（着手の門の実測では、再試行で成功する回は
               // api_retry の出来事だけで error は出なかった）。来たら失敗として出す（費用は1回記録される）。
               const failed = event.isError || heldFailure !== null
+              // 成功で終わる回だけ、残っている問題を ⚠️ の吹き出し1つで先に出す。失敗・⏹ の回は控えを持ち越す。
+              if (!failed && !abortController.signal.aborted) {
+                let notice: Awaited<ReturnType<WriteWatch['finish']>> = null
+                try { notice = await writeWatch.finish() } catch { notice = null }
+                if (notice) route({ kind: 'writeCheck', text: notice.text, marks: notice.marks, projectDir })
+              }
               route(failed ? { ...event, isError: true } : event)
               if (failed) { failedResultSeen = true; releaseFailure() }
               continue

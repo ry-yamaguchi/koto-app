@@ -24,6 +24,7 @@ function makeIo(overrides: Partial<ToolIo> = {}): ToolIo {
     searchInProject: notImplemented('searchInProject'),
     exists: notImplemented('exists'),
     openPath: notImplemented('openPath'),
+    noteWrite: () => {},
     ...overrides,
   }
 }
@@ -249,5 +250,84 @@ describe('executeToolCore - run_command', () => {
     })
     const result = await executeToolCore('run_command', JSON.stringify({ command: 'sleep 999' }), ctx, io)
     expect(result).toBe('$ sleep 999\n終了コード: null（60秒でタイムアウト。常駐プロセスはこのツールでは起動できません）\n（出力なし）')
+  })
+})
+
+describe('executeToolCore - noteWrite（書く前の控え。書き込みは止めない）', () => {
+  const ctx: CoreToolContext = { writeRoot: '/w' }
+  const GH = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+
+  function recorder(files: Record<string, string>) {
+    const notes: { abs: string; before: string | null }[] = []
+    const writes: { rel: string; content: string }[] = []
+    const io = makeIo({
+      readFileInProject: async (_root, rel) => {
+        if (!(rel in files)) throw new Error('ENOENT')
+        return files[rel]
+      },
+      writeFileInProject: async (_root, rel, content) => { writes.push({ rel, content }) },
+      noteWrite: (abs, before) => { notes.push({ abs, before }) },
+    })
+    return { io, notes, writes }
+  }
+
+  it('write_file（既存のファイル）: 旧内容つきで、ちょうど1回。書く前に呼ばれる', async () => {
+    const order: string[] = []
+    const { io, notes } = recorder({ 'a.txt': 'old' })
+    const base = io.writeFileInProject
+    io.writeFileInProject = async (...a) => { order.push('write'); return base(...a) }
+    const noted = io.noteWrite
+    io.noteWrite = (abs, before) => { order.push('note'); noted(abs, before) }
+    await executeToolCore('write_file', JSON.stringify({ path: 'a.txt', content: 'new' }), ctx, io)
+    expect(notes).toEqual([{ abs: '/w/a.txt', before: 'old' }])
+    expect(order).toEqual(['note', 'write'])
+  })
+
+  it('write_file（新しいファイル）: before は null で、ちょうど1回', async () => {
+    const { io, notes } = recorder({})
+    await executeToolCore('write_file', JSON.stringify({ path: 'sub/new.txt', content: 'x' }), ctx, io)
+    expect(notes).toEqual([{ abs: '/w/sub/new.txt', before: null }])
+  })
+
+  it('edit_file: 読んだ内容が before。編集が成り立ったときだけ、ちょうど1回', async () => {
+    const { io, notes, writes } = recorder({ 'a.txt': 'foo bar' })
+    await executeToolCore('edit_file', JSON.stringify({ path: 'a.txt', old_string: 'foo', new_string: 'baz' }), ctx, io)
+    expect(notes).toEqual([{ abs: '/w/a.txt', before: 'foo bar' }])
+    expect(writes).toEqual([{ rel: 'a.txt', content: 'baz bar' }])
+  })
+
+  it('edit_file: 見つからない・曖昧・空・同じ文字列・読めないときは呼ばない', async () => {
+    const { io, notes } = recorder({ 'a.txt': 'x x' })
+    const run = (a: object) => executeToolCore('edit_file', JSON.stringify({ path: 'a.txt', ...a }), ctx, io)
+    await run({ old_string: 'zzz', new_string: 'y' })
+    await run({ old_string: 'x', new_string: 'y' })
+    await run({ old_string: '', new_string: 'y' })
+    await run({ old_string: 'x', new_string: 'x' })
+    await executeToolCore('edit_file', JSON.stringify({ path: 'none.txt', old_string: 'a', new_string: 'b' }), ctx, io)
+    expect(notes).toEqual([])
+  })
+
+  it('保護されたパスの断りでは、write_file も edit_file も呼ばない', async () => {
+    const { io, notes, writes } = recorder({ '.env': 'A=1' })
+    const w = await executeToolCore('write_file', JSON.stringify({ path: '.env', content: 'x' }), ctx, io)
+    const e = await executeToolCore('edit_file', JSON.stringify({ path: '.env', old_string: 'A', new_string: 'B' }), ctx, io)
+    expect(w).toMatch(/^エラー: /)
+    expect(e).toMatch(/^エラー: /)
+    expect(notes).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('警告が出る中身でも、戻り値と書かれる中身は、控えが無いときと同じ（止めない・AI へ返さない）', async () => {
+    const content = `const t = "${GH}"\n`
+    const a = recorder({})
+    const b = recorder({})
+    b.io.noteWrite = () => { throw new Error('控えが壊れていても') }
+    const ra = await executeToolCore('write_file', JSON.stringify({ path: 'k.js', content }), ctx, a.io)
+    const rb = await executeToolCore('write_file', JSON.stringify({ path: 'k.js', content }), ctx, b.io)
+    expect(ra).toBe(`保存しました: k.js（${content.length}文字）`)
+    expect(rb).toBe(ra)
+    expect(a.writes).toEqual([{ rel: 'k.js', content }])
+    expect(b.writes).toEqual(a.writes)
+    expect(ra).not.toContain('⚠️')
   })
 })

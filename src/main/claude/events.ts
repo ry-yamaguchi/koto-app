@@ -9,6 +9,7 @@
 
 import { withFailureDetail, failureDetailOf } from '../../shared/failureText'
 import { joinFailureDetail } from '../../shared/failureDetail'
+import type { WriteFixMark } from '../../shared/securityFindings'
 
 export type UiEvent =
   | { kind: 'session'; sessionId: string }
@@ -27,6 +28,9 @@ export type UiEvent =
   // agent.ts の PostToolUse フック／tools.ts の委譲書き込みから ipc/claude.ts が発行する。
   // renderer は該当パスの開きタブをディスクから読み直す（stale tab のオートセーブ上書き防止）。
   | { kind: 'fileWritten'; path: string }
+  // 成功で終わるターンの終わりに、書いた中身の点検で残った問題を知らせる（値は含まない）。result の前に出る。
+  // projectDir は、受け取る側が自分のプロジェクトの回のものだけを当てるための印（掟11）。
+  | { kind: 'writeCheck'; text: string; marks: WriteFixMark[]; projectDir: string }
 
 /** tool_use ブロックの input から、ツール実行中表示に使う短い一言（ファイルパス／コマンド等）を作る。 */
 export function describeToolDetail(name: string, input: unknown): string {

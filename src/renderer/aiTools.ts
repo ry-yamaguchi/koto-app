@@ -114,6 +114,8 @@ function buildIo(ctx: ToolContext): ToolIo {
     searchInProject: (root, query, pathPattern) => window.electronAPI.fs.searchInProject(root, query, pathPattern),
     exists: (path) => window.electronAPI.fs.exists(path),
     openPath: async (path) => { await window.electronAPI.shell.openPath(path) },
+    // 書き込みの点検は main 側が持つ（本番の書き込みは main の executeTool を通る）。型のための何もしない実装。
+    noteWrite: () => {},
   }
 }
 

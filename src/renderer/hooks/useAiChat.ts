@@ -41,6 +41,7 @@ import type { AskPath } from '../../shared/chatTurnRpc'
 import { stripFunctions, dispatchAsk } from '../chatTurnBridge'
 import { turnKey, getTurn, updateTurn, resetTurn, subscribe, getSnapshot } from '../chatTurnRegistry'
 import type { ConfirmOptions } from '../useConfirm'
+import type { WriteFixMark } from '../../shared/securityFindings'
 
 export type ChatMessage = {
   role: 'user' | 'assistant'
@@ -61,6 +62,8 @@ export type ChatMessage = {
    *  付けるのは failureBubbleOf（chatFailure.ts）だけ。送り直す材料（依頼の文と画像）は持たない
    *  （画像のデータ URL を会話の保存に二重に入れないため）。会話の保存に残る。 */
   offerRetry?: true
+  /** 書いた中身の点検（⚠️ の吹き出し）で見つけたものの印。ファイル・種類・行だけを持つ。toolNote なので AI へは送らない。 */
+  writeFix?: WriteFixMark[]
   /** 推論モデル（Kimi K2.7 / gpt-oss 等）が本文を出す前に流してくる「思考」。
    *  待っている間に「いま何をしているか」を見せるための表示専用（2026-08-03 ユーザー要望）。
    *  **AIへは送り返さない**（費用が増え、モデルも混乱する）。**履歴ファイルにも保存しない**
@@ -393,6 +396,8 @@ export function useAiChat(args: UseAiChatArgs) {
       compactWarnedRef.current = true
       return true
     },
+    // 本番の書き込みは main 側が持つ。型のための何もしない実装。
+    writeWatch: { finish: async () => null },
     h: {
       formatChatError,
       condenseReasoning,
@@ -573,6 +578,12 @@ export function useAiChat(args: UseAiChatArgs) {
               // Claude/委譲が main プロセス側でファイルを書いた直後。開きタブをディスクから読み直す
               // （stale tab のオートセーブ上書きによるデータ喪失防止・2026-07-11 の致命バグ修正）。
               onExternalFilesChanged?.([ev.path])
+              break
+            case 'writeCheck':
+              // 書いた中身の点検で残った問題（成功で終わる回の result の前）。⚠️ の吹き出し1つ。AI へは送らない。
+              // 別のプロジェクトの回の点検は、ここの会話に入れない（掟11。ほかのプロジェクトで送ると、前の回の受け取りが残る）。
+              if (ev.projectDir !== projectDir) break
+              appendBubble({ role: 'assistant', toolNote: true, content: ev.text, writeFix: ev.marks })
               break
           }
         })

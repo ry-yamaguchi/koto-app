@@ -173,6 +173,8 @@ type ClaudeUiEvent =
   // Claude/委譲がファイルを書き込んだ直後（データ喪失バグ修正・2026-07-11）。
   // 開きタブをディスクから読み直す（stale tab のオートセーブ上書き防止）
   | { kind: 'fileWritten'; path: string }
+  // 成功で終わるターンの終わりに、書いた中身の点検で残った問題を知らせる（値は含まない）
+  | { kind: 'writeCheck'; text: string; marks: import('../shared/securityFindings').WriteFixMark[]; projectDir: string }
 
 // ── 「前の状態に戻す」（P2-⑧）の型。main 側 backup/plan.ts と一致させること ──
 type BackupFileAction = 'overwrite' | 'create' | 'pre-restore'
@@ -206,6 +208,7 @@ interface Window {
       writeFileIfUnchanged(path: string, content: string, expected: string | null): Promise<WriteIfUnchangedResultShape>
       /** 読めるかを聞く（読むだけ）。readable / missing（ファイルが無い）/ unreadable（それ以外）。 */
       readCheck(path: string): Promise<'readable' | 'missing' | 'unreadable'>
+      readForWriteFix(projectDir: string, rel: string): Promise<{ state: 'text'; content: string } | { state: 'missing' } | { state: 'unreadable' }>
       readFileInProject(projectDir: string, rel: string): Promise<string>
       writeFileInProject(projectDir: string, rel: string, content: string): Promise<void>
       openDialog(opts?: { filters?: { name: string; extensions: string[] }[] }): Promise<string | null>

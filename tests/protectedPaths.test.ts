@@ -112,7 +112,7 @@ describe('大文字小文字を変えても守りから漏れない', () => {
     for (const p of ['.GIT/hooks/pre-commit', '.Sakuraide.json', '.SAKURAIDE-BACKUP/x', '.ENV']) {
       const r = await writeDelegatedFiles([{ path: p, content: 'x' }], {
         projectDir: '/nonexistent/proj', writeRoot: '/nonexistent/proj', snapshotId: 's', snapshotLabel: 'l',
-        onFileWritten: () => { throw new Error('書いてはいけない') }, writeMode: 'auto', turnId: 't', isStopped: () => false,
+        onFileWritten: () => { throw new Error('書いてはいけない') }, writeMode: 'auto', turnId: 't', isStopped: () => false, noteWrite: () => {},
       } as any)
       expect(r.written, p).toEqual([])
       expect(r.denied?.path, p).toBe(p)

@@ -81,7 +81,7 @@ function delegateHandler(writeMode: WriteMode): (args: any) => Promise<{ content
   }
   const server: any = buildIdeToolsServer(sdk, {
     projectDir, writeRoot, aiEngineKey: 'test-key', ragTags: [], enabledTools: IDE_TOOL_BARE_NAMES, writeMode, turnId: TURN_ID,
-    isStopped: () => false, // ⏹ の抜け道は tests/w-fix-delegate-stop.test.ts で固定
+    isStopped: () => false, noteWrite: () => {}, // ⏹ の抜け道は tests/w-fix-delegate-stop.test.ts で固定
     onOpenPreview: () => {}, snapshotId: SNAPSHOT_ID, snapshotLabel: 'テスト',
     ragBudgetCheck: () => ({ allowed: true }), // W-85: search_docs の上限の確認（このテストは委譲だけを見るので常に許可）
     onDelegated: onDelegated as any, onFileWritten: onFileWritten as any,
@@ -230,7 +230,7 @@ describe('W-18: delegate_implementation の書き込みも「✋ 毎回確認」
 describe('W-18: writeDelegatedFiles（書く関数そのもの）の関門', () => {
   const ctx = (writeMode: WriteMode) => ({
     projectDir, writeRoot, snapshotId: SNAPSHOT_ID, snapshotLabel: 't',
-    onFileWritten: onFileWritten as any, writeMode, turnId: TURN_ID, isStopped: () => false,
+    onFileWritten: onFileWritten as any, writeMode, turnId: TURN_ID, isStopped: () => false, noteWrite: () => {},
   })
 
   it('★★ 守るパスは、呼び出し側の検査（validateDelegatePath）を通り抜けても、この関数が聞かずに拒否する', async () => {
@@ -306,7 +306,7 @@ describe('W-18: 配線（agent.ts は writeMode と turnId を委譲のツール
     expect(tools).not.toContain('writeMode?:')
     expect(tools).not.toContain('turnId?:')
     // ハンドラは書き込みを writeDelegatedFiles に通す（fs.writeFileSync を直接呼ぶ道が残っていない）
-    expect(tools).toContain('await writeDelegatedFiles(parsed.files, { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped })')
+    expect(tools).toContain('await writeDelegatedFiles(parsed.files, { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped, noteWrite })')
     expect(tools.match(/fs\.writeFileSync\(/g)?.length).toBe(1) // 書く関数の中の1か所だけ
   })
 })

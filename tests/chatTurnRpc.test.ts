@@ -45,7 +45,7 @@ const DIRECT_PATHS = [
   'toolSupport.shouldSendTools', 'toolSupport.isKnownToolCapable', 'toolSupport.record',
   'vision.shouldTryDirect', 'vision.record', 'vision.defaultModel',
   'usage.check', 'usage.record', 'compactWarnOnce',
-  'executeTool', 'approveToolCall', 'getHistory',
+  'executeTool', 'approveToolCall', 'getHistory', 'writeWatch.finish',
 ]
 
 describe('ASK_PATHS ⇄ EngineTurnPorts', () => {
@@ -87,6 +87,7 @@ describe('ASK_PATHS ⇄ EngineTurnPorts', () => {
         defaultModel: mark('vision.defaultModel'),
       },
       compactWarnOnce: mark('compactWarnOnce'),
+      writeWatch: { finish: async () => { seen.push('writeWatch.finish'); return null } },
       h: dummyH,
     }
 
@@ -115,6 +116,7 @@ describe('ASK_PATHS ⇄ EngineTurnPorts', () => {
     await ports.vision.record('model', true)
     await ports.vision.defaultModel()
     await ports.compactWarnOnce()
+    await ports.writeWatch.finish()
     seen.push('h') // h は呼び出しではなく値なので、ここで手動計上する
 
     const direct = seen.filter((p) => DIRECT_PATHS.includes(p))

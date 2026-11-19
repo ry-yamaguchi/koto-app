@@ -30,6 +30,7 @@ import { toolActionName, unexecutedToolsNote } from './aiToolsCore'
 import { DEFAULT_MODEL } from './modelInfo'
 // W-21: 「上限を超えています」の知らせを、同じ会話・同じキー・同じ月で1度だけにするための鍵（下の usageWarned）。
 import { hashKey, thisMonth } from './usageBudget'
+import type { WriteFixMark, WriteCheckNotice } from './securityFindings'
 
 // メッセージの形（renderer の ChatMessage と構造的に同じ。shared から renderer を import しない）
 export type TurnMessage = {
@@ -51,6 +52,9 @@ export type TurnMessage = {
    *  付けるのは failureBubbleOf（chatFailure.ts）だけ。送り直す材料（依頼の文と画像）は持たない
    *  （画像のデータ URL を会話の保存に二重に入れないため）。会話の保存に残る。 */
   offerRetry?: true
+  /** 書いた中身の点検（⚠️ の吹き出し）で見つけたものの印。ファイル・種類・行だけを持ち、値・文字数・見本は持たない。
+   *  toolNote なので AI へは送らない。会話の保存に残る。 */
+  writeFix?: WriteFixMark[]
   /** 推論モデル（Kimi K2.7 / gpt-oss 等）が本文を出す前に流してくる「思考」。
    *  待っている間に「いま何をしているか」を見せるための表示専用（2026-08-03 ユーザー要望）。
    *  **AIへは送り返さない**（費用が増え、モデルも混乱する）。**履歴ファイルにも保存しない**
@@ -200,6 +204,8 @@ export type EngineTurnPorts = {
   }
   /** 「まとめ失敗の警告は1度だけ」の印。初回だけ true を返し、以後 false。 */
   compactWarnOnce(): boolean | Promise<boolean>
+  /** このターンで AI が書いたファイルの点検。ターンの終わりに1回だけ呼ぶ。問題が残っていなければ null。 */
+  writeWatch: { finish(): Promise<WriteCheckNotice | null> }
   h: TurnHelpers
 }
 
@@ -1043,6 +1049,14 @@ export async function runEngineTurn(spec: EngineTurnSpec, ports: EngineTurnPorts
       }
       if (!(await ports.usage.check()).allowed) break // 上限到達時はループを止める
     }
+    // 書いたファイルの点検。ループの外で1回だけ（⏹・周回の上限・上限到達で抜けた回もここを通る）。
+    // 点検の失敗でターンを失敗にしない。
+    try {
+      const notice = await ports.writeWatch.finish()
+      if (notice) {
+        ports.emit({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: notice.text, writeFix: notice.marks } })
+      }
+    } catch { /* 点検できなかったときは何も出さない */ }
   } catch (err: any) {
     ports.emit({ kind: 'append', msg: failureBubbleOf(errorPrefix + ports.h.formatChatError(err?.message ?? String(err), 'sakura', err)) })
     ports.emit({ kind: 'attention', value: 'error' }) // 見ていない会話でも気づけるよう ⚠️ の印を付ける（B-2）。見ている会話では UI が出さない

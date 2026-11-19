@@ -6,6 +6,7 @@
 import type { RagQueryHit } from '../rag/parse'
 import { isProtectedWritePath } from '../../shared/protectedPaths'
 import { wrapUntrusted } from '../../shared/untrustedBlock'
+import { SECURE_WRITING_RULE } from '../../shared/secureWritingRule'
 
 // ── ツール名の修飾規則 ─────────────────────────────────────────────
 // SDK の仕様: createSdkMcpServer で注入したカスタムツールの実際のツール名は
@@ -196,7 +197,8 @@ export function buildDelegatePrompt(task: string, files: DelegateContextFile[]):
     '- content は変更後のファイルの完全な内容（差分ではなく全文）\n' +
     '- 新規作成・上書きのどちらもこの files 配列で表現する\n' +
     '- notes には補足事項があれば書く（無ければ空文字でよい）\n' +
-    '- 出力の最初の文字は必ず "{" であること'
+    '- 出力の最初の文字は必ず "{" であること\n\n' +
+    SECURE_WRITING_RULE
 
   const filesBlock = files.length
     ? files.map(f => `--- ${f.path} ---\n${f.content}`).join('\n\n')
