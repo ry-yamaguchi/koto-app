@@ -59,6 +59,8 @@ import { hashKey } from '../../shared/usageBudget'
 import { checkBeforeRequest, recordUsage, budgetCheckForKey } from '../usageStore'
 // B'-3d-2b: executeTool の main 直呼び用の追加インポート ──────────────────────
 import { executeToolCore, type CoreToolContext, type ToolIo, type SearchConfig } from '../../shared/toolExecCore'
+import { createWriteWatch, type WriteWatch } from '../../shared/writeWatch'
+import { readForWatch } from '../writeWatchRead'
 import { cleanAiRelPath } from '../../shared/publishRoot'
 import { fetchUrlPage, webSearch } from '../ipc/web'
 import { readFileInProjectFs, writeFileInProjectFs, projectFilesFs, searchInProjectFs } from '../ipc/fs'
@@ -181,6 +183,7 @@ export function buildMainIo(
   opts: Record<string, unknown>,
   payload: TurnStartPayload,
   emit: EngineTurnPorts['emit'],
+  writeWatch: Pick<WriteWatch, 'touch'>,
 ): ToolIo {
   const rag = opts.rag as { tags: string[] } | null | undefined
   return {
@@ -202,6 +205,8 @@ export function buildMainIo(
     snapshotBeforeWrite: async (root, snapshotId, rel, newContent, label) =>
       snapshotBeforeWriteOnDisk(root, snapshotId, rel, newContent, label),
     runCommand: runProjectCommand,
+    // 書く直前の控え。ターンの終わりの点検（writeWatch.finish）が使う。
+    noteWrite: (absPath, before) => writeWatch.touch(absPath, before),
     // 📚 資料の検索（search_docs）。renderer ChatPanel の buildExecuteOpts().ragSearch
     // （2026-08-30 時点）と一字一句同じパラメータ（query.slice(0,1000)・tags・topK 3）で組む。
     // rag（opts.rag）が無ければ undefined＝core が「資料検索は現在利用できません」を返す
@@ -281,9 +286,14 @@ export async function decideApproval(
 
 /** renderer にしか無い副作用を ask で組み立てる。optional な ports は caps が false なら undefined にする
  *  （無いのに ask すると挙動が変わるため・仕様書の注記）。 */
-function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPayload, entry: TurnEntry): EngineTurnPorts {
+export function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPayload, entry: TurnEntry): EngineTurnPorts {
   const { bridge } = entry
   const { caps } = payload
+  // このターンで AI が書いたファイルの控え。ターンの終わりに、いまの内容を読み直して点検する。
+  const writeWatch = createWriteWatch({
+    displayRoot: String(payload.spec.toolsProjectDir ?? ''),
+    read: readForWatch,
+  })
   // B'-3c: message系（append/replaceLast/removeLast）は、まず main の会話ストア
   // （convStore.ts）へ直接当ててから画面へ送る。renderer を経由しない書き込みの第一歩
   // （ウィンドウが閉じていても・出来事を取りこぼしても、会話は必ず保存される）。
@@ -342,7 +352,8 @@ function buildMainPorts(turnId: string, wc: WebContents, payload: TurnStartPaylo
     approveToolCall: (name, argsJson, scope) => decideApproval(name, argsJson, scope, payload, turnId),
     // B'-3d-2b: ask('executeTool', ...) から直呼びへ。本体（判定順序・結果文言）は
     // shared/toolExecCore.ts の executeToolCore（renderer と共有・複製ゼロ）。
-    executeTool: (name, argsJson, opts) => executeToolCore(name, argsJson, coreCtx(opts), buildMainIo(opts, payload, emit)),
+    executeTool: (name, argsJson, opts) => executeToolCore(name, argsJson, coreCtx(opts), buildMainIo(opts, payload, emit, writeWatch)),
+    writeWatch: { finish: () => writeWatch.finish() },
     buildRagBlock: caps.buildRagBlock
       ? (text) => bridge.ask('buildRagBlock', [text]) as any
       : undefined,

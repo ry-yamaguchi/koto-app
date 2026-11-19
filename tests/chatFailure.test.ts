@@ -205,6 +205,7 @@ function makePorts(cfg: Cfg) {
     },
     vision: { shouldTryDirect: () => cfg.visionDirect ?? true, record: () => {}, defaultModel: () => 'vision-model' },
     compactWarnOnce: () => false,
+    writeWatch: { finish: async () => null },
     h: cfg.toolsThrow === 'toolsFor' ? { ...helpers, toolsFor: () => { throw new Error('tools list failed (test)') } } : helpers,
   }
   return { ports, log, requests }

@@ -20,6 +20,8 @@ import { IDE_CONTEXT, buildProjectContext, ragStatusContext } from '../aiContext
 import { onTargetChanged, type TargetChangedDetail } from '../targetCheck'
 import { useTargetCheck } from '../hooks/useTargetCheck'
 import TargetCheckButton from './TargetCheckButton'
+import { useWriteFix } from '../hooks/useWriteFix'
+import WriteFixButton from './WriteFixButton'
 import RetryButton from './RetryButton'
 import { showsRetry } from '../../shared/retryOffer'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
@@ -844,6 +846,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     window.addEventListener('sakura-target-changed', h)
     return () => window.removeEventListener('sakura-target-changed', h)
   }, [targetCheck.ports])
+  // ⚠️ の吹き出しの「🛠 AIに修正させる」（writeFix.ts）。送るのは、ボタンを押したときだけ。
+  const writeFix = useWriteFix({ projectDir, apiKey, claudeActive, aiRoot: currentAiRoot, isBusy: isLoading, applyOp, send: chat.send })
 
   /**
    * 送信。**印が付いていれば、ここで画像をプロジェクトへ入れる**（2026-08-19）。
@@ -1102,6 +1106,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
                     {/* 失敗の吹き出しの「もう一度送る」。最後の失敗にだけ出る（判断は retryOffer.ts）。 */}
                     <RetryButton show={showsRetry(shown, i)} isLoading={chat.isLoading} onPress={() => void chat.retryLast()} />
                     <TargetCheckButton offered={msg.offerTargetCheck} dir={projectDir} spent={targetCheck.spent} at={msg.at} isLoading={chat.isLoading} onPress={() => void targetCheck.press()} />
+                    <WriteFixButton marks={msg.writeFix} dir={projectDir} isLoading={chat.isLoading} onPress={() => void writeFix.press(msg.writeFix)} />
                   </div>
                   {/* 触れたら吹き出しの下に時刻。OS のツールチップ（title）は
                       出るまでに間があり、少し動かすと消えるのでやめた（2026-08-26 実機）。 */}

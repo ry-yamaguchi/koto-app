@@ -527,6 +527,7 @@ function makePorts(cfg: Cfg) {
     toolSupport: { shouldSendTools: () => true, isKnownToolCapable: () => true, record: () => {} },
     vision: { shouldTryDirect: () => true, record: () => {}, defaultModel: () => 'v' },
     compactWarnOnce: () => false,
+    writeWatch: { finish: async () => null },
     h: helpers,
   }
   return { ports, log }

@@ -90,7 +90,7 @@ function delegateHandler(writeMode: WriteMode): (args: any) => Promise<{ content
   }
   const server: any = buildIdeToolsServer(sdk, {
     projectDir, writeRoot, aiEngineKey: 'test-key', ragTags: [], enabledTools: IDE_TOOL_BARE_NAMES, writeMode, turnId: TURN_ID,
-    isStopped: () => stopped,
+    isStopped: () => stopped, noteWrite: () => {},
     onOpenPreview: () => {}, snapshotId: SNAPSHOT_ID, snapshotLabel: 'テスト',
     ragBudgetCheck: () => ({ allowed: true }), // W-85: search_docs の上限の確認（このテストは委譲だけを見るので常に許可）
     onDelegated: onDelegated as any, onFileWritten: onFileWritten as any,
@@ -178,7 +178,7 @@ describe('W-18: AI Engine の応答待ちの最中に ⏹ → 応答が返って
 describe('W-18: writeDelegatedFiles（書く関数そのもの）は、止まっていれば聞かず・書かない', () => {
   const ctx = (writeMode: WriteMode) => ({
     projectDir, writeRoot, snapshotId: SNAPSHOT_ID, snapshotLabel: 't',
-    onFileWritten: onFileWritten as any, writeMode, turnId: TURN_ID, isStopped: () => stopped,
+    onFileWritten: onFileWritten as any, writeMode, turnId: TURN_ID, isStopped: () => stopped, noteWrite: () => {},
   })
 
   it('★★ 最初から止まっている: confirm でも auto でも、聞かず・書かず、全ファイルが未着手', async () => {
@@ -267,7 +267,7 @@ describe('W-18: 配線（agent.ts は ⏹ の印を委譲のツールへ渡す�
 
   it('agent.ts: isStopped は、abortController の signal（⏹ で abort() されるもの）を見る', () => {
     const agent = read('src/main/claude/agent.ts')
-    expect(agent).toContain('onDelegated, onFileWritten, isStopped: () => abortController.signal.aborted })')
+    expect(agent).toContain('onDelegated, onFileWritten, noteWrite: (p, b) => writeWatch.touch(p, b), isStopped: () => abortController.signal.aborted })')
     // ⏹ の abort() と同じ abortController を Options にも渡している（別の物を見ていない）
     expect(agent).toContain('    abortController,\n')
     expect(agent).toContain('return { abort: () => abortController.abort(), turnId }')
@@ -278,7 +278,7 @@ describe('W-18: 配線（agent.ts は ⏹ の印を委譲のツールへ渡す�
     expect(tools).toContain('  isStopped: () => boolean\n')
     expect(tools).not.toContain('isStopped?:')
     // ハンドラは isStopped をそのまま書く関数へ渡す
-    expect(tools).toContain('onFileWritten, writeMode, turnId, isStopped })')
+    expect(tools).toContain('onFileWritten, writeMode, turnId, isStopped, noteWrite })')
   })
 })
 

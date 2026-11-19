@@ -12,6 +12,7 @@ import { destinationDir, uniqueName, isImageFileName, type AssetPurpose } from '
 import { trashFs, trashCheckFs, trashProjectFs, renameFs } from './fsTrash'
 import { createProjectOnDisk } from '../projectCreateFs'
 import { writeFileIfUnchangedFs, readCheckFs } from '../writeIfUnchangedFs'
+import { readForWriteFixFs } from '../writeFixRead'
 import { failureText } from '../../shared/failureText'
 import { publishExcludedDirNames, excludedFileNames } from '../../shared/publishExclude'
 import { dialogStartDir, rememberedDirAfterPick } from './dialogStart'
@@ -256,6 +257,8 @@ export function registerFsHandlers(deps: IpcDeps) {
 
   // 読めるかを聞く（読むだけ）。読み直しに失敗したタブが、消えたのか読めないのかを、保存の口と同じ分類で言い分ける。判断は writeIfUnchangedFs.ts
   ipcMain.handle('fs:readCheck', (_, filePath: string) => readCheckFs(filePath))
+
+  ipcMain.handle('fs:readForWriteFix', (_, projectDir: string, rel: string) => readForWriteFixFs(projectDir, rel))
 
   ipcMain.handle('fs:readFileInProject', (_, projectDir: string, rel: string) => readFileInProjectFs(projectDir, rel))
 

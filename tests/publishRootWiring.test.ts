@@ -204,7 +204,7 @@ describe('Claude頭脳モード: 作業フォルダと退避先を取り違え�
     // **呼び出しの側**を見る。関数の定義（`function makePreToolUseHook(projectDir: string`）にも
     // 同じ文字列があるので、そこに当たると中身が変わっても気づけない
     //（2026-08-20、実際に素通りした）。
-    expect(agent).toContain("hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)]")
+    expect(agent).toContain("hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel, writeWatch)]")
     expect(agent).toContain("hooks: [makePostToolUseHook(projectDir, onFileWritten)]")
     expect(agent).toContain('cwd: writeRoot')
     // W-18（2026-09-27 決定・案3）: 「✋ 毎回確認」は Claude でも効かせる。
@@ -425,7 +425,7 @@ describe('🕘 履歴の退避の根', () => {
 
   it('Claude 経路は先に分けてあり、その形を崩さない', () => {
     const s = read('src/main/claude/agent.ts')
-    expect(s).toContain('hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel)]')
+    expect(s).toContain('hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel, writeWatch)]')
   })
 })
 

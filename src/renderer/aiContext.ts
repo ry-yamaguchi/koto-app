@@ -11,6 +11,7 @@ import { PUBLISH_TARGET_LABEL } from './publishStatus'
 // 実体は shared へ移した（B'-3b）。searchStatusContext は src/shared/aiToolsCore.ts を参照。
 import { searchStatusContext } from '../shared/aiToolsCore'
 import { UNTRUSTED_RULE } from '../shared/untrustedBlock'
+import { SECURE_WRITING_RULE } from '../shared/secureWritingRule'
 export { searchStatusContext }
 
 // 共通：アプリの説明
@@ -174,6 +175,7 @@ export const IDE_CONTEXT =
   '- write_file が使えない場合（プロジェクト未選択時）のみ、```言語 file=相対パス 形式のコードブロックで提示してください（ユーザーが [💾 プロジェクトに保存] ボタンで保存できます）。\n' +
   '- 相対パスはプロジェクトのルートからのパスにしてください。\n' +
   '- 回答は必ず日本語のみで書くこと。他言語（韓国語・中国語・英語など）の単語や文字を混ぜない（コード・技術用語・固有名詞は除く）。\n' +
+  SECURE_WRITING_RULE + '\n' +
   '【ユーザーに作業を依頼しない（とても重要）】\n' +
   '- IDE（あなたのツール）でできる作業——ファイルの保存・読み取り・一覧——をユーザーに依頼しないこと。あなたが実行し、結果を報告する。\n' +
   '- ユーザーに残る操作は「【試す】での確認」「【公開】」「実際の情報（文章・画像）の提供」だけにする。\n' +

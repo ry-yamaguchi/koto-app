@@ -340,7 +340,7 @@ describe('usageStore.ts: budgetCheckForKey は「渡されたキーの指紋」�
 describe('chat/turnRunner.ts の資料検索（ragSearch）: 上限を超えたら通信せず、止めた理由を返す（W-85）', () => {
   const payload = { turnId: 't1', spec: { apiKey: KEY }, caps: {} } as any
   const ragSearch = () => {
-    const io = buildMainIo({ rag: { tags: [] } }, payload, () => {})
+    const io = buildMainIo({ rag: { tags: [] } }, payload, () => {}, { touch: () => {} })
     return io.ragSearch!
   }
 
@@ -384,7 +384,7 @@ describe('claude/tools.ts の search_docs: 渡された ragBudgetCheck で、上
     }
     const server: any = buildIdeToolsServer(sdk, {
       projectDir, writeRoot: projectDir, aiEngineKey: KEY, ragTags: [], enabledTools: IDE_TOOL_BARE_NAMES, writeMode: 'auto', turnId: 'claude-test-turn',
-      isStopped: () => false,
+      isStopped: () => false, noteWrite: () => {},
       onOpenPreview: () => {}, snapshotId: 'snap', snapshotLabel: 'テスト',
       onDelegated: () => {}, onFileWritten: () => {},
       ragBudgetCheck,

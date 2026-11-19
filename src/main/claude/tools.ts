@@ -106,6 +106,9 @@ export type IdeToolsParams = {
    *  「おまかせ」でも、⏹ のあとに黙って書かないための歯止めになる。
    *  ⚠️ 必須にしてある: 任意（?）にすると、渡し忘れても型検査を素通りし「⏹ のあとに書く」挙動に黙って倒れる。 */
   isStopped: () => boolean
+  /** 書く直前に、ファイルの旧内容（新しいファイルは null）を控える（ターンの終わりの点検用）。
+   *  1ファイルにつき1回呼ばれる。投げても書き込みは止まらない。 */
+  noteWrite: (absPath: string, before: string | null) => void
 }
 
 // delegate_implementation の1回のリクエストで許可する最大出力トークン数。
@@ -144,7 +147,7 @@ function readDelegateContextFile(projectDir: string, rel: string): DelegateConte
 /** writeDelegatedFiles が使う値（IdeToolsParams のうち書き込みに関わるものだけ）。 */
 export type DelegateWriteContext = Pick<
   IdeToolsParams,
-  'projectDir' | 'writeRoot' | 'snapshotId' | 'snapshotLabel' | 'onFileWritten' | 'writeMode' | 'turnId' | 'isStopped'
+  'projectDir' | 'writeRoot' | 'snapshotId' | 'snapshotLabel' | 'onFileWritten' | 'writeMode' | 'turnId' | 'isStopped' | 'noteWrite'
 >
 
 /** writeDelegatedFiles の結果。denied が null なら全件保存済み。 */
@@ -182,7 +185,7 @@ export type DelegateWriteOutcome = {
  * 止まっていれば聞かず・書かずに返す（「おまかせ」で ⏹ のあとに黙って書く道もこれで塞がる）。
  */
 export async function writeDelegatedFiles(files: DelegateParsedFile[], ctx: DelegateWriteContext): Promise<DelegateWriteOutcome> {
-  const { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped } = ctx
+  const { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped, noteWrite } = ctx
   const written: { path: string; bytes: number }[] = []
   for (let i = 0; i < files.length; i++) {
     const f = files[i]
@@ -218,6 +221,13 @@ export async function writeDelegatedFiles(files: DelegateParsedFile[], ctx: Dele
       // makePreToolUseHook と同じ方針）
     }
     const full = path.join(writeRoot, f.path)
+    try {
+      let before: string | null = null
+      try { before = fs.readFileSync(full, 'utf8') } catch { before = null }
+      noteWrite(full, before)
+    } catch {
+      // 控えの失敗で書き込みは止めない
+    }
     fs.mkdirSync(path.dirname(full), { recursive: true })
     fs.writeFileSync(full, f.content, 'utf8')
     written.push({ path: f.path, bytes: Buffer.byteLength(f.content, 'utf8') })
@@ -233,7 +243,7 @@ export async function writeDelegatedFiles(files: DelegateParsedFile[], ctx: Dele
  * 実際のツール名は `mcp__koto__<tool名>` に修飾される（toolText.ts の IDE_MCP_TOOL_NAMES 参照）。
  */
 export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): McpSdkServerConfigWithInstance {
-  const { projectDir, writeRoot, aiEngineKey, ragTags, enabledTools, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, writeMode, turnId, isStopped } = params
+  const { projectDir, writeRoot, aiEngineKey, ragTags, enabledTools, onOpenPreview, ragBudgetCheck, snapshotId, snapshotLabel, onDelegated, onFileWritten, writeMode, turnId, isStopped, noteWrite } = params
 
   const fetchUrlTool = sdk.tool(
     'fetch_url',
@@ -353,7 +363,7 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
 
         // W-18: 書き込みは writeDelegatedFiles を通す（「✋ 毎回確認」なら書く前に承認・拒否なら書かない）。
         // ⏹ が AI Engine の応答待ちの最中に押されていた場合も、ここで聞かず・書かずに返ってくる（outcome.stopped）。
-        const outcome = await writeDelegatedFiles(parsed.files, { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped })
+        const outcome = await writeDelegatedFiles(parsed.files, { projectDir, writeRoot, snapshotId, snapshotLabel, onFileWritten, writeMode, turnId, isStopped, noteWrite })
 
         const promptTokens = res.usage?.prompt_tokens ?? 0
         const completionTokens = res.usage?.completion_tokens ?? 0

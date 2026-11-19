@@ -20,6 +20,7 @@ import { planSend, planCompact, compactPrompt, acceptSummary, compactSource } fr
 import { searchStatusContext } from '../src/renderer/aiContext'
 import { applyToMessages } from '../src/shared/chatEvents'
 import { splitFailureDetail } from '../src/shared/failureDetail'
+import type { WriteCheckNotice } from '../src/shared/securityFindings'
 
 // B'-3a: send() の AI Engine 部分を chatTurn.ts へ切り出した。ここでは
 // 「偽の ports ＋ 本物の純粋関数」で runEngineTurn を node で駆動し、
@@ -106,6 +107,8 @@ interface PortsConfig {
   visionDirect?: Record<string, boolean> // shouldTryDirect（既定 true）
   visionDefault?: string
   compactWarn?: boolean[] // compactWarnOnce() の返り値の列（既定 [true, false, false, ...]）
+  /** 指定すると、writeWatch.finish() がこれを返す（呼ばれたことは log に 'writeWatch.finish' で残る）。省略時は null を返し、log に残さない。 */
+  writeWatch?: () => Promise<WriteCheckNotice | null>
 }
 
 function makePorts(cfg: PortsConfig): { ports: EngineTurnPorts; log: Log; streamRequests: any[] } {
@@ -198,6 +201,13 @@ function makePorts(cfg: PortsConfig): { ports: EngineTurnPorts; log: Log; stream
       compactWarnIdx++
       return v
     },
+    writeWatch: {
+      finish: async () => {
+        if (!cfg.writeWatch) return null
+        log.push({ tag: 'writeWatch.finish' })
+        return cfg.writeWatch()
+      },
+    },
     h,
   }
   return { ports, log, streamRequests }
@@ -236,6 +246,7 @@ function wrapPortsAsync(ports: EngineTurnPorts): EngineTurnPorts {
       defaultModel: () => Promise.resolve(ports.vision.defaultModel()),
     },
     compactWarnOnce: () => Promise.resolve(ports.compactWarnOnce()),
+    writeWatch: { finish: () => Promise.resolve(ports.writeWatch.finish()) },
   }
 }
 
@@ -1103,6 +1114,103 @@ describe('runEngineTurn', () => {
     expect(stopMsg).toBeFalsy()
     const last = [...log].reverse().find((e) => e.tag === 'emit' && e.ev.kind === 'replaceLast')
     expect(last.ev.msg.content).toBe('読みました')
+  })
+
+  // 27. 書いたファイルの点検（ターンの終わりに ⚠️ の吹き出しを1つだけ）
+  const NOTICE: WriteCheckNotice = {
+    text: '⚠️ 書いたファイルに、気になる点があります。',
+    marks: [{ file: 'a.js', kind: 'known-key', line: 3 }],
+  }
+  const writeCalls = [{ id: 'c1', function: { name: 'write_file', arguments: '{"path":"a.js","content":"x"}' } }]
+  const noticeAppends = (log: Log) =>
+    log.filter((e) => e.tag === 'emit' && e.ev.kind === 'append' && e.ev.msg.content === NOTICE.text)
+
+  it('点検: 結果はループの後に、1つの toolNote（印つき）として append される。最後のツールの実況より後・ターンの終わりより前', async () => {
+    const { ports, log } = makePorts({
+      stream: [
+        { content: '', toolCalls: writeCalls, usage: { prompt_tokens: 1, completion_tokens: 1 } },
+        { content: '書きました', toolCalls: null },
+      ],
+      executeTool: () => '保存しました: a.js（1文字）',
+      writeWatch: async () => NOTICE,
+    })
+    await runEngineTurn(makeSpec(), ports)
+    const notes = noticeAppends(log)
+    expect(notes.length).toBe(1)
+    expect(notes[0].ev.msg).toEqual({ role: 'assistant', toolNote: true, content: NOTICE.text, writeFix: NOTICE.marks })
+    const idx = log.indexOf(notes[0])
+    const lastTool = log.map((e, i) => (e.tag === 'executeTool' ? i : -1)).filter((i) => i >= 0).pop() as number
+    const lastReplace = log.map((e, i) => (e.tag === 'emit' && e.ev.kind === 'replaceLast' ? i : -1)).filter((i) => i >= 0).pop() as number
+    const loadingOff = log.findIndex((e) => e.tag === 'emit' && e.ev.kind === 'loading' && e.ev.value === false)
+    expect(idx).toBeGreaterThan(lastTool)
+    expect(idx).toBeGreaterThan(lastReplace)
+    expect(idx).toBeLessThan(loadingOff)
+    expect(log.filter((e) => e.tag === 'writeWatch.finish').length).toBe(1)
+  })
+
+  it('点検: 結果が null なら append は増えない（出来事の並びは、点検が無いときと同じ）', async () => {
+    const script = () => [{ content: '', toolCalls: writeCalls, usage: { prompt_tokens: 1, completion_tokens: 1 } }, { content: '書きました', toolCalls: null }]
+    const a = makePorts({ stream: script(), executeTool: () => '保存しました: a.js（1文字）', writeWatch: async () => null })
+    const b = makePorts({ stream: script(), executeTool: () => '保存しました: a.js（1文字）' })
+    await runEngineTurn(makeSpec(), a.ports)
+    await runEngineTurn(makeSpec(), b.ports)
+    expect(a.log.filter((e) => e.tag !== 'writeWatch.finish')).toEqual(b.log)
+  })
+
+  it('点検: ツールの失敗が混ざるターンでも、吹き出しは最後に残り、replaceLast に潰されない', async () => {
+    let n = 0
+    const { ports, log } = makePorts({
+      stream: [
+        { content: '', toolCalls: writeCalls, usage: { prompt_tokens: 1, completion_tokens: 1 } },
+        { content: '', toolCalls: writeCalls, usage: { prompt_tokens: 1, completion_tokens: 1 } },
+        { content: '終わりました', toolCalls: null },
+      ],
+      executeTool: () => (n++ === 0 ? 'エラー: 保存できませんでした（x）' : '保存しました: a.js（1文字）'),
+      writeWatch: async () => NOTICE,
+    })
+    await runEngineTurn(makeSpec(), ports)
+    const idx = log.indexOf(noticeAppends(log)[0])
+    expect(idx).toBeGreaterThan(-1)
+    const after = log.slice(idx + 1).filter((e) => e.tag === 'emit' && (e.ev.kind === 'replaceLast' || e.ev.kind === 'removeLast'))
+    expect(after).toEqual([])
+  })
+
+  it('点検: 例外で終わった回（catch）では finish を呼ばず、吹き出しも出ない', async () => {
+    const { ports, log } = makePorts({
+      stream: [{ content: '', throwMessage: 'network down' }],
+      writeWatch: async () => NOTICE,
+    })
+    const r = await runEngineTurn(makeSpec(), ports)
+    expect(r.endedWithError).toBe(true)
+    expect(log.filter((e) => e.tag === 'writeWatch.finish').length).toBe(0)
+    expect(noticeAppends(log).length).toBe(0)
+  })
+
+  it('点検: ⏹ で抜けた回でも finish は呼ばれ、吹き出しが出る', async () => {
+    let stopFlag = false
+    const { ports, log } = makePorts({
+      stream: [
+        { content: '', toolCalls: writeCalls, usage: { prompt_tokens: 1, completion_tokens: 1 } },
+        { content: '呼ばれない', toolCalls: null },
+      ],
+      executeTool: () => { stopFlag = true; return '保存しました: a.js（1文字）' },
+      writeWatch: async () => NOTICE,
+    })
+    ports.stopRequested = () => stopFlag
+    await runEngineTurn(makeSpec(), ports)
+    expect(log.filter((e) => e.tag === 'chatStream').length).toBe(1)
+    expect(noticeAppends(log).length).toBe(1)
+  })
+
+  it('点検: finish が投げても、ターンは失敗にならない（吹き出しは出ず、失敗の吹き出しも出ない）', async () => {
+    const { ports, log } = makePorts({
+      stream: [{ content: '書きました', toolCalls: null }],
+      writeWatch: async () => { throw new Error('boom') },
+    })
+    const r = await runEngineTurn(makeSpec(), ports)
+    expect(r.endedWithError).toBe(false)
+    expect(noticeAppends(log).length).toBe(0)
+    expect(log.filter((e) => e.tag === 'emit' && e.ev.kind === 'attention').length).toBe(0)
   })
 })
 

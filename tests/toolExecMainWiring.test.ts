@@ -34,7 +34,7 @@ describe('turnRunner.ts: executeTool はもう bridge.ask ではない（execute
       "import { executeToolCore, type CoreToolContext, type ToolIo, type SearchConfig } from '../../shared/toolExecCore'"
     )
     expect(src).toContain(
-      'executeTool: (name, argsJson, opts) => executeToolCore(name, argsJson, coreCtx(opts), buildMainIo(opts, payload, emit)),'
+      'executeTool: (name, argsJson, opts) => executeToolCore(name, argsJson, coreCtx(opts), buildMainIo(opts, payload, emit, writeWatch)),'
     )
   })
 })

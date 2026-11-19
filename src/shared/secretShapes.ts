@@ -492,6 +492,11 @@ function lineAt(starts: readonly number[], index: number): number {
   return lo + 1
 }
 
+function overlapsTaken(taken: Uint8Array, at: number, end: number): boolean {
+  for (let i = at; i < end; i++) if (taken[i]) return true
+  return false
+}
+
 /**
  * テキストの中の秘密を、種類・行・文字数・見本で返す（純関数）。**値そのものは返さない。**
  * 並びは出てきた順。見つからなければ空配列。読み出し（`process.env.X`）・見本の値・
@@ -500,16 +505,17 @@ function lineAt(starts: readonly number[], index: number): number {
 export function findSecretShapes(text: string): SecretFinding[] {
   const src = String(text ?? '')
   const starts = lineStartsOf(src)
-  const taken: Array<[number, number]> = []
+  // 取った範囲。一致が多いファイルでも時間が伸びないよう、位置ごとの印で持つ（範囲の一覧を毎回なめない）
+  const taken = new Uint8Array(src.length + 1)
   const found: Array<SecretFinding & { at: number }> = []
   for (const shape of SECRET_SHAPES) {
     if (shape.maskOnly) continue
     for (const m of src.matchAll(shape.re)) {
       const at = m.index ?? 0
       const end = at + m[0].length
-      if (taken.some(([a, b]) => at < b && a < end)) continue
+      if (overlapsTaken(taken, at, end)) continue
       // 見本と判断したものも範囲は取る。内側の判断を、外側の形が覆し直さない
-      taken.push([at, end])
+      taken.fill(1, at, end)
       if (!shape.reports(m)) continue
       found.push({ kind: shape.kind, line: lineAt(starts, at), length: shape.valueOf(m).length, sample: shape.sampleOf(m), at })
     }

@@ -14,6 +14,7 @@
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel } from './usage'
 import { looksSecretByName, looksSecretButPublished, BUILD_CONFIG_FILES } from '../shared/publishExclude'
 import { maskSecretShapes } from '../shared/secretShapes'
+import { capList } from '../shared/capList'
 import { wrapUntrusted } from '../shared/untrustedBlock'
 import { detectRuntime } from '../shared/runtimeDetect'
 import { resolvePublishRoot } from './publishRootRenderer'
@@ -170,14 +171,8 @@ const DATA_LIKE_NOTE_LIMIT = 20
 /** 報告先頭の「秘密が入っていそうなファイル」固定文に載せる上限。 */
 const SECRET_NOTE_LIMIT = 20
 
-/**
- * 名前一覧を先頭 n 件に切り、超過分は「ほかN件」の1行にまとめる（純関数）。
- * 上限以下ならそのまま返す（「ほか0件」のような無意味な注記は付けない）。
- */
-export function capList(names: readonly string[], n: number): string[] {
-  if (names.length <= n) return [...names]
-  return [...names.slice(0, n), `ほか${names.length - n}件`]
-}
+// 名前一覧の切り方（capList）の定義は shared にある。呼び元は変えず、同じ名前で出し直す。
+export { capList }
 
 // ── 対象外ファイルの「素通り」をふさぐ（roadmap #17・2026-09-03 Ryosuke 発見・案2）───
 // pickCheckTargets は拡張子の許可リストだけで検査対象を選ぶため、txt/csv/sql/db/bak/log/zip/py 等の

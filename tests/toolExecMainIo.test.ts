@@ -38,7 +38,7 @@ describe('buildMainIo: applyFile（main 直呼びの保存＋aiFileWritten通知
   it('cleanAiRelPath 済みの位置（writeRoot 直下）へ実際に書く', async () => {
     const writeRoot = mkTmpDir()
     const emitted: ChatEvent<unknown>[] = []
-    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) })
+    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) }, { touch: () => {} })
 
     await io.applyFile!('hello.txt', 'こんにちは')
 
@@ -49,7 +49,7 @@ describe('buildMainIo: applyFile（main 直呼びの保存＋aiFileWritten通知
   it('emit に aiFileWritten（rel・実際に書いた full）が乗る', async () => {
     const writeRoot = mkTmpDir()
     const emitted: ChatEvent<unknown>[] = []
-    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) })
+    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) }, { touch: () => {} })
 
     await io.applyFile!('a.txt', 'hi')
 
@@ -59,7 +59,7 @@ describe('buildMainIo: applyFile（main 直呼びの保存＋aiFileWritten通知
 
   it('無いフォルダは mkdir -p 相当で作ってから書く（fs:writeFile ハンドラと同じ書き方）', async () => {
     const writeRoot = mkTmpDir()
-    const io = buildMainIo({ writeRoot }, dummyPayload, () => {})
+    const io = buildMainIo({ writeRoot }, dummyPayload, () => {}, { touch: () => {} })
 
     await io.applyFile!('nested/deep/file.txt', 'content')
 
@@ -71,7 +71,7 @@ describe('buildMainIo: applyFile（main 直呼びの保存＋aiFileWritten通知
   it('rel が "./" で始まっていても cleanAiRelPath が正規化してから書く', async () => {
     const writeRoot = mkTmpDir()
     const emitted: ChatEvent<unknown>[] = []
-    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) })
+    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) }, { touch: () => {} })
 
     await io.applyFile!('./b.txt', 'x')
 
@@ -85,7 +85,7 @@ describe('buildMainIo: applyFile（main 直呼びの保存＋aiFileWritten通知
     const full = path.join(writeRoot, 'c.txt')
     fs.writeFileSync(full, 'old', 'utf-8')
     const emitted: ChatEvent<unknown>[] = []
-    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) })
+    const io = buildMainIo({ writeRoot }, dummyPayload, (ev) => { emitted.push(ev) }, { touch: () => {} })
 
     await io.applyFile!('c.txt', 'new')
 

@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeFileIfUnchanged: (path: string, content: string, expected: string | null) => ipcRenderer.invoke('fs:writeFileIfUnchanged', path, content, expected),
     /** 読めるかを聞く（読むだけ）。readable / missing（ファイルが無い）/ unreadable（それ以外）。 */
     readCheck: (path: string) => ipcRenderer.invoke('fs:readCheck', path),
+    /** 「AIに修正させる」用。プロジェクトの中だけを読む（text / missing / unreadable） */
+    readForWriteFix: (projectDir: string, rel: string) => ipcRenderer.invoke('fs:readForWriteFix', projectDir, rel),
     // AI専用：プロジェクト内に閉じ込めた読み書き（rel はルートからの相対パス）
     readFileInProject: (projectDir: string, rel: string) => ipcRenderer.invoke('fs:readFileInProject', projectDir, rel),
     writeFileInProject: (projectDir: string, rel: string, content: string) => ipcRenderer.invoke('fs:writeFileInProject', projectDir, rel, content),

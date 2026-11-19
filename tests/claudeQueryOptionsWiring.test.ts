@@ -60,6 +60,8 @@ import {
   setApprovalListener, answerApproval, listPending, resetApprovalsForTest, cancelApprovalsForTurn,
 } from '../src/main/chat/approvalStore'
 import { RAG_API_BASE } from '../src/main/rag/client'
+import { SECURE_WRITING_RULE } from '../src/shared/secureWritingRule'
+import { UNTRUSTED_RULE } from '../src/shared/untrustedBlock'
 import { writeDenialMessage } from '../src/shared/approvalPlan'
 import type { WriteMode } from '../src/shared/approvalPlan'
 
@@ -411,6 +413,22 @@ describe('query() へ実際に渡った MCP サーバのツール: 登録・isSt
     expect(toolNames(noKey)).toEqual(['fetch_url', 'open_preview'])
     expect(ideAllowed(noKey)).toEqual(qualified(['fetch_url', 'open_preview']))
     expect(promptOf(noKey)).not.toContain(DELEGATION_GUIDANCE)
+  })
+
+  it('★★★ 安全な書き方の指示は、任せる案内がある回にもない回にも、毎回 systemPrompt.append に入る', async () => {
+    const withGuide = await runChat({ aiEngineKey: 'k', offeredIdeTools: IDE_TOOL_BARE_NAMES })
+    const noGuide = await runChat({ aiEngineKey: 'k' })
+    expect(promptOf(withGuide)).toContain(DELEGATION_GUIDANCE)
+    expect(promptOf(noGuide)).not.toContain(DELEGATION_GUIDANCE)
+    for (const run of [withGuide, noGuide]) expect(promptOf(run)).toContain(SECURE_WRITING_RULE)
+    // 並びは、外から読んだ文の扱いの決まりの次・時刻の前
+    for (const run of [withGuide, noGuide]) {
+      const p = promptOf(run)
+      const rule = p.indexOf(SECURE_WRITING_RULE)
+      expect(p.indexOf(UNTRUSTED_RULE)).toBeGreaterThanOrEqual(0)
+      expect(p.indexOf(UNTRUSTED_RULE)).toBeLessThan(rule)
+      expect(p.slice(rule + SECURE_WRITING_RULE.length)).toMatch(/^\n\n【現在の日時】/)
+    }
   })
 
   it('一覧から外せば、その道具は登録も許可も無い（fetch_url を外す）', async () => {

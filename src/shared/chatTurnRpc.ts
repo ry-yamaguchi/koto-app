@@ -22,7 +22,7 @@ import type { EngineTurnSpec } from './chatTurn'
  * B'-3d-1a で main 化した toolSupport.* / vision.* の6メンバー、
  * B'-3d-1b で main 化した usage.check / usage.record / compactWarnOnce の3メンバー、
  * B'-3d-2b で main 化した executeTool、B'-3d-3 で main 化した approveToolCall、
- * B'-3e-b で main 化した getHistory）
+ * B'-3e-b で main 化した getHistory、書き込みの点検 writeWatch）
  * **以外**の全メンバーがここに載っている（tests/chatTurnRpc.test.ts が突き合わせて固定する）。
  *
  * ── B'-3d-1a（2026-08-29）: toolSupport.* / vision.* を main が直接持つように ─────────

@@ -89,6 +89,7 @@ function makeHarness(check: () => UsageCheckResult, history: TurnMessage[] = [])
     toolSupport: { shouldSendTools: () => true, isKnownToolCapable: () => false, record: () => {} },
     vision: { shouldTryDirect: () => true, record: () => {}, defaultModel: () => 'vision-model' },
     compactWarnOnce: () => false,
+    writeWatch: { finish: async () => null },
     h,
   }
   return {

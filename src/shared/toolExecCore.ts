@@ -110,6 +110,8 @@ export interface ToolIo {
   }>
   exists(path: string): Promise<boolean>
   openPath(path: string): Promise<void>
+  /** AI がファイルを書く直前に、その絶対パスと旧内容（新しいファイルは null）を渡す。書き込みは止めない。 */
+  noteWrite(absPath: string, before: string | null): void
 }
 
 /** ツールを実行して、AIに返す結果文字列を作る。失敗もAIに伝える（説明できるように）。 */
@@ -178,6 +180,9 @@ export async function executeToolCore(name: string, argsJson: string, ctx: CoreT
     const resolved = resolveForWrite(ctx.writeRoot, rel)
     if ('error' in resolved) return resolved.error
     try {
+      let before: string | null
+      try { before = await io.readFileInProject(ctx.writeRoot, rel) } catch { before = null }
+      try { io.noteWrite(resolved.full, before) } catch { /* 点検の控えが失敗しても保存は止めない */ }
       // 上書き前の自動バックアップ（AIターン単位のスナップショット。「🕘 履歴」から1クリックで戻せる）
       let backedUp = false
       try {
@@ -234,6 +239,7 @@ export async function executeToolCore(name: string, argsJson: string, ctx: CoreT
     }
 
     try {
+      try { io.noteWrite(resolved.full, content) } catch { /* 点検の控えが失敗しても保存は止めない */ }
       // 上書き前の自動バックアップ（write_file とまったく同じ手順。「🕘 履歴」から1クリックで戻せる）
       let backedUp = false
       try {
