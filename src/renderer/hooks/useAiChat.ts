@@ -39,6 +39,7 @@ import { retryRequestOf } from '../../shared/retryOffer'
 import { failureBubbleOf, noteWritten, requestBubbleOf, requestTextOf, unexpectedFailureAppends, type WrittenState } from '../../shared/chatFailure'
 import type { AskPath } from '../../shared/chatTurnRpc'
 import { stripFunctions, dispatchAsk } from '../chatTurnBridge'
+import { newClaudeTurn, claudeSendBlocked, markClaudeTurnStarted, markClaudeTurnEnded, CLAUDE_OTHER_BUSY_NOTE } from '../claudeTurn'
 import { turnKey, getTurn, updateTurn, resetTurn, subscribe, getSnapshot } from '../chatTurnRegistry'
 import type { ConfirmOptions } from '../useConfirm'
 import type { WriteFixMark } from '../../shared/securityFindings'
@@ -472,6 +473,10 @@ export function useAiChat(args: UseAiChatArgs) {
     //   実質使われないが、鍵の作り方は他と揃える（turnKey は projectDir があれば優先するので
     //   結果は変わらない）。
     const key = turnKey(projectDir, sessionId)
+    // この送信の印。main が出来事へ載せて返すので、受け取りは自分の印のものだけ当てる（ほかの回の出来事を当てない）。
+    const turn = newClaudeTurn()
+    // 同じプロジェクトの新しい回に止められて終わったか（真なら、終わりに応答中の印を下ろさない）
+    let superseded = false
     emit({ kind: 'loading', value: true })
     let assistantOpen = false
     let textAcc = ''
@@ -497,12 +502,15 @@ export function useAiChat(args: UseAiChatArgs) {
       // 呼び出し元2箇所（'error' イベント・chatStart の catch）を一度にカバーする（B-2）
       emit({ kind: 'attention', value: 'error' })
     }
+    // 回の印を立てる（chatStart より前）。下ろすのは下の finally の1か所で、どの終わり方でも通る。
+    markClaudeTurnStarted(projectDir, turn)
     try {
       await new Promise<void>(resolve => {
         let unsubscribe: (() => void) | null = null
         const finish = () => { unsubscribe?.(); resolve() }
 
         unsubscribe = window.electronAPI.claude.onStream((ev: ClaudeUiEvent) => {
+          if (ev.turn !== turn) return
           updateTurn(key, { lastActivityAt: Date.now() })
           switch (ev.kind) {
             case 'session':
@@ -560,6 +568,12 @@ export function useAiChat(args: UseAiChatArgs) {
               afterFailure = []
               finish()
               break
+            case 'superseded':
+              // 同じプロジェクトの次の送信に、この回が止められた。吹き出しも費用も出さずに終える。
+              // 応答中の印と ⏹ は、同じ鍵（プロジェクト）の新しい回のものなので、この回は下ろさない。
+              superseded = true
+              finish()
+              break
             case 'openPreview':
               // C2b: open_preview ツール。従来経路（AI Engineループ）の open_preview と完全に同じ処理＝
               // aiTools.ts executeTool の open_preview 分岐（拡張子・存在の確認→既定ブラウザで開く）を、
@@ -581,8 +595,7 @@ export function useAiChat(args: UseAiChatArgs) {
               break
             case 'writeCheck':
               // 書いた中身の点検で残った問題（成功で終わる回の result の前）。⚠️ の吹き出し1つ。AI へは送らない。
-              // 別のプロジェクトの回の点検は、ここの会話に入れない（掟11。ほかのプロジェクトで送ると、前の回の受け取りが残る）。
-              if (ev.projectDir !== projectDir) break
+              // ほかの回の点検は、入口の印の確かめ（`ev.turn !== turn`）で落ちている。
               appendBubble({ role: 'assistant', toolNote: true, content: ev.text, writeFix: ev.marks })
               break
           }
@@ -590,23 +603,35 @@ export function useAiChat(args: UseAiChatArgs) {
 
         updateTurn(key, {
           abort: () => {
-            window.electronAPI.claude.chatCancel()
+            window.electronAPI.claude.chatCancel(turn)
             appendBubble({ role: 'assistant', content: '（⏹ 停止しました）', toolNote: true })
             finish()
           },
         })
 
-        window.electronAPI.claude.chatStart(projectDir, claudeKey, text, images, snapshotId, claudeSessionRef.current, aiEngineKey, claudeModel, writeMode, rag)
+        window.electronAPI.claude.chatStart(projectDir, claudeKey, text, images, snapshotId, claudeSessionRef.current, aiEngineKey, claudeModel, writeMode, rag, turn)
+          .then(r => {
+            // 画面の判断を抜けた送信を main が断った（ほかのプロジェクトの作業中・印の不正）。受け取る出来事は無いので、ここで終える。
+            if (!r.ok) {
+              if (r.busy) appendBubble({ role: 'assistant', toolNote: true, content: CLAUDE_OTHER_BUSY_NOTE })
+              else showClaudeError(r.message ?? '')
+              finish()
+            }
+          })
           .catch((e: any) => {
             showClaudeError(e?.message ?? String(e))
             finish()
           })
       })
     } finally {
+      markClaudeTurnEnded(turn)
       // abort の登録解除は不要（直後の loading:false → emit 内の resetTurn(key) が
       // abort ごとアイドルへ戻す。chatTurnRegistry.ts の resetTurn 参照）。
-      emit({ kind: 'loading', value: false })
-      emit({ kind: 'status', value: '' })
+      // 新しい回に止められて終わったときは下ろさない（同じ鍵の、新しい回の応答中と ⏹ を消してしまうため）。
+      if (!superseded) {
+        emit({ kind: 'loading', value: false })
+        emit({ kind: 'status', value: '' })
+      }
     }
   }, [appendBubble, replaceLast, errorPrefix, buildExecuteOpts, apiKey, onExternalFilesChanged, emit, sessionId])
 
@@ -678,6 +703,11 @@ export function useAiChat(args: UseAiChatArgs) {
       const claudeReady = !!claudeKey && isClaudeModeEnabled()
 
       if (toolsProjectDir && claudeReady) {
+        // Claude は同時に1つの作業しか持てない。ほかのプロジェクトで AI が作業中なら、同意の確認も出さず、依頼の吹き出しも足さずに断る。
+        if (claudeSendBlocked(toolsProjectDir)) {
+          appendBubble({ role: 'assistant', toolNote: true, content: CLAUDE_OTHER_BUSY_NOTE })
+          return
+        }
         // 送信してよいか: すでに同意済み、またはいま「はい」と答えた。記録の成否には依存させない
         // （保存領域が書けない環境でも、同意した回は送る。次回はまた確認が出る）。
         let consented = hasClaudeConsent()

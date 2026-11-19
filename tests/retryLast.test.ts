@@ -67,10 +67,12 @@ beforeEach(() => {
       claude: {
         onStream: (cb: (ev: any) => void) => { streamListener = cb; return () => { if (streamListener === cb) streamListener = null } },
         chatCancel: () => {},
-        chatStart: async (projectDir: string, _key: string, text: string, images: string[]) => {
+        chatStart: async (projectDir: string, _key: string, text: string, images: string[], ...rest: unknown[]) => {
+          const turn = rest[rest.length - 1]
           chatStartCalls.push({ projectDir, text, images })
-          if (holdStream) return
-          setTimeout(() => { streamListener?.({ kind: 'result', costUsd: 0, durationMs: 1, isError: false }) }, 0)
+          if (holdStream) return { ok: true }
+          setTimeout(() => { streamListener?.({ kind: 'result', costUsd: 0, durationMs: 1, isError: false, turn }) }, 0)
+          return { ok: true }
         },
       },
     },

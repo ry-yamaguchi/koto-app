@@ -32,6 +32,9 @@ export type UiEvent =
   // projectDir は、受け取る側が自分のプロジェクトの回のものだけを当てるための印（掟11）。
   | { kind: 'writeCheck'; text: string; marks: WriteFixMark[]; projectDir: string }
 
+/** 画面へ送る形。どの回の出来事かの印（turn）を載せる。superseded は、同じプロジェクトの次の送信に前の回が止められたことの知らせ。 */
+export type TurnTaggedUiEvent = (UiEvent | { kind: 'superseded' }) & { turn: string }
+
 /** tool_use ブロックの input から、ツール実行中表示に使う短い一言（ファイルパス／コマンド等）を作る。 */
 export function describeToolDetail(name: string, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>

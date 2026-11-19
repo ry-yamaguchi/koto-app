@@ -161,20 +161,22 @@ interface CloudVersionRow {
 
 // ── Claude頭脳モード（C2a/C2b）のストリームイベント型。main側 claude/events.ts の UiEvent と一致させること ──
 type ClaudeUiEvent =
-  | { kind: 'session'; sessionId: string }
-  | { kind: 'text'; text: string }
-  | { kind: 'tool'; name: string; detail: string }
-  | { kind: 'result'; costUsd: number; durationMs: number; isError: boolean }
-  | { kind: 'error'; message: string }
+  | { kind: 'session'; sessionId: string; turn: string }
+  | { kind: 'text'; text: string; turn: string }
+  | { kind: 'tool'; name: string; detail: string; turn: string }
+  | { kind: 'result'; costUsd: number; durationMs: number; isError: boolean; turn: string }
+  | { kind: 'error'; message: string; turn: string }
   // C2b: open_preview ツールの副作用通知（renderer が従来の open_preview ツールと同じ処理で開く）
-  | { kind: 'openPreview'; id: string; path: string; projectDir: string; writeRoot: string }
+  | { kind: 'openPreview'; id: string; path: string; projectDir: string; writeRoot: string; turn: string }
   // C3: delegate_implementation の実行後（AI Engine 側の使用量を usage.ts へ記録するために使う）
-  | { kind: 'delegated'; model: string; promptTokens: number; completionTokens: number }
+  | { kind: 'delegated'; model: string; promptTokens: number; completionTokens: number; turn: string }
   // Claude/委譲がファイルを書き込んだ直後（データ喪失バグ修正・2026-07-11）。
   // 開きタブをディスクから読み直す（stale tab のオートセーブ上書き防止）
-  | { kind: 'fileWritten'; path: string }
+  | { kind: 'fileWritten'; path: string; turn: string }
   // 成功で終わるターンの終わりに、書いた中身の点検で残った問題を知らせる（値は含まない）
-  | { kind: 'writeCheck'; text: string; marks: import('../shared/securityFindings').WriteFixMark[]; projectDir: string }
+  | { kind: 'writeCheck'; text: string; marks: import('../shared/securityFindings').WriteFixMark[]; projectDir: string; turn: string }
+  // 同じプロジェクトの次の送信に、この回が止められたことの知らせ（吹き出しも費用も出さずに終える）
+  | { kind: 'superseded'; turn: string }
 
 // ── 「前の状態に戻す」（P2-⑧）の型。main 側 backup/plan.ts と一致させること ──
 type BackupFileAction = 'overwrite' | 'create' | 'pre-restore'
@@ -899,9 +901,9 @@ interface Window {
       // 直接画像を読む（main側 agent.ts がストリーミング入力モードへ切り替える）。
       // writeMode は W-18: 「✋ 毎回確認」なら、Write/Edit/Bash の前に承認ダイアログを出す
       // （さくらのAI Engine 経路と同じ approval:* の仕組みを使い回す）。'auto' | 'confirm'。
-      chatStart(projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string, rag: { tags: string[] } | null): Promise<{ ok: boolean }>
-      // 進行中の Claude セッションを中断する。
-      chatCancel(): Promise<{ ok: boolean }>
+      chatStart(projectDir: string, apiKey: string, prompt: string, images: string[], snapshotId: string, resumeSessionId: string | null, aiEngineKey: string | null, model: string, writeMode: string, rag: { tags: string[] } | null, turn: string): Promise<{ ok: boolean; busy?: boolean; message?: string }>
+      // 進行中の Claude セッションを中断する。turn は止める回の印（合わなければ何もしない）。
+      chatCancel(turn: string): Promise<{ ok: boolean; stopped?: boolean }>
       // open_preview の知らせへの返事（存在確認・拡張子の確認のうえ開いた結果の文）。id は知らせの id。
       openPreviewResult(id: string, result: string): Promise<{ ok: boolean }>
       // ストリームイベント購読。戻り値の関数を呼ぶと購読解除。

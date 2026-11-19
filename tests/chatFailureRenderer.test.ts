@@ -226,8 +226,10 @@ describe('A2. convDir がある会話: main が書き主。chat:applied と chat
 describe('A3. Claude の失敗: 書き主は画面側。印は失敗の吹き出しだけに付く', () => {
   async function sendWithClaudeError(message: string, apiKey: string) {
     rt.claudeToken = 'sk-ant-test-key'
-    const chatStart = vi.fn(async () => {
-      setTimeout(() => { streamListener?.({ kind: 'error', message }) }, 0)
+    const chatStart = vi.fn(async (...args: unknown[]) => {
+      const turn = args[args.length - 1]
+      setTimeout(() => { streamListener?.({ kind: 'error', message, turn }) }, 0)
+      return { ok: true }
     })
     ;(window as any).electronAPI.claude.chatStart = chatStart
     const chat = render({ apiKey })
@@ -277,11 +279,13 @@ describe('A4. 書き換えの行き先は送信した瞬間のもの（切り替
     rt.claudeToken = 'sk-ant-test-key'
     const toA: ChatEvent<ChatMessage>[] = []
     const toB: ChatEvent<ChatMessage>[] = []
-    ;(window as any).electronAPI.claude.chatStart = vi.fn(async () => {
+    ;(window as any).electronAPI.claude.chatStart = vi.fn(async (...args: unknown[]) => {
+      const turn = args[args.length - 1]
       setTimeout(() => {
         render({ toolsProjectDir: '/work/koto-project-b', convDir: '/work/koto-project-b', onMessageEvent: ev => { toB.push(ev) } })
-        streamListener?.({ kind: 'error', message: 'Claude が正常に動きませんでした (test)' })
+        streamListener?.({ kind: 'error', message: 'Claude が正常に動きませんでした (test)', turn })
       }, 0)
+      return { ok: true }
     })
     const chatA = render({ onMessageEvent: ev => { toA.push(ev) } })
     await chatA.send('これを直して', [])
