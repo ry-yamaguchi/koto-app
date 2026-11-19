@@ -265,6 +265,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // 走ったままの回を残さない（main の回はモジュールに1つ。次のテストが別のプロジェクトで始めると断られるため）。
+  for (const t of ['ct-test-00000001', 'ct-test-00000002']) h.handlers.get('claude:chatCancel')?.({}, t)
   vi.unstubAllGlobals()
   initUsageStore(null) // 保存のタイマーも止める
   fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -422,7 +424,7 @@ describe('ipc/claude.ts: startClaudeChat へ渡す ragBudgetCheck は、AI Engin
     const fn = h.handlers.get('claude:chatStart')
     if (!fn) throw new Error('claude:chatStart が登録されていない')
     const event = { sender: { send: () => {} } }
-    fn(event, projectDir, 'anthropic-key', 'こんにちは', [], 'snap', null, aiEngineKey, '', 'auto', { tags: [] })
+    fn(event, projectDir, 'anthropic-key', 'こんにちは', [], 'snap', null, aiEngineKey, '', 'auto', { tags: [] }, 'ct-test-00000001')
     if (!h.started) throw new Error('startClaudeChat が呼ばれていない')
     return h.started
   }

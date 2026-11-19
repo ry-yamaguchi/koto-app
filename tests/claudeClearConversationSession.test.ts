@@ -64,6 +64,8 @@ const OTHER_PROJECT = '/Users/test/koto-project-b'
 let store: Map<string, string>
 type ChatStartCall = { projectDir: string; resumeSessionId: string | null }
 let chatStartCalls: ChatStartCall[]
+/** chatStart が受け取った回の印（呼ばれた順）。 */
+let turns: string[]
 let streamListener: ((ev: any) => void) | null
 /** 次の chatStart が SDK から受け取る session（無ければ出さない）。 */
 let nextSessionFromSdk: string | null
@@ -73,6 +75,7 @@ let holdStream: boolean
 beforeEach(() => {
   store = new Map()
   chatStartCalls = []
+  turns = []
   streamListener = null
   nextSessionFromSdk = null
   holdStream = false
@@ -91,14 +94,17 @@ beforeEach(() => {
         // 解除は自分の登録のときだけ（別のターンが登録し直したあとの古いターンの解除で、新しい登録を消さない）
         onStream: (cb: (ev: any) => void) => { streamListener = cb; return () => { if (streamListener === cb) streamListener = null } },
         chatCancel: () => {},
-        chatStart: async (projectDir: string, _key: string, _text: string, _images: string[], _snapshotId: string, resumeSessionId: string | null) => {
+        chatStart: async (projectDir: string, _key: string, _text: string, _images: string[], _snapshotId: string, resumeSessionId: string | null, ...rest: unknown[]) => {
+          const turn = rest[rest.length - 1] as string
+          turns.push(turn)
           chatStartCalls.push({ projectDir, resumeSessionId })
-          if (holdStream) return
+          if (holdStream) return { ok: true }
           // 実物と同じく、出来事は chatStart の呼び出しのあとで流れてくる（session → result）
           setTimeout(() => {
-            if (nextSessionFromSdk) streamListener?.({ kind: 'session', sessionId: nextSessionFromSdk })
-            streamListener?.({ kind: 'result', costUsd: 0, durationMs: 1, isError: false })
+            if (nextSessionFromSdk) streamListener?.({ kind: 'session', sessionId: nextSessionFromSdk, turn })
+            streamListener?.({ kind: 'result', costUsd: 0, durationMs: 1, isError: false, turn })
           }, 0)
+          return { ok: true }
         },
       },
     },
@@ -243,7 +249,7 @@ describe('「🗑 会話をクリア」の確定: 画面の会話を消すのと
 })
 
 describe('別のプロジェクトのターンの session は、いま見ているプロジェクトの番号にならない（掟11）', () => {
-  const RESULT = { kind: 'result', costUsd: 0, durationMs: 1, isError: false }
+  const resultOf = (turn: string) => ({ kind: 'result', costUsd: 0, durationMs: 1, isError: false, turn })
 
   it('対照: 同じプロジェクトのままなら、届いた session が次の chatStart の resumeSessionId になる', async () => {
     setClaudeSessionId(PROJECT, 'sess-a-old')
@@ -270,20 +276,20 @@ describe('別のプロジェクトのターンの session は、いま見てい�
     // B へ切り替える（props が変わり、effect が回る）
     const chatB = renderChat(OTHER_PROJECT)
     // A のターンに、遅れて session が届く
-    listenerA({ kind: 'session', sessionId: 'sess-a-new' })
+    listenerA({ kind: 'session', sessionId: 'sess-a-new', turn: turns[0] })
     // A の保存値は新しい番号になり、B の保存値は触られない
     expect(getClaudeSessionId(PROJECT)).toBe('sess-a-new')
     expect(getClaudeSessionId(OTHER_PROJECT)).toBe('sess-b')
+
+    // A のターンを終わらせる（A が応答中のあいだ、ほかのプロジェクトからは Claude へ送れない）
+    listenerA(resultOf(turns[0]))
+    await sendA
 
     // B で送ると、B の保存値で resume する（A の番号ではない）
     holdStream = false
     await chatB.send('B の依頼', [])
     expect(chatStartCalls).toHaveLength(2)
     expect(chatStartCalls[1]).toEqual({ projectDir: OTHER_PROJECT, resumeSessionId: 'sess-b' })
-
-    // A のターンを終わらせる
-    listenerA(RESULT)
-    await sendA
   })
 
   it('★★ A へ戻ってきたら、保存された新しい番号で resume する', async () => {
@@ -294,8 +300,8 @@ describe('別のプロジェクトのターンの session は、いま見てい�
     await waitUntil(() => chatStartCalls.length === 1, 'A の chatStart が呼ばれる')
     const listenerA = streamListener!
     renderChat(OTHER_PROJECT) // B へ切り替え
-    listenerA({ kind: 'session', sessionId: 'sess-a-new' })
-    listenerA(RESULT)
+    listenerA({ kind: 'session', sessionId: 'sess-a-new', turn: turns[0] })
+    listenerA(resultOf(turns[0]))
     await sendA
 
     renderChat(OTHER_PROJECT) // 描画だけ（B のまま）

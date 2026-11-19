@@ -25,12 +25,12 @@ describe('rag の運び（画面 → main）', () => {
   it('useAiChat が turnOpts.rag を sendViaClaude の最後の引数へ渡し、chatStart の最後の引数にする', () => {
     const src = readCode('src/renderer/hooks/useAiChat.ts')
     expect(src).toContain("(turnOpts as { rag?: { tags: string[] } | null }).rag ?? null)")
-    expect(src).toContain('claudeSessionRef.current, aiEngineKey, claudeModel, writeMode, rag)')
+    expect(src).toContain('claudeSessionRef.current, aiEngineKey, claudeModel, writeMode, rag, turn)')
   })
 
   it('preload が rag を invoke の最後の引数へ渡す', () => {
     const src = readCode('src/main/preload.ts')
-    expect(src).toContain("'claude:chatStart', projectDir, apiKey, prompt, images, snapshotId, resumeSessionId, aiEngineKey, model, writeMode, rag)")
+    expect(src).toContain("'claude:chatStart', projectDir, apiKey, prompt, images, snapshotId, resumeSessionId, aiEngineKey, model, writeMode, rag, turn)")
   })
 })
 

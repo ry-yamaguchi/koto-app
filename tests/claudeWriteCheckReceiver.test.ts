@@ -76,8 +76,11 @@ const NOTICE = '⚠️ public/app.js の1行目に、APIキーが直接書かれ
 const MARKS = [{ file: 'public/app.js', kind: 'known-key', line: 1 }]
 
 async function runTurn(events: unknown[]) {
-  ;(window as any).electronAPI.claude.chatStart = vi.fn(async () => {
-    for (const e of events) streamListener?.(e)
+  ;(window as any).electronAPI.claude.chatStart = vi.fn(async (...args: unknown[]) => {
+    // 出来事は、chatStart が受け取った回の印を載せて流す（main と同じ。印を持つ出来事は、その印のまま）。
+    const turn = args[args.length - 1]
+    for (const e of events) streamListener?.({ turn, ...(e as object) })
+    return { ok: true }
   })
   rt.i = 0
   const chat = useAiChat({
@@ -111,13 +114,21 @@ describe('Claude のストリーム: writeCheck の受け取り', () => {
     expect(msgs[i - 1]).toMatchObject({ content: '書きました' })
   })
 
-  it('★★★ ほかのプロジェクトの回の writeCheck は、この会話に入れない（掟11）', async () => {
+  it('★★★ 別の印の回の writeCheck は、この会話に入れない（掟11）', async () => {
     await runTurn([
-      { kind: 'writeCheck', text: NOTICE, marks: MARKS, projectDir: '/work/another-project' },
+      { kind: 'writeCheck', text: NOTICE, marks: MARKS, projectDir: '/work/another-project', turn: 'ct-other-00000000' },
       { kind: 'result', costUsd: 0.01, durationMs: 5, isError: false },
     ])
     expect(appended().filter(m => m.writeFix)).toEqual([])
     expect(appended().some(m => m.content === NOTICE)).toBe(false)
+  })
+
+  it('印が同じなら、projectDir が違っても入る（絞るのは印だけ。同じ判断を2か所に持たない）', async () => {
+    await runTurn([
+      { kind: 'writeCheck', text: NOTICE, marks: MARKS, projectDir: '/work/another-project' },
+      { kind: 'result', costUsd: 0.01, durationMs: 5, isError: false },
+    ])
+    expect(appended().filter(m => m.writeFix)).toHaveLength(1)
   })
 
   it('writeCheck が無ければ、印つきの吹き出しは出ない（対照）', async () => {

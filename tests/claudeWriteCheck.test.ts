@@ -360,12 +360,13 @@ describe('型と運び口: writeCheck', () => {
     expect(a.startsWith(LINE)).toBe(true)
     expect(b.startsWith(LINE)).toBe(true)
     expect(a).toContain('marks: WriteFixMark[]; projectDir: string }')
-    expect(b).toContain("marks: import('../shared/securityFindings').WriteFixMark[]; projectDir: string }")
+    expect(b).toContain("marks: import('../shared/securityFindings').WriteFixMark[]; projectDir: string; turn: string }")
   })
 
   it('ipc/claude.ts の onEvent は種類を絞らずに claude:stream へ送る', () => {
     const s = read('src/main/ipc/claude.ts')
-    expect(s).toContain("try { event.sender.send('claude:stream', uiEvent) }")
+    expect(s).toContain("try { event.sender.send('claude:stream', { ...uiEvent, turn } satisfies TurnTaggedUiEvent) }")
+    expect(s).toContain('onEvent: uiEvent => {\n            sendTurn(uiEvent)')
     expect(s).not.toContain("uiEvent.kind === 'writeCheck'")
   })
 

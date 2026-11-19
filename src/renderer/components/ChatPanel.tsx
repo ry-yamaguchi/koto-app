@@ -43,6 +43,7 @@ import { CHAT_TEXT_WRAP } from '../textWrap'
 import { resolvePublishRoot } from '../publishRootRenderer'
 import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { turnKey, updateTurn } from '../chatTurnRegistry'
+import { claudeSendBlocked, CLAUDE_OTHER_BUSY_NOTE } from '../claudeTurn'
 import { useConfirm } from '../useConfirm'
 import { runClearConversation } from '../confirmedActions'
 import { clearConversationAction } from '../confirmedActions'
@@ -860,6 +861,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     const attached = pendingImages
     const images = attached.map(p => p.url)
     if ((!text.trim() && images.length === 0) || isLoading) return
+    if (claudeActive && claudeSendBlocked(projectDir)) { applyOp({ kind: 'append', msg: { role: 'assistant', toolNote: true, content: CLAUDE_OTHER_BUSY_NOTE } }); return }
     const choice = assetChoice
     setInput('')
     setPendingImages([])
@@ -898,7 +900,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       kind: 'append',
       msg: { role: 'assistant', toolNote: true, content: useImageHint(attached.length) },
     }))
-  }, [input, pendingImages, isLoading, chat, assetChoice, projectDir, putIntoProject, applyOp])
+  }, [input, pendingImages, isLoading, chat, assetChoice, projectDir, putIntoProject, applyOp, claudeActive])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {

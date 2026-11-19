@@ -190,13 +190,16 @@ function makeSdk(script: Script) {
 
 /** 1ターン。startClaudeChat の出来事を、そのまま画面（useAiChat）の受け取りへ渡す。 */
 async function runTurn(script: Script, resume: string | null = null) {
-  ;(window as any).electronAPI.claude.chatStart = vi.fn(async () => {
+  ;(window as any).electronAPI.claude.chatStart = vi.fn(async (...args: unknown[]) => {
+    // main と同じく、出来事には chatStart が受け取った回の印を載せて画面へ渡す。
+    const turn = args[args.length - 1]
     startClaudeChat({
       projectDir, writeRoot: path.join(projectDir, 'public'), apiKey: 'k', writeMode: 'auto', aiEngineKey: null,
       prompt: 'p', images: [], snapshotId: 's', resumeSessionId: resume, model: '',
-      onEvent: e => { delivered.push(e); streamListener?.(e) },
+      onEvent: e => { delivered.push(e); streamListener?.({ ...e, turn }) },
       onOpenPreview: () => {}, ragBudgetCheck: () => ({ allowed: true }), onDelegated: () => {}, onFileWritten: () => {},
     }, makeSdk(script))
+    return { ok: true }
   })
   rt.i = 0
   const chat = useAiChat({

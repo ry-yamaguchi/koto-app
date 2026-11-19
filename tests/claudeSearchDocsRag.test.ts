@@ -65,6 +65,8 @@ beforeEach(() => {
   }))
 })
 afterEach(() => {
+  // 走ったままの回を残さない（main の回はモジュールに1つ。次のテストが別のプロジェクトで始めると断られるため）。
+  for (const t of ['ct-test-00000001', 'ct-test-00000002']) h.handlers.get('claude:chatCancel')?.({}, t)
   vi.unstubAllGlobals()
   fs.rmSync(projectDir, { recursive: true, force: true })
 })
@@ -160,7 +162,7 @@ describe('ipc/claude.ts: 画面から来た rag を startClaudeChat へ運ぶ（
     h.started = null
     registerClaudeHandlers({} as any)
     const fn = h.handlers.get('claude:chatStart')!
-    fn({ sender: { send: () => {} } }, projectDir, 'anthropic-key', 'こんにちは', [], 'snap', null, 'ai-engine-key', '', 'auto', rag)
+    fn({ sender: { send: () => {} } }, projectDir, 'anthropic-key', 'こんにちは', [], 'snap', null, 'ai-engine-key', '', 'auto', rag, 'ct-test-00000001')
     return h.started!
   }
   it('{ tags } はそのまま、null は null', () => {
@@ -182,14 +184,14 @@ describe('ipc/claude.ts: 新しい送信が始まるとき、前のターンの�
     const fn = h.handlers.get('claude:chatStart')!
     const sender = { send: () => {} }
     h.started = null
-    fn({ sender }, projectDir, 'k', 'a', [], 'snap', null, null, '', 'auto', null)
+    fn({ sender }, projectDir, 'k', 'a', [], 'snap', null, null, '', 'auto', null, 'ct-test-00000001')
     const first = h.started!
     const waiting = first.onOpenPreview('index.html') as Promise<string>
     let settled = false
     waiting.then(() => { settled = true })
     await Promise.resolve()
     expect(settled).toBe(false)
-    fn({ sender }, projectDir, 'k', 'b', [], 'snap', null, null, '', 'auto', null)
+    fn({ sender }, projectDir, 'k', 'b', [], 'snap', null, null, '', 'auto', null, 'ct-test-00000002')
     expect(await waiting).toBe('エラー: 中断されました')
   })
 })
