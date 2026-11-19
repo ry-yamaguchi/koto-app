@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import StorageSettings from './StorageSettings'
+import OsvConsentSettings from './OsvConsentSettings'
 import SakuraLogo from './SakuraLogo'
 import {
   getSettings, setSettings, getUsage, getUsageByModel, resetThisMonth, PRICING,
@@ -420,6 +421,8 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials, upda
               会話が空のプロジェクトを開くと、さくらのAI Engine が要約と質問を返し、その利用量を使います。Claude だけを使っているときは、決まった一言だけです。
             </p>
           </div>
+
+          <OsvConsentSettings />
 
           {/* 所見6: 使う AI（Claude / さくらのAI Engine）。両方のキーが登録済みのときだけ切替を出す。
               W-19（2026-09-27決定・別案＋案5）: 見出しは、切替を出す（＝両方のキーがある）ときだけ

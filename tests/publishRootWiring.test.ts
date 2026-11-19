@@ -30,6 +30,7 @@ const read = (p: string) => fs.readFileSync(path.join(ROOT, p), 'utf-8')
  * これで③の配線は全部そろった。**新しい経路を足すときは、必ずここへも足すこと。**
  */
 const CONSUMERS: { name: string; file: string; must: string; mustNot: string; viaResolver?: boolean }[] = [
+  { name: 'ライブラリの脆弱性の照会（package.json・package-lock.json を読む場所）', file: 'src/main/osvProjectRead.ts', must: 'resolvePublishRoot(projectDir)', mustNot: "readTextInsideDirFs(projectDir," },
   {
     name: 'AppRun（標準・Docker とも contextAbs を通る）',
     file: 'src/main/ipc/cloud.ts',

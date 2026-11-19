@@ -409,6 +409,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     estimates: () => ipcRenderer.invoke('stageTiming:estimates'),
   },
 
+  osv: {
+    preview: (projectDir: string) => ipcRenderer.invoke('osv:preview', projectDir),
+    check: (projectDir: string, consented: boolean) => ipcRenderer.invoke('osv:check', projectDir, consented),
+  },
+
   vercel: {
     // 方式B: トークン/チームIDは中央ストア（認証情報）から renderer が読んで引数で渡す。main には保存しない。
     testConnection: (token: string, teamId?: string) => ipcRenderer.invoke('vercel:testConnection', token, teamId),
