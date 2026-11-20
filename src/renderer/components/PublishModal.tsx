@@ -727,7 +727,7 @@ export default function PublishModal({ projectDir, apiKey, onClose, onRun, onOpe
             )}
             {mountedApprunTabs['sakura-apprun-dedicated'] && (
               <div className={target === 'sakura-apprun-dedicated' ? undefined : 'hidden'}>
-                <AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun-dedicated'} />
+                <AppRunDedicatedPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun-dedicated'} />
               </div>
             )}
           </div>

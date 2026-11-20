@@ -609,3 +609,49 @@ describe('位置引数の秘密も、送る前に1文字も残さず伏せる', 
     expect(sent).toContain("expiresIn: '1h'")
   })
 })
+
+describe('秘密鍵の形: 終わりの印の無い開始が多くても、時間が伸びない・一致する範囲は変わらない', () => {
+  const HEAD = '-----BEGIN ' + 'PRIVATE KEY-----'
+  const TAIL = '-----END ' + 'PRIVATE KEY-----'
+  it('終わりの無い開始を 100,000 行並べても、探す・伏せるが数秒かからない（直す前は、行数の2乗で伸びた）', () => {
+    const s = (HEAD + '\n').repeat(100000)
+    const t = Date.now()
+    expect(findSecretShapes(s)).toEqual([])
+    expect(maskSecretShapes(s)).toBe(s)
+    expect(Date.now() - t).toBeLessThan(5000)
+  })
+  it('終わりが別の種類（証明書）だけのときも同じ', () => {
+    const s = (HEAD + '\n').repeat(100000) + '-----END CERTIFICATE-----\n'
+    const t = Date.now()
+    expect(findSecretShapes(s)).toEqual([])
+    expect(Date.now() - t).toBeLessThan(5000)
+  })
+  it('見出しだけが先に出て、あとに本物の鍵がある: 最初の開始から終わりまでを1つとして伏せる（これまでどおり）', () => {
+    const s = ['ERROR ' + HEAD + ' not found', 'x', HEAD, 'AAAABBBBCCCCDDDD', TAIL, 'after'].join('\n')
+    const masked = maskSecretShapes(s)
+    expect(masked).not.toContain('AAAABBBBCCCCDDDD')
+    expect(masked.endsWith('after')).toBe(true)
+    expect(findSecretShapes(s).map(f => f.kind)).toEqual(['private-key'])
+  })
+  it('終わりの無い鍵のあとに完全な鍵が続く: 途中の本体も伏せる（範囲を狭めない）', () => {
+    const s = [HEAD, 'TRUNCATEDBODY1111', 'between', HEAD, 'FULLBODY2222', TAIL].join('\n')
+    const masked = maskSecretShapes(s)
+    expect(masked).not.toContain('TRUNCATEDBODY1111')
+    expect(masked).not.toContain('FULLBODY2222')
+  })
+  it('最後の終わりより後ろの開始は、これまでどおり一致しない（そのまま残る）', () => {
+    const s = [HEAD, 'BODY1', TAIL, 'mid', HEAD, 'NOEND'].join('\n')
+    const masked = maskSecretShapes(s)
+    expect(masked).not.toContain('BODY1')
+    expect(masked).toContain('NOEND')
+    expect(findSecretShapes(s)).toHaveLength(1)
+  })
+  it('鍵が2つ: それぞれを別々に伏せ、あいだの文は残す', () => {
+    const s = [HEAD, 'BODY1', TAIL, 'keep-this', HEAD, 'BODY2', TAIL].join('\n')
+    const masked = maskSecretShapes(s)
+    expect(masked).toContain('keep-this')
+    expect(masked).not.toContain('BODY1')
+    expect(masked).not.toContain('BODY2')
+    expect(findSecretShapes(s)).toHaveLength(2)
+  })
+})

@@ -52,6 +52,6 @@ describe('PublishModal.tsx: AppRun の2つのタブのパネルに、visible（�
   const s = code(MODAL)
   it('★ 共用型のパネルには target === \'sakura-apprun\'、専有型のパネルには target === \'sakura-apprun-dedicated\' を渡す（取り違えない）', () => {
     expect(s).toContain("<AppRunPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun'} />")
-    expect(s).toContain("<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun-dedicated'} />")
+    expect(s).toContain("<AppRunDedicatedPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === 'sakura-apprun-dedicated'} />")
   })
 })

@@ -155,3 +155,71 @@ describe('buildWriteFixPrompt', () => {
     expect(q.split('\n').filter(l => l.startsWith('・'))).toHaveLength(1)
   })
 })
+
+// ── 公開されるファイルの点検の指摘 ─────────────────────────────────────
+import { isServedPath, severityOf, sortScanFindings, scanFindingLine } from '../src/shared/securityFindings'
+import type { ScanFinding, ScanFindingKind } from '../src/shared/securityFindings'
+
+describe('isServedPath', () => {
+  it('static は全部配られる', () => {
+    expect(isServedPath('static', 'server.js')).toBe(true)
+    expect(isServedPath('static', 'a/b.js')).toBe(true)
+  })
+  it('node は public/ と static/ の下だけ', () => {
+    expect(isServedPath('node', 'public/app.js')).toBe(true)
+    expect(isServedPath('node', 'static/app.js')).toBe(true)
+    expect(isServedPath('node', 'server.js')).toBe(false)
+    expect(isServedPath('node', 'src/public/app.js')).toBe(false)
+    expect(isServedPath('node', 'publicx/app.js')).toBe(false)
+  })
+})
+
+describe('severityOf', () => {
+  const secret: ScanFindingKind[] = ['known-key', 'named-secret', 'private-key', 'connection-string', 'secret-name']
+  const risky: ScanFindingKind[] = ['input-to-command', 'input-to-html', 'input-to-path']
+  it.each(secret)('%s は配られるなら now・そうでなければ should', (k) => {
+    expect(severityOf(k, true)).toBe('now')
+    expect(severityOf(k, false)).toBe('should')
+  })
+  it.each(risky)('%s はいつも should', (k) => {
+    expect(severityOf(k, true)).toBe('should')
+    expect(severityOf(k, false)).toBe('should')
+  })
+})
+
+describe('sortScanFindings', () => {
+  const f = (file: string, severity: 'now' | 'should', line?: number): ScanFinding => ({ kind: 'known-key', severity, file, line })
+  it('now が先・ファイル名の順・行の小さい順（行の無いものが先）', () => {
+    const out = sortScanFindings([f('b.js', 'now', 2), f('a.js', 'should', 1), f('b.js', 'now', 1), f('b.js', 'now'), f('a.js', 'now', 9)])
+    expect(out.map(x => `${x.severity}:${x.file}:${x.line ?? '-'}`)).toEqual(['now:a.js:9', 'now:b.js:-', 'now:b.js:1', 'now:b.js:2', 'should:a.js:1'])
+  })
+  it('元の配列を変えない', () => {
+    const src = [f('b.js', 'should', 1), f('a.js', 'now', 1)]
+    sortScanFindings(src)
+    expect(src[0].file).toBe('b.js')
+  })
+})
+
+describe('scanFindingLine', () => {
+  it('種類ごとの文', () => {
+    expect(scanFindingLine({ kind: 'input-to-command', severity: 'should', file: 'server.js', line: 30 }, 'publish')).toBe('server.js:30 訪問者の入力を、そのままコマンドに使っています')
+    expect(scanFindingLine({ kind: 'known-key', severity: 'now', file: 'config.js', line: 3, length: 40, sample: 'ghp_…' }, 'publish')).toBe('config.js:3 APIキーが直接書かれています（ghp_…・40文字）')
+    expect(scanFindingLine({ kind: 'named-secret', severity: 'now', file: 'a.js', line: 1, length: 11 }, 'publish')).toBe('a.js:1 パスワードやキーらしい値が直接書かれています（11文字）')
+    expect(scanFindingLine({ kind: 'private-key', severity: 'now', file: 'a.js', line: 1 }, 'publish')).toBe('a.js:1 秘密鍵が直接書かれています')
+    expect(scanFindingLine({ kind: 'connection-string', severity: 'now', file: 'a.js', line: 1 }, 'publish')).toBe('a.js:1 接続先の文字列に、ユーザー名とパスワードが入っています')
+    expect(scanFindingLine({ kind: 'input-to-html', severity: 'should', file: 'a.js', line: 2 }, 'publish')).toBe('a.js:2 訪問者の入力を、そのまま画面（HTML）に出しています')
+    expect(scanFindingLine({ kind: 'input-to-path', severity: 'should', file: 'a.js', line: 2 }, 'publish')).toBe('a.js:2 訪問者の入力を、そのままファイルのパスに使っています')
+    expect(scanFindingLine({ kind: 'secret-name', severity: 'now', file: 'credentials.json' }, 'publish')).toBe('credentials.json 秘密が入っていそうなファイルが、公開されるものに入っています')
+    expect(scanFindingLine({ kind: 'secret-name', severity: 'should', file: 'credentials.json' }, 'github')).toBe('credentials.json 秘密が入っていそうなファイルが、保存されるものに入っています')
+  })
+  it('値を持たない（型にも文にも値は入らない）', () => {
+    const line = scanFindingLine({ kind: 'known-key', severity: 'now', file: 'a.js', line: 1, length: 40, sample: 'ghp_…' }, 'publish')
+    expect(line).not.toContain(GH_BODY)
+  })
+  it('パスの制御文字を除く', () => {
+    const line = scanFindingLine({ kind: 'private-key', severity: 'now', file: 'a\nb‮.js', line: 1 }, 'publish')
+    expect(line.split('\n')).toHaveLength(1)
+    expect(line).not.toContain('‮')
+    expect(line.startsWith('ab.js:1 ')).toBe(true)
+  })
+})

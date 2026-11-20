@@ -10,6 +10,8 @@ import * as path from 'path'
 // ソースを読んで「呼び出しの形そのもの」を固定する（掟10: 「どこかに書いてある」だけでは
 // 直し忘れを捕まえられない。呼び出しごと見る）。
 
+import { SECURITY_PLACEMENTS } from './securityPlacements'
+
 const ROOT = path.join(__dirname, '..')
 const raw = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf-8')
 // コメントでの言及だけを拾って誤検知しないよう、コメント行を除く。
@@ -251,39 +253,14 @@ describe('moveFilesToFs: 守りの配線（isProtectedWritePath を移動元・�
 })
 
 describe('UI: 4パネルへの埋め込み（SecurityCheckSection の隣・同じ位置）', () => {
-  const PANELS = [
-    'src/renderer/components/PublishModal.tsx',
-    'src/renderer/components/AppRunPanel.tsx',
-    'src/renderer/components/HanamiiPanel.tsx',
-    'src/renderer/components/VercelPanel.tsx',
-  ]
+  const WITH_UNUSED = Object.values(SECURITY_PLACEMENTS).flatMap(p =>
+    p.kind === 'section' && p.unusedCall !== null ? [{ file: p.file, sec: p.call, unused: p.unusedCall }] : [])
+  const PANELS = WITH_UNUSED.map(x => x.file)
+  const CALLS: Record<string, { sec: string; unused: string }> = Object.fromEntries(WITH_UNUSED.map(x => [x.file, { sec: x.sec, unused: x.unused }]))
 
   it.each(PANELS)('%s が UnusedFilesSection を import している', (file) => {
     expect(raw(file)).toContain("import UnusedFilesSection from './UnusedFilesSection'")
   })
-
-  // 2026-09-04 Ryosuke 指摘A: 公開画面は番号付きの手順で並んでいるのに、この2節だけ
-  // 無番号で浮いて見える。番号体系を持つ3画面（AppRun・HANAMII・Vercel）は stepNo を
-  // 渡し、番号体系の無い PublishModal（公開先選択）は渡さない（現状維持）。
-  // 呼び出しの形ごと一意に指す（掟10: 「どこかにある」だけでは直し忘れを捕まえられない）。
-  const CALLS: Record<string, { sec: string; unused: string }> = {
-    'src/renderer/components/PublishModal.tsx': {
-      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />',
-      unused: '<UnusedFilesSection projectDir={projectDir} />',
-    },
-    'src/renderer/components/AppRunPanel.tsx': {
-      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順4" />',
-      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="手順5" />',
-    },
-    'src/renderer/components/HanamiiPanel.tsx': {
-      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順3" />',
-      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="手順4" />',
-    },
-    'src/renderer/components/VercelPanel.tsx': {
-      sec: '<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順2" />',
-      unused: '<UnusedFilesSection projectDir={projectDir} stepNo="手順3" />',
-    },
-  }
 
   it.each(PANELS)('%s で UnusedFilesSection を、その画面の番号体系に合わせて SecurityCheckSection の直後に描画している', (file) => {
     const src = raw(file)

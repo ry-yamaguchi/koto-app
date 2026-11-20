@@ -850,6 +850,9 @@ interface Window {
       estimates(): Promise<Record<string, import('../shared/stageEstimate').StageEstimate>>
     }
 
+    publishScan: {
+      run(projectDir: string, scope: import('../shared/publishScanTypes').PublishScanScope): Promise<import('../shared/publishScanTypes').PublishScanReply>
+    }
     osv: {
       preview(projectDir: string): Promise<import('../shared/osvTypes').OsvPreview>
       check(projectDir: string, consented: boolean): Promise<import('../shared/osvTypes').OsvCheckReply>

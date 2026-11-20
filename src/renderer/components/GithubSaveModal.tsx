@@ -6,6 +6,7 @@ import CopyButton from './CopyButton'
 import { isNameConflictError, suggestAlternativeName } from '../nameConflict'
 import { mergeProjectMeta } from '../projectMeta'
 import FailureLines from './FailureLines'
+import GithubSaveScan from './GithubSaveScan'
 import { splitFailureDetail } from '../../shared/failureDetail'
 
 // 💾 GitHubに保存（バックアップ・共有・P3-⑬ G1）。
@@ -169,6 +170,7 @@ export default function GithubSaveModal({ projectDir, onClose, onOpenCredentials
         </div>
 
         <div className="px-6 pb-6 space-y-4">
+          {tokenLoaded && metaLoaded && !!token && <GithubSaveScan projectDir={projectDir} />}
           {!tokenLoaded || !metaLoaded ? (
             <p className="text-sm text-ink-secondary py-4">読み込み中…</p>
           ) : !token ? (

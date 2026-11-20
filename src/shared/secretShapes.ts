@@ -169,6 +169,12 @@ interface SecretShapeBase {
   mask(m: RegExpMatchArray, keepLines: boolean): string | null
   /** 名前を見て決める形（`name = "値"`）か。更新ログの伏せ字は、名前を見る形を使わない。 */
   byName?: boolean
+  /**
+   * 終わりの印（必ず `g` 付き）。この印が後ろに無い所では決して一致しない形に付ける。
+   * 付いている形は、文の中の最後の印までだけを探す（一致する範囲は変わらない。印の無い開始が多い文で、
+   * 開始ごとに文の終わりまで探して、時間が長さの2乗で伸びるのを避ける）。
+   */
+  until?: RegExp
 }
 
 /** 警告にも伏せ字にも使う形。 */
@@ -285,6 +291,7 @@ const SECRET_SHAPES: readonly SecretShape[] = [
     id: 'private-key',
     kind: 'private-key',
     re: /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/g,
+    until: /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/g,
     valueOf: m => m[0],
     sampleOf: () => '',  // 鍵の本体は、先頭の数文字でも出さない
     reports: () => true,
@@ -502,6 +509,14 @@ function overlapsTaken(taken: Uint8Array, at: number, end: number): boolean {
  * 並びは出てきた順。見つからなければ空配列。読み出し（`process.env.X`）・見本の値・
  * 公開してよいキーは数えない。
  */
+/** その形を探す範囲の長さ。終わりの印を持つ形は最後の印まで（無ければ 0）、持たない形は全部。 */
+function searchSpanOf(text: string, shape: Pick<SecretShapeBase, 'until'>): number {
+  if (!shape.until) return text.length
+  let end = 0
+  for (const m of text.matchAll(shape.until)) end = (m.index ?? 0) + m[0].length
+  return end
+}
+
 export function findSecretShapes(text: string): SecretFinding[] {
   const src = String(text ?? '')
   const starts = lineStartsOf(src)
@@ -510,7 +525,8 @@ export function findSecretShapes(text: string): SecretFinding[] {
   const found: Array<SecretFinding & { at: number }> = []
   for (const shape of SECRET_SHAPES) {
     if (shape.maskOnly) continue
-    for (const m of src.matchAll(shape.re)) {
+    const span = searchSpanOf(src, shape)
+    for (const m of (span === src.length ? src : src.slice(0, span)).matchAll(shape.re)) {
       const at = m.index ?? 0
       const end = at + m[0].length
       if (overlapsTaken(taken, at, end)) continue
@@ -554,7 +570,9 @@ export function maskSecretShapes(text: string, options: MaskOptions = {}): strin
   let out = String(text ?? '')
   for (const shape of SECRET_SHAPES) {
     if (shape.byName && !byName) continue
-    out = replaceMatches(out, shape.re, m => shape.mask(m, keepLines) ?? m[0])
+    const span = searchSpanOf(out, shape)
+    const replacer = (m: RegExpMatchArray): string => shape.mask(m, keepLines) ?? m[0]
+    out = span === out.length ? replaceMatches(out, shape.re, replacer) : replaceMatches(out.slice(0, span), shape.re, replacer) + out.slice(span)
   }
   return out
 }

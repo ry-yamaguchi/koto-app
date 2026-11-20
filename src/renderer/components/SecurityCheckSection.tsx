@@ -5,6 +5,13 @@ import CopyButton from './CopyButton'
 import SecurityReportBody from './SecurityReportBody'
 import { failureCopyNow } from '../failureCopy'
 import OsvCheckBlock from './OsvCheckBlock'
+import PublishScanResult from './PublishScanResult'
+import { runPublishScanView } from '../publishScanRun'
+import { runSecuritySteps } from '../securityCheckSteps'
+import {
+  PUBLISH_SCAN_PROGRESS, PUBLISH_SCAN_BUTTON_NO_AI, PUBLISH_SCAN_NO_AI_NOTE, PUBLISH_SCAN_AI_STOPPED_NOTE,
+  type ScanView,
+} from '../publishScanWords'
 
 // 🛡 セキュリティチェックの節。公開フローの「事前チェック」の次に置く
 // （2026-08-21 Ryosuke 指定。最初は上部バーに置いたが、公開の流れの中が自然）。
@@ -38,6 +45,16 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
   // 「中止した」のか「そもそも実施できなかった」のかを取り違えないための印。
   // 押した本人に「実施できませんでした」とだけ見せると、失敗したように読める
   const [aborted, setAborted] = useState(false)
+  // Koto が自分で読んで点検した結果（AI は使わない）。押した時点のプロジェクトのものだけ置く
+  const [scan, setScan] = useState<ScanView | null>(null)
+  // 「中止」が押されたか（描画には使わないので ref）
+  const stopRef = useRef(false)
+  // 点検の間に中止が押され、AI の確認を始めなかった回
+  const [aiStopped, setAiStopped] = useState(false)
+  // 押した時点で、AI の確認を走らせる回だったか（キーはあとで変わりうるので、押した時点の値を残す）
+  const [aiRan, setAiRan] = useState(false)
+  const dirRef = useRef(projectDir)
+  dirRef.current = projectDir
 
   useEffect(() => {
     setResult(null) // 別プロジェクトの結果を見せない
@@ -47,21 +64,40 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
     } catch { setRecord(null) }
   }, [projectDir])
 
+  useEffect(() => { setScan(null) }, [projectDir])
+
   async function run() {
     if (checking) return
+    stopRef.current = false
     setChecking(true)
     setStopping(false)
     setAborted(false)
     setResult(null)
+    setScan(null)
+    setAiStopped(false)
+    setAiRan(!!apiKey)
+    const started = projectDir
     try {
-      const r = await runSecurityCheck(projectDir, apiKey, setProgress, (abort) => { abortRef.current = abort })
-      setResult(r)
-      // 実施できたときだけ記録する（省略・失敗は「確認した」ではない）
-      if (r.verdict === 'ok' || r.verdict === 'warn') {
-        const rec: CheckRecord = { at: new Date().toISOString(), verdict: r.verdict }
-        try { window.localStorage.setItem(checkRecordKey(projectDir), JSON.stringify(rec)) } catch { /* 保存できなくても続ける */ }
-        setRecord(rec)
-      }
+      setProgress(PUBLISH_SCAN_PROGRESS)
+      const end = await runSecuritySteps({
+        // 先に Koto が自分で点検する（AI は呼ばない・外へ送らない）
+        scan: async () => {
+          const view = await runPublishScanView(projectDir, 'publish')
+          if (dirRef.current === started) setScan(view)
+        },
+        stopRequested: () => stopRef.current,
+        ai: apiKey ? async () => {
+          const r = await runSecurityCheck(projectDir, apiKey, setProgress, (abort) => { abortRef.current = abort })
+          setResult(r)
+          // 実施できたときだけ記録する（省略・失敗は「確認した」ではない）
+          if (r.verdict === 'ok' || r.verdict === 'warn') {
+            const rec: CheckRecord = { at: new Date().toISOString(), verdict: r.verdict }
+            try { window.localStorage.setItem(checkRecordKey(projectDir), JSON.stringify(rec)) } catch { /* 保存できなくても続ける */ }
+            setRecord(rec)
+          }
+        } : null,
+      })
+      if (end === 'stopped-before-ai' && dirRef.current === started) setAiStopped(true)
     } finally {
       abortRef.current = null
       setChecking(false)
@@ -73,6 +109,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
   /** 「中止する」を押したとき。いま待っている問い合わせを切り、残りのかたまりへ進ませない。 */
   function stop() {
     if (!checking) return
+    stopRef.current = true
     setStopping(true)
     setAborted(true)
     abortRef.current?.()
@@ -87,7 +124,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
               受け口（onAbortReady）と、押されたときに本当に止まる振る舞いは
               securityCheck.ts 側にあったが、**押すところが画面に無かった**。
               押せない中断は無いのと同じなので、確認中はここに必ず出す。 */}
-          {checking && (
+          {checking && aiRan && (
             <button
               onClick={stop}
               disabled={stopping}
@@ -98,7 +135,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
             onClick={() => { void run() }}
             disabled={checking}
             className="bg-overlay text-ink border border-line rounded-md px-3 py-1 text-xs font-medium hover:border-sakura disabled:opacity-40"
-          >{checking ? '確認中…' : 'AIに確認してもらう'}</button>
+          >{checking ? '確認中…' : apiKey ? 'AIに確認してもらう' : PUBLISH_SCAN_BUTTON_NO_AI}</button>
         </div>
       </div>
       {/* ── 免責は「押す前」に読める位置に置く（2026-08-21 Ryosuke 指摘）────────
@@ -106,10 +143,21 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
           最終的な確認がご自身であることが画面から消えていた**。
           文言も実態に合わせる（何を見るか／このあと選べること／責任の所在）。 */}
       <p className="text-[11px] text-ink-muted leading-relaxed">
-        簡易的なセキュリティチェックを実施します。（秘密情報の書き込みや危険な記述がないか）<br />
-        公開されるファイルを、原則すべて確認します（確認しきれなかったファイルは、結果に名前を出します）。<br />
-        チェック後、修正するかどうか選択可能です。<br />
-        なおAIによる簡易的な確認であるため、最終的にはご自身で確認してください。
+        {apiKey ? (
+          <>
+            秘密情報の書き込みや危険な記述がないかを、Koto の点検と AI の確認で調べます。<br />
+            公開されるファイルを、原則すべて確認します（確認しきれなかったファイルは、結果に名前を出します）。<br />
+            AI の確認では、ファイルの中身をさくらのAI Engine へ送ります。パスワードなどに見えるものは伏せて送ります。<br />
+            チェック後、修正するかどうか選択可能です。<br />
+            簡易的な確認であるため、最終的にはご自身で確認してください。
+          </>
+        ) : (
+          <>
+            秘密情報の書き込みや危険な記述がないかを、Koto が点検します。<br />
+            公開されるファイルを、原則すべて確認します（確認しきれなかったファイルは、結果に名前を出します）。<br />
+            簡易的な確認であるため、最終的にはご自身で確認してください。
+          </>
+        )}
       </p>
 
       {/* 前回の確認。**結果を表示していないときだけ**出す（同じことを二度書かない）。
@@ -122,13 +170,19 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
         <>
           <p className="text-xs text-ink-secondary">⏳ {progress || '準備しています…'}</p>
           {/* 待たされている人に、止められることを字で伝える（ボタンだけだと気づかれない） */}
-          <p className="text-[11px] text-ink-muted">
-            {stopping
-              ? '中止しています。実行中の AI への問い合わせが終わるまで、少しお待ちください。'
-              : '時間がかかるときは「⏹ 中止する」で止められます。途中までの結果は「確認した」ことにはしません。'}
-          </p>
+          {aiRan && (
+            <p className="text-[11px] text-ink-muted">
+              {stopping
+                ? '中止しています。少しお待ちください。'
+                : '時間がかかるときは「⏹ 中止する」で AI の確認を止められます。途中までの結果は「確認した」ことにはしません。'}
+            </p>
+          )}
         </>
       )}
+
+      {scan && <PublishScanResult view={scan} />}
+      {scan && !aiRan && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_NO_AI_NOTE}</p>}
+      {scan && aiStopped && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_AI_STOPPED_NOTE}</p>}
 
       {/* ── 全部✅なら1行に畳む（判断6・利用者目線レビュー・2026-09-11）──────────────
           手順3 事前チェック（AppRunPanel.tsx）の「preflight.checks.every(c => c.status === 'ok')」

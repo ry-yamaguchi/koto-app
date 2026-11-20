@@ -12,7 +12,8 @@
 // どちらとして検査するかは runtimeDetect が自動で決める（利用者には選ばせない）。
 
 import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel } from './usage'
-import { looksSecretByName, looksSecretButPublished, BUILD_CONFIG_FILES } from '../shared/publishExclude'
+import { looksSecretByName, looksSecretButPublished } from '../shared/publishExclude'
+import { LOCKFILE_RE, ASSET_FILE_RE, isKotoBuildConfig } from '../shared/publishScanTargets'
 import { maskSecretShapes } from '../shared/secretShapes'
 import { capList } from '../shared/capList'
 import { wrapUntrusted } from '../shared/untrustedBlock'
@@ -103,23 +104,7 @@ const SECURITY_CHECK_MAX_FILES = 5000
 // svg はXMLテキストでスクリプト混入がありうるため、同じ理由で中身を読む対象にする。
 const TARGET_RE = /\.(html?|php|js|mjs|cjs|css|json|ya?ml|sh|md|txt|svg)$|(^|\/)(Dockerfile|\.htaccess)$/i
 // 中身を読むまでもなく公開NGなファイル名の判定は publishExclude.ts の looksSecretByName（唯一の定義）。
-// 依存の一覧（ロックファイル）は中身を送らない。名前と版とハッシュが並ぶだけで読んでも指摘は出ず、
-// 大きいと枠（BATCH_CHARS × MAX_BATCHES）を使い切って後ろのソースが「確認していません」に回る。
-// 対象から外すだけで、公開物にある事実は others の名前に残る（yarn.lock が元からそうなっている）。
-const LOCKFILE_RE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$/i
-
-/**
- * Koto が管理するビルド設定か。**ユーザーの作成物ではないので検査しない。**
- *
- * rc.2 実機（2026-08-21 Ryosuke 指摘）で、AI がビルド設定に「COPY . は全ファイルを
- * 公開してしまう」と指摘した。だがそれは Koto 自身の責任範囲で、そのまま配信される
- * 公開先には入れない（publishExclude.ts・v0.3.38 で 404 を実測済み）。利用者には
- * 直せない上に Koto の設計と矛盾する助言になるため、対象から外す。名簿は一元定義を使う。
- */
-function isKotoBuildConfig(relPath: string): boolean {
-  const base = relPath.split('/').pop() ?? relPath
-  return (BUILD_CONFIG_FILES as readonly string[]).includes(base)
-}
+// 依存の一覧（ロックファイル）・Koto のビルド設定・素材の拡張子の定義は shared/publishScanTargets.ts の1か所
 
 /**
  * チェックにかけるファイルを選ぶ（純関数）。
@@ -198,14 +183,8 @@ export const DATA_FILE_RE = /\.(sql|db|sqlite|sqlite3|csv|tsv|bak|old|log|dump|z
 // 資産」であり、残骸の疑いがある others と同じ袋に入れると混乱の元になる。そこで
 // assets を独立させ、名指しせず件数だけを伝える（mergeCheckResults）。
 
-/**
- * 表示用の「資産」ファイル（一元定義）。画像・フォント・音声・動画など、そもそも
- * テキストとして中身を確認する対象になり得ないもの。
- *
- * svg はここに含めない（XMLテキストでスクリプト混入がありうるため TARGET_RE 側で読む）。
- * pdf もここに含めない（文書なので others に残し、名前だけで判定させる）。
- */
-export const ASSET_FILE_RE = /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|woff2?|ttf|otf|eot|mp3|wav|ogg|m4a|mp4|webm|mov|avi)$/i
+// 表示用の資産ファイルの定義は shared/publishScanTargets.ts の1か所（ここからも使えるよう再公開する）
+export { ASSET_FILE_RE }
 
 /**
  * 検査対象（targets）にも、名前だけで公開NGと分かるもの（secretFiles）にも入らなかった

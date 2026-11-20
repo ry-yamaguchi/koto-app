@@ -150,6 +150,11 @@ function hasRawInput(s: string): boolean {
   return false
 }
 
+/** 長すぎて、危ない書き方の点検から外す行か。長さの上限の判断はここだけ。 */
+function isTooLongLine(trimmed: string): boolean {
+  return trimmed.length > WRITE_CHECK_MAX_LINE_CHARS
+}
+
 function isCommentLine(trimmed: string): boolean {
   return trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*') || trimmed.startsWith('<!--')
 }
@@ -203,6 +208,21 @@ function riskyKindsOfLine(line: string): Array<'input-to-command' | 'input-to-ht
   return kinds
 }
 
+/** 見本の名前（.example・.sample・.template・.dist がつくもの）のファイルか。点検の対象にしない判断はここの1か所。 */
+export function isSampleFileName(path: string): boolean {
+  return SAMPLE_FILE_RE.test(baseName(path))
+}
+
+/** findingsInWrite が、行が長すぎるという理由で1行以上を危ない書き方の点検から外すファイルか。 */
+export function hasLongLineSkipped(path: string, text: string): boolean {
+  const base = baseName(path)
+  if (isSampleFileName(path) || !CODE_EXT_RE.test(base)) return false
+  return text.split('\n').some(raw => {
+    const trimmed = raw.trim()
+    return !!trimmed && !isCommentLine(trimmed) && isTooLongLine(trimmed)
+  })
+}
+
 /**
  * 書いたファイルの中身を点検する。`before` は書く前の中身（新しいファイルなら null）。
  * `before` にある行（前後の空白を除いて同じ）は出さない。値そのものは戻り値に入れない。
@@ -210,7 +230,7 @@ function riskyKindsOfLine(line: string): Array<'input-to-command' | 'input-to-ht
 export function findingsInWrite(input: { path: string; before: string | null; after: string }): WriteFinding[] {
   const { path, before, after } = input
   const base = baseName(path)
-  if (SAMPLE_FILE_RE.test(base)) return []
+  if (isSampleFileName(path)) return []
 
   const afterLines = after.split('\n')
   // テスト・fixture の見本のパスワードは、名前だけで決める形を出さない。キー・秘密鍵・接続文字列は出す
@@ -229,7 +249,7 @@ export function findingsInWrite(input: { path: string; before: string | null; af
       const trimmed = raw.trim()
       if (!trimmed || isCommentLine(trimmed)) return
       // とても長い行は見ない（点検の時間が行の長さの2乗で伸びるため。迷う形は通す）
-      if (trimmed.length > WRITE_CHECK_MAX_LINE_CHARS) return
+      if (isTooLongLine(trimmed)) return
       for (const kind of riskyKindsOfLine(trimmed)) found.push({ kind, line: i + 1 })
     })
   }

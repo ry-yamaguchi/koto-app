@@ -8,38 +8,9 @@ import {
   GithubClient, splitRepoFullName, describeCreateRepoError, describeUserError,
   type GithubFileEntry,
 } from '../github/client'
-import { partitionEntries, isSkippedDirName, isSkippedFileName, type EnumerateEntry } from '../github/enumerate'
+import { githubSaveFilesFs } from '../github/saveFiles'
 import type { IpcDeps } from './types'
 import { failureText } from '../../shared/failureText'
-
-// プロジェクト内のファイルを列挙する（node_modules 等の除外＋ .env系除外＋ 5MB超過除外は
-// partitionEntries が担当。ここではディレクトリ走査のみを行う）。
-// envDetect.ts / fs.ts の SKIP_DIRS 系と同じ上限（深さ8・最大2000ファイル）を踏襲する。
-function walkProjectFiles(projectDir: string): EnumerateEntry[] {
-  const MAX_FILES = 2000
-  const entries: EnumerateEntry[] = []
-  const walk = (dir: string, rel: string, depth: number): void => {
-    if (depth > 8 || entries.length >= MAX_FILES) return
-    let dirents: fs.Dirent[]
-    try { dirents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const ent of dirents) {
-      if (entries.length >= MAX_FILES) return
-      const full = path.join(dir, ent.name)
-      const relPath = rel + ent.name
-      if (ent.isDirectory()) {
-        if (isSkippedDirName(ent.name)) continue
-        walk(full, relPath + '/', depth + 1)
-      } else if (ent.isFile()) {
-        if (isSkippedFileName(ent.name)) continue
-        let size = 0
-        try { size = fs.statSync(full).size } catch { continue }
-        entries.push({ rel: relPath, sizeBytes: size })
-      }
-    }
-  }
-  walk(projectDir, '', 0)
-  return entries
-}
 
 // ファイルをバイト列のまま base64 化して読む（テキスト/バイナリ問わず安全。GithubFileEntry.content の形）。
 function readFileAsBase64(full: string): string {
@@ -81,8 +52,7 @@ export function registerGithubHandlers(_deps: IpcDeps) {
     const parsed = splitRepoFullName(repoFullName)
     if (!parsed) return { ok: false, message: '保存先のリポジトリが正しく設定されていません' }
     try {
-      const rawEntries = walkProjectFiles(projectDir)
-      const { included, excluded } = partitionEntries(rawEntries)
+      const { included, excluded } = githubSaveFilesFs(projectDir)
       if (included.length === 0) {
         return { ok: false, message: '保存できるファイルが見つかりませんでした', excluded }
       }
