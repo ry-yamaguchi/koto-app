@@ -106,6 +106,13 @@ const CONSUMERS: { name: string; file: string; must: string; mustNot: string; vi
     mustNot: 'projectFiles(projectDir)\n',
   },
   {
+    // Koto が自分で読む点検（公開されるファイルの一覧）も、同じ根から読む。
+    name: '公開されるファイルの点検（Koto が自分で読む部分）',
+    file: 'src/main/publishScan.ts',
+    must: 'resolvePublishRoot(projectDir)',
+    mustNot: 'projectFilesInfoFs(projectDir',
+  },
+  {
     // 2026-08-20 実機: `main.js` が同じフォルダにあるのに「見つかりません」と出た。
     // 走査の基準がずれると、相対パスの解決が全部おかしくなる。
     name: '見た目チェック（findSiteIssues）の走査',

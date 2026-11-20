@@ -49,12 +49,12 @@ export const WRITE_MARK_LINE_MAX = 10_000_000
 /** 印の件数の上限（持つ側・読む側で同じ）。 */
 export const WRITE_MARKS_LIMIT = MARKS_LIMIT
 
-function isSecretKind(kind: WriteFindingKind): boolean {
+export function isSecretKind(kind: WriteFindingKind): boolean {
   return SECRET_KINDS.includes(kind)
 }
 
 /** 見つけたものの言い方（値は含まない。文字数と見本は、あれば括弧で添える）。 */
-function phraseOf(f: WriteFinding): string {
+export function phraseOf(f: WriteFinding): string {
   switch (f.kind) {
     case 'known-key':
       return `APIキーが直接書かれています${shapeNote(f)}`
@@ -116,7 +116,7 @@ export function hasHiddenPathChar(file: string): boolean {
 const SHOWN_PATH_MAX = 200
 
 /** 改行と制御文字を除き、長すぎれば先頭を省く（パスは利用者やAIが決めた文字列なので、依頼文の行を増やさせない）。 */
-function cleanPath(file: string): string {
+export function cleanPath(file: string): string {
   const s = file.replace(new RegExp(HIDDEN_CHAR_SRC, 'g'), '')
   return s.length > SHOWN_PATH_MAX ? '…' + s.slice(s.length - (SHOWN_PATH_MAX - 1)) : s
 }
@@ -139,4 +139,56 @@ export function buildWriteFixPrompt(marks: WriteFixMark[]): string {
     ...(marks.some(m => isSecretKind(m.kind)) ? SECRET_FIX_LINES : []),
     ...(marks.some(m => !isSecretKind(m.kind)) ? INPUT_FIX_LINES : []),
   ].join('\n')
+}
+
+// ── 公開されるファイルの点検（Koto が自分で読む部分）の指摘 ─────────────────────
+
+/** 点検の範囲。publish は公開されるファイル・github は GitHub 保存で保存されるファイル。 */
+export type ScanScope = 'publish' | 'github'
+
+export type FindingSeverity = 'now' | 'should' // すぐ直す／直したほうがよい
+export type ScanFindingKind = WriteFindingKind | 'secret-name'
+
+/** 公開されるファイルの点検の指摘。値そのものは持たない。 */
+export interface ScanFinding {
+  kind: ScanFindingKind
+  severity: FindingSeverity
+  file: string
+  line?: number
+  length?: number
+  sample?: string
+}
+
+export type RuntimeMode = 'static' | 'node'
+
+const SERVED_DIR_RE = /^(?:public|static)\//
+
+/** そのファイルが、訪問者へそのまま配られるか（見立て）。static は全部・node は public/ か static/ の下だけ。 */
+export function isServedPath(mode: RuntimeMode, rel: string): boolean {
+  if (mode === 'static') return true
+  return SERVED_DIR_RE.test(rel)
+}
+
+/** 重さ。秘密の4種と secret-name は、配られるなら 'now'・そうでなければ 'should'。危ない書き方3種は 'should'。 */
+export function severityOf(kind: ScanFindingKind, served: boolean): FindingSeverity {
+  if (kind === 'secret-name') return served ? 'now' : 'should'
+  return isSecretKind(kind) && served ? 'now' : 'should'
+}
+
+/** 並べ方: 'now' が先。同じ重さの中は、ファイル名（文字の順）→ 行（小さい順。行の無いものが先）。 */
+export function sortScanFindings(items: ScanFinding[]): ScanFinding[] {
+  const rank = (f: ScanFinding) => (f.severity === 'now' ? 0 : 1)
+  return [...items].sort((a, b) => {
+    if (rank(a) !== rank(b)) return rank(a) - rank(b)
+    if (a.file !== b.file) return a.file < b.file ? -1 : 1
+    return (a.line ?? 0) - (b.line ?? 0)
+  })
+}
+
+/** 1件の文（値を出さない）。 */
+export function scanFindingLine(f: ScanFinding, scope: ScanScope): string {
+  const file = cleanPath(f.file)
+  if (f.kind === 'secret-name') return `${file} 秘密が入っていそうなファイルが、${scope === 'github' ? '保存される' : '公開される'}ものに入っています`
+  const phrase = phraseOf({ kind: f.kind, line: f.line ?? 0, length: f.length, sample: f.sample })
+  return typeof f.line === 'number' ? `${file}:${f.line} ${phrase}` : `${file} ${phrase}`
 }

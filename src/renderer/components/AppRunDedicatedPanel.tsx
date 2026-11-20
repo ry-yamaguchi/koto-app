@@ -92,6 +92,7 @@ import { useConfirm } from '../useConfirm'
 // 同じ部品に同じ形（stageTimings）を渡す。
 import StageEstimate from './StageEstimate'
 import StageTimingDetails from './StageTimingDetails'
+import SecurityCheckSection from './SecurityCheckSection'
 
 // さくらのAppRun 専有型パネル（roadmap #23）。
 //
@@ -110,6 +111,8 @@ import StageTimingDetails from './StageTimingDetails'
 
 interface Props {
   projectDir: string
+  /** さくらのAI Engine のキー。空なら Koto の点検だけが走る。 */
+  apiKey: string
   onOpenCredentials: () => void
   /**
    * いま利用者の目の前に出ているか（既定は true）。共用型・専有型のタブは、切り替えても**パネルを外さずに隠す**
@@ -939,7 +942,7 @@ export function buildTeardownSummary(record: TeardownSummaryRecord, plans: Teard
   return { lines }
 }
 
-export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, visible: panelVisible = true }: Props) {
+export default function AppRunDedicatedPanel({ projectDir, apiKey, onOpenCredentials, visible: panelVisible = true }: Props) {
   const metaPath = `${projectDir}/.sakuraide.json`
   // `panelVisible` は、タブが目の前に出ているか（この関数の中には、入力欄の「表示するエラー」も `visible` の名前で居るので、別名で持つ）。
   // 記録の見張り（下の useDedicatedOpsWatch）へ渡す。
@@ -2564,6 +2567,7 @@ export default function AppRunDedicatedPanel({ projectDir, onOpenCredentials, vi
       {/* 手順8 アプリを公開する（D-4・2026-09-15。段階(3)(5)）。クラスタ・ASG・LB が揃っているときだけ出す
           （shouldShowPublishSection・apprunDedicatedActions.ts）。手順7の後ろに置き、番号は付け直さない
           （理由はファイル冒頭のコメント）。 */}
+      {shouldShowPublishSection(apprunState) && <SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />}
       {shouldShowPublishSection(apprunState) && (
         <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
           <p className="text-sm font-semibold text-ink">手順8 アプリを公開する</p>

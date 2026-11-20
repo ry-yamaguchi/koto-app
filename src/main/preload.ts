@@ -409,6 +409,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     estimates: () => ipcRenderer.invoke('stageTiming:estimates'),
   },
 
+  publishScan: {
+    run: (projectDir: string, scope: import('../shared/publishScanTypes').PublishScanScope) => ipcRenderer.invoke('publishScan:run', projectDir, scope),
+  },
   osv: {
     preview: (projectDir: string) => ipcRenderer.invoke('osv:preview', projectDir),
     check: (projectDir: string, consented: boolean) => ipcRenderer.invoke('osv:check', projectDir, consented),

@@ -120,7 +120,7 @@ describe('名前だけで秘密と分かるもの・ロックファイルの扱�
 
   it('名前の判定は publishExclude.ts の looksSecretByName を呼ぶ（手元に正規表現を持たない）', () => {
     const s = readSrc('src/renderer/securityCheck.ts')
-    expect(s).toContain("import { looksSecretByName, looksSecretButPublished, BUILD_CONFIG_FILES } from '../shared/publishExclude'")
+    expect(s).toContain("import { looksSecretByName, looksSecretButPublished } from '../shared/publishExclude'")
     expect(s).toContain("const secretFiles = files.filter(f => looksSecretByName(f) && f !== '.sakuraide.json')")
     expect(s).toContain('let targets = files.filter(f => TARGET_RE.test(f) && !looksSecretByName(f) && !LOCKFILE_RE.test(f) && !isKotoBuildConfig(f))')
     expect(s).toContain('if (entry && files.includes(entry) && !looksSecretByName(entry)) {')
@@ -519,17 +519,7 @@ describe('セキュリティチェックの配線', () => {
   // 無番号で浮いて見える。番号体系を持つ3画面（AppRun・HANAMII・Vercel）は stepNo を
   // 渡し、番号体系の無い PublishModal（公開先選択）は渡さない（現状維持）。
   // 呼び出しの形ごと一意に指す（掟10: 「どこかにある」だけでは直し忘れを捕まえられない）。
-  it('公開フローの4経路すべてに 🛡 節が居る（AppRun・Vercel・HANAMII・レンタル）', () => {
-    expect(read('src/renderer/components/AppRunPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順4" />')
-    expect(read('src/renderer/components/HanamiiPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順3" />')
-    expect(read('src/renderer/components/VercelPanel.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo="手順2" />')
-    for (const f of ['AppRunPanel', 'HanamiiPanel', 'VercelPanel']) {
-      expect(read(`src/renderer/components/${f}.tsx`), `${f} の stepNo に丸数字が戻っている`).not.toMatch(/stepNo="[①-⑳]"/)
-    }
-    // PublishModal は番号体系の無い画面のため stepNo を渡さない（現状維持）
-    expect(read('src/renderer/components/PublishModal.tsx')).toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} />')
-    expect(read('src/renderer/components/PublishModal.tsx')).not.toContain('<SecurityCheckSection projectDir={projectDir} apiKey={apiKey} stepNo=')
-  })
+  // 公開先ごとの 🛡 節の置き場所は tests/securityPlacementTable.test.ts（表は tests/securityPlacements.ts）。
 
   it('公開時に自動では走らせない（2026-08-21 Ryosuke 指定。入口は手動の 🛡 節だけ）', () => {
     expect(read('src/renderer/components/PublishModal.tsx')).not.toContain('runSecurityCheck(')
@@ -569,8 +559,8 @@ describe('セキュリティチェックの配線', () => {
     // (2) ボタンが stop に繋がっていること（別の関数へ繋ぎ替わったら落ちる）
     const btn = s.indexOf('onClick={stop}')
     expect(btn).toBeGreaterThan(-1)
-    // (3) そのボタンは「確認中のときだけ」出す条件の中に居る（押せない時に出さない）
-    const guard = s.lastIndexOf('{checking && (', btn)
+    // (3) そのボタンは「確認中で、AI の確認を走らせる回のときだけ」出す条件の中に居る（押せない時に出さない）
+    const guard = s.lastIndexOf('{checking && aiRan && (', btn)
     expect(guard).toBeGreaterThan(-1)
     expect(s.slice(guard, btn)).not.toContain('</button>') // 別のボタンを挟んでいない
     // (4) 文言は素のテキスト・日本語（掟5）。利用者が「中止」と読める語であること
@@ -594,7 +584,7 @@ describe('セキュリティチェックの配線', () => {
   })
 
   it('ビルド設定の除外は一元定義（BUILD_CONFIG_FILES）を呼び出しの形ごと使う', () => {
-    const s = read('src/renderer/securityCheck.ts')
+    const s = read('src/shared/publishScanTargets.ts')
     // 名簿の丸ごと利用を、式の形ごと一意に指す（手書きの配列に替わったら落ちる）
     expect(s).toContain('(BUILD_CONFIG_FILES as readonly string[]).includes(base)')
   })

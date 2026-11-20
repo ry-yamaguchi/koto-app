@@ -18,6 +18,7 @@ import { registerPublishMetaHandlers } from './publishMeta'
 import { registerProjectOpsHandlers } from './projectOps'
 import { registerStageTimingHandlers } from './stageTiming'
 import { registerOsvHandlers } from './osv'
+import { registerPublishScanHandlers } from './publishScan'
 import { registerVpsHandlers } from './vps'
 import { registerRagHandlers } from './rag'
 import { registerTermHandlers } from './term'
@@ -56,6 +57,7 @@ export function registerAllHandlers(deps: IpcDeps) {
   registerProjectOpsHandlers(deps)
   registerStageTimingHandlers()
   registerOsvHandlers()
+  registerPublishScanHandlers()
   registerVpsHandlers(deps)
   registerRagHandlers(deps)
   registerTermHandlers(deps)

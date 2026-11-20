@@ -170,9 +170,9 @@ describe('共用型／専有型のタブ: 一度開いたパネルは外さず h
     // 専有型
     const dedicatedAt = modal.indexOf("{mountedApprunTabs['sakura-apprun-dedicated'] && (")
     expect(dedicatedAt).toBeGreaterThan(0)
-    const dedicatedBlock = modal.slice(dedicatedAt, dedicatedAt + 300)
+    const dedicatedBlock = modal.slice(dedicatedAt, dedicatedAt + 340)
     expect(dedicatedBlock).toContain("<div className={target === 'sakura-apprun-dedicated' ? undefined : 'hidden'}>")
-    expect(dedicatedBlock).toContain('<AppRunDedicatedPanel projectDir={projectDir} onOpenCredentials={onOpenCredentials} visible={target === \'sakura-apprun-dedicated\'} />')
+    expect(dedicatedBlock).toContain('<AppRunDedicatedPanel projectDir={projectDir} apiKey={apiKey} onOpenCredentials={onOpenCredentials} visible={target === \'sakura-apprun-dedicated\'} />')
 
     // 専有型が先に描かれない（タブの並びと同じ順序であること）。
     expect(sharedAt).toBeLessThan(dedicatedAt)

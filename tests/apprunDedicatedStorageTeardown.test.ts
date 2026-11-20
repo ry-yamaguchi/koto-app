@@ -372,7 +372,8 @@ describe('⑥の破棄: 保存場所の鍵を無効にする', () => {
     setupProject({ permissionId: 'perm-live' })
     const { result } = await runTeardown()
 
-    expect(result.ok).toBe(true)
+    // 落ちたときに理由が読めるよう、失敗の文を添える
+    expect(result.ok, String(result.message ?? '')).toBe(true)
     expect(h.deletedPermissions).toEqual(['perm-live'])
     expect(readApprunDedicatedFs(projectDir).storagePermissionId).toBeFalsy()
   })
