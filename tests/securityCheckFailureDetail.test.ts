@@ -23,6 +23,9 @@ function setupWindow(chat: (args: ChatArgs) => Promise<any>, unreadable: string[
       fs: {
         exists: async () => false,
         projectFilesInfo: async () => ({ files, truncated: false }),
+        readForWriteFix: async (dir: string, rel: string) => {
+          try { return { state: 'text', content: await g.window.electronAPI.fs.readFile(`${dir}/${rel}`) } } catch { return { state: 'unreadable' } }
+        },
         readFile: async (p: string) => {
           if (p.endsWith('package.json')) throw new Error('無い')
           if (unreadable.some(u => p.endsWith(u))) throw new Error('読めない')

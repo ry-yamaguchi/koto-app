@@ -144,7 +144,9 @@ describe('ChatPanel.tsx の配線（B-1b: 切替時に routedModel をリセッ�
   // モデル選択欄からの**手動**切替は、従来どおり割り振りをリセットする
   // （これは「会話が変わったから」ではなく「利用者が別モデルを選んだから」で、意味が異なる。消していない）。
   it('モデル選択欄からの手動切替では、従来どおり setRoutedModel(null) を呼ぶ', () => {
-    expect(src).toContain("setModel(id); setDefaultModel(id, 'ide'); setRoutedModel(null)")
+    expect(src).toContain('ai.selectModel(id); if (!claudeActive) setRoutedModel(null)')
+    // 直す前の形（上の選択が設定の既定を書き換える）が戻っていない
+    expect(src).not.toContain("setDefaultModel(id, 'ide')")
   })
 })
 

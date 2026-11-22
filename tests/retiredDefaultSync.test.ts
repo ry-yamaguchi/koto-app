@@ -76,13 +76,16 @@ describe('提供終了モデルが保存済みの既定のとき', () => {
 
 describe('画面の配線（ChatApp / ChatPanel は同じ関数を、取得できたかを添えて呼ぶ）', () => {
   const read = (f: string) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')
-  it('useModelList は取得成功のときだけ live を立てる', () => {
+  it('useModelList は取得の置き場（usage.ts）から live を読む。live を立てるのは fetchModels が取得に成功したときだけ', () => {
     const src = read('src/renderer/hooks/useModels.ts')
-    expect(src).toMatch(/\.then\(list => \{ if \(!cancelled && list\.length\) \{ setIds\(list\); setLive\(true\) \} \}\)/)
+    expect(src).toContain('const { ids, live } = getSakuraModelList()')
+    expect(src).not.toContain('setLive(')
+    const usageSrc = read('src/renderer/usage.ts')
+    expect(usageSrc).toContain('sakuraModelList = { ids, live: true, at: Date.now() }')
   })
   it.each([
     ['src/renderer/components/ChatApp.tsx', 'chat'],
-    ['src/renderer/components/ChatPanel.tsx', 'ide'],
+    ['src/renderer/hooks/useProjectAiChoice.ts', 'ide'],
   ])('%s', (f, mode) => {
     const src = read(f)
     expect(src).toContain(`syncStoredDefaultWithOffered('${mode}', models.map(m => m.id), modelsLive)`)

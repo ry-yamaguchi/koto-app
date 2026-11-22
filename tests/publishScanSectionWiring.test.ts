@@ -10,77 +10,99 @@ const SECTION = 'src/renderer/components/SecurityCheckSection.tsx'
 
 describe('SecurityCheckSection の配線', () => {
   const s = read(SECTION)
-  it('Koto の点検は1回だけで、AI の部分より前', () => {
-    const call = "await runPublishScanView(projectDir, 'publish')"
-    expect(count(s, call)).toBe(1)
-    expect(s.indexOf(call)).toBeLessThan(s.indexOf('await runSecurityCheck('))
+  const flow = read('src/renderer/securityCheckFlow.ts')
+  it('Koto の点検は流れの1か所だけから呼び、点検の流れに送る口を渡さない', () => {
+    expect(count(s, "runScan: (dir) => runPublishScanResult(dir, 'publish'),")).toBe(1)
+    expect(count(s, 'void runScanFlow({')).toBe(1)
+    const a = s.indexOf('void runScanFlow({')
+    const b = s.indexOf('void runAiFlow({')
+    expect(a).toBeGreaterThan(-1)
+    expect(b).toBeGreaterThan(a)
+    expect(s.slice(a, b)).not.toContain('runSecurityCheck')
+    // 直接呼ぶのは流れの中の1か所だけ
+    expect(count(s, 'runSecurityCheck(')).toBe(0)
+    expect(count(flow, 'a.deps.runSecurityCheck(')).toBe(1)
+    expect(count(flow, 'runSecurityCheck(')).toBe(1)
   })
-  it('AI の部分は apiKey があるときだけ呼ぶ', () => {
-    const call = 'await runSecurityCheck(projectDir, apiKey, setProgress, (abort) => { abortRef.current = abort })'
-    expect(count(s, call)).toBe(1)
-    expect(count(s, 'ai: apiKey ? async () => {')).toBe(1)
-    expect(s).not.toContain('if (apiKey) {')
-    const gate = s.indexOf('ai: apiKey ? async () => {')
-    const close = s.indexOf('} : null,', gate)
-    expect(gate).toBeGreaterThan(-1)
-    expect(close).toBeGreaterThan(gate)
-    expect(s.indexOf(call)).toBeGreaterThan(gate)
-    expect(s.indexOf(call)).toBeLessThan(close)
-    // 門のあとに別の呼びが無い
-    expect(s.indexOf('runSecurityCheck(', gate)).toBe(s.indexOf(call) + 'await '.length)
-    expect(s.indexOf('runSecurityCheck(', close)).toBe(-1)
+  it('AI の確認は見積りの枠のボタンからだけ始まる（点検のボタンは runScan だけ）', () => {
+    expect(count(s, 'void runAiFlow({')).toBe(1)
+    expect(count(s, 'onRun={runAi}')).toBe(1)
+    expect(count(s, 'onClick={runScan}')).toBe(1)
+    expect(count(s, 'function runAi() {')).toBe(1)
+    expect(count(s, 'runAi()')).toBe(1) // 定義だけ（呼ぶ所は見積りの枠の onRun だけ）
+    // 流れの中でも、点検の流れは送る口を呼ばない
+    const scanFlow = flow.slice(flow.indexOf('export async function runScanFlow'), flow.indexOf('export type AiFlowEnd'))
+    expect(scanFlow).not.toContain('runSecurityCheck')
+    expect(s).toContain('runSecurityCheck,\n        writeRecord:')
   })
-  it('順番は runSecuritySteps に任せ、中止の印を配線する', () => {
-    expect(count(s, 'await runSecuritySteps({')).toBe(1)
-    expect(count(s, 'stopRequested: () => stopRef.current,')).toBe(1)
-    const st = s.indexOf('function stop() {')
-    const stBody = s.slice(st, s.indexOf('\n  }', st))
-    expect(stBody).toContain('stopRef.current = true')
-    const run = s.indexOf('async function run() {')
-    const reset = s.indexOf('stopRef.current = false', run)
-    expect(reset).toBeGreaterThan(-1)
-    expect(reset).toBeLessThan(s.indexOf('await runSecuritySteps({'))
-    // 前の回の「中止したため行っていません」を、次の回へ持ち越さない
-    const noteReset = s.indexOf('setAiStopped(false)', run)
-    expect(noteReset).toBeGreaterThan(-1)
-    expect(noteReset).toBeLessThan(s.indexOf('await runSecuritySteps({'))
-    expect(count(s, 'setAiStopped(false)')).toBe(1)
-    // 中止を待つ間の文は、AI への問い合わせを待っているとは言わない（AI を呼ぶ前に押した回・キーが無い回がある）
+  it('点検のあとに勝手に AI の確認が続く仕組み（旧い順番の部品・中止の印）が無い', () => {
+    for (const w of ['runSecuritySteps', 'securityCheckSteps', 'stopRef', 'aiStopped', 'aiRan', 'AI_STOPPED_NOTE']) expect(s).not.toContain(w)
+  })
+  it('中止の出し分けは AI の確認が走っている間だけ（点検の間は出さない）', () => {
+    expect(count(s, '{aiRunning && mine && (\n            <button')).toBe(1)
+    expect(count(s, '{aiRunning && (\n            <p className="text-[11px] text-ink-muted">')).toBe(1)
     expect(s).toContain("'中止しています。少しお待ちください。'")
-    expect(s).not.toContain('AI への問い合わせが終わるまで')
-    expect(s).toContain("if (end === 'stopped-before-ai' && dirRef.current === started) setAiStopped(true)")
-  })
-  it('中止の注記は1回だけで、{result && ( より前', () => {
-    const el = '{scan && aiStopped && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_AI_STOPPED_NOTE}</p>}'
-    expect(count(s, el)).toBe(1)
-    expect(s.indexOf(el)).toBeLessThan(s.indexOf('{result && ('))
-  })
-  it('結果は {result && ( より前に1回だけ描く', () => {
-    const el = '{scan && <PublishScanResult view={scan} />}'
-    expect(count(s, el)).toBe(1)
-    expect(s.indexOf(el)).toBeLessThan(s.indexOf('{result && ('))
-    expect(count(s, '{scan && !aiRan && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_NO_AI_NOTE}</p>}')).toBe(1)
-  })
-  it('AI の確認を走らせる回かは押した時点の apiKey で決め、注記と中止の出し分けはそれを使う', () => {
-    expect(count(s, 'setAiRan(!!apiKey)')).toBe(1)
-    expect(count(s, '{checking && aiRan && (')).toBe(1)
-    expect(count(s, '{aiRan && (\n            <p className="text-[11px] text-ink-muted">')).toBe(1)
     expect(s).toContain('時間がかかるときは「⏹ 中止する」で AI の確認を止められます。途中までの結果は「確認した」ことにはしません。')
-    expect(s).not.toContain('「⏹ 中止する」を押すと、AI の確認を止めます')
-    expect(s).not.toContain('時間がかかるときは「⏹ 中止する」で止められます')
+    expect(s).not.toContain('AI への問い合わせが終わるまで')
+    const st = s.indexOf('function stop() {')
+    expect(s.slice(st, s.indexOf('\n  }', st))).toContain('if (!aiRunning) return')
   })
-  it('「前回の確認」の記録は1回だけで、AI の確認が実施できた分岐の中にある', () => {
-    const set = 'window.localStorage.setItem(checkRecordKey(projectDir)'
-    expect(count(s, set)).toBe(1)
-    const ai = s.indexOf('ai: apiKey ? async () => {')
-    const ok = s.indexOf("if (r.verdict === 'ok' || r.verdict === 'warn') {", ai)
-    expect(ai).toBeGreaterThan(-1)
-    expect(ok).toBeGreaterThan(ai)
-    expect(s.indexOf(set)).toBeGreaterThan(ok)
-    expect(s.indexOf(set)).toBeLessThan(s.indexOf('} : null,', ok))
+  it('進み具合と中止の口は、走らせたプロジェクトの画面にだけ出す（別のプロジェクトへ替えたら出さない）', () => {
+    expect(count(s, 'const mine = checking && runDir === projectDir')).toBe(1)
+    expect(count(s, '{mine && (\n        <>\n          <p className="text-xs text-ink-secondary">⏳ {progress')).toBe(1)
+    expect(s).not.toContain('{checking && (')
+    // 走らせたプロジェクトは、始めるときに置き、終わるときに外す（点検と AI の確認の両方）
+    expect(count(s, 'setRunDir(projectDir)')).toBe(2)
+    expect(count(s, 'setRunDir(null)')).toBe(2)
   })
-  it('ボタンの札を apiKey の有無で出し分ける', () => {
-    expect(count(s, "{checking ? '確認中…' : apiKey ? 'AIに確認してもらう' : PUBLISH_SCAN_BUTTON_NO_AI}")).toBe(1)
+  it('見積りの枠は点検の結果の下・AI の結果の前に1回だけ。キーが消えたら出さない', () => {
+    const el = '{estimate && apiKey && (\n        <AiCheckEstimateBox estimate={estimate} running={aiRunning && mine} disabled={checking} onRun={runAi} />'
+    expect(count(s, el)).toBe(1)
+    expect(count(s, '{scan && <PublishScanResult view={scan.view} />}')).toBe(1)
+    expect(s.indexOf('{scan && <PublishScanResult')).toBeLessThan(s.indexOf(el))
+    expect(s.indexOf(el)).toBeLessThan(s.indexOf('{result && ('))
+    expect(count(s, '{scan && !apiKey && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_NO_AI_NOTE}</p>}')).toBe(1)
+  })
+  it('上のボタンは1つで、札は点検中だけ変わる', () => {
+    expect(count(s, '{scanning ? PUBLISH_SCAN_BUSY : PUBLISH_SCAN_BUTTON_NO_AI}')).toBe(1)
+    expect(s).not.toContain('apiKey ? \'AIに確認してもらう\'')
+    expect(count(s, '<button\n            onClick={runScan}\n            disabled={checking}')).toBe(1)
+  })
+  it('【ファイルを点検する】で3つとも消し、【AIに確認してもらう】では AI の結果だけを消す', () => {
+    const a = s.indexOf('function runScan() {')
+    const b = s.indexOf('function runAi() {')
+    const c = s.indexOf('function stop() {')
+    const scanBody = s.slice(a, b)
+    const aiBody = s.slice(b, c)
+    for (const w of ['setResult(null)', 'setScan(null)', 'setEstimate(null)']) expect(scanBody).toContain(w)
+    expect(aiBody).toContain('setResult(null)')
+    expect(aiBody).not.toContain('setScan(null)')
+    expect(aiBody).not.toContain('setEstimate(null)')
+  })
+  it('プロジェクトが変わったら、点検の結果・見積り・AI の結果を消す', () => {
+    const e = s.indexOf('useEffect(() => {')
+    const eff = s.slice(e, s.indexOf('}, [projectDir])'))
+    for (const w of ['setResult(null)', 'setScan(null)', 'setEstimate(null)']) expect(eff).toContain(w)
+  })
+  it('押した時点のプロジェクトかの判断は dirRef 1つで、流れに渡す', () => {
+    expect(count(s, 'const isCurrent = (dir: string) => dirRef.current === dir')).toBe(1)
+    expect(count(s, '      isCurrent,')).toBe(2)
+  })
+  it('「前回の確認」の記録は1回だけ書く（押した時点の鍵へ）。置くのは流れが渡した記録だけ', () => {
+    expect(count(s, 'window.localStorage.setItem(checkRecordKey(dir), JSON.stringify(rec))')).toBe(1)
+    expect(count(s, 'window.localStorage.setItem(')).toBe(1)
+    expect(s).toContain('if (rec) setRecord(rec)')
+    expect(flow).toContain("if (r.verdict === 'ok' || r.verdict === 'warn') {")
+  })
+  it('修正のボタンは1つで、2つの枠の下。点検の項目と AI の項目を1つの依頼文にする', () => {
+    expect(count(s, "window.dispatchEvent(new CustomEvent('sakura:fix-with-ai'")).toBe(1)
+    expect(count(s, '🛠 AIに修正させる')).toBe(1)
+    expect(count(s, 'buildSecurityFixPrompt(')).toBe(1)
+    expect(s).toContain('const fixPrompt = buildSecurityFixPrompt(mergeFixItems(scan?.fixItems ?? [], fixItemsOf(result?.findings ?? [])))')
+    expect(s).toContain('{fixPrompt !== null && !checking && (')
+    expect(s.indexOf('{fixPrompt !== null && !checking && (')).toBeGreaterThan(s.indexOf('{result && ('))
+    expect(s.indexOf('{fixPrompt !== null && !checking && (')).toBeLessThan(s.indexOf('<OsvCheckBlock'))
+    expect(s).toContain('押すとチャットに移り、AIに直すよう頼みます（AIが応答中のときは入力欄に入るので、終わってから送信してください）')
   })
   it('説明の文は、キーがあるとき・無いときで出し分ける', () => {
     const open = s.indexOf('{apiKey ? (\n          <>')
@@ -106,12 +128,6 @@ describe('SecurityCheckSection の配線', () => {
     expect(noKey).not.toContain('修正するかどうか')
     expect(s).not.toContain('AIによる簡易的な確認')
     expect(s).not.toContain('簡易的なセキュリティチェックを実施')
-  })
-  it('押した時点のプロジェクトのままのときだけ結果を置く（成功・例外の両方）', () => {
-    expect(count(s, 'if (dirRef.current === started) setScan(view)')).toBe(1)
-  })
-  it('プロジェクトが変わったら前の点検の結果を消す', () => {
-    expect(count(s, 'useEffect(() => { setScan(null) }, [projectDir])')).toBe(1)
   })
   it('OsvCheckBlock は </section> の直前のまま', () => {
     expect(s).toContain('<OsvCheckBlock projectDir={projectDir} />\n    </section>')
@@ -142,9 +158,14 @@ describe('結果の描き方と呼び出し元', () => {
   it('electronAPI.publishScan. を呼ぶのは publishScanRun.ts だけ', () => {
     expect(scan().api).toEqual(['src/renderer/publishScanRun.ts'])
   })
-  it('runPublishScanView を呼ぶのは SecurityCheckSection（publish）と GithubSaveScan（github）だけ', () => {
-    expect(scan().run.sort()).toEqual([SECTION, 'src/renderer/components/GithubSaveScan.tsx'].sort())
+  it('runPublishScanView を呼ぶのは GithubSaveScan（github）だけ。🛡 の節は結果と修正の項目を返す口を使う', () => {
+    expect(scan().run).toEqual(['src/renderer/components/GithubSaveScan.tsx'])
     expect(count(read('src/renderer/components/GithubSaveScan.tsx'), "runPublishScanView(started, 'github')")).toBe(1)
+    expect(count(read(SECTION), "runPublishScanResult(dir, 'publish')")).toBe(1)
+  })
+  it('GitHub 保存の点検には修正のボタンを足さない', () => {
+    const g = read('src/renderer/components/GithubSaveScan.tsx')
+    for (const w of ['sakura:fix-with-ai', 'buildSecurityFixPrompt', 'AIに修正させる', 'runSecurityCheck']) expect(g).not.toContain(w)
   })
 })
 

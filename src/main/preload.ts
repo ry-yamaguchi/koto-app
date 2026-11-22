@@ -450,7 +450,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     models: (token: string) => ipcRenderer.invoke('claude:models', token),
     // Claude頭脳モード（C2）: query() を開始する。応答本体は onStream の連続イベントで届く。
     // aiEngineKey は search_docs ツール用（C2b・方式B: renderer が使う瞬間に読んで渡す）。
-    // model は C2c（Claudeモデル選択）: renderer が claudeMode.ts の getClaudeModel() を読んで渡す。
+    // model は C2c（Claudeモデル選択）: renderer が送る回のプロジェクトの記憶 → 既定で決めて渡す（projectAi.ts の resolveAiChoice）。
     // images は C2d（画像添付ターンをClaude自身に直接処理させる。data URL配列・空配列可）。
     // writeMode は W-18: 「✋ 毎回確認」（'confirm'）／「🪄 おまかせ」（'auto'）。ChatPanel.tsx の
     // getWriteMode() を送信時点で読んで渡す（さくらのAI Engine 経路の turnOpts.writeMode と同じ形）。

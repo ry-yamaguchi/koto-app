@@ -148,23 +148,31 @@ describe('「資料に聞く」の回答（KnowledgeAnswer）', () => {
 })
 
 describe('公開前セキュリティチェックの結果（SecurityReportBody）', () => {
-  const ok = { verdict: 'ok' as const, report: '判定: 問題なし\n- **全ファイル**: 秘密情報はありません\n- `app.js` は安全です' }
+  const finding = (o: Record<string, unknown> = {}) => ({
+    kind: 'input-to-html' as const, severity: 'should' as const, certainty: 'ai' as const, file: 'app.js', line: 3, quote: '',
+    note: '**全ファイル**の `app.js` は危険です', ...o,
+  })
+  const ok = (findings: ReturnType<typeof finding>[] = []) => ({ state: 'ok' as const, findings, malformed: 0, cut: 0, files: ['app.js'] })
 
-  it('★ AI の行は、太字・箇条書き・コードに描く', () => {
-    const merged = mergeCheckResults([ok], { files: 3, batches: 1, skipped: [] })
+  // 規則が変わった: 以前は AI の行だけを太字・箇条書き・コードに描いていた。
+  // いまは AI の文（note）も Markdown として描かず、文字のまま出す（結果の行はすべて Koto が組み立てたもの）。
+  it('★ AI の説明（note）の記号は解釈せず、文字のまま出す（太字・箇条書き・コードにならない）', () => {
+    const merged = mergeCheckResults([ok([finding()])], { files: 3, batches: 1, skipped: [], partial: [] })
     const h = render(createElement(SecurityReportBody, { result: merged }))
-    expect(h).toContain('<strong class="font-bold">全ファイル</strong>')
-    expect(h).toContain('<ul')
-    expect(h).toMatch(/<code class="[^"]*">app\.js<\/code>/)
-    // 判定の行・件数の行（Koto が書く）は、そのまま出る
-    expect(h).toContain('判定: 問題なし')
+    expect(h).toContain('**全ファイル**の `app.js` は危険です')
+    expect(h).not.toContain('<strong')
+    expect(h).not.toContain('<ul')
+    expect(h).not.toContain('<code')
+    // 判定の行・件数の行・指摘の行（Koto が書く）は、そのまま出る
+    expect(h).toContain('判定: 要確認')
     expect(h).toContain('（3個のファイルを確認しました）')
+    expect(h).toContain('app.js:3')
   })
 
   it('★ Koto が組み立てた行（確認しなかったファイル名の一覧）は、名前の ** や ` を解釈しない', () => {
-    const merged = mergeCheckResults([ok], {
+    const merged = mergeCheckResults([ok()], {
       files: 3, batches: 1,
-      skipped: ['pages/s**t.html'],
+      skipped: ['pages/s**t.html'], partial: [],
       dataLike: ['data/a**b.csv', 'data/c**d.csv'],
       others: ['`x`.txt', 'k**l.py'],
     })
@@ -173,15 +181,13 @@ describe('公開前セキュリティチェックの結果（SecurityReportBody�
     expect(h).toContain('pages/s**t.html')
     expect(h).toContain('data/a**b.csv、data/c**d.csv')
     expect(h).toContain('`x`.txt, k**l.py')
-    // 名前の ** が太字になっていない・` がコードになっていない（太字になっているのは AI の行だけ）
-    expect((h.match(/<strong/g) ?? []).length).toBe(1)
-    expect(h).toContain('<strong class="font-bold">全ファイル</strong>')
-    expect((h.match(/<code/g) ?? []).length).toBe(1)
-    expect(h).not.toMatch(/<code[^>]*>x<\/code>/)
+    // 名前の ** が太字になっていない・` がコードになっていない
+    expect(h).not.toContain('<strong')
+    expect(h).not.toContain('<code')
   })
 
   it('外側の見た目（大きさ・色・select-text・高さ）は今のまま', () => {
-    const h = render(createElement(SecurityReportBody, { result: mergeCheckResults([ok], { files: 1, batches: 1, skipped: [] }) }))
+    const h = render(createElement(SecurityReportBody, { result: mergeCheckResults([ok()], { files: 1, batches: 1, skipped: [], partial: [] }) }))
     expect(h).toMatch(/^<div class="text-xs text-ink-secondary select-text max-h-52 overflow-y-auto space-y-2">/)
   })
 
@@ -193,7 +199,7 @@ describe('公開前セキュリティチェックの結果（SecurityReportBody�
     expect(h).not.toContain('<code')
     // parts を持たない結果（早期の一言）も同じ
     expect(reportParts(skip)).toEqual([{ text: skip.report, ai: false }])
-    const merged = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（**timeout**）。' }], { files: 1, batches: 1, skipped: [] })
+    const merged = mergeCheckResults([{ state: 'failed', report: 'チェックに失敗しました（**timeout**）。', files: ['a.html'] }], { files: 1, batches: 1, skipped: [], partial: [] })
     const h2 = render(createElement(SecurityReportBody, { result: merged }))
     expect(h2).toContain('チェックに失敗しました（**timeout**）。')
     expect(h2).not.toContain('<strong')
@@ -201,13 +207,14 @@ describe('公開前セキュリティチェックの結果（SecurityReportBody�
 
   it('タグは文字として出る', () => {
     const merged = mergeCheckResults(
-      [{ verdict: 'warn', report: '判定: 要確認\n- <script>alert(1)</script> **<b>x</b>**' }],
-      { files: 1, batches: 1, skipped: [], dataLike: ['<img src=x>.csv'] },
+      [ok([finding({ note: '<script>alert(1)</script> **<b>x</b>**' })])],
+      { files: 1, batches: 1, skipped: [], partial: [], dataLike: ['<img src=x>.csv'] },
     )
     const h = render(createElement(SecurityReportBody, { result: merged }))
     expect(h).not.toContain('<script')
     expect(h).not.toContain('<img')
     expect(h).not.toContain('<b>')
+    expect(h).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
     expect(h).toContain('&lt;img src=x&gt;.csv')
   })
 })

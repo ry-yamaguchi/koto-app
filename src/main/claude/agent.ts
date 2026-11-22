@@ -167,7 +167,7 @@ export type StartClaudeChatParams = {
   snapshotId: string
   /** 継続する既存セッションID（新規会話なら null）。 */
   resumeSessionId: string | null
-  /** 使用するモデルID（C2c・renderer の claudeMode.ts getClaudeModel()）。空文字なら既定モデルを使う。 */
+  /** 使用するモデルID（C2c・renderer が送る回のプロジェクトの記憶 → 既定で決めたもの）。空文字なら既定モデルを使う。 */
   model: string
   /** SDK のストリームを変換した UI イベントを都度渡すコールバック。 */
   onEvent: (event: UiEvent) => void

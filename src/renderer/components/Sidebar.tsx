@@ -12,6 +12,7 @@ import { createHintTimer } from '../hintTimer'
 import { deleteFileEntry, moveFileEntry, moveConfirmBody, submitFileNameDialog, announceFileDeleted } from '../fileEntryOps'
 import Modal from '../ui/Modal'
 import { attachMenuDismiss } from '../ui/menuDismiss'
+import { forgetProjectAi } from '../projectAi'
 
 interface FileEntry {
   name: string
@@ -484,6 +485,7 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
     try {
       localStorage.removeItem(`sakura_tabs:${path}`)
       localStorage.removeItem(`sakura_chat:${path}`) // 移行前の旧形式が残っていた場合
+      forgetProjectAi(path) // 同じパスに作り直したプロジェクトに、古い使う AI の記憶が当たらないように
     } catch { /* 掃除失敗は無視 */ }
     // 親フォルダを開いてファイル一覧から消した回も、中のタブを閉じる（閉じないと、自動保存が消えたフォルダへ書き戻す）。
     announceFileDeleted(path)

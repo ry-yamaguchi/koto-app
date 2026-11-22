@@ -16,6 +16,8 @@
 // 実体は shared へ移した（B'-3b）。MODELS / VISION_MODELS / modelLabel / pickBestModel /
 // estimateTokens は src/shared/modelInfo.ts を参照。ここでは他の関数が使うぶんを import し、
 // 従来どおりの公開API（MODELS 等）は re-export で維持する。
+import { notifyAiChoiceChanged } from './aiChoiceSignal'
+import { notifyModelListChanged } from './modelListSignal'
 import { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, modelPickerText, orderModelsForPicker } from '../shared/modelInfo'
 export { MODELS, VISION_MODELS, DEFAULT_MODEL, modelLabel, pickBestModel, estimateTokens, modelPickerText, orderModelsForPicker }
 
@@ -68,10 +70,28 @@ export function getCachedModelIds(): string[] {
 
 /** さくらのAI Engine から利用可能なチャットモデルを取得してキャッシュする（メインプロセス経由） */
 export async function fetchModels(apiKey: string): Promise<string[]> {
+  // 最後に取りに行ったキー。キーを替えた直後に前のキーの取得があとで返っても、新しいキーの一覧を上書きしない。
+  latestSakuraModelsKey = apiKey
   const all = await window.electronAPI.sakura.models(apiKey)
   const ids = all.filter((id) => typeof id === 'string' && !NON_CHAT.test(id))
-  if (ids.length) localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(ids))
+  if (ids.length && apiKey === latestSakuraModelsKey) {
+    localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(ids))
+    sakuraModelList = { ids, live: true, at: Date.now() }
+    notifyModelListChanged()
+  }
   return ids
+}
+
+let latestSakuraModelsKey: string | null = null
+
+/** さくらのモデルの一覧の置き場（モジュールに1つ）。取得のたびに {ids, live, at} を更新して知らせる。
+ *  live は、この起動中にサービスから実際に取得できたこと（キャッシュ・予備の一覧は live ではない）。 */
+export type SakuraModelListState = { ids: string[]; live: boolean; at: number }
+let sakuraModelList: SakuraModelListState | null = null
+
+/** いまのさくらのモデルの一覧。取得前はキャッシュ／既定の一覧（live=false）。 */
+export function getSakuraModelList(): SakuraModelListState {
+  return sakuraModelList ?? { ids: getCachedModelIds(), live: false, at: 0 }
 }
 
 const LEGACY_MODEL_KEY = 'sakura_default_model' // 旧・共通設定（IDE/チャット共通だった頃）からの移行用
@@ -92,6 +112,7 @@ export function getDefaultModel(mode: ChatMode = 'ide'): string {
 export function setDefaultModel(id: string, mode: ChatMode = 'ide') {
   localStorage.setItem(MODEL_PREF_KEY[mode], id)
   window.dispatchEvent(new Event('sakura-usage-changed'))
+  notifyAiChoiceChanged()
 }
 
 /**

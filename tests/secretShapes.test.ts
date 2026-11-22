@@ -503,11 +503,11 @@ describe('配線（ソースの形）', () => {
     expect(src).not.toContain('KEY|SECRET|TOKEN|PASS|PWD|CREDENTIAL|PRIVATE|APIKEY')
   })
 
-  it('secretShapes を読み込む src は、次の10か所だけ（呼び元を書き下す。足すときはここも足す）', () => {
+  it('secretShapes を読み込む src は、次の11か所だけ（呼び元を書き下す。足すときはここも足す）', () => {
     const importers = listSourceFiles('src')
       .filter(file => file !== 'src/shared/secretShapes.ts')
       .filter(file => /from '[./]*(?:[\w./-]*\/)?secretShapes'/.test(read(file)))
-    expect(importers).toEqual(['src/main/hanamii/client.ts', 'src/main/ipc/hanamii.ts', 'src/main/projectOps.ts', 'src/renderer/components/HanamiiPanel.tsx', 'src/renderer/securityCheck.ts', 'src/shared/failureDetail.ts', 'src/shared/failureText.ts', 'src/shared/securityFindings.ts', 'src/shared/updateLog.ts', 'src/shared/writeCheck.ts'])
+    expect(importers).toEqual(['src/main/hanamii/client.ts', 'src/main/ipc/hanamii.ts', 'src/main/projectOps.ts', 'src/renderer/components/HanamiiPanel.tsx', 'src/renderer/securityCheck.ts', 'src/shared/aiCheckReply.ts', 'src/shared/failureDetail.ts', 'src/shared/failureText.ts', 'src/shared/securityFindings.ts', 'src/shared/updateLog.ts', 'src/shared/writeCheck.ts'])
   })
 
   it('秘密の形の正規表現は、secretShapes.ts のほかのどの src にも無い', () => {

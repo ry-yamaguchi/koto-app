@@ -156,6 +156,9 @@ function setupWindow(chat: (args: ChatArgs) => Promise<any>) {
       fs: {
         exists: async () => false, // public/ は無い（公開の根はプロジェクト直下）
         projectFilesInfo: async () => ({ files: Object.keys(FILES), truncated: false }),
+        readForWriteFix: async (dir: string, rel: string) => {
+          try { return { state: 'text', content: await g.window.electronAPI.fs.readFile(`${dir}/${rel}`) } } catch { return { state: 'unreadable' } }
+        },
         readFile: async (p: string) => {
           readPaths.push(p)
           const rel = p.replace(/^\/proj\//, '')
@@ -168,7 +171,7 @@ function setupWindow(chat: (args: ChatArgs) => Promise<any>) {
   }
 }
 
-const OK_REPLY = { content: '判定: 問題なし\n- 特に問題は見つかりませんでした', usage: { prompt_tokens: 1, completion_tokens: 1 } }
+const OK_REPLY = { content: '{"findings":[]}', usage: { prompt_tokens: 1, completion_tokens: 1 } }
 
 beforeEach(() => {
   readPaths = []

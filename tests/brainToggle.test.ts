@@ -14,8 +14,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 //
 // 描くテスト: DOM 環境（jsdom 等）は入れていないので、react の useState だけを**この試験用の小さな実装**に差し替え、
 // 部品の関数をそのまま呼んで、本物の react-dom/server で HTML にする（tests/aiTextPlacesRender.test.ts と同じ手）。
-// BrainToggle の useState は呼ばれる順に 1. claudeActive 2. hasClaudeKey。useEffect（キーを読む）は静的な描画では動かないので、
-// 「キーが登録済み」の状態はここで直接与える。
+// BrainToggle の useState は hasClaudeKey の1つだけ。useEffect（キーを読む）は静的な描画では動かないので、
+// 「キーが登録済み」の状態はここで直接与える。使う AI（claudeActive）は、プロジェクトの記憶 → 設定の既定
+// （偽の localStorage の sakura_claude_mode）から決まる。
 
 const rt = vi.hoisted(() => ({ states: null as unknown[] | null, i: 0 }))
 
@@ -27,18 +28,26 @@ vi.mock('react', async (importOriginal) => {
   }
 })
 
-import BrainToggle, { brainToggleView, CHAT_MODE_TITLE } from '../src/renderer/components/BrainToggle'
+import BrainToggle, { brainToggleView, brainToggleAction, applyBrainToggle, CHAT_MODE_TITLE } from '../src/renderer/components/BrainToggle'
 
-type Props = { apiKey?: string; compact?: boolean; chatMode?: boolean; className?: string }
+type Props = { apiKey?: string; compact?: boolean; chatMode?: boolean; className?: string; projectDir?: string | null }
 type State = { claudeActive: boolean; hasClaudeKey: boolean }
 
+// 偽の localStorage（既定の AI は sakura_claude_mode の 'on'/'off'。プロジェクトの記憶は無し）
 function render(props: Props, st: State): string {
-  rt.states = [st.claudeActive, st.hasClaudeKey]
+  const store = new Map<string, string>([['sakura_claude_mode', st.claudeActive ? 'on' : 'off']])
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => { store.set(k, v) },
+    removeItem: (k: string) => { store.delete(k) },
+  })
+  rt.states = [st.hasClaudeKey]
   rt.i = 0
   try {
     return renderToStaticMarkup(createElement(BrainToggle, props))
   } finally {
     rt.states = null
+    vi.unstubAllGlobals()
   }
 }
 const text = (html: string) => html.replace(/<[^>]*>/g, '')
@@ -98,30 +107,73 @@ describe('BrainToggle: chatMode は、Claude のキーにかかわらず押せ�
   })
 })
 
+describe('brainToggleAction: 押したときに書く先（純関数）', () => {
+  it('押せない（canToggle でない・projectDir が無い）ときは null', () => {
+    expect(brainToggleAction({ projectDir: '/p', canToggle: false, current: 'claude' })).toBeNull()
+    expect(brainToggleAction({ projectDir: null, canToggle: true, current: 'claude' })).toBeNull()
+    expect(brainToggleAction({ projectDir: undefined, canToggle: true, current: 'sakura' })).toBeNull()
+    expect(brainToggleAction({ projectDir: '', canToggle: true, current: 'sakura' })).toBeNull()
+  })
+  it('Claude ならさくらへ、さくら・使える AI なしなら Claude へ。書く先はそのプロジェクト', () => {
+    expect(brainToggleAction({ projectDir: '/p', canToggle: true, current: 'claude' })).toEqual({ dir: '/p', brain: 'sakura' })
+    expect(brainToggleAction({ projectDir: '/p', canToggle: true, current: 'sakura' })).toEqual({ dir: '/p', brain: 'claude' })
+    expect(brainToggleAction({ projectDir: '/p', canToggle: true, current: null })).toEqual({ dir: '/p', brain: 'claude' })
+  })
+})
+
 describe('BrainToggle: chatMode でないとき（IDE の右下・AIチャット欄の横）は従来どおり', () => {
   const BOTH_ON: State = { claudeActive: true, hasClaudeKey: true }
   const BOTH_OFF: State = { claudeActive: false, hasClaudeKey: true }
 
   it('右下（非 compact）・両方のキー: button で ⇄ 付き。Claude オンは「Claude」・オフは「さくらのAI Engine」', () => {
-    const on = render({ apiKey: AI_KEY, className: 'ml-auto' }, BOTH_ON)
+    const on = render({ apiKey: AI_KEY, className: 'ml-auto', projectDir: '/p' }, BOTH_ON)
     expect(on.startsWith('<button')).toBe(true)
     expect(on).toContain('hover:text-ink')
     expect(on).toContain('ml-auto')
     expect(text(on)).toBe('Claude⇄')
-    expect(on).toContain('title="使う AI: Claude（クリックで さくらのAI Engine に切り替え）"')
-    const off = render({ apiKey: AI_KEY, className: 'ml-auto' }, BOTH_OFF)
+    expect(on).toContain('title="このプロジェクトで使う AI: Claude（クリックで さくらのAI Engine に切り替え）"')
+    const off = render({ apiKey: AI_KEY, className: 'ml-auto', projectDir: '/p' }, BOTH_OFF)
     expect(off.startsWith('<button')).toBe(true)
     expect(text(off)).toBe('さくらのAI Engine⇄')
-    expect(off).toContain('title="使う AI: さくらのAI Engine（クリックで Claude に切り替え）"')
+    expect(off).toContain('title="このプロジェクトで使う AI: さくらのAI Engine（クリックで Claude に切り替え）"')
   })
 
   it('モデル選択の横（compact）・両方のキー: button で ⇄ 付き。「🧠 Claude」「🧠 AI Engine」', () => {
-    const on = render({ apiKey: AI_KEY, compact: true }, BOTH_ON)
+    const on = render({ apiKey: AI_KEY, compact: true, projectDir: '/p' }, BOTH_ON)
     expect(on.startsWith('<button')).toBe(true)
     expect(text(on)).toBe('🧠 Claude ⇄')
-    const off = render({ apiKey: AI_KEY, compact: true }, BOTH_OFF)
+    const off = render({ apiKey: AI_KEY, compact: true, projectDir: '/p' }, BOTH_OFF)
     expect(off.startsWith('<button')).toBe(true)
     expect(text(off)).toBe('🧠 AI Engine ⇄')
+  })
+
+  it('プロジェクトを開いていない（projectDir が null）ときは、両方のキーがあっても押せない（button・⇄ なし。表示は既定）', () => {
+    for (const compact of [false, true]) for (const projectDir of [null, undefined]) {
+      const html = render({ apiKey: AI_KEY, compact, projectDir }, BOTH_ON)
+      expect(html).not.toContain('<button')
+      expect(html).not.toContain('⇄')
+      expect(html).toContain('title="使う AI: Claude"')
+    }
+  })
+
+  it('記憶が表示を決める: 既定が Claude でも、そのプロジェクトの記憶がさくらなら「さくらのAI Engine」（別のプロジェクトは既定のまま）', () => {
+    const store = new Map<string, string>([['sakura_claude_mode', 'on'], ['koto_project_ai:/p', JSON.stringify({ v: 1, brain: 'sakura' })]])
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v) },
+      removeItem: (k: string) => { store.delete(k) },
+    })
+    try {
+      rt.states = [true]; rt.i = 0
+      const a = renderToStaticMarkup(createElement(BrainToggle, { apiKey: AI_KEY, projectDir: '/p' }))
+      rt.states = [true]; rt.i = 0
+      const b = renderToStaticMarkup(createElement(BrainToggle, { apiKey: AI_KEY, projectDir: '/other' }))
+      expect(text(a)).toBe('さくらのAI Engine⇄')
+      expect(text(b)).toBe('Claude⇄')
+    } finally {
+      rt.states = null
+      vi.unstubAllGlobals()
+    }
   })
 
   it('片方のキーだけ: 表示のみ（span・⇄ なし）。右下も compact も', () => {
@@ -199,8 +251,8 @@ describe('BrainToggle の呼び出し: チャットモードのヘッダには c
   })
 
   it('★★ IDE 側は変えない: StatusBar は右下（className のみ）・ChatPanel はモデル選択の横（compact のみ）。どちらにも chatMode は付かない', () => {
-    expect(calls('src/renderer/components/StatusBar.tsx')).toEqual(['<BrainToggle apiKey={apiKey} className="ml-auto" />'])
-    expect(calls('src/renderer/components/ChatPanel.tsx')).toEqual(['<BrainToggle apiKey={apiKey} compact />'])
+    expect(calls('src/renderer/components/StatusBar.tsx')).toEqual(['<BrainToggle apiKey={apiKey} projectDir={projectDir ?? null} className="ml-auto" />'])
+    expect(calls('src/renderer/components/ChatPanel.tsx')).toEqual(['<BrainToggle apiKey={apiKey} projectDir={projectDir ?? null} compact />'])
   })
 
   it('★ src 全体で <BrainToggle を使うのは、この 3 ファイル 3 か所だけ（入口が増えたらここで気づく）', () => {
@@ -211,8 +263,45 @@ describe('BrainToggle の呼び出し: チャットモードのヘッダには c
     }
     expect(found.sort()).toEqual([
       'src/renderer/components/ChatApp.tsx <BrainToggle apiKey={apiKey} chatMode />',
-      'src/renderer/components/ChatPanel.tsx <BrainToggle apiKey={apiKey} compact />',
-      'src/renderer/components/StatusBar.tsx <BrainToggle apiKey={apiKey} className="ml-auto" />',
+      'src/renderer/components/ChatPanel.tsx <BrainToggle apiKey={apiKey} projectDir={projectDir ?? null} compact />',
+      'src/renderer/components/StatusBar.tsx <BrainToggle apiKey={apiKey} projectDir={projectDir ?? null} className="ml-auto" />',
     ])
+  })
+})
+
+describe('applyBrainToggle: 押したときに書く鍵は、そのプロジェクトの記憶だけ', () => {
+  function fakeStorage() {
+    const store = new Map<string, string>([['sakura_claude_mode', 'on'], ['sakura_model_ide', 'dm'], ['sakura_claude_model', 'dc']])
+    const setKeys: string[] = []
+    const removed: string[] = []
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { setKeys.push(k); store.set(k, v) },
+      removeItem: (k: string) => { removed.push(k); store.delete(k) },
+    })
+    const events: string[] = []
+    vi.stubGlobal('window', { dispatchEvent: (e: { type: string }) => { events.push(e.type); return true } })
+    return { store, setKeys, removed, events }
+  }
+  it('押せるときは koto_project_ai:<dir> だけを書き、既定の鍵と credentials-changed には触れない', () => {
+    const env = fakeStorage()
+    try {
+      expect(applyBrainToggle({ projectDir: '/ws/a', canToggle: true, current: 'claude' })).toBe(true)
+      expect(JSON.parse(env.store.get('koto_project_ai:/ws/a')!)).toMatchObject({ brain: 'sakura' })
+      expect(env.setKeys).toEqual(['koto_project_ai:/ws/a'])
+      expect(env.removed).toEqual([])
+      expect(env.store.get('sakura_claude_mode')).toBe('on')
+      expect(env.store.get('sakura_model_ide')).toBe('dm')
+      expect(env.store.get('sakura_claude_model')).toBe('dc')
+      expect(env.events).toEqual([])
+    } finally { vi.unstubAllGlobals() }
+  })
+  it('押せないとき（canToggle でない・プロジェクトが無い）は何も書かない', () => {
+    const env = fakeStorage()
+    try {
+      expect(applyBrainToggle({ projectDir: '/ws/a', canToggle: false, current: 'claude' })).toBe(false)
+      expect(applyBrainToggle({ projectDir: null, canToggle: true, current: 'claude' })).toBe(false)
+      expect(env.setKeys).toEqual([])
+    } finally { vi.unstubAllGlobals() }
   })
 })

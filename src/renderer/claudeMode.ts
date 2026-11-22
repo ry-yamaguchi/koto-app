@@ -4,6 +4,9 @@
 
 import { isClaudeCostOverWarnUsd } from '../shared/usageBudget'
 import { splitFailureDetail } from '../shared/failureDetail'
+import { retiredDefaultReplacement } from '../shared/modelInfo'
+import { notifyAiChoiceChanged } from './aiChoiceSignal'
+import { notifyModelListChanged } from './modelListSignal'
 
 /** モードのオン/オフ（既定=オン）。'off' が明示されているときだけ Claude 経路を使わない。 */
 export const CLAUDE_MODE_KEY = 'sakura_claude_mode'
@@ -89,6 +92,24 @@ export function getCachedClaudeModels(): { id: string; label: string }[] {
   return CLAUDE_MODELS
 }
 
+/** Claude のモデルの一覧の置き場（モジュールに1つ）。取り直すたびに {models, live, at} を更新して知らせる。
+ *  live は、この起動中に Anthropic から実際に取得できたことを表す（キャッシュ・埋め込みの表は live ではない）。 */
+export type ClaudeModelListState = { models: { id: string; label: string }[]; live: boolean; at: number }
+let claudeModelList: ClaudeModelListState | null = null
+
+/** いまの Claude のモデルの一覧。取得前はキャッシュ／CLAUDE_MODELS（live=false）。 */
+export function getClaudeModelListState(): ClaudeModelListState {
+  return claudeModelList ?? { models: getCachedClaudeModels(), live: false, at: 0 }
+}
+
+/** ライブ取得した一覧（マージ済み）を、キャッシュと置き場へ入れて購読者へ知らせる。空は無視する。 */
+export function recordClaudeModelList(models: { id: string; label: string }[]): void {
+  if (!models.length) return
+  try { cacheClaudeModels(models) } catch { /* 保存できなくても置き場は更新する */ }
+  claudeModelList = { models, live: true, at: Date.now() }
+  notifyModelListChanged()
+}
+
 /**
  * 選択中の Claude モデルIDを読む。判定対象は available（省略時は getCachedClaudeModels()＝
  * ライブ取得済みならその一覧、未取得なら CLAUDE_MODELS）。保存済みIDがその中に無ければ
@@ -103,9 +124,27 @@ export function getClaudeModel(available?: { id: string }[]): string {
   return list[0]?.id ?? DEFAULT_CLAUDE_MODEL
 }
 
-/** 選択中の Claude モデルIDを保存する。 */
+/** 保存してある Claude の既定のモデルID（設定の既定）。無い・読めないときは null。 */
+export function getSavedClaudeModel(): string | null {
+  try { return localStorage.getItem(CLAUDE_MODEL_KEY) } catch { return null }
+}
+
+/** Claude の既定のモデルIDを保存する（設定の既定の書き込み口。プロジェクトの記憶は projectAi.ts）。 */
 export function setClaudeModel(id: string): void {
   localStorage.setItem(CLAUDE_MODEL_KEY, id)
+  notifyAiChoiceChanged()
+}
+
+/**
+ * 保存してある Claude の既定が、実際に取得できた提供中の一覧に無ければ、DEFAULT（無ければ先頭）へ書き直す。
+ * live でないとき・保存が無いときは何も書かない。書き直したら新しいIDを返す。
+ */
+export function syncStoredClaudeDefaultWithOffered(offeredIds: string[], live: boolean): string | null {
+  const saved = getSavedClaudeModel()
+  if (!saved) return null
+  const next = retiredDefaultReplacement(saved, offeredIds, live, ids => ids.includes(DEFAULT_CLAUDE_MODEL) ? DEFAULT_CLAUDE_MODEL : ids[0])
+  if (next) setClaudeModel(next)
+  return next
 }
 
 /** モデルIDから短いラベル（例: 'Opus 5'）を作る。list（省略時は getCachedClaudeModels()）に
@@ -122,15 +161,17 @@ export function isClaudeModeEnabled(): boolean {
 }
 
 /**
- * 所見6: Claude頭脳モードのオン/オフを保存する（唯一の書き込み口）。
+ * 設定の既定「IDEモードで使う AI」の書き込み口（書くのは設定の画面だけ。プロジェクトごとの記憶は projectAi.ts）。
  * false のとき 'off' を保存（isClaudeModeEnabled が false を返すようになる）。
  * true のときは 'on' を明示保存する（キー削除でも既定=オンは再現できるが、値を残して意図を明確にする）。
- * 保存後は 'sakura:credentials-changed' を dispatch し、StatusBar/ChatPanel/ChatApp 等の
- * 頭脳表示・判定を即座に更新させる（CredentialsModal の認証情報変更と同じ購読先を再利用する）。
+ * 保存後は 'sakura:credentials-changed' を dispatch する（ChatApp・設定の画面が聞く）。
+ * IDE の表示（右下・チャット欄の上）と送る回の判断は、notifyAiChoiceChanged（aiChoiceSignal）で描き直す。
+ * この2つのうち、どちらも外さないこと。
  */
 export function setClaudeMode(enabled: boolean): void {
   localStorage.setItem(CLAUDE_MODE_KEY, enabled ? 'on' : 'off')
   window.dispatchEvent(new Event('sakura:credentials-changed'))
+  notifyAiChoiceChanged()
 }
 
 /**
@@ -218,9 +259,12 @@ export function recordClaudeConsent(): void {
 }
 
 /** Claude を使うときの同意の確認の本文。確認し直しのとき（旧い旗だけの人）は、変わった点を1文添える。 */
-export function claudeConsentBody(reconfirm: boolean): string {
+export function claudeConsentBody(reconfirm: boolean, hasApiKey: boolean): string {
   const lead = reconfirm ? 'Claude が Koto のツールを使えるようになり、送られるものが増えました。' : ''
-  return lead + 'Claudeモードでは、プロジェクトのコードと指示に加えて、Claude が読んだページの内容と、Claude が探した資料の抜粋（「📚 資料を使う」にしたプロジェクトだけ）が Anthropic（米国）に送信され、Claudeの利用料金が別途発生します（Anthropicへ直接課金／さくらのAI Engineの月間上限とは別枠）。使わないときは 設定 でさくらのAI Engineに切り替えられます。よろしいですか？（この確認は、初回と、送られるものが増えたときだけ出ます）'
+  const scope = hasApiKey
+    ? 'この確認は、すべてのプロジェクトに効きます。使わないプロジェクトは、チャット欄の上の「🧠 Claude ⇄」で さくらのAI Engine に切り替えられます。'
+    : 'この確認は、すべてのプロジェクトに効きます。'
+  return lead + 'Claudeモードでは、プロジェクトのコードと指示に加えて、Claude が読んだページの内容と、Claude が探した資料の抜粋（「📚 資料を使う」にしたプロジェクトだけ）が Anthropic（米国）に送信され、Claudeの利用料金が別途発生します（Anthropicへ直接課金／さくらのAI Engineの月間上限とは別枠）。' + scope + 'よろしいですか？（この確認は、初回と、送られるものが増えたときだけ出ます）'
 }
 
 /** 指定日時（既定=現在）の月キー（'YYYY-MM'）。src/renderer/usage.ts の thisMonth() と同じ規則。 */

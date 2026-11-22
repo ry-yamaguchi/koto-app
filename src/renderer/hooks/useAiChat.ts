@@ -28,8 +28,9 @@ import { shouldSendTools, isKnownToolCapable, recordToolSupport } from '../toolS
 import { planSend, planCompact, planManualCompact, compactPrompt, acceptSummary, compactSource, type CompactMark } from '../historyCompact'
 import { searchStatusContext } from '../aiContext'
 import { getAnthropicToken } from '../components/CredentialsModal'
-import { isClaudeModeEnabled, hasClaudeConsent, isClaudeConsentReconfirm, claudeConsentBody, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, getClaudeModel, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, setClaudeMode, getClaudeCostThisMonth, getClaudeWarnUsd } from '../claudeMode'
+import { hasClaudeConsent, isClaudeConsentReconfirm, claudeConsentBody, recordClaudeConsent, recordClaudeCost, claudeToolLabel, claudeCostFooter, claudeNoProjectGuidance, claudeConsentDeclinedGuidance, isClaudeUsageBlockedError, getClaudeCostThisMonth, getClaudeWarnUsd } from '../claudeMode'
 import { claudeChatWarningText } from '../../shared/usageBudget'
+import { aiChoiceInputsNow, resolveAiChoice, rememberProjectBrain } from '../projectAi'
 import { getClaudeSessionId, setClaudeSessionId } from '../claudeSession'
 import { beginActivity } from '../activity'
 import { applyToMessages, type ChatEvent } from '../../shared/chatEvents'
@@ -465,7 +466,7 @@ export function useAiChat(args: UseAiChatArgs) {
   // aiEngineKey は search_docs ツール用（C2b・方式B: 使う瞬間に読んで main へ引数で渡す。無ければ null）。
   // images は C2d: このターンでユーザーが添付した画像（data URL配列・空配列可）。main側 agent.ts が
   // 1枚以上ならストリーミング入力モードへ切り替え、Claude自身に直接読ませる（2段階visionを経由しない）。
-  const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null, writeMode: string, rag: { tags: string[] } | null) => {
+  const sendViaClaude = useCallback(async (text: string, images: string[], claudeKey: string, snapshotId: string, projectDir: string, aiEngineKey: string | null, claudeModel: string, writeMode: string, rag: { tags: string[] } | null) => {
     // 呼び出し時点の projectDir（send() から渡された、送信した瞬間のプロジェクト）の鍵。
     // このターンの ⏹ 登録・活動通知はここへ書く（emit の scalar も、この呼び出しの間は
     // 同じ値の toolsProjectDir を指しているので一致する。詳しくは send() 冒頭のコメント参照）。
@@ -482,9 +483,8 @@ export function useAiChat(args: UseAiChatArgs) {
     let textAcc = ''
     // 失敗した回の費用の行・⚠️。結果は失敗の知らせより先に届くので、知らせの吹き出しのあとへ回す。
     let afterFailure: string[] = []
-    // C2c: このターンで使うClaudeモデル（設定で選択済みのもの）。chatStart に渡し、
-    // 終端の costFooter にも同じモデルのラベルを付ける。
-    const claudeModel = getClaudeModel()
+    // このターンで使うClaudeモデルは引数 claudeModel（send() が送った瞬間に固定した値）。
+    // chatStart に渡し、終端の costFooter にも同じモデルのラベルを付ける。回の途中で記憶や既定を読み直さない。
     // Claude 経路のエラー表示。Claudeが「利用できない」状態（請求・クレジット不足等）で、かつ
     // さくらのAI Engineキーがある場合は、その旨を伝えて「切り替えて続ける」提案バブルを出す
     // （ユーザー要望2026-07-12・自動切替はせず確認方式）。それ以外は従来どおり案内文を出す。
@@ -658,6 +658,10 @@ export function useAiChat(args: UseAiChatArgs) {
     // 実害と同じ形）。ここで一度だけ読み、以後はこの key を使い続けることで、
     // **始めたプロジェクトの中で終わる**（並列に走らせる形の土台でもある）。
     const key = turnKey(toolsProjectDir, sessionId)
+    // 回の使う AI とモデルを、送った瞬間に1回だけ読んで固定する（掟11）。
+    // 同意の窓・キーの読み込みの間に記憶や既定が変わっても、この回は変わらない。
+    // 読むのは回のプロジェクト（送った描画の toolsProjectDir）の記憶。いま見ているプロジェクトではない。
+    const aiAtSend = aiChoiceInputsNow(toolsProjectDir)
     // B'-3d-3: AI応答は main でターンが走り、窓を閉じても完走する（approveToolCall も main が
     // 駐機する）。「実行中」には引き続き数える（自動更新の再起動ゲートはアプリごと終了するため
     // 対象のまま）が、閉じる前の確認ダイアログの対象からは外す（blocksClose: false）。
@@ -700,7 +704,8 @@ export function useAiChat(args: UseAiChatArgs) {
       // （AI Engineキーが無い＝モードBの場合のみ、行き止まりを避けるため下で案内する）。
       // AI Engine の2段階vision（視覚モデルで読み取り→本来モデルで実行）はモードC（Claude未接続）専用になった。
       const claudeKey = await getAnthropicToken()
-      const claudeReady = !!claudeKey && isClaudeModeEnabled()
+      const ai = resolveAiChoice({ ...aiAtSend, hasClaudeKey: !!claudeKey, hasEngineKey: !!apiKey })
+      const claudeReady = ai.brain === 'claude'
 
       if (toolsProjectDir && claudeReady) {
         // Claude は同時に1つの作業しか持てない。ほかのプロジェクトで AI が作業中なら、同意の確認も出さず、依頼の吹き出しも足さずに断る。
@@ -715,7 +720,7 @@ export function useAiChat(args: UseAiChatArgs) {
           // 所見7: 料金発生（Anthropicへ直接課金・AI Engineの月間上限とは別枠）と、設定での切替可否を明記する。
           const agreed = await confirm({
             title: 'Claudeモードを使いますか',
-            body: claudeConsentBody(isClaudeConsentReconfirm()),
+            body: claudeConsentBody(isClaudeConsentReconfirm(), !!apiKey),
             confirmLabel: '同意して使う',
             danger: false,
             initialFocus: 'cancel',
@@ -753,7 +758,7 @@ export function useAiChat(args: UseAiChatArgs) {
           }
           // W-18: 送信時点の writeMode（turnOpts のスナップショット）を Claude 経路にもそのまま渡す
           // （さくらのAI Engine 経路の decideApproval と同じ「送信時点で固定」・掟10）。
-          await sendViaClaude(text + assetBlock, images, claudeKey as string, snapshotId, toolsProjectDir, delegateKey, (turnOpts as { writeMode?: string }).writeMode ?? 'auto', (turnOpts as { rag?: { tags: string[] } | null }).rag ?? null)
+          await sendViaClaude(text + assetBlock, images, claudeKey as string, snapshotId, toolsProjectDir, delegateKey, ai.claudeModel, (turnOpts as { writeMode?: string }).writeMode ?? 'auto', (turnOpts as { rag?: { tags: string[] } | null }).rag ?? null)
           return
         }
         // 同意ダイアログをキャンセルした場合：AI Engineキーがあれば（モードA）従来どおり黙ってAI Engine経路へ
@@ -772,7 +777,7 @@ export function useAiChat(args: UseAiChatArgs) {
       // AI Engine のループは main で走る（B'-3b）。renderer は
       // (1)出来事を受けて emit する (2)問い合わせ（ask）に答える、の2役だけ。
       const spec: EngineTurnSpec = {
-        rawText, images, assetBlock, apiKey, model, models, maxRounds, toolsProjectDir, convDir,
+        rawText, images, assetBlock, apiKey, model: toolsProjectDir ? ai.sakuraModel : model, models, maxRounds, toolsProjectDir, convDir,
         errorPrefix, twoStageVision, routedModel, hasRag: !!buildRagBlock, turnOpts, snapshotId, snapshotLabel,
       }
       const turnId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -863,13 +868,14 @@ export function useAiChat(args: UseAiChatArgs) {
     twoStageVision, routedModel, appendBubble, buildRagBlock, sendViaClaude, emit, viewOnlyEmit,
   ])
 
-  // #31: 「さくらのAI Engine に切り替えて続ける」提案ボタンのハンドラ。頭脳をさくらのAI Engineへ
-  // 切り替え（setClaudeMode は localStorage を同期更新するため、直後の send() は AI Engine 経路になる。
-  // 設定でいつでも Claude に戻せる）、同じ内容をそのまま送り直す。
+  // #31: 「さくらのAI Engine に切り替えて続ける」提案ボタンのハンドラ。回のプロジェクトの記憶だけを
+  // さくらのAI Engineへ切り替え（記憶は localStorage へ同期に書くため、直後の send() は送った瞬間に
+  // 読んで AI Engine 経路になる。設定の既定と、ほかのプロジェクトは変えない。上の 🧠 ⇄ でいつでも戻せる）、
+  // 同じ内容をそのまま送り直す。
   const switchToAiEngineAndResend = useCallback((text: string, images: string[]) => {
-    setClaudeMode(false)
+    if (toolsProjectDir) rememberProjectBrain(toolsProjectDir, 'sakura')
     void send(text, images)
-  }, [send])
+  }, [send, toolsProjectDir])
 
   // 「もう一度送る」ボタンのハンドラ。材料（依頼の文と画像）は押した時点の会話から取り出し、
   // 既存の send に渡す（送信の入口は send の1か所）。aiOnlyNote は付けない（上の切替と同じ）。

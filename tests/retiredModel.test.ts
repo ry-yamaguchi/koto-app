@@ -49,11 +49,14 @@ describe('提供終了の自動切り替えの案内（IDE チャットとチャ
   })
 
   it('★ ChatPanel も ChatApp も、案内の文を自前で組まず retiredModelNoticeText を1回ずつ呼ぶ', () => {
-    for (const f of ['ChatPanel.tsx', 'ChatApp.tsx']) {
-      const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components', f), 'utf-8')
+    // IDE の案内は useProjectAiChoice（ChatPanel から切り出した）が出す。ChatPanel には案内を出す所が残っていない
+    for (const f of ['hooks/useProjectAiChoice.ts', 'components/ChatApp.tsx']) {
+      const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer', f), 'utf-8')
       expect(src.match(/retiredModelNoticeText\(/g)?.length).toBe(1)
       expect(src).not.toContain('モデル「${model}」は提供終了したため') // さくら側の旧い手組みが戻っていない
     }
+    const panel = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf-8')
+    expect(panel.match(/retiredModelNoticeText\(/g)?.length ?? 0).toBe(0)
   })
 
   it('★ ChatApp は pickBestModel で切り替える同じ場所で案内を出す', () => {

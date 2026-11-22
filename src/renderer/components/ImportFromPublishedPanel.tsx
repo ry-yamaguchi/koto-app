@@ -20,6 +20,8 @@ import {
   emphasize, IMPORT_INTENTS, type ImportTarget, type ImportIntent,
 } from '../importProject'
 import { beginActivity } from '../activity'
+// 新しく作ったフォルダなので、同じパスに前にあったプロジェクトの使う AI の記憶を、開く前に消す。
+import { forgetProjectAi } from '../projectAi'
 import { failureText } from '../../shared/failureText'
 import ErrorBand from './ErrorBand'
 import { FAILURE_DETAIL_CLASS } from './FailureLines'
@@ -277,6 +279,9 @@ export default function ImportFromPublishedPanel({ parentDir, onBack, onCreated,
         { path: '.sakuraide.json', content: JSON.stringify(meta, null, 2) },
       ], true)
 
+      // 新しく作ったフォルダ（上で存在しないことを確かめてある）に、同じパスに前にあったプロジェクトの
+      // 使う AI の記憶を当てない。完了の画面で「プロジェクトを開く」を押さずに閉じても、あとで開いたときに当たらないよう、作った時点で消す。
+      forgetProjectAi(dest)
       setDestRoot(dest)
       setResult(r)
       setStep('done')

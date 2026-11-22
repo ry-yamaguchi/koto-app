@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
-import { pickCheckTargets, judgeVerdict, checkpointsFor, buildCheckPrompt, extractCheckReport, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, reportParts, checkRecordKey, formatCheckRecord, DATA_FILE_RE, ASSET_FILE_RE, classifyUnchecked, capList } from '../src/renderer/securityCheck'
+import { pickCheckTargets, checkpointsFor, splitIntoPieces, packBatches, pieceHeader, mergeCheckResults, reportParts, checkRecordKey, formatCheckRecord, DATA_FILE_RE, ASSET_FILE_RE, classifyUnchecked, capList, type BatchResult } from '../src/renderer/securityCheck'
+import { buildAiCheckPrompt, type PromptPiece } from '../src/shared/aiCheckPrompt'
+import { extractLastFindingsJson, parseAiReply } from '../src/shared/aiCheckReply'
+import type { AiFinding } from '../src/shared/aiCheckFindings'
 
 // 2026-08-09 の総点検で見つかった2件の回帰テスト。
 // 公開前セキュリティチェックは「守り」のコードなのに、テストが1件も無かった（掟10）。
@@ -120,7 +123,11 @@ describe('名前だけで秘密と分かるもの・ロックファイルの扱�
 
   it('名前の判定は publishExclude.ts の looksSecretByName を呼ぶ（手元に正規表現を持たない）', () => {
     const s = readSrc('src/renderer/securityCheck.ts')
-    expect(s).toContain("import { looksSecretByName, looksSecretButPublished } from '../shared/publishExclude'")
+    expect(s).toContain("import { looksSecretByName } from '../shared/publishExclude'")
+    // 公開される秘密らしい名前の判定（looksSecretButPublished）は、合成の側が唯一の定義を呼ぶ
+    const merge = readSrc('src/renderer/aiCheckMerge.ts')
+    expect(merge).toContain("import { looksSecretButPublished } from '../shared/publishExclude'")
+    expect(merge).toContain('return secretFiles.filter(looksSecretButPublished)')
     expect(s).toContain("const secretFiles = files.filter(f => looksSecretByName(f) && f !== '.sakuraide.json')")
     expect(s).toContain('let targets = files.filter(f => TARGET_RE.test(f) && !looksSecretByName(f) && !LOCKFILE_RE.test(f) && !isKotoBuildConfig(f))')
     expect(s).toContain('if (entry && files.includes(entry) && !looksSecretByName(entry)) {')
@@ -174,16 +181,17 @@ describe('かたまりを作る前に、秘密に見える値を伏せる', () =
     expect(s).toContain('let rest = maskSecretShapes(content)')
     expect(s).not.toContain('let rest = content')
     // 本番の呼び出しは、読んだ中身をそのまま splitIntoPieces へ渡す（かたまりを作る道はこの1つ）
-    expect(s).toContain('pieces.push(...splitIntoPieces(f, await window.electronAPI.fs.readFile(`${projectDir}/${f}`)))')
+    expect(s).toContain("if (r.state === 'text') pieces.push(...splitIntoPieces(f, r.content))")
     expect((s.match(/splitIntoPieces\(/g) ?? []).length).toBe(2) // 定義1・呼び出し1
   })
 })
 
 describe('伏せ字を AI に伝える一文', () => {
-  const base = { mode: 'node' as const, entry: 'server.js', secretFiles: [] as string[] }
+  const base = { mode: 'node' as const, entry: 'server.js', split: false, secretFiles: [] as string[], others: [] as string[] }
+  const piece = (): PromptPiece => ({ file: 'server.js', part: 1, total: 1, startLine: 1, text: 'const k = "***"' })
 
   it('本文があるとき、*** の意味を伝える。本物の秘密とは限らないことも添える', () => {
-    const p = buildCheckPrompt({ ...base, parts: ['--- server.js ---\nconst k = "***"'] })
+    const p = buildAiCheckPrompt({ ...base, pieces: [piece()] })
     expect(p).toContain('*** に置き換えてお渡ししています')
     expect(p).toContain('*** の所に本物の秘密が書かれていたとは限りません')
     expect(p).toContain('本物の秘密の直書きに見えるものだけを指摘してください')
@@ -193,30 +201,32 @@ describe('伏せ字を AI に伝える一文', () => {
   })
 
   it('本文が無い（名前だけを渡す）ときは、言わない', () => {
-    const p = buildCheckPrompt({ ...base, secretFiles: ['.env'], parts: [] })
+    const p = buildAiCheckPrompt({ ...base, secretFiles: ['.env'], pieces: [] })
     expect(p).not.toContain('*** に置き換えて')
   })
 })
 
 describe('依頼文に載せる秘密らしい名前の数（毎回の要求に入るので上限がある）', () => {
-  const base = { mode: 'static' as const, secretFiles: [] as string[], parts: [] as string[] }
+  const base = { mode: 'static' as const, entry: null, split: false, secretFiles: [] as string[], others: [] as string[], pieces: [] as PromptPiece[] }
   const names = (n: number) => Array.from({ length: n }, (_, i) => `secrets/s${i}.txt`)
 
   it('★ 20件までは全部載せる。21件目以降は「ほかN件」にまとめる（件数は残る）', () => {
-    const exact = buildCheckPrompt({ ...base, secretFiles: names(20) })
+    const exact = buildAiCheckPrompt({ ...base, secretFiles: names(20) })
     expect(exact).toContain('secrets/s19.txt')
     expect(exact).not.toContain('ほか')
-    const many = buildCheckPrompt({ ...base, secretFiles: names(2000) })
+    const none = buildAiCheckPrompt(base)
+    const many = buildAiCheckPrompt({ ...base, secretFiles: names(2000) })
     const line = many.split('\n').find(l => l.startsWith('※ 次のファイルは名前からして公開NGの可能性が高い'))!
     expect(line).toContain('secrets/s0.txt')
     expect(line).toContain('secrets/s19.txt')
     expect(line).toContain('ほか1980件')
     expect(line).not.toContain('secrets/s20.txt')
-    expect(many.length).toBeLessThan(2000)
+    // 名前の数が増えても、依頼文は増えない（2000件ぶんの名前が載れば3万字を超える）
+    expect(many.length - none.length).toBeLessThan(2000)
   })
 
   it('対照: 少なければそのまま（「ほか0件」のような注記は付けない）', () => {
-    const p = buildCheckPrompt({ ...base, secretFiles: ['credentials.json', 'service-account.json'] })
+    const p = buildAiCheckPrompt({ ...base, secretFiles: ['credentials.json', 'service-account.json'] })
     expect(p).toContain('名前からして公開NGの可能性が高い: credentials.json, service-account.json\n')
     expect(p).not.toContain('ほか')
   })
@@ -365,30 +375,39 @@ describe('capList（名前一覧の肥大防止）', () => {
 })
 
 // ── 判定は「要確認」を優先する ──────────────────────────────────────────
-// 以前は1行目に「問題なし」が含まれるかだけを見ていたため、
-// 「判定: 要確認（一部は問題なし）」のような書き方をされると ok になっていた。
-describe('AIの回答から判定を決める', () => {
-  it('問題なしなら ok', () => {
-    expect(judgeVerdict('判定: 問題なし\n確認した観点: 秘密情報の直書き、XSS')).toBe('ok')
+// 以前は1行目に「問題なし」が含まれるかだけを見ており、「判定: 要確認（一部は問題なし）」のような
+// 書き方をされると ok になっていた。いまは AI の文を判定に使わない。判定は、指摘（重さ）・読めなかった回・
+// 読み取れなかった指摘から Koto が決める（回ごとの表は tests/aiCheckMerge.test.ts）。
+describe('AIの回答から判定を決める（合成 mergeCheckResults）', () => {
+  const info = { files: 2, batches: 1, skipped: [] as string[], partial: [] as string[] }
+  const noteOnly = aiF({ kind: 'other', severity: 'note', file: 'z.html', line: 9, note: '補足です' })
+
+  it('指摘が無ければ ok（「念のため」だけでも ok）', () => {
+    expect(mergeCheckResults([okR()], info).verdict).toBe('ok')
+    expect(mergeCheckResults([okR([noteOnly])], info).verdict).toBe('ok')
   })
 
-  it('要確認なら warn', () => {
-    expect(judgeVerdict('判定: 要確認\nindex.html: APIキーが直書きされています')).toBe('warn')
+  it('重さが now・should の指摘があれば warn', () => {
+    expect(mergeCheckResults([okR([nowF('index.html', 3)])], info).verdict).toBe('warn')
+    expect(mergeCheckResults([okR([aiF()])], info).verdict).toBe('warn')
   })
 
-  // ここが実害。両方の語が入っていたら警告側に倒す
-  it('両方の語が入っていたら warn（安全側に倒す）', () => {
-    expect(judgeVerdict('判定: 要確認（一部は問題なし）\n…')).toBe('warn')
-    expect(judgeVerdict('判定: 問題なし。ただし要確認の点あり\n…')).toBe('warn')
+  // ここが実害だった。両方の語が入っていたら警告側に倒す。いまは、AI の説明に「問題なし」と書かれていても、
+  // 指摘があれば警告のまま（AI の文は判定に使わない）
+  it('指摘の説明に「問題なし」と書かれていても warn（安全側に倒す）', () => {
+    const m = mergeCheckResults([okR([aiF({ note: '問題なし、ただし要確認の点あり' })])], info)
+    expect(m.verdict).toBe('warn')
+    expect(m.report.split('\n')[0]).toBe('判定: 要確認')
   })
 
-  it('形式に従わない回答は warn（判定できないものを ok にしない）', () => {
-    expect(judgeVerdict('こんにちは')).toBe('warn')
-    expect(judgeVerdict('')).toBe('warn')
+  it('形式に従わない返事（読み取れない回）は ok にしない（全部がそうなら skip・混ざれば warn）', () => {
+    expect(mergeCheckResults([failR(['a.html'])], info).verdict).toBe('skip')
+    expect(mergeCheckResults([okR(), failR(['b.html'])], info).verdict).toBe('warn')
   })
 
-  it('2行目以降に問題なしと書かれていても、1行目で判断する', () => {
-    expect(judgeVerdict('判定: 要確認\nstyle.css: 問題なし')).toBe('warn')
+  it('1回目が問題なしでも、あとの回の指摘で warn（順序によらない）', () => {
+    expect(mergeCheckResults([okR(), okR([nowF('b.js', 2)])], info).verdict).toBe('warn')
+    expect(mergeCheckResults([okR([nowF('b.js', 2)]), okR()], info).verdict).toBe('warn')
   })
 })
 
@@ -423,54 +442,62 @@ describe('検査の観点は種別で変わる', () => {
 })
 
 describe('AIへの依頼文', () => {
+  const base = { mode: 'static' as const, entry: null as string | null, split: false, secretFiles: [] as string[], others: [] as string[], pieces: [] as PromptPiece[] }
+
   it('アプリなら、サーバーで実行されると明言し、入口ファイル名を伝える', () => {
-    const p = buildCheckPrompt({ mode: 'node', entry: 'server.js', secretFiles: [], parts: ['--- server.js ---\nconst http = ...'] })
+    const p = buildAiCheckPrompt({ ...base, mode: 'node', entry: 'server.js', pieces: [{ file: 'server.js', part: 1, total: 1, startLine: 1, text: 'const http = ...' }] })
     expect(p).toContain('サーバーで実行される')
     expect(p).toContain('入口は server.js')
     expect(p).toContain('命令の混入')
   })
 
   it('サイトなら、そのまま配信されると明言し、アプリ専用の観点は入れない', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
+    const p = buildAiCheckPrompt(base)
     expect(p).toContain('そのまま配信される')
     expect(p).not.toContain('命令の混入')
   })
 
   it('秘密ファイルは名前だけを伝える行に載る', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: ['.env'], parts: [] })
+    const p = buildAiCheckPrompt({ ...base, secretFiles: ['.env'] })
     expect(p).toContain('公開NGの可能性が高い: .env')
   })
 
-  it('出力形式（判定の1行目）を必ず要求する', () => {
-    const p = buildCheckPrompt({ mode: 'node', entry: 'a.js', secretFiles: [], parts: [] })
-    expect(p).toContain('「判定: 問題なし」または「判定: 要確認」')
+  it('出力形式（JSON の形・種類の一覧・JSON 以外を書かせない）を必ず要求する', () => {
+    const p = buildAiCheckPrompt({ ...base, mode: 'node', entry: 'a.js' })
+    expect(p).toContain('{"findings":[{"file":"ファイル名","line":行番号,"kind":"種類","quote":"その行の中身","note":"何が問題かを1文で"}]}')
+    expect(p).toContain('- kind は次のどれか1つ')
+    expect(p).toContain('JSON 以外の文章（思考の経過・英語のメモ）は書かない')
+    // 直す前の形（1行目の「判定」）を要求していない
+    expect(p).not.toContain('判定: 問題なし')
+    expect(p).not.toContain('判定: 要確認')
+    expect(p).not.toContain('報告以外の文章')
   })
 
   // ── others（対象外・データ系でもないファイル名）の名前だけ判定（roadmap #17・案2）───
   it('others の名前を伝え、名前だけで疑いがあるものだけ指摘するよう指示する', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], others: ['server.py', 'メモ.txt'] })
+    const p = buildAiCheckPrompt({ ...base, others: ['server.py', 'メモ.txt'] })
     expect(p).toContain('server.py, メモ.txt')
     expect(p).toContain('名前から個人情報・秘密・残骸')
     expect(p).toContain('中身は見なくてよい')
   })
 
   // 中身は絶対に送らない（2026-08-09 の .env 事故の原則）。others に渡すのは名前一覧だけ
-  // ── parts（実際のファイル内容）を空にしても、others の名前は独立に依頼文へ載る。
-  it('others に渡すのは名前一覧だけ（parts が空でも名前は載る＝中身に依存しない）', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], others: ['customers.csv'] })
+  // ── pieces（実際のファイル内容）を空にしても、others の名前は独立に依頼文へ載る。
+  it('others に渡すのは名前一覧だけ（pieces が空でも名前は載る＝中身に依存しない）', () => {
+    const p = buildAiCheckPrompt({ ...base, others: ['customers.csv'] })
     expect(p).toContain('customers.csv')
-    expect(buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })).not.toContain('customers.csv')
+    expect(buildAiCheckPrompt(base)).not.toContain('customers.csv')
   })
 
   it('others が無ければ、その案内は入れない', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
+    const p = buildAiCheckPrompt(base)
     expect(p).not.toContain('名前から個人情報・秘密・残骸')
   })
 
   // ── 名前一覧の肥大防止（roadmap #17 追補）: others は capList(80) を通す ─────────
   it('others が80件を超えたら、依頼文では81件目以降を「ほかN件」にまとめる', () => {
     const others = Array.from({ length: 90 }, (_, i) => `f${i}.txt`)
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], others })
+    const p = buildAiCheckPrompt({ ...base, others })
     expect(p).toContain('ほか10件')
     expect(p).not.toContain('f89.txt') // 81件目以降は個別には出さない
     expect(p).toContain('f79.txt') // 80件目までは出す
@@ -503,12 +530,20 @@ describe('セキュリティチェックの配線', () => {
 
   it('🛡 節（SecurityCheckSection）は共通実装 runSecurityCheck を呼び、修正は fix-with-ai へ送る', () => {
     const s = read('src/renderer/components/SecurityCheckSection.tsx')
-    expect(s).toContain('await runSecurityCheck(projectDir, apiKey, setProgress, (abort) => { abortRef.current = abort })')
+    // 送る口は流れ（securityCheckFlow.ts）の1か所で呼び、中断の受け口と実況を必ず渡す
+    const flow = read('src/renderer/securityCheckFlow.ts')
+    expect(flow).toContain('await a.deps.runSecurityCheck(started, a.apiKey, a.on.progress, a.on.abortReady)')
+    expect(s).toContain('abortReady: (abort) => { abortRef.current = abort },')
+    expect(s).toContain('progress: setProgress,')
     // 直す前の3引数の形（＝中断の受け口を渡していない形）が戻ってきたら落ちる
-    expect(s).not.toContain('await runSecurityCheck(projectDir, apiKey, setProgress)')
-    // 送る文は buildFixPrompt の1か所で組む（報告を境界で囲む）。呼び出しの形ごと一意に指し、
-    // 報告をそのまま差し込む直す前の形が戻ってきたら落ちる
-    expect(s).toContain("window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: buildFixPrompt(result.report) } }))")
+    expect(flow).not.toContain('runSecurityCheck(started, a.apiKey, a.on.progress)')
+    // 送る文は buildSecurityFixPrompt の1か所で組む（指摘のファイル・行・種類だけから作る。AI の文・報告は入れない）。
+    // 呼び出しの形ごと一意に指し、報告を渡す直す前の形が戻ってきたら落ちる
+    expect(s).toContain('const fixPrompt = buildSecurityFixPrompt(mergeFixItems(scan?.fixItems ?? [], fixItemsOf(result?.findings ?? [])))')
+    expect(s).toContain("window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: fixPrompt } }))")
+    expect(s).toContain('{fixPrompt !== null && !checking && (')
+    expect(s).not.toContain('buildFixPrompt')
+    expect(s).not.toContain('detail: { text: result.report }')
     expect(s).not.toContain('${result.report}')
     expect(s).not.toContain('実際に修正して解消してください')
     // 実体を持たない（独自のプロンプトや判定を書かない）
@@ -559,8 +594,8 @@ describe('セキュリティチェックの配線', () => {
     // (2) ボタンが stop に繋がっていること（別の関数へ繋ぎ替わったら落ちる）
     const btn = s.indexOf('onClick={stop}')
     expect(btn).toBeGreaterThan(-1)
-    // (3) そのボタンは「確認中で、AI の確認を走らせる回のときだけ」出す条件の中に居る（押せない時に出さない）
-    const guard = s.lastIndexOf('{checking && aiRan && (', btn)
+    // (3) そのボタンは「AI の確認が走っている間だけ」出す条件の中に居る（点検の間・押せない時に出さない）
+    const guard = s.lastIndexOf('{aiRunning && mine && (', btn)
     expect(guard).toBeGreaterThan(-1)
     expect(s.slice(guard, btn)).not.toContain('</button>') // 別のボタンを挟んでいない
     // (4) 文言は素のテキスト・日本語（掟5）。利用者が「中止」と読める語であること
@@ -600,19 +635,27 @@ describe('セキュリティチェックの配線', () => {
   it('推論対策: 上限4096・目印方式・実況が実装に居る', () => {
     const s = read('src/renderer/securityCheck.ts')
     expect(s).toContain('maxTokens: 4096')
-    expect(s).toContain('extractCheckReport(raw)')
+    expect(s).toContain('const parsed = parseAiReply(raw, { pieces: sentPieces, names: sentNames })')
+    // 旧い目印方式（「判定:」の読み取り）が戻っていない
+    expect(s).not.toContain('extractCheckReport(')
+    expect(s).not.toContain('judgeVerdict(')
     // 実測で1分を超えることがある。短く言い切らない（2026-08-21 rc.3 実機）
     expect(s).toContain('少々時間がかかります')
     expect(s).not.toContain('30秒ほどかかります')
     // 生の応答をそのまま判定・表示に回さない（rc.1 の再発防止）
     expect(s).not.toContain('judgeVerdict(raw)')
+    expect(s).not.toContain('buildCheckPrompt(')
   })
 
   it('全ファイル・全文を分けて確認し、結果をまとめている', () => {
     const s = read('src/renderer/securityCheck.ts')
-    expect(s).toContain('pieces.push(...splitIntoPieces(f, await window.electronAPI.fs.readFile(')
-    expect(s).toContain('const { batches, skipped } = packBatches(pieces)')
-    expect(s).toContain('mergeCheckResults(results, {')
+    expect(s).toContain('pieces.push(...splitIntoPieces(f, r.content))')
+    expect(s).toContain('const { batches, skipped, partial } = packBatches(orderPiecesForPacking(pieces, entry))')
+    expect(s).toContain('const merged = mergeCheckResults(results, {')
+    // 計画（読むだけ）と実行（送る）が分かれ、runSecurityCheck は両方を通る
+    expect(s).toContain('export async function planAiCheck(')
+    expect(s).toContain('export async function runAiCheck(')
+    expect(s).toContain('const plan = await planAiCheck(projectDir, onProgress)')
   })
 
   // 2026-08-21 Ryosuke 指定: 利用量の歯止めは全体予算のブロックに一本化する。
@@ -621,6 +664,16 @@ describe('セキュリティチェックの配線', () => {
     const s = read('src/renderer/securityCheck.ts')
     expect(s.match(/checkBeforeRequest\(/g) ?? []).toHaveLength(1)
     expect(s).toContain('const budget = checkBeforeRequest(apiKey)')
+    // 呼び元は aiCheckBudget(apiKey) だけ（checkBeforeRequest を直に呼ぶ口を増やさない）
+    expect(s).toContain('export function aiCheckBudget(apiKey: string) {')
+    expect(s.match(/const budget = aiCheckBudget\(apiKey\)/g) ?? []).toHaveLength(2)
+  })
+
+  it('★ AI を呼ぶ口（sakura.chat の呼び出し）は、コメントを除いて securityCheck.ts の1か所だけ', () => {
+    const code = read('src/renderer/securityCheck.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n')
+    expect(code.match(/sakura\.chat\(/g) ?? []).toHaveLength(1)
   })
 
   it('種別の見分けは runtimeDetect に一元化（独自に package.json を解釈しない）', () => {
@@ -648,7 +701,7 @@ describe('セキュリティチェックの配線', () => {
 
   it('一覧の打ち切りを捨てない、正直な一覧（projectFilesInfo）を使っている', () => {
     const s = read('src/renderer/securityCheck.ts')
-    expect(s).toContain('await window.electronAPI.fs.projectFilesInfo(projectDir, { maxFiles: SECURITY_CHECK_MAX_FILES, publishView: true })')
+    expect(s).toContain('await window.electronAPI.fs.projectFilesInfo(root, { maxFiles: SECURITY_CHECK_MAX_FILES, publishView: true })')
     expect(s).not.toContain('await window.electronAPI.fs.projectFiles(projectDir)')
   })
 
@@ -668,21 +721,30 @@ describe('セキュリティチェックの配線', () => {
     const s = read('src/renderer/securityCheck.ts')
     expect(s).toContain('const { dataLike, assets, others } = classifyUnchecked(files, targets, secretFiles)')
     const at = s.indexOf('const merged = mergeCheckResults(results, {')
+    expect(at).toBeGreaterThan(-1)
     const call = s.slice(at, s.indexOf('})', at))
-    expect(call).toContain('dataLike,')
-    expect(call).toContain('assets,')
-    expect(call).toContain('others,')
-    expect(call).toContain('truncated,')
+    expect(call).toContain('dataLike: plan.dataLike,')
+    expect(call).toContain('assets: plan.assets,')
+    expect(call).toContain('others: plan.others,')
+    expect(call).toContain('truncated: plan.truncated,')
+    expect(call).toContain('skipped: plan.skipped,')
+    expect(call).toContain('partial: plan.partial,')
     // 名前だけで見つけた秘密らしいファイルと、読めなかったファイルも合成へ渡る（渡し忘れると警告にも報告にも出ない）
-    expect(call).toContain('secretFiles,')
-    expect(call).toContain('unreadable,')
+    expect(call).toContain('secretFiles: plan.secretFiles,')
+    expect(call).toContain('unreadable: plan.unreadable,')
+    // 利用量の警告（warning）も合成へ渡る（捨てない）
+    expect(call).toContain('warning,')
   })
 
-  it('others は buildCheckPrompt へ渡り、中身（parts）とは別立てで名前だけ送られる（毎回。1回目だけの形には戻さない）', () => {
+  it('others・secretFiles は buildAiCheckPrompt へ渡り、中身（pieces）とは別立てで名前だけ送られる（毎回。1回目だけの形には戻さない）', () => {
     const s = read('src/renderer/securityCheck.ts')
-    expect(s).toMatch(/buildCheckPrompt\(\{\s*mode, entry, split,\s*secretFiles,\s*others,\s*parts: batches\[i\]\.map\(/)
+    expect(s).toMatch(/return buildAiCheckPrompt\(\{\s*mode: plan\.mode,\s*entry: plan\.entry,\s*split: plan\.split,[\s\S]*?secretFiles: plan\.secretFiles,\s*others: plan\.others,\s*pieces: \[\.\.\.batch\],\s*\}\)/)
     expect(s).not.toContain('others: i === 0 ? others : [],')
     expect(s).not.toContain('secretFiles: i === 0 ? secretFiles : [],')
+    expect(s).not.toContain('buildCheckPrompt(')
+    // 依頼文を作るのは promptForBatch の1か所（計画の数え方と実行の送り方が同じ関数を通る）
+    expect(s.match(/buildAiCheckPrompt\(/g) ?? []).toHaveLength(1)
+    expect(s.match(/promptForBatch\(/g) ?? []).toHaveLength(3) // 定義1・計画1・実行1
   })
 
   it('secretFiles・others の名前しか無いプロジェクトでも、最低1回はAIに渡す（黙って落とさない）', () => {
@@ -691,78 +753,71 @@ describe('セキュリティチェックの配線', () => {
   })
 })
 
-// ── AIの生の応答から報告を取り出す（目印方式・2026-08-21 rc.1 実機の再発防止）──
+// ── AIの返事の読み取り（JSON・2026-08-21 rc.1 実機の再発防止の形を引き継ぐ）──
 // 推論型モデルが maxTokens を考えるだけで使い切ると、本文の代わりに**英語の思考**が
-// 届く（IPC 側の pickContent が空本文を推論で代替するため）。🗂 まとめと同じく、
-// 目印「判定:」の最後の出現以降だけを受理し、思考を利用者に見せない。
-describe('AIの生の応答から報告を取り出す（目印方式）', () => {
-  it('英語の思考の後ろに報告があれば、最後の「判定:」以降だけを受理する', () => {
-    const raw = 'We need act as web security reviewer. Then decide 判定: ok or not. Let me write.\n判定: 要確認\n- index.html: APIキーが直書きされています'
-    expect(extractCheckReport(raw)).toBe('判定: 要確認\n- index.html: APIキーが直書きされています')
+// 届く（IPC 側の pickContent が空本文を推論で代替するため）。以前は目印「判定:」の最後の出現以降を
+// 受理していた。いまは findings を持つ JSON の塊だけを受理し、思考を利用者に見せない。
+// 読み方の細部は tests/aiCheckReply.test.ts。ここは、旧い目印方式の形が読めなくなったことも含めて固定する。
+describe('AIの返事の読み取り（JSON の塊だけを受理する）', () => {
+  const sent = { pieces: [{ file: 'index.html', startLine: 1, lines: ['<p>x</p>'], served: true }], names: [] }
+
+  it('英語の思考の後ろに JSON があれば、最後の塊だけを受理する', () => {
+    const raw = 'We need act as web security reviewer. Then decide {"findings": maybe}. Let me write.\n{"findings":[]}'
+    expect(extractLastFindingsJson(raw)).toEqual({ findings: [] })
+    expect(parseAiReply(raw, sent)).toMatchObject({ state: 'ok', findings: [] })
   })
 
   it('思考だけで切れた応答（rc.1 実機で起きた形）は不採用にする', () => {
-    expect(extractCheckReport('We need act as web security reviewer. Must output Japanese only, strict format. Need analyze provided files...')).toBeNull()
+    const raw = 'We need act as web security reviewer. Must output Japanese only, strict format. Need analyze provided files...'
+    expect(extractLastFindingsJson(raw)).toBeNull()
+    expect(parseAiReply(raw, sent)).toEqual({ state: 'unreadable' })
   })
 
-  it('全角コロン（判定：）でも受理する', () => {
-    expect(extractCheckReport('前置きの文章\n判定： 問題なし\n確認した観点: 秘密情報・XSS')).toBe('判定： 問題なし\n確認した観点: 秘密情報・XSS')
+  it('JSON のあとにぶら下がった英語の思考は、結果に入らない（実機で出た形）', () => {
+    const raw = '{"findings":[]}\n\nWait, the format for no issues? The instruction says "問題なしの場合'
+    expect(extractLastFindingsJson(raw)).toEqual({ findings: [] })
+    expect(parseAiReply(raw, sent)).toMatchObject({ state: 'ok', findings: [] })
   })
 
-  it('報告だけの応答は、そのまま全体を受理する', () => {
-    expect(extractCheckReport('判定: 問題なし\n確認した観点: 秘密情報の直書き、XSS')).toBe('判定: 問題なし\n確認した観点: 秘密情報の直書き、XSS')
+  it('前後どちらにも思考がある応答から、JSON だけを取り出す', () => {
+    const raw = 'We need to review. {"findings": is decided later.\n{"findings":[]}\n\nWe should double check the format here.'
+    expect(extractLastFindingsJson(raw)).toEqual({ findings: [] })
   })
-})
 
-// ── 報告の「後ろ側」も切る（2026-08-21 rc.3 実機・Ryosuke 報告）────────────
-// 報告を書き終えたあとに思考へ戻る応答があり、利用者向けの文の末尾に
-// `Wait, the bullet format for no issues?…` がぶら下がっていた。
-describe('報告のあとに続く思考を切る', () => {
-  it('報告の末尾にぶら下がった英語の思考を落とす（実機で出た形）', () => {
-    const raw = [
-      '判定: 問題なし',
-      '- 全ファイル: APIキーの直書きは確認されませんでした。',
+  it('★ 旧い形の返事（「判定:」で始まる文）は読まない。どの書き方でも読めない回になる', () => {
+    for (const raw of [
+      '判定: 問題なし\n確認した観点: 秘密情報の直書き、XSS',
+      '判定： 問題なし\n確認した観点: 秘密情報・XSS',
+      '判定: 要確認\nindex.html: APIキーが直書きされています\nscript.js: 入力をそのまま出力しています',
+      '判定: 要確認\n1. index.html: 危険\n・script.js: 危険\n* style.css: 危険',
+      '申し訳ありません、うまく答えられませんでした。',
       '',
-      'Wait, the bullet format for no issues? The instruction says "問題なしの場合',
-    ].join('\n')
-    expect(extractCheckReport(raw)).toBe('判定: 問題なし\n- 全ファイル: APIキーの直書きは確認されませんでした。')
-  })
-
-  it('「ファイル名: …」で始まる行は、箇条書きでなくても報告として残す', () => {
-    const raw = '判定: 要確認\nindex.html: APIキーが直書きされています\nscript.js: 入力をそのまま出力しています'
-    expect(extractCheckReport(raw)).toBe(raw)
-  })
-
-  it('番号付き・記号付きの箇条書きも残す', () => {
-    const raw = '判定: 要確認\n1. index.html: 危険\n・script.js: 危険\n* style.css: 危険'
-    expect(extractCheckReport(raw)).toBe(raw)
-  })
-
-  it('前後どちらにも思考がある応答から、報告だけを取り出す', () => {
-    const raw = 'We need to review. 判定: is decided later.\n判定: 要確認\n- app.js: 入力をそのまま実行しています\n\nWe should double check the format here.'
-    expect(extractCheckReport(raw)).toBe('判定: 要確認\n- app.js: 入力をそのまま実行しています')
+    ]) expect(parseAiReply(raw, sent), raw).toEqual({ state: 'unreadable' })
   })
 })
 
 describe('AIへの依頼文（指摘の絞り込み・切り詰めの申し送り）', () => {
+  const base = { mode: 'static' as const, entry: null, split: false, secretFiles: [] as string[], others: [] as string[], pieces: [] as PromptPiece[] }
+
   it('問題の無い確認結果や、体裁の助言を指摘欄に書かせない', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
-    expect(p).toContain('問題がある項目だけ')
+    const p = buildAiCheckPrompt(base)
+    expect(p).toContain('問題が無ければ {"findings":[]} とだけ出力する')
     expect(p).toContain('セキュリティに関係しない指摘')
-    expect(p).toContain('報告以外の文章（思考の経過・英語のメモ）は書かない')
+    expect(p).toContain('JSON 以外の文章（思考の経過・英語のメモ）は書かない')
   })
 
   it('分けて渡すときは「途中で切れている」と書かないよう伝える', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [], split: true })
+    const p = buildAiCheckPrompt({ ...base, split: true })
     expect(p).toContain('「途中で切れている」「全文を確認せよ」とは書かないでください')
     expect(p).toContain('ほかの部分は別の回に確認します')
   })
 
   it('分けていないときは、その申し送りを入れない（余計な前提を渡さない）', () => {
-    const p = buildCheckPrompt({ mode: 'static', entry: null, secretFiles: [], parts: [] })
+    const p = buildAiCheckPrompt(base)
     expect(p).not.toContain('複数回に分けて')
   })
 })
+
 
 // ── 全ファイル・全文を分けて確認する（2026-08-21 rc.5 の設計見直し）─────────
 // 以前は「先頭8ファイル・各6000文字」で、9個目以降と6000文字超の部分は
@@ -804,13 +859,21 @@ describe('長いファイルを分ける', () => {
 
 describe('1回ぶんずつの束に詰める', () => {
   const piece = (file: string, len: number): ReturnType<typeof splitIntoPieces>[number] =>
-    ({ file, part: 1, total: 1, text: 'x'.repeat(len) })
+    ({ file, part: 1, total: 1, startLine: 1, text: 'x'.repeat(len) })
 
   it('上限を超えないように束を分ける', () => {
     const { batches } = packBatches([piece('a', 900), piece('b', 900), piece('c', 900)], 2000, 6)
     expect(batches).toHaveLength(2)
     expect(batches[0].map(p => p.file)).toEqual(['a', 'b'])
     expect(batches[1].map(p => p.file)).toEqual(['c'])
+  })
+
+  it('行番号の分も数える（行の短いファイルは、番号の分だけ早く束が分かれる）', () => {
+    const lines = (file: string, n: number): ReturnType<typeof splitIntoPieces>[number] =>
+      ({ file, part: 1, total: 1, startLine: 1, text: 'ab\n'.repeat(n) })
+    // 本文だけなら 30 + 30 = 60 字で 1 束に収まるが、各行に「N| 」が付くと 90 字を超える
+    const { batches } = packBatches([lines('a', 10), lines('b', 10)], 80, 6)
+    expect(batches).toHaveLength(2)
   })
 
   it('1つで上限を超えるかたまりも捨てない（単独の束にする）', () => {
@@ -827,55 +890,51 @@ describe('1回ぶんずつの束に詰める', () => {
 
   it('一部でも確認できたファイルは「確認していない」に入れない', () => {
     const pieces = [
-      { file: 'big.html', part: 1, total: 2, text: 'x'.repeat(900) },
-      { file: 'big.html', part: 2, total: 2, text: 'x'.repeat(900) },
+      { file: 'big.html', part: 1, total: 2, startLine: 1, text: 'x'.repeat(900) },
+      { file: 'big.html', part: 2, total: 2, startLine: 1, text: 'x'.repeat(900) },
     ]
     const { skipped } = packBatches(pieces, 1000, 1)
     expect(skipped).toEqual([])
   })
 })
 
+const aiF = (o: Partial<AiFinding> = {}): AiFinding => ({
+  kind: 'input-to-html', severity: 'should', certainty: 'ai', file: 'a.html', line: 3, note: '', quote: '', ...o,
+})
+const okR = (findings: AiFinding[] = [], files: string[] = ['a.html']): BatchResult =>
+  ({ state: 'ok', findings, malformed: 0, cut: 0, files })
+const failR = (files: string[] = [], report = 'チェックに失敗しました（timeout）。'): BatchResult =>
+  ({ state: 'failed', report, files })
+const nowF = (file: string, line: number): AiFinding => aiF({ kind: 'secret-exposed', severity: 'now', file, line })
+
 describe('複数回の結果をまとめる', () => {
-  const info = { files: 9, batches: 2, skipped: [] as string[] }
+  const info = { files: 9, batches: 2, skipped: [] as string[], partial: [] as string[] }
 
   it('1回でも「要確認」なら全体で「要確認」（安全側に倒す）', () => {
-    const m = mergeCheckResults([
-      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題ありませんでした' },
-      { verdict: 'warn', report: '判定: 要確認\n- b.js: APIキーが直書きされています' },
-    ], info)
+    const m = mergeCheckResults([okR(), okR([nowF('b.js', 2)])], info)
     expect(m.verdict).toBe('warn')
-    // 「要確認」の中に「問題ありませんでした」を混ぜない
-    expect(m.report).toContain('- b.js: APIキーが直書きされています')
-    expect(m.report).not.toContain('問題ありませんでした')
+    expect(m.report).toContain('b.js:2')
+    // 「要確認」の中に「問題は見つかりませんでした」を混ぜない
+    expect(m.report).not.toContain('確認した範囲では')
   })
 
   // ⚠️ 順番を変えても倒れること。**「最後の回で決める」実装でも通る**テストしか
   // 書いておらず、ミューテーション試験で素通りした（2026-08-21・掟10 と同じ形）。
   it('「要確認」が最初の回でも、全体で「要確認」になる', () => {
-    const m = mergeCheckResults([
-      { verdict: 'warn', report: '判定: 要確認\n- b.js: APIキーが直書きされています' },
-      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題ありませんでした' },
-    ], info)
+    const m = mergeCheckResults([okR([nowF('b.js', 2)]), okR()], info)
     expect(m.verdict).toBe('warn')
-    expect(m.report).toContain('- b.js: APIキーが直書きされています')
+    expect(m.report).toContain('b.js:2')
   })
 
   it('「要確認」が真ん中の回でも、全体で「要確認」になる', () => {
-    const m = mergeCheckResults([
-      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題ありませんでした' },
-      { verdict: 'warn', report: '判定: 要確認\n- b.js: 危険' },
-      { verdict: 'ok', report: '判定: 問題なし\n- c.css: 問題ありませんでした' },
-    ], info)
+    const m = mergeCheckResults([okR(), okR([nowF('b.js', 2)]), okR()], info)
     expect(m.verdict).toBe('warn')
   })
 
   // 以前は「1回でも実施できていれば、失敗した回に引きずられない」と固定していた（skip を無視して ok）。
   // 読めなかった回のファイルは確認できていないので、ほかの回が ok でも「✅ 問題なし」にしない。
-  it('★ 読めなかった回（skip）が混ざるなら、ほかの回が ok でも「要確認」（迷ったら警告）', () => {
-    const m = mergeCheckResults([
-      { verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題なし' },
-      { verdict: 'skip', report: 'チェックに失敗しました（timeout）。' },
-    ], info)
+  it('★ 読めなかった回（failed）が混ざるなら、ほかの回が ok でも「要確認」（迷ったら警告）', () => {
+    const m = mergeCheckResults([okR(), failR(['b.html'])], info)
     expect(m.verdict).toBe('warn')
     expect(m.report.split('\n')[0]).toBe('判定: 要確認')
     expect(m.report).toContain('※ AIが確認できなかった回があります（2回中1回）。もう一度お試しください')
@@ -886,35 +945,33 @@ describe('複数回の結果をまとめる', () => {
   })
 
   it('全部問題なしなら、確認した件数と回数を添えて「問題なし」', () => {
-    const m = mergeCheckResults([
-      { verdict: 'ok', report: '判定: 問題なし\n- 全ファイル: 秘密情報はありません' },
-      { verdict: 'ok', report: '判定: 問題なし\n- 全ファイル: 秘密情報はありません' },
-    ], info)
+    const m = mergeCheckResults([okR(), okR()], info)
     expect(m.verdict).toBe('ok')
     expect(m.report).toContain('（9個のファイルを2回に分けて確認しました）')
-    // 同じ指摘は1度だけ
-    expect(m.report.match(/秘密情報はありません/g)).toHaveLength(1)
+    // 「問題は見つかりませんでした」は1度だけ
+    expect(m.report.match(/確認した範囲では、問題は見つかりませんでした。/g)).toHaveLength(1)
   })
 
-  it('確認できなかったファイルは、結果の中で名指しで伝える', () => {
-    const m = mergeCheckResults(
-      [{ verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題なし' }],
-      { files: 30, batches: 6, skipped: ['x.html', 'y.js'] },
-    )
+  it('同じ指摘は、回をまたいでも1度だけ', () => {
+    const m = mergeCheckResults([okR([nowF('b.js', 2)]), okR([nowF('b.js', 2)])], info)
+    expect(m.report.match(/b\.js:2/g)).toHaveLength(1)
+    expect(m.findings).toHaveLength(1)
+  })
+
+  it('量が多くて確認しなかったファイルは、結果の中で名指しで伝える。その回は「問題なし」にしない', () => {
+    const m = mergeCheckResults([okR()], { files: 30, batches: 6, skipped: ['x.html', 'y.js'], partial: [] })
     expect(m.report).toContain('※ 量が多いため、次のファイルは確認していません: x.html, y.js')
+    expect(m.verdict).toBe('warn')
   })
 
   it('全部が実施できなかったときは skip のまま（問題なしと言わない）', () => {
-    const m = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（timeout）。' }], info)
+    const m = mergeCheckResults([failR(['a.html'])], info)
     expect(m.verdict).toBe('skip')
     expect(m.report).toContain('チェックに失敗しました')
   })
 
   it('1回だけのときは「回に分けて」と言わない', () => {
-    const m = mergeCheckResults(
-      [{ verdict: 'ok', report: '判定: 問題なし\n- a.html: 問題なし' }],
-      { files: 3, batches: 1, skipped: [] },
-    )
+    const m = mergeCheckResults([okR()], { files: 3, batches: 1, skipped: [], partial: [] })
     expect(m.report).toContain('（3個のファイルを確認しました）')
     expect(m.report).not.toContain('回に分けて')
   })
@@ -924,11 +981,11 @@ describe('複数回の結果をまとめる', () => {
 // dataLike / others / truncated を渡さない既存呼び出し（上のテスト群）は、
 // 挙動が1文字も変わらないことも合わせて確かめる（新しい任意項目は既定で無害）。
 describe('対象外ファイルの正直化を合成する（mergeCheckResults の拡張）', () => {
-  const okReport = { verdict: 'ok' as const, report: '判定: 問題なし\n- 全ファイル: 問題ありませんでした' }
-  const warnReport = { verdict: 'warn' as const, report: '判定: 要確認\n- app.js: APIキーが直書きされています' }
+  const okReport = okR()
+  const warnReport = okR([nowF('app.js', 5)])
 
   it('dataLike が1件でもあれば、AIが「問題なし」でも全体は「要確認」になる（安全側）', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: [] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: ['dump.sql'], others: [] })
     expect(m.verdict).toBe('warn')
     expect(m.report.split('\n')[0]).toBe('判定: 要確認')
     expect(m.report).toContain('dump.sql: 公開するとデータの中身を誰でも見られるようになる種類のファイルです（中身は確認していません）。公開が不要なら公開されるフォルダから移動してください')
@@ -936,28 +993,28 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
   })
 
   it('複数件の dataLike は1行にまとめる', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql', 'backup.zip'], others: [] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: ['dump.sql', 'backup.zip'], others: [] })
     expect(m.report).toContain('dump.sql、backup.zip: 公開するとデータの中身を誰でも見られるようになる種類のファイルです')
   })
 
   it('固定文は指摘欄の先頭（AIの指摘より前）に入る', () => {
-    const m = mergeCheckResults([warnReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: [] })
+    const m = mergeCheckResults([warnReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: ['dump.sql'], others: [] })
     const dataLikeIdx = m.report.indexOf('dump.sql: 公開すると')
-    const aiIdx = m.report.indexOf('app.js: APIキーが直書きされています')
+    const aiIdx = m.report.indexOf('app.js:5')
     expect(dataLikeIdx).toBeGreaterThan(-1)
     expect(aiIdx).toBeGreaterThan(-1)
     expect(dataLikeIdx).toBeLessThan(aiIdx)
   })
 
   it('others だけなら判定はAIのまま。末尾に「確認できない種類」一覧が必ず出る', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: ['server.py', 'メモ.txt'] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: [], others: ['server.py', 'メモ.txt'] })
     expect(m.verdict).toBe('ok')
     expect(m.report).toContain('※ 中身を確認できない種類のファイルです（名前だけで判定しました）: server.py, メモ.txt')
   })
 
   it('末尾の「確認できない種類」一覧は others だけ（dataLike は警告行と二重になるので含めない・assets も含めない）', () => {
     // 2026-09-03 Ryosuke 指摘の反映: dataLike（dump.sql）は上の警告行が名指し済みなので末尾に重複させない
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: ['dump.sql'], others: ['server.py'], assets: ['logo.png'] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: ['dump.sql'], others: ['server.py'], assets: ['logo.png'] })
     expect(m.report).toContain('※ 中身を確認できない種類のファイルです（名前だけで判定しました）: server.py')
     const tail = m.report.split('※ 中身を確認できない種類のファイルです')[1]
     expect(tail).not.toContain('dump.sql')
@@ -968,7 +1025,7 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
   // 末尾の「確認していない」一覧（dataLike+others）は capList(50) を通す ─────────
   it('dataLike が20件を超えたら、指摘欄の固定文では21件目以降を「ほかN件」にまとめる（末尾一覧は別枠なので含めない）', () => {
     const dataLike = Array.from({ length: 25 }, (_, i) => `d${i}.sql`)
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike, others: [] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike, others: [] })
     const fixedLine = m.report.split('\n').find(l => l.endsWith('公開が不要なら公開されるフォルダから移動してください'))
     expect(fixedLine).toContain('ほか5件')
     expect(fixedLine).not.toContain('d24.sql')
@@ -977,21 +1034,21 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
 
   it('末尾の「確認できない種類」一覧は、others が50件を超えたら「ほかN件」にまとめる', () => {
     const others = Array.from({ length: 60 }, (_, i) => `o${i}.txt`)
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: [], others })
     expect(m.report).toContain('※ 中身を確認できない種類のファイルです（名前だけで判定しました）:')
     expect(m.report).toContain('ほか10件')
     expect(m.report).not.toContain('o59.txt')
   })
 
   it('others が無ければ「確認できない種類」の一覧は書かない（狼少年にしない）', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [] })
     expect(m.report).not.toContain('確認できない種類のファイル')
   })
 
   // ── assets（表示用の資産）は名指ししない（2026-09-03 Ryosuke 決定・案1）───────
   it('assets が1件以上あれば、末尾に件数だけの1行を出す（ファイル名は出さない）', () => {
     const m = mergeCheckResults([okReport], {
-      files: 1, batches: 1, skipped: [],
+      files: 1, batches: 1, skipped: [], partial: [],
       dataLike: ['dump.sql'], others: ['server.py'],
       assets: ['logo.png', 'font.woff2', 'movie.mp4'],
     })
@@ -1003,12 +1060,12 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
   })
 
   it('assets が無ければ、その注記は入れない', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [] })
     expect(m.report).not.toContain('中身の確認の対象外です')
   })
 
   it('assets の注記は「確認していないファイル」一覧より前（末尾側だが、その手前）に入る', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: ['server.py'], assets: ['logo.png'] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: [], others: ['server.py'], assets: ['logo.png'] })
     const assetsIdx = m.report.indexOf('画像・フォント・音声など')
     const uncheckedIdx = m.report.indexOf('確認できない種類のファイルです（名前だけで判定しました）')
     expect(assetsIdx).toBeGreaterThan(-1)
@@ -1019,22 +1076,22 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
   // assets だけがあって dataLike/others/AIの指摘が無い場合、資産の存在自体は正常なので
   // 判定を要確認に倒さない（forceWarn に含めない）
   it('assets だけがあり dataLike・others が無ければ、判定は要確認にしない（資産の存在は正常）', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: [], assets: ['logo.png', 'font.woff2'] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: [], others: [], assets: ['logo.png', 'font.woff2'] })
     expect(m.verdict).toBe('ok')
     expect(m.report).toContain('※ 画像・フォント・音声など 2 件は、中身の確認の対象外です')
     // dataLike/others が無いので「確認していないファイル」一覧自体は出さない
     expect(m.report).not.toContain('確認していないファイル（名前だけで判定しました）')
   })
 
-  it('AIが要確認でも、assets の1行は指摘（AIの本文）とは独立して末尾に出る', () => {
-    const m = mergeCheckResults([warnReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: [], assets: ['logo.png'] })
+  it('AIが要確認でも、assets の1行は指摘（AIの指摘）とは独立して末尾に出る', () => {
+    const m = mergeCheckResults([warnReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: [], others: [], assets: ['logo.png'] })
     expect(m.verdict).toBe('warn')
-    expect(m.report).toContain('app.js: APIキーが直書きされています')
+    expect(m.report).toContain('app.js:5')
     expect(m.report).toContain('※ 画像・フォント・音声など 1 件は、中身の確認の対象外です')
   })
 
   it('truncated（一覧打ち切り）は判定を要確認に倒し、専用の文言を明示する', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], dataLike: [], others: [], truncated: true })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [], dataLike: [], others: [], truncated: true })
     expect(m.verdict).toBe('warn')
     // 2026-10-09 画面の文を短くする（T107）: 「一覧は途中までです。チェックも…」の重ねを1つにした。
     expect(m.report).toContain('※ ファイルが多いため、チェックは一部のファイルにとどまります')
@@ -1042,36 +1099,35 @@ describe('対象外ファイルの正直化を合成する（mergeCheckResults �
   })
 
   it('truncated が無ければ、その文言は入れない', () => {
-    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [] })
+    const m = mergeCheckResults([okReport], { files: 1, batches: 1, skipped: [], partial: [] })
     expect(m.report).not.toContain('一覧は途中までです')
   })
 
-  it('AIが未実施（skip）でも、dataLike があれば機械的な理由で「要確認」にする', () => {
-    const m = mergeCheckResults([], { files: 0, batches: 0, skipped: [], dataLike: ['dump.sql'], others: [] })
+  it('AIが未実施（回が無い）でも、dataLike があれば機械的な理由で「要確認」にする', () => {
+    const m = mergeCheckResults([], { files: 0, batches: 0, skipped: [], partial: [], dataLike: ['dump.sql'], others: [] })
     expect(m.verdict).toBe('warn')
     expect(m.report).toContain('dump.sql: 公開するとデータの中身を誰でも見られるようになる種類のファイルです')
   })
 
   it('AIが未実施で、機械的な理由（dataLike・truncated）も無ければ、従来どおり skip のまま', () => {
-    const m = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（timeout）。' }], { files: 0, batches: 0, skipped: [], dataLike: [], others: ['server.py'] })
+    const m = mergeCheckResults([failR()], { files: 0, batches: 0, skipped: [], partial: [], dataLike: [], others: ['server.py'] })
     expect(m.verdict).toBe('skip')
     expect(m.report).toBe('チェックに失敗しました（timeout）。')
   })
 })
 
-// ── 結果を「AI の行」と「Koto の行」に分けて持つ（2026-10-09 検分の指摘）──────────────
-// 結果の文には、AI が書いた行のほかに、Koto が組み立てた行（確認しなかったファイル名の一覧など）が混ざる。
-// 画面は AI の行だけを太字・箇条書きに描き、Koto の行は文字のまま出す。そうしないと、ファイル名の中の ** や `
-// が太字・コードになり、実在しない名前に見える。分け方は mergeCheckResults が決める（画面は parts を見るだけ）。
-describe('結果を AI の行と Koto の行に分けて持つ（mergeCheckResults の parts）', () => {
-  const ok = { verdict: 'ok' as const, report: '判定: 問題なし\n- **全ファイル**: 秘密情報はありません\n- `a.js` は安全' }
-  const warn = { verdict: 'warn' as const, report: '判定: 要確認\n- b.js: キーが直書き' }
+// ── 結果の行は、すべて Koto が組み立てた文字のまま描く（AI の文を Markdown として描かない）──────────
+// 結果の文には、AI の説明（note）やファイル名が入る。** や ` を解釈すると、太字・コードになり、
+// 実在しない名前に見える。分け方は mergeCheckResults が決める（画面は parts を見るだけ）。
+describe('結果の行は、すべて ai: false で持つ（mergeCheckResults の parts）', () => {
+  const ok = okR([aiF({ file: 'a.js', line: 2, note: '**全ファイル** の `a.js` は安全ではありません' })])
+  const warn = okR([nowF('b.js', 4)])
 
-  it('★ report は parts を改行でつないだものと一致する（コピー・「AIに修正させる」に渡る全文は変わらない）', () => {
+  it('★ report は parts を改行でつないだものと一致する（コピーに渡る全文は変わらない）', () => {
     const infos = [
-      { files: 3, batches: 1, skipped: [] as string[] },
-      { files: 9, batches: 2, skipped: ['x.html'], dataLike: ['d**a.csv'], others: ['`x`.txt'], assets: ['l.png'], truncated: true },
-      { files: 1, batches: 1, skipped: [], assets: ['l.png'] },
+      { files: 3, batches: 1, skipped: [] as string[], partial: [] as string[] },
+      { files: 9, batches: 2, skipped: ['x.html'], partial: [], dataLike: ['d**a.csv'], others: ['`x`.txt'], assets: ['l.png'], truncated: true },
+      { files: 1, batches: 1, skipped: [], partial: [], assets: ['l.png'] },
     ]
     for (const info of infos) for (const results of [[ok], [warn], [ok, warn], []]) {
       const m = mergeCheckResults(results, info)
@@ -1080,13 +1136,12 @@ describe('結果を AI の行と Koto の行に分けて持つ（mergeCheckResul
     }
   })
 
-  it('★ AI の行だけが ai: true。Koto の行（判定・件数・確認しなかった名前・打ち切り・資産・確認できない種類）は ai: false', () => {
+  it('★ すべて ai: false。Koto の行（判定・件数・確認しなかった名前・打ち切り・資産・確認できない種類）も AI の note も文字のまま', () => {
     const m = mergeCheckResults([ok], {
-      files: 9, batches: 2, skipped: ['s**t.html'], dataLike: ['d**a.csv'], others: ['`x`.txt'], assets: ['l.png'], truncated: true,
+      files: 9, batches: 2, skipped: ['s**t.html'], partial: [], partial: [], dataLike: ['d**a.csv'], others: ['`x`.txt'], assets: ['l.png'], truncated: true,
     })
-    const ai = m.parts.filter(p => p.ai).map(p => p.text)
-    expect(ai).toEqual(['- **全ファイル**: 秘密情報はありません\n- `a.js` は安全'])
-    const koto = m.parts.filter(p => !p.ai).map(p => p.text).join('\n')
+    expect(m.parts.every(p => p.ai === false)).toBe(true)
+    const text = m.parts.map(p => p.text).join('\n')
     for (const line of [
       '判定: 要確認',
       '（9個のファイルを2回に分けて確認しました）',
@@ -1095,21 +1150,20 @@ describe('結果を AI の行と Koto の行に分けて持つ（mergeCheckResul
       '※ ファイルが多いため、チェックは一部のファイルにとどまります',
       '※ 画像・フォント・音声など 1 件は、中身の確認の対象外です',
       '※ 中身を確認できない種類のファイルです（名前だけで判定しました）: `x`.txt',
-    ]) expect(koto, line).toContain(line)
-    // 並び: Koto の行 → AI の行 → Koto の行
-    expect(m.parts.map(p => p.ai)).toEqual([false, true, false])
+      '　**全ファイル** の `a.js` は安全ではありません',
+    ]) expect(text, line).toContain(line)
   })
 
-  it('AI の行が無い（AI 未実施で機械的に要確認になった）とき、ai: true は無い', () => {
-    const m = mergeCheckResults([], { files: 0, batches: 0, skipped: [], dataLike: ['dump.sql'], others: [] })
+  it('AI の指摘が無い（AI 未実施で機械的に要確認になった）ときも、ai: true は無い', () => {
+    const m = mergeCheckResults([], { files: 0, batches: 0, skipped: [], partial: [], dataLike: ['dump.sql'], others: [] })
     expect(m.verdict).toBe('warn')
     expect(m.parts.some(p => p.ai)).toBe(false)
   })
 
   it('実施できなかった結果（skip）は、全体が Koto の文（失敗の理由には外部の応答の文が入りうる）', () => {
-    const m = mergeCheckResults([{ verdict: 'skip', report: 'チェックに失敗しました（**timeout**）。' }], { files: 1, batches: 1, skipped: [] })
+    const m = mergeCheckResults([failR(['a.html'], 'チェックに失敗しました（**timeout**）。')], { files: 1, batches: 1, skipped: [], partial: [] })
     expect(m.parts).toEqual([{ text: 'チェックに失敗しました（**timeout**）。', ai: false }])
-    expect(mergeCheckResults([], { files: 0, batches: 0, skipped: [] }).parts).toEqual([{ text: 'チェックを実施できませんでした。', ai: false }])
+    expect(mergeCheckResults([], { files: 0, batches: 0, skipped: [], partial: [] }).parts).toEqual([{ text: 'チェックを実施できませんでした。', ai: false }])
   })
 
   it('★ parts を持たない結果（Koto が早期に返す一言）は、全体を Koto の文として扱う（解釈しない側に倒す）', () => {
@@ -1150,10 +1204,23 @@ describe('AIの利用量を使う場面の一覧', () => {
     expect(g).toContain('Anthropic 側の利用料')
   })
 
-  it('AI を呼ぶ実装は、一覧に挙げた3ファイルの中だけにある', () => {
-    // 増えたらここが落ちる → 一覧の更新を促す（掟9: 文書と実物を一致させる）
-    const callers = ['src/renderer/hooks/useAiChat.ts', 'src/renderer/components/ChatPanel.tsx', 'src/renderer/securityCheck.ts']
-    for (const f of callers) expect(read(f)).toMatch(/sakura\.chat(Stream)?\(/)
+  it('AI を呼ぶ実装は、一覧に挙げた3ファイルとちょうど一致する（src/renderer を走査して導く）', () => {
+    // 増えたらここが落ちる → 一覧の更新を促す（掟9: 文書と実物を一致させる）。減っても落ちる
+    const listed = ['src/renderer/components/ChatPanel.tsx', 'src/renderer/hooks/useAiChat.ts', 'src/renderer/securityCheck.ts']
+    const root = path.join(__dirname, '..', 'src/renderer')
+    const found: string[] = []
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name)
+        if (e.isDirectory()) { walk(full); continue }
+        if (!/\.tsx?$/.test(e.name)) continue
+        // コメントだけの行は数えない（呼び出しの形が書いてあるだけのものを拾わない）
+        const code = fs.readFileSync(full, 'utf-8').split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+        if (/sakura\.chat(Stream)?\(/.test(code)) found.push(path.relative(path.join(__dirname, '..'), full).split(path.sep).join('/'))
+      }
+    }
+    walk(root)
+    expect(found.sort()).toEqual(listed)
   })
 })
 
@@ -1168,12 +1235,12 @@ describe('前回の確認の記録', () => {
 
   it('問題なしは日時つきで表示する', () => {
     const at = new Date(2026, 7, 21, 20, 5).toISOString()
-    expect(formatCheckRecord({ at, verdict: 'ok' })).toBe('前回の確認: 8/21 20:05 ✅ 問題なし')
+    expect(formatCheckRecord({ at, verdict: 'ok' })).toBe('前回の AI の確認: 8/21 20:05 ✅ 問題なし')
   })
 
-  it('要確認は「修正の提案あり」と分かるように表示する', () => {
+  it('要確認は、そのまま「要確認」と表示する（修正の依頼が出ない回もあるので、提案ありとは言わない）', () => {
     const at = new Date(2026, 7, 21, 9, 30).toISOString()
-    expect(formatCheckRecord({ at, verdict: 'warn' })).toBe('前回の確認: 8/21 09:30 ⚠️ 要確認（修正の提案あり）')
+    expect(formatCheckRecord({ at, verdict: 'warn' })).toBe('前回の AI の確認: 8/21 09:30 ⚠️ 要確認')
   })
 
   it('記録が無い・壊れているときは何も出さない（嘘の日付を出さない）', () => {
@@ -1189,8 +1256,8 @@ describe('前回の確認の配線', () => {
 
   it('実施できたときだけ記録する（省略・失敗は「確認した」ではない）', () => {
     const s = read('src/renderer/components/SecurityCheckSection.tsx')
-    expect(s).toContain("if (r.verdict === 'ok' || r.verdict === 'warn') {")
-    expect(s).toContain('window.localStorage.setItem(checkRecordKey(projectDir), JSON.stringify(rec))')
+    expect(read('src/renderer/securityCheckFlow.ts')).toContain("if (r.verdict === 'ok' || r.verdict === 'warn') {")
+    expect(s).toContain('window.localStorage.setItem(checkRecordKey(dir), JSON.stringify(rec))')
   })
 
   it('置き場所は共通の関数から取る（画面側で文字列を組み立てない）', () => {

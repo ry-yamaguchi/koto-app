@@ -68,6 +68,8 @@ describe('Sidebar: afterProjectDeleted（フォルダを移したあとの後始
     const b = body()
     expect(b).toContain('localStorage.removeItem(`sakura_tabs:${path}`)')
     expect(b).toContain('localStorage.removeItem(`sakura_chat:${path}`)')
+    // 同じパスに作り直したプロジェクトへ、古い使う AI の記憶が当たらないように、完全一致の鍵を消す
+    expect(b).toContain('forgetProjectAi(path)')
     expect(b).toContain('setRecents(prev => {')
     expect(b).toContain('const next = prev.filter(p => p !== path)')
     expect(b).toContain('localStorage.setItem(RECENTS_KEY, JSON.stringify(next))')

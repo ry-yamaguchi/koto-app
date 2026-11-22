@@ -489,13 +489,18 @@ describe('「AIに修正させる」ボタン', () => {
   })
 
   it('★★ 「AIに修正させる」でチャットへ送る口は2つだけ。どちらも、囲んだ文をそのまま渡す', () => {
-    // 見た目の項目（AppRunPanel）は、fixInstruction が囲んだ文（c.fixPrompt）。🛡 節（SecurityCheckSection）は buildFixPrompt が囲んだ文。
+    // 見た目の項目（AppRunPanel）は、fixInstruction が囲んだ文（c.fixPrompt）。🛡 節（SecurityCheckSection）は、
+    // 指摘のファイル・行・種類だけから Koto が作った文（buildSecurityFixPrompt）。AI の文・報告は入らない。
     // どちらも、渡す直前に文を組み直さない（囲みの外で利用者の依頼に混ぜない）
     expect(panel).toContain("window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: c.fixPrompt } }))")
     const sites = [...listTs('src')].filter(f => readFileSync(join(__dirname, '..', f), 'utf-8').includes("new CustomEvent('sakura:fix-with-ai'"))
     expect(sites).toEqual(['src/renderer/components/AppRunPanel.tsx', 'src/renderer/components/SecurityCheckSection.tsx'])
     const section = readFileSync(join(__dirname, '..', 'src/renderer/components/SecurityCheckSection.tsx'), 'utf-8')
-    expect(section).toContain("window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: buildFixPrompt(result.report) } }))")
+    expect(section).toContain('const fixPrompt = buildSecurityFixPrompt(mergeFixItems(scan?.fixItems ?? [], fixItemsOf(result?.findings ?? [])))')
+    expect(section).toContain("window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: fixPrompt } }))")
+    // 直す前の形（報告の全文を囲んで渡す）が戻っていない
+    expect(section).not.toContain('buildFixPrompt')
+    expect(section).not.toContain('detail: { text: result.report }')
   })
 
   it('★★ 押したら送る（相談＝入力欄に置くだけ、とは別物）', () => {

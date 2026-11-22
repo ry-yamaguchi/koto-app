@@ -3,8 +3,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   MODELS, VISION_MODELS, DEFAULT_MODEL, pickBestModel, SYSTEM_ROLE_UNSUPPORTED, foldSystemForModel,
-  MODEL_PURPOSE, purposeLabel, orderModelsForPicker, modelPickerText, modelLabel,
+  MODEL_PURPOSE, purposeLabel, orderModelsForPicker, modelPickerText, modelLabel, isVisionModel,
 } from '../src/shared/modelInfo'
+import { priceFor, isPriceKnown } from '../src/shared/usageBudget'
 import ModelSelect, { pickerTooltip } from '../src/renderer/components/ModelSelect'
 import { CLAUDE_MODELS } from '../src/renderer/claudeMode'
 import { createElement } from 'react'
@@ -17,7 +18,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 // tools 非対応(400) = Phi-4-mini-instruct-cpu / Qwen3-0.6B-cpu。
 
 describe('MODELS / VISION_MODELS / DEFAULT_MODEL（2026-09-04 世代交代）', () => {
-  it('MODELS は8件、Qwen3-Coder系（旧世代）は含まれない', () => {
+  it('MODELS は10件、Qwen3-Coder系（旧世代）は含まれない', () => {
     expect(MODELS).toEqual([
       { id: 'preview/Kimi-K2.7-Code', label: 'Kimi K2.7 Code（プレビュー）' },
       { id: 'preview/Qwen3.6-35B-A3B', label: 'Qwen3.6 35B（プレビュー）' },
@@ -26,9 +27,39 @@ describe('MODELS / VISION_MODELS / DEFAULT_MODEL（2026-09-04 世代交代）', 
       { id: 'llm-jp-3.1-8x13b-instruct4', label: 'llm-jp 3.1 8x13b（日本語）' },
       { id: 'preview/Qwen3-0.6B-cpu', label: 'Qwen3 0.6B（CPU・プレビュー）' },
       { id: 'preview/Phi-4-mini-instruct-cpu', label: 'Phi-4 mini（CPU・プレビュー）' },
+      // 2026-11-18 提供開始・2026-11-20 実測
+      { id: 'preview/GLM-5.3-Flash', label: 'GLM-5.3 Flash（プレビュー）' },
+      { id: 'preview/DeepSeek-V4.1-Flash-1017', label: 'DeepSeek V4.1 Flash（プレビュー）' },
       // 2026-09-24 提供開始（tests/modelPricingMedLLM.test.ts）
       { id: 'preview/Weblab-MedLLM-gpt-oss-120b', label: 'Weblab-MedLLM 120B（医療・プレビュー）' },
     ])
+  })
+
+  it('2026-11-20: 新しい2モデルは MODELS にあり、API に無い Kimi-K2.6 は無い', () => {
+    const ids = MODELS.map(m => m.id)
+    expect(ids).toContain('preview/GLM-5.3-Flash')
+    expect(ids).toContain('preview/DeepSeek-V4.1-Flash-1017')
+    expect(ids).not.toContain('preview/Kimi-K2.6')
+  })
+
+  it('2026-11-20: 新しい2モデルは、画像を送るときの画像用のモデルの選びには入らない（直接読めるかは modelLearning の種）', () => {
+    expect(isVisionModel('preview/DeepSeek-V4.1-Flash-1017')).toBe(false)
+    expect(isVisionModel('preview/GLM-5.3-Flash')).toBe(false)
+  })
+
+  it('2026-11-20: 新しい2モデルの料金は入力40・出力400（料金表にある）', () => {
+    for (const id of ['preview/GLM-5.3-Flash', 'preview/DeepSeek-V4.1-Flash-1017']) {
+      expect(isPriceKnown(id)).toBe(true)
+      expect(priceFor(id)).toEqual({ in: 40, out: 400 })
+    }
+  })
+
+  it('2026-11-20: 新しい2モデルの目的（purposeLabel と modelPickerText の説明）', () => {
+    expect(MODEL_PURPOSE['preview/GLM-5.3-Flash']).toEqual({ purpose: '画像も読める', note: '推論型' })
+    expect(MODEL_PURPOSE['preview/DeepSeek-V4.1-Flash-1017']).toEqual({ purpose: '画像も読める', note: '推論型' })
+    expect(modelPickerText('preview/GLM-5.3-Flash').description).toBe(purposeLabel('preview/GLM-5.3-Flash'))
+    expect(modelPickerText('preview/DeepSeek-V4.1-Flash-1017').description).toBe(purposeLabel('preview/DeepSeek-V4.1-Flash-1017'))
+    expect(purposeLabel('preview/DeepSeek-V4.1-Flash-1017')).toContain('画像も読める')
   })
 
   // ── 弱め禁止: 旧モデルIDが残っていないことを not.toContain で明示的に禁じる ─────
@@ -309,7 +340,9 @@ describe('配線: モデル選択UI3か所（チャット欄ヘッダー／新�
   })
 
   it('Claude 頭脳モードの経路: ChatPanel / NewProjectModal が useClaudeModels の一覧（label 付き）を ModelSelect へ渡している', () => {
-    expect(chatPanelSrc).toContain('const claudeModels = useClaudeModels(claudeKey)')
+    // ChatPanel の一覧は useProjectAiChoice が持つ（Claude のキーの読み込みと一覧の取得を含む）
+    expect(fs.readFileSync(path.join(__dirname, '..', 'src/renderer/hooks/useProjectAiChoice.ts'), 'utf-8')).toContain('useClaudeModelList(claudeKey)')
+    expect(chatPanelSrc).toContain('const { models, claudeModels, claudeActive, model, claudeModelId } = ai')
     expect(chatPanelSrc).toContain('models={claudeActive ? claudeModels : models}')
     expect(newProjectSrc).toContain('const claudeModels = useClaudeModels(claudeKey)')
     expect(newProjectSrc).toContain("models={brain === 'claude' ? claudeModels : sakuraModels}")
@@ -387,9 +420,11 @@ describe('配線: モデル選択UI3か所（チャット欄ヘッダー／新�
     // 「直下」を描画順で固定: </select> の次の行が description の <p>（間に他の行が無い）
     const ls = lines(settingsSrc)
     const closers = ls.map((l, i) => (l.trim() === '</select>' ? i : -1)).filter(i => i >= 0)
-    expect(closers.length).toBe(2)
+    // select は3つ: さくらの IDE・チャット（説明の行つき）と、Claude の既定のモデル（説明の行は付けない）
+    expect(closers.length).toBe(3)
     expect(ls[closers[0] + 1].trim()).toBe('{ideDesc && <p className="mt-1 text-sm text-ink-secondary">{ideDesc}</p>}')
-    expect(ls[closers[1] + 1].trim()).toBe('{chatDesc && <p className="mt-1 text-sm text-ink-secondary">{chatDesc}</p>}')
+    expect(ls[closers[2] + 1].trim()).toBe('{chatDesc && <p className="mt-1 text-sm text-ink-secondary">{chatDesc}</p>}')
+    expect(ls[closers[1] + 1].trim()).toBe('</div>')
   })
 
   it('設定の一覧も orderModelsForPicker で既定を先頭に並べている（IDE=DEFAULT_MODEL・チャット=DEFAULT_CHAT_MODEL）', () => {

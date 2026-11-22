@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  publishScanViewOf, publishScanViewText, PUBLISH_SCAN_TITLE, PUBLISH_SCAN_PROGRESS, PUBLISH_SCAN_BUTTON_NO_AI, PUBLISH_SCAN_NO_AI_NOTE, PUBLISH_SCAN_AI_STOPPED_NOTE, GITHUB_SCAN_NOTE,
+  publishScanViewOf, publishScanViewText, PUBLISH_SCAN_TITLE, PUBLISH_SCAN_PROGRESS, PUBLISH_SCAN_BUTTON_NO_AI, PUBLISH_SCAN_BUSY, PUBLISH_SCAN_NO_AI_NOTE, GITHUB_SCAN_NOTE,
 } from '../src/renderer/publishScanWords'
 import type { PublishScanDone } from '../src/shared/publishScanTypes'
 import type { ScanFinding } from '../src/shared/securityFindings'
@@ -171,7 +171,7 @@ describe('文の決まり', () => {
     expect(PUBLISH_SCAN_PROGRESS).toBe('公開されるファイルを点検しています…')
     expect(PUBLISH_SCAN_BUTTON_NO_AI).toBe('ファイルを点検する')
     expect(PUBLISH_SCAN_NO_AI_NOTE).toBe('AI による確認は行っていません（さくらのAI Engine のキーがありません）。')
-    expect(PUBLISH_SCAN_AI_STOPPED_NOTE).toBe('AI の確認は、中止したため行っていません。')
+    expect(PUBLISH_SCAN_BUSY).toBe('点検中…')
     expect(GITHUB_SCAN_NOTE).toBe('キーやパスワードの直書きと、秘密が入っていそうな名前のファイルがないかを、Koto が点検します。AI は使いません。')
   })
   it('禁じる語を使わない', () => {
@@ -180,7 +180,7 @@ describe('文の決まり', () => {
     const all = [
       publishScanViewText(publishScanViewOf(d)), publishScanViewText(publishScanViewOf(done())),
       publishScanViewText(publishScanViewOf(done({ scanned: 0 }))), publishScanViewText(publishScanViewOf({ state: 'bad-dir' })),
-      PUBLISH_SCAN_TITLE, PUBLISH_SCAN_PROGRESS, PUBLISH_SCAN_BUTTON_NO_AI, PUBLISH_SCAN_NO_AI_NOTE, PUBLISH_SCAN_AI_STOPPED_NOTE,
+      PUBLISH_SCAN_TITLE, PUBLISH_SCAN_PROGRESS, PUBLISH_SCAN_BUTTON_NO_AI, PUBLISH_SCAN_BUSY, PUBLISH_SCAN_NO_AI_NOTE,
     ].join('\n')
     for (const w of ['部品', '道具', '新しい版', 'つなぐ', '繋が', '無償', '無料', 'Claude Code', 'OWASP', '準拠', '対策済み', '①', '②', '③']) {
       expect(all).not.toContain(w)

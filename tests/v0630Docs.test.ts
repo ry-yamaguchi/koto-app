@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto'
 
 // 0.6.30 の分（提供が終わったモデルの除去・HANAMII の公開し直しの失敗と案内・接続テストの未保存の知らせ・更新の仕組みの部品）の CHANGELOG が、実機で確かめた範囲を正しく言う（掟9）。
 // 0.6.30 は 2026-11-13 に公開した（書きためていた `## [未リリース]` の節名が `## [0.6.30]` に変わった）。節は版の数で探す。
-// 0.6.31 は 2026-11-13 に、0.6.32 は 2026-11-18 に公開済み・0.6.33 は同じ日に公開の予定で、0.6.30 の節の上に（あれば1つずつ・上から 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の順で）載る。最上部の並び（`[未リリース]`・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31・0.6.30）はここと v0631Docs が見る。
-// ここで見る並びは、0.6.30 の節がちょうど1つで、その上が `[未リリース]` の節（あれば1つ・いちばん上）と 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節（あれば1つずつ・上から 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の順）だけで、その次が公開済みの 0.6.29 の節で、0.6.29 の節が変わっていないこと。
+// 0.6.31 は 2026-11-13 に、0.6.32 は 2026-11-18 に公開済み・0.6.33 は同じ日に公開の予定で、0.6.30 の節の上に（あれば1つずつ・上から 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の順で）載る。最上部の並び（`[未リリース]`・0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31・0.6.30）はここと v0631Docs が見る。
+// ここで見る並びは、0.6.30 の節がちょうど1つで、その上が `[未リリース]` の節（あれば1つ・いちばん上）と 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節（あれば1つずつ・上から 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の順）だけで、その次が公開済みの 0.6.29 の節で、0.6.29 の節が変わっていないこと。
 // 0.6.28 以前の並びは v0625Docs〜v0629Docs が見る。
 // 公開の木では CHANGELOG の版つきの見出しの角括弧が外れる（`## [0.6.29]` → `## 0.6.29`）ので、版の見出しは角括弧の有無によらず取る。
 const CHANGELOG = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'utf-8')
@@ -19,11 +19,11 @@ const LAST_4 = '**保存済みのキーで接続テストが通ったときに�
 const LAST_5 = '**新しい部品で「更新を確認」が動き、「お使いのバージョンは最新です。」と出ることは、0.6.30-rc.1 の実際の画面で確かめました。更新のダウンロードと入れ替えは、まだ確かめていません。**'
 /** 項目の順に、題（太字の見出し）の頭・最後の太字の文。 */
 const ITEM_SPECS = [
-  { head: '- 🔧 **提供が終わったモデル（Kimi K2.6）を外しました**:', last: LAST_1 },
-  { head: '- 🐛 **HANAMII の公開し直しに失敗しても、公開中の URL を失わないようにしました**:', last: LAST_2 },
-  { head: '- 🔧 **HANAMII の失敗の案内を足しました**:', last: LAST_3 },
-  { head: '- 🔧 **接続テストが通ったのに保存していないとき、知らせるようにしました**:', last: LAST_4 },
-  { head: '- 🔒 **Koto の更新の仕組みの部品を新しくしました**:', last: LAST_5 },
+  { head: '- **提供が終わったモデル（Kimi K2.6）を外しました**:', last: LAST_1 },
+  { head: '- **HANAMII の公開し直しに失敗しても、公開中の URL を失わないようにしました**:', last: LAST_2 },
+  { head: '- **HANAMII の失敗の案内を足しました**:', last: LAST_3 },
+  { head: '- **接続テストが通ったのに保存していないとき、知らせるようにしました**:', last: LAST_4 },
+  { head: '- **Koto の更新の仕組みの部品を新しくしました**:', last: LAST_5 },
 ] as const
 /**
  * 掟（確かめていないものを確かめたと書かない）の向き。向きを変える直し（rc.1/rc.2/まだ の有無）をしたら、上の最後の文とここを合わせる。
@@ -51,7 +51,7 @@ const frozenForm = (section: string): string =>
   section.replace(/^## \[(\d+\.\d+\.\d+)\]/, '## $1').replace(/(?:\s*\n---)?\s*$/, '')
 const fingerprint = (section: string): string => createHash('sha256').update(frozenForm(section)).digest('hex')
 /** 公開済みの 0.6.29 の節の指紋（`frozenForm` の形で）。 */
-const FROZEN_0629 = '0197d67c244665efdf0fc26b82a1890b26008e8a8fc1019a840f5267aa15f1ac'
+const FROZEN_0629 = 'ea3e914bfa8377d2d81d8d4f79a318a812e91eb2797fb0d88c119229f664f777'
 
 /** CHANGELOG の節の並びの問題（空なら問題なし）。実物と、書き換えた本文（下の試験）の両方に同じ検査をかける。 */
 const changelogProblems = (changelog: string): string[] => {
@@ -69,18 +69,20 @@ const changelogProblems = (changelog: string): string[] => {
     const n33 = above.filter(isVersion('0.6.33'))
     const n35 = above.filter(isVersion('0.6.35'))
     const n36 = above.filter(isVersion('0.6.36'))
+    const n38 = above.filter(isVersion('0.6.38'))
     const n37 = above.filter(isVersion('0.6.37'))
     const n34 = above.filter(isVersion('0.6.34'))
-    if (above.some(s => !isUnreleased(s) && !isVersion('0.6.31')(s) && !isVersion('0.6.32')(s) && !isVersion('0.6.33')(s) && !isVersion('0.6.34')(s) && !isVersion('0.6.35')(s) && !isVersion('0.6.36')(s) && !isVersion('0.6.37')(s))) problems.push('0.6.30 の節の上に、`[未リリース]` の節と 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節以外がある')
+    if (above.some(s => !isUnreleased(s) && !isVersion('0.6.31')(s) && !isVersion('0.6.32')(s) && !isVersion('0.6.33')(s) && !isVersion('0.6.34')(s) && !isVersion('0.6.35')(s) && !isVersion('0.6.36')(s) && !isVersion('0.6.37')(s) && !isVersion('0.6.38')(s))) problems.push('0.6.30 の節の上に、`[未リリース]` の節と 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節以外がある')
     if (n36.length > 1) problems.push(`0.6.36 の節が ${n36.length} 個ある`)
+    if (n38.length > 1) problems.push(`0.6.38 の節が ${n38.length} 個ある`)
     if (n37.length > 1) problems.push(`0.6.37 の節が ${n37.length} 個ある`)
     if (n35.length > 1) problems.push(`0.6.35 の節が ${n35.length} 個ある`)
     if (n34.length > 1) problems.push(`0.6.34 の節が ${n34.length} 個ある`)
     if (n33.length > 1) problems.push(`0.6.33 の節が ${n33.length} 個ある`)
     if (newest.length > 1) problems.push(`0.6.32 の節が ${newest.length} 個ある`)
     if (newer.length > 1) problems.push(`0.6.31 の節が ${newer.length} 個ある`)
-    const orderOf = (x: string): number => (isVersion('0.6.37')(x) ? -4 : isVersion('0.6.36')(x) ? -3 : isVersion('0.6.35')(x) ? -2 : isVersion('0.6.34')(x) ? -1 : isVersion('0.6.33')(x) ? 0 : isVersion('0.6.32')(x) ? 1 : 2)
-    if (above.filter(s => isVersion('0.6.37')(s) || isVersion('0.6.36')(s) || isVersion('0.6.35')(s) || isVersion('0.6.34')(s) || isVersion('0.6.33')(s) || isVersion('0.6.32')(s) || isVersion('0.6.31')(s)).some((s, i, a) => i > 0 && orderOf(a[i - 1]) > orderOf(s))) problems.push('0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節の並びが、上から 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 でない')
+    const orderOf = (x: string): number => (isVersion('0.6.38')(x) ? -5 : isVersion('0.6.37')(x) ? -4 : isVersion('0.6.36')(x) ? -3 : isVersion('0.6.35')(x) ? -2 : isVersion('0.6.34')(x) ? -1 : isVersion('0.6.33')(x) ? 0 : isVersion('0.6.32')(x) ? 1 : 2)
+    if (above.filter(s => isVersion('0.6.38')(s) || isVersion('0.6.37')(s) || isVersion('0.6.36')(s) || isVersion('0.6.35')(s) || isVersion('0.6.34')(s) || isVersion('0.6.33')(s) || isVersion('0.6.32')(s) || isVersion('0.6.31')(s)).some((s, i, a) => i > 0 && orderOf(a[i - 1]) > orderOf(s))) problems.push('0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節の並びが、上から 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 でない')
     if (newer.length === 1 && above[above.length - 1] !== newer[0]) problems.push('0.6.31 の節が、0.6.30 の節の直前にない')
     if (newer.length === 0 && newest.length === 1 && above[above.length - 1] !== newest[0]) problems.push('0.6.32 の節が、0.6.30 の節の直前にない')
     if (newer.length === 0 && newest.length === 0 && n33.length === 1 && above[above.length - 1] !== n33[0]) problems.push('0.6.33 の節が、0.6.30 の節の直前にない')
@@ -88,6 +90,7 @@ const changelogProblems = (changelog: string): string[] => {
     if (newer.length === 0 && newest.length === 0 && n33.length === 0 && n34.length === 0 && n35.length === 1 && above[above.length - 1] !== n35[0]) problems.push('0.6.35 の節が、0.6.30 の節の直前にない')
     if (newer.length === 0 && newest.length === 0 && n33.length === 0 && n34.length === 0 && n35.length === 0 && n36.length === 1 && above[above.length - 1] !== n36[0]) problems.push('0.6.36 の節が、0.6.30 の節の直前にない')
     if (newer.length === 0 && newest.length === 0 && n33.length === 0 && n34.length === 0 && n35.length === 0 && n36.length === 0 && n37.length === 1 && above[above.length - 1] !== n37[0]) problems.push('0.6.37 の節が、0.6.30 の節の直前にない')
+    if (newer.length === 0 && newest.length === 0 && n33.length === 0 && n34.length === 0 && n35.length === 0 && n36.length === 0 && n37.length === 0 && n38.length === 1 && above[above.length - 1] !== n38[0]) problems.push('0.6.38 の節が、0.6.30 の節の直前にない')
     if (!/^## \[?0\.6\.30\]? - 2026-11-13\n/.test(released[0])) problems.push('0.6.30 の節の見出し（版と日付）が公開の日でない')
   }
   const published = sections.filter(isVersion('0.6.29'))
@@ -168,7 +171,7 @@ const SECTION = sectionsOf(CHANGELOG).find(isVersion('0.6.30')) ?? ''
 const ITEMS = itemsOf(CHANGELOG)
 
 describe('0.6.30 の CHANGELOG の項目', () => {
-  it('★★ 0.6.30 の節が読めていて、項目はちょうど5つで、順に 🔧 Kimi K2.6・🐛 公開中の URL・🔧 失敗の案内・🔧 接続テストの未保存・🔒 更新の部品', () => {
+  it('★★ 0.6.30 の節が読めていて、項目はちょうど5つで、順に Kimi K2.6・公開中の URL・失敗の案内・接続テストの未保存・更新の部品', () => {
     expect(SECTION.length).toBeGreaterThan(1000)
     expect(ITEMS).toHaveLength(5)
     ITEM_SPECS.forEach((spec, i) => expect(ITEMS[i].startsWith(spec.head), `${i + 1} 番目の項目の題`).toBe(true))
@@ -195,8 +198,8 @@ describe('0.6.30 の CHANGELOG の項目', () => {
     expect(cases.length, '対照の形が足りない').toBeGreaterThanOrEqual(3)
     for (const c of cases) expect(c.problems, c.name).not.toEqual([])
     // 項目が4つになった・6つになった
-    expect(itemProblems(CHANGELOG.replace(/^- 🔒 \*\*Koto の更新の仕組み.*\n/m, ''))).toEqual(['項目が 4 個ある（5個のはず）'])
-    expect(itemProblems(CHANGELOG.replace(/^(- 🔒 \*\*Koto の更新の仕組み.*\n)/m, '$1- 🔧 **足した項目**: 試験です。\n'))).toEqual(['項目が 6 個ある（5個のはず）'])
+    expect(itemProblems(CHANGELOG.replace(/^- \*\*Koto の更新の仕組み.*\n/m, ''))).toEqual(['項目が 4 個ある（5個のはず）'])
+    expect(itemProblems(CHANGELOG.replace(/^(- \*\*Koto の更新の仕組み.*\n)/m, '$1- **足した項目**: 試験です。\n'))).toEqual(['項目が 6 個ある（5個のはず）'])
   })
   it('★★ 0.6.30 の節・`[未リリース]` の節（あれば）に、禁止語と丸数字が無い（0.6.30 の節が対象に入っていることも見る）', () => {
     const FORBIDDEN = /Claude Code|無償|無料|[①-⑳㉑-㊿]/
@@ -208,7 +211,7 @@ describe('0.6.30 の CHANGELOG の項目', () => {
   })
 })
 
-describe('CHANGELOG の節の並び: 0.6.30 の節は1つだけ・その上は `[未リリース]` と 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節だけ・次は公開済みの 0.6.29 の節で変わらない', () => {
+describe('CHANGELOG の節の並び: 0.6.30 の節は1つだけ・その上は `[未リリース]` と 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節だけ・次は公開済みの 0.6.29 の節で変わらない', () => {
   it('★★ 実物の CHANGELOG に、節の並びの問題が無い', () => {
     expect(changelogProblems(CHANGELOG)).toEqual([])
   })
@@ -221,7 +224,7 @@ describe('CHANGELOG の節の並び: 0.6.30 の節は1つだけ・その上は `
     expect(at, `${heading} の節が見つからない`).toBeGreaterThan(0)
     return `${changelog.slice(0, at)}${inserted}${changelog.slice(at)}`
   }
-  const UNRELEASED_SECTION = '## [未リリース]\n\n- 🔧 **試験の項目**: 試験です。\n\n---\n\n'
+  const UNRELEASED_SECTION = '## [未リリース]\n\n- **試験の項目**: 試験です。\n\n---\n\n'
   /** 実物から `[未リリース]` の節（あれば）を抜いた形。挿す試験は、書きためる前の形から始める（次の版を書きためている間も、試験が同じ意味を保つ）。 */
   const BEFORE_WRITING = (() => {
     const at = CHANGELOG.search(/^## \[?未リリース\]?(?![\w.-])/m)
@@ -245,7 +248,7 @@ describe('CHANGELOG の節の並び: 0.6.30 の節は1つだけ・その上は `
     expect(changelogProblems(twice)).toEqual(['[未リリース] の節が 2 個ある'])
   })
 
-  it('★★ `[未リリース]` の節が 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31・0.6.30・0.6.29・0.6.28 の節の下にあると見つける', () => {
+  it('★★ `[未リリース]` の節が 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31・0.6.30・0.6.29・0.6.28 の節の下にあると見つける', () => {
     const below = insertAbove(BEFORE_WRITING, '0.6.27', UNRELEASED_SECTION)
     expect(changelogProblems(below)).toEqual(['[未リリース] の節が、いちばん上にない'])
   })
@@ -254,7 +257,7 @@ describe('CHANGELOG の節の並び: 0.6.30 の節は1つだけ・その上は `
     const published = sectionsOf(CHANGELOG).find(isVersion('0.6.29')) ?? ''
     expect(published.length).toBeGreaterThan(500)
     const edited = [
-      published.replace('🔒', '🐛'),
+      published.replace('- **', '- **（書き換え）'),
       published.replace('2026-11-11', '2026-11-12'),
       published.replace('まだ確かめていません。', 'もう確かめました。'),
       `${published.trimEnd()}。\n\n---\n`,
@@ -305,13 +308,13 @@ describe('CHANGELOG の節の並び: 0.6.30 の節は1つだけ・その上は `
     expect(released.length).toBeGreaterThan(500)
     expect(changelogProblems(publicForm.replace(released, `${released}\n${released}`))).toEqual(['0.6.30 の節が 2 個ある（1つのはず）'])
     expect(changelogProblems(publicForm.replace(released, released.replace('2026-11-13', '2026-11-14')))).toEqual(['0.6.30 の節の見出し（版と日付）が公開の日でない'])
-    expect(changelogProblems(publicForm.replace(published, published.replace('🔒', '🐛')))).toEqual(['0.6.29 の節の中身が変わっている'])
+    expect(changelogProblems(publicForm.replace(published, published.replace('- **', '- **（書き換え）')))).toEqual(['0.6.29 の節の中身が変わっている'])
     expect(changelogProblems(publicForm.replace(released, '@@R').replace(published, '@@P').replace('@@R', published).replace('@@P', released))).not.toEqual([])
     for (const c of swapCases(publicForm)) expect(c.problems, `公開の木の形: ${c.name}`).not.toEqual([])
   })
 })
 
-describe('0.6.30 の節の上: 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節（1つずつ・この順）は通り、2つ・別の版・0.6.30 の下に動いた形は見つける', () => {
+describe('0.6.30 の節の上: 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節（1つずつ・この順）は通り、2つ・別の版・0.6.30 の下に動いた形は見つける', () => {
   const released = sectionsOf(CHANGELOG).find(isVersion('0.6.30')) ?? ''
   const newer = sectionsOf(CHANGELOG).find(isVersion('0.6.31')) ?? ''
   const newest = sectionsOf(CHANGELOG).find(isVersion('0.6.32')) ?? ''
@@ -320,9 +323,10 @@ describe('0.6.30 の節の上: 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.
   const summit = sectionsOf(CHANGELOG).find(isVersion('0.6.35')) ?? ''
   const pinnacle = sectionsOf(CHANGELOG).find(isVersion('0.6.36')) ?? ''
   const zenith = sectionsOf(CHANGELOG).find(isVersion('0.6.37')) ?? ''
+  const meridian = sectionsOf(CHANGELOG).find(isVersion('0.6.38')) ?? ''
   // 見出しの文字列を `## [` と数字の並びで書かない（syncPublic の「角括弧つきの版の見出しで探さない」検査に当たるため。角括弧つきの形を作る試験用）
-  const OTHER = `${'## '}${'[0.6.38]'} - 2026-11-20\n\n- 🔧 **試験の項目**: 試験です。\n\n---\n\n`
-  it('★★ 実物は通り、0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節が2つ・別の版の節が上にある（0.6.33 の上・0.6.31 と 0.6.30 の間）・0.6.30 の下へ動いた形・並びが逆の形は見つける', () => {
+  const OTHER = `${'## '}${'[0.6.39]'} - 2026-11-20\n\n- **試験の項目**: 試験です。\n\n---\n\n`
+  it('★★ 実物は通り、0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節が2つ・別の版の節が上にある（0.6.33 の上・0.6.31 と 0.6.30 の間）・0.6.30 の下へ動いた形・並びが逆の形は見つける', () => {
     expect(newer.length).toBeGreaterThan(100)
     expect(newest.length).toBeGreaterThan(100)
     expect(uppermost.length).toBeGreaterThan(100)
@@ -330,6 +334,7 @@ describe('0.6.30 の節の上: 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.
     expect(summit.length).toBeGreaterThan(100)
     expect(pinnacle.length).toBeGreaterThan(100)
     expect(zenith.length).toBeGreaterThan(100)
+    expect(meridian.length).toBeGreaterThan(100)
     expect(changelogProblems(CHANGELOG)).toEqual([])
     expect(changelogProblems(CHANGELOG.replace(newer, `${newer}\n${newer}`))).toEqual(['0.6.31 の節が 2 個ある'])
     expect(changelogProblems(CHANGELOG.replace(newest, `${newest}\n${newest}`))).toEqual(['0.6.32 の節が 2 個ある'])
@@ -338,18 +343,21 @@ describe('0.6.30 の節の上: 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.
     expect(changelogProblems(CHANGELOG.replace(summit, `${summit}\n${summit}`))).toEqual(['0.6.35 の節が 2 個ある'])
     expect(changelogProblems(CHANGELOG.replace(pinnacle, `${pinnacle}\n${pinnacle}`))).toEqual(['0.6.36 の節が 2 個ある'])
     expect(changelogProblems(CHANGELOG.replace(zenith, `${zenith}\n${zenith}`))).toEqual(['0.6.37 の節が 2 個ある'])
+    expect(changelogProblems(CHANGELOG.replace(meridian, `${meridian}\n${meridian}`))).toEqual(['0.6.38 の節が 2 個ある'])
     // 0.6.37 と 0.6.36 を入れ替えた形
     expect(changelogProblems(CHANGELOG.replace(zenith, '@@A').replace(pinnacle, '@@B').replace('@@A', pinnacle).replace('@@B', zenith))).not.toEqual([])
+    // 0.6.38 と 0.6.37 を入れ替えた形
+    expect(changelogProblems(CHANGELOG.replace(meridian, '@@A').replace(zenith, '@@B').replace('@@A', zenith).replace('@@B', meridian))).not.toEqual([])
     // 0.6.32 と 0.6.31 を入れ替えた形
     const order = CHANGELOG.replace(newest, '@@A').replace(newer, '@@B').replace('@@A', newer).replace('@@B', newest)
-    expect(changelogProblems(order)).toEqual(['0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節の並びが、上から 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 でない', '0.6.31 の節が、0.6.30 の節の直前にない'])
+    expect(changelogProblems(order)).toEqual(['0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節の並びが、上から 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 でない', '0.6.31 の節が、0.6.30 の節の直前にない'])
     const swapped = CHANGELOG.replace(newer, '@@N').replace(released, '@@R').replace('@@N', released).replace('@@R', newer)
     expect(changelogProblems(swapped)).not.toEqual([])
     const at = CHANGELOG.search(/^## \[?0\.6\.33\]?(?![\w.-])/m)
     const beyond = `${CHANGELOG.slice(0, at)}${OTHER}${CHANGELOG.slice(at)}`
-    expect(changelogProblems(beyond)).toEqual(['0.6.30 の節の上に、`[未リリース]` の節と 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節以外がある'])
+    expect(changelogProblems(beyond)).toEqual(['0.6.30 の節の上に、`[未リリース]` の節と 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節以外がある'])
     const betweenAt = CHANGELOG.search(/^## \[?0\.6\.30\]?(?![\w.-])/m)
     const between = `${CHANGELOG.slice(0, betweenAt)}${OTHER}${CHANGELOG.slice(betweenAt)}`
-    expect(changelogProblems(between)).toEqual(['0.6.30 の節の上に、`[未リリース]` の節と 0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節以外がある', '0.6.31 の節が、0.6.30 の節の直前にない'])
+    expect(changelogProblems(between)).toEqual(['0.6.30 の節の上に、`[未リリース]` の節と 0.6.38・0.6.37・0.6.36・0.6.35・0.6.34・0.6.33・0.6.32・0.6.31 の節以外がある', '0.6.31 の節が、0.6.30 の節の直前にない'])
   })
 })

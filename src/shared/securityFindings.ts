@@ -81,7 +81,7 @@ function shapeNote(f: WriteFinding): string {
 }
 
 /** 依頼文用の言い方。値・文字数・見本は入れない。 */
-function plainPhraseOf(kind: WriteFindingKind): string {
+export function plainPhraseOf(kind: WriteFindingKind): string {
   return phraseOf({ kind, line: 0 })
 }
 
@@ -105,7 +105,7 @@ export function writeCheckNotice(items: { file: string; findings: WriteFinding[]
 }
 
 /** 画面と依頼文に出さない文字: 改行・制御文字・見かけを変える文字（向きの制御・幅のない文字・BOM）。 */
-const HIDDEN_CHAR_SRC = '[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff]'
+export const HIDDEN_CHAR_SRC = '[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff]'
 
 /** パスにそのまま出してはいけない文字を含むか（印の読み直しが、そういうパスを受けないために使う）。 */
 export function hasHiddenPathChar(file: string): boolean {
@@ -121,12 +121,12 @@ export function cleanPath(file: string): string {
   return s.length > SHOWN_PATH_MAX ? '…' + s.slice(s.length - (SHOWN_PATH_MAX - 1)) : s
 }
 
-const SECRET_FIX_LINES = [
+export const SECRET_FIX_LINES = [
   'キーやパスワードは、コードに直接書かず、環境変数などから読む形にしてください。',
   'キーやパスワードの値そのものは、この会話に書かないでください。',
   '値をどこに設定するか（入れ先）は決めつけず、先に私に確かめてください。',
 ]
-const INPUT_FIX_LINES = ['訪問者の入力をそのまま使っている所は、入力をそのまま使わない形に直してください。']
+export const INPUT_FIX_LINES = ['訪問者の入力をそのまま使っている所は、入力をそのまま使わない形に直してください。']
 
 /** 「AIに修正させる」で送る依頼文。値・文字数・見本は入れない。直し方の文は、見つかった種類に合うものだけ。 */
 export function buildWriteFixPrompt(marks: WriteFixMark[]): string {

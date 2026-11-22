@@ -58,8 +58,8 @@ describe('Claude の同意の版', () => {
   })
 
   it('確認の本文: 送られるものに、読んだページと資料の抜粋が入る。確認し直しのときだけ変わった点を添える', () => {
-    const first = claudeConsentBody(false)
-    const again = claudeConsentBody(true)
+    const first = claudeConsentBody(false, true)
+    const again = claudeConsentBody(true, true)
     for (const t of [first, again]) {
       expect(t).toContain('Claude が読んだページの内容')
       expect(t).toContain('資料の抜粋')
@@ -69,8 +69,18 @@ describe('Claude の同意の版', () => {
     expect(again).toContain('送られるものが増えました')
   })
 
+  it('確認の本文: すべてのプロジェクトに効くことを言い、⇄ を指すのはさくらのキーもあるときだけ', () => {
+    const withKey = claudeConsentBody(false, true)
+    const noKey = claudeConsentBody(false, false)
+    for (const t of [withKey, noKey]) expect(t).toContain('この確認は、すべてのプロジェクトに効きます。')
+    expect(withKey).toContain('チャット欄の上の「🧠 Claude ⇄」で さくらのAI Engine に切り替えられます。')
+    expect(noKey).not.toContain('⇄')
+    expect(noKey).not.toContain('切り替えられます')
+    expect(withKey).not.toContain('設定 でさくらのAI Engineに切り替えられます')
+  })
+
   it('確認の結びは、初回・確認し直しのどちらも「初回と、送られるものが増えたときだけ」（初回のみ、とは言わない）', () => {
-    for (const t of [claudeConsentBody(false), claudeConsentBody(true)]) {
+    for (const t of [claudeConsentBody(false, true), claudeConsentBody(true, true)]) {
       expect(t.endsWith('（この確認は、初回と、送られるものが増えたときだけ出ます）')).toBe(true)
       expect(t).not.toContain('初回のみ')
     }

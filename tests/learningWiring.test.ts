@@ -99,6 +99,7 @@ describe('turnRunner.ts: defaultVisionModelFor（renderer/usage.ts の getDefaul
     // 提供終了した Kimi-K2.6 は画像対応として拾わない（一覧にあっても既定の画像モデルへ戻る）
     expect(defaultVisionModelFor([{ id: 'preview/Kimi-K2.6' }])).toBe('preview/Qwen3-VL-30B-A3B-Instruct')
     // 予備の一覧だけ（オフライン）でも、画像モデルは Qwen3-VL に決まる
+    // （2026-11-20 に足した DeepSeek V4.1 Flash は画像を直接読めるが、画像用のモデルの選びには使わない）
     expect(defaultVisionModelFor(MODELS)).toBe('preview/Qwen3-VL-30B-A3B-Instruct')
   })
 

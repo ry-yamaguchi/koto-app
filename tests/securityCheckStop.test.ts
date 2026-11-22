@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2026-09-25 検分の指摘6: preload の `sakura.chat(args, onStart?)` に足した「中断の口」の
@@ -47,6 +47,9 @@ function setupWindow(chat: (args: ChatArgs, onStart?: (abort: () => void) => voi
       fs: {
         exists: async () => false, // public/ は無い（publishRoot はプロジェクト直下）
         projectFilesInfo: async () => ({ files, truncated: false }),
+        readForWriteFix: async (dir: string, rel: string) => {
+          try { return { state: 'text', content: await g.window.electronAPI.fs.readFile(`${dir}/${rel}`) } } catch { return { state: 'unreadable' } }
+        },
         readFile: async (p: string) => {
           if (p.endsWith('package.json')) throw new Error('無い') // 静的サイトとして検査される
           // 1ファイル5,000文字 → かたまり（24,000文字）は4ファイルで満ちる＝全部で2かたまり
@@ -107,7 +110,7 @@ describe('公開前セキュリティチェックを中止できる（sakura.cha
     setupWindow((args, onStart) => new Promise(resolve => {
       onStart?.(() => { /* すでに答え終わった呼び出しの中断は、本物でも何も起きない */ })
       requests.push(filesInPrompt(args))
-      release = () => resolve({ content: '判定: 問題なし\n- 特に問題は見つかりませんでした', usage: null })
+      release = () => resolve({ content: '{"findings":[]}', usage: null })
       onRequest()
     }))
     const { runSecurityCheck } = await import('../src/renderer/securityCheck')
@@ -124,11 +127,64 @@ describe('公開前セキュリティチェックを中止できる（sakura.cha
     expect(r.report).toContain('最後まで確認していません')
   }, 20_000)
 
+  it('★ 計画（ファイルの読み込み）の間に押しても、1件も送らず、中止の結果で返る', async () => {
+    setupWindow(async (args) => {
+      requests.push(filesInPrompt(args))
+      return { content: '{"findings":[]}', usage: null }
+    })
+    const { runSecurityCheck } = await import('../src/renderer/securityCheck')
+    let stop: (() => void) | null = null
+    const read = g.window.electronAPI.fs.readFile
+    // ファイルを読んでいる最中に押す（計画の間）
+    g.window.electronAPI.fs.readFile = async (p: string) => { stop?.(); return read(p) }
+    const r = await runSecurityCheck('/proj', 'key-1', undefined, fn => { stop = fn })
+    expect(requests).toHaveLength(0)
+    expect(r.verdict).toBe('skip')
+    expect(r.report).toContain('中止')
+    expect(r.report).toContain('最後まで確認していません')
+  }, 20_000)
+
+  it('★ 対象が無い計画の間に押したら、中止の結果で返る（対象が無いという結果ではない）', async () => {
+    setupWindow(async (args) => {
+      requests.push(filesInPrompt(args))
+      return { content: '{"findings":[]}', usage: null }
+    })
+    let stop: (() => void) | null = null
+    // 一覧を取っている最中に押し、しかも対象が1つも無い
+    g.window.electronAPI.fs.projectFilesInfo = async () => { stop?.(); return { files: ['logo.png'], truncated: false } }
+    const { runSecurityCheck } = await import('../src/renderer/securityCheck')
+    const r = await runSecurityCheck('/proj', 'key-1', undefined, fn => { stop = fn })
+    expect(requests).toHaveLength(0)
+    expect(r.verdict).toBe('skip')
+    expect(r.report).toContain('最後まで確認していません')
+  }, 20_000)
+
+  it('★ キーが無いとき・上限のときは、計画（ファイルの一覧も読み込みも）へ進まない', async () => {
+    const calls: string[] = []
+    setupWindow(async () => ({ content: '{"findings":[]}', usage: null }))
+    const fs = g.window.electronAPI.fs
+    const info = fs.projectFilesInfo
+    const read = fs.readFile
+    fs.projectFilesInfo = async (...a: any[]) => { calls.push('list'); return info(...a) }
+    fs.readFile = async (p: string) => { calls.push('read'); return read(p) }
+    const { runSecurityCheck } = await import('../src/renderer/securityCheck')
+    await runSecurityCheck('/proj', '')
+    expect(calls).toEqual([])
+    // 上限: 利用量を上限ぎりぎりにする（偽 localStorage の記録で、全体予算が許さない状態）
+    const usage = await import('../src/renderer/usage')
+    const spy = vi.spyOn(usage, 'checkBeforeRequest').mockReturnValue({ allowed: false, message: 'x' } as any)
+    try {
+      const r = await runSecurityCheck('/proj', 'key-1')
+      expect(r.report).toContain('AI利用上限')
+    } finally { spy.mockRestore() }
+    expect(calls).toEqual([])
+  }, 20_000)
+
   it('対照: 中止しなければ、かたまりの数だけ順に問い合わせる（副作用が無いこと）', async () => {
     setupWindow(async (args, onStart) => {
       onStart?.(() => {}) // 本物と同じく必ず呼ばれる（呼ばれなくても対照側は成立する）
       requests.push(filesInPrompt(args))
-      return { content: '判定: 問題なし\n- 特に問題は見つかりませんでした', usage: { prompt_tokens: 1, completion_tokens: 1 } }
+      return { content: '{"findings":[]}', usage: { prompt_tokens: 1, completion_tokens: 1 } }
     })
     const { runSecurityCheck } = await import('../src/renderer/securityCheck')
 

@@ -18,9 +18,11 @@ const DEFAULT_VISION_MODELS = ['preview/Qwen3-VL-30B-A3B-Instruct']
 const VISION_MODELS = process.argv.slice(2).filter(a => !a.startsWith('-'))
 VISION_MODELS.length || VISION_MODELS.push(...DEFAULT_VISION_MODELS)
 
-// 1x1の赤いPNG（有効な最小画像）
+// 1x1の赤いPNG（有効な最小画像）。透けない赤（RGB 255,0,0）にする。
+// 以前は半分透けた赤（RGBA 255,0,0,127）で、白の上ならピンク・黒の上なら黒に見えるため、
+// 答えの色で読めたかを判断できなかった（2026-11-20: GLM-5.3-Flash が「黒」と答えたのを、読めていないと誤って判断した）。
 const TINY_PNG =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
 
 async function getKey() {
   if (process.env.SAKURA_API_KEY) return process.env.SAKURA_API_KEY.trim()
@@ -88,6 +90,8 @@ for (const model of VISION_MODELS) {
       (r.otherKeys.length ? ` / その他のdeltaフィールド: ${r.otherKeys.join(',')}` : ''))
     if (r.content.trim()) {
       console.log(`✅ PASS: contentに回答あり（${r.content.trim().slice(0, 60)}…）`)
+      // 見本は透けない赤の1画素。色を言い当てていれば、画像を読めている見込みが高い
+      console.log(/赤|red/i.test(r.content) ? '   色: 赤と答えた（見本と合う）' : '   ⚠️ 色: 赤と答えていない（見本は透けない赤の1画素）。画像を読めていない可能性があるので、実際の画像でも確かめる')
     } else if (r.reasoning.trim()) {
       console.log(`⚠️ 回答がreasoningに出ている（アプリのフォールバックで表示可能）: ${r.reasoning.trim().slice(0, 60)}…`)
     } else {

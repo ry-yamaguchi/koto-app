@@ -31,6 +31,7 @@ import { unreadableFrom, type UnreadableChat } from '../../shared/chatUnreadable
 import { ChatAppLoadNotices } from './ChatLoadNotice'
 import { chatStatusLine } from '../../shared/chatStatusLine'
 import RetryButton from './RetryButton'
+import { forgetProjectAi } from '../projectAi'
 import { showsRetry } from '../../shared/retryOffer'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
@@ -377,6 +378,8 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
     const ws = await getWorkspaceDir()
     const r = await window.electronAPI.appSessions.ensureProject(chatWorkspace, activeId, ws, activeSession?.title ?? '新しい会話')
     if (!r.ok || !r.projectDir) throw new Error(r.message ?? '保存用のプロジェクトを用意できませんでした')
+    // 新しく作った会話用のフォルダに、同じパスに前にあったプロジェクトの使う AI の記憶を当てない（既存のプロジェクトを使うときは消さない）。
+    if (r.created) forgetProjectAi(r.projectDir)
     await onApplyFile(relPath, content, r.projectDir + '/public', { openProjectDir: r.projectDir })
   }, [onApplyFile, chatWorkspace, activeId, activeSession])
 

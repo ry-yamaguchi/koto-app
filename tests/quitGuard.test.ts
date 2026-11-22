@@ -618,8 +618,8 @@ describe('CHANGELOG: 0.6.21 の節に、この修理の項目がある', () => {
     changelog.search(/\n## (?:\[0\.6\.20\]|0\.6\.20(?![\w.-]))/),
   )
 
-  it('🐛 の項目で、直したことと、確かめた範囲を書く（「実機」と書かない）', () => {
-    const item = unreleased.split('\n').find(l => l.startsWith('- 🐛') && l.includes('⌘Q') && l.includes('警告なしに'))
+  it('終了の歯止めの項目で、直したことと、確かめた範囲を書く（「実機」と書かない）', () => {
+    const item = unreleased.split('\n').find(l => l.startsWith('- **') && l.includes('⌘Q') && l.includes('警告なしに'))
     expect(item, '終了の歯止めの項目が見つからない').toBeTruthy()
     expect(item).toContain('終了の前に必ず聞く')
     // 0.6.21-rc.2 の実際の画面で確かめた（2026-10-15 作者）。確かめたことを、まだのまま残さない
@@ -629,14 +629,14 @@ describe('CHANGELOG: 0.6.21 の節に、この修理の項目がある', () => {
   })
 
   it('★ 「知らせが届かない」のは、閉じたあと・開き直して**その処理を映す画面を開くまで**。開き直したあと一律に届かない、とは書かない', () => {
-    const item = unreleased.split('\n').find(l => l.startsWith('- 🐛') && l.includes('⌘Q') && l.includes('警告なしに'))
+    const item = unreleased.split('\n').find(l => l.startsWith('- **') && l.includes('⌘Q') && l.includes('警告なしに'))
     expect(item).toContain('その処理を映す画面を開くまでは届きません')
     expect(item).not.toContain('その知らせが届いていませんでした')
   })
 
   it('★ rc.1 で答えが出たこと（2回目の警告）を、「まだ分かっていません」のまま残さない', () => {
     expect(unreleased).not.toContain('警告が出るかも、まだ分かっていません')
-    const btn = unreleased.split('\n').find(l => l.startsWith('- 🐛') && l.includes('「ウィンドウを閉じる（処理は続きます）」に直しました'))
+    const btn = unreleased.split('\n').find(l => l.startsWith('- **') && l.includes('「ウィンドウを閉じる（処理は続きます）」に直しました'))
     expect(btn, 'ボタン名の項目が見つからない').toBeTruthy()
     expect(btn).toContain('2回目の警告は、0.6.21-rc.1 の実際の画面で確かめました')
   })

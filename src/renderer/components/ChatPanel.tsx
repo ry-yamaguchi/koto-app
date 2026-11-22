@@ -10,11 +10,10 @@ import type { MigratePlan } from '../../shared/migratePlan'
 import { saveRagSettings } from '../ragContext'
 import { COMPACT_NOTE, canCompactNow } from '../historyCompact'
 import ThinkingBlock from './ThinkingBlock'
-import { checkBeforeRequest, recordUsage, estimateTokens, getDefaultModel, setDefaultModel, isVisionModel, getDefaultVisionModel, modelLabel, pickBestModel, retiredModelNoticeText, syncStoredDefaultWithOffered, DEFAULT_MODEL } from '../usage'
+import { checkBeforeRequest, recordUsage, estimateTokens, isVisionModel, getDefaultVisionModel, modelLabel, DEFAULT_MODEL } from '../usage'
 import { shouldTryImagesDirectly } from '../visionSupport'
 import { shouldSendTools } from '../toolSupport'
-import { useModelList } from '../hooks/useModels'
-import { useClaudeModels } from '../hooks/useClaudeModels'
+import { useProjectAiChoice } from '../hooks/useProjectAiChoice'
 import { useAiChat, type ChatMessage } from '../hooks/useAiChat'
 import { IDE_CONTEXT, buildProjectContext, ragStatusContext } from '../aiContext'
 import { onTargetChanged, type TargetChangedDetail } from '../targetCheck'
@@ -30,8 +29,8 @@ import { isGreetOnOpenEnabled } from '../greetSetting'
 import { parseRagSettings, autoRagBlock, type RagSettings } from '../ragContext'
 import ModelSelect from './ModelSelect'
 import BrainToggle from './BrainToggle'
-import { getAnthropicToken } from './CredentialsModal'
-import { isClaudeModeEnabled, getClaudeModel, setClaudeModel, claudeModelShortLabel, CHAT_NO_KEY_MESSAGE, CHAT_NO_KEY_HINT, isChatUsable } from '../claudeMode'
+import ChatKeyMissing from './ChatKeyMissing'
+import { isChatUsable } from '../claudeMode'
 import { loadConversationView, loadConversationChecked, makeConvClient, opRouteOf, applyOpToConversation, type Op } from '../chatConvClient'
 import { IDE_CHAT_BACKUP_PLACE, type UnreadableChat } from '../../shared/chatUnreadable'
 import ChatLoadNotice from './ChatLoadNotice'
@@ -126,7 +125,6 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   const [convLoadedDir, setConvLoadedDir] = useState<string | null>(null)
   // 会話の記録を読めなかった知らせ（写しの名前を持つ）。読めたプロジェクト・切り替えた直後は null。
   const [loadUnreadable, setLoadUnreadable] = useState<UnreadableChat | null>(null)
-  const [model, setModel] = useState(getDefaultModel('ide'))
   // どのプロジェクトの文脈かを dir 付きで保持する。
   // （dir を持たないと、プロジェクト切替直後に「前のプロジェクトの文脈」であいさつしてしまう）
   const [projectCtx, setProjectCtx] = useState<{ dir: string; ctx: string } | null>(null)
@@ -187,11 +185,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   const answerApproval = useCallback((id: string, approved: boolean) => {
     void window.electronAPI.approval.answer(id, approved)
   }, [])
-  const { models, live: modelsLive } = useModelList(apiKey)
-
-  // C2c: チャットの頭脳が Claude か（StatusBar.tsx と同じ判定方式）。Claudeのときは
-  // ModelSelect の選択肢を AI Engine のモデル一覧から Claudeモデル一覧（ライブ取得。useClaudeModels）へ切り替える。
-  const [claudeActive, setClaudeActive] = useState(false)
+  // 使う AI とモデルは、プロジェクトの記憶 → 設定の既定の順で、描画の中で決める（useProjectAiChoice。
+  // 決めるのは projectAi.ts の resolveAiChoice だけ）。Claude のときは ModelSelect の選択肢が Claude のモデル一覧になる。
+  const ai = useProjectAiChoice({ projectDir: projectDir ?? null, apiKey, convLoadedDir, applyOp })
+  const { models, claudeModels, claudeActive, model, claudeModelId } = ai
 
   // ── AI が読み書きする基準（2026-08-20）───────────────────────────────
   // `public/` がある＝そこが作業の場。無ければプロジェクト直下（移行前）。
@@ -247,50 +244,6 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   }, [projectDir])
   /** いま開いているプロジェクトの根（追いついていなければプロジェクト直下）。 */
   const currentAiRoot = aiRoot && aiRoot.dir === projectDir ? aiRoot.root : projectDir
-  const [claudeKey, setClaudeKey] = useState('')
-  useEffect(() => {
-    let alive = true
-    const refresh = async () => {
-      const key = await getAnthropicToken()
-      if (!alive) return
-      setClaudeActive(!!key && isClaudeModeEnabled())
-      setClaudeKey(key ?? '')
-    }
-    refresh()
-    window.addEventListener('sakura:credentials-changed', refresh)
-    return () => { alive = false; window.removeEventListener('sakura:credentials-changed', refresh) }
-  }, [])
-  const claudeModels = useClaudeModels(claudeKey)
-  const [claudeModelId, setClaudeModelId] = useState(() => getClaudeModel())
-
-  // Claude側も同様: ライブ取得した一覧に選択中のモデルが無ければ（提供終了・ID改廃）自動で切り替える。
-  // 送信時は useAiChat が getClaudeModel()（＝更新後のキャッシュを見る）で自己修復するため実害は出ないが、
-  // これが無いと**画面に出ているモデル名と実際に使われるモデルが食い違う**（選択欄だけ古いまま残る）。
-  useEffect(() => {
-    if (!claudeModels.length) return
-    if (claudeModels.some(m => m.id === claudeModelId)) return
-    const next = getClaudeModel(claudeModels)
-    setClaudeModel(next)
-    setClaudeModelId(next)
-    if (claudeActive) {
-      applyOp({ kind: 'append', msg: { role: 'assistant', content: `ℹ️ モデル「${claudeModelId}」は提供終了したため、「${claudeModelShortLabel(next, claudeModels)}」に自動で切り替えました。` } })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [claudeModels])
-
-  // 選択中のモデルが提供終了していたら、提供中の最適なモデルへ自動で切り替える
-  useEffect(() => {
-    if (!models.length) return
-    // 保存済みの既定も提供終了なら（一覧が実際に取得できたときだけ）保存し直す。次の新しい会話で案内を繰り返さない
-    syncStoredDefaultWithOffered('ide', models.map(m => m.id), modelsLive)
-    if (!models.some(m => m.id === model)) {
-      const next = pickBestModel(models.map(m => m.id))
-      setModel(next)
-      applyOp({ kind: 'append', msg: { role: 'assistant', content: retiredModelNoticeText(model, modelLabel(next)) } })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [models, modelsLive])
-
   const toggleWriteMode = () => {
     setWriteMode(prev => {
       const next: WriteMode = prev === 'auto' ? 'confirm' : 'auto'
@@ -694,9 +647,9 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   // NewProjectModal 側は onCreated（App.tsx が setCurrentDir する）の直後にこのイベントを dispatch するため、
   // このパネルの projectDir がまだ旧プロジェクトのまま（Reactの再描画が追いついていない）状態で届くことがある。
   // そのため detail.dir を pendingNewProjectRef に保留し、projectDir が一致するまで送らない
-  // （このeffect自体が projectDir の変化のたびに再評価する）。さらに「初めてのプロジェクト作成」では
-  // dispatch の瞬間まだ ChatPanel 自体がマウントされておらず（IDEモード表示は mode==='ide' && currentDir
-  // が条件のため）イベントの受け手が存在しない＝取りこぼす。newProjectRequest.ts のモジュール退避
+  // （このeffect自体が projectDir の変化のたびに再評価する）。さらに「チャットモードで作った」「チャット欄を
+  // 閉じていた」ときは、dispatch の瞬間まだ ChatPanel 自体がマウントされておらず（表示の条件は
+  // mode==='ide' && showChat）イベントの受け手が存在しない＝取りこぼす。newProjectRequest.ts のモジュール退避
   // （takeNewProjectRequest）でこのケースも拾い直す（下の consume 内）。
   //
   // あいさつとの衝突防止: 依頼が保留中の間は、あいさつの判断（decideGreeting。すぐ下の effect）が
@@ -713,8 +666,8 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       // （deps の aiRoot 変化）でここへ戻ってくる。退避の消費より前に返ること（消費すると失われる）。
       if (aiRoot?.dir !== projectDir) return
       // データの出どころは2つ: (1)イベントで直接受け取り済みのもの（pendingNewProjectRef）
-      // (2)イベントを取りこぼした場合の救済（newProjectRequest.ts のモジュール退避。「初めてのプロジェクト
-      //   作成」では ChatPanel がまだマウントされておらずイベントの受け手が無いため、これが唯一の頼り）。
+      // (2)イベントを取りこぼした場合の救済（newProjectRequest.ts のモジュール退避。チャットモードで作った・
+      //   チャット欄を閉じていたときは ChatPanel がまだマウントされておらずイベントの受け手が無いため、これが唯一の頼り）。
       // ⚠️ モジュール退避（(2)）は**必ず消費する**（2026-08-28 実機で発覚）。(1)（イベント経由の ref）で
       // 送れたときに(2)の写しが残っていると、ChatPanel の再マウント（モード切替）で二重送信ガードの
       // ref が消えたあと、(2)を拾って**同じ依頼をもう一度送ってしまう**（実機: 新規作成の23分後、
@@ -909,25 +862,10 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
     }
   }
 
-  // apiKey（さくらのAI Engine）と claudeActive（Claude）のどちらも無い場合のみ案内画面を出す
-  // （モードB＝Claudeキーのみの利用者がここで行き止まりにならないよう、ユーザー指摘 2026-07-12 で変更）。
+  // 使える AI（さくらのAI Engine のキー、または Claude を使う設定とそのキー）が無い場合のみ案内画面を出す。
+  // さくらを使う設定でキーが無く、Claude のキーがあるときは、押したときだけ Claude にする案内を添える（黙って Claude にしない）。
   if (!isChatUsable(!!apiKey, claudeActive)) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full p-6 gap-3 text-center">
-        <SakuraLogo size={40} />
-        <span className="text-sm font-semibold sakura-gradient-text">Koto AI</span>
-        <p className="text-xs text-ink-secondary">{CHAT_NO_KEY_MESSAGE}<br />{CHAT_NO_KEY_HINT}</p>
-        <button
-          onClick={onOpenCredentials}
-          className="sakura-gradient text-white rounded-lg px-4 py-2 text-sm font-semibold hover:opacity-90 transition-opacity"
-        >
-          🔑 APIキーを登録する
-        </button>
-        <p className="text-[11px] text-ink-muted mt-1">
-          <a href="https://ai.sakura.ad.jp/" className="text-sakura-soft hover:underline">さくらのAI Engine</a> で取得 ・ ⇧⌘, でも開けます
-        </p>
-      </div>
-    )
+    return <ChatKeyMissing onOpenCredentials={onOpenCredentials} onUseClaudeHere={ai.switchToClaudeHere ?? undefined} />
   }
 
   return (
@@ -940,16 +878,13 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           <ModelSelect
             models={claudeActive ? claudeModels : models}
             value={claudeActive ? claudeModelId : model}
-            onChange={id => {
-              if (claudeActive) { setClaudeModel(id); setClaudeModelId(id) }
-              else { setModel(id); setDefaultModel(id, 'ide'); setRoutedModel(null) }
-            }}
+            onChange={id => { ai.selectModel(id); if (!claudeActive) setRoutedModel(null) }}
             buttonClassName="flex items-center gap-1 max-w-[12rem] text-xs bg-elevated border border-line rounded-md px-1.5 py-0.5 text-ink hover:border-sakura cursor-pointer transition-colors"
             defaultId={claudeActive ? undefined : DEFAULT_MODEL}
           />
-          {/* 頭脳の切替（2026-07-29 ユーザー要望）。右下のステータスバー・設定と同じ BrainToggle を
-              モデル選択の横にも置く（切替＝setClaudeMode の書き込み口は1つのまま）。 */}
-          <BrainToggle apiKey={apiKey} compact />
+          {/* 使う AI の切替（2026-07-29 ユーザー要望）。右下のステータスバーと同じ BrainToggle を
+              モデル選択の横にも置く。切り替えるのは、このプロジェクトの記憶だけ。 */}
+          <BrainToggle apiKey={apiKey} projectDir={projectDir ?? null} compact />
         </div>
         <div className="flex items-center gap-2">
           {/* 🗂 手動で区切る（2026-08-20 Ryosuke 要望）。自動は約47往復を超えないと働かないので、

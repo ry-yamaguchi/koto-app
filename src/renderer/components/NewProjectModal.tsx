@@ -1,7 +1,7 @@
 import { failureText } from '../../shared/failureText'
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import SakuraLogo from './SakuraLogo'
-import { getDefaultModel, setDefaultModel, DEFAULT_MODEL } from '../usage'
+import { getDefaultModel, DEFAULT_MODEL } from '../usage'
 import { isAvailableTarget, getTargetProfile, type TargetId } from '../targetProfiles'
 import { beginActivity } from '../activity'
 import { useModels } from '../hooks/useModels'
@@ -10,8 +10,9 @@ import ModelSelect from './ModelSelect'
 import Modal from '../ui/Modal'
 import { shouldCloseNewProject } from '../newProjectClose'
 import { getAnthropicToken } from './CredentialsModal'
-import { isClaudeModeEnabled, getClaudeModel, setClaudeMode, setClaudeModel } from '../claudeMode'
+import { isClaudeModeEnabled, getClaudeModel } from '../claudeMode'
 import { defaultCreationBrain, pickSavedModel, type CreationBrain } from '../newProjectAgent'
+import { applyCreationAi } from '../projectAi'
 import { buildNewProjectRequest, stashNewProjectRequest, SITE_TYPES } from '../newProjectRequest'
 import { skipMigrationForTarget } from '../../shared/migratePlan'
 // 雛形に書き出す除外（deploy.sh / .dockerignore / .gitignore）は、
@@ -23,8 +24,8 @@ import ImportFromPublishedPanel from './ImportFromPublishedPanel'
 import { getWorkspaceDir, WORKSPACE_KEY } from '../workspace'
 import ErrorBand from './ErrorBand'
 
-// 「このあとチャットで作業するAI」の選択（作成実行時に一度だけ、実際のチャットの頭脳・モデルへ反映する。
-// 詳しくは runCreate 内のコメント参照）。選んだ内容は次回の初期値として localStorage に覚えておく。
+// 「このあとチャットで作業するAI」の選択（作成実行時に、作ったプロジェクトで使う AI とモデルとして覚える。
+// 設定の既定は変えない。詳しくは runCreate 内のコメント参照）。選んだ内容は次回の初期値として localStorage に覚えておく。
 const NEWPROJECT_AGENT_KEY = 'sakura_newproject_agent'
 const NEWPROJECT_MODEL_SAKURA_KEY = 'sakura_newproject_model_sakura'
 const NEWPROJECT_MODEL_CLAUDE_KEY = 'sakura_newproject_model_claude'
@@ -642,9 +643,9 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
   const [error, setError] = useState('')
   const [conflict, setConflict] = useState<{ path: string; suggestion: string } | null>(null)
 
-  // ── 「このあとチャットで作業するAI」（頭脳＋モデル）。選択中はこの画面内だけの状態だが、
-  //    作成を実行した瞬間（runCreate）に setClaudeMode/setClaudeModel/setDefaultModel でアプリ全体の
-  //    頭脳・既定モデル設定へ反映する（この後チャットが実際に作業を引き継ぐため）。
+  // ── 「このあとチャットで作業するAI」（使う AI＋モデル）。選択中はこの画面内だけの状態だが、
+  //    作成を実行した瞬間（runCreate）に、作ったプロジェクトの記憶として書く（projectAi.ts）。
+  //    設定の既定（使う AI・モデル）は変えない。
   //    選んだ内容は localStorage にも覚えて次回この画面を開いたときの初期値にする。
   const [claudeKey, setClaudeKey] = useState('')
   const sakuraModels = useModels(apiKey)
@@ -833,16 +834,16 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
         openRelPath = undefined
       }
 
-      if (useChat) {
-        // 「作成を担当するAI」の選択を、この後チャットが実際の作業に使う頭脳・モデルへ反映する
-        // （書き込み口は claudeMode.ts / usage.ts の関数のみ＝掟7。ChatPanel 自身の state はここでは触らない）。
-        if (brain === 'claude') {
-          setClaudeMode(true)
-          setClaudeModel(claudeModelId)
-        } else {
-          setClaudeMode(false)
-          setDefaultModel(sakuraModelId, 'ide')
-        }
+      // 「作成を担当するAI」の選択は、作ったプロジェクトだけの記憶になる（設定の既定は書かない。掟11）。
+      // onCreated・退避・依頼のイベントより前に、同期で書く（依頼の回は、この記憶から使う AI とモデルを決める）。
+      // 新しく作ったフォルダは、同じパスに前にあったプロジェクトの記憶を先に消す（まっさらでも）。
+      // 既存のフォルダの中に作った（merged）ときは、そのフォルダが既にプロジェクトかもしれないので消さずに重ねる。
+      const aiSaved = applyCreationAi({ root: result.root, merged: result.merged, useChat, brain, claudeModelId, sakuraModelId })
+      if (!aiSaved && useChat) {
+        // 使う AI を保存できなかったときは、依頼を送らない（設定の既定の AI で、利用者が選んでいない課金が始まらないように）。
+        setError(`フォルダ「${result.root}」は作りましたが、使う AI を保存できなかったので、開かずに止めました。サイドバーから開き、チャット欄の上で使う AI を選んでから頼んでください。`)
+        setBusy(false)
+        return
       }
 
       onCreated(result.root, openRelPath)
@@ -858,8 +859,8 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           description,
         })
         if (prompt) {
-          // 初めてのプロジェクト作成では、この時点でまだ ChatPanel がマウントされていない
-          // （IDEモード表示は mode==='ide' && currentDir が条件のため）。CustomEvent はその場合
+          // チャットモードで作った・チャット欄を閉じていたときは、この時点でまだ ChatPanel がマウントされていない
+          // （表示の条件は mode==='ide' && showChat）。CustomEvent はその場合
           // 受け手不在で失われるので、モジュールスコープにも退避しておき、ChatPanel が後から
           // マウントされたタイミングで拾い直せるようにする（newProjectRequest.ts 参照）。
           stashNewProjectRequest(result.root, prompt)
@@ -1156,10 +1157,10 @@ export default function NewProjectModal({ apiKey, onClose, onCreated, onOpenCred
           </div>
           )}
 
-          {/* このあとチャットで作業するAI（頭脳＋モデル）。キーが登録されているものだけ表示する。
+          {/* このあとチャットで作業するAI（使う AI＋モデル）。キーが登録されているものだけ表示する。
               まっさらはチャットへ依頼しないため出さない（brain が null＝どちらのキーも無いときも出さない）。
-              選択はここでは保存のみ行い、作成実行時（runCreate）に setClaudeMode/setDefaultModel で
-              実際にチャットの頭脳・モデルへ反映する（この後チャットが作業を引き継ぐため）。 */}
+              選んだものは、作成実行時（runCreate）に、作ったプロジェクトで使うものとして覚える
+              （設定の既定は変えない）。 */}
           {kind !== 'blank' && brain && (
             <div>
               <label className="text-xs font-semibold text-ink-secondary">このあとチャットで作業するAI</label>

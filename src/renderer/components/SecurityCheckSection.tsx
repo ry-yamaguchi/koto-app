@@ -1,29 +1,39 @@
 import { useEffect, useRef, useState } from 'react'
-import { runSecurityCheck, buildFixPrompt, SecurityCheckResult, CheckRecord, checkRecordKey, formatCheckRecord } from '../securityCheck'
+import { runSecurityCheck, planAiCheck, aiCheckBudget, SecurityCheckResult, CheckRecord, checkRecordKey, formatCheckRecord } from '../securityCheck'
 import { foldSecurity } from '../appRunFolding'
+import { buildSecurityFixPrompt, fixItemsOf, mergeFixItems } from '../../shared/aiCheckFindings'
+import { createRunGate, runScanFlow, runAiFlow } from '../securityCheckFlow'
+import type { AiEstimate } from '../aiCheckEstimate'
+import AiCheckEstimateBox from './AiCheckEstimateBox'
 import CopyButton from './CopyButton'
 import SecurityReportBody from './SecurityReportBody'
 import { failureCopyNow } from '../failureCopy'
 import OsvCheckBlock from './OsvCheckBlock'
 import PublishScanResult from './PublishScanResult'
-import { runPublishScanView } from '../publishScanRun'
-import { runSecuritySteps } from '../securityCheckSteps'
+import { runPublishScanResult, type PublishScanOutcome } from '../publishScanRun'
 import {
-  PUBLISH_SCAN_PROGRESS, PUBLISH_SCAN_BUTTON_NO_AI, PUBLISH_SCAN_NO_AI_NOTE, PUBLISH_SCAN_AI_STOPPED_NOTE,
-  type ScanView,
+  PUBLISH_SCAN_PROGRESS, PUBLISH_SCAN_BUTTON_NO_AI, PUBLISH_SCAN_BUSY, PUBLISH_SCAN_NO_AI_NOTE,
 } from '../publishScanWords'
 
 // 🛡 セキュリティチェックの節。公開フローの「事前チェック」の次に置く
 // （2026-08-21 Ryosuke 指定。最初は上部バーに置いたが、公開の流れの中が自然）。
 //
-// 実体は runSecurityCheck ただ1つ（掟10）。押したときだけ実行する（手動のみ）。
+// 流れは securityCheckFlow.ts（依存は引数）。ここは状態を持って、押されたら流れを呼ぶだけ。
+// 【ファイルを点検する】は Koto の点検だけ（キーがあれば続けて送る前の見積りを作る）。
+// 【AIに確認してもらう】は、見積りの枠の中のボタンを押したときだけ AI の確認が始まる。
 // 公開時の自動実行は 2026-08-21 に作者の指摘で廃止した（コミット 94e0c08。毎回は不要）。
 // 公開はこの確認の最中でも押せる（任意の確認のため。押したときだけ実行する、という上の決定の帰結）。
 // どの公開先（AppRun / Vercel / HANAMII / レンタルサーバ）でも、この同じ部品を使う。
 // stepNo: 呼び出し元の画面の番号体系に乗せるための見出し番号（例 '手順4'）。
 // 渡されなければ従来どおり番号なし（PublishModal は番号体系を持たない画面のため未指定・2026-09-04 Ryosuke 指摘）。
 export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { projectDir: string; apiKey: string; stepNo?: string }) {
-  const [checking, setChecking] = useState(false)
+  // 点検が走っている間／AI の確認が走っている間（どちらも、押し直しは gate が止める）
+  const [scanning, setScanning] = useState(false)
+  const [aiRunning, setAiRunning] = useState(false)
+  const checking = scanning || aiRunning
+  // 走らせたプロジェクト。別のプロジェクトへ替えたら、進み具合と中止の口は出さない（走らせた側の持ち物）
+  const [runDir, setRunDir] = useState<string | null>(null)
+  const mine = checking && runDir === projectDir
   // 実況: 何をしているか（時間がかかるので、無言で待たせない・2026-08-21 Ryosuke 指摘）
   const [progress, setProgress] = useState('')
   const [result, setResult] = useState<SecurityCheckResult | null>(null)
@@ -38,7 +48,6 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
   // ⚠️ 受け口を useState で持たないこと。useState は関数を渡すと「更新関数」と解釈して
   // **その場で呼んでしまう**（setStop(abort) が abort() を走らせる）。押していないのに
   // 中止が走る、いちばん見つけにくい形になる。だから ref に置く。
-  // 画面に出す・消すの判定は checking（と stopping）で足りる。
   const abortRef = useRef<(() => void) | null>(null)
   // 押したあと、実際に止まるまでのあいだ（通信が切れるまで）の表示用
   const [stopping, setStopping] = useState(false)
@@ -46,74 +55,102 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
   // 押した本人に「実施できませんでした」とだけ見せると、失敗したように読める
   const [aborted, setAborted] = useState(false)
   // Koto が自分で読んで点検した結果（AI は使わない）。押した時点のプロジェクトのものだけ置く
-  const [scan, setScan] = useState<ScanView | null>(null)
-  // 「中止」が押されたか（描画には使わないので ref）
-  const stopRef = useRef(false)
-  // 点検の間に中止が押され、AI の確認を始めなかった回
-  const [aiStopped, setAiStopped] = useState(false)
-  // 押した時点で、AI の確認を走らせる回だったか（キーはあとで変わりうるので、押した時点の値を残す）
-  const [aiRan, setAiRan] = useState(false)
+  const [scan, setScan] = useState<PublishScanOutcome | null>(null)
+  // 送る前の見積り（点検を押した時点のもの。送るときに計画し直すので、数は変わりうる）
+  const [estimate, setEstimate] = useState<AiEstimate | null>(null)
+  // 走っている間の押し直しを止める札（点検と AI の確認で1つ）
+  const gateRef = useRef(createRunGate())
   const dirRef = useRef(projectDir)
   dirRef.current = projectDir
+  const isCurrent = (dir: string) => dirRef.current === dir
 
   useEffect(() => {
-    setResult(null) // 別プロジェクトの結果を見せない
+    // 別プロジェクトの結果・見積りを見せない
+    setResult(null)
+    setScan(null)
+    setEstimate(null)
     try {
       const raw = window.localStorage.getItem(checkRecordKey(projectDir))
       setRecord(raw ? JSON.parse(raw) as CheckRecord : null)
     } catch { setRecord(null) }
   }, [projectDir])
 
-  useEffect(() => { setScan(null) }, [projectDir])
-
-  async function run() {
-    if (checking) return
-    stopRef.current = false
-    setChecking(true)
-    setStopping(false)
-    setAborted(false)
-    setResult(null)
-    setScan(null)
-    setAiStopped(false)
-    setAiRan(!!apiKey)
-    const started = projectDir
-    try {
-      setProgress(PUBLISH_SCAN_PROGRESS)
-      const end = await runSecuritySteps({
-        // 先に Koto が自分で点検する（AI は呼ばない・外へ送らない）
-        scan: async () => {
-          const view = await runPublishScanView(projectDir, 'publish')
-          if (dirRef.current === started) setScan(view)
+  /** 【ファイルを点検する】。Koto の点検だけ。キーがあれば、続けて見積りを作る（AI は呼ばない）。 */
+  function runScan() {
+    void runScanFlow({
+      projectDir, apiKey,
+      gate: gateRef.current,
+      isCurrent,
+      deps: {
+        runScan: (dir) => runPublishScanResult(dir, 'publish'),
+        planAiCheck: (dir) => planAiCheck(dir),
+        aiCheckBudget,
+      },
+      on: {
+        start: () => {
+          setRunDir(projectDir)
+          setScanning(true)
+          setStopping(false)
+          setAborted(false)
+          setResult(null)
+          setScan(null)
+          setEstimate(null)
+          setProgress(PUBLISH_SCAN_PROGRESS)
         },
-        stopRequested: () => stopRef.current,
-        ai: apiKey ? async () => {
-          const r = await runSecurityCheck(projectDir, apiKey, setProgress, (abort) => { abortRef.current = abort })
+        scan: setScan,
+        estimate: setEstimate,
+        finish: () => { setScanning(false); setRunDir(null); setProgress('') },
+      },
+    })
+  }
+
+  /** 見積りの枠の【AIに確認してもらう】。ここからだけ AI の確認が始まる。 */
+  function runAi() {
+    void runAiFlow({
+      projectDir, apiKey, estimate,
+      gate: gateRef.current,
+      isCurrent,
+      deps: {
+        runSecurityCheck,
+        writeRecord: (dir, rec) => window.localStorage.setItem(checkRecordKey(dir), JSON.stringify(rec)),
+      },
+      on: {
+        start: () => {
+          setRunDir(projectDir)
+          setAiRunning(true)
+          setStopping(false)
+          setAborted(false)
+          setResult(null)
+          setProgress('')
+        },
+        progress: setProgress,
+        abortReady: (abort) => { abortRef.current = abort },
+        result: (r, rec) => {
           setResult(r)
-          // 実施できたときだけ記録する（省略・失敗は「確認した」ではない）
-          if (r.verdict === 'ok' || r.verdict === 'warn') {
-            const rec: CheckRecord = { at: new Date().toISOString(), verdict: r.verdict }
-            try { window.localStorage.setItem(checkRecordKey(projectDir), JSON.stringify(rec)) } catch { /* 保存できなくても続ける */ }
-            setRecord(rec)
-          }
-        } : null,
-      })
-      if (end === 'stopped-before-ai' && dirRef.current === started) setAiStopped(true)
-    } finally {
-      abortRef.current = null
-      setChecking(false)
-      setStopping(false)
-      setProgress('')
-    }
+          if (rec) setRecord(rec)
+        },
+        finish: () => {
+          abortRef.current = null
+          setAiRunning(false)
+          setRunDir(null)
+          setStopping(false)
+          setProgress('')
+        },
+      },
+    })
   }
 
   /** 「中止する」を押したとき。いま待っている問い合わせを切り、残りのかたまりへ進ませない。 */
   function stop() {
-    if (!checking) return
-    stopRef.current = true
+    if (!aiRunning) return
     setStopping(true)
     setAborted(true)
     abortRef.current?.()
   }
+
+  // 修正の依頼文は buildSecurityFixPrompt の1か所で組む。Koto の点検の指摘（行のあるもの）と AI の確認の指摘を、
+  // 同じ ファイル:行 は点検のほうを残して1つにする
+  const fixPrompt = buildSecurityFixPrompt(mergeFixItems(scan?.fixItems ?? [], fixItemsOf(result?.findings ?? [])))
 
   return (
     <section className="rounded-xl border border-line bg-surface p-4 space-y-3">
@@ -124,7 +161,7 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
               受け口（onAbortReady）と、押されたときに本当に止まる振る舞いは
               securityCheck.ts 側にあったが、**押すところが画面に無かった**。
               押せない中断は無いのと同じなので、確認中はここに必ず出す。 */}
-          {checking && aiRan && (
+          {aiRunning && mine && (
             <button
               onClick={stop}
               disabled={stopping}
@@ -132,10 +169,10 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
             >{stopping ? '中止しています…' : '⏹ 中止する'}</button>
           )}
           <button
-            onClick={() => { void run() }}
+            onClick={runScan}
             disabled={checking}
             className="bg-overlay text-ink border border-line rounded-md px-3 py-1 text-xs font-medium hover:border-sakura disabled:opacity-40"
-          >{checking ? '確認中…' : apiKey ? 'AIに確認してもらう' : PUBLISH_SCAN_BUTTON_NO_AI}</button>
+          >{scanning ? PUBLISH_SCAN_BUSY : PUBLISH_SCAN_BUTTON_NO_AI}</button>
         </div>
       </div>
       {/* ── 免責は「押す前」に読める位置に置く（2026-08-21 Ryosuke 指摘）────────
@@ -166,11 +203,11 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
         <p className="text-[11px] text-ink-muted">🕐 {formatCheckRecord(record)}</p>
       )}
 
-      {checking && (
+      {mine && (
         <>
           <p className="text-xs text-ink-secondary">⏳ {progress || '準備しています…'}</p>
           {/* 待たされている人に、止められることを字で伝える（ボタンだけだと気づかれない） */}
-          {aiRan && (
+          {aiRunning && (
             <p className="text-[11px] text-ink-muted">
               {stopping
                 ? '中止しています。少しお待ちください。'
@@ -180,9 +217,12 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
         </>
       )}
 
-      {scan && <PublishScanResult view={scan} />}
-      {scan && !aiRan && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_NO_AI_NOTE}</p>}
-      {scan && aiStopped && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_AI_STOPPED_NOTE}</p>}
+      {scan && <PublishScanResult view={scan.view} />}
+      {scan && !apiKey && <p className="text-[11px] text-ink-muted">{PUBLISH_SCAN_NO_AI_NOTE}</p>}
+      {/* 送る前の見積り。キーが無い・消えたときは出さない（描く時点の apiKey を見る） */}
+      {estimate && apiKey && (
+        <AiCheckEstimateBox estimate={estimate} running={aiRunning && mine} disabled={checking} onRun={runAi} />
+      )}
 
       {/* ── 全部✅なら1行に畳む（判断6・利用者目線レビュー・2026-09-11）──────────────
           手順3 事前チェック（AppRunPanel.tsx）の「preflight.checks.every(c => c.status === 'ok')」
@@ -222,24 +262,24 @@ export default function SecurityCheckSection({ projectDir, apiKey, stepNo }: { p
             {/* 結果は目印方式で「判定＋指摘（最大5件）」だけに絞ってある（＝要約）。
                 思考の文章は securityCheck 側で捨てるので、ここには届かない */}
             <SecurityReportBody result={result} />
-            {result.verdict === 'warn' && (
-              <span className="block">
-                <button
-                  onClick={() => {
-                    // 指摘の全文＋「実際に修正しろ」の明確な指示をチャットへ（そのまま送信される）。
-                    // rc.1 では指示が弱く、AIが翻訳・再レビューだけで終わった（2026-08-21 実機）。
-                    // 指摘の全文は外部のテキストなので、境界で囲む（組み立ては buildFixPrompt の1か所）
-                    window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: buildFixPrompt(result.report) } }))
-                  }}
-                  className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
-                >🛠 AIに修正させる</button>
-                {/* W-104: 「AIが直します」は言い切りすぎ。応答中は入力欄に置かれるだけで、
-                    自動では送られない・直せない項目もあることを添える（決定: 案2）。 */}
-                <span className="ml-2 text-[11px] text-ink-muted">押すとチャットに移り、AIに直すよう頼みます（AIが応答中のときは入力欄に入るので、終わってから送信してください）</span>
-              </span>
-            )}
           </div>
         )
+      )}
+      {/* 修正のボタンは、点検と AI の確認の2つの枠の下に1つだけ */}
+      {fixPrompt !== null && !checking && (
+        <span className="block">
+          <button
+            onClick={() => {
+              // 指摘のファイル・行・種類だけから作った依頼文をチャットへ（そのまま送信される）。
+              // 組み立ては buildSecurityFixPrompt の1か所（AI の文・引用・値は入れようがない）
+              window.dispatchEvent(new CustomEvent('sakura:fix-with-ai', { detail: { text: fixPrompt } }))
+            }}
+            className="sakura-gradient text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:opacity-90"
+          >🛠 AIに修正させる</button>
+          {/* W-104: 「AIが直します」は言い切りすぎ。応答中は入力欄に置かれるだけで、
+              自動では送られない・直せない項目もあることを添える（決定: 案2）。 */}
+          <span className="ml-2 text-[11px] text-ink-muted">押すとチャットに移り、AIに直すよう頼みます（AIが応答中のときは入力欄に入るので、終わってから送信してください）</span>
+        </span>
       )}
       <OsvCheckBlock projectDir={projectDir} />
     </section>

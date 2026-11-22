@@ -904,7 +904,7 @@ interface Window {
       // Claude頭脳モード（C2a/C2b）: query() を開始する。ハンドラは即 {ok:true} を返し、
       // 応答本体は onStream の連続イベント（claude:stream）として届く。
       // aiEngineKey は search_docs ツール用（方式B: renderer が使う瞬間に読んで渡す。無ければ null）。
-      // model は C2c（Claudeモデル選択）: claudeMode.ts の getClaudeModel() で選んだモデルID。
+      // model は C2c（Claudeモデル選択）: 送る回のプロジェクトの記憶 → 既定で決めたモデルID（projectAi.ts の resolveAiChoice）。
       // images は C2d: ユーザーが添付した画像（data URL配列・空配列可）。1枚以上あればClaude自身が
       // 直接画像を読む（main側 agent.ts がストリーミング入力モードへ切り替える）。
       // writeMode は W-18: 「✋ 毎回確認」なら、Write/Edit/Bash の前に承認ダイアログを出す

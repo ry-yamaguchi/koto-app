@@ -91,8 +91,14 @@ export const VISION_SUPPORT_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 // 実測で確定している種。`-VL-` / `multimodal` は画像専用として提供されているもの、
 // （Kimi K2.6 は 2026-07-14 に実測で直接読めたが、提供終了したため種から外した。根拠: 公式の終了案内 2026-10-14、2026-11-11 の check-pricing で公開料金表に無いこと。）
+// 2026-11-20 の実測: preview/DeepSeek-V4.1-Flash-1017 は verify-vision.mjs で画像に答え（見本の色も合った）、
+//   作者が送った実際の写真（たぬき）も正しく答えた。
+//   preview/GLM-5.3-Flash は、作者が実際に画像を送って内容を理解したことを確かめた（verify-vision.mjs の見本は
+//   半分透けた赤で「黒」と答えたが、透明を黒の背景として読んだもので、読めていた）。どちらも種 true。
+//   名前は完全一致で比べる（似た名前の別のモデルに当てない）。
 // （vision には「非対応と確定している種」は無い＝すべて未確認から始まり、実測で学習する。）
 const VISION_SEED_TRUE = /-VL-|multimodal/i
+const VISION_SEED_TRUE_IDS: ReadonlySet<string> = new Set(['preview/DeepSeek-V4.1-Flash-1017', 'preview/GLM-5.3-Flash'])
 
 /**
  * 画像入力の対応状況を判定する（純関数・記録を読むだけ）。判定順:
@@ -103,7 +109,7 @@ const VISION_SEED_TRUE = /-VL-|multimodal/i
 export function visionSupportOf(store: LearnStore, model: string, now: number = Date.now()): ToolSupport {
   const cached = store[model]
   if (cached && now - cached.at < VISION_SUPPORT_TTL_MS) return cached.supported
-  if (VISION_SEED_TRUE.test(model)) return true
+  if (VISION_SEED_TRUE.test(model) || VISION_SEED_TRUE_IDS.has(model)) return true
   return null
 }
 

@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { getAnthropicToken } from './CredentialsModal'
-import { isClaudeModeEnabled, setClaudeMode } from '../claudeMode'
+import { currentAiChoice, rememberProjectBrain, type AiBrain } from '../projectAi'
+import { subscribeAiChoice, getAiChoiceVersion } from '../aiChoiceSignal'
 
 /** チャットモードの表示（押せない）のツールチップ。 */
 export const CHAT_MODE_TITLE = 'Claude は、プロジェクトを開いた画面（IDEモード）で使えます'
@@ -24,8 +25,8 @@ export function brainToggleView(o: { canToggle: boolean; claudeActive: boolean; 
   // ツールチップは compact でも省略せず正式名称で出す（表示名だけを短くする）。
   const title = o.canToggle
     ? (o.claudeActive
-      ? '使う AI: Claude（クリックで さくらのAI Engine に切り替え）'
-      : '使う AI: さくらのAI Engine（クリックで Claude に切り替え）')
+      ? 'このプロジェクトで使う AI: Claude（クリックで さくらのAI Engine に切り替え）'
+      : 'このプロジェクトで使う AI: さくらのAI Engine（クリックで Claude に切り替え）')
     : (o.claudeActive ? '使う AI: Claude' : '使う AI: さくらのAI Engine')
   const label = o.compact
     ? (o.claudeActive ? '🧠 Claude' : '🧠 AI Engine')
@@ -34,11 +35,31 @@ export function brainToggleView(o: { canToggle: boolean; claudeActive: boolean; 
 }
 
 /**
+ * クリックで切り替える先（純関数）。押せない（canToggle でない・プロジェクトを開いていない）ときは null。
+ * 切り替えるのは、そのプロジェクトの記憶の brain だけ。
+ */
+export function brainToggleAction(o: { projectDir: string | null | undefined; canToggle: boolean; current: AiBrain | null }): { dir: string; brain: AiBrain } | null {
+  if (!o.canToggle || !o.projectDir) return null
+  return { dir: o.projectDir, brain: o.current === 'claude' ? 'sakura' : 'claude' }
+}
+
+/**
+ * クリックで切り替えたときの書き込み（押せるときだけ書く）。書く先は、そのプロジェクトの記憶（koto_project_ai:<dir>）だけ。
+ * 設定の既定は書かない。書いたかどうかを返す。
+ */
+export function applyBrainToggle(o: { projectDir: string | null | undefined; canToggle: boolean; current: AiBrain | null }): boolean {
+  const a = brainToggleAction(o)
+  if (!a) return false
+  return rememberProjectBrain(a.dir, a.brain)
+}
+
+/**
  * 使う AI（Claude / さくらのAI Engine）の表示＋クリック切替。
  * StatusBar（IDEモード右下）から抽出し、ChatApp（チャットモード右下）でも共用する（2026-07-13 ユーザー要望）。
  * チャットモードの右下は、のちに押せない表示へ変えた（下の chatMode）。
- * 両方のキーが登録済みのときだけクリックで切替できる（⇄ 付き）。片方のみは表示のみ。
- * setClaudeMode は 'sakura:credentials-changed' を dispatch するため、切替は全画面に即反映される。
+ * 両方のキーが登録済みで、プロジェクトを開いているときだけクリックで切替できる（⇄ 付き）。それ以外は表示のみ。
+ * 切り替えるのは、そのプロジェクトの記憶だけ（設定の既定は変えない）。記憶と既定の変化は aiChoiceSignal で知らせる。
+ * 表示する AI は projectAi.ts の currentAiChoice（記憶 → 既定）で決める。
  *
  * compact: モデル選択の横（IDE の AIチャット欄のヘッダ）に置くための小さな枠付き表示
  * （2026-07-29 ユーザー要望: 右下と設定だけでなく、モデル選択の横でも切り替えたい）。
@@ -51,10 +72,9 @@ export function brainToggleView(o: { canToggle: boolean; claudeActive: boolean; 
  * 必ず さくらのAI Engine が答える（toolsProjectDir が無いため。useAiChat.ts の send() 参照）。
  * 以前は両方のキーがあると押せる表示（⇄）にしていたが、押しても IDEモードで使う AI だけが変わり、
  * チャットの表示は変わらないため、効かないように見えた。Claude は IDE モードで使う
- * （切り替えの入口は IDE の右下・AIチャット欄のモデル選択の横・設定の「IDEモードで使う AI」）。
+ * （切り替えの入口は IDE の右下・AIチャット欄のモデル選択の横。どちらもそのプロジェクトの記憶だけを変え、設定の「IDEモードで使う AI」は既定）。
  */
-export default function BrainToggle({ apiKey, className = '', compact = false, chatMode = false }: { apiKey?: string; className?: string; compact?: boolean; chatMode?: boolean }) {
-  const [claudeActive, setClaudeActive] = useState(false)
+export default function BrainToggle({ apiKey, className = '', compact = false, chatMode = false, projectDir = null }: { apiKey?: string; className?: string; compact?: boolean; chatMode?: boolean; projectDir?: string | null }) {
   // Claudeキーが登録済みか（モードのオン/オフとは別。切替可否の判定に使う）。
   const [hasClaudeKey, setHasClaudeKey] = useState(false)
   useEffect(() => {
@@ -63,15 +83,21 @@ export default function BrainToggle({ apiKey, className = '', compact = false, c
       const key = await getAnthropicToken()
       if (!alive) return
       setHasClaudeKey(!!key)
-      setClaudeActive(!!key && isClaudeModeEnabled())
     }
     refresh()
     window.addEventListener('sakura:credentials-changed', refresh)
     return () => { alive = false; window.removeEventListener('sakura:credentials-changed', refresh) }
   }, [])
-  const canToggle = hasClaudeKey && !!apiKey?.trim()
-  const toggle = () => { if (canToggle) setClaudeMode(!isClaudeModeEnabled()) }
-  const view = brainToggleView({ canToggle, claudeActive, compact, chatMode, hasEngineKey: !!apiKey?.trim() })
+  // 記憶か既定が変わったら描き直す（値は使わない。第3引数は renderToStaticMarkup のために必須）。
+  useSyncExternalStore(subscribeAiChoice, getAiChoiceVersion, getAiChoiceVersion)
+  const hasEngineKey = !!apiKey?.trim()
+  const current = currentAiChoice(projectDir, { hasClaudeKey, hasEngineKey }).brain
+  const claudeActive = current === 'claude'
+  const canToggle = hasClaudeKey && hasEngineKey && !!projectDir
+  const toggle = () => {
+    applyBrainToggle({ projectDir, canToggle, current })
+  }
+  const view = brainToggleView({ canToggle, claudeActive, compact, chatMode, hasEngineKey })
   if (!view) return null
 
   if (compact) {

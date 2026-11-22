@@ -813,7 +813,7 @@ export default function App() {
         )}
       </div>
 
-      {mode === 'ide' && <StatusBar activeFile={activeFileObj} meta={projectMeta} apiKey={sakuraApiKey} />}
+      {mode === 'ide' && <StatusBar activeFile={activeFileObj} meta={projectMeta} apiKey={sakuraApiKey} projectDir={currentDir} />}
 
       {showSettings && <SettingsModal apiKey={sakuraApiKey} updateRequest={updateRequest} onClose={() => { setShowSettings(false); setUpdateRequest(0) }} onOpenCredentials={() => setShowCredentials(true)} />}
 

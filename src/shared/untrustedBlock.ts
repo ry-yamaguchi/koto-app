@@ -49,7 +49,7 @@ function makeNonce(): string {
  * 境界トークンを本文に埋め込んで「囲みが終わったように見せかける」ことは
  * できてしまう。wrap する前に必ず除去する。
  */
-function sanitizeForWrap(content: string): string {
+export function sanitizeForWrap(content: string): string {
   return content.replace(/<<<\s*(END-)?KOTO-EXT[^>]*>>>/gi, '⟪外部データ内の区切り模倣を除去⟫')
 }
 

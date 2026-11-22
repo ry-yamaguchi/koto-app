@@ -33,6 +33,11 @@ export const MODELS: { id: string; label: string }[] = [
   { id: 'llm-jp-3.1-8x13b-instruct4', label: 'llm-jp 3.1 8x13b（日本語）' },
   { id: 'preview/Qwen3-0.6B-cpu', label: 'Qwen3 0.6B（CPU・プレビュー）' },
   { id: 'preview/Phi-4-mini-instruct-cpu', label: 'Phi-4 mini（CPU・プレビュー）' },
+  // 2026-11-18 提供開始（公式料金表）。2026-11-20 作者の実測: tools ok・推論型・どちらも画像を直接読める
+  // （画像の扱いは modelLearning.ts の種で決める）。Kimi-K2.6 は
+  // 2026-11-20 に公式料金表へ再び載っていたが、API の提供モデル（/v1/models）に無いので登録しない。
+  { id: 'preview/GLM-5.3-Flash', label: 'GLM-5.3 Flash（プレビュー）' },
+  { id: 'preview/DeepSeek-V4.1-Flash-1017', label: 'DeepSeek V4.1 Flash（プレビュー）' },
   // 2026-09-24 提供開始（医療特化・東京大学 松尾・岩澤研究室。gpt-oss-120b に日本語の医学論文・
   // 診療ガイドライン等で追加学習）。ツール対応は**書かない**——お知らせに記述が無く、
   // 実際に使ったときに modelLearning.ts が学ぶ（掟1: 推測しない）。
@@ -90,6 +95,8 @@ export const MODEL_PURPOSE: Record<string, { purpose: string; note?: string }> =
   'preview/Qwen3-0.6B-cpu': { purpose: '小型', note: 'ツール非対応' },
   'preview/Phi-4-mini-instruct-cpu': { purpose: '小型', note: 'ツール非対応' },
   'preview/Weblab-MedLLM-gpt-oss-120b': { purpose: '医療特化', note: '無償枠なし' },
+  'preview/GLM-5.3-Flash': { purpose: '画像も読める', note: '推論型' },
+  'preview/DeepSeek-V4.1-Flash-1017': { purpose: '画像も読める', note: '推論型' },
 }
 
 /**
@@ -142,6 +149,8 @@ const VISION_IDS = new Set(VISION_MODELS.map(m => m.id))
 /** モデルが画像入力に対応しているか（ID命名からも推定）。
  *  名前の一覧（VISION_MODELS）と、-VL- / multimodal の命名で判定する。
  *  Kimi K2.6 は提供終了したため、判定からも外した（根拠: 公式の終了案内 2026-10-14、および 2026-11-11 の check-pricing で公開料金表に無いこと。K2.5 も提供終了済み）。
+ *  これは「画像を送るときに使う画像用のモデル」を選ぶための判定。チャットのモデルが画像を直接読めるか
+ *  （DeepSeek-V4.1-Flash-1017・GLM-5.3-Flash は読める＝2026-11-20 実測）は modelLearning.ts の種で持つ。
  *  ── B'-3d-1a で renderer/usage.ts からここ（shared）へ移した。main のターン実行
  *  （turnRunner.ts の vision.defaultModel）と renderer の両方が使うため。**複製しないこと**
  *  （掟10: 片方だけ直されて、ずれても誰も気づかない）。 */

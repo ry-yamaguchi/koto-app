@@ -88,7 +88,7 @@ export const SERVICES: ServiceDef[] = [
     fields: [{ key: 'apiKey', label: '個人アクセストークン（PAT）', secret: true, placeholder: 'github_pat_…' }],
   },
   {
-    id: 'anthropic', title: 'Claude（Anthropic API）', hint: '登録すると、プロジェクトを開いた画面（IDEモード）で使う AI が Claude に切り替わります。キーは Claude Console（platform.claude.com）で発行します。',
+    id: 'anthropic', title: 'Claude（Anthropic API）', hint: '登録すると、Claude を選んだプロジェクトと、使う AI をまだ選んでいないプロジェクト（設定の「IDEモードで使う AI」が Claude のとき）で Claude を使います。キーは Claude Console（platform.claude.com）で発行します。',
     active: true, group: 'perTarget',
     fields: [{ key: 'apiKey', label: 'APIキー', secret: true, placeholder: 'sk-ant-…' }],
   },

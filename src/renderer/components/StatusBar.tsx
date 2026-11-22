@@ -6,8 +6,10 @@ import BrainToggle from './BrainToggle'
 interface Props {
   activeFile: OpenFile | null
   meta?: ProjectMeta | null
-  /** さくらのAI Engineのキー（Claude頭脳モードのツールチップ文言の出し分けに使う）。 */
+  /** さくらのAI Engineのキー（使う AI の表示・切り替えの可否に使う）。 */
   apiKey?: string
+  /** 開いているプロジェクト（使う AI の記憶を引く）。無ければ切り替えは押せない。 */
+  projectDir?: string | null
 }
 
 const TARGET_SHORT: Record<string, string> = {
@@ -57,8 +59,8 @@ function publishedTitle(iso?: string): string {
   return `最終公開操作: ${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-export default function StatusBar({ activeFile, meta, apiKey }: Props) {
-  // チャットの頭脳表示＋クリック切替は BrainToggle（ChatApp と共用）へ抽出（2026-07-13）。
+export default function StatusBar({ activeFile, meta, apiKey, projectDir }: Props) {
+  // 使う AI の表示＋クリック切替は BrainToggle（ChatApp と共用）へ抽出（2026-07-13）。
   const published = meta?.publish?.lastPublishedAt
   const url = meta?.publish?.url
   const date = shortDate(published)
@@ -95,7 +97,7 @@ export default function StatusBar({ activeFile, meta, apiKey }: Props) {
           )}
         </>
       )}
-      <BrainToggle apiKey={apiKey} className="ml-auto" />
+      <BrainToggle apiKey={apiKey} projectDir={projectDir ?? null} className="ml-auto" />
     </div>
   )
 }

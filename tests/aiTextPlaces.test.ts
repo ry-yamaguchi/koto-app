@@ -205,15 +205,21 @@ describe('★ 5か所は、ただの文字ではなく共通の部品を使っ�
     // コピーされるのは元の文（AI が書いたまま）
     // （実施できなかった側だけ getText で版・日時を添える。写す元の文は同じ result.report）
     expect(countOf(src, '<CopyButton text={result.report} title="チェック結果をコピー"')).toBe(2)
-    // 「AIに修正させる」に渡すのも元の文（境界で囲むのは buildFixPrompt。文へ直に差し込む形には戻さない）
-    expect(src).toContain('detail: { text: buildFixPrompt(result.report) }')
+    // 「AIに修正させる」に渡すのは、Koto が指摘のファイル・行・種類だけから作った文（buildSecurityFixPrompt）。
+    // AI の文・報告は入らない。報告を渡す直す前の形には戻さない
+    expect(src).toContain('detail: { text: fixPrompt }')
+    expect(src).not.toContain('buildFixPrompt')
+    expect(src).not.toContain('detail: { text: buildFixPrompt(result.report) }')
     expect(src).not.toContain('\\n\\n${result.report}')
   })
 
-  it('2・3. SecurityReportBody: AI の行だけ AiText で解釈し、Koto の行は plain で文字のまま出す', () => {
+  it('2・3. SecurityReportBody: 結果の行は plain で文字のまま出す（解釈するのは ai が true の行だけ。いまの合成は常に false）', () => {
     const src = code(COMP + 'SecurityReportBody.tsx')
     expect(src).toContain("import { AiText } from './AiMessage'")
-    expect(src).toContain('reportParts(result).map((p, i) => <AiText key={i} content={p.text} plain={!p.ai} />)')
+    expect(src).toContain('{blocksOf(reportParts(result)).map((b, i) => {')
+    expect(src).toContain('<AiText key={j} content={p.text} plain={!p.ai} />')
+    // 直す前の形（fold を知らず、1行ずつ並べるだけ）に戻っていない
+    expect(src).not.toContain('reportParts(result).map((p, i) =>')
     expect(src).toContain('<div className="text-xs text-ink-secondary select-text max-h-52 overflow-y-auto space-y-2">')
     expect(src).not.toContain('<pre')
   })

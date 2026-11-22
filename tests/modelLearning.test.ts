@@ -150,6 +150,29 @@ describe('visionSupportOf: 未確認のモデルは、まずそのまま試す',
   })
 })
 
+describe('visionSupportOf: 2026-11-20 の実測の種（名前の完全一致）', () => {
+  const empty = {}
+  it('DeepSeek V4.1 Flash は画像を直接読める種（そのまま渡す）', () => {
+    expect(visionSupportOf(empty, 'preview/DeepSeek-V4.1-Flash-1017')).toBe(true)
+    expect(shouldTryImagesDirectly(empty, 'preview/DeepSeek-V4.1-Flash-1017')).toBe(true)
+  })
+  it('GLM-5.3 Flash も画像を直接読める種（作者が実際の画像で確かめた）', () => {
+    expect(visionSupportOf(empty, 'preview/GLM-5.3-Flash')).toBe(true)
+    expect(shouldTryImagesDirectly(empty, 'preview/GLM-5.3-Flash')).toBe(true)
+  })
+  it('似た名前のモデルには種を当てない（未確認のまま）', () => {
+    for (const id of ['preview/GLM-5.3-Flash-x', 'preview/GLM-5.3', 'preview/DeepSeek-V4.1-Flash', 'preview/DeepSeek-V4.1-Flash-1017x']) {
+      expect(visionSupportOf(empty, id)).toBeNull()
+    }
+  })
+  it('新しい実測で読めないと覚えたら、それに従う（覚えた結果が種より先）', () => {
+    for (const id of ['preview/DeepSeek-V4.1-Flash-1017', 'preview/GLM-5.3-Flash']) {
+      const learned = { [id]: { supported: false, at: Date.now() } }
+      expect(visionSupportOf(learned, id)).toBe(false)
+    }
+  })
+})
+
 describe('visionSupportOf: 試した結果を覚える（記録との往復）', () => {
   it('対応と分かれば、次からそのまま渡す', () => {
     const store: LearnStore = { modelA: { supported: true, at: Date.now() } }

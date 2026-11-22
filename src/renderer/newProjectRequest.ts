@@ -159,9 +159,9 @@ export function buildNewProjectRequest(args: NewProjectRequestArgs): string | nu
 
 // ── 依頼の受け渡し（モジュールスコープの一時退避） ──────────────────────────────
 // NewProjectModal.tsx は作成直後に window.dispatchEvent(new CustomEvent('sakura-new-project-request', ...))
-// で ChatPanel.tsx へ依頼を渡す。しかし「初めてのプロジェクト作成」では
-// ChatPanel がまだマウントされておらず（IDEモード表示は mode==='ide' && currentDir が条件のため、
-// 最初のプロジェクトが作られるまで ChatPanel 自体が存在しない）、その瞬間に発火した CustomEvent は
+// で ChatPanel.tsx へ依頼を渡す。しかし、チャットモードで作った・
+// チャット欄を閉じていたときは ChatPanel がまだマウントされておらず（表示の条件は mode==='ide' && showChat。
+// そのときは ChatPanel 自体が存在しない）、その瞬間に発火した CustomEvent は
 // 受け手不在のまま失われてしまう。ここへも同じ内容を退避しておき、ChatPanel が後からマウントされた
 // タイミングで拾い直せるようにする（Electron のレンダラは1ページのまま切り替わるため、
 // モジュールスコープの値はプロジェクト作成→ChatPanelのマウントをまたいで生き続ける）。

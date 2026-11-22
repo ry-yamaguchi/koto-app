@@ -11,7 +11,6 @@ export const PUBLISH_SCAN_BUSY = '点検中…'
 export const GITHUB_SCAN_TITLE = '🛡 保存するファイルの点検'
 export const GITHUB_SCAN_NOTE = 'キーやパスワードの直書きと、秘密が入っていそうな名前のファイルがないかを、Koto が点検します。AI は使いません。'
 export const PUBLISH_SCAN_NO_AI_NOTE = 'AI による確認は行っていません（さくらのAI Engine のキーがありません）。'
-export const PUBLISH_SCAN_AI_STOPPED_NOTE = 'AI の確認は、中止したため行っていません。'
 
 export type ScanVerdict = 'ok' | 'warn' | 'skip'
 export interface ScanViewLine { kind: 'head' | 'group' | 'finding' | 'text' | 'failure' | 'note'; text: string }

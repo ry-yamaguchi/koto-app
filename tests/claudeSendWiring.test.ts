@@ -45,8 +45,8 @@ describe('Claude の同意の関門', () => {
     expect(src.split('claude.chatStart(').length - 1).toBe(1)
   })
 
-  it('確認の本文は、確認し直しの判定を渡した claudeConsentBody', () => {
-    expect(src).toContain('claudeConsentBody(isClaudeConsentReconfirm())')
+  it('確認の本文は、確認し直しの判定とさくらのキーの有無を渡した claudeConsentBody', () => {
+    expect(src).toContain('claudeConsentBody(isClaudeConsentReconfirm(), !!apiKey)')
   })
 
   it('送れるかは「すでに同意済み、または今回はいと答えた」で決め、保存の成否に頼らない', () => {

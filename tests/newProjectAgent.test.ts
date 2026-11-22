@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultCreationBrain, pickSavedModel } from '../src/renderer/newProjectAgent'
+import { defaultCreationBrain, pickSavedModel, creationProjectAi } from '../src/renderer/newProjectAgent'
 
 describe('defaultCreationBrain — 新規プロジェクト作成の「担当AI」既定選択', () => {
   it('両方のキーあり・Claude頭脳モードon・保存無し → claude', () => {
@@ -60,5 +60,16 @@ describe('pickSavedModel — モデル選択の保存値とフォールバック
   it('一覧が空のときは既定（fallback）をそのまま返す', () => {
     expect(pickSavedModel('b', [], 'a')).toBe('a')
     expect(pickSavedModel(null, [], 'a')).toBe('a')
+  })
+})
+
+describe('creationProjectAi — 新規作成で選んだ AI とモデルを、作ったプロジェクトの記憶の形にする', () => {
+  it('claude なら { brain, claudeModel }、sakura なら { brain, sakuraModel }（選ばなかった側のモデルは入れない）', () => {
+    expect(creationProjectAi({ brain: 'claude', claudeModelId: 'c1', sakuraModelId: 's1' })).toEqual({ brain: 'claude', claudeModel: 'c1' })
+    expect(creationProjectAi({ brain: 'sakura', claudeModelId: 'c1', sakuraModelId: 's1' })).toEqual({ brain: 'sakura', sakuraModel: 's1' })
+  })
+
+  it('AI を選べない（null）ときは記憶を作らない', () => {
+    expect(creationProjectAi({ brain: null, claudeModelId: 'c1', sakuraModelId: 's1' })).toBeNull()
   })
 })

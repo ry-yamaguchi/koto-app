@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import StorageSettings from './StorageSettings'
 import OsvConsentSettings from './OsvConsentSettings'
 import SakuraLogo from './SakuraLogo'
@@ -10,6 +10,8 @@ import {
   type BudgetSettings, type MonthUsage, type ModelUsageRow,
 } from '../usage'
 import { useModels } from '../hooks/useModels'
+import { useClaudeModels } from '../hooks/useClaudeModels'
+import { subscribeAiChoice, getAiChoiceVersion } from '../aiChoiceSignal'
 import { getAnthropicToken } from './CredentialsModal'
 import { SHOW_THINKING_KEY, isThinkingAlwaysOpen } from './ThinkingBlock'
 import { GREET_ON_OPEN_LABEL, isGreetOnOpenEnabled, setGreetOnOpen } from '../greetSetting'
@@ -17,7 +19,7 @@ import { updateStatusText, shouldHighlight, shouldCheckFromMenu, type UpdateStat
 // 料金の表示は shared の1か所から（料金表に無いモデルに、実在しない料金を出さない・2026-09-25）
 import { priceLabel, usageCostNote, unknownPriceRuleText } from '../../shared/usageBudget'
 import {
-  isClaudeModeEnabled, setClaudeMode, claudeMonthKey,
+  isClaudeModeEnabled, setClaudeMode, getClaudeModel, setClaudeModel, claudeMonthKey,
   getClaudeCostThisMonth, approxJpyFromUsd, getClaudeWarnUsd, setClaudeWarnUsd, isOverClaudeWarnThreshold,
   USD_JPY_APPROX,
 } from '../claudeMode'
@@ -141,6 +143,9 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials, upda
     return () => { alive = false; window.removeEventListener('sakura:credentials-changed', refreshClaude) }
   }, [])
   const hasClaudeKey = !!claudeKey
+  // 設定の既定の Claude のモデル（書いたら描き直す。値は描画のたびに読む）。
+  useSyncExternalStore(subscribeAiChoice, getAiChoiceVersion, getAiChoiceVersion)
+  const claudeModels = useClaudeModels(claudeKey ?? '')
   const hasAiEngineKey = !!apiKey?.trim()
 
   // 所見8: 今月のClaude利用額（実額・USD）。モーダルは開閉のたびに再マウントされるため、初期値の取得のみで十分。
@@ -449,10 +454,10 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials, upda
                       さくらのAI Engine
                     </button>
                   </div>
-                  <p className="mt-1.5 text-[11px] text-ink-muted">切り替えると、次のメッセージから反映されます。</p>
+                  <p className="mt-1.5 text-[11px] text-ink-muted">使う AI をまだ選んでいないプロジェクトで使います。新規作成やチャット欄の上で選んだプロジェクトは、その選択のまま使います。</p>
                 </>
               ) : hasClaudeKey ? (
-                <p className="text-sm text-ink">Claudeで動作しています。</p>
+                <p className="text-sm text-ink">Claude のキーだけが登録されています。</p>
               ) : (
                 <p className="text-sm text-ink">
                   さくらのAI Engineで動作しています（Claudeのキーを登録すると切り替えられます）。
@@ -484,10 +489,25 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials, upda
             </select>
             {ideDesc && <p className="mt-1 text-sm text-ink-secondary">{ideDesc}</p>}
             <p className="mt-1 text-[11px] text-ink-muted">
-              コード作成・プロジェクト生成・🛡 簡易セキュリティチェックで使います。
-              Claude で動かしているときは、IDE の右側にある AIチャット欄の上のモデル選択で選びます。
+              モデルをまだ選んでいないプロジェクトと、🛡 簡易セキュリティチェックで使います。
             </p>
           </div>
+
+          {/* Default model (IDE・Claude)。Claude のキーがあるときだけ。設定の既定の書き込み口（プロジェクトの記憶は projectAi.ts）。 */}
+          {hasClaudeKey && (
+            <div>
+              <label className="text-xs font-semibold text-ink-secondary">IDEで使うモデル（Claude）</label>
+              <select
+                value={getClaudeModel(claudeModels)}
+                onChange={e => setClaudeModel(e.target.value)}
+                className="mt-1.5 w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-sm text-ink outline-none focus:border-sakura cursor-pointer transition-colors"
+              >
+                {claudeModels.map(m => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Default model (Chat) */}
           <div>
