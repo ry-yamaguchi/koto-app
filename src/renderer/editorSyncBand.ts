@@ -78,6 +78,39 @@ export async function runBandAction(file: OpenFile, action: BandAction, deps: Ba
   }
 }
 
+/**
+ * 帯のボタンの押下口。二重押しは ref（inFlight）で断り、busy（ボタンを disabled にする）は実行の段にだけ立てる。
+ * 確認（外の内容を読み込む・未保存のまま閉じる）を待つ間にボタンを disabled にすると、閉じたときにフォーカスを戻せず body に落ちるため。
+ */
+export async function runBandClick(
+  inFlight: { current: boolean },
+  setBusy: (busy: boolean) => void,
+  file: OpenFile,
+  action: BandAction,
+  deps: BandDeps,
+): Promise<void> {
+  if (inFlight.current) return
+  inFlight.current = true
+  const exec = (fn: (path: string) => unknown | Promise<unknown>) => async (path: string) => {
+    setBusy(true)
+    try { return await fn(path) } finally { setBusy(false) }
+  }
+  try {
+    await runBandAction(file, action, {
+      ...deps,
+      reload: exec(deps.reload),
+      keepMine: exec(deps.keepMine),
+      recreate: exec(deps.recreate),
+      save: async (path, content) => {
+        setBusy(true)
+        try { return await deps.save(path, content) } finally { setBusy(false) }
+      },
+    })
+  } finally {
+    inFlight.current = false
+  }
+}
+
 /** 保存できなかったファイルの名前を並べる（5つまで。残りは件数）。 */
 function unsavedNames(unsaved: Array<{ name: string }>): string {
   const SHOWN = 5

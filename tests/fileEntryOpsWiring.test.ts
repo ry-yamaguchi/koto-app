@@ -33,7 +33,7 @@ const SIDEBAR = 'src/renderer/components/Sidebar.tsx'
 const DIALOG = 'src/renderer/components/ProjectDeleteDialog.tsx'
 const OPS = 'src/renderer/fileEntryOps.ts'
 const APP = 'src/renderer/App.tsx'
-const APPRUN = 'src/renderer/components/AppRunPanel.tsx'
+const APPRUN = 'src/renderer/unusedImagesTrash.ts' // 使っていない画像のゴミ箱（P-137 で AppRunPanel から切り出した）
 
 describe('ファイル一覧の削除は deleteFileEntry の 1 か所。先に fs.trashCheck で聞く', () => {
   it('見張りの前提: 対象のファイルが実在する', () => {
@@ -69,7 +69,7 @@ describe('ファイル一覧の削除は deleteFileEntry の 1 か所。先に f
     expect(body.indexOf('deps.confirm(')).toBeLessThan(body.indexOf('deps.trash('))
   })
 
-  it('★★★ 呼び口の一覧: fs.trashCheck( は Sidebar だけ、fs.trash( は Sidebar と AppRunPanel（使われていないファイルの削除）だけ、fs.trashProject( はダイアログだけ', () => {
+  it('★★★ 呼び口の一覧: fs.trashCheck( は Sidebar だけ、fs.trash( は Sidebar と unusedImagesTrash.ts（使っていない画像の削除）だけ、fs.trashProject( はダイアログだけ', () => {
     expect(hits('fs.trashCheck(')).toEqual([SIDEBAR])
     expect(hits('fs.trash(')).toEqual([SIDEBAR, APPRUN].sort())
     expect(hits('fs.trashProject(')).toEqual([DIALOG])

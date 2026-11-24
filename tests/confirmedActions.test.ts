@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
+  runForgetPublishRecord,
   runClearConversation,
   runDeleteConversation,
   runCloseUnsaved,
@@ -157,5 +160,39 @@ describe('runEraseVpsKey: confirm を通らなければ erase は一切呼ばれ
     const confirm = vi.fn().mockResolvedValue(false)
     await runEraseVpsKey('entry-1', '確認文言V', { confirm, erase: vi.fn() })
     expect(confirm).toHaveBeenCalledWith('確認文言V')
+  })
+})
+
+describe('runForgetPublishRecord（📡 公開したもの一覧「一覧から削除」・P-136）: 確認が no なら消す関数は0回', () => {
+  it('★ no: forget は呼ばれず、cancelled', async () => {
+    const forget = vi.fn()
+    const confirm = vi.fn(async () => false)
+    const out = await runForgetPublishRecord('msg', { confirm, forget })
+    expect(out).toEqual({ cancelled: true })
+    expect(confirm).toHaveBeenCalledWith('msg')
+    expect(forget).toHaveBeenCalledTimes(0)
+  })
+  it('★ yes: forget が1回', async () => {
+    const forget = vi.fn()
+    const out = await runForgetPublishRecord('msg', { confirm: async () => true, forget })
+    expect(out.cancelled).toBe(false)
+    expect(forget).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('PublishedListModal の配線（P-136）: 「一覧から削除」は確認（runForgetPublishRecord）を通る', () => {
+  const src = readFileSync(join(__dirname, '..', 'src/renderer/components/PublishedListModal.tsx'), 'utf-8')
+  const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  it('forgetRecord が runForgetPublishRecord を呼び、clearPublishRecord はその forget の中にだけある', () => {
+    expect(code).toMatch(/import \{ runForgetPublishRecord \} from '\.\.\/confirmedActions'/)
+    const m = code.match(/const forgetRecord = async \(e: PublishedEntry\) => \{([\s\S]*?)\n  \}\n/)
+    expect(m, 'forgetRecord が見つかる').not.toBeNull()
+    const body = m![1]
+    expect(body).toContain('await runForgetPublishRecord(')
+    expect(body.indexOf('runForgetPublishRecord')).toBeLessThan(body.indexOf('clearPublishRecord'))
+    expect(body).toMatch(/forget: async \(\) => \{[^}]*clearPublishRecord/)
+    // ボタンは forgetRecord だけを呼ぶ（clearPublishRecord を直に呼ばない）
+    expect(code).toContain('onClick={() => forgetRecord(e)}')
+    expect(code.match(/clearPublishRecord\(/g)?.length).toBe(1)
   })
 })

@@ -187,6 +187,9 @@ describe('buildDelegatePrompt', () => {
     const { system } = buildDelegatePrompt('タスク', [])
     expect(system).toContain('{"files":[{"path":"相対パス","content":"ファイル全文"}],"notes":"補足(任意)"}')
     expect(system).toContain('コードフェンス')
+    // P-131: path の根は作業フォルダ（delegate は writeRoot へ書く）
+    expect(system).toContain('path は作業フォルダ')
+    expect(system).not.toContain('プロジェクトルート')
     expect(system).toContain('説明文')
   })
 

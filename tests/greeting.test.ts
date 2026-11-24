@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import {
-  decideGreeting, runGreeting,
+  decideGreeting, runGreeting, isGreetingLeftover,
   type GreetingInput, type GreetingPorts, type GreetingStreamRequest,
 } from '../src/renderer/greeting'
 import { IDE_CONTEXT } from '../src/renderer/aiContext'
@@ -179,8 +179,6 @@ function makePorts(opts: {
   budget?: { allowed: boolean; warning?: string; message?: string }
   /** 返事の断片。関数は、その位置で起きる出来事（例: 別のプロジェクトへの切り替え）。 */
   deltas?: Array<string | (() => void)>
-  /** いま開いているプロジェクト。呼ぶたびに返す（既定は RUN_DIR のまま）。 */
-  dirNow?: () => string | null | undefined
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null
   timedOut?: 'first' | 'idle'
   streamThrows?: Error
@@ -189,9 +187,8 @@ function makePorts(opts: {
   const calls: Call[] = []
   const rec = (name: string, ...args: unknown[]) => { calls.push({ name, args }) }
   const abortFn = () => {}
-  const dirNow = (): string | null | undefined => (opts.dirNow ? opts.dirNow() : RUN_DIR)
-  /** applyOp が届いたときに開いていたプロジェクト（会話へ当てた先） */
-  const appliedAt: Array<string | null | undefined> = []
+  /** 会話の記録へ送った書き換え（宛先つき。あいさつの書き換えの出口はこの1本だけ） */
+  const toDir: Array<{ dir: string; op: any }> = []
   const ports: GreetingPorts = {
     checkBeforeRequest: (apiKey) => { rec('checkBeforeRequest', apiKey); return opts.budget ?? { allowed: true } },
     chatStream: async (req: GreetingStreamRequest, onDelta, onAbort) => {
@@ -203,19 +200,18 @@ function makePorts(opts: {
     },
     recordUsage: (...a) => { rec('recordUsage', ...a); if (opts.recordThrows) throw opts.recordThrows },
     estimateTokens: (text) => { rec('estimateTokens', text); return text.length },
-    applyOp: (op) => { rec('applyOp', op); appliedAt.push(dirNow()) },
+    applyOpToDir: (dir, op) => { rec('applyOpToDir', op); toDir.push({ dir, op }) },
     setLoading: (v) => { rec('setLoading', v) },
     setAbort: (fn) => { rec('setAbort', fn) },
     warn: (d) => { rec('warn', d) },
-    currentDir: dirNow,
   }
-  return { ports, calls, abortFn, appliedAt }
+  return { ports, calls, abortFn, toDir }
 }
 
 const run = { apiKey: 'key-1', model: 'model-1', projectContext: '【プロジェクト】a', dir: RUN_DIR }
 const names = (calls: Call[]) => calls.map(c => c.name)
 const ofName = (calls: Call[], name: string) => calls.filter(c => c.name === name)
-const ops = (calls: Call[]) => ofName(calls, 'applyOp').map(c => c.args[0] as any)
+const ops = (calls: Call[]) => ofName(calls, 'applyOpToDir').map(c => c.args[0] as any)
 
 describe('T-5b: runGreeting — お金の歯止めは、同じ引数・同じ順で呼ばれる', () => {
   it('★★★ 通常の1回: checkBeforeRequest(キー) → 読み込み表示 → 吹き出し → chatStream → … → recordUsage(キー, モデル, 入力, 出力) → 中断を外す → 読み込み表示を消す', async () => {
@@ -224,11 +220,11 @@ describe('T-5b: runGreeting — お金の歯止めは、同じ引数・同じ順
     expect(names(calls)).toEqual([
       'checkBeforeRequest',
       'setLoading',
-      'applyOp',        // 空の吹き出しを出す
+      'applyOpToDir',        // 空の吹き出しを出す
       'chatStream',
       'setAbort',       // chatStream の中で中断関数を受け取る
-      'applyOp',        // 'こん'
-      'applyOp',        // 'こんにちは'
+      'applyOpToDir',        // 'こん'
+      'applyOpToDir',        // 'こんにちは'
       'recordUsage',
       'setAbort',
       'setLoading',
@@ -273,7 +269,7 @@ describe('T-5b: runGreeting — キー無し（Claude だけ）は AI へ送ら�
     const { ports, calls } = makePorts()
     await runGreeting({ ...run, apiKey: '' }, ports)
     expect(calls).toEqual([
-      { name: 'applyOp', args: [{ kind: 'replaceAll', messages: [{ role: 'assistant', content: FIXED }] }] },
+      { name: 'applyOpToDir', args: [{ kind: 'replaceAll', messages: [{ role: 'assistant', content: FIXED }] }] },
     ])
   })
 })
@@ -358,7 +354,7 @@ describe('T-5b: runGreeting — warning（止めない設定で上限を超え�
     expect(warning(calls)).toEqual([{ kind: 'append', msg: { role: 'assistant', toolNote: true, content: WARN } }])
     // 最後の1件で、読み込み表示を消したあと
     const last = calls[calls.length - 1]
-    expect(last.name).toBe('applyOp')
+    expect(last.name).toBe('applyOpToDir')
     expect((last.args[0] as any).kind).toBe('append')
     const idxLoadingOff = calls.findIndex(c => c.name === 'setLoading' && c.args[0] === false)
     expect(idxLoadingOff).toBe(calls.length - 2)
@@ -449,87 +445,78 @@ describe('T-5b: runGreeting — ⏹ 停止', () => {
   })
 })
 
-describe('T-5b: runGreeting — 返事を待つ間に別のプロジェクトを開いたら、会話へ当てない（環境の独立）', () => {
+describe('T-5b: runGreeting — 書き換えはいつも始めたプロジェクトの記録へ送る（環境の独立。開いている先は見ない）', () => {
   const WARN = '⚠️ 今月の上限を超えています'
   const A = '/p/a'
-  const B = '/p/b'
-  /** 開いているプロジェクトを切り替える出来事。deltas の位置に置く。 */
-  const open = (cur: { dir: string | null }, to: string | null) => () => { cur.dir = to }
-  const sentToOthers = (appliedAt: Array<string | null | undefined>) => appliedAt.filter(d => d !== A)
 
-  it('★★★ 途中で B に切り替わったら、そのあとの更新は B の会話へ1件も届かない（A のときに当てた分だけが残る）', async () => {
-    const cur = { dir: A as string | null }
-    const { ports, calls, appliedAt } = makePorts({ dirNow: () => cur.dir, deltas: ['あ', open(cur, B), 'い', 'う'] })
-    await runGreeting(run, ports)
-    expect(ops(calls)).toHaveLength(2) // 空の吹き出しと 'あ' の2件。切り替えのあとの 'い'・'う' は届かない
-    expect(appliedAt).toEqual([A, A])
-    expect(sentToOthers(appliedAt)).toEqual([])
+  it('★★★ 全文・時間切れ・失敗・上限の文・固定の一言のすべてが、始めたプロジェクト A の記録へだけ送られる', async () => {
+    const cases: Array<{ name: string; o: Parameters<typeof makePorts>[0]; key?: string }> = [
+      { name: '全文', o: { deltas: ['あ', 'い'] } },
+      { name: '時間切れ', o: { usage: null, timedOut: 'first', deltas: [] } },
+      { name: '失敗', o: { streamThrows: new Error('boom') } },
+      { name: '上限の知らせ', o: { budget: { allowed: true, warning: WARN } } },
+      { name: '固定の一言', o: {}, key: '' },
+    ]
+    for (const c of cases) {
+      const { ports, toDir } = makePorts(c.o)
+      await runGreeting({ ...run, apiKey: c.key ?? run.apiKey }, ports)
+      expect(toDir.length, c.name).toBeGreaterThan(0)
+      expect(toDir.every(t => t.dir === A), c.name).toBe(true)
+    }
   })
 
-  it('★★★ 切り替わったあとの warning（あとから足す知らせ）は、B の会話へ届かない', async () => {
-    const cur = { dir: A as string | null }
-    const { ports, calls, appliedAt } = makePorts({ budget: { allowed: true, warning: WARN }, deltas: ['あ', open(cur, B)], dirNow: () => cur.dir })
+  it('★★★ 返事の全文は、最後の1件が記録に残る全文になる（毎回送り直す）', async () => {
+    const { ports, toDir } = makePorts({ deltas: ['あ', 'い', 'う'] })
     await runGreeting(run, ports)
-    expect(ops(calls).map(o => o.kind)).toEqual(['replaceAll', 'replaceAll']) // append（warning）は届かない
-    expect(sentToOthers(appliedAt)).toEqual([])
+    expect(toDir.map(t => t.dir)).toEqual([A, A, A, A])
+    expect(toDir[toDir.length - 1].op).toEqual({ kind: 'replaceAll', messages: [{ role: 'user', content: KICKOFF, hidden: true }, { role: 'assistant', content: 'あいう' }] })
   })
 
-  it('★★★ 切り替わったあとの時間切れの文は、B の会話へ届かない', async () => {
-    const cur = { dir: A as string | null }
-    const { ports, calls, appliedAt } = makePorts({ usage: null, deltas: [open(cur, B)], timedOut: 'first', dirNow: () => cur.dir })
-    await runGreeting(run, ports)
-    expect(ops(calls).map(o => o.kind)).toEqual(['replaceAll']) // 空の吹き出しだけ（A のとき）。時間切れの文は届かない
-    expect(sentToOthers(appliedAt)).toEqual([])
-    expect(ofName(calls, 'recordUsage')).toHaveLength(1)
+  it('★★★ 時間切れ・失敗・上限の文は、記録の最後に文として残る', async () => {
+    const t = makePorts({ usage: null, timedOut: 'first', deltas: [] })
+    await runGreeting(run, t.ports)
+    expect(t.toDir[t.toDir.length - 1]).toEqual({ dir: A, op: { kind: 'replaceAll', messages: [{ role: 'assistant', content: TIMED_OUT }] } })
+    expect(ofName(t.calls, 'recordUsage')).toHaveLength(1)
+    const f = makePorts({ streamThrows: new Error('boom') })
+    await runGreeting(run, f.ports)
+    expect(f.toDir[f.toDir.length - 1]).toEqual({ dir: A, op: { kind: 'replaceAll', messages: [{ role: 'assistant', content: FAILED }] } })
+    expect(ofName(f.calls, 'warn')).toHaveLength(1)
+    const w = makePorts({ budget: { allowed: true, warning: WARN }, deltas: ['あ'] })
+    await runGreeting(run, w.ports)
+    expect(w.toDir[w.toDir.length - 1]).toEqual({ dir: A, op: { kind: 'append', msg: { role: 'assistant', toolNote: true, content: WARN } } })
   })
 
-  it('★★ 失敗（例外）の文は、切り替わったあとなら届かない。原因のログは残る', async () => {
-    const cur = { dir: A as string | null }
-    const { ports, calls, appliedAt } = makePorts({ dirNow: () => cur.dir, streamThrows: new Error('boom') })
-    const orig = ports.chatStream
-    ports.chatStream = async (req, onDelta, onAbort) => { cur.dir = B; return orig(req, onDelta, onAbort) } // 要求を出した直後に切り替わる
-    await runGreeting(run, ports)
-    expect(sentToOthers(appliedAt)).toEqual([])
-    expect(ops(calls).map(o => o.kind)).toEqual(['replaceAll']) // 空の吹き出しだけ。固定の失敗文は届かない
-    expect(ofName(calls, 'warn')).toHaveLength(1)
-  })
-
-  it('★★ 切り替わっても、読み込み表示を消す・中断関数を外す・利用量を記録する、は続ける', async () => {
-    const cur = { dir: A as string | null }
-    const { ports, calls } = makePorts({ dirNow: () => cur.dir, deltas: [open(cur, B), 'い'], usage: { prompt_tokens: 7, completion_tokens: 3 } })
+  it('★★ 読み込み表示を消す・中断関数を外す・利用量を記録する、は変わらず続ける', async () => {
+    const { ports, calls } = makePorts({ deltas: ['い'], usage: { prompt_tokens: 7, completion_tokens: 3 } })
     await runGreeting(run, ports)
     expect(ofName(calls, 'recordUsage')).toEqual([{ name: 'recordUsage', args: ['key-1', 'model-1', 7, 3] }])
     expect(calls.slice(-2)).toEqual([{ name: 'setAbort', args: [null] }, { name: 'setLoading', args: [false] }])
   })
 
-  it('★ 返事の全文は毎回送り直すので、A に戻ってきたら、離れている間に届いた分も含めた全文が出る', async () => {
-    const cur = { dir: A as string | null }
-    const { ports, calls, appliedAt } = makePorts({ dirNow: () => cur.dir, deltas: ['あ', open(cur, B), 'い', open(cur, A), 'う'] })
-    await runGreeting(run, ports)
-    expect(sentToOthers(appliedAt)).toEqual([])
-    const last = ops(calls).pop()
-    expect(last).toEqual({ kind: 'replaceAll', messages: [{ role: 'user', content: KICKOFF, hidden: true }, { role: 'assistant', content: 'あいう' }] })
-  })
-
-  it('開いているプロジェクトが無い（null・undefined）ときも当てない', async () => {
-    for (const none of [null, undefined]) {
-      const { ports, calls } = makePorts({ dirNow: () => none, budget: { allowed: true, warning: WARN } })
-      await runGreeting(run, ports)
-      expect(calls.filter(c => c.name === 'applyOp'), String(none)).toEqual([])
+  // ChatPanel の配線を写した ports。送り先は applyOpToConversation（dir ごとの列）だけで、
+  // 画面の client（clientRef）・開いているプロジェクト（projectDirRef）は ports に渡さない。
+  it('★★★ A→B→A の戻り（projectDirRef が A・clientRef は B の client）の間に A のあいさつが届いても、B の記録へは1件も入らない', async () => {
+    const projectDirRef = { current: 'A' as string }
+    const clientRef = { current: { dir: 'B', sent: [] as unknown[] } }
+    const store = new Map<string, unknown[]>()
+    const wired: GreetingPorts = {
+      ...makePorts({ deltas: ['あ', 'い'] }).ports,
+      applyOpToDir: (dir, op) => { const l = store.get(dir) ?? []; l.push(op); store.set(dir, l) },
     }
+    // 描画は A へ戻ったが effect はまだ（clientRef は B のまま）
+    expect(projectDirRef.current).toBe('A')
+    expect(clientRef.current.dir).toBe('B')
+    await runGreeting({ ...run, dir: 'A' }, wired)
+    expect([...store.keys()]).toEqual(['A'])
+    expect(store.get('B')).toBeUndefined()
+    expect(clientRef.current.sent).toEqual([])
   })
 
-  it('キー無しの固定の一言も、始めたプロジェクトが開いていなければ当てない', async () => {
-    const { ports, calls } = makePorts({ dirNow: () => B })
-    await runGreeting({ ...run, apiKey: '' }, ports)
-    expect(calls).toEqual([])
-  })
-
-  it('対照: ずっと A が開いていれば、いままでどおり全部当てる（warning も最後に1件）', async () => {
-    const { ports, calls, appliedAt } = makePorts({ budget: { allowed: true, warning: WARN }, deltas: ['あ', 'い'] })
-    await runGreeting(run, ports)
-    expect(ops(calls).map(o => o.kind)).toEqual(['replaceAll', 'replaceAll', 'replaceAll', 'append'])
-    expect(appliedAt.every(d => d === A)).toBe(true)
+  it('★★★ ports は画面への口（applyOp）・開いているプロジェクト（currentDir）・読み込み済みか（viewingReady）を持たない', () => {
+    const g = readCode('src/renderer/greeting.ts')
+    expect(g).not.toMatch(/applyOp\(|currentDir|viewingReady|ports\.applyOp\b/)
+    const { ports } = makePorts()
+    expect(Object.keys(ports).sort()).toEqual(['applyOpToDir', 'checkBeforeRequest', 'chatStream', 'estimateTokens', 'recordUsage', 'setAbort', 'setLoading', 'warn'].sort())
   })
 })
 
@@ -574,7 +561,7 @@ describe('判断 → 実行: オフなら AI へ何も飛ばない', () => {
   it('オン（キー無しで Claude だけ）→ 固定の一言だけ・chatStream 0回', async () => {
     const { ports, calls } = makePorts()
     await effectLike({ ...ready, hasApiKey: false }, '', ports, { dir: '' })
-    expect(names(calls)).toEqual(['applyOp'])
+    expect(names(calls)).toEqual(['applyOpToDir'])
   })
 
   it('同じフォルダでは2回目は飛ばない（印が効く）', async () => {
@@ -656,25 +643,31 @@ describe('T-5d: ChatPanel の effect が decideGreeting を1か所で通る（�
     expect(ports).toContain('        recordUsage,\n')
     expect(ports).toContain('        estimateTokens,\n')
     expect(ports).toContain('chatStream: (req, onDelta, onAbort) => window.electronAPI.sakura.chatStream(req, onDelta, onAbort),')
-    expect(ports).toContain('setLoading: setGreetLoading,')
-    expect(ports).toContain('applyOp,')
+    expect(ports).toContain('setLoading: (loading) => greet.setLoadingOf(projectDir, loading),')
+    expect(ports).toContain('applyOpToDir: applyOpToConversation,')
+    // 見ている間の client も、見ていない間の口と同じ dir ごとの1本（別々に作ると同じ会話へ2本の列が書く）
+    expect(readCode('src/renderer/components/ChatPanel.tsx')).toContain('clientRef.current = convClientOf(projectDir)')
+    expect(readCode('src/renderer/components/ChatPanel.tsx')).not.toContain('clientRef.current = makeConvClient(')
+    expect(ports).not.toMatch(/\n\s+applyOp,/)
   })
 
   it('★★ 第1引数（キー・モデル・そのプロジェクトの文脈・始めたプロジェクト）と、残りの ports も、実物のまま渡す', () => {
     // 型検査は通る形（空の文脈・空の関数・渡し忘れ）なので、呼び出しの形ごと固定する。
     const call = effect.slice(effect.indexOf('void runGreeting('))
     expect(call).toContain('{ apiKey, model, projectContext: ctxFor(projectDir), dir: projectDir },')
-    expect(call).toContain('setAbort: (abort) => { greetAbortRef.current = abort },')
+    expect(call).toContain('setAbort: (abort) => greet.setAbortOf(projectDir, abort),')
     expect(call).toContain("warn: (detail) => console.warn('greet failed:', detail),")
-    expect(call).toContain('currentDir: () => projectDirRef.current,')
-    // いま開いているプロジェクトの置き場は、描画のたびに更新する（古い値のままだと、切り替わりを見分けられない）
-    expect(src).toContain('const projectDirRef = useRef(projectDir)\n  projectDirRef.current = projectDir\n')
+    // 画面の状態（開いているプロジェクト・client）をあいさつの送り先の判断に使わない
+    expect(call).not.toContain('projectDirRef')
+    expect(call).not.toContain('clientRef')
+    expect(src).not.toContain('projectDirRef')
     // ⏹ は、登録された中断関数を呼ぶ
-    expect(src).toContain('onClick={() => { chat.abort(); greetAbortRef.current?.() }}')
+    expect(src).toContain('onClick={() => { chat.abort(); greet.abortViewing() }}')
+    expect(src).not.toContain('greetAbortRef')
   })
 
   it('★★ ports は、GreetingPorts の項目をすべて渡している（渡し忘れが無い）', () => {
-    const expected = ['applyOp', 'chatStream', 'checkBeforeRequest', 'currentDir', 'estimateTokens', 'recordUsage', 'setAbort', 'setLoading', 'warn']
+    const expected = ['applyOpToDir', 'chatStream', 'checkBeforeRequest', 'estimateTokens', 'recordUsage', 'setAbort', 'setLoading', 'warn']
     const g = readCode('src/renderer/greeting.ts')
     const block = g.slice(g.indexOf('export interface GreetingPorts {'), g.indexOf('\n}\n', g.indexOf('export interface GreetingPorts {')))
     const declared = [...block.matchAll(/^  (\w+)\(/gm)].map(m => m[1]).sort()
@@ -694,10 +687,10 @@ describe('T-5d: ChatPanel の effect が decideGreeting を1か所で通る（�
     expect(countOf(src, 'sakura.chatStream(')).toBe(1)
   })
 
-  it('★★★ 会話への書き換えは emit の1か所だけが ports.applyOp へ渡し、emit は始めたプロジェクトが開いているときだけ通す', () => {
+  it('★★★ 会話への書き換えは emit の1か所だけが渡し、いつも記録の口（applyOpToDir）へ送る', () => {
     const g = readCode('src/renderer/greeting.ts')
-    expect(countOf(g, 'ports.applyOp(')).toBe(1)
-    expect(g).toContain('const emit = (op: Op): void => { if (ports.currentDir() === dir) ports.applyOp(op) }')
+    expect(countOf(g, 'ports.applyOpToDir(')).toBe(1)
+    expect(g).toContain('const emit = (op: Op): void => { ports.applyOpToDir(dir, op) }')
     // 書き換えの入口 6か所（キー無しの固定文・最初の吹き出し・返事の更新・時間切れ文・失敗文・あとから足す知らせ）は、すべて emit
     expect(countOf(g, 'emit({')).toBe(6)
   })
@@ -743,7 +736,7 @@ describe('T-5d: 会話の読み込み済みの印（convLoadedDir）は、読み
     const load = at('loadConversationChecked(projectDir)')
     const cancelled = at('if (cancelled) return')
     const show = at('setMessages(msgs)')
-    const client = at('clientRef.current = makeConvClient(projectDir)')
+    const client = at('clientRef.current = convClientOf(projectDir)')
     const mark = at('if (readable) setConvLoadedDir(projectDir)')
     expect(load).toBeGreaterThan(-1)
     expect(cancelled).toBeGreaterThan(load)
@@ -787,5 +780,65 @@ describe('T-5d: プロジェクトを開く入口6つは、すべて projectDir 
       .filter(f => /\b(?:decideGreeting|runGreeting)\(/.test(readCode(f)))
       .sort()
     expect(callers).toEqual(['src/renderer/components/ChatPanel.tsx'])
+  })
+})
+
+// ── あいさつの残り（途中で止めた会話）────────────────────────────────────────
+const HID = { role: 'user', content: KICKOFF, hidden: true }
+const EMPTY_AI = { role: 'assistant', content: '' }
+
+describe('あいさつの残り: isGreetingLeftover', () => {
+  it('隠した依頼文＋空の AI の吹き出しだけなら残り', () => {
+    expect(isGreetingLeftover([HID, EMPTY_AI])).toBe(true)
+  })
+  it('空の会話・返事の文がある・利用者の発言がある・札だけ、は残りではない', () => {
+    expect(isGreetingLeftover([])).toBe(false)
+    expect(isGreetingLeftover([HID, { role: 'assistant', content: 'こんにちは' }])).toBe(false)
+    expect(isGreetingLeftover([HID, EMPTY_AI, { role: 'user', content: 'ECサイトを作りたい' }])).toBe(false)
+    expect(isGreetingLeftover([HID, { role: 'assistant', content: '', toolNote: true }])).toBe(false)
+  })
+  it('★ 画像を入れた旨の隠した発言（あいさつの依頼文ではない）は残りではない', () => {
+    const IMG = { role: 'user', content: '画像を入れました: assets/a.png', hidden: true }
+    expect(isGreetingLeftover([IMG, EMPTY_AI])).toBe(false)
+    expect(isGreetingLeftover([IMG])).toBe(false)
+    expect(decideGreeting({ ...ready, messagesLength: 1, messages: [{ role: 'user', content: 'x', hidden: true }] })).toEqual(NONE)
+  })
+})
+
+describe('あいさつの残り: decideGreeting はやり直す', () => {
+  const leftover = [HID, EMPTY_AI]
+  it('★ 残りだけの会話では、空の会話と同じ判断（あいさつをやり直す）', () => {
+    expect(decideGreeting({ ...ready, messagesLength: 2, messages: leftover })).toEqual({ action: 'ai', markGreeted: true })
+    expect(decideGreeting({ ...ready, hasApiKey: false, messagesLength: 2, messages: leftover })).toEqual({ action: 'fixed', markGreeted: true })
+  })
+  it('★ 利用者が何か送ったあと（件数3・利用者の発言あり）はやり直さない', () => {
+    const sent = [...leftover, { role: 'user', content: 'つくって' }]
+    expect(decideGreeting({ ...ready, messagesLength: 3, messages: sent })).toEqual(NONE)
+  })
+  it('返事の文があるあいさつは出し直さない', () => {
+    expect(decideGreeting({ ...ready, messagesLength: 2, messages: [HID, { role: 'assistant', content: 'やあ' }] })).toEqual(NONE)
+  })
+  it('残りでも、生成中・済んだ印・新規作成の保留中は出さない', () => {
+    for (const patch of [{ isLoading: true }, { greetedDir: '/p/a' }, { newProjectPending: true }] as Array<Partial<GreetingInput>>) {
+      expect(decideGreeting({ ...ready, messagesLength: 2, messages: leftover, ...patch })).toMatchObject({ action: 'none' })
+    }
+  })
+  it('★ やり直しは追記でなく置き換え: 最初の op は replaceAll で、残りの2件を2組にしない', async () => {
+    const ops: any[] = []
+    const ports: GreetingPorts = {
+      checkBeforeRequest: () => ({ allowed: true }),
+      chatStream: async (_r, onDelta) => { onDelta('やあ'); return { usage: null } },
+      recordUsage: () => {}, estimateTokens: () => 1,
+      applyOpToDir: (_d, op) => { ops.push(op) },
+      setLoading: () => {}, setAbort: () => {}, warn: () => {},
+    }
+    await runGreeting({ apiKey: 'k', model: 'm', projectContext: '', dir: '/p/a' }, ports)
+    expect(ops[0]).toEqual({ kind: 'replaceAll', messages: [{ role: 'user', content: KICKOFF, hidden: true }, { role: 'assistant', content: '' }] })
+    expect(ops.some(o => o.kind === 'append' && o.msg?.hidden)).toBe(false)
+  })
+  it('★ 画面は残りだけの会話で空の案内を出す（ChatPanel が isGreetingLeftover を通る）', () => {
+    const src = readFileSync(join(__dirname, '..', 'src/renderer/components/ChatPanel.tsx'), 'utf-8')
+    expect(src).toMatch(/isGreetingLeftover\(messages\)\) && !isLoading/)
+    expect(src).toContain('      messages,\n')
   })
 })

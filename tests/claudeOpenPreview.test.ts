@@ -107,6 +107,9 @@ describe('open_preview（Claude の道具）', () => {
     const onOpen = vi.fn(async () => 'x')
     const t = await openPreviewTool(onOpen)
     expect((await t.handler({ path: '../a.html' })).content[0].text).toContain('不正なパス')
+    // P-131: Claude 経路の失敗の文も「作業フォルダ」の言い方（さくら側 toolExecCore と同じ根）
+    expect((await t.handler({ path: '../a.html' })).content[0].text).toContain('作業フォルダからの相対パス')
+    expect((await t.handler({ path: '../a.html' })).content[0].text).not.toContain('プロジェクトルート')
     expect(onOpen).not.toHaveBeenCalled()
   })
   it('道具の説明に、開けるのは HTML だけと書いてある（Claude の道具・さくらのAI Engine の道具の両方）', async () => {

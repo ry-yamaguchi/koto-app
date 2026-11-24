@@ -286,7 +286,7 @@ export function buildIdeToolsServer(sdk: SdkModule, params: IdeToolsParams): Mcp
     async ({ path: relPath }) => {
       const rel = normalizePreviewPath(typeof relPath === 'string' ? relPath : undefined)
       if (!rel) {
-        return textResult(`エラー: 不正なパスです（${relPath}）。プロジェクトルートからの相対パスを指定してください`)
+        return textResult(`エラー: 不正なパスです（${relPath}）。作業フォルダからの相対パスを指定してください`)
       }
       // renderer が存在確認・拡張子の確認のうえ既定ブラウザで開き、その結果の文が返るまで待つ（確かめる前に「開きました」と言わない）。
       return textResult(await onOpenPreview(rel))

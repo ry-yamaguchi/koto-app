@@ -51,7 +51,7 @@ describe('executeToolCore - 共通のエラー文言', () => {
   it('read_file: 不正なパス（脱出）はエラー文言に相対パス指定を促す', async () => {
     const ctx: CoreToolContext = { writeRoot: '/w' }
     const result = await executeToolCore('read_file', JSON.stringify({ path: '../secret' }), ctx, makeIo())
-    expect(result).toBe('エラー: 不正なパスです（../secret）。プロジェクトルートからの相対パスを指定してください')
+    expect(result).toBe('エラー: 不正なパスです（../secret）。作業フォルダからの相対パスを指定してください')
   })
 
   it('write_file: Koto管理領域（.env）は保護パス文言を返す', async () => {

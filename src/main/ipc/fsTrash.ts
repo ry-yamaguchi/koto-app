@@ -20,7 +20,7 @@ import { CLOUD_DIR, CLOUD_STATE_FILE, loadCloudSpec } from '../cloud/specStore'
 import { readTwinFacts } from '../cloud/twinFacts'
 import { readApprunDedicatedFs, readMetaFs } from '../publishMetaFs'
 import { runningOpEntryAt } from '../projectLock'
-import { failureText } from '../../shared/failureText'
+import { withFailureDetail } from '../../shared/failureText'
 
 /** 断りの文（仕様 E-5）。画面にそのまま出る。 */
 export const FS_TRASH_MESSAGES = {
@@ -45,6 +45,15 @@ export const FS_TRASH_MESSAGES = {
   skippedInvalid: '削除の指定が正しくないため、移していません。',
   noPlace: '場所が指定されていません',
 } as const
+
+/**
+ * `shell.trashItem` が投げた失敗の文。macOS の文（コードの無い Error・OS の言語）は failureText が見分けられず原文だけになるので、
+ * ゴミ箱へ移せなかったことを固定の文で言い、原文は「詳細:」として添える（P-138）。権限と言い切らない（ロック・ゴミ箱の不調もある）。
+ */
+export const TRASH_FAILED_SENTENCE = 'ゴミ箱へ移せませんでした。Finder で、ロックされていないか・権限を確かめてください。'
+export function trashFailedText(e: unknown): string {
+  return withFailureDetail(TRASH_FAILED_SENTENCE, e)
+}
 
 /** `fs:trashCheck` の答え。`kind` は断った理由（`'denied'` はホームの深さの守り〔canTrash〕）。画面はこれで振り分ける（U8）。 */
 export type TrashCheckResult = { ok: true } | { ok: false; kind: 'denied' | Exclude<FileOpVerdict, 'plain'>; message: string }
@@ -137,7 +146,11 @@ export function trashCheckFs(p: unknown, deps: { home: string }): TrashCheckResu
 export async function trashFs(p: unknown, deps: TrashDeps): Promise<void> {
   const r = checkTrash(p, deps.home, [])
   if (!r.ok) throw new Error(r.message)
-  await deps.trashItem(r.abs)
+  try {
+    await deps.trashItem(r.abs)
+  } catch (e) {
+    throw new Error(trashFailedText(e))
+  }
 }
 
 /** `fs:rename`（同じフォルダの中での名前の変更）: 記録・プロジェクトのフォルダ・中にプロジェクトがあるフォルダ・調べられないものは変えない。新しい名前が記録の名前でも断る。 */
@@ -231,7 +244,7 @@ export async function trashProjectFs(dir: unknown, opts: unknown, deps: TrashDep
   try {
     await deps.trashItem(r.abs)
   } catch (e) {
-    return { ok: false, message: failureText(e, { checkAt: 'ファイル一覧' }) }
+    return { ok: false, message: trashFailedText(e) }
   }
   return { ok: true }
 }

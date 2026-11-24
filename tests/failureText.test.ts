@@ -201,6 +201,21 @@ describe('IPC を通って文字列だけになった失敗（構造の印が無
     expect(classifyFailure(new Error("EACCES: permission denied, open '/work/a.txt'")).path).toBe('/work/a.txt')
   })
 
+  it('★ 1つのパスの操作（open・mkdir）は、名前に \' -> \' を含んでもパス全体を返す（実在しない場所を言わない）', () => {
+    const pathOf = (m: string) => classifyFailure(new Error(m)).path
+    expect(pathOf("EACCES: permission denied, open '/w/p' -> 'q/new.txt'")).toBe("/w/p' -> 'q/new.txt")
+    expect(pathOf("EACCES: permission denied, mkdir '/w/p' -> 'q/dir'")).toBe("/w/p' -> 'q/dir")
+    // IPC の頭つき
+    const wrapped = new Error(head('fs:createProject', "Error: EACCES: permission denied, mkdir '/w/p' -> 'q/dir'"))
+    expect(classifyFailure(wrapped).path).toBe("/w/p' -> 'q/dir")
+    expect(classifyFailure(wrapped).path).not.toBe('/w/p')
+    // 2つのパスの操作は従来どおり（symlink・link・copyfile も）
+    expect(pathOf("ENOENT: no such file or directory, symlink '/w/a' -> '/w/b'")).toBe('/w/a')
+    expect(pathOf("ENOENT: no such file or directory, copyfile '/w/a' -> '/w/b'")).toBe('/w/a')
+    // 操作名が読めない形は言わない
+    expect(pathOf("EACCES: permission denied '/w/a'")).toBeUndefined()
+  })
+
   it('★ パスの読みは Node の errno 文の形だけ（Kids\' Photos・Rock \'n\' Roll で欠けない・形が曖昧なら言わない）', () => {
     const pathOf = (m: string) => classifyFailure(new Error(m)).path
     expect(pathOf("ENOENT: no such file or directory, open '/work/Kids' Photos'")).toBe("/work/Kids' Photos")

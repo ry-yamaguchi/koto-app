@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { trashFs, renameFs, trashCheckFs, trashProjectFs, FS_TRASH_MESSAGES, verdictOf } from '../src/main/ipc/fsTrash'
+import { trashFs, renameFs, trashCheckFs, trashProjectFs, FS_TRASH_MESSAGES, TRASH_FAILED_SENTENCE, verdictOf } from '../src/main/ipc/fsTrash'
 import { NOT_CONFIRMED_MESSAGE } from '../src/main/cloud/teardownShell'
 import { withProjectLock } from '../src/main/projectLock'
 import { resetProjectOpsForTests } from '../src/main/projectOps'
@@ -356,6 +356,7 @@ describe('★★★ T-E3 fs:trashProject: 確認の印が無ければ移さな�
   it('ゴミ箱へ送る口が失敗したら ok:false と原因の文を返す（投げない。画面が「移せませんでした」として受ける）', async () => {
     const dir = project('SAKURAIDE/p')
     const r = await trashProjectFs(dir, { confirmed: true, skippedForTwins: [] }, { home, trashItem: async () => { throw new Error('ゴミ箱を開けません') } })
-    expect(r).toEqual({ ok: false, message: 'ゴミ箱を開けません' })
+    // 固定の案内の文＋原文は「詳細:」（P-138。tests/trashFailureDetail.test.ts が画面の文まで通す）
+    expect(r).toEqual({ ok: false, message: `${TRASH_FAILED_SENTENCE}\n詳細: ゴミ箱を開けません` })
   })
 })

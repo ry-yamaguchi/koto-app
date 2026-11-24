@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import EditorSyncBand from '../src/renderer/components/EditorSyncBand'
-import { syncBandOf, runBandAction, quitBlockedNotice, leaveUnsavedNotice, RELOAD_CONFIRM, type BandAction, type BandDeps } from '../src/renderer/editorSyncBand'
+import { syncBandOf, runBandAction, runBandClick, quitBlockedNotice, leaveUnsavedNotice, RELOAD_CONFIRM, type BandAction, type BandDeps } from '../src/renderer/editorSyncBand'
 import { runReloadExternal } from '../src/renderer/confirmedActions'
 import type { OpenFile } from '../src/renderer/editorTabs'
 
@@ -251,9 +251,11 @@ describe('配線: EditorPanel の帯・プレビュー、App の自動保存・�
     expect(panel).toContain('onSave: (path: string, content: string) => Promise<SaveResult>')
   })
 
-  it('★★ 帯の操作は runBandAction を通り、「外の内容を読み込む」の確認は赤い確認（danger）', () => {
+  it('★★ 帯の操作は runBandClick（runBandAction の前に二重押しの ref と実行の段だけの busy）を通り、「外の内容を読み込む」の確認は赤い確認（danger）', () => {
     const body = bodyOf(panel, 'const handleBandAction = async', 'return (')
-    expect(body).toContain('await runBandAction(file, action, {')
+    expect(body).toContain('await runBandClick(bandInFlightRef, setBandBusy, file, action, {')
+    // 確認の前に busy を立てる元の形には戻さない
+    expect(body).not.toContain('setBandBusy(true)')
     expect(body).toContain('confirmReload: (body) => confirm({ title: RELOAD_CONFIRM.title, body, confirmLabel: RELOAD_CONFIRM.confirmLabel, danger: true }),')
     expect(body).toContain('reload: onReloadFromDisk,')
     expect(body).toContain('keepMine: onKeepMine,')
@@ -355,5 +357,81 @@ describe('配線: EditorPanel の帯・プレビュー、App の自動保存・�
     const body = bodyOf(app, 'const applyRestoreResult = useCallback(', 'const activeFileObj')
     expect(body).toContain('setActiveFile(prev => (prev && !openFilesRef.current.some(f => f.path === prev)) ? null : prev)')
     expect(body).not.toContain('deletedAbs.has(prev)')
+  })
+})
+
+describe('runBandClick: 確認を待つ間は busy を立てない（開いたボタンへフォーカスを戻せるように）・二重押しは1回だけ（P-133）', () => {
+  function setup(answer: Promise<boolean>) {
+    const busyLog: boolean[] = []
+    const log: string[] = []
+    const deps: BandDeps = {
+      confirmReload: () => answer,
+      reload: async p => { log.push(`reload ${p}`) },
+      keepMine: async p => { log.push(`keep ${p}`) },
+      recreate: async p => { log.push(`recreate ${p}`) },
+      save: async p => { log.push(`save ${p}`) },
+      close: async f => { log.push(`close ${f.name}`) },
+    }
+    const inFlight = { current: false }
+    return { busyLog, log, deps, inFlight, setBusy: (b: boolean) => { busyLog.push(b) } }
+  }
+
+  it('★ 「外の内容を読み込む」の確認を待つ間、busy は一度も立たない。答えのあと、実行の間だけ立つ', async () => {
+    let answer!: (v: boolean) => void
+    const s = setup(new Promise<boolean>(r => { answer = r }))
+    const p = runBandClick(s.inFlight, s.setBusy, file(), 'reload', s.deps)
+    await Promise.resolve()
+    expect(s.busyLog).toEqual([])
+    expect(s.log).toEqual([])
+    answer(true)
+    await p
+    expect(s.log).toEqual(['reload /p/a.txt'])
+    expect(s.busyLog).toEqual([true, false])
+  })
+  it('★ 確認を待つ間に2回目を押しても、実行は1回だけ', async () => {
+    let answer!: (v: boolean) => void
+    const s = setup(new Promise<boolean>(r => { answer = r }))
+    const p1 = runBandClick(s.inFlight, s.setBusy, file(), 'reload', s.deps)
+    const p2 = runBandClick(s.inFlight, s.setBusy, file(), 'reload', s.deps)
+    await p2
+    answer(true)
+    await p1
+    expect(s.log).toEqual(['reload /p/a.txt'])
+    // 終わったあとは、また押せる
+    await runBandClick(s.inFlight, s.setBusy, file(), 'keep', s.deps)
+    expect(s.log).toEqual(['reload /p/a.txt', 'keep /p/a.txt'])
+  })
+  it('確認が no なら busy は立たず、実行もしない。そのあとまた押せる', async () => {
+    const s = setup(Promise.resolve(false))
+    await runBandClick(s.inFlight, s.setBusy, file(), 'reload', s.deps)
+    expect(s.busyLog).toEqual([])
+    expect(s.log).toEqual([])
+    expect(s.inFlight.current).toBe(false)
+  })
+  it('★ 消えた帯の「閉じる」: 未保存の確認を待つ間も busy を立てない（閉じる本体は確認を持つ側）', async () => {
+    let answer!: (v: boolean) => void
+    const gate = new Promise<boolean>(r => { answer = r })
+    const s = setup(gate)
+    s.deps.close = async f => { if (await gate) s.log.push(`close ${f.name}`) }
+    const p = runBandClick(s.inFlight, s.setBusy, file(), 'close', s.deps)
+    await Promise.resolve()
+    expect(s.busyLog).toEqual([])
+    answer(true)
+    await p
+    expect(s.log).toEqual(['close a.txt'])
+    expect(s.busyLog).toEqual([])
+  })
+  it('keep・recreate・retry は実行の間だけ busy。失敗しても busy は戻る', async () => {
+    for (const [action, log] of [['keep', 'keep /p/a.txt'], ['recreate', 'recreate /p/a.txt'], ['retry', 'save /p/a.txt']] as const) {
+      const s = setup(Promise.resolve(true))
+      await runBandClick(s.inFlight, s.setBusy, file(), action, s.deps)
+      expect(s.log, action).toEqual([log])
+      expect(s.busyLog, action).toEqual([true, false])
+    }
+    const s = setup(Promise.resolve(true))
+    s.deps.keepMine = async () => { throw new Error('x') }
+    await expect(runBandClick(s.inFlight, s.setBusy, file(), 'keep', s.deps)).rejects.toThrow('x')
+    expect(s.busyLog).toEqual([true, false])
+    expect(s.inFlight.current).toBe(false)
   })
 })

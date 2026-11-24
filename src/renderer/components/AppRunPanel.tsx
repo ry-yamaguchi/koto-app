@@ -42,6 +42,8 @@ import { useConfirm } from '../useConfirm'
 import { useSharedTeardown, SharedTeardownResultView } from './SharedTeardownSection'
 import { resumedTeardownView, type TeardownView } from '../../shared/teardownResult'
 import { imageTrashNote } from './imageTrashNote'
+import { trashUnusedImages } from '../unusedImagesTrash'
+import { resolvePublishRoot } from '../publishRootRenderer'
 import ErrorBand from './ErrorBand'
 
 // AppRun の公開名（env.json の name）の文字数上限。main/cloud/spec.ts の NAME_PATTERN
@@ -504,6 +506,7 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   // 画像の片づけの確認（判断9・2026-09-11）: window.confirm → ConfirmModal（Koto 様式）。
   // ※この関数の名前は `confirmDialog`（上の apply/teardown 用 `confirm` state と衝突するため）。
   const { confirm: confirmDialog, element: confirmElement } = useConfirm()
+  const checkedRootRef = useRef('')
   const cleanUnusedImages = async (files: string[]) => {
     const head = files.slice(0, 8).map(f => `・${f}`).join('\n')
     const more = files.length > 8 ? `\n・ほか ${files.length - 8} 件` : ''
@@ -516,11 +519,10 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
     })
     if (!ok) return
     setTrashing(true)
-    const failed: string[] = []
+    let failed: string[] = []
     try {
-      for (const rel of files) {
-        try { await window.electronAPI.fs.trash(`${projectDir}/${rel}`) } catch { failed.push(rel) }
-      }
+      // 名前は公開の根からの相対。移す先も公開の根の下（P-137。unusedImagesTrash.ts）
+      failed = await trashUnusedImages(projectDir, files, checkedRootRef.current || undefined)
     } finally {
       setTrashing(false)
     }
@@ -532,7 +534,13 @@ export default function AppRunPanel({ apiKey, projectDir, onOpenCredentials, vis
   const runPreflight = async () => {
     setChecking(true)
     setPreflight(null)
-    try { setPreflight(await window.electronAPI.cloud.preflight(projectDir)) }
+    // 一覧（unusedFiles）は、この確かめの時点の公開の根からの名前。移す側が同じ根を使えるよう控える（P-137）
+    checkedRootRef.current = ''
+    try {
+      const result = await window.electronAPI.cloud.preflight(projectDir)
+      checkedRootRef.current = await resolvePublishRoot(projectDir)
+      setPreflight(result)
+    }
     catch (e: any) { setPreflight({ ok: false, canPublish: true, summary: '確認できませんでした', checks: [], message: failureText(e, { readOnly: true }) }) }
     finally { setChecking(false) }
   }

@@ -32,6 +32,7 @@ import { ChatAppLoadNotices } from './ChatLoadNotice'
 import { chatStatusLine } from '../../shared/chatStatusLine'
 import RetryButton from './RetryButton'
 import { forgetProjectAi } from '../projectAi'
+import { shouldNoticeRetired } from '../retiredNotice'
 import { showsRetry } from '../../shared/retryOffer'
 
 /** 幾何学的なスクエアの装飾モチーフ（背景の飾り） */
@@ -94,6 +95,9 @@ function MessageCopyButton({ text, side }: { text: string; side: 'left' | 'right
     >{copied ? '✓' : '📋'}</button>
   )
 }
+
+// 提供終了の案内を出した印（会話の id＋元のモデル）。チャット画面を作り直しても覚えておく。
+const retiredNoticed = new Set<string>()
 
 export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onApplyFile }: Props) {
   const [sessions, setSessions] = useState<Session[]>(() => [newSession()])
@@ -231,17 +235,21 @@ export default function ChatApp({ apiKey, onSetApiKey, onOpenCredentials, onAppl
   const { isLoading, statusNote, stalled, elapsedSec, setRoutedModel } = chat
 
   // 選択中のモデルが提供終了していたら、提供中の最適なモデルへ自動で切り替える
+  // 依存は models の配列そのものでなく中身（id の並び）にする（配列は毎回新しいため）
+  const modelIdsKey = models.map(m => m.id).join('\n')
   useEffect(() => {
     if (!models.length || !activeSession) return
     // 保存済みの既定も提供終了なら（一覧が実際に取得できたときだけ）保存し直す。次の新しい会話で案内を繰り返さない
     syncStoredDefaultWithOffered('chat', models.map(m => m.id), modelsLive)
-    if (!models.some(m => m.id === activeSession.model)) {
+    // 案内は同じ会話・同じ元のモデルにつき1度だけ（models は毎回新しい配列で、描き直しで effect が
+    // updateSession の反映より先にもう一度走るため、印で止める。P-135）
+    if (!models.some(m => m.id === activeSession.model) && shouldNoticeRetired(retiredNoticed, activeId, activeSession.model)) {
       const next = pickBestModel(models.map(m => m.id))
       updateSession(activeId, { model: next })
       applyOp({ kind: 'append', msg: { role: 'assistant', content: retiredModelNoticeText(activeSession.model, modelLabel(next)), toolNote: true } })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [models, modelsLive, activeId])
+  }, [modelIdsKey, modelsLive, activeId])
 
   // 画像を取り込む（縮小してdata URL化し、添付候補に追加）
   const addImages = useCallback(async (files: FileList | File[]) => {

@@ -12,7 +12,7 @@
 import {
   errorCodesOf, isJudgeableMessage, connectionHitOfCode, hitOfCliMessage,
 } from './connectionFailure'
-import { joinFailureDetail } from './failureDetail'
+import { joinFailureDetail, splitFailureDetail } from './failureDetail'
 import { maskSecretShapes } from './secretShapes'
 import { maskHomePath } from './homePath'
 
@@ -175,13 +175,23 @@ function hitOfMessage(message: string): (Hit & { code?: string }) | null {
   return hitOfCliMessage(message, hitOfCode)
 }
 
+/** 2つのパス「'<src>' -> '<dest>'」を取る操作。これ以外の操作の引用は、丸ごと1つのパス。 */
+const TWO_PATH_SYSCALLS = new Set(['rename', 'link', 'symlink', 'copyfile'])
+
 /** 例外の文面のパス。Node の fs の失敗の形だけを読む（形に合わなければ、誤ったパスを言うより言わない）。
  *  errno 名で始まる文の、1つ: 「<syscall> '<path>'」が文末にある（閉じる ' は文末の最後の1つ。パスの中の ' は逃がされずに出るので、Kids' Photos も Taro's も欠けない）。
  *  2つ（rename など）: 「<syscall> '<src>' -> '<dest>'」。元のパス（src）を返す。
- *  どちらの形にも当たらない・区切りの ' -> ' がパスの中にもあって分け方が決まらないときは undefined。 */
+ *  操作名（syscall）を見て分ける: 2つのパスを取る操作（rename・link・symlink・copyfile）だけ ' -> ' で割り、区切りが1つだけのときに元のパスを返す。
+ *  それ以外の操作（open・mkdir など）は、引用の中身を丸ごと1つのパスとして返す（名前に ' -> ' を含んでもよい）。
+ *  操作名が読めない・errno の形でない・空・区切りの ' -> ' がパスの中にもあって分け方が決まらないときは undefined。 */
 function pathOfMessage(message: string): string | undefined {
-  const tail = /^(?:\w*Error:\s*)?E[A-Z0-9_]+:\s[^']*?,\s\w+\s'(.*)'\s*$/.exec(message)?.[1]
-  if (tail === undefined || tail === '') return undefined
+  const m = /^(?:\w*Error:\s*)?E[A-Z0-9_]+:\s[^']*?,\s(\w+)\s'(.*)'\s*$/.exec(message)
+  if (!m) return undefined
+  const syscall = m[1]
+  const tail = m[2]
+  if (tail === '') return undefined
+  // 1つのパスを取る操作（open・mkdir など）は、引用の中身が丸ごと1つのパス（名前に「' -> '」を含んでもよい）
+  if (!TWO_PATH_SYSCALLS.has(syscall)) return tail
   const parts = tail.split("' -> '")
   if (parts.length === 1) return tail
   // 2つのパス。区切りが1つだけのときだけ決められる（パスの中に ' -> ' が混ざると分け方が複数ある）
@@ -220,6 +230,9 @@ function interruptedWriteText(checkAt: string | undefined): string {
 /** 失敗を利用者向けの日本語1文にする。見分けられない失敗は原文のまま返す（IPC の頭だけ落とす）。
  *  既定は書き込み側の慎重な文。接続テスト・一覧などの読み取りだけ readOnly: true。 */
 export function failureText(e: unknown, opts: FailureTextOptions = {}): string {
+  // main がすでに「日本語の文＋詳細: 原文」に直して返した失敗は、もう一度見分けない（詳細の原文を見分けて二重に包むのを避ける）
+  const already = stripRemoteHead(e)
+  if (splitFailureDetail(already).detail !== '') return already
   const info = classifyFailure(e)
   if (info.kind === 'unknown') return info.original
   const sentence = sentenceOf(info, opts)

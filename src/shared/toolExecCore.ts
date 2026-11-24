@@ -16,7 +16,8 @@
 // 「なぜ」を記録した資産）。
 
 import { isProtectedWritePath, protectedWriteMessage } from './protectedPaths'
-import { backupRelPath } from './publishRoot'
+import { backupRelPath, cleanAiRelPath } from './publishRoot'
+import { publicPrefixHint } from './readPathHint'
 import { wrapUntrusted } from './untrustedBlock'
 import { applyEdit } from './editFile'
 
@@ -47,7 +48,7 @@ export const PREVIEW_EXT_RE = /\.html?$/i
 export const OPEN_PREVIEW_DESCRIPTION = 'プロジェクト内のHTMLファイル（.html・.htm）を既定ブラウザで開いてユーザーに見せる。HTML 以外のファイルは開けない。作業が一段落して見た目を確認してもらうときに使う。'
 export const OPEN_PREVIEW_PATH_DESCRIPTION = '開くHTMLファイルの相対パス（.html または .htm のみ・省略時は index.html）'
 
-/** プロジェクトルート配下の安全な絶対パスに解決する。絶対パス・脱出を試みるパスは null。 */
+/** 作業フォルダ配下の安全な絶対パスに解決する。絶対パス・脱出を試みるパスは null。 */
 export function resolveInProject(projectDir: string, relPath: string): string | null {
   if (relPath.startsWith('/') || relPath.includes('..')) return null
   const clean = relPath.replace(/^\.\//, '')
@@ -59,7 +60,7 @@ export function resolveInProject(projectDir: string, relPath: string): string | 
 export function resolveForWrite(projectDir: string, relPath: string): { full: string } | { error: string } {
   if (isProtectedWritePath(relPath)) return { error: `エラー: ${protectedWriteMessage(relPath)}` }
   const full = resolveInProject(projectDir, relPath)
-  if (!full) return { error: `エラー: 不正なパスです（${relPath}）。プロジェクトルートからの相対パスを指定してください` }
+  if (!full) return { error: `エラー: 不正なパスです（${relPath}）。作業フォルダからの相対パスを指定してください` }
   return { full }
 }
 
@@ -150,7 +151,7 @@ export async function executeToolCore(name: string, argsJson: string, ctx: CoreT
     if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     try {
       const files = await io.projectFiles(ctx.writeRoot)
-      return files.length ? `プロジェクトのファイル一覧:\n${files.map(f => `- ${f}`).join('\n')}` : '（ファイルがありません）'
+      return files.length ? `作業フォルダのファイル一覧:\n${files.map(f => `- ${f}`).join('\n')}` : '（ファイルがありません）'
     } catch (e: any) {
       return `エラー: 一覧を取得できませんでした（${e?.message ?? e}）`
     }
@@ -160,7 +161,7 @@ export async function executeToolCore(name: string, argsJson: string, ctx: CoreT
     if (!ctx.writeRoot) return 'エラー: プロジェクトが開かれていません'
     const rel = String(args.path ?? '')
     const full = resolveInProject(ctx.writeRoot, rel)
-    if (!full) return `エラー: 不正なパスです（${rel}）。プロジェクトルートからの相対パスを指定してください`
+    if (!full) return `エラー: 不正なパスです（${rel}）。作業フォルダからの相対パスを指定してください`
     try {
       const content = await io.readFileInProject(ctx.writeRoot, rel)
       const truncated = content.length > READ_MAX_CHARS
@@ -169,7 +170,18 @@ export async function executeToolCore(name: string, argsJson: string, ctx: CoreT
         (truncated ? `\n\n（長いため ${READ_MAX_CHARS} 文字で打ち切り。全体は ${content.length} 文字）` : '')
       )
     } catch (e: any) {
-      return `エラー: ファイルを読めませんでした（${e?.message ?? e}）`
+      const msg = String(e?.message ?? e)
+      // P-131 安全網（読み取りだけ）: 頭の public/ を外せば届くときは、言い方を添える。読み替えて読むことはしない。
+      let hint: string | null = null
+      // AI が付けがちな先頭の ./ は resolveInProject と同じく外してから判断する（cleanAiRelPath）。
+      const relClean = cleanAiRelPath(rel)
+      if (/ENOENT|no such file|見つか/i.test(msg) && relClean.startsWith('public/')) {
+        const rootName = ctx.writeRoot.replace(/[/\\]+$/, '').split('/').pop() ?? ''
+        let exists = false
+        try { exists = await io.exists(`${ctx.writeRoot}/${relClean.slice('public/'.length)}`) } catch { /* 見られなければ添えない */ }
+        hint = publicPrefixHint(relClean, rootName, exists)
+      }
+      return `エラー: ファイルを読めませんでした（${msg}）` + (hint ? `。${hint}` : '')
     }
   }
 

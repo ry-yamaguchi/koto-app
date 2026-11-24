@@ -27,6 +27,9 @@ import { useConfirm } from '../useConfirm'
 import Modal from '../ui/Modal'
 import FailureLines from './FailureLines'
 
+/** 利用額の見立ての断り（P-145・2026-11-24 作者決定の案A）。 */
+export const USAGE_ESTIMATE_NOTE = '料金表の単価で足した見立てで、さくらの月ごとの利用枠は引いていません。実際の請求は、さくらのコントロールパネルで確かめてください。'
+
 interface KeyRow { label: string; apiKey: string }
 
 // ── W-51（2026-09-27決定）: 「今月の記録を0に戻す」は、上限による停止まで解除する取り消せない
@@ -222,6 +225,8 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials, upda
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold text-ink">¥{usage.costYen.toFixed(1)}</span>
             </div>
+            {/* P-145（2026-11-24 作者決定）: 計算は控えめのまま（月ごとの利用枠を引かない）。そのことを1回だけ断る */}
+            <p className="mt-1 text-[11px] text-ink-muted">{USAGE_ESTIMATE_NOTE}</p>
             {/* W-20（2026-09-27決定・案2）: 全キー合計 vs 既定上限の帯・棒グラフはやめた（実際に
                 止まる基準＝キーごとの実効上限と食い違うため）。「上限に達しています」は、下の
                 キー別の行で、そのキー自身の基準（checkBeforeRequestOf と同じ・isKeyOverLimit）
@@ -582,9 +587,9 @@ export default function SettingsModal({ apiKey, onClose, onOpenCredentials, upda
               </ul>
               <p className="pt-1">{unknownPriceRuleText()}</p>
               <p className="pt-1">
-                実際の課金・無料枠は{' '}
+                実際の請求と月ごとの利用枠は{' '}
                 <a href="https://www.sakura.ad.jp/aipf/ai-engine/" className="text-sakura hover:underline">さくらのAI Engine 公式</a>
-                {' '}をご確認ください。これはあくまで Koto 側の使いすぎ防止の目安です。
+                {' '}をご確認ください。これは Koto の使いすぎを防ぐための目安です。
               </p>
             </div>
           </details>

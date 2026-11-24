@@ -49,8 +49,8 @@
 // runProjectDelete・moveProjectToTrash・pressProjectDelete は React を持たない。口（材料・破棄・走っている操作・フォルダの有無・ゴミ箱）は deps で渡す。
 // どの経路を通るかは pressProjectDelete の1つ（前回の phase で決まる）。画面に分岐を書かない。
 
-import { classifyFailure, failureText, withFailureDetail } from '../../shared/failureText'
-import { wrapFailureText } from '../../shared/failureDetail'
+import { classifyFailure, failureText, stripRemoteHead, withFailureDetail } from '../../shared/failureText'
+import { wrapFailureText, splitFailureDetail } from '../../shared/failureDetail'
 import { teardownFailureText } from './failureNote'
 import { PUBLISH_TARGET_LABEL, type PublishTargetKind } from '../publishStatus'
 import { teardownSupport } from '../../shared/teardownSupport'
@@ -273,6 +273,8 @@ export const TRASH_CHECK_AT = 'Finder のゴミ箱'
 /** ゴミ箱へ移す失敗の文。権限の失敗は、選び直す場所が無いので Finder で権限を確かめる旨だけにする（0.6.26）。
  *  切れた場合は、フォルダを移したかを確かめる先を Finder のゴミ箱にする。 */
 export function trashFailureText(e: unknown): string {
+  // main が「文＋詳細: 原文」に直して返した失敗（shell.trashItem の失敗。P-138）は、詳細を落とさずそのまま出す。
+  if (splitFailureDetail(stripRemoteHead(e)).detail !== '') return stripRemoteHead(e)
   // 自前の固定文に置き換えるので、捨てる原文を詳細として添える。
   if (classifyFailure(e).kind === 'fs-denied') return withFailureDetail('フォルダをゴミ箱へ移せません。Finder で権限を確かめてください。', e)
   return failureText(e, { checkAt: TRASH_CHECK_AT })

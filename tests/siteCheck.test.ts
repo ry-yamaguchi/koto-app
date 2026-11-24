@@ -596,9 +596,13 @@ describe('使っていない画像の片づけ', () => {
   it('★★ 完全には消さない（取り違えても戻せる）', () => {
     const at = panel.indexOf('const cleanUnusedImages')
     const block = panel.slice(at, at + 1200)
-    expect(block).toContain('window.electronAPI.fs.trash')
+    // 移す口は unusedImagesTrash.ts へ切り出した（P-137）。画面は trashUnusedImages を呼ぶだけ
+    expect(block).toContain('trashUnusedImages(')
+    const mod = readFileSync(join(__dirname, '../src/renderer/unusedImagesTrash.ts'), 'utf-8')
+    expect(mod).toContain('window.electronAPI.fs.trash')
     expect(block).toContain('ゴミ箱')
     expect(block).not.toContain('unlink')
+    expect(mod).not.toContain('unlink')
   })
 
   it('★★ 消す前に一覧を見せて確認する（掟5・ConfirmModal 経由）', () => {
@@ -611,7 +615,7 @@ describe('使っていない画像の片づけ', () => {
     expect(block).not.toContain('window.confirm(')
     expect(block).toContain('files.slice(0, 8)')
     // 確認より前に実行（ゴミ箱への移動）が来ていないか（掟10）
-    expect(block.indexOf('await confirmDialog(')).toBeLessThan(block.indexOf('window.electronAPI.fs.trash'))
+    expect(block.indexOf('await confirmDialog(')).toBeLessThan(block.indexOf('trashUnusedImages('))
   })
 
   it('★ 片づけたら、その場で結果を出し直す', () => {

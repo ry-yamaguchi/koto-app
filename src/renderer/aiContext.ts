@@ -5,7 +5,8 @@
 
 import { getTargetProfile, profileToContext } from './targetProfiles'
 import { MATERIALS_DIR } from '../shared/publishExclude'
-import { PUBLISH_DIR } from '../shared/publishRoot'
+import { PUBLISH_DIR, splitFilesByRoot, rootRelOf } from '../shared/publishRoot'
+import { resolvePublishRoot } from './publishRootRenderer'
 import { importedContext } from './importProject'
 import { PUBLISH_TARGET_LABEL } from './publishStatus'
 // 実体は shared へ移した（B'-3b）。searchStatusContext は src/shared/aiToolsCore.ts を参照。
@@ -173,7 +174,7 @@ export const IDE_CONTEXT =
   '- あなたにファイルを移動する手段はありません。「移動します」「移動しておきます」と約束しないこと。移動が必要なときは、その旨をユーザーに伝えてください（使われていないファイルは、【公開】の画面にある「🧹 使われていないファイルの確認」からユーザー自身が移動できます）。\n' +
   '- 保存したら「✏️ ◯◯ を保存しました」のように一言で報告し、コード全文はチャットに貼らないでください（変更の要点だけ説明する）。\n' +
   '- write_file が使えない場合（プロジェクト未選択時）のみ、```言語 file=相対パス 形式のコードブロックで提示してください（ユーザーが [💾 プロジェクトに保存] ボタンで保存できます）。\n' +
-  '- 相対パスはプロジェクトのルートからのパスにしてください。\n' +
+  '- 相対パスは作業フォルダからのパスにしてください。\n' +
   '- 回答は必ず日本語のみで書くこと。他言語（韓国語・中国語・英語など）の単語や文字を混ぜない（コード・技術用語・固有名詞は除く）。\n' +
   SECURE_WRITING_RULE + '\n' +
   '【ユーザーに作業を依頼しない（とても重要）】\n' +
@@ -267,7 +268,20 @@ export async function buildProjectContext(dir: string | null | undefined): Promi
   try { files = await window.electronAPI.fs.projectFiles(dir) } catch {}
 
   const name = meta.name || dir.split('/').pop() || ''
-  const fileList = files.length ? files.map(f => `- ${f}`).join('\n') : '（まだファイルはありません）'
+  // 作業フォルダ（AI のツールの根）。ChatPanel の currentAiRoot と同じ resolvePublishRoot で決める（掟10・P-131）。
+  // 一覧をプロジェクト直下のパスのまま見せると、AI が public/a.js と付けて read_file に渡して失敗した。
+  const root = (await resolvePublishRoot(dir)) || dir
+  const { inside, outside } = splitFilesByRoot(files, rootRelOf(dir, root))
+  const sameAsProject = root === dir
+  const list = (xs: string[]) => xs.map(f => `- ${f}`).join('\n')
+  const fileList = files.length === 0
+    ? 'ファイル構成（作業フォルダの中。そのまま read_file などに渡せるパス）:\n（まだファイルはありません）'
+    : 'ファイル構成（作業フォルダの中。そのまま read_file などに渡せるパス）:\n' +
+      (inside.length ? list(inside) : '（まだファイルはありません）') +
+      // 外は公開先の判断（useTargetCheck）がサーバーのファイルの有無を知るのに要るので消さない。ただし AI には触れないと伝える。
+      (!sameAsProject && outside.length
+        ? '\n\n作業フォルダの外のファイル（プロジェクト直下からのパス。読み書きできません）:\n' + list(outside)
+        : '')
 
   // 公開先プロファイル（その環境でうまくいく構成の知識）を注入する
   const profileBlock = '\n' + profileToContext(getTargetProfile(meta.target)) + '\n'
@@ -285,8 +299,8 @@ export async function buildProjectContext(dir: string | null | undefined): Promi
     // インポートしたものは**扱いが違う**（利用者の資産・組み立て後・秘密が無い・次の公開が上書き）。
     // 何も言わないと、AI はふつうに新規作成したプロジェクトとして扱う（2026-08-24 Ryosuke 指摘）。
     (importedFromBlock ? importedFromBlock + '\n\n' : '') +
-    `ルートパス: ${dir}\n` +
-    'ファイル構成:\n' +
+    `作業フォルダ: ${root}\n` +
+    (sameAsProject ? '' : `プロジェクト直下: ${dir}\n`) +
     fileList +
     '\n\nユーザーの要望に沿って、上記プロジェクトの開発を進めてください。'
   )

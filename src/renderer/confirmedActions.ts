@@ -101,6 +101,19 @@ export async function runCloseUnsaved(path: string, message: string, deps: RunCl
   return gate(message, deps.confirm, () => deps.close(path))
 }
 
+// ── PublishedListModal.tsx: 公開の記録を一覧から削除 ───────────────────────────
+
+export interface RunForgetPublishRecordDeps {
+  confirm: ConfirmFn
+  /** 公開の記録（Koto の控え）だけを消す。公開したもの自体には触れない。 */
+  forget: () => Promise<void> | void
+}
+
+/** confirm を通ったときだけ forget を呼ぶ。キャンセルなら記録は消えない。 */
+export async function runForgetPublishRecord(message: string, deps: RunForgetPublishRecordDeps): Promise<ActionOutcome<void>> {
+  return gate(message, deps.confirm, () => deps.forget())
+}
+
 // ── CredentialsModal.tsx: 未保存の変更を破棄 ─────────────────────────────────
 
 export interface RunDiscardCredentialEditsDeps {

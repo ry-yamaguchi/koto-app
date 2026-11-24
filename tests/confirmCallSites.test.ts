@@ -58,7 +58,7 @@ function expectCallSite(file: string, call: string, placed: string[]) {
   expect(src).not.toContain('role="alertdialog"')
 }
 
-describe('useConfirm の呼び口 14 か所', () => {
+describe('useConfirm の呼び口 15 か所', () => {
   it('App.tsx（保存できなかった編集を捨てて、プロジェクトを切り替える・フォルダを整理する）', () => {
     expectCallSite('App.tsx', 'const { confirm: askUser, element: confirmElement } = useConfirm()', ['{confirmElement}'])
   })
@@ -101,6 +101,9 @@ describe('useConfirm の呼び口 14 か所', () => {
   it('OsvCheckBlock.tsx（ライブラリの脆弱性を調べる初回の確認）', () => {
     expectCallSite('components/OsvCheckBlock.tsx', 'const { confirm, element: confirmElement } = useConfirm()', ['{confirmElement}'])
   })
+  it('PublishedListModal.tsx（📡 の「一覧から削除」。P-136 で行の中の確かめから移した）', () => {
+    expectCallSite('components/PublishedListModal.tsx', 'const { confirm, element: confirmElement } = useConfirm()', ['{confirmElement}'])
+  })
 })
 
 describe('useConfirmChoices の呼び口 4 か所', () => {
@@ -134,7 +137,7 @@ describe('呼び口の全件（一覧に無い呼び口が増えたら落ちる�
   const using = (needle: string) =>
     files.filter(f => read(f).split('\n').some(l => !l.trim().startsWith('//') && l.includes(needle))).sort()
 
-  it('★★★ `= useConfirm()` を呼ぶファイルは、書き下した 14 個だけ', () => {
+  it('★★★ `= useConfirm()` を呼ぶファイルは、書き下した 15 個だけ', () => {
     expect(using('= useConfirm()')).toEqual([
       'App.tsx',
       'components/AppRunDedicatedPanel.tsx',
@@ -145,6 +148,7 @@ describe('呼び口の全件（一覧に無い呼び口が増えたら落ちる�
       'components/EditorPanel.tsx',
       'components/HanamiiTeardownSection.tsx',
       'components/OsvCheckBlock.tsx',
+      'components/PublishedListModal.tsx',
       'components/RollbackSection.tsx',
       'components/SettingsModal.tsx',
       'components/Sidebar.tsx',

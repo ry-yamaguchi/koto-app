@@ -24,14 +24,15 @@ import WriteFixButton from './WriteFixButton'
 import RetryButton from './RetryButton'
 import { showsRetry } from '../../shared/retryOffer'
 import { fileToDataUrl, countNonImageFiles } from '../imageInput'
-import { decideGreeting, runGreeting } from '../greeting'
+import { decideGreeting, runGreeting, isGreetingLeftover } from '../greeting'
 import { isGreetOnOpenEnabled } from '../greetSetting'
+import { useGreetingState } from '../hooks/useGreetingState'
 import { parseRagSettings, autoRagBlock, type RagSettings } from '../ragContext'
 import ModelSelect from './ModelSelect'
 import BrainToggle from './BrainToggle'
 import ChatKeyMissing from './ChatKeyMissing'
 import { isChatUsable } from '../claudeMode'
-import { loadConversationView, loadConversationChecked, makeConvClient, opRouteOf, applyOpToConversation, type Op } from '../chatConvClient'
+import { loadConversationView, loadConversationChecked, makeConvClient, convClientOf, opRouteOf, applyOpToConversation, type Op } from '../chatConvClient'
 import { IDE_CHAT_BACKUP_PLACE, type UnreadableChat } from '../../shared/chatUnreadable'
 import ChatLoadNotice from './ChatLoadNotice'
 import { applyToMessages, viewSyncDecision } from '../../shared/chatEvents'
@@ -39,6 +40,7 @@ import { takeNewProjectRequest, hasNewProjectRequest } from '../newProjectReques
 import { defaultImageName, tellAiAboutAsset, assetSavedNote, useImageHint, mediaTypeOf, type AssetPurpose } from '../../shared/assetImport'
 import { AssetUseButton, AssetUseCheckbox } from './AssetUseButton'
 import { CHAT_TEXT_WRAP } from '../textWrap'
+import { CHAT_NOTICE_CLASS, CHAT_LIST_MIN_CLASS } from '../chatLayout'
 import { resolvePublishRoot } from '../publishRootRenderer'
 import { timelineMarks, bubbleTime, nowContext } from '../../shared/chatTime'
 import { turnKey, updateTurn } from '../chatTurnRegistry'
@@ -118,8 +120,9 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   }, [applyOp])
   const [input, setInput] = useState('')
   // あいさつ（greet）専用のローディング／中断。送信パイプラインの状態は useAiChat が持つ。
-  const [greetLoading, setGreetLoading] = useState(false)
-  const greetAbortRef = useRef<(() => void) | null>(null)
+  // どのプロジェクトのあいさつかの印つき（別のプロジェクトでは出さない・止めない。useGreetingState.ts）。
+  const greet = useGreetingState(projectDir)
+  const greetLoading = greet.greetLoading
   // 会話の読み込みが済んで、読めたプロジェクト。読み込み前の messages は前のプロジェクトのもの（または空）なので、
   // これが projectDir と同じになるまで、あいさつは会話を空と読まない。
   const [convLoadedDir, setConvLoadedDir] = useState<string | null>(null)
@@ -255,10 +258,6 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const greetedRef = useRef<string>('')
-  // いま開いているプロジェクト。あいさつの返事を待つ間に切り替わったかを、呼ぶたびに読むための置き場
-  // （effect の中の projectDir は、始めた時点の値のまま古くなる）。
-  const projectDirRef = useRef(projectDir)
-  projectDirRef.current = projectDir
   // 新規プロジェクト作成の依頼（sakura-new-project-request）: イベントが projectDir の切替より
   // 先に届くことがあるため、いったんここに保留してから dir が一致した時点で送る。
   const pendingNewProjectRef = useRef<{ dir: string; prompt: string } | null>(null)
@@ -582,7 +581,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       if (cancelled) return
       setMessages(msgs) // ストアから来たものを映すだけ（ops は送らない）
       setLoadUnreadable(unreadable)
-      clientRef.current = makeConvClient(projectDir)
+      clientRef.current = convClientOf(projectDir) // dir ごとに共有の1本（見ていない間の書き換えの口と同じ列）
       // 読み込み中に main が当てた書き換え（A→B→A の途中で届いたターンの結果）は、この読み込み結果に
       // 入っているとは限らない。一度ストアから読み直して、抜けも二重も残さない。
       if (appliedDuringLoadRef.current) {
@@ -712,6 +711,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
       projectDir,
       ctxDir: projectCtx?.dir ?? null,
       messagesLength: messages.length,
+      messages,
       conversationLoaded: convLoadedDir === projectDir,
       isLoading,
       greetedDir: greetedRef.current,
@@ -728,11 +728,11 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         chatStream: (req, onDelta, onAbort) => window.electronAPI.sakura.chatStream(req, onDelta, onAbort),
         recordUsage,
         estimateTokens,
-        applyOp,
-        setLoading: setGreetLoading,
-        setAbort: (abort) => { greetAbortRef.current = abort },
+        // 会話への書き換えは、いつも始めたプロジェクトの記録の口へ。画面へは chat:applied の購読が映す（掟11）
+        applyOpToDir: applyOpToConversation,
+        setLoading: (loading) => greet.setLoadingOf(projectDir, loading),
+        setAbort: (abort) => greet.setAbortOf(projectDir, abort),
         warn: (detail) => console.warn('greet failed:', detail),
-        currentDir: () => projectDirRef.current,
       },
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -939,7 +939,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
 
       {/* Messages */}
       <div
-        className="flex-1 overflow-y-auto p-3 space-y-3 relative"
+        className={`flex-1 overflow-y-auto p-3 space-y-3 relative ${CHAT_LIST_MIN_CLASS}`}
         // ── 二重に受け取らない（2026-08-19 実機）──────────────────────────
         // 画面全体でも受けるようにしたため、ここで止めないと**同じ画像が2枚**添付される
         // （ここで addImages → 画面全体の受け口へ伝わって、もう一度 addImages）。
@@ -951,7 +951,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
         }}
       >
         <ChatLoadNotice unreadable={loadUnreadable} place={IDE_CHAT_BACKUP_PLACE} />
-        {messages.filter(m => !m.hidden).length === 0 && !isLoading && (
+        {(messages.filter(m => !m.hidden).length === 0 || isGreetingLeftover(messages)) && !isLoading && (
           <div className="text-center text-ink-muted text-xs py-6">
             <div className="flex justify-center mb-2"><SakuraLogo size={32} /></div>
             <p>{claudeActive ? 'Claudeに質問してください' : 'さくらのAI Engineに質問してください'}</p>
@@ -1118,7 +1118,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
           スクロールの外に行き、実機で「実装されていないように見える」状態になった。
           常に見える場所（入力欄の直上）へ置く。 */}
       {migratePlan && (
-        <div className="border-t border-line px-3 pt-3 flex-none">
+        <div className={`border-t border-line px-3 pt-3 ${CHAT_NOTICE_CLASS}`}>
           <MigrateNotice plan={migratePlan} onRun={runMigrate} />
         </div>
       )}
@@ -1235,7 +1235,7 @@ export default function ChatPanel({ apiKey, onSetApiKey, onOpenCredentials, onAp
             <div className="flex-1" />
             {isLoading ? (
               <button
-                onClick={() => { chat.abort(); greetAbortRef.current?.() }}
+                onClick={() => { chat.abort(); greet.abortViewing() }}
                 className="bg-elevated border border-brand-red text-brand-red rounded-lg px-3 py-1.5 text-sm font-semibold hover:bg-brand-red-fill hover:text-white transition-colors"
                 title="応答を停止"
               >

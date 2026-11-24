@@ -113,7 +113,7 @@ describe('C. 配線（ChatPanel.tsx）', () => {
     expect(src).toContain('if (!clientRef.current) { appliedDuringLoadRef.current = true; return }')
     expect(src).toContain('if (appliedDuringLoadRef.current) {')
     expect(src).toContain('useEffect(() => { viewingDirRef.current = projectDir ?? null }, [projectDir])')
-    expect(src).toContain("import { loadConversationView, loadConversationChecked, makeConvClient, opRouteOf, applyOpToConversation, type Op } from '../chatConvClient'")
+    expect(src).toContain("import { loadConversationView, loadConversationChecked, makeConvClient, convClientOf, opRouteOf, applyOpToConversation, type Op } from '../chatConvClient'")
   })
 
   it('単独チャット（ChatApp）は、セッションを閉じ込めた applyOp のまま（変えない）', () => {

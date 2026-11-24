@@ -6,7 +6,7 @@
 // 移行（replaceAll）へ進むと壊れた記録の上へ旧データを書き、readable を真にするとあいさつが書き込む。
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { loadConversationChecked, loadConversationView } from '../src/renderer/chatConvClient'
+import { loadConversationChecked, loadConversationView, convClientOf, applyOpToConversation } from '../src/renderer/chatConvClient'
 
 const DIR = '/work/my-app'
 const LEGACY_KEY = `sakura_chat:${DIR}`
@@ -185,5 +185,28 @@ describe('loadConversationView — 今までの呼び手は、読めたかを使
       const checked = await loadConversationChecked(DIR)
       expect(await loadConversationView(DIR)).toEqual(checked.messages)
     }
+  })
+})
+
+describe('dir ごとの client は1つ — 見ている間の口と見ていない間の口が、同じ会話へ1本の列で書く', () => {
+  it('同じ dir は同じ client を返し、違う dir は別', () => {
+    expect(convClientOf('/c/a')).toBe(convClientOf('/c/a'))
+    expect(convClientOf('/c/a')).not.toBe(convClientOf('/c/b'))
+  })
+
+  it('★★ 見ている client（convClientOf）の書き換えと applyOpToConversation の書き換えが、送った順に main へ届く', async () => {
+    // 先に送った1件の IPC が遅くても、後から送った1件が追い越さない（2本の列だと追い越す）
+    const arrived: string[] = []
+    const dir = '/c/order'
+    ;(window as any).electronAPI.chat.ops = async (_d: string, ops: any[]) => {
+      if (ops[0].msg.content === '1') await new Promise(r => setTimeout(r, 30))
+      arrived.push(ops[0].msg.content)
+      return { ok: true }
+    }
+    const viewing = convClientOf(dir) // ChatPanel の clientRef が持つもの
+    viewing.apply({ kind: 'append', msg: { role: 'user', content: '1' } } as any)
+    applyOpToConversation(dir, { kind: 'append', msg: { role: 'assistant', content: '2' } } as any)
+    await viewing.idle()
+    expect(arrived).toEqual(['1', '2'])
   })
 })

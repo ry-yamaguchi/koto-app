@@ -40,7 +40,7 @@ const LIST_FILES_TOOL = {
   type: 'function',
   function: {
     name: 'list_files',
-    description: '現在のプロジェクトのファイル一覧（相対パス）を取得する。構成を把握したいときに最初に使う。',
+    description: '作業フォルダ（public/ があればその中）のファイル一覧を、作業フォルダからの相対パスで取得する。構成を把握したいときに最初に使う。',
     parameters: { type: 'object', properties: {} },
   },
 }
@@ -50,11 +50,11 @@ const READ_FILE_TOOL = {
   function: {
     name: 'read_file',
     description:
-      '現在のプロジェクト内のファイルの中身を読む。コードの調査・修正・デバッグの前に、推測せず必ず実際の内容を読むこと。',
+      '作業フォルダ内のファイルの中身を読む。コードの調査・修正・デバッグの前に、推測せず必ず実際の内容を読むこと。',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'プロジェクトルートからの相対パス（例: src/index.js）' },
+        path: { type: 'string', description: '作業フォルダ（public/ があればその中）からの相対パス（例: index.html、js/app.js）。public/ を頭に付けない' },
       },
       required: ['path'],
     },
@@ -66,7 +66,7 @@ const WRITE_FILE_TOOL = {
   function: {
     name: 'write_file',
     description:
-      '現在のプロジェクト内にファイルを作成・上書き保存する。コードの作成や修正はユーザーに頼まず、このツールで自分で保存すること。' +
+      '作業フォルダ内にファイルを作成・上書き保存する。コードの作成や修正はユーザーに頼まず、このツールで自分で保存すること。' +
       '【厳守】content にはファイルの完全な全文を入れること（断片・差分・省略は禁止。「...existing code...」のような省略も禁止）。' +
       '既存ファイルを修正するときは、必ず先に read_file で現在の内容を読み、変更箇所を反映した全文を書き戻すこと。' +
       '【重要】既存ファイルの部分修正には、全文を書き直すこのツールではなく edit_file を使うこと（新規作成・全面書き換えのときだけ write_file を使う）。' +
@@ -74,7 +74,7 @@ const WRITE_FILE_TOOL = {
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'プロジェクトルートからの相対パス（例: src/index.html）' },
+        path: { type: 'string', description: '作業フォルダ（public/ があればその中）からの相対パス（例: index.html、js/app.js）。public/ を頭に付けない' },
         content: { type: 'string', description: 'ファイルの完全な内容（差分ではなく全文）' },
       },
       required: ['path', 'content'],
@@ -87,13 +87,13 @@ const EDIT_FILE_TOOL = {
   function: {
     name: 'edit_file',
     description:
-      '現在のプロジェクト内の既存ファイルを部分的に修正する（差分置換）。既存ファイルの一部を直すときは、' +
+      '作業フォルダ内の既存ファイルを部分的に修正する（差分置換）。既存ファイルの一部を直すときは、' +
       '全文を書き直す write_file ではなく必ずこちらを使うこと（write_file は新規作成・全面書き換えのときだけ使う）。' +
       'old_string はファイル内で一意に決まる長さにすること（周囲の行を含めて、他の箇所と混同しない範囲まで広げる）。',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'プロジェクトルートからの相対パス（例: src/index.js）' },
+        path: { type: 'string', description: '作業フォルダ（public/ があればその中）からの相対パス（例: index.html、js/app.js）。public/ を頭に付けない' },
         old_string: { type: 'string', description: '置き換える現在の文字列。周囲の行を含め、ファイル内で一意に決まる長さにすること' },
         new_string: { type: 'string', description: '置き換え後の文字列（削除したい場合は空文字）' },
         replace_all: { type: 'boolean', description: '一致箇所すべてを置換する場合は true（省略時は false。一致が複数あるとエラーになる）' },
@@ -108,7 +108,7 @@ const RUN_COMMAND_TOOL = {
   function: {
     name: 'run_command',
     description:
-      'プロジェクトフォルダ内でシェルコマンドを実行し、終了コードと出力を得る。ビルド・テスト・構文チェック・エラー調査に使う。' +
+      '作業フォルダ内でシェルコマンドを実行し、終了コードと出力を得る。ビルド・テスト・構文チェック・エラー調査に使う。' +
       '実行後は出力を必ず読み、エラーがあれば自分でコードを修正して再実行すること。' +
       '【注意】60秒でタイムアウトするため、サーバーの常駐起動（npm start, php -S 等）には使わないこと（動作確認はユーザーに【試す】を案内する）。',
     parameters: {
@@ -173,14 +173,14 @@ const SEARCH_IN_FILES_TOOL = {
   function: {
     name: 'search_in_files',
     description:
-      'プロジェクト内のファイルを横断して文字列を検索し、該当ファイル・行番号・該当行を得る。' +
+      '作業フォルダ内のファイルを横断して文字列を検索し、該当ファイル・行番号・該当行を得る。' +
       'どのファイルに何があるか分からないときは、list_files と read_file を何度も繰り返す前に、まずこれで場所を特定すること。' +
       '単純な部分一致（大文字小文字は区別しない）。正規表現は使えない。',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: '探す文字列（単純な部分一致・大文字小文字を区別しない）' },
-        path_pattern: { type: 'string', description: '省略可。対象を絞る単純なパターン（例: *.css, public/）。正規表現は不可' },
+        path_pattern: { type: 'string', description: '省略可。対象を絞る単純なパターン（例: *.css, css/）。正規表現は不可' },
       },
       required: ['query'],
     },
@@ -208,16 +208,30 @@ export function toolsFor(projectDir?: string | null, hasSearch?: boolean, hasRag
 // （旧: モデル名の正規表現によるハードコードで、新モデルが preview/・kimi 等の語に一致して
 //   誤って非対応判定されていた。2026-07-30、実測から学習する方式に置き換え）。
 
+/** パッケージを取得して入れるコマンド（isSensitiveCommand と confirmReason が同じ表を読む・P-142）。
+ *  単語（add・get・require）だけでは当てない: JavaScript の require( などコードの中の語に当たって理由を取り違えた。 */
+const INSTALL_COMMAND_RE = /\b(npm|pnpm|yarn)\s+(i|install|add|exec|dlx)\b|\bnpx\b|\b(pip|pip3)\s+install\b|\bbrew\s+(install|tap)\b|\bgem\s+install\b|\bcargo\s+install\b|\bgo\s+(install|get)\b|\bcomposer\s+(require|install)\b|\bpoetry\s+add\b|\bapt(-get)?\s+install\b/i
+/** 札の理由だけが読む「取得」の表（isSensitiveCommand は読まない・札を出すかどうかは変えない）。
+ *  INSTALL_COMMAND_RE に、installTargetsFromCommand が知っている bun と、従来は単語で当たっていた pipx・uv・npm ci を足す。 */
+const FETCH_REASON_RE = new RegExp(
+  INSTALL_COMMAND_RE.source + String.raw`|\bbun\s+(i|install|add|x)\b|\bpipx\s+(install|run)\b|\buv\s+(add|pip\s+install|tool\s+install)\b|\b(npm|pnpm)\s+ci\b`,
+  'i',
+)
+/** インタープリタの -c/-e（コードの直接実行の理由を取得より先に言う。`eval` の語はパッケージ名にも出るのでここに含めない）。 */
+const INTERPRETER_INLINE_RE = /\b(python3?|node|ruby|perl|php)\s+-(c|e)\b/i
+/** コードの直接実行（ワンライナー）。 */
+const INLINE_CODE_RE = /\b(python3?|node|ruby|perl|php)\s+-(c|e)\b|\bosascript\b|\beval\b|\bbase64\s+-{1,2}d\b/i
+
 /** インストール・通信・コード直接実行・システム設定変更など、おまかせモードでも確認すべきコマンドか
  *  （旧 renderer/aiTools.ts から移した・B'-3d-3）。 */
 export function isSensitiveCommand(cmd: string): boolean {
   return (
     // パッケージインストール（postinstall等で任意コード実行の恐れ）
-    /\b(npm|pnpm|yarn)\s+(i|install|add|exec|dlx)\b|\bnpx\b|\b(pip|pip3)\s+install\b|\bbrew\s+(install|tap)\b|\bgem\s+install\b|\bcargo\s+install\b|\bgo\s+(install|get)\b|\bcomposer\s+(require|install)\b|\bpoetry\s+add\b|\bapt(-get)?\s+install\b/i.test(cmd) ||
+    INSTALL_COMMAND_RE.test(cmd) ||
     // ネットワーク通信
     /\bcurl\b|\bwget\b|\bnc\b|\bncat\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd) ||
     // コードの直接実行（ワンライナー）
-    /\b(python3?|node|ruby|perl|php)\s+-(c|e)\b|\bosascript\b|\beval\b|\bbase64\s+-{1,2}d\b/i.test(cmd) ||
+    INLINE_CODE_RE.test(cmd) ||
     // システム/ホーム設定の変更。`>>?\s*~` は writesOutsideWorkingDir と重なって見えるが、重複ではない:
     // 文字列のどこにあっても当たる安全網で、scanShell が読まない heredoc・パイプの中（`bash <<EOF … > ~/x`・
     // `echo "… > ~/x" | bash`）の `> ~/…` も拾う。外さないこと。
@@ -259,7 +273,10 @@ export function confirmReason(cmd: string, opts?: { dependencies?: readonly stri
   if (isDangerousCommand(cmd)) return 'この操作はファイルやシステムを壊す可能性があります。'
   // 外へ書き込むコマンドは、`install` などの語で下の「取得して実行」と取り違えないよう先に言う。
   if (writesOutsideWorkingDir(cmd, opts)) return 'プロジェクトのフォルダの外に書き込みます。'
-  if (/\binstall\b|\badd\b|\bnpx\b|\bget\b|\brequire\b|\btap\b/i.test(cmd)) {
+  // コードの直接実行は取得の判定より先（`node -e "require('./x')"` の require を取得と取り違えない・P-142）。
+  // `eval`・osascript・base64 -d は取得の判定より後ろ（下の末尾）: `npm install eval-source-map` を取り違えない。
+  if (INTERPRETER_INLINE_RE.test(cmd)) return 'コードを直接実行します。'
+  if (FETCH_REASON_RE.test(cmd)) {
     // **何が入るのかを見せる**（2026-08-18 Ryosuke 指摘）
     const named = installTargetsFromCommand(cmd)
     const names = named.length > 0 ? named : (opts?.dependencies ?? [])
@@ -271,7 +288,7 @@ export function confirmReason(cmd: string, opts?: { dependencies?: readonly stri
   if (/\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bscp\b|\bsftp\b|\btelnet\b/i.test(cmd)) return '外部と通信します。'
   // 止めはしないが、一度は目に入れる（2026-08-20）。
   if (leavesWorkingDir(cmd)) return `作業フォルダ（${PUBLISH_DIR_LABEL}）の外を操作しようとしています。`
-  if (/-(c|e)\b|\bosascript\b|\beval\b|\bbase64\b/i.test(cmd)) return 'コードを直接実行します。'
+  if (INLINE_CODE_RE.test(cmd) || /-(c|e)\b|\bbase64\b/i.test(cmd)) return 'コードを直接実行します。'
   return 'システムやホームの設定を変更する可能性があります。'
 }
 

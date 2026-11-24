@@ -347,7 +347,9 @@ describe('10. ChatPanel: 旧 chatStorage の読み書きがもう無い・デバ
     expect(src).toContain("from '../chatConvClient'")
     expect(src).toContain('loadConversationChecked(projectDir)')
     // B-1a: makeConvClient はもう画面へのローカル反映を受け取らない（applyOpLocally を渡さない）
-    expect(src).toContain('makeConvClient(projectDir)')
+    // P-139（0.6.39）: 見ている間の client も、見ていない間の口（applyOpToConversation）と同じ dir ごとの1本を使う
+    expect(src).toContain('clientRef.current = convClientOf(projectDir)')
+    expect(src).not.toContain('clientRef.current = makeConvClient(projectDir)')
     expect(src).not.toContain('makeConvClient(projectDir, applyOpLocally)')
   })
 

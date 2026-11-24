@@ -414,8 +414,9 @@ describe('公開したもの一覧からも片づけられる', () => {
 
   it('★ 実体は消えないと、押す前に伝える', () => {
     const src = read('src/renderer/components/PublishedListModal.tsx')
-    // W-93（2026-09-27 決定・案2）: 押したボタンと確定ボタンを同じ言い方に揃える
-    expect(src).toContain('一覧から削除（公開したものは残ります）')
+    // W-93（2026-09-27 決定・案2）は、行の中の確かめ（確定ボタン）の言い方だった。P-136 で行の中の確かめをやめ、確認（ConfirmModal）の本文で1回だけ言う
+    expect(src).toContain('公開したものは残ります')
+    expect(src).not.toContain('一覧から削除（公開したものは残ります）')
   })
 
   it('★ 判断は1つ（同じ処理を二度書かない）', () => {

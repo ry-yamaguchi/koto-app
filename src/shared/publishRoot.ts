@@ -147,3 +147,33 @@ export function backupRelPath(projectRoot: string, writeRoot: string, rel: strin
 export function cleanAiRelPath(relPath: string): string {
   return relPath.replace(/^\.?\//, '').replace(/\.\.(\/|\\)/g, '') // 軽いトラバーサル対策
 }
+
+/**
+ * プロジェクト直下からのファイル一覧を「作業フォルダの中」と「外」に分ける（純関数・P-131）。
+ *
+ * AI のツールは作業フォルダ（`public/` があればその中）を根にして動く。一覧をプロジェクト直下の
+ * パスのまま見せると、AI は `public/a.js` と頭に付けて read_file に渡し、失敗する（0.6.38-rc.1 の実機）。
+ * だから中は**作業フォルダからの相対**（そのままツールへ渡せる形）にし、外は直下からのパスのまま分ける。
+ *
+ * @param files   プロジェクト直下からの相対パスの一覧
+ * @param rootRel 作業フォルダのプロジェクト直下からの相対（`''` は直下そのもの）
+ */
+export function splitFilesByRoot(files: string[], rootRel: string): { inside: string[]; outside: string[] } {
+  if (!rootRel) return { inside: files.slice(), outside: [] }
+  const prefix = `${rootRel}/`
+  const inside: string[] = []
+  const outside: string[] = []
+  for (const f of files) {
+    if (f.startsWith(prefix)) inside.push(f.slice(prefix.length))
+    else outside.push(f)
+  }
+  return { inside, outside }
+}
+
+/** 作業フォルダの、プロジェクト直下からの相対（直下と同じ・外なら `''`）。 */
+export function rootRelOf(projectDir: string, root: string): string {
+  const p = String(projectDir ?? '').replace(/[/\\]+$/, '')
+  const r = String(root ?? '').replace(/[/\\]+$/, '')
+  if (!p || !r || p === r || !r.startsWith(p + '/')) return ''
+  return r.slice(p.length + 1)
+}

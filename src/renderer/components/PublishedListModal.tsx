@@ -6,6 +6,8 @@ import Modal from '../ui/Modal'
 import { getWorkspaceDir } from '../workspace'
 import { formatPublishedAt, PUBLISH_TARGET_CONSOLE, type PublishTargetKind } from '../publishStatus'
 import { clearPublishRecord } from '../publishRecord'
+import { useConfirm } from '../useConfirm'
+import { runForgetPublishRecord } from '../confirmedActions'
 import { buildPublishedIndex, groupPublishedByTarget, type PublishedEntry, type PublishedGroup } from '../publishedIndex'
 import { teardownSupport } from '../../shared/teardownSupport'
 import { resumeHanamiiDeletionsIn } from '../teardown/hanamiiResume'
@@ -96,8 +98,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
    */
   const openProject = (dir: string) => { onOpenProject(dir); onClose() }
 
-  /** 記録だけを片づける確認中の行（**実体は消えない**ので、必ず1枚挟む）。 */
-  const [forgetting, setForgetting] = useState<string | null>(null)
+  const { confirm, element: confirmElement } = useConfirm()
 
   const reload = useCallback(async (ws?: string) => {
     const dir = ws ?? workspace ?? await getWorkspaceDir()
@@ -129,6 +130,17 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
   // **この一覧は破棄そのものを持たない。** 🗑 のある行は、どれも TeardownRow が、共通の流れ（teardown/flow.ts）で確認 → 実行 → 進み具合 → 結果までを行う。
   // 専有型（2026-10-08）の行は、専有型タブの手順6と同じ「すべて削除」の流れ（アプリだけを消す口は廃止した。段階3B で共通の部品に載せ替えた）。
   // 公開の記録（📡 の行）を消すのも、画面ではなく main の1か所。ここは押せる場所と、行・結果の置き場だけを持つ。
+
+  /**
+   * 記録だけを片づける（**実体は消えない**ので、必ず1枚挟む）。確認は窓の中の行ではなく ConfirmModal（行の幅を食わない）。
+   * 赤くはしない（記録を消すだけ）が、押し直せなくなることがあるので、Return で選ばれるのはキャンセル。
+   */
+  const forgetRecord = async (e: PublishedEntry) => {
+    await runForgetPublishRecord(`「${e.projectName}」の公開の記録を一覧から削除します。公開したものは残ります。`, {
+      confirm: (body) => confirm({ title: '一覧から削除しますか', body, confirmLabel: '一覧から削除', danger: false, initialFocus: 'cancel' }),
+      forget: async () => { try { await clearPublishRecord(e.dir, e.target) } finally { await reload() } },
+    })
+  }
 
   const total = groups?.reduce((n, g) => n + g.entries.length, 0) ?? 0
 
@@ -170,28 +182,12 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
               キーを失くした・向こうで消した等で**破棄できない**ことがある。
               そのとき記録だけが残り続け、この一覧に幽霊が並ぶ。
               **実体は消えない**ので、押す前にそう伝える。 */}
-          {forgetting === `${e.dir}-${e.target}` ? (
-            <>
-              <button
-                onClick={async () => {
-                  try { await clearPublishRecord(e.dir, e.target) } finally { setForgetting(null); await reload() }
-                }}
-                disabled={rowBusy}
-                className="text-[11px] border border-brand-red/60 rounded-md px-1.5 py-0.5 text-brand-red hover:bg-brand-red/10 disabled:opacity-40 whitespace-nowrap"
-              >一覧から削除（公開したものは残ります）</button>
-              <button
-                onClick={() => setForgetting(null)}
-                className="text-[11px] text-ink-muted hover:text-ink whitespace-nowrap"
-              >キャンセル</button>
-            </>
-          ) : (
-            <button
-              onClick={() => setForgetting(`${e.dir}-${e.target}`)}
-              disabled={rowBusy}
-              className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura disabled:opacity-40 whitespace-nowrap"
-              title={forgetTitle(e.target)}
-            >一覧から削除</button>
-          )}
+          <button
+            onClick={() => forgetRecord(e)}
+            disabled={rowBusy}
+            className="text-[11px] border border-line rounded-md px-1.5 py-0.5 text-ink-muted hover:text-ink hover:border-sakura disabled:opacity-40 whitespace-nowrap"
+            title={forgetTitle(e.target)}
+          >一覧から削除</button>
         </div>
       </div>
       {below}
@@ -394,6 +390,7 @@ export default function PublishedListModal({ onClose, onOpenProject }: {
         <div className="px-5 py-3 border-t border-line flex-none flex justify-end">
           <button onClick={onClose} className="text-xs border border-line rounded-lg px-3 py-1.5 text-ink-secondary hover:text-ink hover:border-sakura">閉じる</button>
         </div>
+        {confirmElement}
     </Modal>
   )
 }

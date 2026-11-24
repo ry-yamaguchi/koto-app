@@ -4,7 +4,7 @@ import '../monacoSetup'
 import type { OpenFile, Theme } from '../App'
 import type { SaveResult } from '../editorTabs'
 import { previewTab } from '../editorTabs'
-import { syncBandOf, runBandAction, RELOAD_CONFIRM, type BandAction } from '../editorSyncBand'
+import { syncBandOf, runBandClick, RELOAD_CONFIRM, type BandAction } from '../editorSyncBand'
 import SakuraLogo from './SakuraLogo'
 import EditorSyncBand from './EditorSyncBand'
 import { useConfirm } from '../useConfirm'
@@ -132,6 +132,7 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
   const { confirm, element: confirmElement } = useConfirm()
   // 帯のボタンの操作中（二重に押させない）
   const [bandBusy, setBandBusy] = useState(false)
+  const bandInFlightRef = useRef(false)
 
   const applyTheme = (monaco: any, t: Theme) => {
     monaco.editor.defineTheme('sakura-dark', DARK_THEME)
@@ -178,19 +179,15 @@ export default function EditorPanel({ openFiles, activeFile, onSetActive, onClos
 
   // 帯のボタン。確認が要るもの（外の内容を読み込む）は runBandAction の中で確認を通る
   const handleBandAction = async (file: OpenFile, action: BandAction) => {
-    setBandBusy(true)
-    try {
-      await runBandAction(file, action, {
-        confirmReload: (body) => confirm({ title: RELOAD_CONFIRM.title, body, confirmLabel: RELOAD_CONFIRM.confirmLabel, danger: true }),
-        reload: onReloadFromDisk,
-        keepMine: onKeepMine,
-        recreate: onRecreate,
-        save: onSave,
-        close: requestClose,
-      })
-    } finally {
-      setBandBusy(false)
-    }
+    // busy は実行の段にだけ立てる（確認の間は立てない: 開いたボタンへフォーカスが戻れるように）
+    await runBandClick(bandInFlightRef, setBandBusy, file, action, {
+      confirmReload: (body) => confirm({ title: RELOAD_CONFIRM.title, body, confirmLabel: RELOAD_CONFIRM.confirmLabel, danger: true }),
+      reload: onReloadFromDisk,
+      keepMine: onKeepMine,
+      recreate: onRecreate,
+      save: onSave,
+      close: requestClose,
+    })
   }
 
   if (openFiles.length === 0) {

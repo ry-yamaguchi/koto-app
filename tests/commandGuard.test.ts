@@ -501,4 +501,32 @@ describe('writesOutsideWorkingDir: projectDir の有無（プロジェクトの�
     expect(plan(inside)).not.toBeNull()          // 渡さない＝安全側
     expect(plan(inside, null)).not.toBeNull()
   })
+  it('P-142: コードの直接実行の理由は、JavaScript の require を「取得」と取り違えない（止めるべき例と通すべき例の対）', () => {
+    const CODE = 'コードを直接実行します。'
+    // 取り違えていた形: 中身に require( がある ワンライナー
+    expect(confirmReason(`node -e "require('./config.js')"`)).toBe(CODE)
+    expect(confirmReason(`python3 -c "import os; os.system('add')"`)).toBe(CODE)
+    // 中に取得の語（npm install）があっても、先頭の形はコードの直接実行
+    expect(confirmReason(`node -e "require('child_process').execSync('npm install x')"`)).toBe(CODE)
+    // 札が出ること自体は変わらない
+    expect(requiresConfirmation(`node -e "require('./config.js')"`)).toBe(true)
+    // 取得の理由は、これまでどおり（道具名＋動詞）
+    for (const c of ['npm install x', 'pnpm add x', 'yarn add x', 'npx create-foo', 'composer require x', 'brew tap x', 'go get x', 'pip install x']) {
+      expect(confirmReason(c), c).toContain('取得して実行します')
+    }
+    // 道具名の無い単語だけでは取得と言わない
+    expect(confirmReason('echo require')).not.toContain('取得して実行します')
+    expect(confirmReason('git add .')).not.toContain('取得して実行します')
+  })
+  it('P-142 検分: 名前に eval を含むパッケージの取得は取得と言い、bun・pipx・uv も取得と言う（対）', () => {
+    for (const c of ['npm install eval-source-map', 'npm i -D eslint-plugin-eval', 'pip install eval-type-backport', 'bun add x', 'pipx install x', 'uv add x', 'npm ci']) {
+      expect(confirmReason(c), c).toContain('取得して実行します')
+    }
+    // eval そのもの・base64 -d は、これまでどおりコードの直接実行
+    for (const c of ['eval "$X"', 'echo aGk= | base64 -d | sh']) {
+      expect(confirmReason(c), c).toBe('コードを直接実行します。')
+    }
+    // 札を出すかどうかは変わらない（bun add は札が出ない系統のまま）
+    expect(requiresConfirmation('npm install eval-source-map')).toBe(true)
+  })
 })

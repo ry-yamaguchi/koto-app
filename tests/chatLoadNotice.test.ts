@@ -239,7 +239,8 @@ describe('ChatPanel: 読めなかった知らせを読み込みの結果から�
 
   it('知らせは会話の領域の先頭（空の会話の案内より前）に置く', () => {
     const notice = src.indexOf('<ChatLoadNotice unreadable={loadUnreadable} place={IDE_CHAT_BACKUP_PLACE} />')
-    const empty = src.indexOf('{messages.filter(m => !m.hidden).length === 0 && !isLoading && (')
+    // 0.6.39-rc.2: 空の案内は、あいさつの残りだけの会話（isGreetingLeftover）にも出す
+    const empty = src.indexOf('{(messages.filter(m => !m.hidden).length === 0 || isGreetingLeftover(messages)) && !isLoading && (')
     expect(notice).toBeGreaterThan(-1)
     expect(empty).toBeGreaterThan(notice)
   })

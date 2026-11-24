@@ -201,6 +201,36 @@ function relPathInProject(projectDir: string, absPath: string): string | null {
 }
 
 /**
+ * Claude の Write/Edit の書き込み先を点検する純関数（canUseTool と PreToolUse の hook が**同じ関数を呼ぶ**・掟10）。
+ * 必ず断るのは3つ: file_path が無い・空／プロジェクトのフォルダ（scopeDir）の外／管理領域（isProtectedWritePath）。
+ * `~` と `~/…` は展開し、相対パスは writeRoot 基準で解く（SDK の cwd と同じ）。
+ * ok のとき rel はプロジェクト直下からの相対パス、abs は絶対パス。
+ */
+export function claudeWriteTarget(
+  scopeDir: string, writeRoot: string, rawPath: unknown,
+): { ok: true; rel: string; abs: string } | { ok: false; message: string } {
+  if (typeof rawPath !== 'string' || rawPath === '') {
+    return { ok: false, message: '書き込み先のパス（file_path）が分からないため、書き込めません。' }
+  }
+  const expanded = rawPath === '~' || rawPath.startsWith('~/')
+    ? path.join(os.homedir(), rawPath.slice(1))
+    : rawPath
+  const abs = path.resolve(writeRoot, expanded)
+  const rel = relPathInProject(scopeDir, abs)
+  if (rel === null) {
+    return { ok: false, message: `プロジェクトのフォルダの外（${abs}）には書き込めません。プロジェクトの中のファイルだけを書き換えられます。` }
+  }
+  if (isProtectedWritePath(rel)) return { ok: false, message: protectedWriteMessage(rel) }
+  return { ok: true, rel, abs }
+}
+
+/** claudeWriteTarget が断る書き込みなら、その断りの文。通るなら null。 */
+export function claudeWriteDenialOf(scopeDir: string, writeRoot: string, rawPath: unknown): string | null {
+  const t = claudeWriteTarget(scopeDir, writeRoot, rawPath)
+  return t.ok ? null : t.message
+}
+
+/**
  * Bash の危険コマンドを拒否し、「✋ 毎回確認」（W-18）では Write/Edit/Bash の前に許可を求める canUseTool。
  * 有効化するツール（ALLOWED_TOOL_NAMES = SDK内蔵6種＋IDE固有MCP3種の修飾名）以外は、
  * `tools`/`allowedTools` を絞らずともここで一律拒否する（スコープ最小化という設計を安全網としても徹底するため）。
@@ -275,28 +305,14 @@ export function makeCanUseTool(scopeDir: string, writeRoot: string, writeMode: W
     // (4) プロジェクトの中で writeRoot の外（public/ の外。例 <project>/server.js）は、これまでどおり
     //     おまかせなら許可・毎回確認なら承認（振る舞いを広げも狭めもしない）。
     if (toolName === 'Write' || toolName === 'Edit') {
-      const rawPath = (input as any)?.file_path
-      if (typeof rawPath !== 'string' || rawPath === '') {
-        const result: PermissionResult = { behavior: 'deny', message: '書き込み先のパス（file_path）が分からないため、書き込めません。' }
+      // 断る3つ（file_path が無い・空／プロジェクトの外／管理領域）の判断は claudeWriteTarget に一本化。
+      // PreToolUse の hook（makePreToolUseHook）も同じ関数を呼ぶ（断る書き込みを🕘履歴に残さないため・P-143）。
+      const target = claudeWriteTarget(scopeDir, writeRoot, (input as any)?.file_path)
+      if (!target.ok) {
+        const result: PermissionResult = { behavior: 'deny', message: target.message }
         return result
       }
-      // `~` と `~/…` はホームフォルダを指す（SDK 側で展開される可能性があるため、こちらも展開して「外」と判定する）。
-      const expanded = rawPath === '~' || rawPath.startsWith('~/')
-        ? path.join(os.homedir(), rawPath.slice(1))
-        : rawPath
-      const absPath = path.resolve(writeRoot, expanded)
-      const relProject = relPathInProject(scopeDir, absPath)
-      if (relProject === null) {
-        const result: PermissionResult = {
-          behavior: 'deny',
-          message: `プロジェクトのフォルダの外（${absPath}）には書き込めません。プロジェクトの中のファイルだけを書き換えられます。`,
-        }
-        return result
-      }
-      if (isProtectedWritePath(relProject)) {
-        const result: PermissionResult = { behavior: 'deny', message: protectedWriteMessage(relProject) }
-        return result
-      }
+      const relProject = target.rel
       // W-18: さくらのAI Engine 経路（shared/approvalPlan.ts の planApproval）と同じ判定・同じ文面を
       // 使い回す。「✋ 毎回確認」のときは、保存の前に必ずここで止まる（tests/w-chat-claudeApproval.test.ts）。
       // 承認の文に出すパス（と、断ったときの文に入るパス）は、**いつもプロジェクト直下からの相対**（relProject）。
@@ -358,13 +374,15 @@ export function makeCanUseTool(scopeDir: string, writeRoot: string, writeMode: W
  * あわせて、書く直前の旧内容を writeWatch へ控える（ターンの終わりの点検用）。退避とは別の try にして、
  * どちらが失敗してももう一方と書き込み自体は止めない。
  */
-function makePreToolUseHook(projectDir: string, snapshotId: string, snapshotLabel: string, writeWatch: Pick<WriteWatch, 'touch'>): HookCallback {
+export function makePreToolUseHook(projectDir: string, writeRoot: string, snapshotId: string, snapshotLabel: string, writeWatch: Pick<WriteWatch, 'touch'>): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return { continue: true }
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
-    const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : ''
-    const rel = filePath ? relPathInProject(projectDir, filePath) : null
-    if (rel) {
+    // canUseTool が必ず断る書き込み（file_path 無し・プロジェクトの外・管理領域）は、書かれないので退避も控えもしない（P-143）。
+    // それ以外は（✋ で利用者が拒否したものも含め）今までどおり必ず書く前に退避する。
+    const target = claudeWriteTarget(projectDir, writeRoot, toolInput.file_path)
+    if (target.ok) {
+      const rel = target.rel
       try {
         if (input.tool_name === 'Write' && typeof toolInput.content === 'string') {
           snapshotBeforeWrite(projectDir, snapshotId, rel, toolInput.content, snapshotLabel)
@@ -376,7 +394,7 @@ function makePreToolUseHook(projectDir: string, snapshotId: string, snapshotLabe
       }
       if (input.tool_name === 'Write' || input.tool_name === 'Edit') {
         try {
-          const abs = path.join(projectDir, rel)
+          const abs = target.abs
           let before: string | null = null
           try { before = fs.readFileSync(abs, 'utf8') } catch { before = null }
           writeWatch.touch(abs, before)
@@ -396,13 +414,14 @@ function makePreToolUseHook(projectDir: string, snapshotId: string, snapshotLabe
  * （App.tsx の1.5秒デバウンス・終了時保存）が古いバッファでディスクを上書きし、Claude の変更が消える。
  * renderer 側は fileWritten イベントを受けて該当タブをディスクから読み直す（applyRestoreResult と同じ機構）。
  */
-function makePostToolUseHook(projectDir: string, onFileWritten: (relPath: string) => void): HookCallback {
+export function makePostToolUseHook(projectDir: string, writeRoot: string, onFileWritten: (relPath: string) => void): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PostToolUse') return { continue: true }
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
-    const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : ''
-    const rel = filePath ? relPathInProject(projectDir, filePath) : null
-    if (rel) {
+    // Pre の hook・canUseTool と同じ claudeWriteTarget で解く（相対パスは writeRoot 基準・~ 展開。退避先と通知先をずらさない）。
+    const target = claudeWriteTarget(projectDir, writeRoot, toolInput.file_path)
+    if (target.ok) {
+      const rel = target.rel
       try { onFileWritten(rel) } catch { /* 通知失敗でチャットは止めない */ }
     }
     return { continue: true }
@@ -504,9 +523,9 @@ export function startClaudeChat(params: StartClaudeChatParams, sdkOverride?: Cla
     // scopeDir と同じ役割・ChatPanel.tsx の pendingApprovals が dir===projectDir で絞り込む）。
     canUseTool: makeCanUseTool(projectDir, writeRoot, writeMode, turnId),
     hooks: {
-      PreToolUse: [{ matcher: 'Edit|Write', hooks: [makePreToolUseHook(projectDir, snapshotId, snapshotLabel, writeWatch)] }],
+      PreToolUse: [{ matcher: 'Edit|Write', hooks: [makePreToolUseHook(projectDir, writeRoot, snapshotId, snapshotLabel, writeWatch)] }],
       // 実行成功後にエディタへ反映を通知（stale tab のオートセーブ上書きによるデータ喪失防止）
-      PostToolUse: [{ matcher: 'Edit|Write', hooks: [makePostToolUseHook(projectDir, onFileWritten)] }],
+      PostToolUse: [{ matcher: 'Edit|Write', hooks: [makePostToolUseHook(projectDir, writeRoot, onFileWritten)] }],
     },
     abortController,
     pathToClaudeCodeExecutable: resolveClaudeBinary() ?? undefined,

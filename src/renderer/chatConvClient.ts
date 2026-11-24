@@ -132,18 +132,27 @@ export function opRouteOf(turnDir: string | null, viewingDir: string | null, vie
   return turnDir !== viewingDir || !viewingReady ? 'turn' : 'viewing'
 }
 
-/** 見ていないプロジェクトの会話へ送る client（dir ごとに1つ。同じ会話への書き換えの順序を守る）。 */
-const turnClients = new Map<string, ReturnType<typeof makeConvClient>>()
+/**
+ * dir ごとに1つの client（同じ会話への書き換えを1本の列で送る）。見ているプロジェクトの client（ChatPanel の
+ * clientRef）も、見ていないプロジェクトへ送る口（applyOpToConversation）も、同じ dir ならこの1つを使う。
+ * 別々に作ると、同じ会話へ直列化されていない2本の列が書き、replaceLast が別の吹き出しを書き換えうる。
+ */
+const convClients = new Map<string, ReturnType<typeof makeConvClient>>()
+
+/** dir の会話へ送る client を返す（無ければ作る。同じ dir には、いつも同じものを返す）。 */
+export function convClientOf(dir: string): ReturnType<typeof makeConvClient> {
+  let client = convClients.get(dir)
+  if (!client) {
+    client = makeConvClient(dir)
+    convClients.set(dir, client)
+  }
+  return client
+}
 
 /**
  * ターン中に別のプロジェクトへ切り替わったあとの書き換えを、始めたプロジェクトの会話へ送る（掟11）。
  * 画面へは反映しない（そのプロジェクトを開いたときに読む。chat:applied は見ているプロジェクト宛てだけ受ける）。
  */
 export function applyOpToConversation(dir: string, op: Op): void {
-  let client = turnClients.get(dir)
-  if (!client) {
-    client = makeConvClient(dir)
-    turnClients.set(dir, client)
-  }
-  client.apply(op)
+  convClientOf(dir).apply(op)
 }

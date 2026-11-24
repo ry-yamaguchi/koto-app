@@ -32,6 +32,28 @@ export const GREETING_FAILED_TEXT = '（あいさつを準備できませんで�
 
 // ── 判断 ─────────────────────────────────────────────────────────────────────
 
+/** あいさつの残りかどうかの判断に要る、会話の1件の形（ChatMessage の一部）。 */
+export interface GreetingLeftoverMessage {
+  role: string
+  content?: string
+  hidden?: boolean
+  toolNote?: boolean
+}
+
+/**
+ * 会話が「あいさつの残り」だけか。隠したあいさつの依頼文（GREETING_KICKOFF の hidden の user。画像を入れた旨の hidden は含めない）と、中身が空の AI の吹き出しだけで、
+ * 利用者の発言も AI の返事の文も無い。あいさつの最中にチャット欄を閉じる・⏹ で止めると、この形で記録に残る。
+ * 空の会話と同じに扱う: decideGreeting は「まだあいさつしていない」と読み、画面は空の案内を出す（掟10）。
+ * 1件以上あり、全部がこの2種のときだけ真。
+ */
+export function isGreetingLeftover(messages: readonly GreetingLeftoverMessage[]): boolean {
+  if (messages.length === 0) return false
+  return messages.every(m =>
+    (m.role === 'user' && m.hidden === true && m.content === GREETING_KICKOFF) ||
+    (m.role === 'assistant' && !m.hidden && !m.toolNote && (m.content ?? '').trim() === ''),
+  )
+}
+
 export interface GreetingInput {
   /** AI Engine のキーか Claude のキーのどちらかで、チャットが使える。 */
   chatUsable: boolean
@@ -41,6 +63,8 @@ export interface GreetingInput {
   /** いま持っているプロジェクトの文脈がどのフォルダのものか（まだ無ければ null）。 */
   ctxDir: string | null | undefined
   messagesLength: number
+  /** 会話の中身。あいさつの残りだけ（isGreetingLeftover）なら、空の会話と同じに扱ってやり直す。省くと残りを見ない。 */
+  messages?: readonly GreetingLeftoverMessage[]
   /**
    * そのプロジェクトの会話の読み込みが済み、messages がその会話を映している。
    * 読み込み前の messages は前のプロジェクトのもの（または空）で、空と読むと、保存済みの会話があるプロジェクトへ
@@ -77,7 +101,10 @@ export function decideGreeting(i: GreetingInput): GreetingDecision {
   if (!i.chatUsable) return NONE
   if (!i.projectDir) return NONE
   if (!i.ctxDir || i.ctxDir !== i.projectDir) return NONE
-  if (i.messagesLength > 0 || i.isLoading) return NONE
+  if (i.isLoading) return NONE
+  // 件数だけで見ない: あいさつの残りだけの会話は、まだあいさつしていないのと同じ。やり直しは runGreeting の
+  // 最初の replaceAll が残りを置き換える（追記して2組にならない）。
+  if (i.messagesLength > 0 && !(i.messages && isGreetingLeftover(i.messages))) return NONE
   if (i.newProjectPending) return NONE
   if (!i.enabled) return { action: 'none', markGreeted: true }
   return { action: i.hasApiKey ? 'ai' : 'fixed', markGreeted: true }
@@ -105,16 +132,20 @@ export interface GreetingPorts {
   recordUsage(apiKey: string, model: string, promptTokens: number, completionTokens: number): void
   /** 利用量が返らなかったときの見積もり。 */
   estimateTokens(text: string): number
-  /** 会話への書き換え。 */
-  applyOp(op: Op): void
+  /**
+   * 会話への書き換え。送り先は、いつも始めたプロジェクト（dir）の会話の記録の口（applyOpToConversation。dir ごとに1本の列・
+   * main の convStore へ）。画面へは直に当てない。開いているプロジェクトの画面へは、main が当てた結果を押し出す
+   * chat:applied の購読が映す（読み込み中に届いたものは、読み込みが済んでから読み直す）。
+   * 「いま開いているか・読み込み済みか」を renderer の2つの値（描画で替わるものと effect で替わるもの）で見分けると、
+   * その間に別のプロジェクトの記録を丸ごと置き換えうるので、見分けない（掟11）。
+   */
+  applyOpToDir(dir: string, op: Op): void
   /** あいさつの生成中かどうか（画面の「考えています」の表示）。 */
   setLoading(loading: boolean): void
   /** ⏹ 停止で呼ぶ中断関数の登録。終わったら null で外す。 */
   setAbort(abort: (() => void) | null): void
   /** 失敗の原因をログにだけ残す（吹き出しには出さない）。 */
   warn(detail: string): void
-  /** いま開いているプロジェクト。返事を待つ間に切り替わったかを見るため、値でなく呼ぶたびに返す。 */
-  currentDir(): string | null | undefined
 }
 
 export interface GreetingRun {
@@ -122,7 +153,7 @@ export interface GreetingRun {
   model: string
   /** そのプロジェクトの文脈（ファイル一覧など）。まだ無ければ ''。 */
   projectContext: string
-  /** あいさつを始めたプロジェクト。返事を待つ間に別のプロジェクトが開かれたら、会話へは何も当てない。 */
+  /** あいさつを始めたプロジェクト。会話への書き換えは、いつもこのプロジェクトの記録へ送る。 */
   dir: string
 }
 
@@ -134,14 +165,16 @@ export interface GreetingRun {
  * - 止めない設定で上限を超えている: あいさつは出し、終わったあとに知らせを付け足す。
  *   途中の吹き出しの差し替えで消えないよう、控えておいて最後（finally）に出す。
  * - 利用量は、返事が最後まで来た回（時間切れを含む）にだけ記録する。例外で終わった回は記録しない。
- * - 会話への書き換えは、始めたプロジェクトがまだ開いているときだけ当てる（吹き出し・時間切れ文・失敗文・
- *   あとから足す知らせのすべて）。切り替わっていたら捨てる。開いているプロジェクトの会話を、
- *   別のプロジェクトのあいさつで置き換えないため。読み込み表示・中断の登録・利用量の記録は切り替わっても続ける。
- *   開いていない間に届いた分も、返事の全文を毎回送り直すので、戻ってくれば全文が出る。
+ * - 会話への書き換え（吹き出し・時間切れ文・失敗文・あとから足す知らせのすべて）は、いつも始めたプロジェクトの
+ *   会話の記録へ送る（applyOpToDir）。開いているか・読み込み済みかは見ない（見分ける2つの値は更新のときがずれ、
+ *   A→B→A と戻る描画と effect の間に、B の会話を A のあいさつで置き換えうる）。開いているプロジェクトの画面へは
+ *   chat:applied が映すので、見た目は変わらない。終わったあとに戻っても返事・時間切れ・失敗・上限の文が記録に残る。
+ *   返事の全文は毎回送り直すので、記録は常に最新の全文になる。
+ *   読み込み表示・中断の登録・利用量の記録は切り替わっても続ける。
  */
 export async function runGreeting(run: GreetingRun, ports: GreetingPorts): Promise<void> {
   const { apiKey, model, projectContext, dir } = run
-  const emit = (op: Op): void => { if (ports.currentDir() === dir) ports.applyOp(op) }
+  const emit = (op: Op): void => { ports.applyOpToDir(dir, op) }
   if (!apiKey) {
     emit({ kind: 'replaceAll', messages: [{ role: 'assistant', content: GREETING_FIXED_TEXT }] })
     return
