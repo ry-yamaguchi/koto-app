@@ -2,9 +2,11 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 // @ts-expect-error — ビルド用スクリプト（型定義は持たない）
-import { parsePricingPage, apiIdCandidate, comparePricing, exitCodeFor, formatReport, registrationLines, parseYenPerMillion, PricingPageError, MIN_PRICED_ROWS } from '../scripts/lib/pricingPage.mjs'
+import { parsePricingPage, apiIdCandidate, comparePricing, exitCodeFor, formatReport, registrationLines, validateDeclined, parseYenPerMillion, PricingPageError, MIN_PRICED_ROWS } from '../scripts/lib/pricingPage.mjs'
 // @ts-expect-error — ビルド用スクリプト（型定義は持たない）
 import { parseAppConfig, readAppConfig, NON_CHAT } from '../scripts/lib/appConfig.mjs'
+// @ts-expect-error — ビルド用スクリプト（型定義は持たない）
+import { DECLINED } from '../scripts/lib/pricingDeclined.mjs'
 import { PRICING } from '../src/shared/usageBudget'
 import { MODELS, VISION_MODELS, DEFAULT_MODEL } from '../src/shared/modelInfo'
 
@@ -106,7 +108,7 @@ describe('parsePricingPage — 料金表の行を読む', () => {
     expect(rows().filter((r: any) => r.name === 'gamma-7b')).toHaveLength(1)
     expect(byName('theta-ghost')).toBeUndefined()
     // 照合まで通しても、二重の行で止まらない＝ちょうど1回ずつ数えている
-    expect(() => comparePricing(rows(), KOTO)).not.toThrow()
+    expect(() => comparePricing(rows(), KOTO, [], [])).not.toThrow()
   })
 
   it('rowspan の先頭行でも、モデル名はカテゴリ列ではなく名前の列から読む', () => {
@@ -123,7 +125,7 @@ describe('parsePricingPage — 料金表の行を読む', () => {
     const omega = `<tr><th colSpan="2"><b>omega-chat</b></th><td colSpan="2">月 1 回</td><td>${price('0.2', '0.4')}</td></tr>`
     const html = page(STANDARD.replace('</tbody>', `${omega}\n</tbody>`) + CLOSED + preview(Object.values(PREVIEW_ROWS)))
     expect(byNameIn(html)('omega-chat')).toMatchObject({ section: 'standard', in: 20, out: 40 })
-    expect(comparePricing(parsePricingPage(html), KOTO_ALL).newcomers.map((n: any) => n.id)).toEqual(['omega-chat'])
+    expect(comparePricing(parsePricingPage(html), KOTO_ALL, [], []).newcomers.map((n: any) => n.id)).toEqual(['omega-chat'])
   })
 
   it('★ 料金が Input/Output の形でない行も落とさず、in/out を null で返す（照合で判定する）', () => {
@@ -211,7 +213,7 @@ describe('apiIdCandidate — 区分から API 名の候補を導く', () => {
 
 describe('comparePricing — 5つに分ける', () => {
   let result: any
-  beforeAll(() => { result = comparePricing(parsePricingPage(FULL_HTML), KOTO) })
+  beforeAll(() => { result = comparePricing(parsePricingPage(FULL_HTML), KOTO, [], []) })
 
   it('★ 一致', () => {
     expect(result.matched.map((m: any) => m.id)).toEqual(['alpha-large', 'beta-mid-ja', 'preview/gamma-7b', 'preview/eta-code-32b'])
@@ -243,7 +245,7 @@ describe('comparePricing — 5つに分ける', () => {
     expect(exitCodeFor(result)).toBe(1)
   })
   it('全部一致なら終了コード 0（クローズドは数えない）', () => {
-    const r = comparePricing(parsePricingPage(FULL_HTML), KOTO_ALL)
+    const r = comparePricing(parsePricingPage(FULL_HTML), KOTO_ALL, [], [])
     expect(r.matched).toHaveLength(6)
     expect(r.closed).toHaveLength(2)
     // 料金の形が違う正当な行（音声認識・音声合成の続き・RAG）は「料金を読めなかった行」にしない
@@ -252,7 +254,7 @@ describe('comparePricing — 5つに分ける', () => {
     expect(formatReport(r, { today: '2026-09-25' }).join('\n')).toContain('差分なし')
   })
   it('区分が変わった（プレビュー → 通常）ときは、新顔と Koto にだけある の両方に手がかりを出す', () => {
-    const r = comparePricing(parsePricingPage(FULL_HTML), { ...KOTO, 'preview/alpha-large': { in: 15, out: 75 } })
+    const r = comparePricing(parsePricingPage(FULL_HTML), { ...KOTO, 'preview/alpha-large': { in: 15, out: 75 } }, [], [])
     expect(r.kotoOnly.find((k: any) => k.id === 'preview/alpha-large').sameNameOnPage).toBe('alpha-large')
   })
 })
@@ -266,26 +268,26 @@ describe('★★★ 読めないページで「一致」と言わない（ペー
       'alpha-large': { in: 15, out: 75 }, 'beta-mid-ja': { in: 57, out: 7 },
       'preview/gamma-7b': { in: 10, out: 30 }, 'preview/delta-9b': { in: 1, out: 3 },
     }
-    expect(() => comparePricing(rows, four)).toThrow(PricingPageError)
+    expect(() => comparePricing(rows, four, [], [])).toThrow(PricingPageError)
   })
 
   it('料金の書き方が変わって1行も読めない → 例外（全部 Koto にだけある、とも言わない）', () => {
     const changed = FULL_HTML.replace(/<dt>Input<\/dt>/g, '<dt>入力</dt>').replace(/<dt>Output<\/dt>/g, '<dt>出力</dt>')
-    expect(() => comparePricing(parsePricingPage(changed), KOTO)).toThrow(/ページの形が変わった/)
+    expect(() => comparePricing(parsePricingPage(changed), KOTO, [], [])).toThrow(/ページの形が変わった/)
   })
 
   it('見出し（区分）が読めない → 例外（区分の分からない行は数えない）', () => {
     const noHeadings = FULL_HTML.replace(/<h3\b[^>]*>[\s\S]*?<\/h3>/g, '')
-    expect(() => comparePricing(parsePricingPage(noHeadings), KOTO)).toThrow(PricingPageError)
+    expect(() => comparePricing(parsePricingPage(noHeadings), KOTO, [], [])).toThrow(PricingPageError)
   })
 
   it('空のページ → 例外', () => {
-    expect(() => comparePricing(parsePricingPage('<html><body>メンテナンス中</body></html>'), KOTO)).toThrow(PricingPageError)
+    expect(() => comparePricing(parsePricingPage('<html><body>メンテナンス中</body></html>'), KOTO, [], [])).toThrow(PricingPageError)
   })
 
   it('同じモデルの行が2回読めた（二重に数えている）→ 例外', () => {
     const twice = page(STANDARD + preview(Object.values(PREVIEW_ROWS)) + preview([PREVIEW_ROWS.gamma]))
-    expect(() => comparePricing(parsePricingPage(twice), KOTO)).toThrow(/2回/)
+    expect(() => comparePricing(parsePricingPage(twice), KOTO, [], [])).toThrow(/2回/)
   })
 
   it('コメント・noscript の中の複写も数えない', () => {
@@ -295,7 +297,7 @@ describe('★★★ 読めないページで「一致」と言わない（ペー
   })
 
   it('Koto の PRICING が空 → 例外（全部を新顔と言わない）', () => {
-    expect(() => comparePricing(parsePricingPage(FULL_HTML), {})).toThrow(PricingPageError)
+    expect(() => comparePricing(parsePricingPage(FULL_HTML), {}, [], [])).toThrow(PricingPageError)
   })
 })
 
@@ -313,7 +315,7 @@ describe('★★★ 料金を読めない行を黙って捨てない（1行だ�
   ]
   for (const [label, cell] of shapes) {
     it(`★ プレビューの新しい行の料金が${label} → 料金を読めなかった行・終了コード 1（差分なしと言わない）`, () => {
-      const r = comparePricing(parsePricingPage(withPreviewRow(iota(cell))), KOTO_ALL)
+      const r = comparePricing(parsePricingPage(withPreviewRow(iota(cell))), KOTO_ALL, [], [])
       expect(r.matched).toHaveLength(6)
       expect(r.unreadable).toEqual([
         { id: 'preview/iota-new-8b', name: 'iota-new-8b', section: 'preview', since: '2026-09-26', in: null, out: null, koto: null, sameNameInKoto: null },
@@ -331,14 +333,14 @@ describe('★★★ 料金を読めない行を黙って捨てない（1行だ�
   it('★ 通常の表（Chat completions）に加わった行でも同じ', () => {
     const lambda = `<tr><th><b>Chat completions</b></th><th>lambda-std</th><td>月 1 回</td><td>月 1 回</td><td><p>お問い合わせください</p></td></tr>`
     const html = page(STANDARD.replace('</tbody>', `${lambda}\n</tbody>`) + CLOSED + preview(Object.values(PREVIEW_ROWS)))
-    const r = comparePricing(parsePricingPage(html), KOTO_ALL)
+    const r = comparePricing(parsePricingPage(html), KOTO_ALL, [], [])
     expect(r.unreadable.map((u: any) => [u.id, u.section])).toEqual([['lambda-std', 'standard']])
     expect(exitCodeFor(r)).toBe(1)
   })
 
   it('★ 片方（出力）だけ読めない行も、料金を読めなかった行（読めた値は添える）', () => {
     const cell = `<dl><dt>Input</dt>${tok('0.5')}</dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>`
-    const r = comparePricing(parsePricingPage(withPreviewRow(iota(cell))), KOTO_ALL)
+    const r = comparePricing(parsePricingPage(withPreviewRow(iota(cell))), KOTO_ALL, [], [])
     expect(r.unreadable).toHaveLength(1)
     expect(r.unreadable[0]).toMatchObject({ id: 'preview/iota-new-8b', in: 50, out: null })
     expect(exitCodeFor(r)).toBe(1)
@@ -348,7 +350,7 @@ describe('★★★ 料金を読めない行を黙って捨てない（1行だ�
   it('★ Koto に載っているモデルの料金の書き方が変わった → 料金を読めなかった行（一致にも「Koto にだけある」にもしない）', () => {
     const gammaChanged = PREVIEW_ROWS.gamma.replace(price('0.1', '0.3'), '<p>0.1円 <span>/ 10,000トークン</span></p>')
     const html = page(STANDARD + CLOSED + preview([gammaChanged, PREVIEW_ROWS.delta, PREVIEW_ROWS.eta, PREVIEW_ROWS.epsilon, PREVIEW_ROWS.zeta]))
-    const r = comparePricing(parsePricingPage(html), KOTO_ALL)
+    const r = comparePricing(parsePricingPage(html), KOTO_ALL, [], [])
     expect(r.unreadable).toEqual([
       { id: 'preview/gamma-7b', name: 'gamma-7b', section: 'preview', since: '2026-01-02', in: null, out: null, koto: { in: 10, out: 30 }, sameNameInKoto: null },
     ])
@@ -359,7 +361,7 @@ describe('★★★ 料金を読めない行を黙って捨てない（1行だ�
   })
 
   it('チャット用でない名前（NON_CHAT に当たる）の行は、料金を読めなくても報告しない', () => {
-    const r = comparePricing(parsePricingPage(withPreviewRow(iota('<p>1円 / 60秒</p>').replace('iota-new-8b', 'iota-whisper-8b'))), KOTO_ALL)
+    const r = comparePricing(parsePricingPage(withPreviewRow(iota('<p>1円 / 60秒</p>').replace('iota-new-8b', 'iota-whisper-8b'))), KOTO_ALL, [], [])
     expect(r.unreadable).toEqual([])
     expect(r.excluded).toContain('iota-whisper-8b')
     expect(exitCodeFor(r)).toBe(0)
@@ -369,7 +371,7 @@ describe('★★★ 料金を読めない行を黙って捨てない（1行だ�
 describe('★ Koto 側のチャット用でない id を「提供終了の可能性」と誤報しない', () => {
   it('Koto の PRICING に NON_CHAT に当たる id があっても、Koto にだけある にしない（照合しなかったと添える）', () => {
     const withNonChat = { ...KOTO_ALL, 'tiny-e5-base': { in: 200, out: 0 }, 'whisper-gone-v9': { in: 1, out: 1 } }
-    const r = comparePricing(parsePricingPage(FULL_HTML), withNonChat)
+    const r = comparePricing(parsePricingPage(FULL_HTML), withNonChat, [], [])
     expect(r.kotoOnly).toEqual([])
     expect(r.kotoExcluded).toEqual(['tiny-e5-base', 'whisper-gone-v9'])
     expect(exitCodeFor(r)).toBe(0)
@@ -379,7 +381,7 @@ describe('★ Koto 側のチャット用でない id を「提供終了の可能
   })
 
   it('チャット用の id が公式に無ければ、従来どおり Koto にだけある', () => {
-    const r = comparePricing(parsePricingPage(FULL_HTML), { ...KOTO_ALL, 'preview/old-model': { in: 5, out: 5 } })
+    const r = comparePricing(parsePricingPage(FULL_HTML), { ...KOTO_ALL, 'preview/old-model': { in: 5, out: 5 } }, [], [])
     expect(r.kotoOnly.map((k: any) => k.id)).toEqual(['preview/old-model'])
     expect(r.kotoExcluded).toEqual([])
     expect(exitCodeFor(r)).toBe(1)
@@ -391,7 +393,7 @@ describe('登録案（新顔にそのまま貼れる行）', () => {
   let lines: string[] = []
   let text = ''
   beforeAll(() => {
-    result = comparePricing(parsePricingPage(FULL_HTML), KOTO)
+    result = comparePricing(parsePricingPage(FULL_HTML), KOTO, [], [])
     lines = registrationLines(result.newcomers[0], { today: '2026-09-25' })
     text = lines.join('\n')
   })
@@ -406,7 +408,7 @@ describe('登録案（新顔にそのまま貼れる行）', () => {
   it('★ 無償枠がある新顔には「無償枠なし」と書かない', () => {
     // alpha-large（無償枠あり）を Koto から外して新顔にする
     const { 'alpha-large': _dropped, ...withoutAlpha } = KOTO
-    const r = comparePricing(parsePricingPage(FULL_HTML), withoutAlpha)
+    const r = comparePricing(parsePricingPage(FULL_HTML), withoutAlpha, [], [])
     const alpha = r.newcomers.find((n: any) => n.name === 'alpha-large')
     expect(alpha).toBeTruthy()
     const t = registrationLines(alpha, { today: '2026-09-25' }).join('\n')
@@ -600,14 +602,14 @@ describe('★★★ 新しい形（2026-11）— 通常の表の中の札つき�
 
   it('★ API 名の候補は preview/＋名前。Koto の preview/<名前> と一致する', () => {
     expect(apiIdCandidate(byName('pre-small-cpu'))).toBe('preview/pre-small-cpu')
-    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL, [], [])
     expect(r.matched.map((m: any) => [m.id, m.section])).toContainEqual(['preview/pre-small-cpu', 'preview'])
     expect(r.matched.map((m: any) => m.id)).toContain('preview/pre-vl-30b')
   })
 
   it('★ Koto に無ければ新顔。報告には「パブリックプレビュー」と API 名の候補 preview/＋名前を出す', () => {
     const { 'preview/pre-small-cpu': _dropped, ...without } = NEW_KOTO_ALL
-    const r = comparePricing(parsePricingPage(NEW_HTML), without)
+    const r = comparePricing(parsePricingPage(NEW_HTML), without, [], [])
     expect(r.newcomers).toHaveLength(1)
     expect(r.newcomers[0]).toMatchObject({ id: 'preview/pre-small-cpu', name: 'pre-small-cpu', section: 'preview', since: '2026-02-03', in: 1, out: 3 })
     const report = formatReport(r, { today: '2026-11-02' }).join('\n')
@@ -651,7 +653,7 @@ describe('★★★ 新しい形（2026-11）— 通常の表の中の札つき�
     const one = rows.find((r: any) => r.name === 'Secret One')
     expect(one).toMatchObject({ section: 'closed', provider: 'Example社', in: null, out: null })
     expect(apiIdCandidate(one)).toBeNull()
-    const r = comparePricing(rows, NEW_KOTO_ALL)
+    const r = comparePricing(rows, NEW_KOTO_ALL, [], [])
     expect(r.closed.map((c: any) => c.name)).toEqual(['Secret One', 'Secret Two'])
     expect(r.newcomers).toEqual([])
     expect(exitCodeFor(r)).toBe(0)
@@ -659,7 +661,7 @@ describe('★★★ 新しい形（2026-11）— 通常の表の中の札つき�
 
   it('★ 通常の表の中の札つきの行が、プレビューの表にも載っていたら（二重に数えている）例外', () => {
     const twice = page(NEW_STANDARD + NEW_CLOSED + preview([PREVIEW_ROWS.gamma]).replace(/gamma-7b/g, 'pre-small-cpu'))
-    expect(() => comparePricing(parsePricingPage(twice), NEW_KOTO_ALL)).toThrow(/2回/)
+    expect(() => comparePricing(parsePricingPage(twice), NEW_KOTO_ALL, [], [])).toThrow(/2回/)
   })
 })
 
@@ -679,7 +681,7 @@ describe('★★★ 新しい形（2026-11）— カテゴリ列の <small>・RA
     const names = parsePricingPage(NEW_HTML).map((r: any) => r.name)
     expect(names.filter((n: string) => /RAG|ドキュメント/.test(n))).toEqual([])
     // 料金を読めなかった行にも出ない
-    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL, [], [])
     expect(r.unreadable).toEqual([])
     expect(formatReport(r, { today: '2026-11-02' }).join('\n')).not.toContain('RAG')
   })
@@ -693,7 +695,7 @@ describe('★★★ 新しい形（2026-11）— カテゴリ列の <small>・RA
   it('カテゴリ列だけの行でも、料金（Input/Output）を読めるなら落とさない（<small> つきでも外しすぎない）', () => {
     const omega = `<tr><th colSpan="2"><b>omega-chat</b><small>（文章の生成）</small></th><td colSpan="2">月 1 回</td><td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`
     const html = page(newTable([...Object.values(NEW_ROWS), omega]) + NEW_CLOSED)
-    const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL, [], [])
     expect(r.newcomers.map((n: any) => n.id)).toEqual(['omega-chat'])
     expect(r.newcomers[0]).toMatchObject({ in: 20, out: 40 })
   })
@@ -701,7 +703,7 @@ describe('★★★ 新しい形（2026-11）— カテゴリ列の <small>・RA
 
 describe('★★★ 新しい形（2026-11）— ページ全体の照合と、読めないページで「一致」と言わない', () => {
   it('★★ 全部一致 → 食い違い・新顔・読めなかった行・Koto にだけある が 0 件・終了コード 0', () => {
-    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(NEW_HTML), NEW_KOTO_ALL, [], [])
     expect(r.matched.map((m: any) => m.id)).toEqual(NEW_IDS)
     expect(r.mismatched).toEqual([])
     expect(r.newcomers).toEqual([])
@@ -714,12 +716,12 @@ describe('★★★ 新しい形（2026-11）— ページ全体の照合と、�
   })
 
   it('★★ 1か所でも料金が違えば食い違い・終了コード 1（通常の行も、札つきの行も）', () => {
-    const plain = comparePricing(parsePricingPage(NEW_HTML.replace(price('0.57', '0.07'), price('0.58', '0.07'))), NEW_KOTO_ALL)
+    const plain = comparePricing(parsePricingPage(NEW_HTML.replace(price('0.57', '0.07'), price('0.58', '0.07'))), NEW_KOTO_ALL, [], [])
     expect(plain.mismatched).toEqual([
       { id: 'nova-mid-ja', name: 'nova-mid-ja', section: 'standard', official: { in: 58, out: 7 }, koto: { in: 57, out: 7 } },
     ])
     expect(exitCodeFor(plain)).toBe(1)
-    const koto = comparePricing(parsePricingPage(NEW_HTML), { ...NEW_KOTO_ALL, 'preview/pre-vl-30b': { in: 10, out: 31 } })
+    const koto = comparePricing(parsePricingPage(NEW_HTML), { ...NEW_KOTO_ALL, 'preview/pre-vl-30b': { in: 10, out: 31 } }, [], [])
     expect(koto.mismatched.map((m: any) => m.id)).toEqual(['preview/pre-vl-30b'])
     expect(koto.matched).toHaveLength(NEW_IDS.length - 1)
     expect(exitCodeFor(koto)).toBe(1)
@@ -736,7 +738,7 @@ describe('★★★ 新しい形（2026-11）— ページ全体の照合と、�
   ]
   for (const [label, cell] of shapes) {
     it(`★★ 札つきの新しい行の料金が${label} → 料金を読めなかった行・終了コード 1`, () => {
-      const r = comparePricing(parsePricingPage(withRow(iota(cell))), NEW_KOTO_ALL)
+      const r = comparePricing(parsePricingPage(withRow(iota(cell))), NEW_KOTO_ALL, [], [])
       expect(r.matched).toHaveLength(NEW_IDS.length)
       expect(r.unreadable).toEqual([
         { id: 'preview/iota-new-8b', name: 'iota-new-8b', section: 'preview', since: '2026-11-03', in: null, out: null, koto: null, sameNameInKoto: null },
@@ -752,7 +754,7 @@ describe('★★★ 新しい形（2026-11）— ページ全体の照合と、�
 
   it('★ 片方（出力）だけ読めない行は、読めた入力を残したまま料金を読めなかった行（入出力形式で消さない）', () => {
     const cell = `<dl><dt>Input</dt>${tok('0.5')}</dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>`
-    const r = comparePricing(parsePricingPage(withRow(iota(cell))), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(withRow(iota(cell))), NEW_KOTO_ALL, [], [])
     expect(r.unreadable).toHaveLength(1)
     expect(r.unreadable[0]).toMatchObject({ id: 'preview/iota-new-8b', in: 50, out: null })
     expect(exitCodeFor(r)).toBe(1)
@@ -760,7 +762,7 @@ describe('★★★ 新しい形（2026-11）— ページ全体の照合と、�
 
   it('★ 通常の札なしの行（Chat completions の表）でも同じ', () => {
     const lambda = `<tr><th>lambda-std</th><td>月 1 回</td><td>月 1 回</td><td><dl><dt>Input</dt><dd>お問い合わせください</dd></dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl></td><td>${TXT}</td></tr>`
-    const r = comparePricing(parsePricingPage(withRow(lambda)), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(withRow(lambda)), NEW_KOTO_ALL, [], [])
     expect(r.unreadable.map((u: any) => [u.id, u.section])).toEqual([['lambda-std', 'standard']])
     expect(exitCodeFor(r)).toBe(1)
   })
@@ -768,7 +770,7 @@ describe('★★★ 新しい形（2026-11）— ページ全体の照合と、�
   it('★ Koto に載っているモデルの料金の書き方が変わった → 料金を読めなかった行（一致にも「Koto にだけある」にもしない）', () => {
     const changed = NEW_HTML.replace(price('0.15', '0.75'), '<dl><dt>Input</dt><dd>お問い合わせください</dd></dl><dl><dt>Output</dt><dd>お問い合わせください</dd></dl>')
     expect(changed).not.toBe(NEW_HTML)
-    const r = comparePricing(parsePricingPage(changed), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(changed), NEW_KOTO_ALL, [], [])
     expect(r.unreadable.map((u: any) => [u.id, u.koto])).toEqual([['nova-large', { in: 15, out: 75 }]])
     expect(r.matched.map((m: any) => m.id)).not.toContain('nova-large')
     expect(r.kotoOnly).toEqual([])
@@ -783,10 +785,10 @@ describe('★★★ 新しい形（2026-11）— ページ全体の照合と、�
     }
     // 門が無いと、読めた分だけ Koto と一致して「全部一致（終了コード 0）」と言ってしまう
     const few = make(MIN_PRICED_ROWS - 1)
-    expect(() => comparePricing(parsePricingPage(few.html), few.koto)).toThrow(PricingPageError)
+    expect(() => comparePricing(parsePricingPage(few.html), few.koto, [], [])).toThrow(PricingPageError)
     // ちょうど MIN 件なら通る（入出力形式のセルで料金を null にしていれば、ここで例外になる）
     const enough = make(MIN_PRICED_ROWS)
-    const r = comparePricing(parsePricingPage(enough.html), enough.koto)
+    const r = comparePricing(parsePricingPage(enough.html), enough.koto, [], [])
     expect(r.matched).toHaveLength(MIN_PRICED_ROWS)
     expect(exitCodeFor(r)).toBe(0)
   })
@@ -794,14 +796,14 @@ describe('★★★ 新しい形（2026-11）— ページ全体の照合と、�
   it('料金のセルが全部読めない書き方に変わったら（入出力形式のセルだけが Input/Output の形）→ 例外', () => {
     const asP = NEW_HTML.replace(/<td>(?:<dl class="p-in">[\s\S]*?<\/dl><dl class="p-out">[\s\S]*?<\/dl>)<\/td>/g, '<td><p>1円</p></td>')
     expect(asP).not.toBe(NEW_HTML)
-    expect(() => comparePricing(parsePricingPage(asP), NEW_KOTO_ALL)).toThrow(/ページの形が変わった/)
+    expect(() => comparePricing(parsePricingPage(asP), NEW_KOTO_ALL, [], [])).toThrow(/ページの形が変わった/)
     const jp = NEW_HTML.replace(/<dt>Input<\/dt><dd>\d/g, '<dt>入力</dt><dd>0').replace(/<dt>Output<\/dt><dd>\d/g, '<dt>出力</dt><dd>0')
-    expect(() => comparePricing(parsePricingPage(jp), NEW_KOTO_ALL)).toThrow(/ページの形が変わった/)
+    expect(() => comparePricing(parsePricingPage(jp), NEW_KOTO_ALL, [], [])).toThrow(/ページの形が変わった/)
   })
 
   it('見出し（区分）が読めない → 例外（札つきの行も、区分の分からないまま数えない）', () => {
     const noHeadings = NEW_HTML.replace(/<h3\b[^>]*>[\s\S]*?<\/h3>/g, '')
-    expect(() => comparePricing(parsePricingPage(noHeadings), NEW_KOTO_ALL)).toThrow(PricingPageError)
+    expect(() => comparePricing(parsePricingPage(noHeadings), NEW_KOTO_ALL, [], [])).toThrow(PricingPageError)
   })
 })
 
@@ -826,14 +828,14 @@ describe('★★★ 新しい形（2026-11）— 行が黙って消えない', (
     it(`★★ 名前のセルが${label} → 札の文字を名前に戻して残す（新顔として終了コード 1。黙って捨てない）`, () => {
       const html = withRow(`<tr>${th}<td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`)
       expect(byNameIn(html)('パブリックプレビューモデル')).toMatchObject({ section: 'standard', in: 20, out: 40 })
-      const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL)
+      const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL, [], [])
       expect(r.newcomers.map((n: any) => n.name)).toEqual(['パブリックプレビューモデル'])
       expect(exitCodeFor(r)).toBe(1)
     })
   }
 
   it('★ 札だけのセルで料金も読めない行は、料金を読めなかった行（終了コード 1）', () => {
-    const r = comparePricing(parsePricingPage(withRow(`<tr>${tagOnly('')}<td><p>お問い合わせください</p></td><td>${TXT}</td></tr>`)), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(withRow(`<tr>${tagOnly('')}<td><p>お問い合わせください</p></td><td>${TXT}</td></tr>`)), NEW_KOTO_ALL, [], [])
     expect(r.unreadable.map((u: any) => u.name)).toEqual(['パブリックプレビューモデル'])
     expect(exitCodeFor(r)).toBe(1)
   })
@@ -842,7 +844,7 @@ describe('★★★ 新しい形（2026-11）— 行が黙って消えない', (
     const html = withRow(`<tr><th>rho-8b<br/><small>(2026年11月3日〜)</small></th>${tagOnly('')}<td>${price('0.2', '0.4')}</td><td>${TXT}</td></tr>`)
     expect(byNameIn(html)('rho-8b')).toMatchObject({ section: 'preview', since: '2026-11-03', in: 20, out: 40 })
     expect(parsePricingPage(html).filter((r: any) => /プレビュー/.test(r.name))).toEqual([])
-    const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL)
+    const r = comparePricing(parsePricingPage(html), NEW_KOTO_ALL, [], [])
     expect(r.newcomers.map((n: any) => n.id)).toEqual(['preview/rho-8b'])
   })
 
@@ -879,9 +881,9 @@ describe('★★★ 新しい形（2026-11）— 行が黙って消えない', (
     const many = Array.from({ length: MIN_PRICED_ROWS }, (_, k) => `<tr>${tagged(`mu-${k}`, '(2026年1月1日〜)')}<td>${price('0.1', '0.2')}</td><td>${TXT}</td></tr>`)
     const koto = Object.fromEntries(Array.from({ length: MIN_PRICED_ROWS }, (_, k) => [`preview/mu-${k}`, { in: 10, out: 20 }]))
     const noHeadings = page(newTable(many)).replace(/<h3\b[^>]*>[\s\S]*?<\/h3>/g, '')
-    expect(() => comparePricing(parsePricingPage(noHeadings), koto)).toThrow(PricingPageError)
+    expect(() => comparePricing(parsePricingPage(noHeadings), koto, [], [])).toThrow(PricingPageError)
     // 見出しがあれば同じ行が preview として通る（上の例外は見出しが無いことが理由）
-    expect(comparePricing(parsePricingPage(page(newTable(many))), koto).matched).toHaveLength(MIN_PRICED_ROWS)
+    expect(comparePricing(parsePricingPage(page(newTable(many))), koto, [], []).matched).toHaveLength(MIN_PRICED_ROWS)
   })
 
   // カテゴリ列は <b>…</b> のあとに <small> だけが続く形。名前が <b> で始まるだけのセルはカテゴリ列ではない
@@ -989,5 +991,119 @@ describe('appConfig — Koto の固定設定を読む（check-models.mjs と共�
     expect(src).toMatch(/import \{[^}]*readAppConfig[^}]*NON_CHAT[^}]*\} from '\.\/lib\/appConfig\.mjs'/)
     expect(src).not.toMatch(/const NON_CHAT\s*=/)
     expect(src).not.toMatch(/function readAppConfig/)
+  })
+})
+
+// ── 入れないと決めたもの（2026-11-25・P-147）──────────────────────────────
+// 公式の料金表にはあるが Koto には入れないと決めたモデルが、毎週「新顔」で失敗し続けないようにする。
+// 料金が変わった・料金表から消えた・Koto にも載っている（矛盾）ときは、これまでどおり失敗にする。
+describe('★★★ 入れないと決めたもの（declined）', () => {
+  const kimi = (i: string, o: string, name = 'kimi-test-9b') =>
+    `<tr><th>${name}<br/><span>(2026年11月1日〜)</span></th><td>月 1 回</td><td>月 1 回</td><td>${price(i, o)}</td></tr>`
+  const withKimi = (row: string) => page(STANDARD + CLOSED + preview([...Object.values(PREVIEW_ROWS), row]))
+  const HTML = withKimi(kimi('0.6', '3'))
+  const dec = (over: any = {}) => ({ id: 'preview/kimi-test-9b', name: 'kimi-test-9b', reason: 'テスト用の理由', checkedAt: '2026-11-20', price: { in: 60, out: 300 }, ...over })
+  const run = (html: string, declined: any[], pricing: any = KOTO_ALL, models: string[] = []) => comparePricing(parsePricingPage(html), pricing, declined, models)
+  const opts = { today: '2026-11-25', knownModelIds: [] as string[] }
+
+  it('一覧にあり料金が一致 → 失敗にしない・新顔に出ない・登録案を出さない', () => {
+    const r = run(HTML, [dec()])
+    expect(exitCodeFor(r)).toBe(0)
+    expect(r.declined).toHaveLength(1)
+    expect(r.declined[0]).toMatchObject({ id: 'preview/kimi-test-9b', in: 60, out: 300 })
+    expect(r.newcomers).toHaveLength(0)
+    const text = formatReport(r, opts).join('\n')
+    expect(text).not.toContain('PRICING へ')
+    expect(text).toContain('入れないと決めたもの 1件')
+    expect(text).toContain('● 入れないと決めたもの（1件）')
+    expect(text).toContain('テスト用の理由')
+    expect(text).toContain('2026-11-20')
+  })
+  it('一覧が無ければ、同じページは新顔として失敗になる（対照）', () => {
+    const r = run(HTML, [])
+    expect(exitCodeFor(r)).toBe(1)
+    expect(r.newcomers.map((n: any) => n.id)).toEqual(['preview/kimi-test-9b'])
+  })
+  it('料金が違う → 失敗（料金が変わった）', () => {
+    const r = run(withKimi(kimi('0.7', '3')), [dec()])
+    expect(exitCodeFor(r)).toBe(1)
+    expect(r.declinedChanged).toHaveLength(1)
+    expect(r.declined).toHaveLength(0)
+    expect(r.newcomers).toHaveLength(0)
+    expect(formatReport(r, opts).join('\n')).toContain('入れないと決めたものの料金が変わった')
+  })
+  it('一覧の id がページのどの行にも無い → 失敗（料金表から消えた）', () => {
+    const r = run(FULL_HTML, [dec()])
+    expect(exitCodeFor(r)).toBe(1)
+    expect(r.declinedGone.map((g: any) => g.id)).toEqual(['preview/kimi-test-9b'])
+    expect(formatReport(r, opts).join('\n')).toContain('見当たらない')
+  })
+  it('一覧の id が PRICING にもある → 矛盾で失敗（例外にしない）', () => {
+    const r = run(HTML, [dec()], { ...KOTO_ALL, 'preview/kimi-test-9b': { in: 60, out: 300 } })
+    expect(exitCodeFor(r)).toBe(1)
+    expect(r.declinedConflicts).toEqual([{ id: 'preview/kimi-test-9b', where: 'PRICING' }])
+  })
+  it('一覧の id が MODELS にもある → 矛盾で失敗', () => {
+    const r = run(HTML, [dec()], KOTO_ALL, ['preview/kimi-test-9b'])
+    expect(exitCodeFor(r)).toBe(1)
+    expect(r.declinedConflicts).toEqual([{ id: 'preview/kimi-test-9b', where: 'MODELS' }])
+  })
+  it('名前だけ一致して id が違う（通常の区分へ移った）→ 新顔で失敗・添え書きあり', () => {
+    const html = page(STANDARD.replace('</tbody>', `${kimi('0.6', '3').replace('<td>月 1 回</td><td>月 1 回</td>', '<td>月 1 回</td><td>月 1 回</td>')}</tbody>`) + CLOSED + preview(Object.values(PREVIEW_ROWS)))
+    const r = run(html, [dec()])
+    expect(exitCodeFor(r)).toBe(1)
+    expect(r.newcomers.map((n: any) => n.id)).toEqual(['kimi-test-9b'])
+    expect(r.newcomers[0].sameNameDeclined).toBe('preview/kimi-test-9b')
+    expect(formatReport(r, opts).join('\n')).toContain('入れないと決めた preview/kimi-test-9b と名前が同じ')
+  })
+  it('一覧が空 → 正常（例外にならない）', () => {
+    expect(() => run(FULL_HTML, [])).not.toThrow()
+    expect(exitCodeFor(run(FULL_HTML, []))).toBe(0)
+  })
+  it('一覧の要素の形が違えば例外（設定が読めない）', () => {
+    for (const bad of [
+      dec({ id: '' }), dec({ id: '  ' }), dec({ checkedAt: '2026/11/20' }), dec({ checkedAt: '2026-13-40' }),
+      dec({ checkedAt: '2999-01-01' }), dec({ price: { in: '60', out: 300 } }), dec({ price: undefined }), dec({ price: { in: NaN, out: 1 } }),
+    ]) {
+      expect(() => run(HTML, [bad])).toThrow(PricingPageError)
+      expect(() => validateDeclined([bad])).toThrow(PricingPageError)
+    }
+    expect(() => run(HTML, [dec(), dec()])).toThrow(PricingPageError)
+    expect(() => validateDeclined(undefined)).toThrow(PricingPageError)
+  })
+  it('未来の日付の境界: 今日・明日は通り、明後日は止まる（今日の日付を引数で固定）', () => {
+    const now = new Date(2026, 10, 25, 12, 0, 0) // 2026-11-25（ローカル）
+    expect(() => validateDeclined([dec({ checkedAt: '2026-11-25' })], now)).not.toThrow()
+    expect(() => validateDeclined([dec({ checkedAt: '2026-11-26' })], now)).not.toThrow()
+    expect(() => validateDeclined([dec({ checkedAt: '2026-11-27' })], now)).toThrow(PricingPageError)
+    // 月末の繰り上がり
+    const eom = new Date(2026, 10, 30, 12, 0, 0)
+    expect(() => validateDeclined([dec({ checkedAt: '2026-12-01' })], eom)).not.toThrow()
+    expect(() => validateDeclined([dec({ checkedAt: '2026-12-02' })], eom)).toThrow(PricingPageError)
+  })
+  it('一覧にある id の行が料金を読めない（out が数でない）→ declinedChanged に入って失敗', () => {
+    const cell = `<dl class="p-in"><dt>Input</dt>${tok('0.6')}</dl><dl class="p-out"><dt>Output</dt><dd>お問い合わせください</dd></dl>`
+    const row = `<tr><th>kimi-test-9b<br/><span>(2026年11月1日〜)</span></th><td>月 1 回</td><td>月 1 回</td><td>${cell}</td></tr>`
+    const r = run(withKimi(row), [dec()])
+    expect(r.declinedChanged).toHaveLength(1)
+    expect(r.declinedChanged[0]).toMatchObject({ id: 'preview/kimi-test-9b' })
+    expect(r.declined).toHaveLength(0)
+    expect(exitCodeFor(r)).toBe(1)
+  })
+  it('実際の一覧 DECLINED は形が正しく、PRICING・MODELS と矛盾しない', () => {
+    expect(() => validateDeclined(DECLINED)).not.toThrow()
+    for (const d of DECLINED) {
+      expect(Object.keys(PRICING)).not.toContain(d.id)
+      expect(MODELS.map((m) => m.id)).not.toContain(d.id)
+    }
+  })
+  it('配線: check-pricing.mjs は一覧と MODELS の id を渡して呼ぶ（2引数の形に戻さない）', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../scripts/check-pricing.mjs'), 'utf-8')
+    expect(src).toContain("result = comparePricing(parsePricingPage(html), cfg.pricing, DECLINED, [...cfg.models, ...cfg.visionModels])")
+    expect(src).not.toMatch(/comparePricing\(parsePricingPage\(html\), cfg\.pricing\)/)
+    expect(src).toContain("import { DECLINED } from './lib/pricingDeclined.mjs'")
+    // 呼び出しが実コードにある: 設定を読む try の中（前後ごと）。コメントアウトした形は禁じる
+    expect(src).toMatch(/try \{\n\s*cfg = readAppConfig\(\)\n\s*validateDeclined\(DECLINED\)\n\s*\} catch \(e\) \{[\s\S]*?process\.exit\(2\)/)
+    expect(src).not.toMatch(/\/\/\s*validateDeclined\(DECLINED\)/)
   })
 })

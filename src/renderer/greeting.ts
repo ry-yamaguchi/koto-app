@@ -8,7 +8,7 @@
 // プロジェクトを開く入口がいくつあっても、ここを通らない限り AI へは何も飛ばない。
 
 import type { Op } from './chatConvClient'
-import { IDE_CONTEXT } from './aiContext'
+import { GREETING_SYSTEM, greetingContextOf } from './aiContext'
 import { formatChatError } from '../shared/aiToolsCore'
 import { stripRemoteHead } from '../shared/failureText'
 
@@ -184,7 +184,8 @@ export async function runGreeting(run: GreetingRun, ports: GreetingPorts): Promi
   const budgetWarning = budget.warning
   ports.setLoading(true)
   const kickoff = GREETING_KICKOFF
-  const sys = IDE_CONTEXT + (projectContext ? '\n\n' + projectContext : '')
+  // 道具を渡さない要求なので、道具の前提の IDE_CONTEXT は使わない（モデルが「道具が使えない」と言い出す）。
+  const sys = GREETING_SYSTEM + (projectContext ? '\n\n' + greetingContextOf(projectContext) : '')
   try {
     let text = ''
     // 吹き出しの差し替えは append ではなく replaceAll にする。時刻の刻印を付ける経路を通ると、

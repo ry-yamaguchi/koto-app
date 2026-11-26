@@ -5,7 +5,7 @@ import {
   decideGreeting, runGreeting, isGreetingLeftover,
   type GreetingInput, type GreetingPorts, type GreetingStreamRequest,
 } from '../src/renderer/greeting'
-import { IDE_CONTEXT } from '../src/renderer/aiContext'
+import { IDE_CONTEXT, GREETING_SYSTEM } from '../src/renderer/aiContext'
 import { GREET_ON_OPEN_KEY, isGreetOnOpenEnabled } from '../src/renderer/greetSetting'
 
 // ── 最初のあいさつ（U4・T-5a／T-5b／T-5d）────────────────────────────────────
@@ -283,22 +283,40 @@ describe('T-5b: runGreeting — 送る中身', () => {
     expect(req.apiKey).toBe('key-1')
     expect(req.model).toBe('model-1')
     expect(req.messages.map(m => m.role)).toEqual(['system', 'user'])
+    // tools のキーが無い（道具を渡さない）
     expect(Object.keys(req).sort()).toEqual(['apiKey', 'maxTokens', 'messages', 'model'])
   })
 
-  it('★ system は IDE_CONTEXT ＋ 空行 ＋ プロジェクトの文脈。user は依頼文', async () => {
+  it('★ system は GREETING_SYSTEM で始まり、道具前提の IDE_CONTEXT を含まない', async () => {
     const { ports, calls } = makePorts()
     await runGreeting(run, ports)
     const req = ofName(calls, 'chatStream')[0].args[0] as GreetingStreamRequest
-    expect(req.messages[0].content).toBe(IDE_CONTEXT + '\n\n【プロジェクト】a')
+    expect(req.messages[0].content.startsWith(GREETING_SYSTEM)).toBe(true)
+    expect(req.messages[0].content).not.toContain(IDE_CONTEXT)
+    expect(req.messages[0].content).not.toContain('read_file')
+  })
+
+  it('★ ファイル一覧の見出しは、道具の名前の無い言い方に差し替わって渡る', async () => {
+    const { ports, calls } = makePorts()
+    await runGreeting({ ...run, projectContext: 'ファイル構成（作業フォルダの中。そのまま read_file などに渡せるパス）:\n- a.js' }, ports)
+    const sys = (ofName(calls, 'chatStream')[0].args[0] as GreetingStreamRequest).messages[0].content
+    expect(sys).toContain('ファイル構成（作業フォルダの中）:\n- a.js')
+    expect(sys).not.toContain('read_file')
+  })
+
+  it('★ system は GREETING_SYSTEM ＋ 空行 ＋ プロジェクトの文脈。user は依頼文', async () => {
+    const { ports, calls } = makePorts()
+    await runGreeting(run, ports)
+    const req = ofName(calls, 'chatStream')[0].args[0] as GreetingStreamRequest
+    expect(req.messages[0].content).toBe(GREETING_SYSTEM + '\n\n【プロジェクト】a')
     expect(req.messages[1].content).toBe(KICKOFF)
   })
 
-  it('文脈が空なら、system は IDE_CONTEXT だけ（余分な空行を付けない）', async () => {
+  it('文脈が空なら、system は GREETING_SYSTEM だけ（余分な空行を付けない）', async () => {
     const { ports, calls } = makePorts()
     await runGreeting({ ...run, projectContext: '' }, ports)
     const req = ofName(calls, 'chatStream')[0].args[0] as GreetingStreamRequest
-    expect(req.messages[0].content).toBe(IDE_CONTEXT)
+    expect(req.messages[0].content).toBe(GREETING_SYSTEM)
   })
 
   it('吹き出し: 依頼文（hidden）と、届いた分までの返事。最後の更新は届いた全文', async () => {
@@ -330,7 +348,7 @@ describe('T-5b: runGreeting — 利用量の記録', () => {
   it('★ usage が無ければ見積もり（入力は system＋依頼文、出力は届いた全文）。入力 → 出力の順に見積もる', async () => {
     const { ports, calls } = makePorts({ usage: null, deltas: ['あいう', 'えお'] })
     await runGreeting(run, ports)
-    const sys = IDE_CONTEXT + '\n\n【プロジェクト】a'
+    const sys = GREETING_SYSTEM + '\n\n【プロジェクト】a'
     expect(ofName(calls, 'estimateTokens').map(c => c.args[0])).toEqual([sys + KICKOFF, 'あいうえお'])
     expect(ofName(calls, 'recordUsage')[0].args).toEqual(['key-1', 'model-1', (sys + KICKOFF).length, 'あいうえお'.length])
   })

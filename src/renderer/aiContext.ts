@@ -16,7 +16,7 @@ import { SECURE_WRITING_RULE } from '../shared/secureWritingRule'
 export { searchStatusContext }
 
 // 共通：アプリの説明
-const APP_INTRO =
+export const APP_INTRO =
   'Koto は、さくらのAI Engine でアプリやWebサイトを作り、さくらインターネットのサービスで簡単に公開することを目的とした macOS 向けデスクトップアプリです。'
 
 // 共通：古い呼び方（丸数字つき）を真似させない（2026-10-07・Ryosuke さん「丸印の数字は非常に見難い」）。
@@ -160,6 +160,10 @@ const DATA_RULE =
   '- **まだファイルが見当たらなくても、上の形のとおりに書いてよい。** 自分で koto-data を作らないこと。既にどちらかが置かれているなら、**置かれているほうを読み込むこと**（list_files で確かめられます）。\n' +
   '- **package.json の "type" を変更してはいけません。** 変更するとアプリ全体の読み込み方が変わり、起動しなくなります（import と require を行き来させる書き換えを提案しないこと）。\n'
 
+// IDE_CONTEXT とあいさつ用の GREETING_SYSTEM で同じ決まりを使う（食い違わせない）。
+const JAPANESE_ONLY_RULE =
+  '- 回答は必ず日本語のみで書くこと。他言語（韓国語・中国語・英語など）の単語や文字を混ぜない（コード・技術用語・固有名詞は除く）。\n'
+
 export const IDE_CONTEXT =
   'あなたは「Koto」のAIアシスタントです。' + APP_INTRO +
   'あなたの役割は、コード作成・修正・説明・デバッグを手伝い、ユーザーを「作る → 試す → 公開」の流れで先導することです。\n' +
@@ -175,7 +179,7 @@ export const IDE_CONTEXT =
   '- 保存したら「✏️ ◯◯ を保存しました」のように一言で報告し、コード全文はチャットに貼らないでください（変更の要点だけ説明する）。\n' +
   '- write_file が使えない場合（プロジェクト未選択時）のみ、```言語 file=相対パス 形式のコードブロックで提示してください（ユーザーが [💾 プロジェクトに保存] ボタンで保存できます）。\n' +
   '- 相対パスは作業フォルダからのパスにしてください。\n' +
-  '- 回答は必ず日本語のみで書くこと。他言語（韓国語・中国語・英語など）の単語や文字を混ぜない（コード・技術用語・固有名詞は除く）。\n' +
+  JAPANESE_ONLY_RULE +
   SECURE_WRITING_RULE + '\n' +
   '【ユーザーに作業を依頼しない（とても重要）】\n' +
   '- IDE（あなたのツール）でできる作業——ファイルの保存・読み取り・一覧——をユーザーに依頼しないこと。あなたが実行し、結果を報告する。\n' +
@@ -255,6 +259,26 @@ const SITE_TYPE_LABEL: Record<string, string> = {
   blog: 'ブログ風サイト',
 }
 
+/** buildProjectContext のファイル一覧の見出し。通常のチャット用（道具の名前入り）。 */
+export const FILE_LIST_HEADING = 'ファイル構成（作業フォルダの中。そのまま read_file などに渡せるパス）:'
+/** あいさつ用の見出し。道具を渡さない要求へ道具の名前を持ち込まない。 */
+export const GREETING_FILE_LIST_HEADING = 'ファイル構成（作業フォルダの中）:'
+
+/**
+ * あいさつ専用の system 文。あいさつの要求には道具を渡さないので、道具・ツールには一切触れない。
+ * 依頼文は greeting.ts の GREETING_KICKOFF。
+ */
+export const GREETING_SYSTEM =
+  'あなたは「Koto」のAIアシスタントです。' + APP_INTRO + '\n' +
+  JAPANESE_ONLY_RULE +
+  OLD_WORDING_RULE +
+  'これは、利用者がプロジェクトを開いた直後の最初のあいさつです。下の「現在のプロジェクト」の概要とファイル構成だけを根拠に要約してください。分からないことは推測せず、質問してください。'
+
+/** buildProjectContext の出力を、あいさつ用に直す（ファイル一覧の見出しだけ道具の名前の無い言い方へ）。 */
+export function greetingContextOf(projectContext: string): string {
+  return projectContext.split(FILE_LIST_HEADING).join(GREETING_FILE_LIST_HEADING)
+}
+
 /** プロジェクトの概要（名前・説明・公開先・ファイル構成）を文字列化する */
 export async function buildProjectContext(dir: string | null | undefined): Promise<string> {
   if (!dir) return ''
@@ -275,8 +299,8 @@ export async function buildProjectContext(dir: string | null | undefined): Promi
   const sameAsProject = root === dir
   const list = (xs: string[]) => xs.map(f => `- ${f}`).join('\n')
   const fileList = files.length === 0
-    ? 'ファイル構成（作業フォルダの中。そのまま read_file などに渡せるパス）:\n（まだファイルはありません）'
-    : 'ファイル構成（作業フォルダの中。そのまま read_file などに渡せるパス）:\n' +
+    ? FILE_LIST_HEADING + '\n（まだファイルはありません）'
+    : FILE_LIST_HEADING + '\n' +
       (inside.length ? list(inside) : '（まだファイルはありません）') +
       // 外は公開先の判断（useTargetCheck）がサーバーのファイルの有無を知るのに要るので消さない。ただし AI には触れないと伝える。
       (!sameAsProject && outside.length

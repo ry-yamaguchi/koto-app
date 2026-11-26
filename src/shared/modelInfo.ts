@@ -13,6 +13,7 @@
 //   2. 公開単価はさくらの情報で確認（APIから取れないため手動）:
 //      https://ai.sakura.ad.jp/sakura-ai/ai-engine/ ／ コントロールパネルの提供モデル
 //      → 料金の照合（キー不要）: npm run check:pricing（製品ページの公式料金表 × PRICING・scripts/check-pricing.mjs）
+//      公式の料金表にあるが入れないと決めたモデルは scripts/lib/pricingDeclined.mjs の DECLINED に足す（毎週の照合で新顔として失敗しなくなる）
 //   3. 差分を MODELS / VISION_MODELS / PRICING に反映し、DEFAULT_MODEL を
 //      「その時点でコード作成に最も適したモデル」に見直す
 //   最終確認: v0.1.0（2026-06 時点の最適は旧世代のコード特化480Bモデル）

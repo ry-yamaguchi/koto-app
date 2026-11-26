@@ -10,10 +10,13 @@
  *   npm run check:links
  *
  * 1件でも 400以上 or 通信失敗があれば終了コード 1（週次GitHub Actionsで検知）。
+ * URLが1件も読めなかったとき（読み先のファイルの形が変わった可能性）も終了コード 1。
+ * 判断（抽出・終了コード）は scripts/lib/checkLinks.mjs。ここは読み込みと通信だけ。
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { extractServiceUrls, exitCodeForLinks, NO_URLS_MESSAGE } from './lib/checkLinks.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const TARGET_PROFILES_PATH = resolve(here, '../src/renderer/targetProfiles.ts')
@@ -21,14 +24,6 @@ const RAG_PACKS_PATH = resolve(here, '../src/renderer/ragPacks.ts')
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-
-function extractServiceUrls() {
-  const src = readFileSync(TARGET_PROFILES_PATH, 'utf-8')
-  const urls = [...src.matchAll(/serviceUrl:\s*'([^']+)'/g)].map((m) => m[1])
-  const ragSrc = readFileSync(RAG_PACKS_PATH, 'utf-8')
-  const ragUrls = [...ragSrc.matchAll(/url:\s*'([^']+)'/g)].map((m) => m[1])
-  return [...new Set([...urls, ...ragUrls])]
-}
 
 async function checkUrl(url) {
   try {
@@ -44,29 +39,31 @@ async function checkUrl(url) {
 }
 
 try {
-  const urls = extractServiceUrls()
+  const urls = extractServiceUrls(
+    readFileSync(TARGET_PROFILES_PATH, 'utf-8'),
+    readFileSync(RAG_PACKS_PATH, 'utf-8'),
+  )
   if (urls.length === 0) {
-    console.log('serviceUrl が見つかりませんでした（targetProfiles.ts を確認してください）。')
-    process.exit(0)
+    console.error(`❌ ${NO_URLS_MESSAGE}`)
+    process.exit(exitCodeForLinks({ urls, results: [] }))
   }
 
   console.log(`=== リンク切れ検査（${urls.length}件） ===`)
   const results = await Promise.all(urls.map(checkUrl))
 
-  let hasFailure = false
   for (const r of results) {
     const mark = r.ok ? 'OK' : 'NG'
-    if (!r.ok) hasFailure = true
     const statusText = r.status ?? `通信失敗: ${r.error}`
     console.log(`[${mark}] ${r.url} → ${statusText}`)
   }
 
-  if (hasFailure) {
+  const code = exitCodeForLinks({ urls, results })
+  if (code !== 0) {
     console.log('\n❌ リンク切れ、または通信失敗のURLがあります。')
-    process.exit(1)
+    process.exit(code)
   }
   console.log('\n✅ すべてのURLにアクセスできました。')
-  process.exit(0)
+  process.exit(code)
 } catch (e) {
   console.error(`\n❌ ${e?.message ?? e}`)
   process.exit(2)

@@ -359,14 +359,22 @@ const sameYen = (a, b) => isNum(a) && isNum(b) && Math.abs(a - b) < 1e-9
  *   newcomers    … 公式にあって Koto の PRICING に無い（新顔・料金を読めたもの）
  *   unreadable   … 料金を読めなかった行（公式の表にあるが Input/Output の形で読めない。一致とも新顔とも判定しない）
  *   kotoOnly     … Koto の PRICING にだけある（提供終了の可能性）
+ *   declined     … 入れないと決めたもの（pricingDeclined.mjs）で、公式の料金が登録のとおりのもの（失敗にしない）
+ *   declinedChanged … 入れないと決めたものの、公式の料金が登録と違う（読めない）もの
+ *   declinedGone … 入れないと決めたものが、公式の料金表のどの行にも無い
+ *   declinedConflicts … 入れないと決めたものが PRICING か MODELS にも載っている（矛盾）
  *   closed       … クローズド（料金非公開）
  *   excluded     … 公式の行のうち、チャット用でないので外したもの（表示用）
  *   kotoExcluded … Koto の PRICING のうち、チャット用でないので照合しなかったもの（表示用）
  * 料金を読めたチャット用の行が MIN_PRICED_ROWS 未満、同じ API 名の行が2つ、Koto の PRICING が空、のときは例外。
  * @param {ReturnType<typeof parsePricingPage>} rows
  * @param {Record<string, {in:number,out:number}>} pricing
+ * @param {Array<{id:string,name:string,reason:string,checkedAt:string,price:{in:number,out:number}}>} declined 入れないと決めたもの（空配列は可・省略は不可）
+ * @param {string[]} modelIds Koto の MODELS（と VISION_MODELS）の id（declined との矛盾を見る）
  */
-export function comparePricing(rows, pricing) {
+export function comparePricing(rows, pricing, declined, modelIds) {
+  validateDeclined(declined)
+  if (!Array.isArray(modelIds)) throw new PricingPageError('Koto の MODELS の id の一覧が渡されていません')
   const kotoIds = Object.keys(pricing ?? {})
   if (!kotoIds.length) throw new PricingPageError('Koto の PRICING が空です（読み先がずれていないか確認してください）')
 
@@ -396,6 +404,10 @@ export function comparePricing(rows, pricing) {
   const mismatched = []
   const newcomers = []
   const unreadable = []
+  const declinedHit = []
+  const declinedChanged = []
+  const declinedById = new Map(declined.map((d) => [d.id, d]))
+  const declinedSeen = new Set()
   const onPage = new Set()
   const bare = (id) => id.replace(/^preview\//, '')
 
@@ -404,6 +416,17 @@ export function comparePricing(rows, pricing) {
     const official = { in: r.in, out: r.out }
     const inKoto = !!id && Object.prototype.hasOwnProperty.call(pricing, id)
     if (inKoto) onPage.add(id)
+    // 入れないと決めたもの: 料金が登録のとおりなら失敗にしない・違えば別の分類
+    const dec = id ? declinedById.get(id) : null
+    if (dec) {
+      declinedSeen.add(id)
+      if (sameYen(r.in, dec.price.in) && sameYen(r.out, dec.price.out)) {
+        declinedHit.push({ id, name: r.name, reason: dec.reason, checkedAt: dec.checkedAt, in: r.in, out: r.out })
+      } else {
+        declinedChanged.push({ id, name: r.name, official: official, declined: { in: dec.price.in, out: dec.price.out } })
+      }
+      continue
+    }
     // 料金を読めない行は、一致・食い違い・新顔のどれにもしない（読めた分だけで判定しない）
     if (!isNum(r.in) || !isNum(r.out)) {
       unreadable.push({
@@ -433,8 +456,14 @@ export function comparePricing(rows, pricing) {
       noFreeTier: r.noFreeTier,
       // 区分が変わった（プレビュー → 通常 など）可能性の手がかり
       sameNameInKoto: kotoIds.find((k) => bare(k) === r.name) ?? null,
+      sameNameDeclined: declined.find((d) => bare(d.id) === r.name)?.id ?? null,
     })
   }
+  const declinedGone = declined.filter((d) => !declinedSeen.has(d.id)).map((d) => ({ id: d.id, name: d.name, checkedAt: d.checkedAt }))
+  const declinedConflicts = declined.flatMap((d) => [
+    ...(Object.prototype.hasOwnProperty.call(pricing, d.id) ? [{ id: d.id, where: 'PRICING' }] : []),
+    ...(modelIds.includes(d.id) ? [{ id: d.id, where: 'MODELS' }] : []),
+  ])
 
   // Koto 側もチャット用でないものは外す（公式側で外したものを「提供終了の可能性」と誤報しない）
   const kotoExcluded = kotoIds.filter((id) => NON_CHAT.test(id))
@@ -443,12 +472,44 @@ export function comparePricing(rows, pricing) {
     .map((id) => ({ id, sameNameOnPage: open.find((r) => r.name === bare(id)) ? bare(id) : null }))
 
   const closed = closedRows.map((r) => ({ name: r.name, provider: r.provider }))
-  return { matched, mismatched, newcomers, unreadable, kotoOnly, closed, excluded, kotoExcluded }
+  return { matched, mismatched, newcomers, unreadable, kotoOnly, declined: declinedHit, declinedChanged, declinedGone, declinedConflicts, closed, excluded, kotoExcluded }
 }
 
-/** 終了コード: 食い違い・新顔・料金を読めなかった行・Koto にだけある のどれかがあれば 1、全部一致なら 0（クローズドは数えない） */
+/**
+ * 入れないと決めたものの一覧の形を確かめる。読めなければ PricingPageError（check-pricing.mjs は exit 2）。
+ * 空配列は正常。id が空・checkedAt が YYYY-MM-DD で読めない・未来の日付・price が数でない、は例外。
+ * 「未来」は今日（now のローカル日付）より2日以上先。作者が日本時間の今日の日付で足した直後に
+ * UTC の CI で走っても止まらないよう、1日の余裕を持たせる（今日・明日は通り、明後日は止まる）。
+ * @param {unknown} declined
+ * @param {Date} [now] 今の日時（テストで固定するために外から渡せる。既定は今）
+ */
+export function validateDeclined(declined, now = new Date()) {
+  if (!Array.isArray(declined)) throw new PricingPageError('入れないと決めたものの一覧が配列ではありません（scripts/lib/pricingDeclined.mjs）')
+  const d0 = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + 1))
+  const latestAllowed = d0.toISOString().slice(0, 10) // 明日まで通す
+  const ids = new Set()
+  declined.forEach((d, i) => {
+    const at = `入れないと決めたものの一覧の ${i + 1} 件目（scripts/lib/pricingDeclined.mjs）`
+    if (!d || typeof d.id !== 'string' || !d.id.trim()) throw new PricingPageError(`${at}: id が空です`)
+    if (ids.has(d.id)) throw new PricingPageError(`${at}: id が重複しています（${d.id}）`)
+    ids.add(d.id)
+    if (typeof d.name !== 'string' || !d.name.trim()) throw new PricingPageError(`${at}: name が空です（${d.id}）`)
+    const m = typeof d.checkedAt === 'string' ? d.checkedAt.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null
+    const real = m && (() => { const t = new Date(`${d.checkedAt}T00:00:00Z`); return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === d.checkedAt })()
+    if (!real) throw new PricingPageError(`${at}: checkedAt が YYYY-MM-DD で読めません（${d.id}）`)
+    if (d.checkedAt > latestAllowed) throw new PricingPageError(`${at}: checkedAt が未来の日付です（${d.id}）`)
+    if (!d.price || !isNum(d.price.in) || !isNum(d.price.out)) throw new PricingPageError(`${at}: price が { in: 数, out: 数 } ではありません（${d.id}）`)
+  })
+}
+
+/**
+ * 終了コード: 食い違い・新顔・料金を読めなかった行・Koto にだけある・入れないと決めたものの異変
+ * （料金が変わった・料金表から消えた・PRICING か MODELS との矛盾）のどれかがあれば 1、全部一致なら 0。
+ * クローズドと、入れないと決めたものの一致は数えない。
+ */
 export function exitCodeFor(result) {
-  return result.mismatched.length || result.newcomers.length || result.unreadable.length || result.kotoOnly.length ? 1 : 0
+  return result.mismatched.length || result.newcomers.length || result.unreadable.length || result.kotoOnly.length
+    || result.declinedChanged.length || result.declinedGone.length || result.declinedConflicts.length ? 1 : 0
 }
 
 const per10k = (v) => (isNum(v) ? String(roundYen(v / 100)) : '?')
@@ -494,10 +555,10 @@ export function registrationLines(n, { today, knownModelIds = [] }) {
  */
 export function formatReport(result, opts) {
   const L = []
-  const { matched, mismatched, newcomers, unreadable, kotoOnly, closed, excluded, kotoExcluded } = result
+  const { matched, mismatched, newcomers, unreadable, kotoOnly, declined, declinedChanged, declinedGone, declinedConflicts, closed, excluded, kotoExcluded } = result
   L.push('=== さくらのAI Engine 公式料金表 × Koto の PRICING ===')
   L.push(`出どころ: ${PRICING_PAGE_URL}（提供モデルと料金）`)
-  L.push(`一致 ${matched.length}件 / 食い違い ${mismatched.length}件 / 新顔 ${newcomers.length}件 / 料金を読めなかった行 ${unreadable.length}件 / Koto にだけある ${kotoOnly.length}件 / クローズド ${closed.length}件`)
+  L.push(`一致 ${matched.length}件 / 食い違い ${mismatched.length}件 / 新顔 ${newcomers.length}件 / 料金を読めなかった行 ${unreadable.length}件 / Koto にだけある ${kotoOnly.length}件 / 入れないと決めたもの ${declined.length}件 / クローズド ${closed.length}件`)
   if (excluded.length) L.push(`チャット用でないので外したもの: ${excluded.join('、')}`)
   if (kotoExcluded.length) L.push(`Koto の PRICING のうちチャット用でないので照合しなかったもの: ${kotoExcluded.join('、')}`)
   L.push('単位: Koto は 100万トークンあたり円、公式は 1万トークンあたり円（×100 して比べています）')
@@ -527,6 +588,7 @@ export function formatReport(result, opts) {
       const free = n.noFreeTier ? '・無償枠なし' : ''
       L.push(`  - ${n.name}（${SECTION_LABEL[n.section] ?? n.section}${since}${free}）→ API 名の候補: ${n.id ?? '導けません'}`)
       if (n.sameNameInKoto) L.push(`    Koto には ${n.sameNameInKoto} として載っています。区分が変わった可能性があります。`)
+      if (n.sameNameDeclined) L.push(`    入れないと決めた ${n.sameNameDeclined} と名前が同じです。区分が変わった可能性があります（入れるか、一覧の id を直すか決めてください）。`)
       L.push(...registrationLines(n, opts))
     }
   }
@@ -551,6 +613,27 @@ export function formatReport(result, opts) {
       if (k.sameNameOnPage) L.push(`      公式には ${k.sameNameOnPage} が別の区分で載っています。区分が変わった可能性があります。`)
     }
   }
+  if (declinedChanged.length) {
+    L.push('')
+    L.push(`● 入れないと決めたものの料金が変わった（${declinedChanged.length}件）— 入れるか、scripts/lib/pricingDeclined.mjs の料金を直すか決めてください`)
+    for (const c of declinedChanged) L.push(`    - ${c.id}  公式: 入力 ${yen(c.official.in)} / 出力 ${yen(c.official.out)}  一覧の登録: 入力 ${c.declined.in} / 出力 ${c.declined.out}`)
+  }
+  if (declinedGone.length) {
+    L.push('')
+    L.push(`● 入れないと決めたものが、公式の料金表に見当たらない（${declinedGone.length}件）— 料金表から消えたか、区分や名前が変わった可能性`)
+    L.push('  公式ページで確かめ、scripts/lib/pricingDeclined.mjs から外してよいか決めてください。')
+    for (const g of declinedGone) L.push(`    - ${g.id}（確かめた日 ${g.checkedAt}）`)
+  }
+  if (declinedConflicts.length) {
+    L.push('')
+    L.push(`● 入れないと決めたものが、Koto にも載っている（矛盾・${declinedConflicts.length}件）— 入れたなら scripts/lib/pricingDeclined.mjs から外してください`)
+    for (const c of declinedConflicts) L.push(`    - ${c.id}（${c.where} にある）`)
+  }
+  if (declined.length) {
+    L.push('')
+    L.push(`● 入れないと決めたもの（${declined.length}件）— 照合のうえ失敗にしない`)
+    for (const d of declined) L.push(`    - ${d.id}  入力 ${d.in} / 出力 ${d.out}  理由: ${d.reason}（確かめた日 ${d.checkedAt}）`)
+  }
   if (closed.length) {
     L.push('')
     L.push(`● クローズド（料金は公開されていない・${closed.length}件）— 照合していません`)
@@ -558,7 +641,7 @@ export function formatReport(result, opts) {
   }
   L.push('')
   L.push(exitCodeFor(result)
-    ? '要確認: 上の食い違い・新顔・料金を読めなかった行・Koto にだけある を見直してください。'
+    ? '要確認: 上の食い違い・新顔・料金を読めなかった行・Koto にだけある・入れないと決めたものの異変（料金が変わった・料金表から消えた・矛盾）を見直してください。'
     : '差分なし: チャット用モデルの料金は公式の料金表と一致しています。')
   return L
 }

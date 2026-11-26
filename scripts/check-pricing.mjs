@@ -15,15 +15,19 @@
  *   1 … 食い違い・新顔・料金を読めなかった行・Koto にだけある のどれかがある（新顔にはそのまま貼れる登録案を出す）
  *       料金を読めなかった行 … 通常・プレビューの表にあるチャット用の行で、料金を Input/Output の形で読めないもの
  *       （黙って捨てると、既存の行が一致しているだけで「差分なし」になるため）
- *   2 … ページを取れない／ページの形が変わって読めない／Koto の設定を読めない
+ *       入れないと決めたもの（scripts/lib/pricingDeclined.mjs・公式の料金表にあるが Koto には入れない）は、
+ *       料金が一覧の登録と一致している間は失敗にしない。料金が変わった・料金表から消えた・PRICING か MODELS にも載っている
+ *       （矛盾）ときは 1。確かめた日が古くなっても知らせない（2026-11-25 決定）。
+ *   2 … ページを取れない／ページの形が変わって読めない／Koto の設定（入れないと決めたものの一覧を含む）を読めない
  *       （読み違いのまま「全部一致」と言わないよう、差分を出さずに止める）
  *
  * ※ 新顔の API 名は「区分から導いた候補」。実在は check:models（キーが要る）かお知らせで確かめる。
  */
 import { readAppConfig } from './lib/appConfig.mjs'
 import {
-  PRICING_PAGE_URL, parsePricingPage, comparePricing, formatReport, exitCodeFor,
+  PRICING_PAGE_URL, parsePricingPage, comparePricing, formatReport, exitCodeFor, validateDeclined,
 } from './lib/pricingPage.mjs'
+import { DECLINED } from './lib/pricingDeclined.mjs'
 
 const FETCH_TIMEOUT_MS = 30_000
 
@@ -47,6 +51,7 @@ async function fetchPage() {
 let cfg
 try {
   cfg = readAppConfig()
+  validateDeclined(DECLINED)
 } catch (e) {
   console.error(`❌ ${e?.message ?? e}`)
   process.exit(2)
@@ -62,7 +67,7 @@ try {
 
 let result
 try {
-  result = comparePricing(parsePricingPage(html), cfg.pricing)
+  result = comparePricing(parsePricingPage(html), cfg.pricing, DECLINED, [...cfg.models, ...cfg.visionModels])
 } catch (e) {
   console.error(`❌ ${e?.message ?? e}`)
   console.error('   差分は出していません。ページ（提供モデルと料金）を目で確かめてください: ' + PRICING_PAGE_URL)

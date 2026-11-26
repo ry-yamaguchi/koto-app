@@ -529,9 +529,9 @@ export default function Sidebar({ currentDir, onSetDir, onOpenFile, onNewProject
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-line-soft">
-        <span className="text-[11px] font-semibold text-ink-muted uppercase tracking-widest">ファイル</span>
-        <div className="flex items-center gap-0.5">
+      <div className="flex items-center justify-between min-w-0 px-3 py-2.5 border-b border-line-soft">
+        <span className="min-w-0 truncate whitespace-nowrap text-[11px] font-semibold text-ink-muted uppercase tracking-widest">ファイル</span>
+        <div className="flex items-center gap-0.5 shrink-0">
           {currentDir && onOpenHistory && (
             <button
               onClick={onOpenHistory}
